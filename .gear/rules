@@ -1,0 +1,2 @@
+tar.gz: . name=samba-@version@
+copy: extra/*
