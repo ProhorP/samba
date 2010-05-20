@@ -1,5 +1,5 @@
 %define main_release 50
-%define samba_version 3.4.4
+%define samba_version 3.4.8
 %define pre_release %nil
 
 %define samba_release %main_release%pre_release%{?dist}
@@ -587,6 +587,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu May 20 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt3
+- 3.4.8
+
 * Thu May 13 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.4-alt3
 - packaged doc as noarch
 - rebased onto upstream git
