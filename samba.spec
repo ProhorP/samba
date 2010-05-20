@@ -8,7 +8,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: %samba_version
-Release: alt3
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -587,7 +587,7 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
-* Thu May 20 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt3
+* Thu May 20 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt1
 - 3.4.8
 
 * Thu May 13 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.4-alt3
