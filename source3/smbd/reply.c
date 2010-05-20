@@ -46,9 +46,9 @@ static NTSTATUS check_path_syntax_internal(char *path,
 {
 	char *d = path;
 	const char *s = path;
-	NTSTATUS ret = NT_STATUS_OK;
 	bool start_of_name_component = True;
 	bool stream_started = false;
+	bool check_quota = false;
 
 	*p_last_component_contains_wcard = False;
 
@@ -66,7 +66,7 @@ static NTSTATUS check_path_syntax_internal(char *path,
 					return NT_STATUS_OBJECT_NAME_INVALID;
 				}
 				if (StrCaseCmp(s, ":$DATA") != 0) {
-					return NT_STATUS_INVALID_PARAMETER;
+					check_quota = true;
 				}
 				break;
 			}
@@ -127,8 +127,7 @@ static NTSTATUS check_path_syntax_internal(char *path,
 
 				/* Are we at the start ? Can't go back further if so. */
 				if (d <= path) {
-					ret = NT_STATUS_OBJECT_PATH_SYNTAX_BAD;
-					break;
+					return NT_STATUS_OBJECT_PATH_SYNTAX_BAD;
 				}
 				/* Go back one level... */
 				/* We know this is safe as '/' cannot be part of a mb sequence. */
@@ -201,7 +200,13 @@ static NTSTATUS check_path_syntax_internal(char *path,
 
 	*d = '\0';
 
-	return ret;
+	if (check_quota) {
+		if (StrCaseCmp(path, FAKE_FILE_NAME_QUOTA_UNIX) != 0) {
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+	}
+
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
@@ -5809,6 +5814,23 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 
 		DEBUG(3,("rename_internals_fsp: succeeded doing rename on %s -> %s\n",
 			fsp->fsp_name,newname));
+
+		if (lp_map_archive(SNUM(conn)) ||
+		    lp_store_dos_attributes(SNUM(conn))) {
+			/* We must set the archive bit on the newly
+			   renamed file. */
+			if (SMB_VFS_STAT(conn,newname,&sbuf1) == 0) {
+				uint32_t old_dosmode = dos_mode(conn,
+							newname,
+							&sbuf1);
+				file_set_dosmode(conn,
+					newname,
+					old_dosmode | FILE_ATTRIBUTE_ARCHIVE,
+					&sbuf1,
+					NULL,
+					true);
+			}
+		}
 
 		notify_rename(conn, fsp->is_directory, fsp->fsp_name, newname);
 

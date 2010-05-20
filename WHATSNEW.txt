@@ -1,4 +1,359 @@
                    =============================
+                   Release Notes for Samba 3.4.8
+			   May 11, 2010
+                   =============================
+
+
+This is the latest stable release of Samba 3.4.
+
+Major enhancements in Samba 3.4.8 include:
+
+   o Fix Winbind reconnection to it's own domain (bug #7295).
+   o Fix an uninitialized variable read in smbd (bug #7254).
+   o Fix smbd crash with CUPS printers and no [printers] share defined
+     (bug #7297).
+   o Fix NULL pointer dereference in smbd (bug #7229).
+
+
+Changes since 3.4.7
+-------------------
+
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 7231: Fix automatic building of vfs_tsmsm if gpfs and dmapi are
+      present.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 7159: Fix handling of bad server data returns in client rpc_transport.
+    * BUG 7255: Fix "printer admin" functionality.
+    * BUG 7288: Fix SMB job IDs in CUPS job names.
+    * BUG 7297: Fix smbd crash with CUPS printers and no [printers] share
+      defined.
+    * BUG 7310: Fix DOS attribute inconsistency with MS Office.
+
+
+o   Kai Blin <kai@samba.org>
+    * BUG 7290: Fix core dump in 'ntlm_auth'.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 6727: Fix printing issues.
+    * BUG 7176: Fix incorrect format of device mode strings.
+    * BUG 7256: Fix value-needed calculation in_spoolss_EnumPrinterData().
+    * BUG 7277: Fix exporting printers via 'cupsaddsmb' command.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 7352: Fix different definitions of TIME_T_MAX.
+
+
+o   Michael Karcher <samba@mkarcher.dialup.fu-berlin.de>
+    * BUG 7269: Fix job management commands for CUPS queues.
+
+
+o   Jeff Layton <jlayton@redhat.com>
+    * BUG 6853: Fix race condition in mount.cifs that allows user to replace
+      mountpoint with a symlink.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 5198: Fix parsing of the gecos field.
+    * BUG 5626: Fix build on AIX.
+    * BUG 7229: Fix NULL pointer dereference in smbd.
+    * BUG 7254: Fix an uninitialized variable read in smbd found by Laurent
+      Gaffié from Stratsec.
+    * BUG 7326: Fix writing with vfs_full_audit.
+
+
+o   Derrell Lipman <derrell@dworkin.(none)>
+    * BUG 7345: Fix incomplete description of function return values in
+      libsmbclient.h.
+
+
+o   Jim McDonough <jmcd@samba.org>
+    * BUG 7378:  Display an error on 'net conf import' failures.
+
+
+o   Roel van Meer <rolek@alt001.com>
+    * BUG 6814: Fix valgrind warning.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 7159: Fix handling of bad server data returns in client rpc_transport.
+    * BUG 7170: Never mark external domains as internal.
+    * BUG 7295: Fix Winbind reconnection to it's own domain.
+    * BUG 7316: Make sure we don't try rpc requests against unaccessable
+      domains.
+    * BUG 7317: Fix problems with SIGCHLD handling in Winbind.
+
+
+o   SATOH Fumiyasu <fumiyas@osstech.co.jp>
+    * BUG 1206: Fix segfault in vfs_netatalk.
+
+
+o   Bo Yang <boyang@samba.org>
+    * BUG 7206: Fix duplicate signal handler.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.4 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+Release notes for older versions follow:
+----------------------------------------
+
+                   =============================
+                   Release Notes for Samba 3.4.7
+			    March 8, 2010
+                   =============================
+
+
+This is a security release in order to address CVE-2010-0728.
+
+
+o  CVE-2010-0728:
+   In Samba releases 3.5.0, 3.4.6 and 3.3.11, new code
+   was added to fix a problem with Linux asynchronous IO handling.
+   This code introduced a bad security flaw on Linux platforms if the
+   binaries were built on Linux platforms with libcap support.
+   The flaw caused all smbd processes to inherit CAP_DAC_OVERRIDE
+   capabilities, allowing all file system access to be allowed
+   even when permissions should have denied access.
+
+
+Changes since 3.4.6
+-------------------
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 7222: Fix for CVE-2010-0728.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.4 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   =============================
+                   Release Notes for Samba 3.4.6
+			 February 24, 2010
+                   =============================
+
+
+This is the latest stable release of Samba 3.4.
+
+Major enhancements in Samba 3.4.6 include:
+
+   o "wide links" and "unix extensions" are incompatible (bug #7104).
+   o Fix printing with 64 bit clients (bug #6888).
+   o Fix core dump on Ubuntu 8.04 64 bit (bug #7063).
+   o Fix failing of smbd to respond to a read or a write caused by
+     Linux asynchronous IO (aio) (bug #7067).
+   o Fix string buffer overflow causing heap corruption in smbd (bug #7096).
+
+
+######################################################################
+Changes
+#######
+
+Changes since 3.4.5
+-------------------
+
+
+o   Michael Adam <obnox@samba.org>
+    * Make idmap cache persistent for "ldapsam:trusted".
+    * Also fill the memcache with sid<->id mappings in ldapsam_sid_to_id() not
+      only the persistent idmap cache.
+    * Shortcut uid_to_sid when "ldapsam:trusted = yes".
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 6557: Fix vfs_full_audit.
+    * BUG 7063: Fix core dump on Ubuntu 8.04 64 bit.
+    * BUG 7067: Fix failing of smbd to respond to a read or a write caused by
+      Linux asynchronous IO (aio).
+    * BUG 7072: Fix unlocking of accounts from ldap.
+    * BUG 7081: Fix vfs_expand_msdfs.
+    * BUG 7104: "wide links" and "unix extensions" are incompatible.
+    * BUG 7122: Fix reading of large browselist.
+    * BUG 7154: "mangling method = hash" can crash storing a name containing a '.'.
+    * BUG 7155: Valgrind Conditional jump or move depends on uninitialised
+      value(s) error when "mangling method = hash".
+
+
+o   Steven Danneman <steven.danneman@isilon.com>
+    * BUG 7096: Fix string buffer overflow causing heap corruption in smbd.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 6888: Fix printing with 64 bit clients.
+    * BUG 7130: Fix listing of printjobs in Windows 7.
+    * BUG 7136: Spoolss getprinterdriver2 level 101 marshalling is bad.
+
+
+o   William Jojo <w.jojo@hvcc.edu>
+    * BUG 7052: Fix DFS on AIX (maybe others).
+
+
+o   Jeff Layton <jlayton@redhat.com>
+    * BUG 6868: Fix crash bug in 'cifs.upcall'.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 5885: Fix bogus ip address in SWAT.
+    * BUG 6981: Fix large paged search with DirX LDAP servers.
+    * BUG 7068: Fix pdb_search crash as non-root user.
+    * Make pdb_copy_sam_account also copy the group sid.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 6157: Use the first "uid" value.
+    * BUG 6888: Fix printing with 64 bit clients.
+    * BUG 7098: Fix results of 'smbclient -L' with a large browse list.
+    * Shortcut gid_to_sid when "ldapsam:trusted = yes".
+    * Speed up pdb_get_group_sid().
+    * Try to build the full unix_pw structure with ldapsam:trusted support.
+    * Optimize ldapsam_alias_memberships() and cache ldap searches.
+
+
+o   Lars Müller <lars@samba.org>
+    * BUG 7047: Add cross option to samba_cv_linux_getgrouplist_ok.
+    * BUG 7102: Normalize "Changing password for" msg IDs and STRs.
+
+
+o   Bo Yang <boyang@samba.org>
+    * BUG 7106: Fix malformed require_membership_of_sid.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.4 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   =============================
+                   Release Notes for Samba 3.4.5
+			 January 19, 2010
+                   =============================
+
+
+This is the latest stable release of Samba 3.4.
+
+Major enhancements in Samba 3.4.5 include:
+
+   o Fix memory in leak in smbd (bug #7020).
+   o Fix changing of ACLs on writable files with "dos filemode=yes" (bug #5202).
+
+
+######################################################################
+Changes
+#######
+
+Changes since 3.4.4
+-------------------
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 5202: Fix changing of ACLs on writable files with "dos filemode=yes".
+    * BUG 7020: Fix memory leak in smbd.
+    * BUG 7036: Fix 'net rpc getsid' in hardened Windows environments.
+    * BUG 7045: Fix bad (non memory copying) interfaces in smbc_setXXXX calls.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 7043: Fix crash bug in "SMBC_parse_path".
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 7046: Fix a crash in libsmbclient used against the OpenSolaris CIFS
+      server.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 6642: Fix opening the quota magic file.
+    * BUG 6919: Fix remote quota management.
+
+
+o   SASAJIMA Toshihiro <sasajima_t@jp.fujitsu.com>
+    * BUG 7034: Fix internal error caused by vfs_cap.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.4 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   =============================
                    Release Notes for Samba 3.4.4
 			 January 7, 2009
                    =============================
@@ -94,8 +449,8 @@ database (https://bugzilla.samba.org/).
 ======================================================================
 
 
-Release notes for older versions follow:
-----------------------------------------
+----------------------------------------------------------------------
+
 
                    =============================
                    Release Notes for Samba 3.4.3
