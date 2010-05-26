@@ -71,3 +71,7 @@ SMBC_errno(SMBCCTX *context,
 	return ret;
 }
 
+int smbc_remove_unused_server(SMBCCTX * context, SMBCSRV * srv)
+{
+  smb_panic("You've found a secret level: DEPRECATED smbc_remove_unused_server() called!");
+}
