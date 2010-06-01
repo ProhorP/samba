@@ -8,7 +8,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: %samba_version
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -382,6 +382,11 @@ rm -f %buildroot%_man8dir/tdbbackup.8*
 rm -f %buildroot%_man8dir/tdbdump.8*
 rm -f %buildroot%_man8dir/tdbtool.8*
 
+#cups backend
+%define cups_serverbin %(cups-config --serverbin 2>/dev/null)
+mkdir -p %buildroot%{cups_serverbin}/backend
+ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
+
 %post
 %post_service smb
 %post_service nmb
@@ -461,6 +466,7 @@ true
 %_bindir/smbtar
 %_bindir/smbtree
 %_bindir/sharesec
+%{cups_serverbin}/backend/smb
 %_man1dir/findsmb.1*
 %_man1dir/nmblookup.1*
 %_man1dir/rpcclient.1*
@@ -587,6 +593,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Tue Jun 01 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt2
+- symlink for cups backend resurrected (ALT #23575)
+
 * Thu May 20 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt1
 - 3.4.8
 
