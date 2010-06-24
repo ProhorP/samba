@@ -8,7 +8,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: %samba_version
-Release: alt2
+Release: alt3
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -593,6 +593,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu Jun 24 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt3
+- samba.pamd: use common-login
+
 * Tue Jun 01 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt2
 - symlink for cups backend resurrected (ALT #23575)
 
