@@ -7,7 +7,7 @@
 	<manvolnum>8</manvolnum>
 	<refmiscinfo class="source">Samba</refmiscinfo>
 	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
-	<refmiscinfo class="version">3.4</refmiscinfo>
+	<refmiscinfo class="version">3.5</refmiscinfo>
 </refmeta>
 
 
@@ -58,7 +58,7 @@
 	<title>EXAMPLES</title>
 	<para>
 	The following example shows how to retrieve idmappings from our principal and
-	trusted AD domains. If trusted domains are present id conflicts must be
+	and trusted AD domains. If trusted domains are present id conflicts must be
 	resolved beforehand, there is no
 	guarantee on the order conflicting mappings would be resolved at this point.
 

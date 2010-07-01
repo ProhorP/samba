@@ -644,6 +644,25 @@ void pjob_delete(const char* sharename, uint32 jobid)
 }
 
 /****************************************************************************
+ Parse a file name from the system spooler to generate a jobid.
+****************************************************************************/
+
+static uint32 print_parse_jobid(char *fname)
+{
+	int jobid;
+
+	if (strncmp(fname,PRINT_SPOOL_PREFIX,strlen(PRINT_SPOOL_PREFIX)) != 0)
+		return (uint32)-1;
+	fname += strlen(PRINT_SPOOL_PREFIX);
+
+	jobid = atoi(fname);
+	if (jobid <= 0)
+		return (uint32)-1;
+
+	return (uint32)jobid;
+}
+
+/****************************************************************************
  List a unix job in the print database.
 ****************************************************************************/
 
@@ -1380,6 +1399,22 @@ static void printing_pause_fd_handler(struct tevent_context *ev,
 	exit_server_cleanly(NULL);
 }
 
+static void add_child_pid(pid_t pid)
+{
+	extern struct child_pid *children;
+	struct child_pid *child;
+	extern int num_children;
+
+        child = SMB_MALLOC_P(struct child_pid);
+        if (child == NULL) {
+                DEBUG(0, ("Could not add child struct -- malloc failed\n"));
+                return;
+        }
+        child->pid = pid;
+        DLIST_ADD(children, child);
+        num_children += 1;
+}
+
 static pid_t background_lpq_updater_pid = -1;
 
 /****************************************************************************
@@ -1406,6 +1441,9 @@ void start_background_queue(void)
 		DEBUG(5,("start_background_queue: background LPQ thread failed to start. %s\n", strerror(errno) ));
 		exit(1);
 	}
+
+	/* Track the printing pid along with other smbd children */
+	add_child_pid(background_lpq_updater_pid);
 
 	if(background_lpq_updater_pid == 0) {
 		struct tevent_fd *fde;
@@ -2464,7 +2502,7 @@ uint32 print_job_start(struct auth_serversupplied_info *server_info, int snum,
 	/* we have a job entry - now create the spool file */
 	slprintf(pjob.filename, sizeof(pjob.filename)-1, "%s/%s%.8u.XXXXXX",
 		 path, PRINT_SPOOL_PREFIX, (unsigned int)jobid);
-	pjob.fd = smb_mkstemp(pjob.filename);
+	pjob.fd = mkstemp(pjob.filename);
 
 	if (pjob.fd == -1) {
 		if (errno == EACCES) {
@@ -2544,8 +2582,8 @@ bool print_job_end(int snum, uint32 jobid, enum file_close_type close_type)
 		return False;
 
 	if ((close_type == NORMAL_CLOSE || close_type == SHUTDOWN_CLOSE) &&
-				(sys_fstat(pjob->fd, &sbuf) == 0)) {
-		pjob->size = sbuf.st_size;
+	    (sys_fstat(pjob->fd, &sbuf, false) == 0)) {
+		pjob->size = sbuf.st_ex_size;
 		close(pjob->fd);
 		pjob->fd = -1;
 	} else {
@@ -2571,6 +2609,8 @@ bool print_job_end(int snum, uint32 jobid, enum file_close_type close_type)
 		pjob_delete(sharename, jobid);
 		return True;
 	}
+
+	pjob->smbjob = jobid;
 
 	ret = (*(current_printif->job_submit))(snum, pjob);
 

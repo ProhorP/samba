@@ -22,6 +22,9 @@
 
 /* Required Headers */
 
+#include "replace.h"
+#include "talloc.h"
+#include "tevent.h"
 #include "libwbclient.h"
 
 /* From wb_common.c */
@@ -29,9 +32,6 @@
 NSS_STATUS winbindd_request_response(int req_type,
 				     struct winbindd_request *request,
 				     struct winbindd_response *response);
-NSS_STATUS winbindd_priv_request_response(int req_type,
-					  struct winbindd_request *request,
-					  struct winbindd_response *response);
 
 /** @brief Wrapper around Winbind's send/receive API call
  *
@@ -55,20 +55,16 @@ NSS_STATUS winbindd_priv_request_response(int req_type,
  --Volker
 **********************************************************************/
 
-static wbcErr wbcRequestResponseInt(
-	int cmd,
-	struct winbindd_request *request,
-	struct winbindd_response *response,
-	NSS_STATUS (*fn)(int req_type,
-			 struct winbindd_request *request,
-			 struct winbindd_response *response))
+wbcErr wbcRequestResponse(int cmd,
+			  struct winbindd_request *request,
+			  struct winbindd_response *response)
 {
 	wbcErr wbc_status = WBC_ERR_UNKNOWN_FAILURE;
 	NSS_STATUS nss_status;
 
 	/* for some calls the request and/or response can be NULL */
 
-	nss_status = fn(cmd, request, response);
+	nss_status = winbindd_request_response(cmd, request, response);
 
 	switch (nss_status) {
 	case NSS_STATUS_SUCCESS:
@@ -86,22 +82,6 @@ static wbcErr wbcRequestResponseInt(
 	}
 
 	return wbc_status;
-}
-
-wbcErr wbcRequestResponse(int cmd,
-			  struct winbindd_request *request,
-			  struct winbindd_response *response)
-{
-	return wbcRequestResponseInt(cmd, request, response,
-				     winbindd_request_response);
-}
-
-wbcErr wbcRequestResponsePriv(int cmd,
-			      struct winbindd_request *request,
-			      struct winbindd_response *response)
-{
-	return wbcRequestResponseInt(cmd, request, response,
-				     winbindd_priv_request_response);
 }
 
 /** @brief Translate an error value into a string
