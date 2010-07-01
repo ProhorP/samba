@@ -1,5 +1,5 @@
-%define main_release 50
-%define samba_version 3.4.8
+%define main_release 62
+%define samba_version 3.5.2
 %define pre_release %nil
 
 %define samba_release %main_release%pre_release%{?dist}
@@ -8,7 +8,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: %samba_version
-Release: alt3
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -40,7 +40,6 @@ Patch104: samba-3.0.0rc3-nmbd-netbiosname.patch
 # The passwd part has been applied, but not the group part
 Patch107: samba-3.2.0pre1-grouppwd.patch
 Patch200: samba-3.2.5-inotify.patch
-Patch201: samba-3.4.2-pam_winbind_conf_manpage.patch
 
 Requires(pre): samba-common = %samba_version-%release
 
@@ -174,7 +173,6 @@ cp %SOURCE11 packaging/Fedora/
 %patch104 -p1 -b .nmbd-netbiosname
 %patch107 -p1 -b .grouppwd
 %patch200 -p0 -b .inotify
-%patch201 -p1 -b .pam_winbind_conf_manpage
 
 mv %samba_source/VERSION %samba_source/VERSION.orig
 sed -e 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&\"%samba_release\"/' < %samba_source/VERSION.orig > %samba_source/VERSION
@@ -593,6 +591,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu Jul 01 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.2-alt1
+- 3.5.2 with rhel6beta2 patches
+
 * Thu Jun 24 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.4.8-alt3
 - samba.pamd: use common-login
 
