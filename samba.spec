@@ -400,6 +400,9 @@ rm -f %buildroot%_man8dir/tdbtool.8*
 mkdir -p %buildroot%{cups_serverbin}/backend
 ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 
+%find_lang pam_winbind
+%find_lang net
+
 %post
 %post_service smb
 %post_service nmb
@@ -494,7 +497,7 @@ true
 %_man8dir/umount.cifs.8*
 %_man8dir/cifs.upcall.8*
 
-%files common
+%files common -f net.lang
 %attr(755,root,root) /%_lib/security/pam_smbpass.so
 %dir %_libdir/samba
 %_libdir/samba/lowcase.dat
@@ -540,7 +543,6 @@ true
 %_man8dir/smbpasswd.8*
 %_man8dir/pdbedit.8*
 %_man8dir/net.8*
-%_datadir/locale/*/LC_MESSAGES/net.mo
 %doc README COPYING Manifest
 %doc WHATSNEW.txt Roadmap
 
@@ -552,7 +554,7 @@ true
 %_includedir/netapi.h
 %_pkgconfigdir/netapi.pc
 
-%files winbind
+%files winbind -f pam_winbind.lang
 %_bindir/ntlm_auth
 %_bindir/wbinfo
 %_libdir/samba/idmap
@@ -569,7 +571,6 @@ true
 %_man7dir/winbind_krb5_locator.7*
 %_man8dir/winbindd.8*
 %_man8dir/idmap_*.8*
-%_datadir/locale/*/LC_MESSAGES/pam_winbind.mo
 
 %files winbind-clients
 %_libdir/libnss_winbind.so
