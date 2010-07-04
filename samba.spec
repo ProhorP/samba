@@ -225,6 +225,7 @@ CFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -DLDAP_DEPRECATED" %configure \
     --with-swatdir=%_datadir/swat \
     --with-shared-modules=idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2 \
     --with-cifsupcall \
+    --with-cifsumount \
     --with-cluster-support \
     --with-libtalloc=no \
     --enable-external-libtalloc=yes \
