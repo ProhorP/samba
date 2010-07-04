@@ -530,6 +530,7 @@ true
 %_man8dir/smbpasswd.8*
 %_man8dir/pdbedit.8*
 %_man8dir/net.8*
+%_datadir/locale/*/LC_MESSAGES/net.mo
 
 %doc README COPYING Manifest
 %doc WHATSNEW.txt Roadmap
@@ -563,6 +564,7 @@ true
 
 %files winbind-devel
 %_includedir/wbclient.h
+%_includedir/wbc_async.h
 %_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
 
