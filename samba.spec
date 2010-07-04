@@ -79,6 +79,20 @@ Provides: samba-utils = %samba_version-%release
 Samba-common provides files necessary for both the server and client
 packages of Samba.
 
+%package -n libnetapi
+Summary: Samba netapi library
+Group: System/Libraries
+
+%description -n libnetapi
+Samba netapi library
+
+%package -n libnetapi-devel
+Summary: Samba netapi development files
+Group: Development/Other
+
+%description -n libnetapi-devel
+Samba netapi development files
+
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
@@ -486,10 +500,6 @@ true
 %_libdir/samba/lowcase.dat
 %_libdir/samba/upcase.dat
 %_libdir/samba/valid.dat
-%_libdir/libnetapi.so
-%attr(755,root,root) %_libdir/libnetapi.so.*
-%_includedir/netapi.h
-%_pkgconfigdir/netapi.pc
 %_bindir/net
 %_bindir/testparm
 %_bindir/smbpasswd
@@ -531,9 +541,16 @@ true
 %_man8dir/pdbedit.8*
 %_man8dir/net.8*
 %_datadir/locale/*/LC_MESSAGES/net.mo
-
 %doc README COPYING Manifest
 %doc WHATSNEW.txt Roadmap
+
+%files -n libnetapi
+%attr(755,root,root) %_libdir/libnetapi.so.*
+
+%files -n libnetapi-devel
+%_libdir/libnetapi.so
+%_includedir/netapi.h
+%_pkgconfigdir/netapi.pc
 
 %files winbind
 %_bindir/ntlm_auth
