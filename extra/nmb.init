@@ -106,8 +106,11 @@ case "$1" in
   condrestart)
   	[ -f /var/lock/subsys/nmb ] && restart || :
 	;;
+  condstop)
+  	[ -f /var/lock/subsys/nmb ] && stop || :
+	;;
   *)
-	echo $"Usage: $0 {start|stop|restart|reload|status|condrestart}"
+	echo $"Usage: $0 {start|stop|restart|reload|status|condrestart|condstop}"
 	exit 2
 esac
 

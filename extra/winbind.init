@@ -94,8 +94,11 @@ case "$1" in
   condrestart)
   	[ -f /var/lock/subsys/winbindd ] && restart || :
 	;;
+  condstop)
+  	[ -f /var/lock/subsys/winbindd ] && stop || :
+	;;
   *)
-	echo $"Usage: $0 {start|stop|restart|reload|status|condrestart}"
+	echo $"Usage: $0 {start|stop|restart|reload|status|condrestart|condstop}"
 	exit 2
 esac
 
