@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-tempdir=`mktemp -d /tmp/wb_padXXXXXX`
+tempdir=`mktemp -d $TMPDIR/wb_padXXXXXX`
 test -n "$tempdir" || exit 1
 cat >> $tempdir/wb_pad.c << _EOF
 #include "nsswitch/winbind_client.h"
