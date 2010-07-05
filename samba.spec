@@ -74,6 +74,7 @@ of SMB/CIFS shares and printing to SMB/CIFS printers.
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
 Provides: samba-utils = %samba_version-%release
+Requires: libtalloc >= 2.0.1
 
 %description common
 Samba-common provides files necessary for both the server and client
