@@ -48,7 +48,6 @@ examples/VFS/skel_transparent.so
 *.hd
 *.ho
 *.o
-*.patch
 *.pc
 *.po
 *.pyc
