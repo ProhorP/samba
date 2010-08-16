@@ -213,9 +213,9 @@ install -m644 %SOURCE4 %buildroot%_sysconfdir/sysconfig/%name
 mkdir -p %buildroot%_lib
 ln -sf ../%_libdir/libnss_winbind.so  %buildroot%_lib/libnss_winbind.so.2
 %else
-rm %buildroot%_bindir/ntlm_auth
-rm %buildroot%_bindir/wbinfo
-rm %buildroot%_libdir/libnss_winbind.so
+rm -f %buildroot%_bindir/ntlm_auth
+rm -f %buildroot%_bindir/wbinfo
+rm -f %buildroot%_libdir/libnss_winbind.so
 %endif
 
 # libs {
@@ -228,15 +228,15 @@ mkdir -p %buildroot%_libdir %buildroot%_includedir
 # rm %buildroot%_bindir/umount.cifs
 
 #rm %buildroot%_bindir/epdump
-rm %buildroot%_bindir/gentest
-rm %buildroot%_bindir/getntacl
-rm %buildroot%_bindir/locktest
-rm %buildroot%_bindir/masktest
-#rm %buildroot%_bindir/minschema
-rm %buildroot%_bindir/ndrdump
-rm %buildroot%_bindir/nsstest
-rm %buildroot%_bindir/setnttoken
-rm %buildroot%_bindir/smbtorture
+rm -f %buildroot%_bindir/gentest
+rm -f %buildroot%_bindir/getntacl
+rm -f %buildroot%_bindir/locktest
+rm -f %buildroot%_bindir/masktest
+#rm -f %buildroot%_bindir/minschema
+rm -f %buildroot%_bindir/ndrdump
+rm -f %buildroot%_bindir/nsstest
+rm -f %buildroot%_bindir/setnttoken
+rm -f %buildroot%_bindir/smbtorture
 #rm %buildroot%_bindir/subunitrun
 #depending on the environemnt this file might or might not be generated
 rm -f %buildroot%_bindir/tdbtorture
@@ -247,9 +247,9 @@ rm -rf %buildroot%perl_vendor_privlib/Parse/Yapp
 # Remove files for disabled subpackages.
 %if_disabled samba4
 #rm %buildroot%_bindir/mymachinepw
-rm %buildroot%_sbindir/provision
-rm %buildroot%_sbindir/samba
-rm %buildroot%_sbindir/upgradeprovision
+rm -f %buildroot%_sbindir/provision
+rm -f %buildroot%_sbindir/samba
+rm -f %buildroot%_sbindir/upgradeprovision
 rm -r %buildroot%_datadir/samba/setup
 %endif
 %if_enabled client
@@ -261,46 +261,46 @@ ln -s ../../sbin/umount.cifs %buildroot%_bindir/cifsumount
 %endif
 
 %if_disabled client
-rm %buildroot%_bindir/nmblookup
-rm %buildroot%_bindir/smbclient
-rm %buildroot%_bindir/cifsdd
+rm -f %buildroot%_bindir/nmblookup
+rm -f %buildroot%_bindir/smbclient
+rm -f %buildroot%_bindir/cifsdd
 %endif
 %if_disabled common
-rm %buildroot%_bindir/net
-rm %buildroot%_bindir/regdiff
-rm %buildroot%_bindir/regpatch
-rm %buildroot%_bindir/regshell
-rm %buildroot%_bindir/regtree
-rm %buildroot%_bindir/testparm
+rm -f %buildroot%_bindir/net
+rm -f %buildroot%_bindir/regdiff
+rm -f %buildroot%_bindir/regpatch
+rm -f %buildroot%_bindir/regshell
+rm -f %buildroot%_bindir/regtree
+rm -f %buildroot%_bindir/testparm
 %endif
 %if_disabled all_libraries
-rm %buildroot%_libdir/libdcerpc_atsvc.so
-rm %buildroot%_libdir/libdcerpc_atsvc.so.*
-rm %buildroot%_libdir/libgensec.so
-rm %buildroot%_libdir/libgensec.so.*
-rm %buildroot%_libdir/libregistry.so
-rm %buildroot%_libdir/libregistry.so.*
-rm %buildroot%_libdir/libtorture.so
-rm %buildroot%_libdir/libtorture.so.*
-rm %buildroot%_pkgconfigdir/dcerpc_atsvc.pc
-rm %buildroot%_pkgconfigdir/gensec.pc
-rm %buildroot%_pkgconfigdir/registry.pc
-rm %buildroot%_pkgconfigdir/torture.pc
-rm %buildroot%_includedir/samba-4.0/gensec.h
-rm %buildroot%_includedir/samba-4.0/registry.h
+rm -f %buildroot%_libdir/libdcerpc_atsvc.so
+rm -f %buildroot%_libdir/libdcerpc_atsvc.so.*
+rm -f %buildroot%_libdir/libgensec.so
+rm -f %buildroot%_libdir/libgensec.so.*
+rm -f %buildroot%_libdir/libregistry.so
+rm -f %buildroot%_libdir/libregistry.so.*
+rm -f %buildroot%_libdir/libtorture.so
+rm -f %buildroot%_libdir/libtorture.so.*
+rm -f %buildroot%_pkgconfigdir/dcerpc_atsvc.pc
+rm -f %buildroot%_pkgconfigdir/gensec.pc
+rm -f %buildroot%_pkgconfigdir/registry.pc
+rm -f %buildroot%_pkgconfigdir/torture.pc
+rm -f %buildroot%_includedir/samba-4.0/gensec.h
+rm -f %buildroot%_includedir/samba-4.0/registry.h
 %endif
 
 # the samba4 build process rebuilds libraries internally,
 # but we want to use the standalone build for now.
-rm %buildroot%_libdir/libldb.so*
+#rm %buildroot%_libdir/libldb.so*
 #rm %buildroot%_bindir/ad2oLschema
-rm %buildroot%_bindir/ldbadd
-rm %buildroot%_bindir/ldbdel
-rm %buildroot%_bindir/ldbedit
-rm %buildroot%_bindir/ldbmodify
-rm %buildroot%_bindir/ldbrename
-rm %buildroot%_bindir/ldbsearch
-rm %buildroot%_bindir/oLschema2ldif
+rm -f %buildroot%_bindir/ldbadd
+rm -f %buildroot%_bindir/ldbdel
+rm -f %buildroot%_bindir/ldbedit
+rm -f %buildroot%_bindir/ldbmodify
+rm -f %buildroot%_bindir/ldbrename
+rm -f %buildroot%_bindir/ldbsearch
+rm -f %buildroot%_bindir/oLschema2ldif
 rm -f %buildroot%_bindir/tdbbackup
 rm -f %buildroot%_bindir/tdbdump
 rm -f %buildroot%_bindir/tdbtool
