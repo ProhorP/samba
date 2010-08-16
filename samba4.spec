@@ -11,7 +11,7 @@
 %def_disable winbind
 
 # Install libraries not needed by OpenChange.
-%define all_libraries  0
+%def_disable all_libraries
 
 Name: samba4
 Version: %samba4_version
@@ -292,8 +292,9 @@ rm -f %buildroot%_includedir/samba-4.0/registry.h
 
 # the samba4 build process rebuilds libraries internally,
 # but we want to use the standalone build for now.
-#rm %buildroot%_libdir/libldb.so*
-#rm %buildroot%_bindir/ad2oLschema
+#rm -f %buildroot%_libdir/libldb.so*
+#rm -f %buildroot%_bindir/ad2oLschema
+rm -rf %buildroot%_libdir/ldb
 rm -f %buildroot%_bindir/ldbadd
 rm -f %buildroot%_bindir/ldbdel
 rm -f %buildroot%_bindir/ldbedit
@@ -417,20 +418,20 @@ exit 0
 %_libdir/libndr_standard.so
 %_libdir/libsamba-hostconfig.so
 %_libdir/libsamba-util.so
-#%_libdir/libtorture.so
 %_pkgconfigdir/dcerpc.pc
 %_pkgconfigdir/dcerpc_samr.pc
 %_pkgconfigdir/ndr.pc
 %_pkgconfigdir/ndr_standard.pc
 %_pkgconfigdir/samba-hostconfig.pc
-#%_pkgconfigdir/torture.pc
 %if_enabled all_libraries
 %_libdir/libdcerpc_atsvc.so
 %_libdir/libgensec.so
 %_libdir/libregistry.so
+%_libdir/libtorture.so
 %_pkgconfigdir/dcerpc_atsvc.pc
 %_pkgconfigdir/gensec.pc
 %_pkgconfigdir/registry.pc
+%_pkgconfigdir/torture.pc
 %_includedir/samba-4.0/gen_ndr
 %endif
 
