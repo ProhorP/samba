@@ -251,7 +251,9 @@ rm -f %buildroot%_sbindir/provision
 rm -f %buildroot%_sbindir/samba
 rm -f %buildroot%_sbindir/upgradeprovision
 rm -r %buildroot%_datadir/samba/setup
+rm -rf %buildroot%_libdir/samba/ldb
 %endif
+
 %if_enabled client
 # Fix *mount.cifs
 mkdir -p %buildroot/sbin
@@ -294,7 +296,6 @@ rm -f %buildroot%_includedir/samba-4.0/registry.h
 # but we want to use the standalone build for now.
 #rm -f %buildroot%_libdir/libldb.so*
 #rm -f %buildroot%_bindir/ad2oLschema
-rm -rf %buildroot%_libdir/ldb
 rm -f %buildroot%_bindir/ldbadd
 rm -f %buildroot%_bindir/ldbdel
 rm -f %buildroot%_bindir/ldbedit
@@ -329,29 +330,24 @@ rm -f %buildroot%_datadir/swig/*/talloc.i
 # Fix up permissions in source tree, for debuginfo.
 find source4/heimdal -type f | xargs chmod -x
 
-%pre
-%if_enabled winbind
-getent group wbpriv >/dev/null || groupadd -g 88 wbpriv
-%endif
-exit 0
+%pre winbind
+%_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
+
+%post winbind
+%post_service winbind
+
+%preun winbind
+%preun_service winbind
 
 %post
 %if_enabled samba4
-/sbin/chkconfig --add %name
-if [ "$1" -ge "1" ]; then
-	/sbin/service %name condrestart >/dev/null 2>&1 || :
-fi
+%post_service samba4
 %endif
-exit 0
 
 %preun
 %if_enabled samba4
-if [ $1 = 0 ] ; then
-	/sbin/service %name stop >/dev/null 2>&1 || :
-	/sbin/chkconfig --del %name
-fi
+%preun_service samba4
 %endif
-exit 0
 
 %files
 %doc COPYING WHATSNEW4.txt
