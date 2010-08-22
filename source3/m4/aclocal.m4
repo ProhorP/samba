@@ -363,9 +363,9 @@ EOF
 
 dnl Copied from libtool.m4
 AC_DEFUN(AC_PROG_LD_GNU,
-[AC_CACHE_CHECK([if the linker ($LD) is GNU ld], ac_cv_prog_gnu_ld,
+[AC_CACHE_CHECK([if the linker used by compiler is GNU ld], ac_cv_prog_gnu_ld,
 [# I'd rather use --version here, but apparently some GNU ld's only accept -v.
-if $LD -v 2>&1 </dev/null | egrep '(GNU|with BFD)' 1>&5; then
+if $CC -Wl,-v /dev/null 2>&1 </dev/null | egrep '(GNU|with BFD)' 1>&5; then
   ac_cv_prog_gnu_ld=yes
 else
   ac_cv_prog_gnu_ld=no
@@ -608,6 +608,19 @@ dnl AC_DISABLE_STATIC - set the default static flag to --disable-static
 AC_DEFUN([AC_DISABLE_STATIC],
 [AC_BEFORE([$0],[AC_LIBTOOL_SETUP])dnl
 AC_ENABLE_STATIC(no)])
+
+dnl AC_TRY_COMMAND_NO_STDERR - also fail if there is output on stderr
+AC_DEFUN( [AC_TRY_COMMAND_NO_STDERR],
+[
+	{ OUT=`($1) 3>&AS_MESSAGE_LOG_FD 2>&1 1>&3`
+	RC=$?
+	echo "\$?=$RC" >&AS_MESSAGE_LOG_FD
+	if test x"$OUT" != x ; then
+		echo "stderr:" >&AS_MESSAGE_LOG_FD
+		echo "$OUT" >&AS_MESSAGE_LOG_FD
+	fi
+	test $RC -eq 0 -a x"$OUT" = x ; }
+])
 
 dnl AC_TRY_RUN_STRICT(PROGRAM,CFLAGS,CPPFLAGS,LDFLAGS,
 dnl		[ACTION-IF-TRUE],[ACTION-IF-FALSE],

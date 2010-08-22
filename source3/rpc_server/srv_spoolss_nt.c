@@ -4275,7 +4275,7 @@ static WERROR enumprinters_level5(TALLOC_CTX *mem_ctx,
 WERROR _spoolss_EnumPrinters(pipes_struct *p,
 			     struct spoolss_EnumPrinters *r)
 {
-	const char *name;
+	const char *name = NULL;
 	WERROR result;
 
 	/* that's an [in out] buffer */
@@ -4303,8 +4303,10 @@ WERROR _spoolss_EnumPrinters(pipes_struct *p,
 	 * Level 5: same as Level 2
 	 */
 
-	name = talloc_strdup_upper(p->mem_ctx, r->in.server);
-	W_ERROR_HAVE_NO_MEMORY(name);
+	if (r->in.server) {
+		name = talloc_strdup_upper(p->mem_ctx, r->in.server);
+		W_ERROR_HAVE_NO_MEMORY(name);
+	}
 
 	switch (r->in.level) {
 	case 0:
@@ -7414,6 +7416,10 @@ WERROR _spoolss_AddPrinterDriverEx(pipes_struct *p,
 	 * we only support the semantics of AddPrinterDriver()
 	 * i.e. only copy files that are newer than existing ones
 	 */
+
+	if (r->in.flags == 0) {
+		return WERR_INVALID_PARAM;
+	}
 
 	if (r->in.flags != APD_COPY_NEW_FILES) {
 		return WERR_ACCESS_DENIED;

@@ -1809,7 +1809,8 @@ int kerberos_kinit_password(const char *principal,
 bool create_local_private_krb5_conf_for_domain(const char *realm,
 						const char *domain,
 						const char *sitename,
-						struct sockaddr_storage *pss);
+						struct sockaddr_storage *pss,
+						const char *kdc_name);
 
 /* The following definitions come from libads/kerberos_keytab.c  */
 
@@ -4712,6 +4713,7 @@ bool secrets_delete_machine_password(const char *domain);
 bool secrets_delete_machine_password_ex(const char *domain);
 bool secrets_delete_domain_sid(const char *domain);
 bool secrets_store_machine_password(const char *pass, const char *domain, enum netr_SchannelType sec_channel);
+char *secrets_fetch_prev_machine_password(const char *domain);
 char *secrets_fetch_machine_password(const char *domain,
 				     time_t *pass_last_set_time,
 				     enum netr_SchannelType *channel);
@@ -4777,6 +4779,7 @@ void load_printers(void);
 bool parse_lpq_entry(enum printing_types printing_type,char *line,
 		     print_queue_struct *buf,
 		     print_status_struct *status,bool first);
+uint32_t print_parse_jobid(const char *fname);
 
 /* The following definitions come from printing/notify.c  */
 
@@ -6481,6 +6484,7 @@ NTSTATUS resolve_dfspath_wcard(TALLOC_CTX *ctx,
 				connection_struct *conn,
 				bool dfs_pathnames,
 				const char *name_in,
+				bool allow_wcards,
 				char **pp_name_out,
 				bool *ppath_contains_wcard);
 NTSTATUS create_conn_struct(TALLOC_CTX *ctx,
@@ -7047,6 +7051,7 @@ int sys_statvfs(const char *path, vfs_statvfs_struct *statbuf);
 /* The following definitions come from smbd/trans2.c  */
 
 uint64_t smb_roundup(connection_struct *conn, uint64_t val);
+uint64_t get_FileIndex(connection_struct *conn, const SMB_STRUCT_STAT *psbuf);
 NTSTATUS get_ea_value(TALLOC_CTX *mem_ctx, connection_struct *conn,
 		      files_struct *fsp, const char *fname,
 		      const char *ea_name, struct ea_struct *pea);
