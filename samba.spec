@@ -1,5 +1,5 @@
-%define main_release 62
-%define samba_version 3.5.2
+%define main_release 65
+%define samba_version 3.5.4
 %define pre_release %nil
 
 %define samba_release %main_release%pre_release%{?dist}
@@ -613,6 +613,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Sun Aug 22 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.4-alt1
+- 3.5.4
+
 * Thu Jul 01 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.2-alt1
 - 3.5.2 with rhel6beta2 patches
 
