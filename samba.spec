@@ -46,6 +46,7 @@ Requires(pre): samba-common = %samba_version-%release
 BuildRequires: libpam0-devel, libreadline-devel, libncurses-devel, libacl-devel, libkrb5-devel, libldap-devel, libssl-devel, libcups-devel, ctdb-devel
 BuildRequires: gawk, libpopt-devel, libgtk+2-devel, libcap-devel, libuuid-devel
 BuildRequires: libtalloc-devel, libtdb-devel
+BuildRequires: inkscape xsltproc netpbm dblatex html2text
 
 %description
 Samba is the suite of programs by which a lot of PC-related machines
@@ -198,8 +199,12 @@ cd ..
 #Remove smbldap-tools, they are already packaged separately in Fedora
 rm -fr examples/LDAP/smbldap-tools-*/
 
+pushd docs-xml
+%autoreconf
+popd
+
 %build
-cd %samba_source
+pushd %samba_source
 sh autogen.sh
 %ifarch i386 sparc
 RPM_OPT_FLAGS="$RPM_OPT_FLAGS -D_FILE_OFFSET_BITS=64"
@@ -259,8 +264,22 @@ make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%samba_version%pre_release/%samba_sou
     -C lib/netapi/examples
 
 make  debug2html smbfilter bin/cifs.upcall
+popd
+
+pushd docs-xml
+%configure  --with-samba-sources=../source3
+make release
+popd
 
 %install
+cp -a docs-xml/output/manpages-3/* docs/manpages/
+cp -a docs-xml/output/htmldocs/index.html docs/htmldocs/
+cp -a docs-xml/output/htmldocs/samba.css docs/htmldocs/
+cp -a docs-xml/output/htmldocs/manpages-3/* docs/htmldocs/manpages/
+cp -a docs-xml/output/htmldocs/Samba3-ByExample docs/htmldocs/
+cp -a docs-xml/output/htmldocs/Samba3-Developers-Guide docs/htmldocs/
+cp -a docs-xml/output/htmldocs/Samba3-HOWTO docs/htmldocs/
+
 mkdir -p %buildroot/sbin
 mkdir -p %buildroot/usr/{sbin,bin}
 mkdir -p %buildroot%_initdir
