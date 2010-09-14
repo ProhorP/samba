@@ -1,5 +1,5 @@
 %define main_release 65
-%define samba_version 3.5.4
+%define samba_version 3.5.5
 %define pre_release %nil
 
 %define samba_release %main_release%pre_release%{?dist}
@@ -632,6 +632,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Tue Sep 14 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.5-alt1
+- 3.5.5 (CVE-2010-3069)
+
 * Sun Aug 22 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.4-alt1
 - 3.5.4
 
