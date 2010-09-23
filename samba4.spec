@@ -1,6 +1,6 @@
 %define samba4_version 4.0.0
-%define pre_release alpha11
-%define main_release 24
+%define pre_release alpha13
+%define main_release 25
 
 # Most of these subpackages are disabled because they are not
 # needed by OpenChange, and to avoid file conflicts with Samba3.
@@ -477,6 +477,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Thu Sep 23 2010 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha13
+- Upgrade to alpha13
+
 * Fri Aug 13 2010 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha11
 - initial build for ALT Linux Sisyphus
 
