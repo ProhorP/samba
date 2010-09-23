@@ -10,6 +10,7 @@ pkgconfigdir = $(libdir)/pkgconfig
 LMHOSTSFILE4 = $(sysconfdir)/lmhosts
 
 $(dynconfigsrcdir)/dynconfig.o: CFLAGS+=-DCONFIGFILE=\"$(CONFIG4FILE)\" -DBINDIR=\"$(bindir)\" \
+	 -DSBINDIR=\"$(sbindir)\" \
 	 -DLMHOSTSFILE=\"$(LMHOSTSFILE4)\" \
 	 -DLOCKDIR=\"$(lockdir)\" -DPIDDIR=\"$(piddir)\" -DDATADIR=\"$(datadir)\" \
 	 -DLOGFILEBASE=\"$(logfilebase)\" \
@@ -20,5 +21,10 @@ $(dynconfigsrcdir)/dynconfig.o: CFLAGS+=-DCONFIGFILE=\"$(CONFIG4FILE)\" -DBINDIR
 	 -DSETUPDIR=\"$(setupdir)\" \
 	 -DWINBINDD_PRIVILEGED_SOCKET_DIR=\"$(winbindd_privileged_socket_dir)\" \
 	 -DWINBINDD_SOCKET_DIR=\"$(winbindd_socket_dir)\" \
-	 -DNTP_SIGND_SOCKET_DIR=\"$(ntp_signd_socket_dir)\"
-
+	 -DNTP_SIGND_SOCKET_DIR=\"$(ntp_signd_socket_dir)\" \
+	 -DPYTHONDIR=\"$(pythondir)\" \
+	 -DCODEPAGEDIR=\"$(codepagedir)\" \
+	 -DLIBDIR=\"$(libdir)\" \
+	 -DSTATEDIR=\"$(localstatedir)\" \
+	 -DCACHEDIR=\"$(cachedir)\" \
+	 -DSMB_PASSWD_FILE=\"$(privatedir)/smbpasswd\"

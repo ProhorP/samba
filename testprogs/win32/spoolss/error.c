@@ -18,17 +18,21 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "spoolss.h"
+#include "testspoolss.h"
 
 const char *errstr(DWORD error)
 {
 	static char tmp[20];
 
 	switch (error) {
+	case ERROR_FILE_NOT_FOUND:
+		return "ERROR_FILE_NOT_FOUND";
 	case ERROR_ACCESS_DENIED:
 		return "ERROR_ACCESS_DENIED";
 	case ERROR_INVALID_PARAMETER:
 		return "ERROR_INVALID_PARAMETER";
+	case ERROR_INVALID_HANDLE:
+		return "ERROR_INVALID_HANDLE";
 	case ERROR_CALL_NOT_IMPLEMENTED:
 		return "ERROR_CALL_NOT_IMPLEMENTED";
 	case ERROR_INSUFFICIENT_BUFFER:
@@ -37,8 +41,12 @@ const char *errstr(DWORD error)
 		return "ERROR_INVALID_NAME";
 	case ERROR_INVALID_LEVEL:
 		return "ERROR_INVALID_LEVEL";
+	case ERROR_INVALID_DATA:
+		return "ERROR_INVALID_DATA";
 	case ERROR_MORE_DATA:
 		return "ERROR_MORE_DATA";
+	case ERROR_NO_MORE_ITEMS:
+		return "ERROR_NO_MORE_ITEMS";
 #ifdef ERROR_INVALID_DATATYPE
 	case ERROR_INVALID_DATATYPE:
 		return "ERROR_INVALID_DATATYPE";
@@ -105,6 +113,20 @@ const char *errstr(DWORD error)
 	case ERROR_PRINT_JOB_RESTART_REQUIRED:
 		return "ERROR_PRINT_JOB_RESTART_REQUIRED";
 #endif
+	case ERROR_CANCELLED:
+		return "ERROR_CANCELLED";
+	case ERROR_NOACCESS:
+		return "ERROR_NOACCESS";
+	case RPC_X_NULL_REF_POINTER:
+		return "RPC_X_NULL_REF_POINTER";
+	case RPC_S_PROCNUM_OUT_OF_RANGE:
+		return "RPC_S_PROCNUM_OUT_OF_RANGE";
+	case RPC_S_SERVER_UNAVAILABLE:
+		return "RPC_S_SERVER_UNAVAILABLE";
+	case RPC_S_INVALID_NET_ADDR:
+		return "RPC_S_INVALID_NET_ADDR";
+	case RPC_S_CALL_FAILED:
+		return "RPC_S_CALL_FAILED";
 	default:
 		break;
 	}

@@ -27,6 +27,8 @@
 #include "nsswitch/libwbclient/wbclient.h"
 #include "librpc/gen_ndr/wbint.h"
 
+#include "talloc_dict.h"
+
 #ifdef HAVE_LIBNSCD
 #include <libnscd.h>
 #endif
@@ -41,7 +43,7 @@
 #define WB_REPLACE_CHAR		'_'
 
 struct sid_ctr {
-	DOM_SID *sid;
+	struct dom_sid *sid;
 	bool finished;
 	const char *domain;
 	const char *name;
@@ -56,6 +58,7 @@ struct winbindd_cli_state {
 	bool privileged;                           /* Is the client 'privileged' */
 
 	TALLOC_CTX *mem_ctx;			  /* memory per request */
+	const char *cmd_name;
 	NTSTATUS (*recv_fn)(struct tevent_req *req,
 			    struct winbindd_response *presp);
 	struct winbindd_request *request;         /* Request from client */
@@ -91,8 +94,8 @@ struct getpwent_user {
 	fstring gecos;                       /* User information */
 	fstring homedir;                     /* User Home Directory */
 	fstring shell;                       /* User Login Shell */
-	DOM_SID user_sid;                    /* NT user and primary group SIDs */
-	DOM_SID group_sid;
+	struct dom_sid user_sid;                    /* NT user and primary group SIDs */
+	struct dom_sid group_sid;
 };
 
 /* Our connection to the DC */
@@ -130,7 +133,7 @@ struct winbindd_child {
 
 	int sock;
 	struct tevent_queue *queue;
-	struct rpc_pipe_client *rpccli;
+	struct dcerpc_binding_handle *binding_handle;
 
 	struct timed_event *lockout_policy_event;
 	struct timed_event *machine_password_change_event;
@@ -144,7 +147,7 @@ struct winbindd_domain {
 	fstring name;                          /* Domain name (NetBIOS) */
 	fstring alt_name;                      /* alt Domain name, if any (FQDN for ADS) */
 	fstring forest_name;                   /* Name of the AD forest we're in */
-	DOM_SID sid;                           /* SID for this domain */
+	struct dom_sid sid;                           /* SID for this domain */
 	uint32 domain_flags;                   /* Domain flags from netlogon.h */
 	uint32 domain_type;                    /* Domain type from netlogon.h */
 	uint32 domain_trust_attribs;           /* Trust attribs from netlogon.h */
@@ -154,7 +157,7 @@ struct winbindd_domain {
 	bool primary;                          /* is this our primary domain ? */
 	bool internal;                         /* BUILTIN and member SAM */
 	bool online;			       /* is this domain available ? */
-	time_t startup_time;		       /* When we set "startup" true. */
+	time_t startup_time;		       /* When we set "startup" true. monotonic clock */
 	bool startup;                          /* are we in the first 30 seconds after startup_time ? */
 
 	bool can_do_samlogon_ex; /* Due to the lack of finer control what type
@@ -245,20 +248,20 @@ struct winbindd_methods {
 				const char *domain_name,
 				const char *name,
 				uint32_t flags,
-				DOM_SID *sid,
+				struct dom_sid *sid,
 				enum lsa_SidType *type);
 
 	/* convert a sid to a user or group name */
 	NTSTATUS (*sid_to_name)(struct winbindd_domain *domain,
 				TALLOC_CTX *mem_ctx,
-				const DOM_SID *sid,
+				const struct dom_sid *sid,
 				char **domain_name,
 				char **name,
 				enum lsa_SidType *type);
 
 	NTSTATUS (*rids_to_names)(struct winbindd_domain *domain,
 				  TALLOC_CTX *mem_ctx,
-				  const DOM_SID *domain_sid,
+				  const struct dom_sid *domain_sid,
 				  uint32 *rids,
 				  size_t num_rids,
 				  char **domain_name,
@@ -268,7 +271,7 @@ struct winbindd_methods {
 	/* lookup user info for a given SID */
 	NTSTATUS (*query_user)(struct winbindd_domain *domain, 
 			       TALLOC_CTX *mem_ctx, 
-			       const DOM_SID *user_sid,
+			       const struct dom_sid *user_sid,
 			       struct wbint_userinfo *user_info);
 
 	/* lookup all groups that a user is a member of. The backend
@@ -276,25 +279,25 @@ struct winbindd_methods {
 	   function */
 	NTSTATUS (*lookup_usergroups)(struct winbindd_domain *domain,
 				      TALLOC_CTX *mem_ctx,
-				      const DOM_SID *user_sid,
-				      uint32 *num_groups, DOM_SID **user_gids);
+				      const struct dom_sid *user_sid,
+				      uint32 *num_groups, struct dom_sid **user_gids);
 
 	/* Lookup all aliases that the sids delivered are member of. This is
 	 * to implement 'domain local groups' correctly */
 	NTSTATUS (*lookup_useraliases)(struct winbindd_domain *domain,
 				       TALLOC_CTX *mem_ctx,
 				       uint32 num_sids,
-				       const DOM_SID *sids,
+				       const struct dom_sid *sids,
 				       uint32 *num_aliases,
 				       uint32 **alias_rids);
 
 	/* find all members of the group with the specified group_rid */
 	NTSTATUS (*lookup_groupmem)(struct winbindd_domain *domain,
 				    TALLOC_CTX *mem_ctx,
-				    const DOM_SID *group_sid,
+				    const struct dom_sid *group_sid,
 				    enum lsa_SidType type,
 				    uint32 *num_names, 
-				    DOM_SID **sid_mem, char ***names, 
+				    struct dom_sid **sid_mem, char ***names,
 				    uint32 **name_types);
 
 	/* return the current global sequence number */
@@ -321,11 +324,11 @@ struct winbindd_idmap_methods {
   /* Called when backend is first loaded */
   bool (*init)(void);
 
-  bool (*get_sid_from_uid)(uid_t uid, DOM_SID *sid);
-  bool (*get_sid_from_gid)(gid_t gid, DOM_SID *sid);
+  bool (*get_sid_from_uid)(uid_t uid, struct dom_sid *sid);
+  bool (*get_sid_from_gid)(gid_t gid, struct dom_sid *sid);
 
-  bool (*get_uid_from_sid)(DOM_SID *sid, uid_t *uid);
-  bool (*get_gid_from_sid)(DOM_SID *sid, gid_t *gid);
+  bool (*get_uid_from_sid)(struct dom_sid *sid, uid_t *uid);
+  bool (*get_gid_from_sid)(struct dom_sid *sid, gid_t *gid);
 
   /* Called when backend is unloaded */
   bool (*close)(void);
@@ -338,7 +341,7 @@ struct winbindd_idmap_methods {
 struct winbindd_tdc_domain {
 	const char *domain_name;
 	const char *dns_name;
-        DOM_SID sid;
+        struct dom_sid sid;
 	uint32 trust_flags;
 	uint32 trust_attribs;
 	uint32 trust_type;
@@ -383,5 +386,8 @@ struct WINBINDD_CCACHE_ENTRY {
 #define WINBINDD_RESCAN_FREQ lp_winbind_cache_time()
 #define WINBINDD_PAM_AUTH_KRB5_RENEW_TIME 2592000 /* one month */
 #define DOM_SEQUENCE_NONE ((uint32)-1)
+
+#define winbind_event_context server_event_context
+#define winbind_messaging_context server_messaging_context
 
 #endif /* _WINBINDD_H */

@@ -50,6 +50,7 @@ static NTSTATUS parse_dfs_path(connection_struct *conn,
 				struct dfs_path *pdp, /* MUST BE TALLOCED */
 				bool *ppath_contains_wcard)
 {
+	struct smbd_server_connection *sconn = smbd_server_conn;
 	char *pathname_local;
 	char *p,*temp;
 	char *servicename;
@@ -77,7 +78,7 @@ static NTSTATUS parse_dfs_path(connection_struct *conn,
 
 	sepchar = pdp->posix_path ? '/' : '\\';
 
-	if (*pathname != sepchar) {
+	if (!sconn->using_smb2 && (*pathname != sepchar)) {
 		DEBUG(10,("parse_dfs_path: path %s doesn't start with %c\n",
 			pathname, sepchar ));
 		/*
@@ -218,7 +219,7 @@ NTSTATUS create_conn_struct(TALLOC_CTX *ctx,
 				connection_struct **pconn,
 				int snum,
 				const char *path,
-				struct auth_serversupplied_info *server_info,
+				const struct auth_serversupplied_info *server_info,
 				char **poldcwd)
 {
 	connection_struct *conn;
@@ -253,6 +254,9 @@ NTSTATUS create_conn_struct(TALLOC_CTX *ctx,
 	}
 
 	conn->params->service = snum;
+
+	conn->sconn = smbd_server_conn;
+	conn->sconn->smb1.tcons.num_open += 1;
 
 	if (server_info != NULL) {
 		conn->server_info = copy_serverinfo(conn, server_info);
@@ -1738,6 +1742,7 @@ NTSTATUS resolve_dfspath_wcard(TALLOC_CTX *ctx,
 				connection_struct *conn,
 				bool dfs_pathnames,
 				const char *name_in,
+				bool allow_wcards,
 				char **pp_name_out,
 				bool *ppath_contains_wcard)
 {
@@ -1748,7 +1753,7 @@ NTSTATUS resolve_dfspath_wcard(TALLOC_CTX *ctx,
 		status = dfs_redirect(ctx,
 					conn,
 					name_in,
-					True,
+					allow_wcards,
 					pp_name_out,
 					&path_contains_wcard);
 

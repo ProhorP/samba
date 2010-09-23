@@ -24,10 +24,7 @@
 
 #include "includes.h"
 #include "smbldap.h"
-
-#ifndef LDAP_OPT_SUCCESS
-#define LDAP_OPT_SUCCESS 0
-#endif
+#include "secrets.h"
 
 /* Try not to hit the up or down server forever */
 
@@ -330,6 +327,40 @@ ATTRIB_MAP_ENTRY sidmap_attr_list[] = {
 	DEBUG (100, ("smbldap_get_single_attribute: [%s] = [%s]\n",
 		     attribute, result));
 #endif	
+	return result;
+}
+
+ char * smbldap_talloc_first_attribute(LDAP *ldap_struct, LDAPMessage *entry,
+				       const char *attribute,
+				       TALLOC_CTX *mem_ctx)
+{
+	char **values;
+	char *result;
+	size_t converted_size;
+
+	if (attribute == NULL) {
+		return NULL;
+	}
+
+	values = ldap_get_values(ldap_struct, entry, attribute);
+
+	if (values == NULL) {
+		DEBUG(10, ("attribute %s does not exist\n", attribute));
+		return NULL;
+	}
+
+	if (!pull_utf8_talloc(mem_ctx, &result, values[0], &converted_size)) {
+		DEBUG(10, ("pull_utf8_talloc failed\n"));
+		ldap_value_free(values);
+		return NULL;
+	}
+
+	ldap_value_free(values);
+
+#ifdef DEBUG_PASSWORDS
+	DEBUG (100, ("smbldap_get_first_attribute: [%s] = [%s]\n",
+		     attribute, result));
+#endif
 	return result;
 }
 
@@ -710,7 +741,7 @@ int smb_ldap_start_tls(LDAP *ldap_struct, int version)
  setup a connection to the LDAP server based on a uri
 *******************************************************************/
 
-int smb_ldap_setup_conn(LDAP **ldap_struct, const char *uri)
+static int smb_ldap_setup_conn(LDAP **ldap_struct, const char *uri)
 {
 	int rc;
 
@@ -814,7 +845,7 @@ int smb_ldap_setup_conn(LDAP **ldap_struct, const char *uri)
  version 
  *******************************************************************/
 
-int smb_ldap_upgrade_conn(LDAP *ldap_struct, int *new_version) 
+static int smb_ldap_upgrade_conn(LDAP *ldap_struct, int *new_version)
 {
 	int version;
 	int rc;
@@ -927,6 +958,7 @@ static int rebindproc_with_state  (LDAP * ld, char **whop, char **credp,
 				   int *methodp, int freeit, void *arg)
 {
 	struct smbldap_state *ldap_state = arg;
+	struct timespec ts;
 
 	/** @TODO Should we be doing something to check what servers we rebind to?
 	    Could we get a referral to a machine that we don't want to give our
@@ -959,7 +991,8 @@ static int rebindproc_with_state  (LDAP * ld, char **whop, char **credp,
 		*methodp = LDAP_AUTH_SIMPLE;
 	}
 
-	GetTimeOfDay(&ldap_state->last_rebind);
+	clock_gettime_mono(&ts);
+	ldap_state->last_rebind = convert_timespec_to_timeval(ts);
 
 	return 0;
 }
@@ -979,6 +1012,7 @@ static int rebindproc_connect_with_state (LDAP *ldap_struct,
 	struct smbldap_state *ldap_state =
 		(struct smbldap_state *)arg;
 	int rc;
+	struct timespec ts;
 	int version;
 
 	DEBUG(5,("rebindproc_connect_with_state: Rebinding to %s as \"%s\"\n", 
@@ -1011,7 +1045,8 @@ static int rebindproc_connect_with_state (LDAP *ldap_struct,
 			DEBUG(10,("rebindproc_connect_with_state: "
 				"setting last_rebind timestamp "
 				"(req: 0x%02x)\n", (unsigned int)request));
-			GetTimeOfDay(&ldap_state->last_rebind);
+			clock_gettime_mono(&ts);
+			ldap_state->last_rebind = convert_timespec_to_timeval(ts);
 			break;
 		default:
 			ZERO_STRUCT(ldap_state->last_rebind);
@@ -1137,7 +1172,7 @@ static int smbldap_connect_system(struct smbldap_state *ldap_state, LDAP * ldap_
 
 static void smbldap_idle_fn(struct event_context *event_ctx,
 			    struct timed_event *te,
-			    struct timeval now,
+			    struct timeval now_abs,
 			    void *private_data);
 
 /**********************************************************************
@@ -1149,7 +1184,7 @@ static int smbldap_open(struct smbldap_state *ldap_state)
 	bool reopen = False;
 	SMB_ASSERT(ldap_state);
 
-	if ((ldap_state->ldap_struct != NULL) && ((ldap_state->last_ping + SMBLDAP_DONT_PING_TIME) < time(NULL))) {
+	if ((ldap_state->ldap_struct != NULL) && ((ldap_state->last_ping + SMBLDAP_DONT_PING_TIME) < time_mono(NULL))) {
 
 #ifdef HAVE_UNIXSOCKET
 		struct sockaddr_un addr;
@@ -1173,7 +1208,7 @@ static int smbldap_open(struct smbldap_state *ldap_state)
 		    	ldap_state->ldap_struct = NULL;
 		    	ldap_state->last_ping = (time_t)0;
 		} else {
-			ldap_state->last_ping = time(NULL);
+			ldap_state->last_ping = time_mono(NULL);
 		} 
     	}
 
@@ -1193,7 +1228,7 @@ static int smbldap_open(struct smbldap_state *ldap_state)
 	}
 
 
-	ldap_state->last_ping = time(NULL);
+	ldap_state->last_ping = time_mono(NULL);
 	ldap_state->pid = sys_getpid();
 
 	TALLOC_FREE(ldap_state->idle_event);
@@ -1243,7 +1278,7 @@ static void gotalarm_sig(int dummy)
 static int another_ldap_try(struct smbldap_state *ldap_state, int *rc,
 			    int *attempts, time_t endtime)
 {
-	time_t now = time(NULL);
+	time_t now = time_mono(NULL);
 	int open_rc = LDAP_SERVER_DOWN;
 
 	if (*rc != LDAP_SERVER_DOWN)
@@ -1316,7 +1351,7 @@ static int smbldap_search_ext(struct smbldap_state *ldap_state,
 	int 		rc = LDAP_SERVER_DOWN;
 	int 		attempts = 0;
 	char           *utf8_filter;
-	time_t		endtime = time(NULL)+lp_ldap_timeout();
+	time_t		endtime = time_mono(NULL)+lp_ldap_timeout();
 	struct		timeval timeout;
 	size_t		converted_size;
 
@@ -1327,11 +1362,12 @@ static int smbldap_search_ext(struct smbldap_state *ldap_state,
 
 	if (ldap_state->last_rebind.tv_sec > 0) {
 		struct timeval	tval;
+		struct timespec ts;
 		int64_t	tdiff = 0;
 		int		sleep_time = 0;
 
-		ZERO_STRUCT(tval);
-		GetTimeOfDay(&tval);
+		clock_gettime_mono(&ts);
+		tval = convert_timespec_to_timeval(ts);
 
 		tdiff = usec_time_diff(&tval, &ldap_state->last_rebind);
 		tdiff /= 1000; /* Convert to milliseconds. */
@@ -1365,7 +1401,7 @@ static int smbldap_search_ext(struct smbldap_state *ldap_state,
 	 * just a bit more kind to the server. VL. */
 
 	got_alarm = 0;
-	CatchSignal(SIGALRM, SIGNAL_CAST gotalarm_sig);
+	CatchSignal(SIGALRM, gotalarm_sig);
 	alarm(lp_ldap_timeout());
 	/* End setup timeout. */
 
@@ -1400,7 +1436,7 @@ static int smbldap_search_ext(struct smbldap_state *ldap_state,
 	TALLOC_FREE(utf8_filter);
 
 	/* Teardown timeout. */
-	CatchSignal(SIGALRM, SIGNAL_CAST SIG_IGN);
+	CatchSignal(SIGALRM, SIG_IGN);
 	alarm(0);
 
 	if (got_alarm != 0)
@@ -1514,7 +1550,7 @@ int smbldap_modify(struct smbldap_state *ldap_state, const char *dn, LDAPMod *at
 	int 		rc = LDAP_SERVER_DOWN;
 	int 		attempts = 0;
 	char           *utf8_dn;
-	time_t		endtime = time(NULL)+lp_ldap_timeout();
+	time_t		endtime = time_mono(NULL)+lp_ldap_timeout();
 	size_t		converted_size;
 
 	SMB_ASSERT(ldap_state);
@@ -1558,7 +1594,7 @@ int smbldap_add(struct smbldap_state *ldap_state, const char *dn, LDAPMod *attrs
 	int 		rc = LDAP_SERVER_DOWN;
 	int 		attempts = 0;
 	char           *utf8_dn;
-	time_t		endtime = time(NULL)+lp_ldap_timeout();
+	time_t		endtime = time_mono(NULL)+lp_ldap_timeout();
 	size_t		converted_size;
 
 	SMB_ASSERT(ldap_state);
@@ -1602,7 +1638,7 @@ int smbldap_delete(struct smbldap_state *ldap_state, const char *dn)
 	int 		rc = LDAP_SERVER_DOWN;
 	int 		attempts = 0;
 	char           *utf8_dn;
-	time_t		endtime = time(NULL)+lp_ldap_timeout();
+	time_t		endtime = time_mono(NULL)+lp_ldap_timeout();
 	size_t		converted_size;
 
 	SMB_ASSERT(ldap_state);
@@ -1648,7 +1684,7 @@ int smbldap_extended_operation(struct smbldap_state *ldap_state,
 {
 	int 		rc = LDAP_SERVER_DOWN;
 	int 		attempts = 0;
-	time_t		endtime = time(NULL)+lp_ldap_timeout();
+	time_t		endtime = time_mono(NULL)+lp_ldap_timeout();
 
 	if (!ldap_state)
 		return (-1);
@@ -1695,7 +1731,7 @@ int smbldap_search_suffix (struct smbldap_state *ldap_state,
 
 static void smbldap_idle_fn(struct event_context *event_ctx,
 			    struct timed_event *te,
-			    struct timeval now,
+			    struct timeval now_abs,
 			    void *private_data)
 {
 	struct smbldap_state *state = (struct smbldap_state *)private_data;
@@ -1707,12 +1743,13 @@ static void smbldap_idle_fn(struct event_context *event_ctx,
 		return;
 	}
 
-	if ((state->last_use+SMBLDAP_IDLE_TIME) > now.tv_sec) {
+	if ((state->last_use+SMBLDAP_IDLE_TIME) > time_mono(NULL)) {
 		DEBUG(10,("ldap connection not idle...\n"));
 
+		/* this needs to be made monotonic clock aware inside tevent: */
 		state->idle_event = event_add_timed(
 			event_ctx, NULL,
-			timeval_add(&now, SMBLDAP_IDLE_TIME, 0),
+			timeval_add(&now_abs, SMBLDAP_IDLE_TIME, 0),
 			smbldap_idle_fn,
 			private_data);
 		return;

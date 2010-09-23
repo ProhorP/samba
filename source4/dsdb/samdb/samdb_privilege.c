@@ -33,7 +33,7 @@ struct ldb_context *privilege_connect(TALLOC_CTX *mem_ctx,
 				      struct tevent_context *ev_ctx,
 				      struct loadparm_context *lp_ctx)
 {
-	return ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, "privilege.ldb", 
+	return ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, "privilege.ldb",
 				NULL, NULL, 0);
 }
 
@@ -47,7 +47,8 @@ static NTSTATUS samdb_privilege_setup_sid(struct ldb_context *pdb, TALLOC_CTX *m
 	const char * const attrs[] = { "privilege", NULL };
 	struct ldb_message **res = NULL;
 	struct ldb_message_element *el;
-	int ret, i;
+	unsigned int i;
+	int ret;
 	char *sidstr;
 
 	sidstr = ldap_encode_ndr_dom_sid(mem_ctx, sid);
@@ -68,9 +69,13 @@ static NTSTATUS samdb_privilege_setup_sid(struct ldb_context *pdb, TALLOC_CTX *m
 	for (i=0;i<el->num_values;i++) {
 		const char *priv_str = (const char *)el->values[i].data;
 		enum sec_privilege privilege = sec_privilege_id(priv_str);
-		if (privilege == -1) {
-			DEBUG(1,("Unknown privilege '%s' in samdb\n",
-				 priv_str));
+		if (privilege == SEC_PRIV_INVALID) {
+			uint32_t right_bit = sec_right_bit(priv_str);
+			security_token_set_right_bit(token, right_bit);
+			if (right_bit == 0) {
+				DEBUG(1,("Unknown privilege '%s' in samdb\n",
+					 priv_str));
+			}
 			continue;
 		}
 		security_token_set_privilege(token, privilege);
@@ -88,11 +93,11 @@ NTSTATUS samdb_privilege_setup(struct tevent_context *ev_ctx,
 {
 	struct ldb_context *pdb;
 	TALLOC_CTX *mem_ctx;
-	int i;
+	unsigned int i;
 	NTSTATUS status;
 
 	/* Shortcuts to prevent recursion and avoid lookups */
-	if (token->user_sid == NULL) {
+	if (token->sids == NULL) {
 		token->privilege_mask = 0;
 		return NT_STATUS_OK;
 	}
@@ -118,7 +123,7 @@ NTSTATUS samdb_privilege_setup(struct tevent_context *ev_ctx,
 	
 	for (i=0;i<token->num_sids;i++) {
 		status = samdb_privilege_setup_sid(pdb, mem_ctx,
-						   token, token->sids[i]);
+						   token, &token->sids[i]);
 		if (!NT_STATUS_IS_OK(status)) {
 			talloc_free(mem_ctx);
 			return status;

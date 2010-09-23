@@ -37,7 +37,6 @@
 #include "lib/messaging/irpc.h"
 #include "lib/ldb/include/ldb.h"
 #include "lib/ldb/include/ldb_errors.h"
-#include "libcli/ldap/ldap.h"
 #include "libcli/ldap/ldap_proto.h"
 #include "system/network.h"
 #include "lib/socket/netif.h"
@@ -133,6 +132,32 @@ static void ldapsrv_process_message(struct ldapsrv_connection *conn,
 }
 
 /*
+  disable packets on other sockets while processing this one
+ */
+static void ldapsrv_disable_recv(struct ldapsrv_connection *conn)
+{
+	struct ldapsrv_packet_interfaces *p;
+	for (p=conn->service->packet_interfaces; p; p=p->next) {
+		if (p->packet != conn->packet) {
+			packet_recv_disable(p->packet);
+		}
+	}
+}
+
+/*
+  disable packets on other sockets while processing this one
+ */
+static void ldapsrv_enable_recv(struct ldapsrv_connection *conn)
+{
+	struct ldapsrv_packet_interfaces *p;
+	for (p=conn->service->packet_interfaces; p; p=p->next) {
+		if (p->packet != conn->packet) {
+			packet_recv_enable(p->packet);
+		}
+	}
+}
+
+/*
   decode/process data
 */
 static NTSTATUS ldapsrv_decode(void *private_data, DATA_BLOB blob)
@@ -163,7 +188,13 @@ static NTSTATUS ldapsrv_decode(void *private_data, DATA_BLOB blob)
 	talloc_steal(conn, msg);
 	asn1_free(asn1);
 
+	/* disable messages on other sockets while processing this one */
+	ldapsrv_disable_recv(conn);
+
 	ldapsrv_process_message(conn, msg);
+
+	ldapsrv_enable_recv(conn);
+
 	return NT_STATUS_OK;
 }
 
@@ -237,7 +268,8 @@ static int ldapsrv_load_limits(struct ldapsrv_connection *conn)
 	struct ldb_dn *basedn;
 	struct ldb_dn *conf_dn;
 	struct ldb_dn *policy_dn;
-	int i,ret;
+	unsigned int i;
+	int ret;
 
 	/* set defaults limits in case of failure */
 	conn->limits.initial_timeout = 120;
@@ -325,6 +357,15 @@ failed:
 }
 
 /*
+  remove a packet interface from the service level list
+ */
+static int packet_interface_destructor(struct ldapsrv_packet_interfaces *packet_interface)
+{
+	DLIST_REMOVE(packet_interface->service->packet_interfaces, packet_interface);
+	return 0;
+}
+
+/*
   initialise a server_context from a open socket and register a event handler
   for reading from that socket
 */
@@ -397,6 +438,18 @@ static void ldapsrv_accept(struct stream_connection *c,
 	/* Ensure we don't get packets until the database is ready below */
 	packet_recv_disable(conn->packet);
 
+	/* add to the service level list of packet interfaces, to
+	 * allow us to serialise between connections
+	 */
+	conn->packet_interface = talloc(conn, struct ldapsrv_packet_interfaces);
+	if (conn->packet_interface == NULL) {
+		ldapsrv_terminate_connection(conn, "out of memory");
+	}
+	conn->packet_interface->service = ldapsrv_service;
+	conn->packet_interface->packet = conn->packet;
+	DLIST_ADD(conn->service->packet_interfaces, conn->packet_interface);
+	talloc_set_destructor(conn->packet_interface, packet_interface_destructor);
+
 	server_credentials = cli_credentials_init(conn);
 	if (!server_credentials) {
 		stream_terminate_connection(c, "Failed to init server credentials\n");
@@ -441,7 +494,7 @@ static void ldapsrv_accept_nonpriv(struct stream_connection *c)
 	NTSTATUS status;
 
 	status = auth_anonymous_session_info(
-		c, c->event.ctx, ldapsrv_service->task->lp_ctx, &session_info);
+		c, ldapsrv_service->task->lp_ctx, &session_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		stream_terminate_connection(c, "failed to setup anonymous "
 					    "session info");
@@ -490,7 +543,7 @@ static const struct stream_server_ops ldap_stream_priv_ops = {
   add a socket address to the list of events, one event per port
 */
 static NTSTATUS add_socket(struct tevent_context *event_context,
-			   struct loadparm_context *lp_ctx, 
+			   struct loadparm_context *lp_ctx,
 			   const struct model_ops *model_ops,
 			   const char *address, struct ldapsrv_service *ldap_service)
 {
@@ -501,25 +554,27 @@ static NTSTATUS add_socket(struct tevent_context *event_context,
 	status = stream_setup_socket(event_context, lp_ctx,
 				     model_ops, &ldap_stream_nonpriv_ops,
 				     "ipv4", address, &port, 
-				     lp_socket_options(lp_ctx), 
+				     lpcfg_socket_options(lp_ctx),
 				     ldap_service);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("ldapsrv failed to bind to %s:%u - %s\n",
 			 address, port, nt_errstr(status)));
+		return status;
 	}
 
 	if (tls_support(ldap_service->tls_params)) {
 		/* add ldaps server */
 		port = 636;
-		status = stream_setup_socket(event_context, lp_ctx, 
+		status = stream_setup_socket(event_context, lp_ctx,
 					     model_ops,
 					     &ldap_stream_nonpriv_ops,
 					     "ipv4", address, &port, 
-					     lp_socket_options(lp_ctx), 
+					     lpcfg_socket_options(lp_ctx),
 					     ldap_service);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("ldapsrv failed to bind to %s:%u - %s\n",
 				 address, port, nt_errstr(status)));
+			return status;
 		}
 	}
 
@@ -536,11 +591,12 @@ static NTSTATUS add_socket(struct tevent_context *event_context,
 					     model_ops,
 					     &ldap_stream_nonpriv_ops,
 					     "ipv4", address, &port, 
-				     	     lp_socket_options(lp_ctx), 
+					     lpcfg_socket_options(lp_ctx),
 					     ldap_service);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("ldapsrv failed to bind to %s:%u - %s\n",
 				 address, port, nt_errstr(status)));
+			return status;
 		}
 	}
 
@@ -548,7 +604,7 @@ static NTSTATUS add_socket(struct tevent_context *event_context,
 	 * connect again on each incoming LDAP connection */
 	talloc_unlink(ldap_service, ldb);
 
-	return status;
+	return NT_STATUS_OK;
 }
 
 /*
@@ -564,7 +620,7 @@ static void ldapsrv_task_init(struct task_server *task)
 	NTSTATUS status;
 	const struct model_ops *model_ops;
 
-	switch (lp_server_role(task->lp_ctx)) {
+	switch (lpcfg_server_role(task->lp_ctx)) {
 	case ROLE_STANDALONE:
 		task_server_terminate(task, "ldap_server: no LDAP server required in standalone configuration", 
 				      false);
@@ -592,12 +648,12 @@ static void ldapsrv_task_init(struct task_server *task)
 	ldap_service->tls_params = tls_initialise(ldap_service, task->lp_ctx);
 	if (ldap_service->tls_params == NULL) goto failed;
 
-	if (lp_interfaces(task->lp_ctx) && lp_bind_interfaces_only(task->lp_ctx)) {
+	if (lpcfg_interfaces(task->lp_ctx) && lpcfg_bind_interfaces_only(task->lp_ctx)) {
 		struct interface *ifaces;
 		int num_interfaces;
 		int i;
 
-		load_interfaces(task, lp_interfaces(task->lp_ctx), &ifaces);
+		load_interfaces(task, lpcfg_interfaces(task->lp_ctx), &ifaces);
 		num_interfaces = iface_count(ifaces);
 
 		/* We have been given an interfaces line, and been 
@@ -610,8 +666,8 @@ static void ldapsrv_task_init(struct task_server *task)
 			if (!NT_STATUS_IS_OK(status)) goto failed;
 		}
 	} else {
-		status = add_socket(task->event_ctx, task->lp_ctx, model_ops, 
-				    lp_socket_address(task->lp_ctx), ldap_service);
+		status = add_socket(task->event_ctx, task->lp_ctx, model_ops,
+				    lpcfg_socket_address(task->lp_ctx), ldap_service);
 		if (!NT_STATUS_IS_OK(status)) goto failed;
 	}
 
@@ -623,7 +679,7 @@ static void ldapsrv_task_init(struct task_server *task)
 	status = stream_setup_socket(task->event_ctx, task->lp_ctx,
 				     model_ops, &ldap_stream_nonpriv_ops,
 				     "unix", ldapi_path, NULL, 
-				     lp_socket_options(task->lp_ctx), 
+				     lpcfg_socket_options(task->lp_ctx),
 				     ldap_service);
 	talloc_free(ldapi_path);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -654,7 +710,7 @@ static void ldapsrv_task_init(struct task_server *task)
 	status = stream_setup_socket(task->event_ctx, task->lp_ctx,
 				     model_ops, &ldap_stream_priv_ops,
 				     "unix", ldapi_path, NULL,
-				     lp_socket_options(task->lp_ctx),
+				     lpcfg_socket_options(task->lp_ctx),
 				     ldap_service);
 	talloc_free(ldapi_path);
 	if (!NT_STATUS_IS_OK(status)) {

@@ -59,8 +59,7 @@ static int samba_secrets_init(struct ldb_module *module)
 					     NULL };
 
 	if (!tmp_ctx) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	/* Now prepare the module chain.  Oddly, we must give it to ldb_load_modules_list in REVERSE */
@@ -69,8 +68,7 @@ static int samba_secrets_init(struct ldb_module *module)
 	reverse_module_list = talloc_array(tmp_ctx, const char *, len+1);
 	if (!reverse_module_list) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 	for (i=0; i < len; i++) {
 		reverse_module_list[i] = modules_list[(len - 1) - i];
@@ -94,7 +92,7 @@ static int samba_secrets_init(struct ldb_module *module)
 	return ldb_next_init(module);
 }
 
-const struct ldb_module_ops ldb_samba_secrets_module_ops = {
+_PUBLIC_ const struct ldb_module_ops ldb_samba_secrets_module_ops = {
 	.name		   = "samba_secrets",
 	.init_context	   = samba_secrets_init,
 };

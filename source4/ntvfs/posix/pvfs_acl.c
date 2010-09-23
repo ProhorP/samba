@@ -25,7 +25,16 @@
 #include "librpc/gen_ndr/xattr.h"
 #include "libcli/security/security.h"
 #include "param/param.h"
+#include "../lib/util/unix_privs.h"
 
+#if defined(UID_WRAPPER)
+#if !defined(UID_WRAPPER_REPLACE) && !defined(UID_WRAPPER_NOT_REPLACE)
+#define UID_WRAPPER_REPLACE
+#include "../uid_wrapper/uid_wrapper.h"
+#endif
+#else
+#define uwrap_enabled() 0
+#endif
 
 /* the list of currently registered ACL backends */
 static struct pvfs_acl_backend {
@@ -148,7 +157,7 @@ static NTSTATUS pvfs_default_acl(struct pvfs_state *pvfs,
 	NTSTATUS status;
 	struct security_ace ace;
 	mode_t mode;
-	struct id_mapping *ids;
+	struct id_map *ids;
 	struct composite_context *ctx;
 
 	*psd = security_descriptor_initialise(req);
@@ -157,21 +166,15 @@ static NTSTATUS pvfs_default_acl(struct pvfs_state *pvfs,
 	}
 	sd = *psd;
 
-	ids = talloc_zero_array(sd, struct id_mapping, 2);
+	ids = talloc_zero_array(sd, struct id_map, 2);
 	NT_STATUS_HAVE_NO_MEMORY(ids);
 
-	ids[0].unixid = talloc(ids, struct unixid);
-	NT_STATUS_HAVE_NO_MEMORY(ids[0].unixid);
-
-	ids[0].unixid->id = name->st.st_uid;
-	ids[0].unixid->type = ID_TYPE_UID;
+	ids[0].xid.id = name->st.st_uid;
+	ids[0].xid.type = ID_TYPE_UID;
 	ids[0].sid = NULL;
 
-	ids[1].unixid = talloc(ids, struct unixid);
-	NT_STATUS_HAVE_NO_MEMORY(ids[1].unixid);
-
-	ids[1].unixid->id = name->st.st_gid;
-	ids[1].unixid->type = ID_TYPE_GID;
+	ids[1].xid.id = name->st.st_gid;
+	ids[1].xid.type = ID_TYPE_GID;
 	ids[1].sid = NULL;
 
 	ctx = wbc_xids_to_sids_send(pvfs->wbc_ctx, ids, 2, ids);
@@ -290,7 +293,7 @@ NTSTATUS pvfs_acl_set(struct pvfs_state *pvfs,
 	gid_t old_gid = -1;
 	uid_t new_uid = -1;
 	gid_t new_gid = -1;
-	struct id_mapping *ids;
+	struct id_map *ids;
 	struct composite_context *ctx;
 
 	if (pvfs->acl_ops != NULL) {
@@ -303,11 +306,11 @@ NTSTATUS pvfs_acl_set(struct pvfs_state *pvfs,
 		return status;
 	}
 
-	ids = talloc(req, struct id_mapping);
+	ids = talloc(req, struct id_map);
 	NT_STATUS_HAVE_NO_MEMORY(ids);
-	ids->unixid = NULL;
+	ZERO_STRUCT(ids->xid);
 	ids->sid = NULL;
-	ids->status = NT_STATUS_NONE_MAPPED;
+	ids->status = ID_UNKNOWN;
 
 	new_sd = info->set_secdesc.in.sd;
 	orig_sd = *sd;
@@ -327,9 +330,9 @@ NTSTATUS pvfs_acl_set(struct pvfs_state *pvfs,
 			status = wbc_sids_to_xids_recv(ctx, &ids);
 			NT_STATUS_NOT_OK_RETURN(status);
 
-			if (ids->unixid->type == ID_TYPE_BOTH ||
-			    ids->unixid->type == ID_TYPE_UID) {
-				new_uid = ids->unixid->id;
+			if (ids->xid.type == ID_TYPE_BOTH ||
+			    ids->xid.type == ID_TYPE_UID) {
+				new_uid = ids->xid.id;
 			}
 		}
 		sd->owner_sid = new_sd->owner_sid;
@@ -345,9 +348,9 @@ NTSTATUS pvfs_acl_set(struct pvfs_state *pvfs,
 			status = wbc_sids_to_xids_recv(ctx, &ids);
 			NT_STATUS_NOT_OK_RETURN(status);
 
-			if (ids->unixid->type == ID_TYPE_BOTH ||
-			    ids->unixid->type == ID_TYPE_GID) {
-				new_gid = ids->unixid->id;
+			if (ids->xid.type == ID_TYPE_BOTH ||
+			    ids->xid.type == ID_TYPE_GID) {
+				new_gid = ids->xid.id;
 			}
 
 		}
@@ -384,8 +387,26 @@ NTSTATUS pvfs_acl_set(struct pvfs_state *pvfs,
 		} else {
 			ret = fchown(fd, new_uid, new_gid);
 		}
-		if (errno == EPERM && uwrap_enabled()) {
-			ret = 0;
+		if (errno == EPERM) {
+			if (uwrap_enabled()) {
+				ret = 0;
+			} else {
+				/* try again as root if we have SEC_PRIV_RESTORE or
+				   SEC_PRIV_TAKE_OWNERSHIP */
+				if (security_token_has_privilege(req->session_info->security_token,
+								 SEC_PRIV_RESTORE) ||
+				    security_token_has_privilege(req->session_info->security_token,
+								 SEC_PRIV_TAKE_OWNERSHIP)) {
+					void *privs;
+					privs = root_privileges();
+					if (fd == -1) {
+						ret = chown(name->full_name, new_uid, new_gid);
+					} else {
+						ret = fchown(fd, new_uid, new_gid);
+					}
+					talloc_free(privs);
+				}
+			}
 		}
 		if (ret == -1) {
 			return pvfs_map_errno(pvfs, errno);
@@ -828,7 +849,7 @@ NTSTATUS pvfs_acl_inherited_sd(struct pvfs_state *pvfs,
 	struct xattr_NTACL *acl;
 	NTSTATUS status;
 	struct security_descriptor *parent_sd, *sd;
-	struct id_mapping *ids;
+	struct id_map *ids;
 	struct composite_context *ctx;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 
@@ -865,22 +886,18 @@ NTSTATUS pvfs_acl_inherited_sd(struct pvfs_state *pvfs,
 	sd = security_descriptor_initialise(req);
 	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(sd, tmp_ctx);
 
-	ids = talloc_array(sd, struct id_mapping, 2);
+	ids = talloc_array(sd, struct id_map, 2);
 	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(ids, tmp_ctx);
 
-	ids[0].unixid = talloc(ids, struct unixid);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(ids[0].unixid, tmp_ctx);
-	ids[0].unixid->id = geteuid();
-	ids[0].unixid->type = ID_TYPE_UID;
+	ids[0].xid.id = geteuid();
+	ids[0].xid.type = ID_TYPE_UID;
 	ids[0].sid = NULL;
-	ids[0].status = NT_STATUS_NONE_MAPPED;
+	ids[0].status = ID_UNKNOWN;
 
-	ids[1].unixid = talloc(ids, struct unixid);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(ids[1].unixid, tmp_ctx);
-	ids[1].unixid->id = getegid();
-	ids[1].unixid->type = ID_TYPE_GID;
+	ids[1].xid.id = getegid();
+	ids[1].xid.type = ID_TYPE_GID;
 	ids[1].sid = NULL;
-	ids[1].status = NT_STATUS_NONE_MAPPED;
+	ids[1].status = ID_UNKNOWN;
 
 	ctx = wbc_xids_to_sids_send(pvfs->wbc_ctx, ids, 2, ids);
 	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(ctx, tmp_ctx);

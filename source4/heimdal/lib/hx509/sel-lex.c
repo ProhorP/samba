@@ -1,5 +1,6 @@
+#include "config.h"
 
-#line 3 "sel-lex.c"
+#line 3 "heimdal/lib/hx509/sel-lex.c"
 
 #define  YY_INT_ALIGNED short int
 
@@ -523,6 +524,10 @@ static int lex_input(char *, int);
 
 struct hx_expr_input _hx509_expr_input;
 
+#ifndef YY_NULL
+#define YY_NULL 0
+#endif
+
 #define YY_NO_UNPUT 1
 
 #undef YY_INPUT
@@ -530,7 +535,7 @@ struct hx_expr_input _hx509_expr_input;
 
 #undef ECHO
 
-#line 534 "sel-lex.c"
+#line 538 "heimdal/lib/hx509/sel-lex.c"
 
 #define INITIAL 0
 
@@ -619,7 +624,7 @@ static int input (void );
 /* This used to be an fputs(), but since the string might contain NUL's,
  * we now use fwrite().
  */
-#define ECHO fwrite( yytext, yyleng, 1, yyout )
+#define ECHO do { if (fwrite( yytext, yyleng, 1, yyout )) {} } while (0)
 #endif
 
 /* Gets input and stuffs it into "buf".  number of characters read, or YY_NULL,
@@ -712,10 +717,10 @@ YY_DECL
 	register char *yy_cp, *yy_bp;
 	register int yy_act;
     
-#line 64 "sel-lex.l"
+#line 68 "sel-lex.l"
 
 
-#line 719 "sel-lex.c"
+#line 723 "heimdal/lib/hx509/sel-lex.c"
 
 	if ( !(yy_init) )
 		{
@@ -800,37 +805,37 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 66 "sel-lex.l"
+#line 70 "sel-lex.l"
 { return kw_TRUE; }
 	YY_BREAK
 case 2:
 YY_RULE_SETUP
-#line 67 "sel-lex.l"
+#line 71 "sel-lex.l"
 { return kw_FALSE; }
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 68 "sel-lex.l"
+#line 72 "sel-lex.l"
 { return kw_AND; }
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 69 "sel-lex.l"
+#line 73 "sel-lex.l"
 { return kw_OR; }
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 70 "sel-lex.l"
+#line 74 "sel-lex.l"
 { return kw_IN; }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 71 "sel-lex.l"
+#line 75 "sel-lex.l"
 { return kw_TAILMATCH; }
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 73 "sel-lex.l"
+#line 77 "sel-lex.l"
 {
 			  yylval.string = strdup ((const char *)yytext);
 			  return IDENTIFIER;
@@ -838,31 +843,31 @@ YY_RULE_SETUP
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 77 "sel-lex.l"
+#line 81 "sel-lex.l"
 { yylval.string = handle_string(); return STRING; }
 	YY_BREAK
 case 9:
 /* rule 9 can match eol */
 YY_RULE_SETUP
-#line 78 "sel-lex.l"
+#line 82 "sel-lex.l"
 { ++lineno; }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 79 "sel-lex.l"
+#line 83 "sel-lex.l"
 { return *yytext; }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 80 "sel-lex.l"
+#line 84 "sel-lex.l"
 ;
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 81 "sel-lex.l"
+#line 85 "sel-lex.l"
 ECHO;
 	YY_BREAK
-#line 866 "sel-lex.c"
+#line 870 "heimdal/lib/hx509/sel-lex.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -1860,7 +1865,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 81 "sel-lex.l"
+#line 85 "sel-lex.l"
 
 
 

@@ -18,6 +18,7 @@
 */
 
 #include "includes.h"
+#include "printing/pcap.h"
 
 
 /***************************************************************************
@@ -29,6 +30,10 @@ static void add_auto_printers(void)
 	int pnum = lp_servicenumber(PRINTERS_NAME);
 	char *str;
 	char *saveptr;
+
+	if (pnum < 0)
+		if (process_registry_service(PRINTERS_NAME))
+			pnum = lp_servicenumber(PRINTERS_NAME);
 
 	if (pnum < 0)
 		return;
@@ -51,10 +56,12 @@ static void add_auto_printers(void)
 /***************************************************************************
 load automatic printer services
 ***************************************************************************/
-void load_printers(void)
+void load_printers(struct tevent_context *ev,
+		   struct messaging_context *msg_ctx)
 {
-	if (!pcap_cache_loaded())
-		pcap_cache_reload();
+	if (!pcap_cache_loaded()) {
+		pcap_cache_reload(ev, msg_ctx);
+	}
 
 	add_auto_printers();
 

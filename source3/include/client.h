@@ -22,6 +22,8 @@
 #ifndef _CLIENT_H
 #define _CLIENT_H
 
+#include "../librpc/ndr/libndr.h"
+
 /* the client asks for a smaller buffer to save ram and also to get more
    overlap on the wire. This size gives us a nice read/write size, which
    will be a multiple of the page size on almost any system */
@@ -44,21 +46,6 @@ struct print_job_info {
 	fstring user;
 	fstring name;
 	time_t t;
-};
-
-struct cli_pipe_auth_data {
-	enum pipe_auth_type auth_type; /* switch for the union below. Defined in ntdomain.h */
-	enum dcerpc_AuthLevel auth_level; /* defined in ntdomain.h */
-
-	char *domain;
-	char *user_name;
-	DATA_BLOB user_session_key;
-
-	union {
-		struct schannel_state *schannel_auth;
-		struct ntlmssp_state *ntlmssp_state;
-		struct kerberos_auth_struct *kerberos_auth;
-	} a_u;
 };
 
 /**
@@ -110,32 +97,23 @@ struct rpc_cli_transport {
 	 */
 	NTSTATUS (*trans_recv)(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 			       uint8_t **prdata, uint32_t *prdata_len);
+
+	bool (*is_connected)(void *priv);
+	unsigned int (*set_timeout)(void *priv, unsigned int timeout);
+
 	void *priv;
 };
+
+struct dcerpc_binding_handle;
 
 struct rpc_pipe_client {
 	struct rpc_pipe_client *prev, *next;
 
 	struct rpc_cli_transport *transport;
+	struct dcerpc_binding_handle *binding_handle;
 
 	struct ndr_syntax_id abstract_syntax;
 	struct ndr_syntax_id transfer_syntax;
-
-	NTSTATUS (*dispatch) (struct rpc_pipe_client *cli,
-			TALLOC_CTX *mem_ctx,
-			const struct ndr_interface_table *table,
-			uint32_t opnum, void *r);
-
-	struct tevent_req *(*dispatch_send)(
-		TALLOC_CTX *mem_ctx,
-		struct tevent_context *ev,
-		struct rpc_pipe_client *cli,
-		const struct ndr_interface_table *table,
-		uint32_t opnum,
-		void *r);
-	NTSTATUS (*dispatch_recv)(struct tevent_req *req,
-				  TALLOC_CTX *mem_ctx);
-
 
 	char *desthost;
 	char *srv_name_slash;
@@ -143,13 +121,10 @@ struct rpc_pipe_client {
 	uint16 max_xmit_frag;
 	uint16 max_recv_frag;
 
-	struct cli_pipe_auth_data *auth;
+	struct pipe_auth_data *auth;
 
 	/* The following is only non-null on a netlogon client pipe. */
 	struct netlogon_creds_CredentialState *dc;
-
-	/* Used by internal rpc_pipe_client */
-	pipes_struct *pipes_struct;
 };
 
 /* Transport encryption state. */
@@ -224,7 +199,6 @@ struct cli_state {
 	fstring dev;
 	struct nmb_name called;
 	struct nmb_name calling;
-	fstring full_dest_host_name;
 	struct sockaddr_storage dest_ss;
 
 	DATA_BLOB secblob; /* cryptkey or negTokenInit */
@@ -244,13 +218,11 @@ struct cli_state {
 	int win95;
 	bool is_samba;
 	uint32 capabilities;
-	uint32 posix_capabilities;
+	/* What the server offered. */
+	uint32_t server_posix_capabilities;
+	/* What the client requested. */
+	uint32_t requested_posix_capabilities;
 	bool dfsroot;
-
-#if 0
-	TALLOC_CTX *longterm_mem_ctx;
-	TALLOC_CTX *call_mem_ctx;
-#endif
 
 	struct smb_signing_state *signing_state;
 
@@ -266,6 +238,7 @@ struct cli_state {
 	bool use_kerberos;
 	bool fallback_after_kerberos;
 	bool use_spnego;
+	bool use_ccache;
 	bool got_kerberos_mechanism; /* Server supports krb5 in SPNEGO. */
 
 	bool use_oplocks; /* should we use oplocks? */
@@ -284,8 +257,7 @@ struct cli_state {
 	struct tevent_req **pending;
 };
 
-typedef struct file_info {
-	struct cli_state *cli;
+struct file_info {
 	uint64_t size;
 	uint16 mode;
 	uid_t uid;
@@ -296,7 +268,7 @@ typedef struct file_info {
 	struct timespec ctime_ts;
 	char *name;
 	char short_name[13*3]; /* the *3 is to cope with multi-byte */
-} file_info;
+};
 
 #define CLI_FULL_CONNECTION_DONT_SPNEGO 0x0001
 #define CLI_FULL_CONNECTION_USE_KERBEROS 0x0002
@@ -304,5 +276,6 @@ typedef struct file_info {
 #define CLI_FULL_CONNECTION_FALLBACK_AFTER_KERBEROS 0x0008
 #define CLI_FULL_CONNECTION_OPLOCKS 0x0010
 #define CLI_FULL_CONNECTION_LEVEL_II_OPLOCKS 0x0020
+#define CLI_FULL_CONNECTION_USE_CCACHE 0x0040
 
 #endif /* _CLIENT_H */

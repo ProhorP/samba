@@ -22,12 +22,8 @@
 #include "auth/gensec/gensec.h"
 #include "libcli/util/pyerrors.h"
 #include "scripting/python/modules.h"
-#include "pytalloc.h"
+#include "lib/talloc/pytalloc.h"
 #include <tevent.h>
-
-#ifndef Py_RETURN_NONE
-#define Py_RETURN_NONE return Py_INCREF(Py_None), Py_None
-#endif
 
 static PyObject *py_get_name_by_authtype(PyObject *self, PyObject *args)
 {
@@ -73,8 +69,7 @@ static struct gensec_settings *settings_from_object(TALLOC_CTX *mem_ctx, PyObjec
 	}
 	
 	s->target_hostname = PyString_AsString(py_hostname);
-	s->lp_ctx = lp_from_py_object(py_lp_ctx);
-	s->iconv_convenience = py_iconv_convenience(s);
+	s->lp_ctx = lpcfg_from_py_object(s, py_lp_ctx);
 	return s;
 }
 
@@ -180,6 +175,15 @@ void initgensec(void)
 	m = Py_InitModule3("gensec", NULL, "Generic Security Interface.");
 	if (m == NULL)
 		return;
+
+	PyModule_AddObject(m, "FEATURE_SESSION_KEY",     PyInt_FromLong(GENSEC_FEATURE_SESSION_KEY));
+	PyModule_AddObject(m, "FEATURE_SIGN",            PyInt_FromLong(GENSEC_FEATURE_SIGN));
+	PyModule_AddObject(m, "FEATURE_SEAL",            PyInt_FromLong(GENSEC_FEATURE_SEAL));
+	PyModule_AddObject(m, "FEATURE_DCE_STYLE",       PyInt_FromLong(GENSEC_FEATURE_DCE_STYLE));
+	PyModule_AddObject(m, "FEATURE_ASYNC_REPLIES",   PyInt_FromLong(GENSEC_FEATURE_ASYNC_REPLIES));
+	PyModule_AddObject(m, "FEATURE_DATAGRAM_MODE",   PyInt_FromLong(GENSEC_FEATURE_DATAGRAM_MODE));
+	PyModule_AddObject(m, "FEATURE_SIGN_PKT_HEADER", PyInt_FromLong(GENSEC_FEATURE_SIGN_PKT_HEADER));
+	PyModule_AddObject(m, "FEATURE_NEW_SPNEGO",      PyInt_FromLong(GENSEC_FEATURE_NEW_SPNEGO));
 
 	Py_INCREF(&Py_Security);
 	PyModule_AddObject(m, "Security", (PyObject *)&Py_Security);

@@ -47,8 +47,8 @@
 /*! \endcond */
 
 #include <stdbool.h>
-#include "talloc.h"
-#include "tevent.h"
+#include <talloc.h>
+#include <tevent.h>
 #include "ldb_errors.h"
 
 /*
@@ -86,6 +86,14 @@ struct ldb_val {
 #ifndef PRINTF_ATTRIBUTE
 #define PRINTF_ATTRIBUTE(a,b)
 #endif
+
+#ifndef _DEPRECATED_
+#if (__GNUC__ >= 3) && (__GNUC_MINOR__ >= 1 )
+#define _DEPRECATED_ __attribute__ ((deprecated))
+#else
+#define _DEPRECATED_
+#endif
+#endif
 /*! \endcond */
 
 /* opaque ldb_dn structures, see ldb_dn.c for internals */
@@ -100,6 +108,11 @@ struct ldb_dn;
  deleted or modified respectively.
 */
 #define LDB_FLAG_MOD_MASK  0x3
+
+/**
+  use this to extract the mod type from the operation
+ */
+#define LDB_FLAG_MOD_TYPE(flags) ((flags) & LDB_FLAG_MOD_MASK)
 
 /**
    Flag value used in ldap_modify() to indicate that attributes are
@@ -124,6 +137,11 @@ struct ldb_dn;
    \sa LDB_FLAG_MOD_MASK
 */
 #define LDB_FLAG_MOD_DELETE  3
+
+/**
+    flag bits on an element usable only by the internal implementation
+*/
+#define LDB_FLAG_INTERNAL_MASK 0xFFFFFFF0
 
 /**
   OID for logic AND comaprison.
@@ -456,13 +474,16 @@ const struct ldb_dn_extended_syntax *ldb_dn_extended_syntax_by_name(struct ldb_c
 /* sorting helpers */
 typedef int (*ldb_qsort_cmp_fn_t) (void *v1, void *v2, void *opaque);
 
-/**
-   OID for the allowing client to request temporary relaxed 
-   enforcement of constraints of the x.500 model.
+/* Individual controls */
 
-   \sa <a href="http://opends.dev.java.net/public/standards/draft-zeilenga-ldap-managedit.txt">draft managedit</a>.
+/**
+  OID for getting and manipulating attributes from the ldb
+  without interception in the operational module.
+  It can be used to access attribute that used to be stored in the sam 
+  and that are now calculated.
 */
-#define LDB_CONTROL_RELAX_OID "1.3.6.1.4.1.4203.666.5.12"
+#define LDB_CONTROL_BYPASSOPERATIONAL_OID "1.3.6.1.4.1.7165.4.3.13"
+
 /**
   OID for recalculate SD control. This control force the
   dsdb code to recalculate the SD of the object as if the
@@ -483,6 +504,8 @@ typedef int (*ldb_qsort_cmp_fn_t) (void *v1, void *v2, void *opaque);
    updating prefix map
 */
 #define LDB_CONTROL_AS_SYSTEM_OID "1.3.6.1.4.1.7165.4.3.7"
+
+/* AD controls */
 
 /**
    OID for the paged results control. This control is included in the
@@ -521,6 +544,13 @@ typedef int (*ldb_qsort_cmp_fn_t) (void *v1, void *v2, void *opaque);
    \sa <a href="http://msdn.microsoft.com/library/default.asp?url=/library/en-us/ldap/ldap/ldap_server_notification_oid.asp">Microsoft documentation of this OID</a>
 */
 #define LDB_CONTROL_NOTIFICATION_OID	"1.2.840.113556.1.4.528"
+
+/**
+   OID for performing subtree deletes
+
+   \sa <a href="http://msdn.microsoft.com/en-us/library/aa366991(v=VS.85).aspx">Microsoft documentation of this OID</a>
+*/
+#define LDB_CONTROL_TREE_DELETE_OID	"1.2.840.113556.1.4.805"
 
 /**
    OID for getting deleted objects
@@ -648,6 +678,22 @@ typedef int (*ldb_qsort_cmp_fn_t) (void *v1, void *v2, void *opaque);
    interval. Otherwise the entry is going to be removed.
 */
 #define LDB_EXTENDED_DYNAMIC_OID	"1.3.6.1.4.1.1466.101.119.1"
+
+/* Other standardised controls */
+
+/**
+   OID for the allowing client to request temporary relaxed
+   enforcement of constraints of the x.500 model.
+
+   \sa <a href="http://opends.dev.java.net/public/standards/draft-zeilenga-ldap-managedit.txt">draft managedit</a>.
+*/
+#define LDB_CONTROL_RELAX_OID "1.3.6.1.4.1.4203.666.5.12"
+
+/**
+   control for RODC join
+   See [MS-ADTS] section 3.1.1.3.4.1.23
+*/
+#define LDB_CONTROL_RODC_DCPROMO_OID "1.2.840.113556.1.4.1341"
 
 /*
    OID for LDAP Extended Operation PASSWORD_CHANGE.
@@ -1017,6 +1063,7 @@ int ldb_search_default_callback(struct ldb_request *req, struct ldb_reply *ares)
 */
 int ldb_op_default_callback(struct ldb_request *req, struct ldb_reply *ares);
 
+int ldb_modify_default_callback(struct ldb_request *req, struct ldb_reply *ares);
 
 /**
   Helper function to build a search request
@@ -1610,7 +1657,7 @@ char *ldb_dn_alloc_linearized(TALLOC_CTX *mem_ctx, struct ldb_dn *dn);
   \param dn The DN to linearize
   \param mode Style of extended DN to return (0 is HEX representation of binary form, 1 is a string form)
 */
-char *ldb_dn_get_extended_linearized(void *mem_ctx, struct ldb_dn *dn, int mode);
+char *ldb_dn_get_extended_linearized(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int mode);
 const struct ldb_val *ldb_dn_get_extended_component(struct ldb_dn *dn, const char *name);
 int ldb_dn_set_extended_component(struct ldb_dn *dn, const char *name, const struct ldb_val *val);
 void ldb_dn_extended_filter(struct ldb_dn *dn, const char * const *accept);
@@ -1650,7 +1697,7 @@ struct ldb_dn *ldb_dn_new_fmt(TALLOC_CTX *mem_ctx, struct ldb_context *ldb, cons
   \note The DN will not be parsed at this time.  Use ldb_dn_validate to tell if the DN is syntacticly correct
 */
 
-struct ldb_dn *ldb_dn_from_ldb_val(void *mem_ctx, struct ldb_context *ldb, const struct ldb_val *strdn);
+struct ldb_dn *ldb_dn_from_ldb_val(TALLOC_CTX *mem_ctx, struct ldb_context *ldb, const struct ldb_val *strdn);
 
 /**
   Determine if this DN is syntactically valid 
@@ -1828,13 +1875,56 @@ struct ldb_message *ldb_msg_copy_shallow(TALLOC_CTX *mem_ctx,
 struct ldb_message *ldb_msg_copy(TALLOC_CTX *mem_ctx, 
 				 const struct ldb_message *msg);
 
+/*
+ * ldb_msg_canonicalize() is now depreciated
+ * Please use ldb_msg_normalize() instead
+ *
+ * NOTE: Returned ldb_message object is allocated
+ * into *ldb's context. Callers are recommended
+ * to steal the returned object into a TALLOC_CTX
+ * with short lifetime.
+ */
 struct ldb_message *ldb_msg_canonicalize(struct ldb_context *ldb, 
-					 const struct ldb_message *msg);
+					 const struct ldb_message *msg) _DEPRECATED_;
+
+int ldb_msg_normalize(struct ldb_context *ldb,
+		      TALLOC_CTX *mem_ctx,
+		      const struct ldb_message *msg,
+		      struct ldb_message **_msg_out);
 
 
+/*
+ * ldb_msg_diff() is now depreciated
+ * Please use ldb_msg_difference() instead
+ *
+ * NOTE: Returned ldb_message object is allocated
+ * into *ldb's context. Callers are recommended
+ * to steal the returned object into a TALLOC_CTX
+ * with short lifetime.
+ */
 struct ldb_message *ldb_msg_diff(struct ldb_context *ldb, 
 				 struct ldb_message *msg1,
-				 struct ldb_message *msg2);
+				 struct ldb_message *msg2) _DEPRECATED_;
+
+/**
+ * return a ldb_message representing the differences between msg1 and msg2.
+ * If you then use this in a ldb_modify() call,
+ * it can be used to save edits to a message
+ *
+ * Result message is constructed as follows:
+ * - LDB_FLAG_MOD_ADD     - elements found only in msg2
+ * - LDB_FLAG_MOD_REPLACE - elements in msg2 that have
+ * 			    different value in msg1
+ *                          Value for msg2 element is used
+ * - LDB_FLAG_MOD_DELETE  - elements found only in msg2
+ *
+ * @return LDB_SUCCESS or LDB_ERR_OPERATIONS_ERROR
+ */
+int ldb_msg_difference(struct ldb_context *ldb,
+		       TALLOC_CTX *mem_ctx,
+		       struct ldb_message *msg1,
+		       struct ldb_message *msg2,
+		       struct ldb_message **_msg_out);
 
 /**
    Tries to find a certain string attribute in a message
@@ -1985,6 +2075,35 @@ time_t ldb_string_utc_to_time(const char *s);
 
 void ldb_qsort (void *const pbase, size_t total_elems, size_t size, void *opaque, ldb_qsort_cmp_fn_t cmp);
 
+#ifndef discard_const
+#define discard_const(ptr) ((void *)((uintptr_t)(ptr)))
+#endif
+
+/*
+  a wrapper around ldb_qsort() that ensures the comparison function is
+  type safe. This will produce a compilation warning if the types
+  don't match
+ */
+#define LDB_TYPESAFE_QSORT(base, numel, opaque, comparison)	\
+do { \
+	if (numel > 1) { \
+		ldb_qsort(base, numel, sizeof((base)[0]), discard_const(opaque), (ldb_qsort_cmp_fn_t)comparison); \
+		comparison(&((base)[0]), &((base)[1]), opaque);		\
+	} \
+} while (0)
+
+/* allow ldb to also call TYPESAFE_QSORT() */
+#ifndef TYPESAFE_QSORT
+#define TYPESAFE_QSORT(base, numel, comparison) \
+do { \
+	if (numel > 1) { \
+		qsort(base, numel, sizeof((base)[0]), (int (*)(const void *, const void *))comparison); \
+		comparison(&((base)[0]), &((base)[1])); \
+	} \
+} while (0)
+#endif
+
+
 
 /**
    Convert an array of string represention of a control into an array of ldb_control structures 
@@ -2006,7 +2125,7 @@ unsigned int ldb_get_flags(struct ldb_context *ldb);
 void ldb_set_flags(struct ldb_context *ldb, unsigned flags);
 
 
-struct ldb_dn *ldb_dn_binary_from_ldb_val(void *mem_ctx,
+struct ldb_dn *ldb_dn_binary_from_ldb_val(TALLOC_CTX *mem_ctx,
 					  struct ldb_context *ldb,
 					  const struct ldb_val *strdn);
 

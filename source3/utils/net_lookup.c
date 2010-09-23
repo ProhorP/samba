@@ -18,6 +18,10 @@
 
 #include "includes.h"
 #include "utils/net.h"
+#include "libads/sitename_cache.h"
+#include "libads/dns.h"
+#include "../librpc/gen_ndr/ndr_netlogon.h"
+#include "smb_krb5.h"
 
 int net_lookup_usage(struct net_context *c, int argc, const char **argv)
 {
@@ -109,7 +113,8 @@ static int net_lookup_ldap(struct net_context *c, int argc, const char **argv)
 	sitename = sitename_fetch(domain);
 
 	if ( (ctx = talloc_init("net_lookup_ldap")) == NULL ) {
-		d_fprintf(stderr,_("net_lookup_ldap: talloc_init() failed!\n"));
+		d_fprintf(stderr,"net_lookup_ldap: talloc_init() %s!\n",
+			  _("failed"));
 		SAFE_FREE(sitename);
 		return -1;
 	}
@@ -305,12 +310,12 @@ static int net_lookup_kdc(struct net_context *c, int argc, const char **argv)
 		return -1;
 	}
 	for (i=0;i<num_kdcs;i++)
-		if (addrs[i].sin_family == AF_INET) 
+		if (addrs[i].sin_family == AF_INET)
 			d_printf("%s:%hd\n", inet_ntoa(addrs[i].sin_addr),
 				 ntohs(addrs[i].sin_port));
 	return 0;
 
-#endif	
+#endif
 	DEBUG(1, ("No kerberos support\n"));
 	return -1;
 }
@@ -318,11 +323,13 @@ static int net_lookup_kdc(struct net_context *c, int argc, const char **argv)
 static int net_lookup_name(struct net_context *c, int argc, const char **argv)
 {
 	const char *dom, *name;
-	DOM_SID sid;
+	struct dom_sid sid;
 	enum lsa_SidType type;
 
 	if (argc != 1) {
-		d_printf(_("usage: net lookup name <name>\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _(" net lookup name <name>\n"));
 		return -1;
 	}
 
@@ -340,11 +347,13 @@ static int net_lookup_name(struct net_context *c, int argc, const char **argv)
 static int net_lookup_sid(struct net_context *c, int argc, const char **argv)
 {
 	const char *dom, *name;
-	DOM_SID sid;
+	struct dom_sid sid;
 	enum lsa_SidType type;
 
 	if (argc != 1) {
-		d_printf(_("usage: net lookup sid <sid>\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _(" net lookup sid <sid>\n"));
 		return -1;
 	}
 
@@ -375,7 +384,9 @@ static int net_lookup_dsgetdcname(struct net_context *c, int argc, const char **
 	char *s = NULL;
 
 	if (argc < 1 || argc > 3) {
-		d_printf(_("usage: net lookup dsgetdcname "
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _(" net lookup dsgetdcname "
 			   "<name> <flags> <sitename>\n"));
 		return -1;
 	}

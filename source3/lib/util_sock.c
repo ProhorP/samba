@@ -20,6 +20,7 @@
 */
 
 #include "includes.h"
+#include "memcache.h"
 
 /****************************************************************************
  Get a port number in host byte order from a sockaddr_storage.
@@ -155,8 +156,9 @@ int get_socket_port(int fd)
 	}
 
 	if (getsockname(fd, (struct sockaddr *)&sa, &length) < 0) {
-		DEBUG(0,("getpeername failed. Error was %s\n",
-			strerror(errno) ));
+		int level = (errno == ENOTCONN) ? 2 : 0;
+		DEBUG(level, ("getpeername failed. Error was %s\n",
+			       strerror(errno)));
 		return -1;
 	}
 
@@ -441,8 +443,6 @@ NTSTATUS read_fd_with_timeout(int fd, char *buf,
 	ssize_t readret;
 	size_t nread = 0;
 	struct timeval timeout;
-	char addr[INET6_ADDRSTRLEN];
-	int save_errno;
 
 	/* just checking .... */
 	if (maxcnt <= 0)
@@ -464,20 +464,7 @@ NTSTATUS read_fd_with_timeout(int fd, char *buf,
 			}
 
 			if (readret == -1) {
-				save_errno = errno;
-				if (fd == get_client_fd()) {
-					/* Try and give an error message
-					 * saying what client failed. */
-					DEBUG(0,("read_fd_with_timeout: "
-						"client %s read error = %s.\n",
-						get_peer_addr(fd,addr,sizeof(addr)),
-						strerror(save_errno) ));
-				} else {
-					DEBUG(0,("read_fd_with_timeout: "
-						"read error = %s.\n",
-						strerror(save_errno) ));
-				}
-				return map_nt_error_from_unix(save_errno);
+				return map_nt_error_from_unix(errno);
 			}
 			nread += readret;
 		}
@@ -502,21 +489,7 @@ NTSTATUS read_fd_with_timeout(int fd, char *buf,
 
 		/* Check if error */
 		if (selrtn == -1) {
-			save_errno = errno;
-			/* something is wrong. Maybe the socket is dead? */
-			if (fd == get_client_fd()) {
-				/* Try and give an error message saying
-				 * what client failed. */
-				DEBUG(0,("read_fd_with_timeout: timeout "
-				"read for client %s. select error = %s.\n",
-				get_peer_addr(fd,addr,sizeof(addr)),
-				strerror(save_errno) ));
-			} else {
-				DEBUG(0,("read_fd_with_timeout: timeout "
-				"read. select error = %s.\n",
-				strerror(save_errno) ));
-			}
-			return map_nt_error_from_unix(save_errno);
+			return map_nt_error_from_unix(errno);
 		}
 
 		/* Did we timeout ? */
@@ -536,20 +509,6 @@ NTSTATUS read_fd_with_timeout(int fd, char *buf,
 		}
 
 		if (readret == -1) {
-			save_errno = errno;
-			/* the descriptor is probably dead */
-			if (fd == get_client_fd()) {
-				/* Try and give an error message
-				 * saying what client failed. */
-				DEBUG(0,("read_fd_with_timeout: timeout "
-					"read to client %s. read error = %s.\n",
-					get_peer_addr(fd,addr,sizeof(addr)),
-					strerror(save_errno) ));
-			} else {
-				DEBUG(0,("read_fd_with_timeout: timeout "
-					"read. read error = %s.\n",
-					strerror(save_errno) ));
-			}
 			return map_nt_error_from_unix(errno);
 		}
 
@@ -654,31 +613,11 @@ ssize_t write_data_iov(int fd, const struct iovec *orig_iov, int iovcnt)
 
 ssize_t write_data(int fd, const char *buffer, size_t N)
 {
-	ssize_t ret;
 	struct iovec iov;
 
 	iov.iov_base = CONST_DISCARD(void *, buffer);
 	iov.iov_len = N;
-
-	ret = write_data_iov(fd, &iov, 1);
-	if (ret >= 0) {
-		return ret;
-	}
-
-	if (fd == get_client_fd()) {
-		char addr[INET6_ADDRSTRLEN];
-		/*
-		 * Try and give an error message saying what client failed.
-		 */
-		DEBUG(0, ("write_data: write failure in writing to client %s. "
-			  "Error %s\n", get_peer_addr(fd,addr,sizeof(addr)),
-			  strerror(errno)));
-	} else {
-		DEBUG(0,("write_data: write failure. Error = %s\n",
-			 strerror(errno) ));
-	}
-
-	return -1;
+	return write_data_iov(fd, &iov, 1);
 }
 
 /****************************************************************************
@@ -729,36 +668,6 @@ NTSTATUS read_smb_length_return_keepalive(int fd, char *inbuf,
 }
 
 /****************************************************************************
- Read 4 bytes of a smb packet and return the smb length of the packet.
- Store the result in the buffer. This version of the function will
- never return a session keepalive (length of zero).
- Timeout is in milliseconds.
-****************************************************************************/
-
-NTSTATUS read_smb_length(int fd, char *inbuf, unsigned int timeout,
-			 size_t *len)
-{
-	uint8_t msgtype = SMBkeepalive;
-
-	while (msgtype == SMBkeepalive) {
-		NTSTATUS status;
-
-		status = read_smb_length_return_keepalive(fd, inbuf, timeout,
-							  len);
-		if (!NT_STATUS_IS_OK(status)) {
-			return status;
-		}
-
-		msgtype = CVAL(inbuf, 0);
-	}
-
-	DEBUG(10,("read_smb_length: got smb length of %lu\n",
-		  (unsigned long)len));
-
-	return NT_STATUS_OK;
-}
-
-/****************************************************************************
  Read an smb from a fd.
  The timeout is in milliseconds.
  This function will return on receipt of a session keepalive packet.
@@ -776,7 +685,8 @@ NTSTATUS receive_smb_raw(int fd, char *buffer, size_t buflen, unsigned int timeo
 	status = read_smb_length_return_keepalive(fd,buffer,timeout,&len);
 
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(10, ("receive_smb_raw: %s!\n", nt_errstr(status)));
+		DEBUG(0, ("read_fd_with_timeout failed, read "
+			  "error = %s.\n", nt_errstr(status)));
 		return status;
 	}
 
@@ -795,6 +705,8 @@ NTSTATUS receive_smb_raw(int fd, char *buffer, size_t buflen, unsigned int timeo
 			fd, buffer+4, len, len, timeout, &len);
 
 		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0, ("read_fd_with_timeout failed, read error = "
+				  "%s.\n", nt_errstr(status)));
 			return status;
 		}
 
@@ -1428,8 +1340,9 @@ static const char *get_peer_addr_internal(int fd,
 	}
 
 	if (getpeername(fd, (struct sockaddr *)pss, plength) < 0) {
-		DEBUG(0,("getpeername failed. Error was %s\n",
-					strerror(errno) ));
+		int level = (errno == ENOTCONN) ? 2 : 0;
+		DEBUG(level, ("getpeername failed. Error was %s\n",
+			       strerror(errno)));
 		return addr_buf;
 	}
 

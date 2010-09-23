@@ -27,7 +27,7 @@
 #include "lib/socket/socket.h"
 #include "../lib/util/asn1.h"
 #include "../lib/util/dlinklist.h"
-#include "libcli/ldap/ldap.h"
+#include "libcli/ldap/libcli_ldap.h"
 #include "libcli/ldap/ldap_proto.h"
 #include "libcli/ldap/ldap_client.h"
 #include "libcli/composite/composite.h"
@@ -339,8 +339,8 @@ _PUBLIC_ struct composite_context *ldap_connect_send(struct ldap_connection *con
 		 * local host name as the target for gensec's
 		 * DIGEST-MD5 mechanism */
 		conn->host = talloc_asprintf(conn, "%s.%s",
-					     lp_netbios_name(conn->lp_ctx),
-					     lp_dnsdomain(conn->lp_ctx));
+					     lpcfg_netbios_name(conn->lp_ctx),
+					     lpcfg_dnsdomain(conn->lp_ctx));
 		if (composite_nomem(conn->host, state->ctx)) {
 			return result;
 		}
@@ -375,7 +375,7 @@ _PUBLIC_ struct composite_context *ldap_connect_send(struct ldap_connection *con
 		}
 		
 		ctx = socket_connect_multi_send(state, conn->host, 1, &conn->port,
-						lp_resolve_context(conn->lp_ctx), conn->event.event_ctx);
+						lpcfg_resolve_context(conn->lp_ctx), conn->event.event_ctx);
 		if (ctx == NULL) goto failed;
 
 		ctx->async.fn = ldap_connect_recv_tcp_conn;
@@ -405,7 +405,7 @@ static void ldap_connect_got_sock(struct composite_context *ctx,
 	talloc_steal(conn, conn->sock);
 	if (conn->ldaps) {
 		struct socket_context *tls_socket;
-		char *cafile = lp_tls_cafile(conn->sock, conn->lp_ctx);
+		char *cafile = lpcfg_tls_cafile(conn->sock, conn->lp_ctx);
 
 		if (!cafile || !*cafile) {
 			talloc_free(conn->sock);
@@ -499,7 +499,7 @@ _PUBLIC_ void ldap_set_reconn_params(struct ldap_connection *conn, int max_retri
 	if (conn) {
 		conn->reconnect.max_retries = max_retries;
 		conn->reconnect.retries = 0;
-		conn->reconnect.previous = time(NULL);
+		conn->reconnect.previous = time_mono(NULL);
 	}
 }
 
@@ -507,7 +507,7 @@ _PUBLIC_ void ldap_set_reconn_params(struct ldap_connection *conn, int max_retri
 static void ldap_reconnect(struct ldap_connection *conn)
 {
 	NTSTATUS status;
-	time_t now = time(NULL);
+	time_t now = time_mono(NULL);
 
 	/* do we have set up reconnect ? */
 	if (conn->reconnect.max_retries == 0) return;

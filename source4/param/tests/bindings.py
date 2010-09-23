@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007
@@ -18,9 +18,10 @@
 #
 
 from samba import param
-import unittest
+import samba.tests
 
-class LoadParmTestCase(unittest.TestCase):
+class LoadParmTestCase(samba.tests.TestCase):
+
     def test_init(self):
         file = param.LoadParm()
         self.assertTrue(file is not None)

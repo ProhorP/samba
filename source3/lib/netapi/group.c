@@ -24,6 +24,7 @@
 #include "lib/netapi/netapi_private.h"
 #include "lib/netapi/libnetapi.h"
 #include "../librpc/gen_ndr/cli_samr.h"
+#include "rpc_client/init_lsa.h"
 
 /****************************************************************
 ****************************************************************/
@@ -1415,7 +1416,6 @@ WERROR NetGroupSetUsers_r(struct libnetapi_ctx *ctx,
 	size_t num_del_rids = 0;
 
 	uint32_t *member_rids = NULL;
-	size_t num_member_rids = 0;
 
 	struct GROUP_USERS_INFO_0 *i0 = NULL;
 	struct GROUP_USERS_INFO_1 *i1 = NULL;
@@ -1534,7 +1534,6 @@ WERROR NetGroupSetUsers_r(struct libnetapi_ctx *ctx,
 	}
 
 	member_rids = user_rids.ids;
-	num_member_rids = user_rids.count;
 
 	status = rpccli_samr_QueryGroupMember(pipe_cli, ctx,
 					      &group_handle,

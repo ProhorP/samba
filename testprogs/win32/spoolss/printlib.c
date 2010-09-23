@@ -21,6 +21,12 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <assert.h>
+#include <sddl.h>
+
+#ifndef MIN
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#endif
 
 void print_devmode(DEVMODE *pDevModeIn)
 {
@@ -124,37 +130,51 @@ void print_acl(const char* str, ACL *acl)
 	return;
 }
 
-void print_sid(const char* str, SID *sid)
+void PrintLastError();
+
+void print_sid(LPSTR str, PSID sid)
 {
-	DWORD	i = 0;
+	LPSTR sid_string;
 
 	printf("%s\n", str);
-	printf("0x%x\n", sid);
-	if (sid == NULL)
+
+	if (sid == NULL) {
+		printf("(null sid)\n");
 		return;
-	printf("\t\tRevision\t\t0x%x\n", sid->Revision);
-	printf("\t\tSubAuthorityCount\t0x%x\n", sid->SubAuthorityCount);
-	printf("\t\tSubAuthority\n\t");
-	while (i < sid->SubAuthorityCount) {
-		printf("\t0x%x", sid->SubAuthority[i]);
-		if (i%4 == 3)
-			printf("\n\t");
-		i++;
 	}
+
+	if (!ConvertSidToStringSid(sid, &sid_string)) {
+		PrintLastError();
+		return;
+	}
+
+	printf("%s\n", sid_string);
+	LocalFree(sid_string);
 
 	return;
 }
 
 void print_secdesc(SECURITY_DESCRIPTOR *secdesc)
 {
+	LPSTR sd_string;
+
 	if (secdesc == NULL) {
 		printf("\tSecurity Descriptor\t= (null)\n");
 		return;
 	}
 
+	if (!ConvertSecurityDescriptorToStringSecurityDescriptor(secdesc, 1, 7, &sd_string, NULL)) {
+		PrintLastError();
+		return;
+	}
+
+	printf("%s\n", sd_string);
+	LocalFree(sd_string);
+
+#if 0
 	printf("\tRevision\t= 0x%x\n", secdesc->Revision);
 	printf("\tSbz1\t\t= 0x%x\n", secdesc->Sbz1);
-#if 0
+	printf("\tControl\t\t= 0x%x\n", secdesc->Control);
 	print_sid("\tOwner\t\t= ", secdesc->Owner);
 	print_sid("\tGroup\t\t= ",secdesc->Group);
 	print_acl("\tSacl\t\t= ", secdesc->Sacl);
@@ -247,6 +267,103 @@ void print_job_info_3(PJOB_INFO_3 info)
 	return;
 }
 
+void print_job_info_4(PJOB_INFO_4 info)
+{
+	printf("\tJob ID\t\t= %d\n",		info->JobId);
+	printf("\tPrinter Name\t= %s\n",	info->pPrinterName);
+	printf("\tMachine Name\t= %s\n",	info->pMachineName);
+	printf("\tUser Name\t= %s\n",		info->pUserName);
+	printf("\tDocument\t= %s\n",		info->pDocument);
+	printf("\tDatatype\t= %s\n",		info->pDatatype);
+	printf("\tNotify Name\t= %s\n",		info->pNotifyName);
+	printf("\tPrint Processor\t= %s\n",	info->pPrintProcessor);
+	printf("\tDriver Name\t= %s\n",		info->pDriverName);
+	printf("\tStatus\t\t= %s\n",		info->pStatus);
+	printf("\tStatus\t\t= %d\n",		info->Status);
+	printf("\tPriority\t= %d\n",		info->Priority);
+	printf("\tPosition\t= %d\n",		info->Position);
+	printf("\tTotal Pages\t= %d\n",		info->TotalPages);
+	printf("\tPages Printed\t= %d\n",	info->PagesPrinted);
+	printf("\tStart Time\t= %d\n",		info->StartTime);
+	printf("\tUntil Time\t= %d\n",		info->UntilTime);
+	printf("\tTime\t\t= %d\n",		info->Time);
+	printf("\tSize\t\t= %d\n",		info->Size);
+	printf("\tSize High\t\t= 0x%016x\n",	info->SizeHigh);
+	printf("\tSubmitted (DD:MM:YY HH:MM:SS)\t= %d:%d:%d %d:%d:%d UTC\n",
+		info->Submitted.wDay, info->Submitted.wMonth,
+		info->Submitted.wYear, info->Submitted.wHour,
+		info->Submitted.wMinute, info->Submitted.wSecond);
+	printf("\tDevice Mode Information\n");
+	printf("\t-----------------------\n");
+	print_devmode(info->pDevMode);
+	printf("\tSecurity Descriptor Information\n");
+	printf("\t-------------------------------\n");
+	print_secdesc(info->pSecurityDescriptor);
+
+	return;
+}
+
+void print_job_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PJOB_INFO_1	buffer1 = NULL;
+	PJOB_INFO_2	buffer2 = NULL;
+	PJOB_INFO_3	buffer3 = NULL;
+	PJOB_INFO_4	buffer4 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PJOB_INFO_1)buffer;
+		break;
+	case 2:
+		buffer2 = (PJOB_INFO_2)buffer;
+		break;
+	case 3:
+		buffer3 = (PJOB_INFO_3)buffer;
+		break;
+	case 4:
+		buffer4 = (PJOB_INFO_4)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Job Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_job_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	case 2:
+		for (i=0; i<count; i++) {
+			print_job_info_2(&buffer2[i]);
+			printf("\n");
+		}
+		break;
+	case 3:
+		for (i=0; i<count; i++) {
+			print_job_info_3(&buffer3[i]);
+			printf("\n");
+		}
+		break;
+	case 4:
+		for (i=0; i<count; i++) {
+			print_job_info_4(&buffer4[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
 void print_monitor_info_1(PMONITOR_INFO_1 info)
 {
 	printf("\tMonitor Name\t= %s\n",	info->pName);
@@ -263,6 +380,122 @@ void print_monitor_info_2(PMONITOR_INFO_2 info)
 	return;
 }
 
+void print_monitor_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PMONITOR_INFO_1 buffer1 = NULL;
+	PMONITOR_INFO_2 buffer2 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PMONITOR_INFO_1)buffer;
+		break;
+	case 2:
+		buffer2 = (PMONITOR_INFO_2)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Monitor Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_monitor_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	case 2:
+		for (i=0; i<count; i++) {
+			print_monitor_info_2(&buffer2[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+void print_port_info_1(PPORT_INFO_1 info)
+{
+	printf("\tPort Name\t= %s\n",	info->pName);
+	return;
+}
+
+void print_port_info_2(PPORT_INFO_2 info)
+{
+	printf("\tPort Name\t= %s\n",	info->pPortName);
+	printf("\tMonitor Name\t= %s\n",info->pMonitorName);
+	printf("\tDescription\t= %s\n",	info->pDescription);
+	printf("\tPort Type\t= 0x%08x\n", info->fPortType);
+	printf("\tReserved\t= 0x%08x\n", info->Reserved);
+	return;
+}
+
+void print_port_info_3(PPORT_INFO_3 info)
+{
+	printf("\tStatus\t= 0x%08x\n", info->dwStatus);
+	printf("\tStatus String\t= %s\n", info->pszStatus);
+	printf("\tSeverity\t= 0x%08x\n", info->dwSeverity);
+	return;
+}
+
+void print_port_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PPORT_INFO_1 buffer1 = NULL;
+	PPORT_INFO_2 buffer2 = NULL;
+	PPORT_INFO_3 buffer3 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PPORT_INFO_1)buffer;
+		break;
+	case 2:
+		buffer2 = (PPORT_INFO_2)buffer;
+		break;
+	case 3:
+		buffer3 = (PPORT_INFO_3)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Port Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_port_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	case 2:
+		for (i=0; i<count; i++) {
+			print_port_info_2(&buffer2[i]);
+			printf("\n");
+		}
+		break;
+	case 3:
+		for (i=0; i<count; i++) {
+			print_port_info_3(&buffer3[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
 void print_form_info_1(PFORM_INFO_1 info)
 {
 	printf("\tForm Name\t= %s\n",	info->pName);
@@ -273,6 +506,65 @@ void print_form_info_1(PFORM_INFO_1 info)
 			info->ImageableArea.top, info->ImageableArea.bottom);
 
 	return;
+}
+
+void print_form_info_2(PFORM_INFO_2 info)
+{
+	printf("\tForm Name\t= %s\n",	info->pName);
+	printf("\tFlags\t\t= 0x%x\n",	info->Flags);
+	printf("\tSize\t\t= %d x %d\n", info->Size.cx, info->Size.cy);
+	printf("\tRectangle\t= [left]%d [right]%d [top]%d [bottom]%d\n",
+			info->ImageableArea.left, info->ImageableArea.right,
+			info->ImageableArea.top, info->ImageableArea.bottom);
+	printf("\tKeyword\t= %s\n",	info->pKeyword);
+	printf("\tString Type\t= 0x%08x\n", info->StringType);
+	printf("\tMui DLL\t= %s\n",	info->pMuiDll);
+	printf("\tResource Id\t= 0x%08x\n", info->dwResourceId);
+	printf("\tDisplay Name\t= %s\n",info->pDisplayName);
+	printf("\tLang Id\t= 0x%04x\n", info->wLangId);
+
+	return;
+}
+
+void print_form_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PFORM_INFO_1 buffer1 = NULL;
+	PFORM_INFO_2 buffer2 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PFORM_INFO_1)buffer;
+		break;
+	case 2:
+		buffer2 = (PFORM_INFO_2)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Form Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_form_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	case 2:
+		for (i=0; i<count; i++) {
+			print_form_info_2(&buffer2[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
 }
 
 void print_printer_info_1(PPRINTER_INFO_1 info)
@@ -310,11 +602,25 @@ void print_printer_info_2(PPRINTER_INFO_2 info)
 	printf("\tDevice Mode Information\n");
 	printf("\t-----------------------\n");
 	print_devmode(info->pDevMode);
-#if 0
 	printf("\tSecurity Descriptor Information\n");
 	printf("\t-------------------------------\n");
 	print_secdesc(info->pSecurityDescriptor);
-#endif
+	return;
+}
+
+void print_printer_info_3(PPRINTER_INFO_3 info)
+{
+	printf("\tSecurity Descriptor Information\n");
+	printf("\t-------------------------------\n");
+	print_secdesc(info->pSecurityDescriptor);
+	return;
+}
+
+void print_printer_info_4(PPRINTER_INFO_4 info)
+{
+	printf("\tServer Name\t\t= %s\n",	info->pServerName);
+	printf("\tPrinter Name\t\t= %s\n",	info->pPrinterName);
+	printf("\tAttributes\t\t= 0x%x\n",	info->Attributes);
 	return;
 }
 
@@ -362,6 +668,7 @@ void print_printer_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
 	PPRINTER_INFO_6	buffer6 = NULL;
 	PPRINTER_INFO_7	buffer7 = NULL;
 	PPRINTER_INFO_8	buffer8 = NULL;
+	PPRINTER_INFO_9	buffer9 = NULL;
 
 	if (!buffer) {
 		return;
@@ -392,6 +699,9 @@ void print_printer_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
 	case 8:
 		buffer8 = (PPRINTER_INFO_8)buffer;
 		break;
+	case 9:
+		buffer9 = (PPRINTER_INFO_9)buffer;
+		break;
 	default:
 		break;
 	}
@@ -411,7 +721,6 @@ void print_printer_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
 			printf("\n");
 		}
 		break;
-#if 0
 	case 3:
 		for (i=0; i<count; i++) {
 			print_printer_info_3(&buffer3[i]);
@@ -424,7 +733,6 @@ void print_printer_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
 			printf("\n");
 		}
 		break;
-#endif
 	case 5:
 		for (i=0; i<count; i++) {
 			print_printer_info_5(&buffer5[i]);
@@ -449,6 +757,12 @@ void print_printer_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
 			printf("\n");
 		}
 		break;
+	case 9:
+		for (i=0; i<count; i++) {
+			print_printer_info_9(&buffer9[i]);
+			printf("\n");
+		}
+		break;
 	default:
 		break;
 	}
@@ -459,6 +773,75 @@ void print_printprocessor_info_1(PPRINTPROCESSOR_INFO_1 info)
 	printf("\tPrint Processor Name\t= %s\n", info->pName);
 
 	return;
+}
+
+void print_printprocessor_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PPRINTPROCESSOR_INFO_1 buffer1 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PPRINTPROCESSOR_INFO_1)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Print Processor Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_printprocessor_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+void print_datatypes_info_1(PDATATYPES_INFO_1 info)
+{
+	printf("\tDataTypes Name\t= %s\n", info->pName);
+
+	return;
+}
+
+void print_datatypes_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PDATATYPES_INFO_1 buffer1 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PDATATYPES_INFO_1)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("DataTypes Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_datatypes_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
 }
 
 void print_driver_info_1(PDRIVER_INFO_1 info)
@@ -531,6 +914,21 @@ void print_driver_info_4(PDRIVER_INFO_4 info)
 	return;
 }
 
+void print_driver_info_5(PDRIVER_INFO_5 info)
+{
+	printf("\tDriver Name\t= %s\n",		info->pName);
+	printf("\tEnvironment\t= %s\n",		info->pEnvironment);
+	printf("\tVersion\t\t= %d\n",		info->cVersion);
+	printf("\tDriver Path\t= %s\n",		info->pDriverPath);
+	printf("\tData File\t= %s\n",		info->pDataFile);
+	printf("\tConfig File\t= %s\n",		info->pConfigFile);
+	printf("\tDriver Attributes\t= %d\n",	info->dwDriverAttributes);
+	printf("\tConfig Version\t= %d\n",	info->dwConfigVersion);
+	printf("\tDriver Version\t= %d\n",	info->dwDriverVersion);
+
+	return;
+}
+
 void print_driver_info_6(PDRIVER_INFO_6 info)
 {
 	char *ptr = NULL;
@@ -580,6 +978,152 @@ void print_driver_info_6(PDRIVER_INFO_6 info)
 	return;
 }
 
+static void print_multi_sz(LPSTR multisz)
+{
+	char *ptr = NULL;
+
+	ptr = (char *)multisz;
+
+	if (!ptr) {
+		printf("(null)\n");
+		return;
+	}
+
+	while (*ptr != '\0') {
+		printf("%s\n", ptr);
+		for (; *ptr != '\0'; ptr++) {
+			/* printf("%s\n", ptr); */
+			;
+		}
+		ptr++;
+	}
+}
+
+void print_driver_info_8(PDRIVER_INFO_8 info)
+{
+	printf("\tDriver Name\t= %s\n",		info->pName);
+	printf("\tEnvironment\t= %s\n",		info->pEnvironment);
+	printf("\tVersion\t\t= %d\n",		info->cVersion);
+	printf("\tDriver Path\t= %s\n",		info->pDriverPath);
+	printf("\tData File\t= %s\n",		info->pDataFile);
+	printf("\tConfig File\t= %s\n",		info->pConfigFile);
+	printf("\tHelp Path\t= %s\n",		info->pHelpFile);
+	printf("\tMonitor Name\t= %s\n",	info->pMonitorName);
+	printf("\tData Type\t= %s\n",		info->pDefaultDataType);
+	printf("\tPrevious Names\t=\n");
+	print_multi_sz(info->pszzPreviousNames);
+	printf("\tDependent Files\t=\n");
+	print_multi_sz(info->pDependentFiles);
+	printf("\tDriver Date\t= %d\n",		info->ftDriverDate);
+	printf("\tDriver Version\t= %d\n",	info->dwlDriverVersion);
+	printf("\tManufacture Name = %s\n",	info->pszMfgName);
+	printf("\tOEM URL\t\t= %s\n",		info->pszOEMUrl);
+	printf("\tHardware ID\t= %s\n",		info->pszHardwareID);
+	printf("\tProvider\t= %s\n",		info->pszProvider);
+	printf("\tPrint Processor\t= %s\n",	info->pszPrintProcessor);
+	printf("\tVendor Setup\t= %s\n",	info->pszVendorSetup);
+	printf("\tColor Profiles\t=\n");
+	print_multi_sz(info->pszzColorProfiles);
+	printf("\tInf Path\t= %s\n",		info->pszInfPath);
+	printf("\tPrinter Driver Attributes = %d\n", info->dwPrinterDriverAttributes);
+	printf("\tCore Driver Dependencies\t=\n");
+	print_multi_sz(info->pszzCoreDriverDependencies);
+	printf("\tMin Inbox Driver VerDate\t= %d\n", info->ftMinInboxDriverVerDate);
+	printf("\tMin Inbox Driver VerVersion\t= %d\n", info->dwlMinInboxDriverVerVersion);
+	return;
+}
+
+void print_driver_info_bylevel(DWORD level, LPBYTE buffer, DWORD count)
+{
+	DWORD i;
+	PDRIVER_INFO_1	buffer1 = NULL;
+	PDRIVER_INFO_2	buffer2 = NULL;
+	PDRIVER_INFO_3	buffer3 = NULL;
+	PDRIVER_INFO_4	buffer4 = NULL;
+	PDRIVER_INFO_5	buffer5 = NULL;
+	PDRIVER_INFO_6	buffer6 = NULL;
+	PDRIVER_INFO_8	buffer8 = NULL;
+
+	if (!buffer) {
+		return;
+	}
+
+	switch (level) {
+	case 1:
+		buffer1 = (PDRIVER_INFO_1)buffer;
+		break;
+	case 2:
+		buffer2 = (PDRIVER_INFO_2)buffer;
+		break;
+	case 3:
+		buffer3 = (PDRIVER_INFO_3)buffer;
+		break;
+	case 4:
+		buffer4 = (PDRIVER_INFO_4)buffer;
+		break;
+	case 5:
+		buffer5 = (PDRIVER_INFO_5)buffer;
+		break;
+	case 6:
+		buffer6 = (PDRIVER_INFO_6)buffer;
+		break;
+	case 8:
+		buffer8 = (PDRIVER_INFO_8)buffer;
+		break;
+	default:
+		break;
+	}
+
+	printf("Driver Info Level %d:\n", level);
+
+	switch (level) {
+	case 1:
+		for (i=0; i<count; i++) {
+			print_driver_info_1(&buffer1[i]);
+			printf("\n");
+		}
+		break;
+	case 2:
+		for (i=0; i<count; i++) {
+			print_driver_info_2(&buffer2[i]);
+			printf("\n");
+		}
+		break;
+	case 3:
+		for (i=0; i<count; i++) {
+			print_driver_info_3(&buffer3[i]);
+			printf("\n");
+		}
+		break;
+	case 4:
+		for (i=0; i<count; i++) {
+			print_driver_info_4(&buffer4[i]);
+			printf("\n");
+		}
+		break;
+	case 5:
+		for (i=0; i<count; i++) {
+			print_driver_info_5(&buffer5[i]);
+			printf("\n");
+		}
+		break;
+	case 6:
+		for (i=0; i<count; i++) {
+			print_driver_info_6(&buffer6[i]);
+			printf("\n");
+		}
+		break;
+	case 8:
+		for (i=0; i<count; i++) {
+			print_driver_info_8(&buffer8[i]);
+			printf("\n");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
 void print_doc_info_1(PDOC_INFO_1 info)
 {
 	printf("\tDocument Name\t= %s\n",	info->pDocName);
@@ -588,21 +1132,159 @@ void print_doc_info_1(PDOC_INFO_1 info)
 	return;
 }
 
-void print_printer_enum_values(PRINTER_ENUM_VALUES *info)
+void print_printer_keys(LPSTR buffer)
+{
+	LPSTR p = NULL;
+
+	p = buffer;
+
+	while (p && *p) {
+		printf("%s\n", p);
+		for (; *p; p = CharNext(p)) {
+			p = CharNext(p);
+		}
+	}
+}
+
+LPSTR reg_type_str(DWORD type)
+{
+	switch (type) {
+	case REG_DWORD:
+		return "REG_DWORD";
+	case REG_SZ:
+		return "REG_SZ";
+	case REG_MULTI_SZ:
+		return "REG_MULTI_SZ";
+	case REG_BINARY:
+		return "REG_BINARY";
+	default:
+		return NULL;
+	}
+}
+
+void print_asc(const BYTE *buf, DWORD len)
+{
+	int i;
+	for (i=0; i<len; i++) {
+		printf("%c", isprint(buf[i])?buf[i]:'.');
+	}
+}
+
+static void dump_data(const BYTE *buf, int len)
+{
+	int i=0;
+	static const BYTE empty[16] = { 0, };
+
+	if (len<=0) return;
+
+	for (i=0; i<len;) {
+
+		if (i%16 == 0) {
+			if ((i > 0) &&
+			    (len > i+16) &&
+			    (memcmp(&buf[i], &empty, 16) == 0))
+			{
+				i +=16;
+				continue;
+			}
+
+			if (i<len)  {
+				printf("[%04X] ",i);
+			}
+		}
+
+		printf("%02x ", buf[i]);
+		i++;
+
+		if (i%8 == 0) printf("  ");
+		if (i%16 == 0) {
+			print_asc(&buf[i-16],8); printf(" ");
+			print_asc(&buf[i-8],8); printf("\n");
+		}
+	}
+
+	if (i%16) {
+		int n;
+		n = 16 - (i%16);
+		printf(" ");
+		if (n>8) printf(" ");
+		while (n--) printf("   ");
+		n = MIN(8,i%16);
+		print_asc(&buf[i-(i%16)],n); printf( " " );
+		n = (i%16) - n;
+		if (n>0) print_asc(&buf[i-n],n);
+		printf("\n");
+	}
+}
+
+static void dump_printer_data(DWORD size, LPBYTE buffer, DWORD type)
 {
 	DWORD i = 0;
+	LPSTR p = NULL;
 
-	printf("\tValue Name\t= %s [0x%x]\n",	info->pValueName, info->cbValueName);
-	printf("\tType\t\t= 0x%x\n",		info->dwType);
-	printf("\tSize\t\t= 0x%x\n",		info->cbData);
-
-	while (i < info->cbData) {
-		printf("\t0x%x", *(info->pData++));
-		if (i%4 == 3)
-			printf("\n");
-		i++;
+	switch (type) {
+	case REG_SZ:
+		dump_data(buffer, size);
+		break;
+	case REG_MULTI_SZ:
+		dump_data(buffer, size);
+		p = (LPSTR)buffer;
+		while (p && *p) {
+			printf("\t\t%s\n", p);
+			for (; *p; p = CharNext(p)) {
+				p = CharNext(p);
+			}
+		}
+		break;
+	case REG_DWORD:
+		assert(size == 4);
+		printf("\t\t0x%08x\n", (DWORD)*buffer);
+		break;
+	case REG_BINARY:
+		dump_data(buffer, size);
+		break;
+	default:
+		break;
 	}
-	printf("\n");
-
-	return;
 }
+
+void print_printer_data(LPSTR keyname, LPSTR valuename, DWORD size, LPBYTE buffer, DWORD type)
+{
+	if (keyname) {
+		printf("\tKey Name:\t%s\n", keyname);
+	}
+
+	printf("\tValue Name:\t%s\n", valuename);
+	printf("\tSize:\t\t0x%x (%d)\n", size, size);
+	printf("\tType:\t\t%s\n", reg_type_str(type));
+
+	if (buffer == NULL || size == 0) {
+		return;
+	}
+
+	dump_printer_data(size, buffer, type);
+}
+
+void print_printer_dataw(LPCWSTR keyname, LPCWSTR valuename, DWORD size, LPBYTE buffer, DWORD type)
+{
+	if (keyname) {
+		printf("\tKey Name:\t%ls\n", keyname);
+	}
+
+	printf("\tValue Name:\t%ls\n", valuename);
+	printf("\tSize:\t\t0x%x (%d)\n", size, size);
+	printf("\tType:\t\t%s\n", reg_type_str(type));
+
+	if (buffer == NULL || size == 0) {
+		return;
+	}
+
+	dump_printer_data(size, buffer, type);
+}
+
+
+void print_printer_enum_values(PRINTER_ENUM_VALUES *info)
+{
+	print_printer_data(NULL, info->pValueName, info->cbData, info->pData, info->dwType);
+}
+

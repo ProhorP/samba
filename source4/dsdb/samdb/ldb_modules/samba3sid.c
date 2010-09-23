@@ -19,7 +19,7 @@
 */
 
 /*
-  add objectSID to users and groups using samba3 nextRid method
+  add objectSid to users and groups using samba3 nextRid method
  */
 
 #include "includes.h"
@@ -52,9 +52,11 @@ static int samba3sid_next_sid(struct ldb_module *module,
 	const char *sambaSID;
 
 	ret = dsdb_module_search(module, tmp_ctx, &res, NULL, LDB_SCOPE_SUBTREE,
-				 attrs, DSDB_SEARCH_SEARCH_ALL_PARTITIONS,
+				 attrs,
+				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_SEARCH_SEARCH_ALL_PARTITIONS,
 				 "(&(objectClass=sambaDomain)(sambaDomainName=%s))",
-				 lp_sam_name(ldb_get_opaque(ldb, "loadparm")));
+				 lpcfg_sam_name(ldb_get_opaque(ldb, "loadparm")));
 	if (ret != LDB_SUCCESS) {
 		ldb_asprintf_errstring(ldb,
 				       __location__
@@ -110,9 +112,8 @@ static int samba3sid_next_sid(struct ldb_module *module,
 
 	(*sid) = talloc_asprintf(tmp_ctx, "%s-%d", sambaSID, rid);
 	if (!*sid) {
-		ldb_module_oom(module);
 		talloc_free(tmp_ctx);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_module_oom(module);
 	}
 
 	ret = dsdb_module_constrainted_update_integer(module, msg->dn,
@@ -164,8 +165,7 @@ static int samba3sid_add(struct ldb_module *module, struct ldb_request *req)
 
 	new_msg = ldb_msg_copy_shallow(req, req->op.add.message);
 	if (!new_msg) {
-		ldb_module_oom(module);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_module_oom(module);
 	}
 
 	ret = samba3sid_next_sid(module, new_msg, &sid);

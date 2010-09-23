@@ -41,7 +41,7 @@
 /*
   
 */
-static int ldb_read_data_file(void *mem_ctx, struct ldb_val *value)
+static int ldb_read_data_file(TALLOC_CTX *mem_ctx, struct ldb_val *value)
 {
 	struct stat statbuf;
 	char *buf;
@@ -150,7 +150,7 @@ int ldb_base64_decode(char *s)
   encode as base64
   caller frees
 */
-char *ldb_base64_encode(void *mem_ctx, const char *buf, int len)
+char *ldb_base64_encode(TALLOC_CTX *mem_ctx, const char *buf, int len)
 {
 	const char *b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	int bit_offset, byte_offset, idx, i;
@@ -219,7 +219,7 @@ int ldb_should_b64_encode(struct ldb_context *ldb, const struct ldb_val *val)
 static int fold_string(int (*fprintf_fn)(void *, const char *, ...), void *private_data,
 			const char *buf, size_t length, int start_pos)
 {
-	unsigned int i;
+	size_t i;
 	int total=0, ret;
 
 	for (i=0;i<length;i++) {
@@ -449,7 +449,7 @@ static char *next_chunk(struct ldb_context *ldb,
 
 
 /* simple ldif attribute parser */
-static int next_attr(void *mem_ctx, char **s, const char **attr, struct ldb_val *value)
+static int next_attr(TALLOC_CTX *mem_ctx, char **s, const char **attr, struct ldb_val *value)
 {
 	char *p;
 	int base64_encoded = 0;
@@ -510,7 +510,7 @@ static int next_attr(void *mem_ctx, char **s, const char **attr, struct ldb_val 
 	if (binary_file) {
 		int len = ldb_read_data_file(mem_ctx, value);
 		if (len == -1) {
-			/* an error occured hile trying to retrieve the file */
+			/* an error occurred while trying to retrieve the file */
 			return -1;
 		}
 	}

@@ -440,6 +440,14 @@ typedef long blksize_t;
 typedef long blkcnt_t;
 #endif
 
+#ifndef HAVE_STRUCT_TIMESPEC
+struct timespec {
+	time_t tv_sec;            /* Seconds.  */
+	long tv_nsec;           /* Nanoseconds.  */
+};
+#endif
+
+
 /*
  * Type for stat structure.
  */
@@ -552,13 +560,6 @@ typedef struct stat_ex SMB_STRUCT_STAT;
 #  endif
 #endif
 
-#ifndef HAVE_STRUCT_TIMESPEC
-struct timespec {
-	time_t tv_sec;            /* Seconds.  */
-	long tv_nsec;           /* Nanoseconds.  */
-};
-#endif
-
 enum timestamp_set_resolution {
 	TIMESTAMP_SET_SECONDS = 0,
 	TIMESTAMP_SET_MSEC,
@@ -601,7 +602,6 @@ typedef char fstring[FSTRING_LEN];
 
 /* Samba 3 doesn't use iconv_convenience: */
 extern void *cmdline_lp_ctx;
-struct smb_iconv_convenience *lp_iconv_convenience(void *lp_ctx);
 
 /* Lists, trees, caching, database... */
 #include "../lib/util/util.h"
@@ -609,6 +609,7 @@ struct smb_iconv_convenience *lp_iconv_convenience(void *lp_ctx);
 #include "../lib/util/xfile.h"
 #include "../lib/util/memory.h"
 #include "../lib/util/attr.h"
+#include "../lib/util/tsort.h"
 #include "intl.h"
 #include "../lib/util/dlinklist.h"
 #include "tdb.h"
@@ -625,95 +626,40 @@ struct smb_iconv_convenience *lp_iconv_convenience(void *lp_ctx);
 #include "../lib/util/time.h"
 #include "../lib/util/asn1.h"
 
-#include "ads.h"
-#include "ads_dns.h"
+#include "libads/ads_status.h"
 #include "interfaces.h"
 #include "trans2.h"
 #include "../libcli/util/error.h"
 #include "ntioctl.h"
 #include "../lib/util/charset/charset.h"
 #include "dynconfig.h"
-#include "util_getent.h"
 #include "debugparse.h"
-#include "privileges.h"
+#include "../libcli/security/privileges.h"
 #include "messages.h"
 #include "locking.h"
 #include "smb_perfcount.h"
-#include "smb_signing.h"
 #include "smb.h"
 #include "nameserv.h"
-#include "secrets.h"
 #include "../lib/util/byteorder.h"
-#include "privileges.h"
-#include "rpc_misc.h"
-#include "rpc_dce.h"
-#include "../librpc/gen_ndr/schannel.h"
 #include "mapping.h"
 #include "passdb.h"
-#include "rpc_secdes.h"
-#include "../libgpo/gpo.h"
 #include "msdfs.h"
-#include "rap.h"
-#include "../lib/crypto/md5.h"
-#include "../lib/crypto/md4.h"
-#include "../lib/crypto/arcfour.h"
-#include "../lib/crypto/crc32.h"
-#include "../lib/crypto/hmacmd5.h"
-
-struct ntlmssp_state;
 
 #include "auth.h"
 #include "ntdomain.h"
-#include "reg_objects.h"
-#include "reg_db.h"
-#include "librpc/gen_ndr/perfcount.h"
-#include "librpc/gen_ndr/notify.h"
-#include "librpc/gen_ndr/xattr.h"
-#include "librpc/gen_ndr/messaging.h"
-#include "librpc/gen_ndr/ndr_nbt.h"
 #include "librpc/rpc/dcerpc.h"
-#include "nt_printing.h"
-#include "idmap.h"
 #include "client.h"
 
 #include "session.h"
-#include "popt.h"
-#include "mangle.h"
 #include "module.h"
-#include "nsswitch/winbind_client.h"
-#include "dbwrap.h"
 #include "packet.h"
 #include "ctdbd_conn.h"
 #include "../lib/util/talloc_stack.h"
-#include "memcache.h"
+#include "serverid.h"
 #include "async_smb.h"
 #include "../lib/async_req/async_sock.h"
-#include "talloc_dict.h"
-#include "services.h"
-#include "eventlog.h"
 #include "../lib/util/smb_threads.h"
 #include "../lib/util/smb_threads_internal.h"
-#include "tldap.h"
-#include "tldap_util.h"
-
-#include "lib/smbconf/smbconf.h"
-#include "lib/smbconf/smbconf_init.h"
-#include "lib/smbconf/smbconf_reg.h"
-#include "lib/smbconf/smbconf_txt.h"
-
-/* Defines for wisXXX functions. */
-#define UNI_UPPER    0x1
-#define UNI_LOWER    0x2
-#define UNI_DIGIT    0x4
-#define UNI_XDIGIT   0x8
-#define UNI_SPACE    0x10
-
-#include "nsswitch/winbind_nss.h"
-
-/* forward declaration from printing.h to get around 
-   header file dependencies */
-
-struct printjob;
 
 /* forward declarations from smbldap.c */
 
@@ -735,7 +681,6 @@ enum flush_reason_enum {
     /* NUM_FLUSH_REASONS must remain the last value in the enumeration. */
     NUM_FLUSH_REASONS};
 
-#include "nss_info.h"
 #include "modules/nfs4_acls.h"
 #include "nsswitch/libwbclient/wbclient.h"
 
@@ -746,6 +691,7 @@ enum flush_reason_enum {
 #include "libcli/security/secace.h"
 #include "libcli/security/secacl.h"
 #include "libcli/security/security_descriptor.h"
+#include "libcli/security/sddl.h"
 
 #if defined(HAVE_POSIX_ACLS)
 #include "modules/vfs_posixacl.h"
@@ -765,10 +711,6 @@ enum flush_reason_enum {
 
 #if defined(HAVE_IRIX_ACLS)
 #include "modules/vfs_irixacl.h"
-#endif
-
-#ifdef HAVE_LDAP
-#include "ads_protos.h"
 #endif
 
 /* We need this after proto.h to reference GetTimeOfDay(). */
@@ -961,10 +903,6 @@ void exit_server(const char *const reason) _NORETURN_;
 void exit_server_cleanly(const char *const reason) _NORETURN_;
 void exit_server_fault(void) _NORETURN_;
 
-#ifdef HAVE_LIBNSCD
-#include "libnscd.h"
-#endif
-
 #if defined(HAVE_IPV6)
 void in6_addr_to_sockaddr_storage(struct sockaddr_storage *ss,
 				  struct in6_addr ip);
@@ -972,5 +910,7 @@ void in6_addr_to_sockaddr_storage(struct sockaddr_storage *ss,
 
 /* samba3 doesn't use uwrap yet */
 #define uwrap_enabled() 0
+
+#define BASE_RID (0x000003E8L)
 
 #endif /* _INCLUDES_H */

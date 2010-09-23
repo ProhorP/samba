@@ -86,7 +86,7 @@ static void ldb_dn_mark_invalid(struct ldb_dn *dn)
 }
 
 /* strdn may be NULL */
-struct ldb_dn *ldb_dn_from_ldb_val(void *mem_ctx,
+struct ldb_dn *ldb_dn_from_ldb_val(TALLOC_CTX *mem_ctx,
                                    struct ldb_context *ldb,
                                    const struct ldb_val *strdn)
 {
@@ -154,7 +154,7 @@ failed:
 }
 
 /* strdn may be NULL */
-struct ldb_dn *ldb_dn_new(void *mem_ctx,
+struct ldb_dn *ldb_dn_new(TALLOC_CTX *mem_ctx,
 			  struct ldb_context *ldb,
 			  const char *strdn)
 {
@@ -164,7 +164,7 @@ struct ldb_dn *ldb_dn_new(void *mem_ctx,
 	return ldb_dn_from_ldb_val(mem_ctx, ldb, &blob);
 }
 
-struct ldb_dn *ldb_dn_new_fmt(void *mem_ctx,
+struct ldb_dn *ldb_dn_new_fmt(TALLOC_CTX *mem_ctx,
 			      struct ldb_context *ldb,
 			      const char *new_fmt, ...)
 {
@@ -191,7 +191,7 @@ static int ldb_dn_escape_internal(char *dst, const char *src, int len)
 {
 	const char *p, *s;
 	char *d;
-	int l;
+	size_t l;
 
 	p = s = src;
 	d = dst;
@@ -257,7 +257,7 @@ static int ldb_dn_escape_internal(char *dst, const char *src, int len)
 	return (l + (d - dst));
 }
 
-char *ldb_dn_escape_value(void *mem_ctx, struct ldb_val value)
+char *ldb_dn_escape_value(TALLOC_CTX *mem_ctx, struct ldb_val value)
 {
 	char *dst;
 
@@ -297,8 +297,9 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 	bool in_quote = false;
 	bool is_oid = false;
 	bool escape = false;
-	unsigned x;
-	int l, ret;
+	unsigned int x;
+	size_t l;
+	int ret;
 	char *parse_dn;
 	bool is_index;
 
@@ -330,11 +331,12 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 		return true;
 	}
 
-	/* make sure we free this if alloced previously before replacing */
-	talloc_free(dn->components);
+	/* make sure we free this if allocated previously before replacing */
+	LDB_FREE(dn->components);
+	dn->comp_num = 0;
 
-	talloc_free(dn->ext_components);
-	dn->ext_components = NULL;
+	LDB_FREE(dn->ext_components);
+	dn->ext_comp_num = 0;
 
 	/* in the common case we have 3 or more components */
 	/* make sure all components are zeroed, other functions depend on it */
@@ -342,7 +344,6 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 	if ( ! dn->components) {
 		return false;
 	}
-	dn->comp_num = 0;
 
 	/* Components data space is allocated here once */
 	data = talloc_array(dn->components, char, strlen(parse_dn) + 1);
@@ -740,7 +741,8 @@ bool ldb_dn_validate(struct ldb_dn *dn)
 
 const char *ldb_dn_get_linearized(struct ldb_dn *dn)
 {
-	int i, len;
+	unsigned int i;
+	size_t len;
 	char *d, *n;
 
 	if ( ! dn || ( dn->invalid)) return NULL;
@@ -802,11 +804,11 @@ static int ldb_dn_extended_component_compare(const void *p1, const void *p2)
 	return strcmp(ec1->name, ec2->name);
 }
 
-char *ldb_dn_get_extended_linearized(void *mem_ctx, struct ldb_dn *dn, int mode)
+char *ldb_dn_get_extended_linearized(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int mode)
 {
 	const char *linearized = ldb_dn_get_linearized(dn);
-	char *p;
-	int i;
+	char *p = NULL;
+	unsigned int i;
 
 	if (!linearized) {
 		return NULL;
@@ -824,8 +826,8 @@ char *ldb_dn_get_extended_linearized(void *mem_ctx, struct ldb_dn *dn, int mode)
 	 * the resulting DNs consistent, plus to ensure that we put
 	 * 'DELETED' first, so it can be very quickly recognised
 	 */
-	qsort(dn->ext_components, dn->ext_comp_num, sizeof(dn->ext_components[0]),
-	      ldb_dn_extended_component_compare);
+	TYPESAFE_QSORT(dn->ext_components, dn->ext_comp_num,
+		       ldb_dn_extended_component_compare);
 
 	for (i = 0; i < dn->ext_comp_num; i++) {
 		const struct ldb_dn_extended_syntax *ext_syntax;
@@ -884,7 +886,7 @@ char *ldb_dn_get_extended_linearized(void *mem_ctx, struct ldb_dn *dn, int mode)
  */
 void ldb_dn_extended_filter(struct ldb_dn *dn, const char * const *accept)
 {
-	int i;
+	unsigned int i;
 	for (i=0; i<dn->ext_comp_num; i++) {
 		if (!ldb_attr_in_list(accept, dn->ext_components[i].name)) {
 			memmove(&dn->ext_components[i],
@@ -894,10 +896,11 @@ void ldb_dn_extended_filter(struct ldb_dn *dn, const char * const *accept)
 			i--;
 		}
 	}
+	LDB_FREE(dn->ext_linearized);
 }
 
 
-char *ldb_dn_alloc_linearized(void *mem_ctx, struct ldb_dn *dn)
+char *ldb_dn_alloc_linearized(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 {
 	return talloc_strdup(mem_ctx, ldb_dn_get_linearized(dn));
 }
@@ -909,7 +912,8 @@ char *ldb_dn_alloc_linearized(void *mem_ctx, struct ldb_dn *dn)
 
 static bool ldb_dn_casefold_internal(struct ldb_dn *dn)
 {
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	if ( ! dn || dn->invalid) return false;
 
@@ -954,7 +958,8 @@ failed:
 
 const char *ldb_dn_get_casefold(struct ldb_dn *dn)
 {
-	int i, len;
+	unsigned int i;
+	size_t len;
 	char *d, *n;
 
 	if (dn->casefold) return dn->casefold;
@@ -1011,7 +1016,7 @@ const char *ldb_dn_get_casefold(struct ldb_dn *dn)
 	return dn->casefold;
 }
 
-char *ldb_dn_alloc_casefold(void *mem_ctx, struct ldb_dn *dn)
+char *ldb_dn_alloc_casefold(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 {
 	return talloc_strdup(mem_ctx, ldb_dn_get_casefold(dn));
 }
@@ -1024,7 +1029,7 @@ char *ldb_dn_alloc_casefold(void *mem_ctx, struct ldb_dn *dn)
 int ldb_dn_compare_base(struct ldb_dn *base, struct ldb_dn *dn)
 {
 	int ret;
-	int n_base, n_dn;
+	long long int n_base, n_dn;
 
 	if ( ! base || base->invalid) return 1;
 	if ( ! dn || dn->invalid) return -1;
@@ -1060,7 +1065,7 @@ int ldb_dn_compare_base(struct ldb_dn *base, struct ldb_dn *dn)
 		return (dn->comp_num - base->comp_num);
 	}
 
-	if (dn->comp_num == 0) {
+	if ((dn->comp_num == 0) || (base->comp_num == 0)) {
 		if (dn->special && base->special) {
 			return strcmp(base->linearized, dn->linearized);
 		} else if (dn->special) {
@@ -1110,7 +1115,8 @@ int ldb_dn_compare_base(struct ldb_dn *base, struct ldb_dn *dn)
 
 int ldb_dn_compare(struct ldb_dn *dn0, struct ldb_dn *dn1)
 {
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	if (( ! dn0) || dn0->invalid || ! dn1 || dn1->invalid) {
 		return -1;
@@ -1181,7 +1187,7 @@ int ldb_dn_compare(struct ldb_dn *dn0, struct ldb_dn *dn1)
 }
 
 static struct ldb_dn_component ldb_dn_copy_component(
-						void *mem_ctx,
+						TALLOC_CTX *mem_ctx,
 						struct ldb_dn_component *src)
 {
 	struct ldb_dn_component dst;
@@ -1227,7 +1233,7 @@ static struct ldb_dn_component ldb_dn_copy_component(
 }
 
 static struct ldb_dn_ext_component ldb_dn_ext_copy_component(
-						void *mem_ctx,
+						TALLOC_CTX *mem_ctx,
 						struct ldb_dn_ext_component *src)
 {
 	struct ldb_dn_ext_component dst;
@@ -1252,7 +1258,7 @@ static struct ldb_dn_ext_component ldb_dn_ext_copy_component(
 	return dst;
 }
 
-struct ldb_dn *ldb_dn_copy(void *mem_ctx, struct ldb_dn *dn)
+struct ldb_dn *ldb_dn_copy(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 {
 	struct ldb_dn *new_dn;
 
@@ -1268,7 +1274,7 @@ struct ldb_dn *ldb_dn_copy(void *mem_ctx, struct ldb_dn *dn)
 	*new_dn = *dn;
 
 	if (dn->components) {
-		int i;
+		unsigned int i;
 
 		new_dn->components =
 			talloc_zero_array(new_dn,
@@ -1291,7 +1297,7 @@ struct ldb_dn *ldb_dn_copy(void *mem_ctx, struct ldb_dn *dn)
 	}
 
 	if (dn->ext_components) {
-		int i;
+		unsigned int i;
 
 		new_dn->ext_components =
 			talloc_zero_array(new_dn,
@@ -1357,7 +1363,7 @@ bool ldb_dn_add_base(struct ldb_dn *dn, struct ldb_dn *base)
 	}
 
 	if (dn->components) {
-		int i;
+		unsigned int i;
 
 		if ( ! ldb_dn_validate(base)) {
 			return false;
@@ -1424,12 +1430,10 @@ bool ldb_dn_add_base(struct ldb_dn *dn, struct ldb_dn *base)
 
 	/* Wipe the ext_linearized DN,
 	 * the GUID and SID are almost certainly no longer valid */
-	if (dn->ext_linearized) {
-		LDB_FREE(dn->ext_linearized);
-	}
-
+	LDB_FREE(dn->ext_linearized);
 	LDB_FREE(dn->ext_components);
 	dn->ext_comp_num = 0;
+
 	return true;
 }
 
@@ -1481,7 +1485,12 @@ bool ldb_dn_add_child(struct ldb_dn *dn, struct ldb_dn *child)
 	}
 
 	if (dn->components) {
-		int n, i, j;
+		unsigned int n;
+		long long int i, j;
+
+		if (dn->comp_num == 0) {
+			return false;
+		}
 
 		if ( ! ldb_dn_validate(child)) {
 			return false;
@@ -1529,6 +1538,9 @@ bool ldb_dn_add_child(struct ldb_dn *dn, struct ldb_dn *child)
 	}
 
 	if (dn->linearized) {
+		if (dn->linearized[0] == '\0') {
+			return false;
+		}
 
 		s = ldb_dn_get_linearized(child);
 		if ( ! s) {
@@ -1547,7 +1559,6 @@ bool ldb_dn_add_child(struct ldb_dn *dn, struct ldb_dn *child)
 	/* Wipe the ext_linearized DN,
 	 * the GUID and SID are almost certainly no longer valid */
 	LDB_FREE(dn->ext_linearized);
-
 	LDB_FREE(dn->ext_components);
 	dn->ext_comp_num = 0;
 
@@ -1589,7 +1600,7 @@ bool ldb_dn_add_child_fmt(struct ldb_dn *dn, const char *child_fmt, ...)
 
 bool ldb_dn_remove_base_components(struct ldb_dn *dn, unsigned int num)
 {
-	int i;
+	long long int i;
 
 	if ( ! ldb_dn_validate(dn)) {
 		return false;
@@ -1623,7 +1634,6 @@ bool ldb_dn_remove_base_components(struct ldb_dn *dn, unsigned int num)
 	/* Wipe the ext_linearized DN,
 	 * the GUID and SID are almost certainly no longer valid */
 	LDB_FREE(dn->ext_linearized);
-
 	LDB_FREE(dn->ext_components);
 	dn->ext_comp_num = 0;
 
@@ -1632,7 +1642,7 @@ bool ldb_dn_remove_base_components(struct ldb_dn *dn, unsigned int num)
 
 bool ldb_dn_remove_child_components(struct ldb_dn *dn, unsigned int num)
 {
-	int i, j;
+	unsigned int i, j;
 
 	if ( ! ldb_dn_validate(dn)) {
 		return false;
@@ -1668,13 +1678,13 @@ bool ldb_dn_remove_child_components(struct ldb_dn *dn, unsigned int num)
 	/* Wipe the ext_linearized DN,
 	 * the GUID and SID are almost certainly no longer valid */
 	LDB_FREE(dn->ext_linearized);
-
 	LDB_FREE(dn->ext_components);
 	dn->ext_comp_num = 0;
+
 	return true;
 }
 
-struct ldb_dn *ldb_dn_get_parent(void *mem_ctx, struct ldb_dn *dn)
+struct ldb_dn *ldb_dn_get_parent(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 {
 	struct ldb_dn *new_dn;
 
@@ -1688,12 +1698,6 @@ struct ldb_dn *ldb_dn_get_parent(void *mem_ctx, struct ldb_dn *dn)
 		return NULL;
 	}
 
-	/* Wipe the ext_linearized DN,
-	 * the GUID and SID are almost certainly no longer valid */
-	LDB_FREE(dn->ext_linearized);
-
-	LDB_FREE(dn->ext_components);
-	dn->ext_comp_num = 0;
 	return new_dn;
 }
 
@@ -1706,8 +1710,8 @@ struct ldb_dn *ldb_dn_get_parent(void *mem_ctx, struct ldb_dn *dn)
    the EX format has the last '/' replaced with a newline (\n).
 
 */
-static char *ldb_dn_canonical(void *mem_ctx, struct ldb_dn *dn, int ex_format) {
-	int i;
+static char *ldb_dn_canonical(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int ex_format) {
+	long long int i;
 	TALLOC_CTX *tmpctx;
 	char *cracked = NULL;
 	const char *format = (ex_format ? "\n" : "/" );
@@ -1719,7 +1723,7 @@ static char *ldb_dn_canonical(void *mem_ctx, struct ldb_dn *dn, int ex_format) {
 	tmpctx = talloc_new(mem_ctx);
 
 	/* Walk backwards down the DN, grabbing 'dc' components at first */
-	for (i = dn->comp_num - 1 ; i >= 0; i--) {
+	for (i = dn->comp_num - 1; i >= 0; i--) {
 		if (ldb_attr_cmp(dn->components[i].name, "dc") != 0) {
 			break;
 		}
@@ -1766,12 +1770,12 @@ done:
 }
 
 /* Wrapper functions for the above, for the two different string formats */
-char *ldb_dn_canonical_string(void *mem_ctx, struct ldb_dn *dn) {
+char *ldb_dn_canonical_string(TALLOC_CTX *mem_ctx, struct ldb_dn *dn) {
 	return ldb_dn_canonical(mem_ctx, dn, 0);
 
 }
 
-char *ldb_dn_canonical_ex_string(void *mem_ctx, struct ldb_dn *dn) {
+char *ldb_dn_canonical_ex_string(TALLOC_CTX *mem_ctx, struct ldb_dn *dn) {
 	return ldb_dn_canonical(mem_ctx, dn, 1);
 }
 
@@ -1852,7 +1856,7 @@ int ldb_dn_set_component(struct ldb_dn *dn, int num,
 	dn->components[num].value = v;
 
 	if (dn->valid_case) {
-		int i;
+		unsigned int i;
 		for (i = 0; i < dn->comp_num; i++) {
 			LDB_FREE(dn->components[i].cf_name);
 			LDB_FREE(dn->components[i].cf_value.data);
@@ -1865,16 +1869,16 @@ int ldb_dn_set_component(struct ldb_dn *dn, int num,
 	/* Wipe the ext_linearized DN,
 	 * the GUID and SID are almost certainly no longer valid */
 	LDB_FREE(dn->ext_linearized);
-
-	dn->ext_comp_num = 0;
 	LDB_FREE(dn->ext_components);
+	dn->ext_comp_num = 0;
+
 	return LDB_SUCCESS;
 }
 
 const struct ldb_val *ldb_dn_get_extended_component(struct ldb_dn *dn,
 						    const char *name)
 {
-	int i;
+	unsigned int i;
 	if ( ! ldb_dn_validate(dn)) {
 		return NULL;
 	}
@@ -1890,7 +1894,7 @@ int ldb_dn_set_extended_component(struct ldb_dn *dn,
 				  const char *name, const struct ldb_val *val)
 {
 	struct ldb_dn_ext_component *p;
-	int i;
+	unsigned int i;
 	struct ldb_val v2;
 
 	if ( ! ldb_dn_validate(dn)) {
@@ -1915,7 +1919,6 @@ int ldb_dn_set_extended_component(struct ldb_dn *dn,
 					ldb_dn_mark_invalid(dn);
 					return LDB_ERR_OPERATIONS_ERROR;
 				}
-				return LDB_SUCCESS;
 			} else {
 				if (i != (dn->ext_comp_num - 1)) {
 					memmove(&dn->ext_components[i],
@@ -1933,8 +1936,10 @@ int ldb_dn_set_extended_component(struct ldb_dn *dn,
 					ldb_dn_mark_invalid(dn);
 					return LDB_ERR_OPERATIONS_ERROR;
 				}
-				return LDB_SUCCESS;
 			}
+			LDB_FREE(dn->ext_linearized);
+
+			return LDB_SUCCESS;
 		}
 	}
 
@@ -1965,13 +1970,16 @@ int ldb_dn_set_extended_component(struct ldb_dn *dn,
 	dn->ext_components = p;
 	dn->ext_comp_num++;
 
+	LDB_FREE(dn->ext_linearized);
+
 	return LDB_SUCCESS;
 }
 
 void ldb_dn_remove_extended_components(struct ldb_dn *dn)
 {
-	dn->ext_comp_num = 0;
+	LDB_FREE(dn->ext_linearized);
 	LDB_FREE(dn->ext_components);
+	dn->ext_comp_num = 0;
 }
 
 bool ldb_dn_is_valid(struct ldb_dn *dn)
@@ -2023,10 +2031,9 @@ int ldb_dn_update_components(struct ldb_dn *dn, const struct ldb_dn *ref_dn)
 	       sizeof(struct ldb_dn_component)*ref_dn->comp_num);
 	dn->comp_num = ref_dn->comp_num;
 
-	talloc_free(dn->linearized);
-	talloc_free(dn->ext_linearized);
-	dn->ext_linearized = NULL;
-	dn->linearized = NULL;
+	LDB_FREE(dn->casefold);
+	LDB_FREE(dn->linearized);
+	LDB_FREE(dn->ext_linearized);
 
 	return LDB_SUCCESS;
 }

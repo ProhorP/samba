@@ -20,9 +20,11 @@
  */
 
 #include "includes.h"
+#include "registry.h"
+#include "registry/reg_util_token.h"
 #include "utils/net.h"
 #include "utils/net_registry_util.h"
-
+#include "include/g_lock.h"
 
 /*
  *
@@ -39,7 +41,7 @@ static WERROR open_hive(TALLOC_CTX *ctx, const char *path,
 			char **subkeyname)
 {
 	WERROR werr;
-	NT_USER_TOKEN *token = NULL;
+	struct security_token *token = NULL;
 	char *hivename = NULL;
 	char *tmp_subkeyname = NULL;
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
@@ -130,9 +132,12 @@ static int net_registry_enumerate(struct net_context *c, int argc,
 	int ret = -1;
 
 	if (argc != 1 || c->display_usage) {
-		d_printf(_("Usage:    net registry enumerate <path>\n"));
-		d_printf(_("Example:  net registry enumerate "
-			 "'HKLM\\Software\\Samba'\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry enumerate <path>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry enumerate 'HKLM\\Software\\Samba'\n"));
 		goto done;
 	}
 
@@ -182,9 +187,13 @@ static int net_registry_createkey(struct net_context *c, int argc,
 	int ret = -1;
 
 	if (argc != 1 || c->display_usage) {
-		d_printf(_("Usage:    net registry createkey <path>\n"));
-		d_printf(_("Example:  net registry createkey "
-			 "'HKLM\\Software\\Samba\\smbconf.127.0.0.1'\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry createkey <path>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry createkey "
+			   "'HKLM\\Software\\Samba\\smbconf.127.0.0.1'\n"));
 		goto done;
 	}
 	if (strlen(argv[0]) == 0) {
@@ -235,8 +244,12 @@ static int net_registry_deletekey(struct net_context *c, int argc,
 	int ret = -1;
 
 	if (argc != 1 || c->display_usage) {
-		d_printf(_("Usage:    net registry deletekey <path>\n"));
-		d_printf(_("Example:  net registry deletekey "
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry deletekey <path>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry deletekey "
 			   "'HKLM\\Software\\Samba\\smbconf.127.0.0.1'\n"));
 		goto done;
 	}
@@ -247,14 +260,14 @@ static int net_registry_deletekey(struct net_context *c, int argc,
 
 	werr = open_hive(ctx, argv[0], REG_KEY_WRITE, &hivekey, &subkeyname);
 	if (!W_ERROR_IS_OK(werr)) {
-		d_fprintf(stderr, _("open_hive failed: %s\n"),
+		d_fprintf(stderr, "open_hive %s: %s\n", _("failed"),
 			  win_errstr(werr));
 		goto done;
 	}
 
 	werr = reg_deletekey(hivekey, subkeyname);
 	if (!W_ERROR_IS_OK(werr)) {
-		d_fprintf(stderr, _("reg_deletekey failed: %s\n"),
+		d_fprintf(stderr, "reg_deletekey %s: %s\n", _("failed"),
 			  win_errstr(werr));
 		goto done;
 	}
@@ -276,8 +289,9 @@ static int net_registry_getvalue_internal(struct net_context *c, int argc,
 	TALLOC_CTX *ctx = talloc_stackframe();
 
 	if (argc != 2 || c->display_usage) {
-		d_fprintf(stderr, _("usage: net rpc registry getvalue <key> "
-				    "<valuename>\n"));
+		d_fprintf(stderr, "%s\n%s",
+			  _("Usage:"),
+			  _("net registry getvalue <key> <valuename>\n"));
 		goto done;
 	}
 
@@ -325,8 +339,10 @@ static int net_registry_setvalue(struct net_context *c, int argc,
 	TALLOC_CTX *ctx = talloc_stackframe();
 
 	if (argc < 4 || c->display_usage) {
-		d_fprintf(stderr, _("usage: net rpc registry setvalue <key> "
-			  "<valuename> <type> [<val>]+\n"));
+		d_fprintf(stderr, "%s\n%s",
+			  _("Usage:"),
+			  _("net registry setvalue <key> <valuename> "
+			    "<type> [<val>]+\n"));
 		goto done;
 	}
 
@@ -336,16 +352,33 @@ static int net_registry_setvalue(struct net_context *c, int argc,
 	}
 
 	if (strequal(argv[2], "dword")) {
+		uint32_t v = strtoul(argv[3], NULL, 10);
 		value.type = REG_DWORD;
-		value.v.dword = strtoul(argv[3], NULL, 10);
+		value.data = data_blob_talloc(ctx, NULL, 4);
+		SIVAL(value.data.data, 0, v);
 	} else if (strequal(argv[2], "sz")) {
 		value.type = REG_SZ;
-		value.v.sz.len = strlen(argv[3])+1;
-		value.v.sz.str = CONST_DISCARD(char *, argv[3]);
+		if (!push_reg_sz(ctx, &value.data, argv[3])) {
+			goto done;
+		}
 	} else if (strequal(argv[2], "multi_sz")) {
+		const char **array;
+		int count = argc - 3;
+		int i;
 		value.type = REG_MULTI_SZ;
-		value.v.multi_sz.num_strings = argc - 3;
-		value.v.multi_sz.strings = (char **)(argv + 3);
+		array = talloc_zero_array(ctx, const char *, count + 1);
+		if (array == NULL) {
+			goto done;
+		}
+		for (i=0; i < count; i++) {
+			array[i] = talloc_strdup(array, argv[count+i]);
+			if (array[i] == NULL) {
+				goto done;
+			}
+		}
+		if (!push_reg_multi_sz(ctx, &value.data, array)) {
+			goto done;
+		}
 	} else {
 		d_fprintf(stderr, _("type \"%s\" not implemented\n"), argv[2]);
 		goto done;
@@ -371,6 +404,111 @@ done:
 	return ret;
 }
 
+struct net_registry_increment_state {
+	const char *keyname;
+	const char *valuename;
+	uint32_t increment;
+	uint32_t newvalue;
+	WERROR werr;
+};
+
+static void net_registry_increment_fn(void *private_data)
+{
+	struct net_registry_increment_state *state =
+		(struct net_registry_increment_state *)private_data;
+	struct registry_value *value;
+	struct registry_key *key = NULL;
+	uint32_t v;
+
+	state->werr = open_key(talloc_tos(), state->keyname,
+			       REG_KEY_READ|REG_KEY_WRITE, &key);
+	if (!W_ERROR_IS_OK(state->werr)) {
+		d_fprintf(stderr, _("open_key failed: %s\n"),
+			  win_errstr(state->werr));
+		goto done;
+	}
+
+	state->werr = reg_queryvalue(key, key, state->valuename, &value);
+	if (!W_ERROR_IS_OK(state->werr)) {
+		d_fprintf(stderr, _("reg_queryvalue failed: %s\n"),
+			  win_errstr(state->werr));
+		goto done;
+	}
+
+	if (value->type != REG_DWORD) {
+		d_fprintf(stderr, _("value not a DWORD: %s\n"),
+			  str_regtype(value->type));
+		goto done;
+	}
+
+	if (value->data.length < 4) {
+		d_fprintf(stderr, _("value too short for regular DWORD\n"));
+		goto done;
+	}
+
+	v = IVAL(value->data.data, 0);
+	v += state->increment;
+	state->newvalue = v;
+
+	SIVAL(value->data.data, 0, v);
+
+	state->werr = reg_setvalue(key, state->valuename, value);
+	if (!W_ERROR_IS_OK(state->werr)) {
+		d_fprintf(stderr, _("reg_setvalue failed: %s\n"),
+			  win_errstr(state->werr));
+		goto done;
+	}
+
+done:
+	TALLOC_FREE(key);
+	return;
+}
+
+static int net_registry_increment(struct net_context *c, int argc,
+				  const char **argv)
+{
+	struct net_registry_increment_state state;
+	NTSTATUS status;
+	int ret = -1;
+
+	if (argc < 2 || c->display_usage) {
+		d_fprintf(stderr, "%s\n%s",
+			  _("Usage:"),
+			  _("net registry increment <key> <valuename> "
+			    "[<increment>]\n"));
+		goto done;
+	}
+
+	state.keyname = argv[0];
+	state.valuename = argv[1];
+
+	state.increment = 1;
+	if (argc == 3) {
+		state.increment = strtoul(argv[2], NULL, 10);
+	}
+
+	status = g_lock_do("registry_increment_lock", G_LOCK_WRITE,
+			   timeval_set(600, 0), procid_self(),
+			   net_registry_increment_fn, &state);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_fprintf(stderr, _("g_lock_do failed: %s\n"),
+			  nt_errstr(status));
+		goto done;
+	}
+	if (!W_ERROR_IS_OK(state.werr)) {
+		d_fprintf(stderr, _("increment failed: %s\n"),
+			  win_errstr(state.werr));
+		goto done;
+	}
+
+	d_printf(_("%u\n"), (unsigned)state.newvalue);
+
+	ret = 0;
+
+done:
+	return ret;
+}
+
 static int net_registry_deletevalue(struct net_context *c, int argc,
 				    const char **argv)
 {
@@ -380,8 +518,9 @@ static int net_registry_deletevalue(struct net_context *c, int argc,
 	int ret = -1;
 
 	if (argc != 2 || c->display_usage) {
-		d_fprintf(stderr, _("usage: net rpc registry deletevalue <key> "
-			  "<valuename>\n"));
+		d_fprintf(stderr, "%s\n%s",
+			  _("Usage:"),
+			  _("net registry deletevalue <key> <valuename>\n"));
 		goto done;
 	}
 
@@ -405,13 +544,13 @@ done:
 	return ret;
 }
 
-static int net_registry_getsd(struct net_context *c, int argc,
-			      const char **argv)
+static WERROR net_registry_getsd_internal(struct net_context *c,
+					  TALLOC_CTX *mem_ctx,
+					  const char *keyname,
+					  struct security_descriptor **sd)
 {
 	WERROR werr;
-	int ret = -1;
 	struct registry_key *key = NULL;
-	struct security_descriptor *secdesc = NULL;
 	TALLOC_CTX *ctx = talloc_stackframe();
 	uint32_t access_mask = REG_KEY_READ |
 			       SEC_FLAG_MAXIMUM_ALLOWED |
@@ -423,31 +562,175 @@ static int net_registry_getsd(struct net_context *c, int argc,
 	 */
 	access_mask = REG_KEY_READ;
 
-	if (argc != 1 || c->display_usage) {
-		d_printf(_("Usage:    net registry getsd <path>\n"));
-		d_printf(_("Example:  net registry getsd "
-			   "'HKLM\\Software\\Samba'\n"));
-		goto done;
-	}
-	if (strlen(argv[0]) == 0) {
-		d_fprintf(stderr, "error: zero length key name given\n");
+	if (sd == NULL) {
+		d_fprintf(stderr, _("internal error: invalid argument\n"));
+		werr = WERR_INVALID_PARAM;
 		goto done;
 	}
 
-	werr = open_key(ctx, argv[0], access_mask, &key);
-	if (!W_ERROR_IS_OK(werr)) {
-		d_fprintf(stderr, _("open_key failed: %s\n"), win_errstr(werr));
+	if (strlen(keyname) == 0) {
+		d_fprintf(stderr, _("error: zero length key name given\n"));
+		werr = WERR_INVALID_PARAM;
 		goto done;
 	}
 
-	werr = reg_getkeysecurity(ctx, key, &secdesc);
+	werr = open_key(ctx, keyname, access_mask, &key);
 	if (!W_ERROR_IS_OK(werr)) {
-		d_fprintf(stderr, _("reg_getkeysecurity failed: %s\n"),
+		d_fprintf(stderr, "%s%s\n", _("open_key failed: "),
 			  win_errstr(werr));
 		goto done;
 	}
 
+	werr = reg_getkeysecurity(mem_ctx, key, sd);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_fprintf(stderr, "%s%s\n", _("reg_getkeysecurity failed: "),
+			  win_errstr(werr));
+		goto done;
+	}
+
+	werr = WERR_OK;
+
+done:
+	TALLOC_FREE(ctx);
+	return werr;
+}
+
+static int net_registry_getsd(struct net_context *c, int argc,
+			      const char **argv)
+{
+	WERROR werr;
+	int ret = -1;
+	struct security_descriptor *secdesc = NULL;
+	TALLOC_CTX *ctx = talloc_stackframe();
+
+	if (argc != 1 || c->display_usage) {
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry getsd <path>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry getsd 'HKLM\\Software\\Samba'\n"));
+		goto done;
+	}
+
+	werr = net_registry_getsd_internal(c, ctx, argv[0], &secdesc);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
+
 	display_sec_desc(secdesc);
+
+	ret = 0;
+
+done:
+	TALLOC_FREE(ctx);
+	return ret;
+}
+
+static int net_registry_getsd_sddl(struct net_context *c,
+				   int argc, const char **argv)
+{
+	WERROR werr;
+	int ret = -1;
+	struct security_descriptor *secdesc = NULL;
+	TALLOC_CTX *ctx = talloc_stackframe();
+
+	if (argc != 1 || c->display_usage) {
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry getsd_sddl <path>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry getsd_sddl 'HKLM\\Software\\Samba'\n"));
+		goto done;
+	}
+
+	werr = net_registry_getsd_internal(c, ctx, argv[0], &secdesc);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
+
+	d_printf("%s\n", sddl_encode(ctx, secdesc, get_global_sam_sid()));
+
+	ret = 0;
+
+done:
+	TALLOC_FREE(ctx);
+	return ret;
+}
+
+static WERROR net_registry_setsd_internal(struct net_context *c,
+					  TALLOC_CTX *mem_ctx,
+					  const char *keyname,
+					  struct security_descriptor *sd)
+{
+	WERROR werr;
+	struct registry_key *key = NULL;
+	TALLOC_CTX *ctx = talloc_stackframe();
+	uint32_t access_mask = REG_KEY_WRITE |
+			       SEC_FLAG_MAXIMUM_ALLOWED |
+			       SEC_FLAG_SYSTEM_SECURITY;
+
+	/*
+	 * net_rpc_regsitry uses SEC_FLAG_SYSTEM_SECURITY, but access
+	 * is denied with these perms right now...
+	 */
+	access_mask = REG_KEY_WRITE;
+
+	if (strlen(keyname) == 0) {
+		d_fprintf(stderr, _("error: zero length key name given\n"));
+		werr = WERR_INVALID_PARAM;
+		goto done;
+	}
+
+	werr = open_key(ctx, keyname, access_mask, &key);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_fprintf(stderr, "%s%s\n", _("open_key failed: "),
+			  win_errstr(werr));
+		goto done;
+	}
+
+	werr = reg_setkeysecurity(key, sd);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_fprintf(stderr, "%s%s\n", _("reg_setkeysecurity failed: "),
+			  win_errstr(werr));
+		goto done;
+	}
+
+	werr = WERR_OK;
+
+done:
+	TALLOC_FREE(ctx);
+	return werr;
+}
+
+static int net_registry_setsd_sddl(struct net_context *c,
+				   int argc, const char **argv)
+{
+	WERROR werr;
+	int ret = -1;
+	struct security_descriptor *secdesc = NULL;
+	TALLOC_CTX *ctx = talloc_stackframe();
+
+	if (argc != 2 || c->display_usage) {
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry setsd_sddl <path> <security_descriptor>\n"));
+		d_printf("%s\n%s",
+			 _("Example:"),
+			 _("net registry setsd_sddl 'HKLM\\Software\\Samba'\n"));
+		goto done;
+	}
+
+	secdesc = sddl_decode(ctx, argv[1], get_global_sam_sid());
+	if (secdesc == NULL) {
+		goto done;
+	}
+
+	werr = net_registry_setsd_internal(c, ctx, argv[0], secdesc);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
 
 	ret = 0;
 
@@ -510,6 +793,14 @@ int net_registry(struct net_context *c, int argc, const char **argv)
 			   "    Set a new registry value")
 		},
 		{
+			"increment",
+			net_registry_increment,
+			NET_TRANSPORT_LOCAL,
+			N_("Increment a DWORD registry value under a lock"),
+			N_("net registry increment\n"
+			   "    Increment a DWORD registry value under a lock")
+		},
+		{
 			"deletevalue",
 			net_registry_deletevalue,
 			NET_TRANSPORT_LOCAL,
@@ -524,6 +815,22 @@ int net_registry(struct net_context *c, int argc, const char **argv)
 			N_("Get security descriptor"),
 			N_("net registry getsd\n"
 			   "    Get security descriptor")
+		},
+		{
+			"getsd_sddl",
+			net_registry_getsd_sddl,
+			NET_TRANSPORT_LOCAL,
+			N_("Get security descriptor in sddl format"),
+			N_("net registry getsd_sddl\n"
+			   "    Get security descriptor in sddl format")
+		},
+		{
+			"setsd_sddl",
+			net_registry_setsd_sddl,
+			NET_TRANSPORT_LOCAL,
+			N_("Set security descriptor from sddl format string"),
+			N_("net registry setsd_sddl\n"
+			   "    Set security descriptor from sddl format string")
 		},
 	{ NULL, NULL, 0, NULL, NULL }
 	};

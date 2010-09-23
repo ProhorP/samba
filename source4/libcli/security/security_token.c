@@ -31,16 +31,10 @@ struct security_token *security_token_initialise(TALLOC_CTX *mem_ctx)
 {
 	struct security_token *st;
 
-	st = talloc(mem_ctx, struct security_token);
+	st = talloc_zero(mem_ctx, struct security_token);
 	if (!st) {
 		return NULL;
 	}
-
-	st->user_sid = NULL;
-	st->group_sid = NULL;
-	st->num_sids = 0;
-	st->sids = NULL;
-	st->privilege_mask = 0;
 
 	return st;
 }
@@ -51,7 +45,7 @@ struct security_token *security_token_initialise(TALLOC_CTX *mem_ctx)
 void security_token_debug(int dbg_lev, const struct security_token *token)
 {
 	TALLOC_CTX *mem_ctx;
-	int i;
+	uint32_t i;
 
 	if (!token) {
 		DEBUG(dbg_lev, ("Security token: (NULL)\n"));
@@ -63,13 +57,11 @@ void security_token_debug(int dbg_lev, const struct security_token *token)
 		return;
 	}
 
-	DEBUG(dbg_lev, ("Security token of user %s\n",
-				    dom_sid_string(mem_ctx, token->user_sid) ));
-	DEBUGADD(dbg_lev, (" SIDs (%lu):\n", 
+	DEBUG(dbg_lev, ("Security token SIDs (%lu):\n", 
 				       (unsigned long)token->num_sids));
 	for (i = 0; i < token->num_sids; i++) {
 		DEBUGADD(dbg_lev, ("  SID[%3lu]: %s\n", (unsigned long)i, 
-			   dom_sid_string(mem_ctx, token->sids[i])));
+			   dom_sid_string(mem_ctx, &token->sids[i])));
 	}
 
 	security_token_debug_privileges(dbg_lev, token);
@@ -81,7 +73,7 @@ void security_token_debug(int dbg_lev, const struct security_token *token)
 
 bool security_token_is_sid(const struct security_token *token, const struct dom_sid *sid)
 {
-	if (dom_sid_equal(token->user_sid, sid)) {
+	if (token->sids && dom_sid_equal(&token->sids[PRIMARY_USER_SID_INDEX], sid)) {
 		return true;
 	}
 	return false;
@@ -111,9 +103,9 @@ bool security_token_is_anonymous(const struct security_token *token)
 
 bool security_token_has_sid(const struct security_token *token, const struct dom_sid *sid)
 {
-	int i;
+	uint32_t i;
 	for (i = 0; i < token->num_sids; i++) {
-		if (dom_sid_equal(token->sids[i], sid)) {
+		if (dom_sid_equal(&token->sids[i], sid)) {
 			return true;
 		}
 	}
@@ -147,7 +139,8 @@ bool security_token_has_enterprise_dcs(const struct security_token *token)
 	return security_token_has_sid_string(token, SID_NT_ENTERPRISE_DCS);
 }
 
-enum security_user_level security_session_user_level(struct auth_session_info *session_info) 
+enum security_user_level security_session_user_level(struct auth_session_info *session_info,
+						     const struct dom_sid *domain_sid)
 {
 	if (!session_info) {
 		return SECURITY_ANONYMOUS;
@@ -163,6 +156,16 @@ enum security_user_level security_session_user_level(struct auth_session_info *s
 
 	if (security_token_has_builtin_administrators(session_info->security_token)) {
 		return SECURITY_ADMINISTRATOR;
+	}
+
+	if (domain_sid) {
+		struct dom_sid *rodc_dcs;
+		rodc_dcs = dom_sid_add_rid(session_info, domain_sid, DOMAIN_RID_READONLY_DCS);
+		if (security_token_has_sid(session_info->security_token, rodc_dcs)) {
+			talloc_free(rodc_dcs);
+			return SECURITY_RO_DOMAIN_CONTROLLER;
+		}
+		talloc_free(rodc_dcs);
 	}
 
 	if (security_token_has_enterprise_dcs(session_info->security_token)) {

@@ -2,17 +2,17 @@
    Unix SMB/CIFS implementation.
    struct samu local cache for 
    Copyright (C) Jim McDonough (jmcd@us.ibm.com) 2004.
-      
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -31,7 +31,7 @@ static TDB_CONTEXT *cache;
 bool login_cache_init(void)
 {
 	char* cache_fname = NULL;
-	
+
 	/* skip file open if it's already opened */
 	if (cache) return True;
 
@@ -63,23 +63,25 @@ bool login_cache_shutdown(void)
 }
 
 /* if we can't read the cache, oh well, no need to return anything */
-LOGIN_CACHE * login_cache_read(struct samu *sampass)
+bool login_cache_read(struct samu *sampass, struct login_cache *entry)
 {
 	char *keystr;
 	TDB_DATA databuf;
-	LOGIN_CACHE *entry;
+	uint32_t entry_timestamp = 0, bad_password_time = 0;
+	uint16_t acct_ctrl;
 
-	if (!login_cache_init())
-		return NULL;
+	if (!login_cache_init()) {
+		return false;
+	}
 
 	if (pdb_get_nt_username(sampass) == NULL) {
-		return NULL;
+		return false;
 	}
 
 	keystr = SMB_STRDUP(pdb_get_nt_username(sampass));
 	if (!keystr || !keystr[0]) {
 		SAFE_FREE(keystr);
-		return NULL;
+		return false;
 	}
 
 	DEBUG(7, ("Looking up login cache for user %s\n",
@@ -87,35 +89,44 @@ LOGIN_CACHE * login_cache_read(struct samu *sampass)
 	databuf = tdb_fetch_bystring(cache, keystr);
 	SAFE_FREE(keystr);
 
-	if (!(entry = SMB_MALLOC_P(LOGIN_CACHE))) {
-		DEBUG(1, ("Unable to allocate cache entry buffer!\n"));
-		SAFE_FREE(databuf.dptr);
-		return NULL;
-	}
+	ZERO_STRUCTP(entry);
 
 	if (tdb_unpack (databuf.dptr, databuf.dsize, SAM_CACHE_FORMAT,
-			&entry->entry_timestamp, &entry->acct_ctrl, 
-			&entry->bad_password_count, 
-			&entry->bad_password_time) == -1) {
+			&entry_timestamp,
+			&acct_ctrl,
+			&entry->bad_password_count,
+			&bad_password_time) == -1) {
 		DEBUG(7, ("No cache entry found\n"));
-		SAFE_FREE(entry);
 		SAFE_FREE(databuf.dptr);
-		return NULL;
+		return false;
 	}
+
+	/*
+	 * Deal with 32-bit acct_ctrl. In the tdb we only store 16-bit
+	 * ("w" in SAM_CACHE_FORMAT). Fixes bug 7253.
+	 */
+	entry->acct_ctrl = acct_ctrl;
+
+	/* Deal with possible 64-bit time_t. */
+	entry->entry_timestamp = (time_t)entry_timestamp;
+	entry->bad_password_time = (time_t)bad_password_time;
 
 	SAFE_FREE(databuf.dptr);
 
 	DEBUG(5, ("Found login cache entry: timestamp %12u, flags 0x%x, count %d, time %12u\n",
 		  (unsigned int)entry->entry_timestamp, entry->acct_ctrl, 
 		  entry->bad_password_count, (unsigned int)entry->bad_password_time));
-	return entry;
+	return true;
 }
 
-bool login_cache_write(const struct samu *sampass, LOGIN_CACHE entry)
+bool login_cache_write(const struct samu *sampass,
+		       const struct login_cache *entry)
 {
 	char *keystr;
 	TDB_DATA databuf;
 	bool ret;
+	uint32_t entry_timestamp;
+	uint32_t bad_password_time = entry->bad_password_time;
 
 	if (!login_cache_init())
 		return False;
@@ -130,25 +141,25 @@ bool login_cache_write(const struct samu *sampass, LOGIN_CACHE entry)
 		return False;
 	}
 
-	entry.entry_timestamp = time(NULL);
+	entry_timestamp = (uint32_t)time(NULL);
 
 	databuf.dsize = 
 		tdb_pack(NULL, 0, SAM_CACHE_FORMAT,
-			 entry.entry_timestamp,
-			 entry.acct_ctrl,
-			 entry.bad_password_count,
-			 entry.bad_password_time);
+			 entry_timestamp,
+			 entry->acct_ctrl,
+			 entry->bad_password_count,
+			 bad_password_time);
 	databuf.dptr = SMB_MALLOC_ARRAY(uint8, databuf.dsize);
 	if (!databuf.dptr) {
 		SAFE_FREE(keystr);
 		return False;
 	}
-			 
+
 	if (tdb_pack(databuf.dptr, databuf.dsize, SAM_CACHE_FORMAT,
-			 entry.entry_timestamp,
-			 entry.acct_ctrl,
-			 entry.bad_password_count,
-			 entry.bad_password_time)
+			 entry_timestamp,
+			 entry->acct_ctrl,
+			 entry->bad_password_count,
+			 bad_password_time)
 	    != databuf.dsize) {
 		SAFE_FREE(keystr);
 		SAFE_FREE(databuf.dptr);
@@ -165,7 +176,7 @@ bool login_cache_delentry(const struct samu *sampass)
 {
 	int ret;
 	char *keystr;
-	
+
 	if (!login_cache_init()) 
 		return False;	
 
@@ -182,7 +193,7 @@ bool login_cache_delentry(const struct samu *sampass)
 	DEBUG(9, ("About to delete entry for %s\n", keystr));
 	ret = tdb_delete_bystring(cache, keystr);
 	DEBUG(9, ("tdb_delete returned %d\n", ret));
-	
+
 	SAFE_FREE(keystr);
 	return ret == 0;
 }

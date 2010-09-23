@@ -20,7 +20,6 @@ m4_include(../lib/util/util.m4)
 m4_include(../lib/util/fsusage.m4)
 m4_include(../lib/util/xattr.m4)
 m4_include(../lib/util/capability.m4)
-m4_include(../lib/util/time.m4)
 m4_include(../lib/popt/samba.m4)
 m4_include(../lib/util/charset/config.m4)
 m4_include(lib/socket/config.m4)
@@ -34,6 +33,7 @@ m4_include(../nsswitch/nsstest.m4)
 m4_include(../pidl/config.m4)
 
 AC_CONFIG_FILES(lib/registry/registry.pc)
+AC_CONFIG_FILES(lib/policy/policy.pc)
 AC_CONFIG_FILES(librpc/dcerpc.pc)
 AC_CONFIG_FILES(../librpc/ndr.pc)
 AC_CONFIG_FILES(../librpc/ndr_standard.pc)
@@ -92,7 +92,7 @@ SMB_INCLUDED_LIB_PKGCONFIG(LIBLDB, ldb = LDB_REQUIRED_VERSION,
 		# with AC_CONFIG_COMMANDS_PRE
 		# as that's the deferrs the commands
 		# to location after $prefix and $exec_prefix
-		# have usefull values and directly before
+		# have useful values and directly before
 		# creating config.status.
 		#
 		# The 'eval eval echo' trick is used to
@@ -116,6 +116,7 @@ SMB_INCLUDED_LIB_PKGCONFIG(LIBLDB, ldb = LDB_REQUIRED_VERSION,
 
 m4_include(lib/tls/config.m4)
 m4_include(torture/libnetapi/config.m4)
+m4_include(torture/libsmbclient/config.m4)
 
 dnl m4_include(auth/kerberos/config.m4)
 m4_include(auth/gensec/config.m4)
@@ -125,10 +126,14 @@ m4_include(ntvfs/unixuid/config.m4)
 m4_include(../lib/socket_wrapper/config.m4)
 m4_include(../lib/nss_wrapper/config.m4)
 m4_include(../lib/uid_wrapper/config.m4)
+dnl nsswitch must be before auth as it sets some variable
+dnl tested by auth/config.m4, libiiniparser must be even before
+dnl because nsswitch depend also on it
+m4_include(../lib/iniparser_build/config.m4)
+m4_include(../nsswitch/config.m4)
 m4_include(auth/config.m4)
 m4_include(kdc/config.m4)
 m4_include(ntvfs/sysdep/config.m4)
-m4_include(../nsswitch/config.m4)
 
 #################################################
 # add *_CFLAGS only for the real build
@@ -195,7 +200,7 @@ $SMB_INFO_LIBRARIES
 CEOF
 
 SMB_BUILD_RUN(data.mk)
-AC_OUTPUT
+AC_OUTPUT(Makefile)
 
 cmp include/config_tmp.h include/config.h >/dev/null 2>&1
 CMP_RET=$?

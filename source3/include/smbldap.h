@@ -153,7 +153,7 @@ int smbldap_modify(struct smbldap_state *ldap_state,
 struct smbldap_state {
 	LDAP *ldap_struct;
 	pid_t pid;
-	time_t last_ping;
+	time_t last_ping; /* monotonic */
 	/* retrive-once info */
 	const char *uri;
 
@@ -166,11 +166,11 @@ struct smbldap_state {
 
 	unsigned int num_failures;
 
-	time_t last_use;
+	time_t last_use; /* monotonic */
 	struct event_context *event_context;
 	struct timed_event *idle_event;
 
-	struct timeval last_rebind;
+	struct timeval last_rebind; /* monotonic */
 };
 
 /* struct used by both pdb_ldap.c and pdb_nds.c */
@@ -184,7 +184,7 @@ struct ldapsam_privates {
 	int index;
 
 	const char *domain_name;
-	DOM_SID domain_sid;
+	struct dom_sid domain_sid;
 
 	/* configuration items */
 	int schema_ver;
@@ -196,6 +196,11 @@ struct ldapsam_privates {
 
 	/* ldap server location parameter */
 	char *location;
+
+	struct {
+		char *filter;
+		LDAPMessage *result;
+	} search_cache;
 };
 
 /* Functions shared between pdb_ldap.c and pdb_nds.c. */
@@ -211,6 +216,9 @@ const char** get_userattr_list( TALLOC_CTX *mem_ctx, int schema_ver );
 char * smbldap_talloc_single_attribute(LDAP *ldap_struct, LDAPMessage *entry,
 				       const char *attribute,
 				       TALLOC_CTX *mem_ctx);
+char * smbldap_talloc_first_attribute(LDAP *ldap_struct, LDAPMessage *entry,
+				      const char *attribute,
+				      TALLOC_CTX *mem_ctx);
 char * smbldap_talloc_smallest_attribute(LDAP *ldap_struct, LDAPMessage *entry,
 					 const char *attribute,
 					 TALLOC_CTX *mem_ctx);
@@ -227,6 +235,7 @@ char *smbldap_talloc_dn(TALLOC_CTX *mem_ctx, LDAP *ld,
 
 #else
 #define LDAP void
+#define LDAPMessage void
 #define LDAPMod void
 #define LDAP_CONST const
 #define LDAPControl void
@@ -237,5 +246,11 @@ struct ldapsam_privates;
 #define LDAP_DEFAULT_TIMEOUT   15
 #define LDAP_CONNECTION_DEFAULT_TIMEOUT 2
 #define LDAP_PAGE_SIZE 1024
+
+#ifndef LDAP_OPT_SUCCESS
+#define LDAP_OPT_SUCCESS 0
+#endif
+
+#define ADS_PAGE_CTL_OID 	"1.2.840.113556.1.4.319"
 
 #endif	/* _SMBLDAP_H */

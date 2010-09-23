@@ -47,13 +47,13 @@
 	status = smb2_getinfo_file(tree, tctx, &_q); \
 	CHECK_STATUS(status, NT_STATUS_OK); \
 	/* Handle a Vista bug where SEC_STD_SYNCHRONIZE doesn't come back. */ \
-	if (((flags & CHECK_ACCESS_IGNORE) == CHECK_ACCESS_IGNORE) && \
+	if ((((flags) & CHECK_ACCESS_IGNORE) == CHECK_ACCESS_IGNORE) && \
 	    ((_q.access_information.out.access_flags & CHECK_ACCESS_IGNORE) != CHECK_ACCESS_IGNORE)) { \
 		torture_comment(tctx, "SKIPPING (Vista bug): (%s) Incorrect access_flags 0x%08x - should be 0x%08x\n", \
 		       __location__, _q.access_information.out.access_flags, (flags)); \
 	} \
 	if ((_q.access_information.out.access_flags & ~CHECK_ACCESS_IGNORE) != \
-	    ((flags & ~CHECK_ACCESS_IGNORE))) { \
+	    (((flags) & ~CHECK_ACCESS_IGNORE))) { \
 		torture_result(tctx, TORTURE_FAIL, "(%s) Incorrect access_flags 0x%08x - should be 0x%08x\n", \
 		       __location__, _q.access_information.out.access_flags, (flags)); \
 		ret = false; \
@@ -397,7 +397,7 @@ static bool test_generic_bits(struct torture_context *tctx, struct smb2_tree *tr
 			expected_mask_anon |= SEC_STD_DELETE;
 		}
 
-		torture_comment(tctx, "testing generic bits 0x%08x\n",
+		torture_comment(tctx, "Testing generic bits 0x%08x\n",
 		       file_mappings[i].gen_bits);
 		sd = security_descriptor_dacl_create(tctx,
 						0, owner_sid, NULL,
@@ -438,7 +438,7 @@ static bool test_generic_bits(struct torture_context *tctx, struct smb2_tree *tr
 			continue;
 		}
 
-		torture_comment(tctx, "testing generic bits 0x%08x (anonymous)\n",
+		torture_comment(tctx, "Testing generic bits 0x%08x (anonymous)\n",
 		       file_mappings[i].gen_bits);
 		sd = security_descriptor_dacl_create(tctx,
 						0, SID_NT_ANONYMOUS, NULL,
@@ -554,7 +554,7 @@ static bool test_generic_bits(struct torture_context *tctx, struct smb2_tree *tr
 			expected_mask_anon |= SEC_STD_DELETE;
 		}
 
-		torture_comment(tctx, "testing generic bits 0x%08x\n",
+		torture_comment(tctx, "Testing generic bits 0x%08x\n",
 		       file_mappings[i].gen_bits);
 		sd = security_descriptor_dacl_create(tctx,
 						0, owner_sid, NULL,
@@ -595,7 +595,7 @@ static bool test_generic_bits(struct torture_context *tctx, struct smb2_tree *tr
 			continue;
 		}
 
-		torture_comment(tctx, "testing generic bits 0x%08x (anonymous)\n",
+		torture_comment(tctx, "Testing generic bits 0x%08x (anonymous)\n",
 		       file_mappings[i].gen_bits);
 		sd = security_descriptor_dacl_create(tctx,
 						0, SID_NT_ANONYMOUS, NULL,
@@ -1125,7 +1125,7 @@ static bool test_inheritance(struct torture_context *tctx, struct smb2_tree *tre
 		}
 	}
 
-	torture_comment(tctx, "testing access checks on inherited create with %s\n", fname1);
+	torture_comment(tctx, "Testing access checks on inherited create with %s\n", fname1);
 	sd = security_descriptor_dacl_create(tctx,
 					0, NULL, NULL,
 					owner_sid,
@@ -1286,7 +1286,7 @@ static bool test_inheritance_flags(struct torture_context *tctx,
 		uint32_t parent_get_ace_inherit;
 		uint32_t child_get_sd_type;
 		uint32_t child_get_ace_inherit;
-	} tflags[16] = {0}; /* 2^4 */
+	} tflags[16] = {{0}}; /* 2^4 */
 
 	for (i = 0; i < 15; i++) {
 		torture_comment(tctx, "i=%d:", i);

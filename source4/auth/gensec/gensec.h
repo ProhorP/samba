@@ -26,6 +26,8 @@
 #include "../lib/util/data_blob.h"
 #include "libcli/util/ntstatus.h"
 
+#define GENSEC_SASL_NAME_NTLMSSP "NTLM"
+
 #define GENSEC_OID_NTLMSSP "1.3.6.1.4.1.311.2.2.10"
 #define GENSEC_OID_SPNEGO "1.3.6.1.5.5.2"
 #define GENSEC_OID_KERBEROS5 "1.2.840.113554.1.2.2"
@@ -73,7 +75,6 @@ struct tevent_req;
 
 struct gensec_settings {
 	struct loadparm_context *lp_ctx;
-	struct smb_iconv_convenience *iconv_convenience;
 	const char *target_hostname;
 };
 
@@ -179,6 +180,7 @@ struct gensec_critical_sizes {
 struct gensec_security;
 struct socket_context;
 struct auth_context;
+struct auth_serversupplied_info;
 
 NTSTATUS gensec_socket_init(struct gensec_security *gensec_security,
 			    TALLOC_CTX *mem_ctx, 
@@ -309,5 +311,7 @@ NTSTATUS gensec_start_mech_by_sasl_name(struct gensec_security *gensec_security,
 
 int gensec_setting_int(struct gensec_settings *settings, const char *mechanism, const char *name, int default_value);
 bool gensec_setting_bool(struct gensec_settings *settings, const char *mechanism, const char *name, bool default_value);
+
+NTSTATUS gensec_set_target_principal(struct gensec_security *gensec_security, const char *principal);
 
 #endif /* __GENSEC_H__ */

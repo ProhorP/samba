@@ -386,7 +386,7 @@ _PUBLIC_ NTSTATUS dcesrv_endpoint_connect(struct dcesrv_context *dce_ctx,
 	p->endpoint = ep;
 	p->contexts = NULL;
 	p->call_list = NULL;
-	p->packet_log_dir = lp_lockdir(dce_ctx->lp_ctx);
+	p->packet_log_dir = lpcfg_lockdir(dce_ctx->lp_ctx);
 	p->incoming_fragmented_call_list = NULL;
 	p->pending_call_list = NULL;
 	p->cli_max_recv_frag = 0;
@@ -468,7 +468,7 @@ static NTSTATUS dcesrv_fault(struct dcesrv_call_state *call, uint32_t fault_code
 	NTSTATUS status;
 
 	/* setup a bind_ack */
-	dcesrv_init_hdr(&pkt, lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
+	dcesrv_init_hdr(&pkt, lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
 	pkt.auth_length = 0;
 	pkt.call_id = call->pkt.call_id;
 	pkt.ptype = DCERPC_PKT_FAULT;
@@ -486,7 +486,7 @@ static NTSTATUS dcesrv_fault(struct dcesrv_call_state *call, uint32_t fault_code
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	status = ncacn_push_auth(&rep->blob, call, lp_iconv_convenience(call->conn->dce_ctx->lp_ctx), &pkt, NULL);
+	status = ncacn_push_auth(&rep->blob, call, &pkt, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -516,7 +516,7 @@ static NTSTATUS dcesrv_bind_nak(struct dcesrv_call_state *call, uint32_t reason)
 	NTSTATUS status;
 
 	/* setup a bind_nak */
-	dcesrv_init_hdr(&pkt, lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
+	dcesrv_init_hdr(&pkt, lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
 	pkt.auth_length = 0;
 	pkt.call_id = call->pkt.call_id;
 	pkt.ptype = DCERPC_PKT_BIND_NAK;
@@ -531,7 +531,7 @@ static NTSTATUS dcesrv_bind_nak(struct dcesrv_call_state *call, uint32_t reason)
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	status = ncacn_push_auth(&rep->blob, call, lp_iconv_convenience(call->conn->dce_ctx->lp_ctx), &pkt, NULL);
+	status = ncacn_push_auth(&rep->blob, call, &pkt, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -554,7 +554,7 @@ static int dcesrv_connection_context_destructor(struct dcesrv_connection_context
 {
 	DLIST_REMOVE(c->conn->contexts, c);
 
-	if (c->iface) {
+	if (c->iface && c->iface->unbind) {
 		c->iface->unbind(c, c->iface);
 	}
 
@@ -580,7 +580,7 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 	  if provided, check the assoc_group is valid
 	 */
 	if (call->pkt.u.bind.assoc_group_id != 0 &&
-	    lp_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","assoc group checking", true) &&
+	    lpcfg_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","assoc group checking", true) &&
 	    dcesrv_assoc_group_find(call->conn->dce_ctx, call->pkt.u.bind.assoc_group_id) == NULL) {
 		return dcesrv_bind_nak(call, 0);	
 	}
@@ -648,7 +648,7 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 		call->context = context;
 		talloc_set_destructor(context, dcesrv_connection_context_destructor);
 
-		status = iface->bind(call, iface);
+		status = iface->bind(call, iface, if_version);
 		if (!NT_STATUS_IS_OK(status)) {
 			char *uuid_str = GUID_string(call, &uuid);
 			DEBUG(2,("Request for dcerpc interface %s/%d rejected: %s\n",
@@ -667,7 +667,7 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 	}
 
 	if ((call->pkt.pfc_flags & DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN) &&
-	    lp_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","header signing", false)) {
+	    lpcfg_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","header signing", false)) {
 		call->conn->state_flags |= DCESRV_CALL_STATE_FLAG_HEADER_SIGNING;
 		extra_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
 	}
@@ -680,7 +680,7 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 	}
 
 	/* setup a bind_ack */
-	dcesrv_init_hdr(&pkt, lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
+	dcesrv_init_hdr(&pkt, lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
 	pkt.auth_length = 0;
 	pkt.call_id = call->pkt.call_id;
 	pkt.ptype = DCERPC_PKT_BIND_ACK;
@@ -732,7 +732,8 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	status = ncacn_push_auth(&rep->blob, call, lp_iconv_convenience(call->conn->dce_ctx->lp_ctx), &pkt, call->conn->auth_state.auth_info);
+	status = ncacn_push_auth(&rep->blob, call, &pkt,
+							 call->conn->auth_state.auth_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		talloc_free(call->context);
 		call->context = NULL;
@@ -827,7 +828,7 @@ static NTSTATUS dcesrv_alter_new_context(struct dcesrv_call_state *call, uint32_
 	call->context = context;
 	talloc_set_destructor(context, dcesrv_connection_context_destructor);
 
-	status = iface->bind(call, iface);
+	status = iface->bind(call, iface, if_version);
 	if (!NT_STATUS_IS_OK(status)) {
 		/* we don't want to trigger the iface->unbind() hook */
 		context->iface = NULL;
@@ -874,7 +875,7 @@ static NTSTATUS dcesrv_alter(struct dcesrv_call_state *call)
 
 	if (result == 0 &&
 	    call->pkt.u.alter.assoc_group_id != 0 &&
-	    lp_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","assoc group checking", true) &&
+	    lpcfg_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","assoc group checking", true) &&
 	    call->pkt.u.alter.assoc_group_id != call->context->assoc_group->id) {
 		DEBUG(0,(__location__ ": Failed attempt to use new assoc_group in alter context (0x%08x 0x%08x)\n",
 			 call->context->assoc_group->id, call->pkt.u.alter.assoc_group_id));
@@ -884,7 +885,7 @@ static NTSTATUS dcesrv_alter(struct dcesrv_call_state *call)
 	}
 
 	/* setup a alter_resp */
-	dcesrv_init_hdr(&pkt, lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
+	dcesrv_init_hdr(&pkt, lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
 	pkt.auth_length = 0;
 	pkt.call_id = call->pkt.call_id;
 	pkt.ptype = DCERPC_PKT_ALTER_RESP;
@@ -923,7 +924,7 @@ static NTSTATUS dcesrv_alter(struct dcesrv_call_state *call)
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	status = ncacn_push_auth(&rep->blob, call, lp_iconv_convenience(call->conn->dce_ctx->lp_ctx), &pkt, call->conn->auth_state.auth_info);
+	status = ncacn_push_auth(&rep->blob, call, &pkt, call->conn->auth_state.auth_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -940,6 +941,30 @@ static NTSTATUS dcesrv_alter(struct dcesrv_call_state *call)
 	}
 
 	return NT_STATUS_OK;
+}
+
+/*
+  possibly save the call for inspection with ndrdump
+ */
+static void dcesrv_save_call(struct dcesrv_call_state *call, const char *why)
+{
+#ifdef DEVELOPER
+	char *fname;
+	char *dump_dir;
+	dump_dir = lpcfg_parm_string(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv", "stubs directory");
+	if (!dump_dir) {
+		return;
+	}
+	fname = talloc_asprintf(call, "%s/RPC-%s-%u-%s.dat",
+				dump_dir,
+				call->context->iface->name,
+				call->pkt.u.request.opnum,
+				why);
+	if (file_save(fname, call->pkt.u.request.stub_and_verifier.data, call->pkt.u.request.stub_and_verifier.length)) {
+		DEBUG(0,("RPC SAVED %s\n", fname));
+	}
+	talloc_free(fname);
+#endif
 }
 
 /*
@@ -962,8 +987,7 @@ static NTSTATUS dcesrv_request(struct dcesrv_call_state *call)
 		return dcesrv_fault(call, DCERPC_FAULT_UNK_IF);
 	}
 
-	pull = ndr_pull_init_blob(&call->pkt.u.request.stub_and_verifier, call,
-				  lp_iconv_convenience(call->conn->dce_ctx->lp_ctx));
+	pull = ndr_pull_init_blob(&call->pkt.u.request.stub_and_verifier, call);
 	NT_STATUS_HAVE_NO_MEMORY(pull);
 
 	pull->flags |= LIBNDR_FLAG_REF_ALLOC;
@@ -978,13 +1002,21 @@ static NTSTATUS dcesrv_request(struct dcesrv_call_state *call)
 	/* unravel the NDR for the packet */
 	status = context->iface->ndr_pull(call, call, pull, &call->r);
 	if (!NT_STATUS_IS_OK(status)) {
+		if (call->fault_code == DCERPC_FAULT_OP_RNG_ERROR) {
+			/* we got an unknown call */
+			DEBUG(3,(__location__ ": Unknown RPC call %u on %s\n",
+				 call->pkt.u.request.opnum, context->iface->name));
+			dcesrv_save_call(call, "unknown");
+		} else {
+			dcesrv_save_call(call, "pullfail");
+		}
 		return dcesrv_fault(call, call->fault_code);
 	}
 
 	if (pull->offset != pull->data_size) {
+		dcesrv_save_call(call, "extrabytes");
 		DEBUG(3,("Warning: %d extra bytes in incoming RPC request\n", 
 			 pull->data_size - pull->offset));
-		dump_data(10, pull->data+pull->offset, pull->data_size - pull->offset);
 	}
 
 	/* call the dispatch function */
@@ -1023,7 +1055,7 @@ _PUBLIC_ NTSTATUS dcesrv_reply(struct dcesrv_call_state *call)
 	}
 
 	/* form the reply NDR */
-	push = ndr_push_init_ctx(call, lp_iconv_convenience(call->conn->dce_ctx->lp_ctx));
+	push = ndr_push_init_ctx(call);
 	NT_STATUS_HAVE_NO_MEMORY(push);
 
 	/* carry over the pointer count to the reply in case we are
@@ -1031,7 +1063,7 @@ _PUBLIC_ NTSTATUS dcesrv_reply(struct dcesrv_call_state *call)
 	   pointers */
 	push->ptr_count = call->ndr_pull->ptr_count;
 
-	if (lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx)) {
+	if (lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx)) {
 		push->flags |= LIBNDR_FLAG_BIGENDIAN;
 	}
 
@@ -1070,7 +1102,7 @@ _PUBLIC_ NTSTATUS dcesrv_reply(struct dcesrv_call_state *call)
 		length = MIN(chunk_size, stub.length);
 
 		/* form the dcerpc response packet */
-		dcesrv_init_hdr(&pkt, lp_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
+		dcesrv_init_hdr(&pkt, lpcfg_rpc_big_endian(call->conn->dce_ctx->lp_ctx));
 		pkt.auth_length = 0;
 		pkt.call_id = call->pkt.call_id;
 		pkt.ptype = DCERPC_PKT_RESPONSE;
@@ -1111,25 +1143,6 @@ _PUBLIC_ NTSTATUS dcesrv_reply(struct dcesrv_call_state *call)
 	return NT_STATUS_OK;
 }
 
-_PUBLIC_ struct socket_address *dcesrv_connection_get_my_addr(struct dcesrv_connection *conn, TALLOC_CTX *mem_ctx)
-{
-	if (!conn->transport.get_my_addr) {
-		return NULL;
-	}
-
-	return conn->transport.get_my_addr(conn, mem_ctx);
-}
-
-_PUBLIC_ struct socket_address *dcesrv_connection_get_peer_addr(struct dcesrv_connection *conn, TALLOC_CTX *mem_ctx)
-{
-	if (!conn->transport.get_peer_addr) {
-		return NULL;
-	}
-
-	return conn->transport.get_peer_addr(conn, mem_ctx);
-}
-
-
 /*
   remove the call from the right list when freed
  */
@@ -1137,6 +1150,16 @@ static int dcesrv_call_dequeue(struct dcesrv_call_state *call)
 {
 	dcesrv_call_set_list(call, DCESRV_LIST_NONE);
 	return 0;
+}
+
+_PUBLIC_ const struct tsocket_address *dcesrv_connection_get_local_address(struct dcesrv_connection *conn)
+{
+	return conn->local_address;
+}
+
+_PUBLIC_ const struct tsocket_address *dcesrv_connection_get_remote_address(struct dcesrv_connection *conn)
+{
+	return conn->remote_address;
 }
 
 /*

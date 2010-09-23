@@ -57,7 +57,7 @@ static bool torture_ldb_attrs(struct torture_context *torture)
 		       "Failed to init ldb");
 
 	torture_assert_int_equal(torture, 
-				 ldb_register_samba_handlers(ldb), 0, 
+				 ldb_register_samba_handlers(ldb), LDB_SUCCESS,
 				 "Failed to register Samba handlers");
 
 	ldb_set_utf8_fns(ldb, NULL, wrap_casefold);
@@ -216,7 +216,7 @@ static bool torture_ldb_dn_attrs(struct torture_context *torture)
 		       "Failed to init ldb");
 
 	torture_assert_int_equal(torture, 
-				 ldb_register_samba_handlers(ldb), 0, 
+				 ldb_register_samba_handlers(ldb), LDB_SUCCESS,
 				 "Failed to register Samba handlers");
 
 	ldb_set_utf8_fns(ldb, NULL, wrap_casefold);
@@ -334,7 +334,7 @@ static bool torture_ldb_dn_extended(struct torture_context *torture)
 		       "Failed to init ldb");
 
 	torture_assert_int_equal(torture, 
-				 ldb_register_samba_handlers(ldb), 0, 
+				 ldb_register_samba_handlers(ldb), LDB_SUCCESS,
 				 "Failed to register Samba handlers");
 
 	ldb_set_utf8_fns(ldb, NULL, wrap_casefold);
@@ -587,6 +587,7 @@ static bool torture_ldb_dn(struct torture_context *torture)
 	struct ldb_dn *dn;
 	struct ldb_dn *child_dn;
 	struct ldb_dn *typo_dn;
+	struct ldb_dn *special_dn;
 	struct ldb_val val;
 
 	torture_assert(torture, 
@@ -594,7 +595,7 @@ static bool torture_ldb_dn(struct torture_context *torture)
 		       "Failed to init ldb");
 
 	torture_assert_int_equal(torture, 
-				 ldb_register_samba_handlers(ldb), 0, 
+				 ldb_register_samba_handlers(ldb), LDB_SUCCESS,
 				 "Failed to register Samba handlers");
 
 	ldb_set_utf8_fns(ldb, NULL, wrap_casefold);
@@ -656,6 +657,23 @@ static bool torture_ldb_dn(struct torture_context *torture)
 		       ldb_dn_compare_base(dn, typo_dn) != 0,
 		       "Base Comparison on dc=samba,dc=org and c=samba,dc=org should != 0");
 
+	/* Check comparisons with a special DN */
+	torture_assert(torture,
+		       special_dn = ldb_dn_new(mem_ctx, ldb, "@special_dn"),
+		       "Failed to create 'special' DN");
+
+	torture_assert(torture,
+		       ldb_dn_compare(dn, special_dn) != 0,
+		       "Comparison on dc=samba,dc=org and @special_dn should != 0");
+
+	torture_assert(torture,
+		       ldb_dn_compare_base(special_dn, dn) > 0,
+		       "Base Comparison of @special_dn and dc=samba,dc=org should > 0");
+
+	torture_assert(torture,
+		       ldb_dn_compare_base(dn, special_dn) < 0,
+		       "Base Comparison on dc=samba,dc=org and @special_dn should < 0");
+
 	/* Check DN based on MS-ADTS:3.1.1.5.1.2 Naming Constraints*/
 	torture_assert(torture,
 		       dn = ldb_dn_new(mem_ctx, ldb, "CN=New\nLine,DC=SAMBA,DC=org"),
@@ -689,7 +707,7 @@ static bool torture_ldb_dn_invalid_extended(struct torture_context *torture)
 		       "Failed to init ldb");
 
 	torture_assert_int_equal(torture, 
-				 ldb_register_samba_handlers(ldb), 0, 
+				 ldb_register_samba_handlers(ldb), LDB_SUCCESS,
 				 "Failed to register Samba handlers");
 
 	ldb_set_utf8_fns(ldb, NULL, wrap_casefold);

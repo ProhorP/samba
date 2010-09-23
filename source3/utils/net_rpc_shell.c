@@ -19,7 +19,10 @@
 
 
 #include "includes.h"
+#include "popt_common.h"
 #include "utils/net.h"
+#include "../librpc/gen_ndr/ndr_samr.h"
+#include "lib/netapi/netapi.h"
 
 static NTSTATUS rpc_sh_info(struct net_context *c,
 			    TALLOC_CTX *mem_ctx, struct rpc_sh_ctx *ctx,
@@ -214,8 +217,7 @@ int net_rpc_shell(struct net_context *c, int argc, const char **argv)
 	struct rpc_sh_ctx *ctx;
 
 	if (argc != 0 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net rpc shell\n"));
+		d_printf("%s\nnet rpc shell\n", _("Usage:"));
 		return -1;
 	}
 

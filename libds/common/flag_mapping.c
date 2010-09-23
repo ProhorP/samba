@@ -4,6 +4,7 @@
 
    Copyright (C) Stefan (metze) Metzmacher 2002
    Copyright (C) Andrew Tridgell 2004
+   Copyright (C) Matthias Dieter Wallnöfer 2010
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,7 +55,8 @@ static const struct {
 
 uint32_t ds_acb2uf(uint32_t acb)
 {
-	uint32_t i, ret = 0;
+	unsigned int i;
+	uint32_t ret = 0;
 	for (i=0;i<ARRAY_SIZE(acct_flags_map);i++) {
 		if (acct_flags_map[i].acb & acb) {
 			ret |= acct_flags_map[i].uf;
@@ -68,7 +70,7 @@ translated the UserFlags (userAccountControl) to ACB_CTRL Flags
 */
 uint32_t ds_uf2acb(uint32_t uf)
 {
-	uint32_t i;
+	unsigned int i;
 	uint32_t ret = 0;
 	for (i=0;i<ARRAY_SIZE(acct_flags_map);i++) {
 		if (acct_flags_map[i].uf & uf) {
@@ -143,4 +145,16 @@ enum lsa_SidType ds_atype_map(uint32_t atype)
 		DEBUG(1,("hmm, need to map account type 0x%x\n", atype));
 	}
 	return SID_NAME_UNKNOWN;
+}
+
+/* get the default primary group RID for a given userAccountControl
+ * (informations according to MS-SAMR 3.1.1.8.1) */
+uint32_t ds_uf2prim_group_rid(uint32_t uf)
+{
+	uint32_t prim_group_rid = DOMAIN_RID_USERS;
+
+	if (uf & UF_SERVER_TRUST_ACCOUNT)           prim_group_rid = DOMAIN_RID_DCS;
+	else if (uf & UF_WORKSTATION_TRUST_ACCOUNT) prim_group_rid = DOMAIN_RID_DOMAIN_MEMBERS;
+
+	return prim_group_rid;
 }

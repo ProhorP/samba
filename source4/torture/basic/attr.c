@@ -49,7 +49,7 @@ static const uint32_t open_attrs_table[] = {
 };
 
 struct trunc_open_results {
-	uint_t num;
+	unsigned int num;
 	uint32_t init_attr;
 	uint32_t trunc_attr;
 	uint32_t result_attr;
@@ -91,7 +91,7 @@ bool torture_openattrtest(struct torture_context *tctx,
 	const char *fname = "\\openattr.file";
 	int fnum1;
 	uint16_t attr;
-	uint_t i, j, k, l;
+	unsigned int i, j, k, l;
 	int failures = 0;
 
 	for (k = 0, i = 0; i < sizeof(open_attrs_table)/sizeof(uint32_t); i++) {
@@ -121,7 +121,8 @@ bool torture_openattrtest(struct torture_context *tctx,
 			if (fnum1 == -1) {
 				for (l = 0; l < ARRAY_SIZE(attr_results); l++) {
 					if (attr_results[l].num == k) {
-						torture_comment(tctx, "[%d] trunc open 0x%x -> 0x%x of %s failed - should have succeeded !(%s)\n",
+						torture_result(tctx, TORTURE_FAIL,
+								"[%d] trunc open 0x%x -> 0x%x of %s failed - should have succeeded !(%s)",
 								k, open_attrs_table[i],
 								open_attrs_table[j],
 								fname, smbcli_errstr(cli1->tree));
@@ -160,10 +161,11 @@ bool torture_openattrtest(struct torture_context *tctx,
 					if (attr != attr_results[l].result_attr ||
 					    open_attrs_table[i] != attr_results[l].init_attr ||
 					    open_attrs_table[j] != attr_results[l].trunc_attr) {
-						torture_comment(tctx, "[%d] getatr check failed. [0x%x] trunc [0x%x] got attr 0x%x, should be 0x%x\n",
+						torture_result(tctx, TORTURE_FAIL,
+							"[%d] getatr check failed. [0x%x] trunc [0x%x] got attr 0x%x, should be 0x%x",
 						       k, open_attrs_table[i],
 						       open_attrs_table[j],
-						       (uint_t)attr,
+						       (unsigned int)attr,
 						       attr_results[l].result_attr);
 						CHECK_MAX_FAILURES(error_exit);
 					}

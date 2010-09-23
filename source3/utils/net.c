@@ -41,7 +41,10 @@
 /*****************************************************/
 
 #include "includes.h"
+#include "popt_common.h"
 #include "utils/net.h"
+#include "secrets.h"
+#include "lib/netapi/netapi.h"
 
 extern bool AllowDebugChange;
 
@@ -231,7 +234,7 @@ static int net_getauthuser(struct net_context *c, int argc, const char **argv)
  */
 static int net_getlocalsid(struct net_context *c, int argc, const char **argv)
 {
-        DOM_SID sid;
+        struct dom_sid sid;
 	const char *name;
 	fstring sid_str;
 
@@ -271,13 +274,14 @@ static int net_getlocalsid(struct net_context *c, int argc, const char **argv)
 
 static int net_setlocalsid(struct net_context *c, int argc, const char **argv)
 {
-	DOM_SID sid;
+	struct dom_sid sid;
 
 	if ( (argc != 1)
 	     || (strncmp(argv[0], "S-1-5-21-", strlen("S-1-5-21-")) != 0)
 	     || (!string_to_sid(&sid, argv[0]))
 	     || (sid.num_auths != 4)) {
-		d_printf(_("usage: net setlocalsid S-1-5-21-x-y-z\n"));
+		d_printf(_("Usage:"));
+		d_printf(" net setlocalsid S-1-5-21-x-y-z\n");
 		return 1;
 	}
 
@@ -291,13 +295,14 @@ static int net_setlocalsid(struct net_context *c, int argc, const char **argv)
 
 static int net_setdomainsid(struct net_context *c, int argc, const char **argv)
 {
-	DOM_SID sid;
+	struct dom_sid sid;
 
 	if ( (argc != 1)
 	     || (strncmp(argv[0], "S-1-5-21-", strlen("S-1-5-21-")) != 0)
 	     || (!string_to_sid(&sid, argv[0]))
 	     || (sid.num_auths != 4)) {
-		d_printf(_("usage: net setdomainsid S-1-5-21-x-y-z\n"));
+		d_printf(_("Usage:"));
+		d_printf(" net setdomainsid S-1-5-21-x-y-z\n");
 		return 1;
 	}
 
@@ -311,11 +316,12 @@ static int net_setdomainsid(struct net_context *c, int argc, const char **argv)
 
 static int net_getdomainsid(struct net_context *c, int argc, const char **argv)
 {
-	DOM_SID domain_sid;
+	struct dom_sid domain_sid;
 	fstring sid_str;
 
 	if (argc > 0) {
-		d_printf(_("usage: net getdomainsid\n"));
+		d_printf(_("Usage:"));
+		d_printf(" net getdomainsid\n");
 		return 1;
 	}
 
@@ -399,7 +405,7 @@ static int net_maxrid(struct net_context *c, int argc, const char **argv)
 	uint32 rid;
 
 	if (argc != 0) {
-	        d_fprintf(stderr, _("usage: net maxrid\n"));
+	        d_fprintf(stderr, "%s net maxrid\n", _("Usage:"));
 		return 1;
 	}
 
@@ -609,6 +615,13 @@ static struct functable net_func[] = {
 		N_("  Use 'net help lookup' to get more information about 'net "
 		   "lookup' commands.")
 	},
+	{	"g_lock",
+		net_g_lock,
+		NET_TRANSPORT_LOCAL,
+		N_("Manipulate the global lock table"),
+		N_("  Use 'net help g_lock' to get more information about "
+		   "'net g_lock' commands.")
+	},
 	{	"join",
 		net_join,
 		NET_TRANSPORT_ADS | NET_TRANSPORT_RPC,
@@ -709,6 +722,21 @@ static struct functable net_func[] = {
 		N_("  Use 'net help eventlog' to get more information about "
 		   "'net eventlog' commands.")
 	},
+	{	"printing",
+		net_printing,
+		NET_TRANSPORT_LOCAL,
+		N_("Process tdb printer files"),
+		N_("  Use 'net help printing' to get more information about "
+		   "'net printing' commands.")
+	},
+
+	{	"serverid",
+		net_serverid,
+		NET_TRANSPORT_LOCAL,
+		N_("Manage the serverid tdb"),
+		N_("  Use 'net help serverid' to get more information about "
+		   "'net serverid' commands.")
+	},
 
 #ifdef WITH_FAKE_KASERVER
 	{	"afs",
@@ -767,6 +795,7 @@ static struct functable net_func[] = {
 		{"machine-pass",'P', POPT_ARG_NONE,   &c->opt_machine_pass},
 		{"kerberos",    'k', POPT_ARG_NONE,   &c->opt_kerberos},
 		{"myworkgroup", 'W', POPT_ARG_STRING, &c->opt_workgroup},
+		{"use-ccache",    0, POPT_ARG_NONE,   &c->opt_ccache},
 		{"verbose",	'v', POPT_ARG_NONE,   &c->opt_verbose},
 		{"test",	'T', POPT_ARG_NONE,   &c->opt_testmode},
 		/* Options for 'net groupmap set' */
@@ -886,7 +915,7 @@ static struct functable net_func[] = {
 	load_interfaces();
 
 	/* this makes sure that when we do things like call scripts,
-	   that it won't assert becouse we are not root */
+	   that it won't assert because we are not root */
 	sec_init();
 
 	if (c->opt_machine_pass) {

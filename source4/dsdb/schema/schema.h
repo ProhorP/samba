@@ -28,6 +28,15 @@ struct dsdb_attribute;
 struct dsdb_class;
 struct dsdb_schema;
 
+struct dsdb_syntax_ctx {
+	struct ldb_context *ldb;
+	const struct dsdb_schema *schema;
+
+	/* set when converting objects under Schema NC */
+	bool is_schema_nc;
+};
+
+
 struct dsdb_syntax {
 	const char *name;
 	const char *ldap_oid;
@@ -39,18 +48,19 @@ struct dsdb_syntax {
 	const char *comment;
 	const char *ldb_syntax;
 
-	WERROR (*drsuapi_to_ldb)(struct ldb_context *ldb, 
-				 const struct dsdb_schema *schema,
+	WERROR (*drsuapi_to_ldb)(const struct dsdb_syntax_ctx *ctx,
 				 const struct dsdb_attribute *attr,
 				 const struct drsuapi_DsReplicaAttribute *in,
 				 TALLOC_CTX *mem_ctx,
 				 struct ldb_message_element *out);
-	WERROR (*ldb_to_drsuapi)(struct ldb_context *ldb, 
-				 const struct dsdb_schema *schema,
+	WERROR (*ldb_to_drsuapi)(const struct dsdb_syntax_ctx *ctx,
 				 const struct dsdb_attribute *attr,
 				 const struct ldb_message_element *in,
 				 TALLOC_CTX *mem_ctx,
 				 struct drsuapi_DsReplicaAttribute *out);
+	WERROR (*validate_ldb)(const struct dsdb_syntax_ctx *ctx,
+			       const struct dsdb_attribute *attr,
+			       const struct ldb_message_element *in);
 };
 
 struct dsdb_attribute {
@@ -161,8 +171,17 @@ struct dsdb_class {
 	uint32_t subClass_order;
 };
 
+/**
+ * data stored in schemaInfo attribute
+ */
+struct dsdb_schema_info {
+	uint32_t 	revision;
+	struct GUID	invocation_id;
+};
+
 
 struct dsdb_schema {
+	struct ldb_dn *base_dn;
 
 	struct dsdb_schema_prefixmap *prefixmap;
 
@@ -175,6 +194,9 @@ struct dsdb_schema {
 	 * Schema-Partition head object.
 	 */
 	const char *schema_info;
+
+	/* We can also tell the schema version from the USN on the partition */
+	uint64_t loaded_usn;
 
 	struct dsdb_attribute *attributes;
 	struct dsdb_class *classes;
@@ -193,13 +215,23 @@ struct dsdb_schema {
 	struct dsdb_attribute **attributes_by_attributeID_id;
 	struct dsdb_attribute **attributes_by_attributeID_oid;
 	struct dsdb_attribute **attributes_by_linkID;
+	uint32_t num_int_id_attr;
+	struct dsdb_attribute **attributes_by_msDS_IntId;
 
 	struct {
 		bool we_are_master;
 		struct ldb_dn *master_dn;
 	} fsmo;
 
-	struct smb_iconv_convenience *iconv_convenience;
+	/* Was this schema loaded from ldb (if so, then we will reload it when we detect a change in ldb) */
+	struct ldb_module *loaded_from_module;
+	struct dsdb_schema *(*refresh_fn)(struct ldb_module *module, struct dsdb_schema *schema, bool is_global_schema);
+	bool refresh_in_progress;
+	/* an 'opaque' sequence number that the reload function may also wish to use */
+	uint64_t reload_seq_number;
+
+	/* Should the syntax handlers in this case handle all incoming OIDs automatically, assigning them as an OID if no text name is known? */
+	bool relax_OID_conversions;
 };
 
 enum dsdb_attr_list_query {

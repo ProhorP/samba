@@ -27,6 +27,12 @@
 
 #include "includes.h"
 #include "winbindd.h"
+#include "../libds/common/flags.h"
+#include "ads.h"
+#include "libads/ldap_schema.h"
+#include "nss_info.h"
+#include "secrets.h"
+#include "idmap.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -43,8 +49,6 @@
 } while (0)
 
 struct idmap_ad_context {
-	uint32_t filter_low_id;
-	uint32_t filter_high_id;
 	ADS_STRUCT *ads;
 	struct posix_schema *ad_schema;
 	enum wb_posix_mapping ad_map_type; /* WB_POSIX_MAP_UNKNOWN */
@@ -197,29 +201,19 @@ static NTSTATUS idmap_ad_initialize(struct idmap_domain *dom,
 {
 	struct idmap_ad_context *ctx;
 	char *config_option;
-	const char *range = NULL;
 	const char *schema_mode = NULL;	
 
-	if ( (ctx = TALLOC_ZERO_P(dom, struct idmap_ad_context)) == NULL ) {
+	ctx = TALLOC_ZERO_P(dom, struct idmap_ad_context);
+	if (ctx == NULL) {
 		DEBUG(0, ("Out of memory!\n"));
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if ( (config_option = talloc_asprintf(ctx, "idmap config %s", dom->name)) == NULL ) {
+	config_option = talloc_asprintf(ctx, "idmap config %s", dom->name);
+	if (config_option == NULL) {
 		DEBUG(0, ("Out of memory!\n"));
 		talloc_free(ctx);
 		return NT_STATUS_NO_MEMORY;
-	}
-
-	/* load ranges */
-	range = lp_parm_const_string(-1, config_option, "range", NULL);
-	if (range && range[0]) {
-		if ((sscanf(range, "%u - %u", &ctx->filter_low_id, &ctx->filter_high_id) != 2) ||
-		    (ctx->filter_low_id > ctx->filter_high_id)) {
-			DEBUG(1, ("ERROR: invalid filter range [%s]", range));
-			ctx->filter_low_id = 0;
-			ctx->filter_high_id = 0;
-		}
 	}
 
 	/* default map type */
@@ -267,7 +261,7 @@ static struct id_map *find_map_by_id(struct id_map **maps, enum id_type type, ui
  Search up to IDMAP_AD_MAX_IDS entries in maps for a match
  ***********************************************************************/
 
-static struct id_map *find_map_by_sid(struct id_map **maps, DOM_SID *sid)
+static struct id_map *find_map_by_sid(struct id_map **maps, struct dom_sid *sid)
 {
 	int i;
 
@@ -400,7 +394,7 @@ again:
 
 	entry = res;
 	for (i = 0; (i < count) && entry; i++) {
-		DOM_SID sid;
+		struct dom_sid sid;
 		enum id_type type;
 		struct id_map *map;
 		uint32_t id;
@@ -453,11 +447,9 @@ again:
 			continue;
 		}
 
-		if ((id == 0) ||
-		    (ctx->filter_low_id && (id < ctx->filter_low_id)) ||
-		    (ctx->filter_high_id && (id > ctx->filter_high_id))) {
+		if (!idmap_unix_id_is_in_range(id, dom)) {
 			DEBUG(5, ("Requested id (%u) out of range (%u - %u). Filtered!\n",
-				id, ctx->filter_low_id, ctx->filter_high_id));
+				id, dom->low_id, dom->high_id));
 			continue;
 		}
 
@@ -593,7 +585,7 @@ again:
 
 	entry = res;	
 	for (i = 0; (i < count) && entry; i++) {
-		DOM_SID sid;
+		struct dom_sid sid;
 		enum id_type type;
 		struct id_map *map;
 		uint32_t id;
@@ -651,11 +643,9 @@ again:
 			DEBUG(1, ("Could not get unix ID\n"));
 			continue;
 		}
-		if ((id == 0) ||
-		    (ctx->filter_low_id && (id < ctx->filter_low_id)) ||
-		    (ctx->filter_high_id && (id > ctx->filter_high_id))) {
+		if (!idmap_unix_id_is_in_range(id, dom)) {
 			DEBUG(5, ("Requested id (%u) out of range (%u - %u). Filtered!\n",
-				id, ctx->filter_low_id, ctx->filter_high_id));
+				id, dom->low_id, dom->high_id));
 			continue;
 		}
 
@@ -818,7 +808,7 @@ static NTSTATUS nss_rfc2307_init( struct nss_domain_entry *e )
  ***********************************************************************/
 
 static NTSTATUS nss_ad_get_info( struct nss_domain_entry *e, 
-				  const DOM_SID *sid, 
+				  const struct dom_sid *sid,
 				  TALLOC_CTX *mem_ctx,
 				  ADS_STRUCT *ads, 
 				  LDAPMessage *msg,

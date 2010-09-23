@@ -25,6 +25,8 @@
 #include "auth/auth.h"
 #include "auth/ntlm/auth_proto.h"
 #include "param/param.h"
+#include "dsdb/samdb/samdb.h"
+
 
 /***************************************************************************
  Set a fixed challenge
@@ -96,13 +98,16 @@ _PUBLIC_ NTSTATUS auth_get_challenge(struct auth_context *auth_ctx, uint8_t chal
 }
 
 /****************************************************************************
- Try to get a challenge out of the various authentication modules.
- Returns a const char of length 8 bytes.
+Used in the gensec_gssapi and gensec_krb5 server-side code, where the
+PAC isn't available, and for tokenGroups in the DSDB stack.
+
+ Supply either a principal or a DN
 ****************************************************************************/
 _PUBLIC_ NTSTATUS auth_get_server_info_principal(TALLOC_CTX *mem_ctx, 
-						  struct auth_context *auth_ctx,
-						  const char *principal,
-						  struct auth_serversupplied_info **server_info)
+						 struct auth_context *auth_ctx,
+						 const char *principal,
+						 struct ldb_dn *user_dn,
+						 struct auth_serversupplied_info **server_info)
 {
 	NTSTATUS nt_status;
 	struct auth_method_context *method;
@@ -112,7 +117,7 @@ _PUBLIC_ NTSTATUS auth_get_server_info_principal(TALLOC_CTX *mem_ctx,
 			continue;
 		}
 
-		nt_status = method->ops->get_server_info_principal(mem_ctx, auth_ctx, principal, server_info);
+		nt_status = method->ops->get_server_info_principal(mem_ctx, auth_ctx, principal, user_dn, server_info);
 		if (NT_STATUS_EQUAL(nt_status, NT_STATUS_NOT_IMPLEMENTED)) {
 			continue;
 		}
@@ -229,7 +234,6 @@ _PUBLIC_ struct tevent_req *auth_check_password_send(TALLOC_CTX *mem_ctx,
 	struct auth_check_password_state *state;
 	/* if all the modules say 'not for me' this is reasonable */
 	NTSTATUS nt_status;
-	struct auth_method_context *method;
 	uint8_t chal[8];
 	struct auth_usersupplied_info *user_info_tmp;
 	struct tevent_immediate *im;
@@ -247,10 +251,9 @@ _PUBLIC_ struct tevent_req *auth_check_password_send(TALLOC_CTX *mem_ctx,
 
 	state->auth_ctx		= auth_ctx;
 	state->user_info	= user_info;
-	state->method		= NULL;
 
 	if (!user_info->mapped_state) {
-		nt_status = map_user_info(req, lp_workgroup(auth_ctx->lp_ctx),
+		nt_status = map_user_info(req, lpcfg_workgroup(auth_ctx->lp_ctx),
 					  user_info, &user_info_tmp);
 		if (tevent_req_nterror(req, nt_status)) {
 			return tevent_req_post(req, ev);
@@ -291,35 +294,11 @@ _PUBLIC_ struct tevent_req *auth_check_password_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 
-	for (method = auth_ctx->methods; method; method = method->next) {
-		NTSTATUS result;
-
-		/* check if the module wants to chek the password */
-		result = method->ops->want_check(method, req, user_info);
-		if (NT_STATUS_EQUAL(result, NT_STATUS_NOT_IMPLEMENTED)) {
-			DEBUG(11,("auth_check_password_send: "
-				  "%s had nothing to say\n",
-				  method->ops->name));
-			continue;
-		}
-
-		state->method = method;
-
-		if (tevent_req_nterror(req, result)) {
-			return tevent_req_post(req, ev);
-		}
-
-		tevent_schedule_immediate(im,
-					  auth_ctx->event_ctx,
-					  auth_check_password_async_trigger,
-					  req);
-
-		return req;
-	}
-
-	/* If all the modules say 'not for me', then this is reasonable */
-	tevent_req_nterror(req, NT_STATUS_NO_SUCH_USER);
-	return tevent_req_post(req, ev);
+	tevent_schedule_immediate(im,
+				  auth_ctx->event_ctx,
+				  auth_check_password_async_trigger,
+				  req);
+	return req;
 }
 
 static void auth_check_password_async_trigger(struct tevent_context *ev,
@@ -331,11 +310,45 @@ static void auth_check_password_async_trigger(struct tevent_context *ev,
 	struct auth_check_password_state *state =
 		tevent_req_data(req, struct auth_check_password_state);
 	NTSTATUS status;
+	struct auth_method_context *method;
 
-	status = state->method->ops->check_password(state->method,
-						    state,
-						    state->user_info,
-						    &state->server_info);
+	status = NT_STATUS_OK;
+
+	for (method=state->auth_ctx->methods; method; method = method->next) {
+
+		/* we fill in state->method here so debug messages in
+		   the callers know which method failed */
+		state->method = method;
+
+		/* check if the module wants to check the password */
+		status = method->ops->want_check(method, req, state->user_info);
+		if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_IMPLEMENTED)) {
+			DEBUG(11,("auth_check_password_send: "
+				  "%s had nothing to say\n",
+				  method->ops->name));
+			continue;
+		}
+
+		if (tevent_req_nterror(req, status)) {
+			return;
+		}
+
+		status = method->ops->check_password(method,
+						     state,
+						     state->user_info,
+						     &state->server_info);
+		if (!NT_STATUS_EQUAL(status, NT_STATUS_NOT_IMPLEMENTED)) {
+			/* the backend has handled the request */
+			break;
+		}
+	}
+
+	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_IMPLEMENTED)) {
+		/* don't expose the NT_STATUS_NOT_IMPLEMENTED
+		   internals */
+		status = NT_STATUS_NO_SUCH_USER;
+	}
+
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
@@ -373,7 +386,7 @@ _PUBLIC_ NTSTATUS auth_check_password_recv(struct tevent_req *req,
 
 	if (tevent_req_is_nterror(req, &status)) {
 		DEBUG(2,("auth_check_password_recv: "
-			 "%s authentication for user [%s\\%s]"
+			 "%s authentication for user [%s\\%s] "
 			 "FAILED with error %s\n",
 			 (state->method ? state->method->ops->name : "NO_METHOD"),
 			 state->user_info->mapped.domain_name,
@@ -397,13 +410,14 @@ _PUBLIC_ NTSTATUS auth_check_password_recv(struct tevent_req *req,
 
 /***************************************************************************
  Make a auth_info struct for the auth subsystem
- - Allow the caller to specify the methods to use
+ - Allow the caller to specify the methods to use, including optionally the SAM to use
 ***************************************************************************/
 _PUBLIC_ NTSTATUS auth_context_create_methods(TALLOC_CTX *mem_ctx, const char **methods, 
-				     struct tevent_context *ev,
-				     struct messaging_context *msg,
-				     struct loadparm_context *lp_ctx,
-				     struct auth_context **auth_ctx)
+					      struct tevent_context *ev,
+					      struct messaging_context *msg,
+					      struct loadparm_context *lp_ctx,
+					      struct ldb_context *sam_ctx,
+					      struct auth_context **auth_ctx)
 {
 	int i;
 	struct auth_context *ctx;
@@ -420,11 +434,6 @@ _PUBLIC_ NTSTATUS auth_context_create_methods(TALLOC_CTX *mem_ctx, const char **
 		return NT_STATUS_INTERNAL_ERROR;
 	}
 
-	if (!msg) {
-		DEBUG(0,("auth_context_create: called with out messaging context\n"));
-		return NT_STATUS_INTERNAL_ERROR;
-	}
-
 	ctx = talloc(mem_ctx, struct auth_context);
 	NT_STATUS_HAVE_NO_MEMORY(ctx);
 	ctx->challenge.set_by		= NULL;
@@ -434,6 +443,12 @@ _PUBLIC_ NTSTATUS auth_context_create_methods(TALLOC_CTX *mem_ctx, const char **
 	ctx->event_ctx			= ev;
 	ctx->msg_ctx			= msg;
 	ctx->lp_ctx			= lp_ctx;
+
+	if (sam_ctx) {
+		ctx->sam_ctx = sam_ctx;
+	} else {
+		ctx->sam_ctx = samdb_connect(ctx, ctx->event_ctx, ctx->lp_ctx, system_session(ctx->lp_ctx));
+	}
 
 	for (i=0; methods[i] ; i++) {
 		struct auth_method_context *method;
@@ -461,36 +476,81 @@ _PUBLIC_ NTSTATUS auth_context_create_methods(TALLOC_CTX *mem_ctx, const char **
 	ctx->set_challenge = auth_context_set_challenge;
 	ctx->challenge_may_be_modified = auth_challenge_may_be_modified;
 	ctx->get_server_info_principal = auth_get_server_info_principal;
+	ctx->generate_session_info = auth_generate_session_info;
 
 	*auth_ctx = ctx;
 
 	return NT_STATUS_OK;
 }
+
+static const char **auth_methods_from_lp(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_ctx)
+{
+	const char **auth_methods = NULL;
+	switch (lpcfg_server_role(lp_ctx)) {
+	case ROLE_STANDALONE:
+		auth_methods = lpcfg_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "standalone", NULL);
+		break;
+	case ROLE_DOMAIN_MEMBER:
+		auth_methods = lpcfg_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "member server", NULL);
+		break;
+	case ROLE_DOMAIN_CONTROLLER:
+		auth_methods = lpcfg_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "domain controller", NULL);
+		break;
+	}
+	return auth_methods;
+}
+
 /***************************************************************************
  Make a auth_info struct for the auth subsystem
  - Uses default auth_methods, depending on server role and smb.conf settings
 ***************************************************************************/
-_PUBLIC_ NTSTATUS auth_context_create(TALLOC_CTX *mem_ctx, 
+_PUBLIC_ NTSTATUS auth_context_create(TALLOC_CTX *mem_ctx,
 			     struct tevent_context *ev,
 			     struct messaging_context *msg,
 			     struct loadparm_context *lp_ctx,
 			     struct auth_context **auth_ctx)
 {
-	const char **auth_methods = NULL;
-	switch (lp_server_role(lp_ctx)) {
-	case ROLE_STANDALONE:
-		auth_methods = lp_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "standalone", NULL);
-		break;
-	case ROLE_DOMAIN_MEMBER:
-		auth_methods = lp_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "member server", NULL);
-		break;
-	case ROLE_DOMAIN_CONTROLLER:
-		auth_methods = lp_parm_string_list(mem_ctx, lp_ctx, NULL, "auth methods", "domain controller", NULL);
-		break;
+	NTSTATUS status;
+	const char **auth_methods;
+	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+	if (!tmp_ctx) {
+		return NT_STATUS_NO_MEMORY;
 	}
-	return auth_context_create_methods(mem_ctx, auth_methods, ev, msg, lp_ctx, auth_ctx);
+
+	auth_methods = auth_methods_from_lp(tmp_ctx, lp_ctx);
+	if (!auth_methods) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+	status = auth_context_create_methods(mem_ctx, auth_methods, ev, msg, lp_ctx, NULL, auth_ctx);
+	talloc_free(tmp_ctx);
+	return status;
 }
 
+/* Create an auth context from an open LDB.
+
+   This allows us not to re-open the LDB when we need to do a some authentication logic (such as tokenGroups)
+
+ */
+NTSTATUS auth_context_create_from_ldb(TALLOC_CTX *mem_ctx, struct ldb_context *ldb, struct auth_context **auth_ctx)
+{
+	NTSTATUS status;
+	const char **auth_methods;
+	struct loadparm_context *lp_ctx = talloc_get_type_abort(ldb_get_opaque(ldb, "loadparm"), struct loadparm_context);
+	struct tevent_context *ev = ldb_get_event_context(ldb);
+
+	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+	if (!tmp_ctx) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	auth_methods = auth_methods_from_lp(tmp_ctx, lp_ctx);
+	if (!auth_methods) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+	status = auth_context_create_methods(mem_ctx, auth_methods, ev, NULL, lp_ctx, ldb, auth_ctx);
+	talloc_free(tmp_ctx);
+	return status;
+}
 
 /* the list of currently registered AUTH backends */
 static struct auth_backend {
@@ -587,9 +647,4 @@ _PUBLIC_ NTSTATUS auth_init(void)
 	run_init_functions(static_init);
 	
 	return NT_STATUS_OK;	
-}
-
-NTSTATUS server_service_auth_init(void)
-{
-	return auth_init();
 }

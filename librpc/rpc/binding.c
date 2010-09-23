@@ -23,10 +23,12 @@
 */
 
 #include "includes.h"
+#include "../../lib/util/util_net.h"
 #include "librpc/gen_ndr/ndr_epmapper.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/rpc/dcerpc.h"
 #undef strcasecmp
+#undef strncasecmp
 
 #define MAX_PROTSEQ		10
 
@@ -85,7 +87,8 @@ static const struct {
 	{"bigendian", DCERPC_PUSH_BIGENDIAN},
 	{"smb2", DCERPC_SMB2},
 	{"hdrsign", DCERPC_HEADER_SIGNING},
-	{"ndr64", DCERPC_NDR64}
+	{"ndr64", DCERPC_NDR64},
+	{"localaddress", DCERPC_LOCALADDRESS}
 };
 
 const char *epm_floor_string(TALLOC_CTX *mem_ctx, struct epm_floor *epm_floor)
@@ -219,7 +222,12 @@ _PUBLIC_ char *dcerpc_binding_string(TALLOC_CTX *mem_ctx, const struct dcerpc_bi
 
 	for (i=0;i<ARRAY_SIZE(ncacn_options);i++) {
 		if (b->flags & ncacn_options[i].flag) {
-			s = talloc_asprintf_append_buffer(s, ",%s", ncacn_options[i].name);
+			if (ncacn_options[i].flag == DCERPC_LOCALADDRESS && b->localaddress) {
+				s = talloc_asprintf_append_buffer(s, ",%s=%s", ncacn_options[i].name,
+								  b->localaddress);
+			} else {
+				s = talloc_asprintf_append_buffer(s, ",%s", ncacn_options[i].name);
+			}
 			if (!s) return NULL;
 		}
 	}
@@ -312,6 +320,7 @@ _PUBLIC_ NTSTATUS dcerpc_parse_binding(TALLOC_CTX *mem_ctx, const char *s, struc
 	b->flags = 0;
 	b->assoc_group_id = 0;
 	b->endpoint = NULL;
+	b->localaddress = NULL;
 
 	if (!options) {
 		*b_out = b;
@@ -338,8 +347,17 @@ _PUBLIC_ NTSTATUS dcerpc_parse_binding(TALLOC_CTX *mem_ctx, const char *s, struc
 	/* some options are pre-parsed for convenience */
 	for (i=0;b->options[i];i++) {
 		for (j=0;j<ARRAY_SIZE(ncacn_options);j++) {
-			if (strcasecmp(ncacn_options[j].name, b->options[i]) == 0) {
+			size_t opt_len = strlen(ncacn_options[j].name);
+			if (strncasecmp(ncacn_options[j].name, b->options[i], opt_len) == 0) {
 				int k;
+				char c = b->options[i][opt_len];
+
+				if (ncacn_options[j].flag == DCERPC_LOCALADDRESS && c == '=') {
+					b->localaddress = talloc_strdup(b, &b->options[i][opt_len+1]);
+				} else if (c != 0) {
+					continue;
+				}
+
 				b->flags |= ncacn_options[j].flag;
 				for (k=i;b->options[k];k++) {
 					b->options[k] = b->options[k+1];
@@ -375,7 +393,7 @@ _PUBLIC_ NTSTATUS dcerpc_floor_get_lhs_data(const struct epm_floor *epm_floor,
 	enum ndr_err_code ndr_err;
 	uint16_t if_version=0;
 
-	ndr = ndr_pull_init_blob(&epm_floor->lhs.lhs_data, mem_ctx, NULL);
+	ndr = ndr_pull_init_blob(&epm_floor->lhs.lhs_data, mem_ctx);
 	if (ndr == NULL) {
 		talloc_free(mem_ctx);
 		return NT_STATUS_NO_MEMORY;
@@ -404,12 +422,27 @@ _PUBLIC_ NTSTATUS dcerpc_floor_get_lhs_data(const struct epm_floor *epm_floor,
 static DATA_BLOB dcerpc_floor_pack_lhs_data(TALLOC_CTX *mem_ctx, const struct ndr_syntax_id *syntax)
 {
 	DATA_BLOB blob;
-	struct ndr_push *ndr = ndr_push_init_ctx(mem_ctx, NULL);
+	struct ndr_push *ndr = ndr_push_init_ctx(mem_ctx);
 
 	ndr->flags |= LIBNDR_FLAG_NOALIGN;
 
 	ndr_push_GUID(ndr, NDR_SCALARS | NDR_BUFFERS, &syntax->uuid);
 	ndr_push_uint16(ndr, NDR_SCALARS, syntax->if_version);
+
+	blob = ndr_push_blob(ndr);
+	talloc_steal(mem_ctx, blob.data);
+	talloc_free(ndr);
+	return blob;
+}
+
+static DATA_BLOB dcerpc_floor_pack_rhs_if_version_data(TALLOC_CTX *mem_ctx, const struct ndr_syntax_id *syntax)
+{
+	DATA_BLOB blob;
+	struct ndr_push *ndr = ndr_push_init_ctx(mem_ctx);
+
+	ndr->flags |= LIBNDR_FLAG_NOALIGN;
+
+	ndr_push_uint16(ndr, NDR_SCALARS, syntax->if_version >> 16);
 
 	blob = ndr_push_blob(ndr);
 	talloc_steal(mem_ctx, blob.data);
@@ -697,7 +730,7 @@ _PUBLIC_ NTSTATUS dcerpc_binding_build_tower(TALLOC_CTX *mem_ctx,
 
 	tower->floors[0].lhs.lhs_data = dcerpc_floor_pack_lhs_data(tower->floors, &binding->object);
 
-	tower->floors[0].rhs.uuid.unknown = data_blob_talloc_zero(tower->floors, 2);
+	tower->floors[0].rhs.uuid.unknown = dcerpc_floor_pack_rhs_if_version_data(tower->floors, &binding->object);
 
 	/* Floor 1 */
 	tower->floors[1].lhs.protocol = EPM_PROTOCOL_UUID;

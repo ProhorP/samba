@@ -38,6 +38,14 @@ TDB_DATA make_tdb_data(const uint8_t *dptr, size_t dsize)
 	return ret;
 }
 
+bool tdb_data_equal(TDB_DATA t1, TDB_DATA t2)
+{
+	if (t1.dsize != t2.dsize) {
+		return false;
+	}
+	return (memcmp(t1.dptr, t2.dptr, t1.dsize) == 0);
+}
+
 TDB_DATA string_tdb_data(const char *string)
 {
 	return make_tdb_data((const uint8_t *)string, string ? strlen(string) : 0 );
@@ -125,7 +133,7 @@ int32_t tdb_fetch_int32(struct tdb_context *tdb, const char *keystr)
 }
 
 /****************************************************************************
- Store a int32_t value by an arbitary blob key, return 0 on success, -1 on failure.
+ Store a int32_t value by an arbitrary blob key, return 0 on success, -1 on failure.
  Input is int32_t in native byte order. Output in tdb is in little-endian.
 ****************************************************************************/
 
@@ -182,7 +190,7 @@ bool tdb_fetch_uint32(struct tdb_context *tdb, const char *keystr, uint32_t *val
 }
 
 /****************************************************************************
- Store a uint32_t value by an arbitary blob key, return 0 on success, -1 on failure.
+ Store a uint32_t value by an arbitrary blob key, return 0 on success, -1 on failure.
  Input is uint32_t in native byte order. Output in tdb is in little-endian.
 ****************************************************************************/
 

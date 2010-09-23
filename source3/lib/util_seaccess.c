@@ -22,8 +22,6 @@
 
 #include "includes.h"
 
-extern NT_USER_TOKEN anonymous_token;
-
 /* Map generic access rights to object specific rights.  This technique is
    used to give meaning to assigning read, write, execute and all access to
    objects.  Each type of object has its own mapping of generic to object
@@ -82,7 +80,7 @@ void security_acl_map_generic(struct security_acl *sa,
    objects.  Each type of object has its own mapping of standard to object
    specific access rights. */
 
-void se_map_standard(uint32 *access_mask, struct standard_mapping *mapping)
+void se_map_standard(uint32 *access_mask, const struct standard_mapping *mapping)
 {
 	uint32 old_mask = *access_mask;
 
@@ -106,14 +104,14 @@ void se_map_standard(uint32 *access_mask, struct standard_mapping *mapping)
   perform a SEC_FLAG_MAXIMUM_ALLOWED access check
 */
 static uint32_t access_check_max_allowed(const struct security_descriptor *sd, 
-			  		const NT_USER_TOKEN *token)
+					const struct security_token *token)
 {
 	uint32_t denied = 0, granted = 0;
 	unsigned i;
 
 	if (is_sid_in_token(token, sd->owner_sid)) {
 		granted |= SEC_STD_WRITE_DAC | SEC_STD_READ_CONTROL | SEC_STD_DELETE;
-	} else if (user_has_privileges(token, &se_restore)) {
+	} else if (security_token_has_privilege(token, SEC_PRIV_RESTORE)) {
 		granted |= SEC_STD_DELETE;
 	}
 
@@ -154,7 +152,7 @@ static uint32_t access_check_max_allowed(const struct security_descriptor *sd,
   to by the access_granted pointer.
 */
 NTSTATUS se_access_check(const struct security_descriptor *sd, 
-			  const NT_USER_TOKEN *token,
+			  const struct security_token *token,
 			  uint32_t access_desired,
 			  uint32_t *access_granted)
 {
@@ -203,7 +201,7 @@ NTSTATUS se_access_check(const struct security_descriptor *sd,
 		bits_remaining &= ~(SEC_STD_WRITE_DAC|SEC_STD_READ_CONTROL|SEC_STD_DELETE);
 	}
 	if ((bits_remaining & SEC_STD_DELETE) &&
-	    user_has_privileges(token, &se_restore)) {
+	    (security_token_has_privilege(token, SEC_PRIV_RESTORE))) {
 		bits_remaining &= ~SEC_STD_DELETE;
 	}
 

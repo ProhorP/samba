@@ -18,6 +18,8 @@
  */
 
 #include "includes.h"
+#include "../librpc/gen_ndr/ndr_netlogon.h"
+#include "smbd/globals.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_VFS
@@ -35,7 +37,8 @@
   This is to redirect a DFS client to a host close to it.
 ***********************************************************/
 
-static char *read_target_host(TALLOC_CTX *ctx, const char *mapfile)
+static char *read_target_host(TALLOC_CTX *ctx, const char *mapfile,
+			      const char *clientaddr)
 {
 	XFILE *f;
 	char buf[1024];
@@ -53,7 +56,6 @@ static char *read_target_host(TALLOC_CTX *ctx, const char *mapfile)
 	DEBUG(10, ("Scanning mapfile [%s]\n", mapfile));
 
 	while (x_fgets(buf, sizeof(buf), f) != NULL) {
-		char addr[INET6_ADDRSTRLEN];
 
 		if ((strlen(buf) > 0) && (buf[strlen(buf)-1] == '\n'))
 			buf[strlen(buf)-1] = '\0';
@@ -69,8 +71,7 @@ static char *read_target_host(TALLOC_CTX *ctx, const char *mapfile)
 
 		*space = '\0';
 
-		if (strncmp(client_addr(get_client_fd(),addr,sizeof(addr)),
-				buf, strlen(buf)) == 0) {
+		if (strncmp(clientaddr, buf, strlen(buf)) == 0) {
 			found = true;
 			break;
 		}
@@ -135,7 +136,9 @@ static char *expand_msdfs_target(TALLOC_CTX *ctx,
 
 	DEBUG(10, ("Expanding from table [%s]\n", mapfilename));
 
-	if ((targethost = read_target_host(ctx, mapfilename)) == NULL) {
+	targethost = read_target_host(
+		ctx, conn->sconn->client_id.addr, mapfilename);
+	if (targethost == NULL) {
 		DEBUG(1, ("Could not expand target host from file %s\n",
 			  mapfilename));
 		return NULL;
@@ -147,7 +150,7 @@ static char *expand_msdfs_target(TALLOC_CTX *ctx,
 				conn->connectpath,
 				conn->server_info->utok.gid,
 				conn->server_info->sanitized_username,
-				pdb_get_domain(conn->server_info->sam_account),
+				conn->server_info->info3->base.domain.string,
 				targethost);
 
 	DEBUG(10, ("Expanded targethost to %s\n", targethost));
@@ -173,20 +176,26 @@ static int expand_msdfs_readlink(struct vfs_handle_struct *handle,
 	TALLOC_CTX *ctx = talloc_tos();
 	int result;
 	char *target = TALLOC_ARRAY(ctx, char, PATH_MAX+1);
+	size_t len;
 
 	if (!target) {
 		errno = ENOMEM;
 		return -1;
 	}
+	if (bufsiz == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
 	result = SMB_VFS_NEXT_READLINK(handle, path, target,
 				       PATH_MAX);
 
-	if (result < 0)
+	if (result <= 0)
 		return result;
 
 	target[result] = '\0';
 
-	if ((strncmp(target, "msdfs:", strlen("msdfs:")) == 0) &&
+	if ((strncmp(target, "msdfs:", 6) == 0) &&
 	    (strchr_m(target, '@') != NULL)) {
 		target = expand_msdfs_target(ctx, handle->conn, target);
 		if (!target) {
@@ -195,8 +204,12 @@ static int expand_msdfs_readlink(struct vfs_handle_struct *handle,
 		}
 	}
 
-	safe_strcpy(buf, target, bufsiz-1);
-	return strlen(buf);
+	len = MIN(bufsiz, strlen(target));
+
+	memcpy(buf, target, len);
+
+	TALLOC_FREE(target);
+	return len;
 }
 
 static struct vfs_fn_pointers vfs_expand_msdfs_fns = {

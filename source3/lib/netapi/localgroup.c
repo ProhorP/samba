@@ -25,6 +25,8 @@
 #include "lib/netapi/libnetapi.h"
 #include "../librpc/gen_ndr/cli_samr.h"
 #include "../librpc/gen_ndr/cli_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
+#include "rpc_client/init_lsa.h"
 
 static NTSTATUS libnetapi_samr_lookup_and_open_alias(TALLOC_CTX *mem_ctx,
 						     struct rpc_pipe_client *pipe_cli,
@@ -933,7 +935,7 @@ static NTSTATUS libnetapi_lsa_lookup_names3(TALLOC_CTX *mem_ctx,
 
 	status = rpccli_lsa_open_policy2(lsa_pipe, mem_ctx,
 					 false,
-					 STD_RIGHT_READ_CONTROL_ACCESS |
+					 SEC_STD_READ_CONTROL |
 					 LSA_POLICY_VIEW_LOCAL_INFORMATION |
 					 LSA_POLICY_LOOKUP_NAMES,
 					 &lsa_handle);
@@ -984,8 +986,8 @@ static WERROR NetLocalGroupModifyMembers_r(struct libnetapi_ctx *ctx,
 
 	struct dom_sid *add_sids = NULL;
 	struct dom_sid *del_sids = NULL;
-	size_t num_add_sids = 0;
-	size_t num_del_sids = 0;
+	uint32_t num_add_sids = 0;
+	uint32_t num_del_sids = 0;
 
 	if ((!add && !del && !set) || (add && del && set)) {
 		return WERR_INVALID_PARAM;

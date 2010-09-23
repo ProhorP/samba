@@ -72,9 +72,9 @@ struct smbclient_context {
 
 /* timing globals */
 static uint64_t get_total_size = 0;
-static uint_t get_total_time_ms = 0;
+static unsigned int get_total_time_ms = 0;
 static uint64_t put_total_size = 0;
-static uint_t put_total_time_ms = 0;
+static unsigned int put_total_time_ms = 0;
 
 /* Unfortunately, there is no way to pass the a context to the completion function as an argument */
 static struct smbclient_context *rl_ctx; 
@@ -863,18 +863,19 @@ static void do_mget(struct smbclient_context *ctx, struct clilist_file_info *fin
 		return;
 
 	if (finfo->attrib & FILE_ATTRIBUTE_DIRECTORY)
-		asprintf(&quest, "Get directory %s? ",finfo->name);
+		quest = talloc_asprintf(ctx, "Get directory %s? ",finfo->name);
 	else
-		asprintf(&quest, "Get file %s? ",finfo->name);
+		quest = talloc_asprintf(ctx, "Get file %s? ",finfo->name);
 
 	if (ctx->prompt && !yesno(quest)) return;
 
-	SAFE_FREE(quest);
+	talloc_free(quest);
 
 	if (!(finfo->attrib & FILE_ATTRIBUTE_DIRECTORY)) {
-		asprintf(&rname, "%s%s",ctx->remote_cur_dir,finfo->name);
+		rname = talloc_asprintf(ctx, "%s%s",ctx->remote_cur_dir,
+					finfo->name);
 		do_get(ctx, rname, finfo->name, false);
-		SAFE_FREE(rname);
+		talloc_free(rname);
 		return;
 	}
 
@@ -2605,7 +2606,7 @@ static bool browse_host(struct loadparm_context *lp_ctx,
 
 	do {
 		ZERO_STRUCT(ctr1);
-		status = dcerpc_srvsvc_NetShareEnumAll(p, mem_ctx, &r);
+		status = dcerpc_srvsvc_NetShareEnumAll_r(p->binding_handle, mem_ctx, &r);
 
 		if (NT_STATUS_IS_OK(status) && 
 		    (W_ERROR_EQUAL(r.out.result, WERR_MORE_DATA) ||
@@ -2832,7 +2833,7 @@ static void completion_remote_filter(struct clilist_file_info *f, const char *ma
 static char **remote_completion(const char *text, int len)
 {
 	char *dirmask;
-	int i;
+	int i, ret;
 	completion_remote_t info;
 
 	info.samelen = len;
@@ -2855,9 +2856,14 @@ static char **remote_completion(const char *text, int len)
 	if (i > 0) {
 		info.dirmask = talloc_strndup(NULL, text, i+1);
 		info.dirmask[i+1] = 0;
-		asprintf(&dirmask, "%s%*s*", rl_ctx->remote_cur_dir, i-1, text);
-	} else
-		asprintf(&dirmask, "%s*", rl_ctx->remote_cur_dir);
+		ret = asprintf(&dirmask, "%s%*s*", rl_ctx->remote_cur_dir, i-1,
+			       text);
+	} else {
+		ret = asprintf(&dirmask, "%s*", rl_ctx->remote_cur_dir);
+	}
+	if (ret < 0) {
+		goto cleanup;
+	}
 
 	if (smbcli_list(rl_ctx->cli->tree, dirmask, 
 		     FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN, 
@@ -3055,7 +3061,6 @@ static bool do_connect(struct smbclient_context *ctx,
 		       struct cli_credentials *cred, 
 		       struct smbcli_options *options,
 		       struct smbcli_session_options *session_options,
-			   struct smb_iconv_convenience *iconv_convenience,
 			   struct gensec_settings *gensec_settings)
 {
 	NTSTATUS status;
@@ -3078,16 +3083,15 @@ static bool do_connect(struct smbclient_context *ctx,
 					socket_options,
 					cred, resolve_ctx, 
 					ev_ctx, options, session_options,
-					iconv_convenience,
 					gensec_settings);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("Connection to \\\\%s\\%s failed - %s\n", 
 			 server, share, nt_errstr(status));
 		talloc_free(ctx);
-		return NULL;
+		return false;
 	}
 
-	return ctx;
+	return true;
 }
 
 /****************************************************************************
@@ -3113,7 +3117,6 @@ static int do_message_op(const char *netbios_name, const char *desthost,
 			 struct tevent_context *ev_ctx,
 			 struct resolve_context *resolve_ctx,
 			 struct smbcli_options *options,
-			 struct smb_iconv_convenience *iconv_convenience,
              const char *socket_options)
 {
 	struct nbt_name called, calling;
@@ -3129,7 +3132,6 @@ static int do_message_op(const char *netbios_name, const char *desthost,
 	if (!(cli = smbcli_state_init(NULL)) ||
 	    !smbcli_socket_connect(cli, server_name, destports,
 				   ev_ctx, resolve_ctx, options,
-				   iconv_convenience,
                    socket_options)) {
 		d_printf("Connection to %s failed\n", server_name);
 		return 1;
@@ -3259,8 +3261,8 @@ static int do_message_op(const char *netbios_name, const char *desthost,
 
 	poptFreeContext(pc);
 
-	lp_smbcli_options(cmdline_lp_ctx, &smb_options);
-	lp_smbcli_session_options(cmdline_lp_ctx, &smb_session_options);
+	lpcfg_smbcli_options(cmdline_lp_ctx, &smb_options);
+	lpcfg_smbcli_session_options(cmdline_lp_ctx, &smb_session_options);
 
 	ev_ctx = s4_event_context_init(talloc_autofree_context());
 
@@ -3274,26 +3276,25 @@ static int do_message_op(const char *netbios_name, const char *desthost,
   
 	if (query_host) {
 		rc = do_host_query(cmdline_lp_ctx, ev_ctx, query_host,
-				   lp_workgroup(cmdline_lp_ctx));
+				   lpcfg_workgroup(cmdline_lp_ctx));
 		return rc;
 	}
 
 	if (message) {
-		rc = do_message_op(lp_netbios_name(cmdline_lp_ctx), desthost,
-				   lp_smb_ports(cmdline_lp_ctx), dest_ip,
+		rc = do_message_op(lpcfg_netbios_name(cmdline_lp_ctx), desthost,
+				   lpcfg_smb_ports(cmdline_lp_ctx), dest_ip,
 				   name_type, ev_ctx,
-				   lp_resolve_context(cmdline_lp_ctx),
-				   &smb_options, lp_iconv_convenience(cmdline_lp_ctx),
-                   lp_socket_options(cmdline_lp_ctx));
+				   lpcfg_resolve_context(cmdline_lp_ctx),
+				   &smb_options, 
+                   lpcfg_socket_options(cmdline_lp_ctx));
 		return rc;
 	}
 	
-	if (!do_connect(ctx, ev_ctx, lp_resolve_context(cmdline_lp_ctx),
-			desthost, lp_smb_ports(cmdline_lp_ctx), service,
-			lp_socket_options(cmdline_lp_ctx),
+	if (!do_connect(ctx, ev_ctx, lpcfg_resolve_context(cmdline_lp_ctx),
+			desthost, lpcfg_smb_ports(cmdline_lp_ctx), service,
+			lpcfg_socket_options(cmdline_lp_ctx),
 			cmdline_credentials, &smb_options, &smb_session_options,
-			lp_iconv_convenience(cmdline_lp_ctx),
-			lp_gensec_settings(ctx, cmdline_lp_ctx)))
+			lpcfg_gensec_settings(ctx, cmdline_lp_ctx)))
 		return 1;
 
 	if (base_directory) {

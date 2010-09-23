@@ -49,6 +49,7 @@ struct tevent_req *wb_next_grent_send(TALLOC_CTX *mem_ctx,
 	state->ev = ev;
 	state->gstate = gstate;
 	state->gr = gr;
+	state->max_nesting = max_nesting;
 
 	if (state->gstate->next_group >= state->gstate->num_groups) {
 		TALLOC_FREE(state->gstate->groups);
@@ -59,12 +60,17 @@ struct tevent_req *wb_next_grent_send(TALLOC_CTX *mem_ctx,
 			state->gstate->domain = state->gstate->domain->next;
 		}
 
+		if ((state->gstate->domain != NULL)
+		    && sid_check_is_domain(&state->gstate->domain->sid)) {
+			state->gstate->domain = state->gstate->domain->next;
+		}
+
 		if (state->gstate->domain == NULL) {
 			tevent_req_nterror(req, NT_STATUS_NO_MORE_ENTRIES);
 			return tevent_req_post(req, ev);
 		}
-		subreq = rpccli_wbint_QueryGroupList_send(
-			state, state->ev, state->gstate->domain->child.rpccli,
+		subreq = dcerpc_wbint_QueryGroupList_send(
+			state, state->ev, state->gstate->domain->child.binding_handle,
 			&state->next_groups);
 		if (tevent_req_nomem(subreq, req)) {
 			return tevent_req_post(req, ev);
@@ -92,9 +98,17 @@ static void wb_next_grent_fetch_done(struct tevent_req *subreq)
 		req, struct wb_next_grent_state);
 	NTSTATUS status, result;
 
-	status = rpccli_wbint_QueryGroupList_recv(subreq, state, &result);
+	status = dcerpc_wbint_QueryGroupList_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status) || !NT_STATUS_IS_OK(result)) {
+	if (!NT_STATUS_IS_OK(status)) {
+		/* Ignore errors here, just log it */
+		DEBUG(10, ("query_user_list for domain %s returned %s\n",
+			   state->gstate->domain->name,
+			   nt_errstr(status)));
+		tevent_req_nterror(req, status);
+		return;
+	}
+	if (!NT_STATUS_IS_OK(result)) {
 		/* Ignore errors here, just log it */
 		DEBUG(10, ("query_user_list for domain %s returned %s/%s\n",
 			   state->gstate->domain->name,
@@ -109,12 +123,18 @@ static void wb_next_grent_fetch_done(struct tevent_req *subreq)
 
 	if (state->gstate->num_groups == 0) {
 		state->gstate->domain = state->gstate->domain->next;
+
+		if ((state->gstate->domain != NULL)
+		    && sid_check_is_domain(&state->gstate->domain->sid)) {
+			state->gstate->domain = state->gstate->domain->next;
+		}
+
 		if (state->gstate->domain == NULL) {
 			tevent_req_nterror(req, NT_STATUS_NO_MORE_ENTRIES);
 			return;
 		}
-		subreq = rpccli_wbint_QueryGroupList_send(
-			state, state->ev, state->gstate->domain->child.rpccli,
+		subreq = dcerpc_wbint_QueryGroupList_send(
+			state, state->ev, state->gstate->domain->child.binding_handle,
 			&state->next_groups);
 		if (tevent_req_nomem(subreq, req)) {
 			return;

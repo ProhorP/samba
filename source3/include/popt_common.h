@@ -55,6 +55,9 @@ struct user_auth_info {
 	bool smb_encrypt;
 	bool use_machine_account;
 	bool fallback_after_kerberos;
+	bool use_ccache;
 };
+
+void popt_common_set_auth_info(struct user_auth_info *auth_info);
 
 #endif /* _POPT_COMMON_H */

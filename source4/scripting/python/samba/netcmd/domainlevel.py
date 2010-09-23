@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # Raises domain and forest function levels
 #
@@ -34,20 +34,16 @@ from samba.netcmd import (
     Option,
     )
 from samba.samdb import SamDB
-from samba import (
+from samba.dsdb import (
     DS_DOMAIN_FUNCTION_2000,
     DS_DOMAIN_FUNCTION_2003,
     DS_DOMAIN_FUNCTION_2003_MIXED,
     DS_DOMAIN_FUNCTION_2008,
     DS_DOMAIN_FUNCTION_2008_R2,
-    DS_DC_FUNCTION_2000,
-    DS_DC_FUNCTION_2003,
-    DS_DC_FUNCTION_2008,
-    DS_DC_FUNCTION_2008_R2,
     )
 
 class cmd_domainlevel(Command):
-    """Raises domain and forest function levels."""
+    """Raises domain and forest function levels"""
 
     synopsis = "(show | raise <options>)"
 
@@ -73,28 +69,23 @@ class cmd_domainlevel(Command):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
 
-        if H is not None:
-            url = H
-        else:
-            url = lp.get("sam database")
-
-        samdb = SamDB(url=url, session_info=system_session(),
+        samdb = SamDB(url=H, session_info=system_session(),
             credentials=creds, lp=lp)
 
-        domain_dn = SamDB.domain_dn(samdb)
+        domain_dn = samdb.domain_dn()
 
         res_forest = samdb.search("CN=Partitions,CN=Configuration," + domain_dn,
           scope=ldb.SCOPE_BASE, attrs=["msDS-Behavior-Version"])
-        assert(len(res_forest) == 1)
+        assert len(res_forest) == 1
 
         res_domain = samdb.search(domain_dn, scope=ldb.SCOPE_BASE,
           attrs=["msDS-Behavior-Version", "nTMixedDomain"])
-        assert(len(res_domain) == 1)
+        assert len(res_domain) == 1
 
         res_dc_s = samdb.search("CN=Sites,CN=Configuration," + domain_dn,
           scope=ldb.SCOPE_SUBTREE, expression="(objectClass=nTDSDSA)",
           attrs=["msDS-Behavior-Version"])
-        assert(len(res_dc_s) >= 1)
+        assert len(res_dc_s) >= 1
 
         try:
             level_forest = int(res_forest[0]["msDS-Behavior-Version"][0])
@@ -119,12 +110,12 @@ class cmd_domainlevel(Command):
             raise CommandError("Could not retrieve the actual domain, forest level and/or lowest DC function level!")
 
         if subcommand == "show":
-            self.message("Domain and forest function level for domain '" + domain_dn + "'")
-            if level_forest < DS_DOMAIN_FUNCTION_2003:
-                self.message("\nATTENTION: You run SAMBA 4 on a forest function level lower than Windows 2003 (Native). This isn't supported! Please raise!")
-            if level_domain < DS_DOMAIN_FUNCTION_2003:
-                self.message("\nATTENTION: You run SAMBA 4 on a domain function level lower than Windows 2003 (Native). This isn't supported! Please raise!")
-            if min_level_dc < DS_DC_FUNCTION_2003:
+            self.message("Domain and forest function level for domain '%s'" % domain_dn)
+            if level_forest == DS_DOMAIN_FUNCTION_2000 and level_domain_mixed != 0:
+                self.message("\nATTENTION: You run SAMBA 4 on a forest function level lower than Windows 2000 (Native). This isn't supported! Please raise!")
+            if level_domain == DS_DOMAIN_FUNCTION_2000 and level_domain_mixed != 0:
+                self.message("\nATTENTION: You run SAMBA 4 on a domain function level lower than Windows 2000 (Native). This isn't supported! Please raise!")
+            if min_level_dc == DS_DOMAIN_FUNCTION_2000 and level_domain_mixed != 0:
                 self.message("\nATTENTION: You run SAMBA 4 on a lowest function level of a DC lower than Windows 2003. This isn't supported! Please step-up or upgrade the concerning DC(s)!")
 
             self.message("")
@@ -159,13 +150,13 @@ class cmd_domainlevel(Command):
                 outstr = "higher than 2008 R2"
             self.message("Domain function level: (Windows) " + outstr)
 
-            if min_level_dc == DS_DC_FUNCTION_2000:
+            if min_level_dc == DS_DOMAIN_FUNCTION_2000:
                 outstr = "2000"
-            elif min_level_dc == DS_DC_FUNCTION_2003:
+            elif min_level_dc == DS_DOMAIN_FUNCTION_2003:
                 outstr = "2003"
-            elif min_level_dc == DS_DC_FUNCTION_2008:
+            elif min_level_dc == DS_DOMAIN_FUNCTION_2008:
                 outstr = "2008"
-            elif min_level_dc == DS_DC_FUNCTION_2008_R2:
+            elif min_level_dc == DS_DOMAIN_FUNCTION_2008_R2:
                 outstr = "2008 R2"
             else:
                 outstr = "higher than 2008 R2"
@@ -190,17 +181,44 @@ class cmd_domainlevel(Command):
 
                 # Deactivate mixed/interim domain support
                 if level_domain_mixed != 0:
+                    # Directly on the base DN
                     m = ldb.Message()
                     m.dn = ldb.Dn(samdb, domain_dn)
                     m["nTMixedDomain"] = ldb.MessageElement("0",
                       ldb.FLAG_MOD_REPLACE, "nTMixedDomain")
                     samdb.modify(m)
+                    # Under partitions
+                    m = ldb.Message()
+                    m.dn = ldb.Dn(samdb, "CN=" + lp.get("workgroup")
+                      + ",CN=Partitions,CN=Configuration," + domain_dn)
+                    m["nTMixedDomain"] = ldb.MessageElement("0",
+                      ldb.FLAG_MOD_REPLACE, "nTMixedDomain")
+                    try:
+                        samdb.modify(m)
+                    except LdbError, (num, _):
+                        if num != ldb.ERR_UNWILLING_TO_PERFORM:
+                            raise
+
+                # Directly on the base DN
                 m = ldb.Message()
                 m.dn = ldb.Dn(samdb, domain_dn)
                 m["msDS-Behavior-Version"]= ldb.MessageElement(
                   str(new_level_domain), ldb.FLAG_MOD_REPLACE,
                           "msDS-Behavior-Version")
                 samdb.modify(m)
+                # Under partitions
+                m = ldb.Message()
+                m.dn = ldb.Dn(samdb, "CN=" + lp.get("workgroup")
+                  + ",CN=Partitions,CN=Configuration," + domain_dn)
+                m["msDS-Behavior-Version"]= ldb.MessageElement(
+                  str(new_level_domain), ldb.FLAG_MOD_REPLACE,
+                          "msDS-Behavior-Version")
+                try:
+                    samdb.modify(m)
+                except LdbError, (num, _):
+                    if num != ldb.ERR_UNWILLING_TO_PERFORM:
+                        raise
+
                 level_domain = new_level_domain
                 msgs.append("Domain function level changed!")
 

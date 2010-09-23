@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # Sets password settings.
 # (Password complexity, history length, minimum password length, the minimum
@@ -22,10 +22,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import sys
-
 import samba.getopt as options
-import optparse
 import ldb
 
 from samba.auth import system_session
@@ -34,7 +31,7 @@ from samba.dcerpc.samr import DOMAIN_PASSWORD_COMPLEX
 from samba.netcmd import Command, CommandError, Option
 
 class cmd_pwsettings(Command):
-    """Sets password settings.
+    """Sets password settings
 
     Password complexity, history length, minimum password length, the minimum 
     and maximum password age) on a Samba4 server.
@@ -58,7 +55,7 @@ class cmd_pwsettings(Command):
         Option("--min-pwd-length",
           help="The minimum password length (<integer> | default).  Default is 7.", type=str),
         Option("--min-pwd-age",
-          help="The minimum password age (<integer in days> | default).  Default is 0.", type=str),
+          help="The minimum password age (<integer in days> | default).  Default is 1.", type=str),
         Option("--max-pwd-age",
           help="The maximum password age (<integer in days> | default).  Default is 43.", type=str),
           ]
@@ -72,15 +69,10 @@ class cmd_pwsettings(Command):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
 
-        if H is not None:
-            url = H
-        else:
-            url = lp.get("sam database")
-
-        samdb = SamDB(url=url, session_info=system_session(),
+        samdb = SamDB(url=H, session_info=system_session(),
             credentials=creds, lp=lp)
 
-        domain_dn = SamDB.domain_dn(samdb)
+        domain_dn = samdb.domain_dn()
         res = samdb.search(domain_dn, scope=ldb.SCOPE_BASE,
           attrs=["pwdProperties", "pwdHistoryLength", "minPwdLength",
                  "minPwdAge", "maxPwdAge"])
@@ -150,7 +142,7 @@ class cmd_pwsettings(Command):
 
             if min_pwd_age is not None:
                 if min_pwd_age == "default":
-                    min_pwd_age = 0
+                    min_pwd_age = 1
                 else:
                     min_pwd_age = int(min_pwd_age)
 

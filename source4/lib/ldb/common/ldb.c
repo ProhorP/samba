@@ -285,6 +285,22 @@ void ldb_reset_err_string(struct ldb_context *ldb)
 	}
 }
 
+
+
+/*
+  set an ldb error based on file:line
+*/
+int ldb_error_at(struct ldb_context *ldb, int ecode,
+		 const char *reason, const char *file, int line)
+{
+	if (reason == NULL) {
+		reason = ldb_strerror(ecode);
+	}
+	ldb_asprintf_errstring(ldb, "%s at %s:%d", reason, file, line);
+	return ecode;
+}
+
+
 #define FIRST_OP_NOERR(ldb, op) do { \
 	module = ldb->modules;					\
 	while (module && module->ops->op == NULL) module = module->next; \
@@ -665,7 +681,7 @@ int ldb_request_get_status(struct ldb_request *req)
 static void ldb_trace_request(struct ldb_context *ldb, struct ldb_request *req)
 {
 	TALLOC_CTX *tmp_ctx = talloc_new(req);
-	int i;
+	unsigned int i;
 
 	switch (req->operation) {
 	case LDB_SEARCH:
@@ -750,6 +766,24 @@ static void ldb_trace_request(struct ldb_context *ldb, struct ldb_request *req)
 	talloc_free(tmp_ctx);
 }
 
+/*
+  check that the element flags don't have any internal bits set
+ */
+static int ldb_msg_check_element_flags(struct ldb_context *ldb,
+				       const struct ldb_message *message)
+{
+	unsigned i;
+	for (i=0; i<message->num_elements; i++) {
+		if (message->elements[i].flags & LDB_FLAG_INTERNAL_MASK) {
+			ldb_asprintf_errstring(ldb, "Invalid element flags 0x%08x on element %s in %s\n",
+					       message->elements[i].flags, message->elements[i].name,
+					       ldb_dn_get_linearized(message->dn));
+			return LDB_ERR_UNSUPPORTED_CRITICAL_EXTENSION;
+		}
+	}
+	return LDB_SUCCESS;
+}
+
 
 /*
   start an ldb request
@@ -779,20 +813,30 @@ int ldb_request(struct ldb_context *ldb, struct ldb_request *req)
 		ret = module->ops->search(module, req);
 		break;
 	case LDB_ADD:
-		/* we have to canonicalise here, as so many places
+		/*
+		 * we have to normalize here, as so many places
 		 * in modules and backends assume we don't have two
-		 * elements with the same name */
-		req->op.add.message = ldb_msg_canonicalize(ldb, req->op.add.message);
-		if (!req->op.add.message) {
+		 * elements with the same name
+		 */
+		ret = ldb_msg_normalize(ldb, req, req->op.add.message,
+		                        discard_const(&req->op.add.message));
+		if (ret != LDB_SUCCESS) {
 			ldb_oom(ldb);
 			return LDB_ERR_OPERATIONS_ERROR;
 		}
-		talloc_steal(req, req->op.add.message);
+		ret = ldb_msg_check_element_flags(ldb, req->op.add.message);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
 		FIRST_OP(ldb, add);
 		ret = module->ops->add(module, req);
 		break;
 	case LDB_MODIFY:
 		FIRST_OP(ldb, modify);
+		ret = ldb_msg_check_element_flags(ldb, req->op.mod.message);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
 		ret = module->ops->modify(module, req);
 		break;
 	case LDB_DELETE:
@@ -845,7 +889,7 @@ int ldb_search_default_callback(struct ldb_request *req,
 				struct ldb_reply *ares)
 {
 	struct ldb_result *res;
-	int n;
+	unsigned int n;
 
 	res = talloc_get_type(req->context, struct ldb_result);
 
@@ -903,6 +947,54 @@ int ldb_search_default_callback(struct ldb_request *req,
 	return LDB_SUCCESS;
 }
 
+int ldb_modify_default_callback(struct ldb_request *req, struct ldb_reply *ares)
+{
+	struct ldb_result *res;
+	unsigned int n;
+	int ret;
+
+	res = talloc_get_type(req->context, struct ldb_result);
+
+	if (!ares) {
+		return ldb_request_done(req, LDB_ERR_OPERATIONS_ERROR);
+	}
+
+	if (ares->error != LDB_SUCCESS) {
+		ret = ares->error;
+		talloc_free(ares);
+		return ldb_request_done(req, ret);
+	}
+
+	switch (ares->type) {
+	case LDB_REPLY_REFERRAL:
+		if (res->refs) {
+			for (n = 0; res->refs[n]; n++) /*noop*/ ;
+		} else {
+			n = 0;
+		}
+
+		res->refs = talloc_realloc(res, res->refs, char *, n + 2);
+		if (! res->refs) {
+			return ldb_request_done(req, LDB_ERR_OPERATIONS_ERROR);
+		}
+
+		res->refs[n] = talloc_move(res->refs, &ares->referral);
+		res->refs[n + 1] = NULL;
+		break;
+
+	case LDB_REPLY_DONE:
+		talloc_free(ares);
+		return ldb_request_done(req, LDB_SUCCESS);
+	default:
+		talloc_free(ares);
+		ldb_set_errstring(req->handle->ldb, "Invalid reply type!");
+		return ldb_request_done(req, LDB_ERR_OPERATIONS_ERROR);
+	}
+
+	talloc_free(ares);
+	return ldb_request_done(req, LDB_SUCCESS);
+}
+
 int ldb_op_default_callback(struct ldb_request *req, struct ldb_reply *ares)
 {
 	int ret;
@@ -929,7 +1021,7 @@ int ldb_op_default_callback(struct ldb_request *req, struct ldb_reply *ares)
 
 int ldb_build_search_req_ex(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			struct ldb_dn *base,
 	       		enum ldb_scope scope,
 			struct ldb_parse_tree *tree,
@@ -987,7 +1079,7 @@ int ldb_build_search_req_ex(struct ldb_request **ret_req,
 
 int ldb_build_search_req(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			struct ldb_dn *base,
 			enum ldb_scope scope,
 			const char *expression,
@@ -1017,7 +1109,7 @@ int ldb_build_search_req(struct ldb_request **ret_req,
 
 int ldb_build_add_req(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			const struct ldb_message *message,
 			struct ldb_control **controls,
 			void *context,
@@ -1059,7 +1151,7 @@ int ldb_build_add_req(struct ldb_request **ret_req,
 
 int ldb_build_mod_req(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			const struct ldb_message *message,
 			struct ldb_control **controls,
 			void *context,
@@ -1101,7 +1193,7 @@ int ldb_build_mod_req(struct ldb_request **ret_req,
 
 int ldb_build_del_req(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			struct ldb_dn *dn,
 			struct ldb_control **controls,
 			void *context,
@@ -1143,7 +1235,7 @@ int ldb_build_del_req(struct ldb_request **ret_req,
 
 int ldb_build_rename_req(struct ldb_request **ret_req,
 			struct ldb_context *ldb,
-			void *mem_ctx,
+			TALLOC_CTX *mem_ctx,
 			struct ldb_dn *olddn,
 			struct ldb_dn *newdn,
 			struct ldb_control **controls,
@@ -1216,7 +1308,7 @@ int ldb_extended_default_callback(struct ldb_request *req,
 
 int ldb_build_extended_req(struct ldb_request **ret_req,
 			   struct ldb_context *ldb,
-			   void *mem_ctx,
+			   TALLOC_CTX *mem_ctx,
 			   const char *oid,
 			   void *data,
 			   struct ldb_control **controls,

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # Sets a user password on a Samba4 server
 # Copyright Jelmer Vernooij 2008
@@ -22,13 +22,14 @@
 
 import samba.getopt as options
 from samba.netcmd import Command, CommandError, Option
-
 from getpass import getpass
 from samba.auth import system_session
 from samba.samdb import SamDB
+from samba import gensec
+import ldb
 
 class cmd_setpassword(Command):
-    """Change the password of a user."""
+    """(Re)sets the password on a user account"""
 
     synopsis = "setpassword [username] [options]"
 
@@ -65,13 +66,16 @@ class cmd_setpassword(Command):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
 
-        if H is not None:
-            url = H
-        else:
-            url = lp.get("sam database")
+        creds.set_gensec_features(creds.get_gensec_features() | gensec.FEATURE_SEAL)
 
-        samdb = SamDB(url=url, session_info=system_session(),
+        samdb = SamDB(url=H, session_info=system_session(),
                       credentials=creds, lp=lp)
 
-        samdb.setpassword(filter, password,
-            force_password_change_at_next_login_req=must_change_at_next_login)
+        try:
+            samdb.setpassword(filter, password,
+                              force_change_at_next_login=must_change_at_next_login,
+                              username=username)
+        except ldb.LdbError, (num, msg):
+            raise CommandError('Failed to set password for user "%s" - %s' %
+                               (username, msg))
+        print "Changed password OK"

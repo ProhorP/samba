@@ -44,7 +44,7 @@
  */
 static struct ldb_context *sptr_db_connect(TALLOC_CTX *mem_ctx, struct tevent_context *ev_ctx, struct loadparm_context *lp_ctx)
 {
-	return ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, lp_spoolss_url(lp_ctx), system_session(lp_ctx), 
+	return ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, lpcfg_spoolss_url(lp_ctx), system_session(lp_ctx),
 				NULL, 0);
 }
 
@@ -122,51 +122,55 @@ static WERROR sptr_OpenPrintServer(struct ntptr_context *ntptr, TALLOC_CTX *mem_
 /*
  * PrintServer PrinterData functions
  */
-static WERROR sptr_GetPrintServerData(struct ntptr_GenericHandle *server, TALLOC_CTX *mem_ctx,
-				      struct spoolss_GetPrinterData *r)
+
+static WERROR sptr_PrintServerData(struct ntptr_GenericHandle *server,
+				   TALLOC_CTX *mem_ctx,
+				   const char *value_name,
+				   union spoolss_PrinterData *r,
+				   enum winreg_Type *type)
 {
-	struct dcerpc_server_info *server_info = lp_dcerpc_server_info(mem_ctx, server->ntptr->lp_ctx);
-	if (strcmp("W3SvcInstalled", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	struct dcerpc_server_info *server_info = lpcfg_dcerpc_server_info(mem_ctx, server->ntptr->lp_ctx);
+	if (strcmp("W3SvcInstalled", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return WERR_OK;
-	} else if (strcmp("BeepEnabled", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	} else if (strcmp("BeepEnabled", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return WERR_OK;
-	} else if (strcmp("EventLog", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	} else if (strcmp("EventLog", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return WERR_OK;
-	} else if (strcmp("NetPopup", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	} else if (strcmp("NetPopup", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return WERR_OK;
-	} else if (strcmp("NetPopupToComputer", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	} else if (strcmp("NetPopupToComputer", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return  WERR_OK;
-	} else if (strcmp("MajorVersion", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 3;
+	} else if (strcmp("MajorVersion", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 3;
 		return WERR_OK;
-	} else if (strcmp("MinorVersion", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 0;
+	} else if (strcmp("MinorVersion", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 0;
 		return WERR_OK;
-	} else if (strcmp("DefaultSpoolDirectory", r->in.value_name) == 0) {
-		*r->out.type		= REG_SZ;
-		r->out.data->string	= "C:\\PRINTERS";
+	} else if (strcmp("DefaultSpoolDirectory", value_name) == 0) {
+		*type		= REG_SZ;
+		r->string	= "C:\\PRINTERS";
 		return  WERR_OK;
-	} else if (strcmp("Architecture", r->in.value_name) == 0) {
-		*r->out.type		= REG_SZ;
-		r->out.data->string	= SPOOLSS_ARCHITECTURE_NT_X86;
+	} else if (strcmp("Architecture", value_name) == 0) {
+		*type		= REG_SZ;
+		r->string	= SPOOLSS_ARCHITECTURE_NT_X86;
 		return  WERR_OK;
-	} else if (strcmp("DsPresent", r->in.value_name) == 0) {
-		*r->out.type		= REG_DWORD;
-		r->out.data->value	= 1;
+	} else if (strcmp("DsPresent", value_name) == 0) {
+		*type		= REG_DWORD;
+		r->value	= 1;
 		return WERR_OK;
-	} else if (strcmp("OSVersion", r->in.value_name) == 0) {
+	} else if (strcmp("OSVersion", value_name) == 0) {
 		DATA_BLOB blob;
 		enum ndr_err_code ndr_err;
 		struct spoolss_OSVersion os;
@@ -176,15 +180,15 @@ static WERROR sptr_GetPrintServerData(struct ntptr_GenericHandle *server, TALLOC
 		os.build		= server_info->version_build;
 		os.extra_string		= "";
 
-		ndr_err = ndr_push_struct_blob(&blob, mem_ctx, lp_iconv_convenience(server->ntptr->lp_ctx), &os, (ndr_push_flags_fn_t)ndr_push_spoolss_OSVersion);
+		ndr_err = ndr_push_struct_blob(&blob, mem_ctx, &os, (ndr_push_flags_fn_t)ndr_push_spoolss_OSVersion);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 			return WERR_GENERAL_FAILURE;
 		}
 
-		*r->out.type		= REG_BINARY;
-		r->out.data->binary	= blob;
+		*type		= REG_BINARY;
+		r->binary	= blob;
 		return WERR_OK;
-	} else if (strcmp("OSVersionEx", r->in.value_name) == 0) {
+	} else if (strcmp("OSVersionEx", value_name) == 0) {
 		DATA_BLOB blob;
 		enum ndr_err_code ndr_err;
 		struct spoolss_OSVersionEx os_ex;
@@ -199,28 +203,56 @@ static WERROR sptr_GetPrintServerData(struct ntptr_GenericHandle *server, TALLOC
 		os_ex.product_type	= 0;
 		os_ex.reserved		= 0;
 
-		ndr_err = ndr_push_struct_blob(&blob, mem_ctx, lp_iconv_convenience(server->ntptr->lp_ctx), &os_ex, (ndr_push_flags_fn_t)ndr_push_spoolss_OSVersionEx);
+		ndr_err = ndr_push_struct_blob(&blob, mem_ctx, &os_ex, (ndr_push_flags_fn_t)ndr_push_spoolss_OSVersionEx);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 			return WERR_GENERAL_FAILURE;
 		}
 
-		*r->out.type		= REG_BINARY;
-		r->out.data->binary	= blob;
+		*type		= REG_BINARY;
+		r->binary	= blob;
 		return WERR_OK;
-	} else if (strcmp("DNSMachineName", r->in.value_name) == 0) {
-		const char *dnsdomain = lp_dnsdomain(server->ntptr->lp_ctx);
+	} else if (strcmp("DNSMachineName", value_name) == 0) {
+		const char *dnsdomain = lpcfg_dnsdomain(server->ntptr->lp_ctx);
 
 		if (dnsdomain == NULL) return WERR_INVALID_PARAM;
 
-		*r->out.type		= REG_SZ;
-		r->out.data->string	= talloc_asprintf(mem_ctx, "%s.%s",
-							  lp_netbios_name(server->ntptr->lp_ctx),
+		*type		= REG_SZ;
+		r->string	= talloc_asprintf(mem_ctx, "%s.%s",
+							  lpcfg_netbios_name(server->ntptr->lp_ctx),
 							  dnsdomain);
-		W_ERROR_HAVE_NO_MEMORY(r->out.data->string);
+		W_ERROR_HAVE_NO_MEMORY(r->string);
 		return WERR_OK;
 	}
 
 	return WERR_INVALID_PARAM;
+}
+
+static WERROR sptr_GetPrintServerData(struct ntptr_GenericHandle *server, TALLOC_CTX *mem_ctx,
+				      struct spoolss_GetPrinterData *r)
+{
+	WERROR result;
+	union spoolss_PrinterData data;
+	DATA_BLOB blob;
+	enum ndr_err_code ndr_err;
+
+	result = sptr_PrintServerData(server, mem_ctx, r->in.value_name, &data, r->out.type);
+	if (!W_ERROR_IS_OK(result)) {
+		return result;
+	}
+
+	ndr_err = ndr_push_union_blob(&blob, mem_ctx, 
+				      &data, *r->out.type, (ndr_push_flags_fn_t)ndr_push_spoolss_PrinterData);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return WERR_GENERAL_FAILURE;
+	}
+
+	*r->out.needed = blob.length;
+
+	if (r->in.offered >= *r->out.needed) {
+		memcpy(r->out.data, blob.data, blob.length);
+	}
+
+	return WERR_OK;
 }
 
 /* PrintServer Form functions */
@@ -389,7 +421,7 @@ static WERROR sptr_SetPrintServerForm(struct ntptr_GenericHandle *server, TALLOC
 		return WERR_UNKNOWN_LEVEL;
 	}
 
-	ret = samdb_replace(sptr_db, mem_ctx, msg);
+	ret = dsdb_replace(sptr_db, msg, 0);
 	if (ret != 0) {
 		return WERR_FOOBAR;
 	}

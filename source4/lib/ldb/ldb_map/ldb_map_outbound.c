@@ -38,7 +38,7 @@ static const char **map_attrs_select_local(struct ldb_module *module, void *mem_
 {
 	const struct ldb_map_context *data = map_get_context(module);
 	const char **result;
-	int i, last;
+	unsigned int i, last;
 
 	if (attrs == NULL)
 		return NULL;
@@ -81,7 +81,7 @@ static const char **map_attrs_collect_remote(struct ldb_module *module, void *me
 	const char **result;
 	const struct ldb_map_attribute *map;
 	const char *name=NULL;
-	int i, j, last;
+	unsigned int i, j, last;
 	int ret;
 
 	last = 0;
@@ -219,8 +219,10 @@ static struct ldb_message_element *ldb_msg_el_map_remote(struct ldb_module *modu
 							 const char *attr_name,
 							 const struct ldb_message_element *old)
 {
+	const struct ldb_map_context *data = map_get_context(module);
+	const char *local_attr_name = attr_name;
 	struct ldb_message_element *el;
-	int i;
+	unsigned int i;
 
 	el = talloc_zero(mem_ctx, struct ldb_message_element);
 	if (el == NULL) {
@@ -235,7 +237,19 @@ static struct ldb_message_element *ldb_msg_el_map_remote(struct ldb_module *modu
 		return NULL;
 	}
 
-	el->name = talloc_strdup(el, attr_name);
+	for (i = 0; data->attribute_maps[i].local_name; i++) {
+		struct ldb_map_attribute *am = &data->attribute_maps[i];
+		if ((am->type == LDB_MAP_RENAME &&
+			!strcmp(am->u.rename.remote_name, attr_name))
+		    || (am->type == LDB_MAP_CONVERT &&
+			!strcmp(am->u.convert.remote_name, attr_name))) {
+
+			local_attr_name = am->local_name;
+			break;
+		}
+	}
+
+	el->name = talloc_strdup(el, local_attr_name);
 	if (el->name == NULL) {
 		talloc_free(el);
 		map_oom(module);
@@ -350,7 +364,8 @@ static int ldb_msg_el_merge_wildcard(struct ldb_module *module, struct ldb_messa
 	const struct ldb_map_context *data = map_get_context(module);
 	const struct ldb_map_attribute *map = map_attr_find_local(data, "*");
 	struct ldb_message_element *el=NULL;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	/* Perhaps we have a mapping for "*" */
 	if (map && map->type == LDB_MAP_KEEP) {
@@ -392,7 +407,8 @@ static int ldb_msg_el_merge_wildcard(struct ldb_module *module, struct ldb_messa
 /* Merge two local messages into a single one. */
 static int ldb_msg_merge_local(struct ldb_module *module, struct ldb_message *msg1, struct ldb_message *msg2)
 {
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	for (i = 0; i < msg2->num_elements; i++) {
 		ret = ldb_msg_replace(msg1, &msg2->elements[i]);
@@ -408,7 +424,8 @@ static int ldb_msg_merge_local(struct ldb_module *module, struct ldb_message *ms
 static int ldb_msg_merge_remote(struct map_context *ac, struct ldb_message *local, 
 				struct ldb_message *remote)
 {
-	int i, ret;
+	unsigned int i;
+	int ret;
 	const char * const *attrs = ac->all_attrs;
 	if (!attrs) {
 		ret = ldb_msg_el_merge_wildcard(ac->module, local, remote);
@@ -520,7 +537,8 @@ static bool ldb_parse_tree_check_splittable(const struct ldb_parse_tree *tree)
 static int ldb_parse_tree_collect_attrs(struct ldb_module *module, void *mem_ctx, const char ***attrs, const struct ldb_parse_tree *tree)
 {
 	const char **new_attrs;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	if (tree == NULL) {
 		return 0;
@@ -547,8 +565,6 @@ static int ldb_parse_tree_collect_attrs(struct ldb_module *module, void *mem_ctx
 		*attrs = new_attrs;
 		return 0;
 	}
-
-	return -1;
 }
 
 static int map_subtree_select_local(struct ldb_module *module, void *mem_ctx, struct ldb_parse_tree **new, const struct ldb_parse_tree *tree);
@@ -588,7 +604,8 @@ static int map_subtree_select_local_not(struct ldb_module *module, void *mem_ctx
 /* Select a list of subtrees that query attributes in the local partition */
 static int map_subtree_select_local_list(struct ldb_module *module, void *mem_ctx, struct ldb_parse_tree **new, const struct ldb_parse_tree *tree)
 {
-	int i, j, ret=0;
+	unsigned int i, j;
+	int ret=0;
 
 	/* Prepare new tree */
 	*new = talloc_memdup(mem_ctx, tree, sizeof(struct ldb_parse_tree));
@@ -711,7 +728,8 @@ static int map_subtree_collect_remote_not(struct ldb_module *module, void *mem_c
 /* Collect a list of subtrees that query attributes in the remote partition */
 static int map_subtree_collect_remote_list(struct ldb_module *module, void *mem_ctx, struct ldb_parse_tree **new, const struct ldb_parse_tree *tree)
 {
-	int i, j, ret=0;
+	unsigned int i, j;
+	int ret=0;
 
 	/* Prepare new tree */
 	*new = talloc_memdup(mem_ctx, tree, sizeof(struct ldb_parse_tree));
@@ -1051,7 +1069,7 @@ int map_return_entry(struct map_context *ac, struct ldb_reply *ares)
 	struct ldb_message_element *el;
 	const char * const *attrs;
 	struct ldb_context *ldb;
-	int i;
+	unsigned int i;
 
 	ldb = ldb_module_get_ctx(ac->module);
 

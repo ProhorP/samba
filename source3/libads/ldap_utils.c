@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "ads.h"
 
 #ifdef HAVE_LDAP
 /*
@@ -39,7 +40,7 @@ static ADS_STATUS ads_do_search_retry_internal(ADS_STRUCT *ads, const char *bind
 	*res = NULL;
 
 	if (!ads->ldap.ld &&
-	    time(NULL) - ads->ldap.last_attempt < ADS_RECONNECT_TIME) {
+	    time_mono(NULL) - ads->ldap.last_attempt < ADS_RECONNECT_TIME) {
 		return ADS_ERROR(LDAP_SERVER_DOWN);
 	}
 
@@ -199,7 +200,7 @@ static ADS_STATUS ads_do_search_retry_internal(ADS_STRUCT *ads, const char *bind
 }
 
  ADS_STATUS ads_search_retry_sid(ADS_STRUCT *ads, LDAPMessage **res, 
-				 const DOM_SID *sid,
+				 const struct dom_sid *sid,
 				 const char **attrs)
 {
 	char *dn, *sid_string;

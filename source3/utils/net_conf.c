@@ -29,6 +29,9 @@
 
 #include "includes.h"
 #include "utils/net.h"
+#include "lib/smbconf/smbconf.h"
+#include "lib/smbconf/smbconf_init.h"
+#include "lib/smbconf/smbconf_reg.h"
 
 /**********************************************************************
  *
@@ -39,14 +42,16 @@
 static int net_conf_list_usage(struct net_context *c, int argc,
 			       const char **argv)
 {
-	d_printf(_("USAGE: net conf list\n"));
+	d_printf("%s net conf list\n", _("Usage:"));
 	return -1;
 }
 
 static int net_conf_import_usage(struct net_context *c, int argc,
 				 const char**argv)
 {
-	d_printf(_("USAGE: net conf import [--test|-T] <filename> "
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf import [--test|-T] <filename> "
 		   "[<servicename>]\n"
 		   "\t[--test|-T]    testmode - do not act, just print "
 			"what would be done\n"
@@ -58,28 +63,32 @@ static int net_conf_import_usage(struct net_context *c, int argc,
 static int net_conf_listshares_usage(struct net_context *c, int argc,
 				     const char **argv)
 {
-	d_printf(_("USAGE: net conf listshares\n"));
+	d_printf("%s\nnet conf listshares\n", _("Usage:"));
 	return -1;
 }
 
 static int net_conf_drop_usage(struct net_context *c, int argc,
 			       const char **argv)
 {
-	d_printf(_("USAGE: net conf drop\n"));
+	d_printf("%s\nnet conf drop\n", _("Usage:"));
 	return -1;
 }
 
 static int net_conf_showshare_usage(struct net_context *c, int argc,
 				    const char **argv)
 {
-	d_printf(_("USAGE: net conf showshare <sharename>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _("net conf showshare <sharename>\n"));
 	return -1;
 }
 
 static int net_conf_addshare_usage(struct net_context *c, int argc,
 				   const char **argv)
 {
-	d_printf(_("USAGE: net conf addshare <sharename> <path> "
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf addshare <sharename> <path> "
 		   "[writeable={y|N} [guest_ok={y|N} [<comment>]]\n"
 		   "\t<sharename>      the new share name.\n"
 		   "\t<path>           the path on the filesystem to export.\n"
@@ -94,49 +103,63 @@ static int net_conf_addshare_usage(struct net_context *c, int argc,
 static int net_conf_delshare_usage(struct net_context *c, int argc,
 				   const char **argv)
 {
-	d_printf(_("USAGE: net conf delshare <sharename>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _("net conf delshare <sharename>\n"));
 	return -1;
 }
 
 static int net_conf_setparm_usage(struct net_context *c, int argc,
 				  const char **argv)
 {
-	d_printf(_("USAGE: net conf setparm <section> <param> <value>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf setparm <section> <param> <value>\n"));
 	return -1;
 }
 
 static int net_conf_getparm_usage(struct net_context *c, int argc,
 				  const char **argv)
 {
-	d_printf(_("USAGE: net conf getparm <section> <param>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf getparm <section> <param>\n"));
 	return -1;
 }
 
 static int net_conf_delparm_usage(struct net_context *c, int argc,
 				  const char **argv)
 {
-	d_printf(_("USAGE: net conf delparm <section> <param>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf delparm <section> <param>\n"));
 	return -1;
 }
 
 static int net_conf_getincludes_usage(struct net_context *c, int argc,
 				      const char **argv)
 {
-	d_printf(_("USAGE: net conf getincludes <section>\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf getincludes <section>\n"));
 	return -1;
 }
 
 static int net_conf_setincludes_usage(struct net_context *c, int argc,
 				      const char **argv)
 {
-	d_printf(_("USAGE: net conf setincludes <section> [<filename>]*\n"));
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _(" net conf setincludes <section> [<filename>]*\n"));
 	return -1;
 }
 
 static int net_conf_delincludes_usage(struct net_context *c, int argc,
 				      const char **argv)
 {
-	d_printf(_("USAGE: net conf delincludes <section>\n"));
+	d_printf("%s\n%s",
+		_("Usage:"),
+		_(" net conf delincludes <section>\n"));
 	return -1;
 }
 
@@ -209,6 +232,10 @@ static WERROR import_process_service(struct net_context *c,
 						     service->param_names[idx],
 						     service->param_values[idx]);
 			if (!W_ERROR_IS_OK(werr)) {
+				d_fprintf(stderr,
+					  _("Error in section [%s], parameter \"%s\": %s\n"),
+					  service->name, service->param_names[idx],
+					  win_errstr(werr));
 				goto done;
 			}
 		}
@@ -671,6 +698,17 @@ static int net_conf_addshare(struct net_context *c,
 	}
 
 	/*
+	 * start a transaction
+	 */
+
+	werr = smbconf_transaction_start(conf_ctx);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_printf("error starting transaction: %s\n",
+			 win_errstr(werr));
+		goto done;
+	}
+
+	/*
 	 * create the share
 	 */
 
@@ -678,7 +716,7 @@ static int net_conf_addshare(struct net_context *c,
 	if (!W_ERROR_IS_OK(werr)) {
 		d_fprintf(stderr, _("Error creating share %s: %s\n"),
 			  sharename, win_errstr(werr));
-		goto done;
+		goto cancel;
 	}
 
 	/*
@@ -689,7 +727,7 @@ static int net_conf_addshare(struct net_context *c,
 	if (!W_ERROR_IS_OK(werr)) {
 		d_fprintf(stderr, _("Error setting parameter %s: %s\n"),
 			  "path", win_errstr(werr));
-		goto done;
+		goto cancel;
 	}
 
 	if (comment != NULL) {
@@ -698,7 +736,7 @@ static int net_conf_addshare(struct net_context *c,
 		if (!W_ERROR_IS_OK(werr)) {
 			d_fprintf(stderr, _("Error setting parameter %s: %s\n"),
 				  "comment", win_errstr(werr));
-			goto done;
+			goto cancel;
 		}
 	}
 
@@ -706,7 +744,7 @@ static int net_conf_addshare(struct net_context *c,
 	if (!W_ERROR_IS_OK(werr)) {
 		d_fprintf(stderr, _("Error setting parameter %s: %s\n"),
 			  "'guest ok'", win_errstr(werr));
-		goto done;
+		goto cancel;
 	}
 
 	werr = smbconf_set_parameter(conf_ctx, sharename, "writeable",
@@ -714,10 +752,29 @@ static int net_conf_addshare(struct net_context *c,
 	if (!W_ERROR_IS_OK(werr)) {
 		d_fprintf(stderr, _("Error setting parameter %s: %s\n"),
 			  "writeable", win_errstr(werr));
-		goto done;
+		goto cancel;
 	}
 
-	ret = 0;
+	/*
+	 * commit the whole thing
+	 */
+
+	werr = smbconf_transaction_commit(conf_ctx);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_printf("error committing transaction: %s\n",
+			 win_errstr(werr));
+	} else {
+		ret = 0;
+	}
+
+	goto done;
+
+cancel:
+	werr = smbconf_transaction_cancel(conf_ctx);
+	if (!W_ERROR_IS_OK(werr)) {
+		d_printf("error cancelling transaction: %s\n",
+			 win_errstr(werr));
+	}
 
 done:
 	TALLOC_FREE(mem_ctx);

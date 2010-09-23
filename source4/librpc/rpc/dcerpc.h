@@ -31,10 +31,15 @@
 #include "librpc/gen_ndr/dcerpc.h"
 #include "../librpc/ndr/libndr.h"
 
+struct tevent_context;
+struct tevent_req;
+struct dcerpc_binding_handle;
+struct tstream_context;
+
 enum dcerpc_transport_t {
 	NCA_UNKNOWN, NCACN_NP, NCACN_IP_TCP, NCACN_IP_UDP, NCACN_VNS_IPC, 
 	NCACN_VNS_SPP, NCACN_AT_DSP, NCADG_AT_DDP, NCALRPC, NCACN_UNIX_STREAM, 
-	NCADG_UNIX_DGRAM, NCACN_HTTP, NCADG_IPX, NCACN_SPX };
+	NCADG_UNIX_DGRAM, NCACN_HTTP, NCADG_IPX, NCACN_SPX, NCACN_INTERNAL };
 
 /*
   this defines a generic security context for signed/sealed dcerpc pipes.
@@ -60,7 +65,6 @@ struct dcerpc_connection {
 	struct dcerpc_security security_state;
 	const char *binding_string;
 	struct tevent_context *event_ctx;
-	struct smb_iconv_convenience *iconv_convenience;
 
 	/** Directory in which to save ndrdump-parseable files */
 	const char *packet_log_dir;
@@ -103,6 +107,8 @@ struct dcerpc_connection {
   this encapsulates a full dcerpc client side pipe 
 */
 struct dcerpc_pipe {
+	struct dcerpc_binding_handle *binding_handle;
+
 	uint32_t context_id;
 
 	uint32_t assoc_group_id;
@@ -175,6 +181,9 @@ struct dcerpc_pipe {
 /* use NDR64 transport */
 #define DCERPC_NDR64                   (1<<21)
 
+/* specify binding interface */
+#define	DCERPC_LOCALADDRESS            (1<<22)
+
 /* this describes a binding to a particular transport/pipe */
 struct dcerpc_binding {
 	enum dcerpc_transport_t transport;
@@ -183,6 +192,7 @@ struct dcerpc_binding {
 	const char *target_hostname;
 	const char *endpoint;
 	const char **options;
+	const char *localaddress;
 	uint32_t flags;
 	uint32_t assoc_group_id;
 };
@@ -225,7 +235,6 @@ struct rpc_request {
 	const struct GUID *object;
 	uint16_t opnum;
 	DATA_BLOB request_data;
-	bool async_call;
 	bool ignore_timeout;
 
 	/* use by the ndr level async recv call */
@@ -265,8 +274,7 @@ struct rpc_request *dcerpc_ndr_request_send(struct dcerpc_pipe *p,
 						TALLOC_CTX *mem_ctx, 
 						void *r);
 const char *dcerpc_server_name(struct dcerpc_pipe *p);
-struct dcerpc_pipe *dcerpc_pipe_init(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
-				     struct smb_iconv_convenience *ic);
+struct dcerpc_pipe *dcerpc_pipe_init(TALLOC_CTX *mem_ctx, struct tevent_context *ev);
 NTSTATUS dcerpc_pipe_open_smb(struct dcerpc_pipe *p,
 			      struct smbcli_tree *tree,
 			      const char *pipe_name);
@@ -297,6 +305,7 @@ NTSTATUS dcerpc_pipe_connect_b(TALLOC_CTX *parent_ctx,
 			       struct tevent_context *ev,
 			       struct loadparm_context *lp_ctx);
 const char *dcerpc_errstr(TALLOC_CTX *mem_ctx, uint32_t fault_code);
+NTSTATUS dcerpc_fault_to_nt_status(uint32_t fault_code);
 
 NTSTATUS dcerpc_pipe_auth(TALLOC_CTX *mem_ctx,
 			  struct dcerpc_pipe **p, 
@@ -356,9 +365,9 @@ NTSTATUS dcerpc_secondary_auth_connection_recv(struct composite_context *c,
 struct composite_context* dcerpc_secondary_connection_send(struct dcerpc_pipe *p,
 							   struct dcerpc_binding *b);
 void dcerpc_log_packet(const char *lockdir, 
-					   const struct ndr_interface_table *ndr,
-					   uint32_t opnum, uint32_t flags, 
-					   DATA_BLOB *pkt);
+		       const struct ndr_interface_table *ndr,
+		       uint32_t opnum, uint32_t flags,
+		       const DATA_BLOB *pkt);
 NTSTATUS dcerpc_binding_build_tower(TALLOC_CTX *mem_ctx,
 				    const struct dcerpc_binding *binding,
 				    struct epm_tower *tower);
@@ -386,10 +395,128 @@ NTSTATUS dcerpc_request(struct dcerpc_pipe *p,
 			DATA_BLOB *stub_data_in,
 			DATA_BLOB *stub_data_out);
 
-typedef NTSTATUS (*dcerpc_call_fn) (struct dcerpc_pipe *, TALLOC_CTX *, void *);
-
 enum dcerpc_transport_t dcerpc_transport_by_endpoint_protocol(int prot);
 
 const char *dcerpc_floor_get_rhs_data(TALLOC_CTX *mem_ctx, struct epm_floor *epm_floor);
+
+struct tevent_req *dcerpc_read_ncacn_packet_send(TALLOC_CTX *mem_ctx,
+						 struct tevent_context *ev,
+						 struct tstream_context *stream);
+NTSTATUS dcerpc_read_ncacn_packet_recv(struct tevent_req *req,
+				       TALLOC_CTX *mem_ctx,
+				       struct ncacn_packet **pkt,
+				       DATA_BLOB *buffer);
+
+struct dcerpc_binding_handle_ops {
+	const char *name;
+
+	bool (*is_connected)(struct dcerpc_binding_handle *h);
+	uint32_t (*set_timeout)(struct dcerpc_binding_handle *h,
+				uint32_t timeout);
+
+	struct tevent_req *(*raw_call_send)(TALLOC_CTX *mem_ctx,
+					    struct tevent_context *ev,
+					    struct dcerpc_binding_handle *h,
+					    const struct GUID *object,
+					    uint32_t opnum,
+					    uint32_t in_flags,
+					    const uint8_t *in_data,
+					    size_t in_length);
+	NTSTATUS (*raw_call_recv)(struct tevent_req *req,
+				  TALLOC_CTX *mem_ctx,
+				  uint8_t **out_data,
+				  size_t *out_length,
+				  uint32_t *out_flags);
+
+	struct tevent_req *(*disconnect_send)(TALLOC_CTX *mem_ctx,
+					      struct tevent_context *ev,
+					      struct dcerpc_binding_handle *h);
+	NTSTATUS (*disconnect_recv)(struct tevent_req *req);
+
+	/* TODO: remove the following functions */
+	bool (*push_bigendian)(struct dcerpc_binding_handle *h);
+	bool (*ref_alloc)(struct dcerpc_binding_handle *h);
+	bool (*use_ndr64)(struct dcerpc_binding_handle *h);
+	void (*do_ndr_print)(struct dcerpc_binding_handle *h,
+			     int ndr_flags,
+			     const void *struct_ptr,
+			     const struct ndr_interface_call *call);
+	void (*ndr_push_failed)(struct dcerpc_binding_handle *h,
+				NTSTATUS error,
+				const void *struct_ptr,
+				const struct ndr_interface_call *call);
+	void (*ndr_pull_failed)(struct dcerpc_binding_handle *h,
+				NTSTATUS error,
+				const DATA_BLOB *blob,
+				const struct ndr_interface_call *call);
+	NTSTATUS (*ndr_validate_in)(struct dcerpc_binding_handle *h,
+				    TALLOC_CTX *mem_ctx,
+				    const DATA_BLOB *blob,
+				    const struct ndr_interface_call *call);
+	NTSTATUS (*ndr_validate_out)(struct dcerpc_binding_handle *h,
+				     struct ndr_pull *pull_in,
+				     const void *struct_ptr,
+				     const struct ndr_interface_call *call);
+};
+
+struct dcerpc_binding_handle *_dcerpc_binding_handle_create(TALLOC_CTX *mem_ctx,
+					const struct dcerpc_binding_handle_ops *ops,
+					const struct GUID *object,
+					const struct ndr_interface_table *table,
+					void *pstate,
+					size_t psize,
+					const char *type,
+					const char *location);
+#define dcerpc_binding_handle_create(mem_ctx, ops, object, table, \
+				state, type, location) \
+	_dcerpc_binding_handle_create(mem_ctx, ops, object, table, \
+				state, sizeof(type), #type, location)
+
+void *_dcerpc_binding_handle_data(struct dcerpc_binding_handle *h);
+#define dcerpc_binding_handle_data(_h, _type) \
+	talloc_get_type_abort(_dcerpc_binding_handle_data(_h), _type)
+
+_DEPRECATED_ void dcerpc_binding_handle_set_sync_ev(struct dcerpc_binding_handle *h,
+						    struct tevent_context *ev);
+
+bool dcerpc_binding_handle_is_connected(struct dcerpc_binding_handle *h);
+
+uint32_t dcerpc_binding_handle_set_timeout(struct dcerpc_binding_handle *h,
+					   uint32_t timeout);
+
+struct tevent_req *dcerpc_binding_handle_raw_call_send(TALLOC_CTX *mem_ctx,
+						struct tevent_context *ev,
+						struct dcerpc_binding_handle *h,
+						const struct GUID *object,
+						uint32_t opnum,
+						uint32_t in_flags,
+						const uint8_t *in_data,
+						size_t in_length);
+NTSTATUS dcerpc_binding_handle_raw_call_recv(struct tevent_req *req,
+					     TALLOC_CTX *mem_ctx,
+					     uint8_t **out_data,
+					     size_t *out_length,
+					     uint32_t *out_flags);
+
+struct tevent_req *dcerpc_binding_handle_disconnect_send(TALLOC_CTX *mem_ctx,
+						struct tevent_context *ev,
+						struct dcerpc_binding_handle *h);
+NTSTATUS dcerpc_binding_handle_disconnect_recv(struct tevent_req *req);
+
+struct tevent_req *dcerpc_binding_handle_call_send(TALLOC_CTX *mem_ctx,
+					struct tevent_context *ev,
+					struct dcerpc_binding_handle *h,
+					const struct GUID *object,
+					const struct ndr_interface_table *table,
+					uint32_t opnum,
+					TALLOC_CTX *r_mem,
+					void *r_ptr);
+NTSTATUS dcerpc_binding_handle_call_recv(struct tevent_req *req);
+NTSTATUS dcerpc_binding_handle_call(struct dcerpc_binding_handle *h,
+				    const struct GUID *object,
+				    const struct ndr_interface_table *table,
+				    uint32_t opnum,
+				    TALLOC_CTX *r_mem,
+				    void *r_ptr);
 
 #endif /* __DCERPC_H__ */

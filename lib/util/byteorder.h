@@ -54,7 +54,7 @@ that don't have any int types that are 2 bytes long)
 You do this:
 
 #define CVAL(buf,pos) (((uint8_t *)(buf))[pos])
-#define PVAL(buf,pos) ((uint_t)CVAL(buf,pos))
+#define PVAL(buf,pos) ((unsigned int)CVAL(buf,pos))
 #define SVAL(buf,pos) (PVAL(buf,pos)|PVAL(buf,(pos)+1)<<8)
 
 then to extract a uint16_t value at offset 25 in a buffer you do this:
@@ -144,7 +144,7 @@ static __inline__ void st_le32(uint32_t *addr, const uint32_t val)
 #define CAREFUL_ALIGNMENT 1
 #endif
 
-#define CVAL(buf,pos) ((uint_t)(((const uint8_t *)(buf))[pos]))
+#define CVAL(buf,pos) ((unsigned int)(((const uint8_t *)(buf))[pos]))
 #define CVAL_NC(buf,pos) (((uint8_t *)(buf))[pos]) /* Non-const version of CVAL */
 #define PVAL(buf,pos) (CVAL(buf,pos))
 #define SCVAL(buf,pos,val) (CVAL_NC(buf,pos) = (val))
@@ -185,13 +185,13 @@ static __inline__ void st_le32(uint32_t *addr, const uint32_t val)
 
 /* get single value from an SMB buffer */
 #define SVAL(buf,pos) (*(const uint16_t *)((const char *)(buf) + (pos)))
-#define SVAL_NC(buf,pos) (*(uint16_t *)((char *)(buf) + (pos))) /* Non const version of above. */
+#define SVAL_NC(buf,pos) (*(uint16_t *)((void *)((char *)(buf) + (pos)))) /* Non const version of above. */
 #define IVAL(buf,pos) (*(const uint32_t *)((const char *)(buf) + (pos)))
-#define IVAL_NC(buf,pos) (*(uint32_t *)((char *)(buf) + (pos))) /* Non const version of above. */
+#define IVAL_NC(buf,pos) (*(uint32_t *)((void *)((char *)(buf) + (pos)))) /* Non const version of above. */
 #define SVALS(buf,pos) (*(const int16_t *)((const char *)(buf) + (pos)))
-#define SVALS_NC(buf,pos) (*(int16_t *)((char *)(buf) + (pos))) /* Non const version of above. */
+#define SVALS_NC(buf,pos) (*(int16_t *)((void *)((char *)(buf) + (pos)))) /* Non const version of above. */
 #define IVALS(buf,pos) (*(const int32_t *)((const char *)(buf) + (pos)))
-#define IVALS_NC(buf,pos) (*(int32_t *)((char *)(buf) + (pos))) /* Non const version of above. */
+#define IVALS_NC(buf,pos) (*(int32_t *)((void *)((char *)(buf) + (pos)))) /* Non const version of above. */
 
 /* store single value in an SMB buffer */
 #define SSVAL(buf,pos,val) SVAL_NC(buf,pos)=((uint16_t)(val))

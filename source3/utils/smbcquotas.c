@@ -22,6 +22,10 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
+#include "../librpc/gen_ndr/ndr_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
+#include "fake_file.h"
 
 static char *server;
 
@@ -77,7 +81,7 @@ static bool cli_open_policy_hnd(void)
 }
 
 /* convert a SID to a string, either numeric or username/group */
-static void SidToString(fstring str, DOM_SID *sid, bool _numeric)
+static void SidToString(fstring str, struct dom_sid *sid, bool _numeric)
 {
 	char **domains = NULL;
 	char **names = NULL;
@@ -106,10 +110,10 @@ static void SidToString(fstring str, DOM_SID *sid, bool _numeric)
 }
 
 /* convert a string to a SID, either numeric or username/group */
-static bool StringToSid(DOM_SID *sid, const char *str)
+static bool StringToSid(struct dom_sid *sid, const char *str)
 {
 	enum lsa_SidType *types = NULL;
-	DOM_SID *sids = NULL;
+	struct dom_sid *sids = NULL;
 	bool result = True;
 
 	if (strncmp(str, "S-", 2) == 0) {

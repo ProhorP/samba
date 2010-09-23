@@ -26,7 +26,8 @@
 #include "includes.h"
 #include "libsmbclient.h"
 #include "libsmb_internal.h"
-
+#include "../librpc/gen_ndr/ndr_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
 
 /* 
  * Check a server for being alive and well.
@@ -413,6 +414,10 @@ again:
 		c->fallback_after_kerberos = True;
 	}
 
+        if (smbc_getOptionUseCCache(context)) {
+		c->use_ccache = True;
+	}
+
 	c->timeout = smbc_getTimeout(context);
 
         /*
@@ -758,6 +763,9 @@ SMBC_attr_server(TALLOC_CTX *ctx,
                 flags = 0;
                 if (smbc_getOptionUseKerberos(context)) {
                         flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+                }
+                if (smbc_getOptionUseCCache(context)) {
+                        flags |= CLI_FULL_CONNECTION_USE_CCACHE;
                 }
 
                 zero_sockaddr(&ss);

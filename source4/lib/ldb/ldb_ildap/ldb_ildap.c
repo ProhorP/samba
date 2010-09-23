@@ -35,16 +35,16 @@
  *
  *  Modifications:
  *
- *  - description: make the module use asyncronous calls
+ *  - description: make the module use asynchronous calls
  *    date: Feb 2006
  *    author: Simo Sorce
  */
 
 #include "includes.h"
 #include "ldb_module.h"
-#include "dlinklist.h"
+#include "util/dlinklist.h"
 
-#include "libcli/ldap/ldap.h"
+#include "libcli/ldap/libcli_ldap.h"
 #include "libcli/ldap/ldap_client.h"
 #include "auth/auth.h"
 #include "auth/credentials/credentials.h"
@@ -60,6 +60,10 @@ struct ildb_context {
 
 	struct ildb_private *ildb;
 	struct ldap_request *ireq;
+
+	/* indicate we are already processing
+	 * the ldap_request in ildb_callback() */
+	bool in_ildb_callback;
 
 	bool done;
 
@@ -223,6 +227,13 @@ static void ildb_callback(struct ldap_request *req)
 	request_done = false;
 	controls = NULL;
 
+	/* check if we are already processing this request */
+	if (ac->in_ildb_callback) {
+		return;
+	}
+	/* mark the request as being in process */
+	ac->in_ildb_callback = true;
+
 	if (!NT_STATUS_IS_OK(req->status)) {
 		ret = ildb_map_error(ac->module, req->status);
 		ildb_request_done(ac, NULL, ret);
@@ -327,6 +338,7 @@ static void ildb_callback(struct ldap_request *req)
 				if (ret != LDB_SUCCESS) {
 					callback_failed = true;
 				}
+
 				break;
 
 			case LDAP_TAG_SearchResultReference:
@@ -337,6 +349,7 @@ static void ildb_callback(struct ldap_request *req)
 				if (ret != LDB_SUCCESS) {
 					callback_failed = true;
 				}
+
 				break;
 
 			default:
@@ -370,9 +383,13 @@ static void ildb_callback(struct ldap_request *req)
 		}
 	}
 
+	/* mark the request as not being in progress */
+	ac->in_ildb_callback = false;
+
 	if (request_done) {
 		ildb_request_done(ac, controls, ret);
 	}
+
 	return;
 }
 

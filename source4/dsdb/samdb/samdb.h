@@ -61,6 +61,48 @@ struct dsdb_control_current_partition {
  * much like LDB_CONTROL_EXTENDED_DN_OID when the DB stores an
  * extended DN, and otherwise returns normal DNs */
 
+#define DSDB_CONTROL_PASSWORD_CHANGE_STATUS_OID "1.3.6.1.4.1.7165.4.3.8"
+
+struct dsdb_control_password_change_status {
+	struct {
+		uint32_t pwdProperties;
+		uint32_t pwdHistoryLength;
+		int64_t maxPwdAge;
+		int64_t minPwdAge;
+		uint32_t minPwdLength;
+		bool store_cleartext;
+		const char *netbios_domain;
+		const char *dns_domain;
+		const char *realm;
+	} domain_data;
+	enum samPwdChangeReason reject_reason;
+};
+
+#define DSDB_CONTROL_PASSWORD_HASH_VALUES_OID "1.3.6.1.4.1.7165.4.3.9"
+
+#define DSDB_CONTROL_PASSWORD_CHANGE_OID "1.3.6.1.4.1.7165.4.3.10"
+
+struct dsdb_control_password_change {
+	const struct samr_Password *old_nt_pwd_hash;
+	const struct samr_Password *old_lm_pwd_hash;
+};
+
+/**
+   DSDB_CONTROL_APPLY_LINKS is internal to Samba4 - a token passed between repl_meta_data and linked_attributes modules
+*/
+#define DSDB_CONTROL_APPLY_LINKS "1.3.6.1.4.1.7165.4.3.11"
+
+/*
+ * this should only be used for importing users from Samba3
+ */
+#define DSDB_CONTROL_BYPASS_PASSWORD_HASH_OID "1.3.6.1.4.1.7165.4.3.12"
+
+/**
+  OID used to allow the replacement of replPropertyMetaData.
+  It is used when the current replmetadata needs to be edited.
+*/
+#define DSDB_CONTROL_CHANGEREPLMETADATA_OID "1.3.6.1.4.1.7165.4.3.14"
+
 #define DSDB_EXTENDED_REPLICATED_OBJECTS_OID "1.3.6.1.4.1.7165.4.4.1"
 struct dsdb_extended_replicated_object {
 	struct ldb_message *msg;

@@ -218,18 +218,6 @@ INIT_FUNCTION = LDB_MODULE(local_password)
 ldb_local_password_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/local_password.o
 
 ################################################
-# Start MODULE ldb_kludge_acl
-[MODULE::ldb_kludge_acl]
-PRIVATE_DEPENDENCIES = LIBTALLOC LIBEVENTS LIBSECURITY SAMDB
-SUBSYSTEM = LIBLDB
-INIT_FUNCTION = LDB_MODULE(kludge_acl)
-
-# End MODULE ldb_kludge_acl
-################################################
-
-ldb_kludge_acl_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/kludge_acl.o
-
-################################################
 # Start MODULE ldb_extended_dn_in
 [MODULE::ldb_extended_dn_in]
 SUBSYSTEM = LIBLDB
@@ -400,7 +388,7 @@ ldb_instancetype_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/instancetype.o
 [MODULE::ldb_operational]
 SUBSYSTEM = LIBLDB
 CFLAGS = -Ilib/ldb/include
-PRIVATE_DEPENDENCIES = LIBTALLOC LIBTEVENT LIBSAMBA-UTIL SAMDB_COMMON DSDB_MODULE_HELPERS
+PRIVATE_DEPENDENCIES = LIBTALLOC LIBTEVENT LIBSAMBA-UTIL SAMDB_COMMON DSDB_MODULE_HELPERS auth_session auth
 INIT_FUNCTION = LDB_MODULE(operational)
 # End MODULE ldb_operational
 ################################################
@@ -437,7 +425,6 @@ ldb_resolve_oids_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/resolve_oids.o
 PRIVATE_DEPENDENCIES = LIBTALLOC LIBEVENTS LIBSECURITY SAMDB
 SUBSYSTEM = LIBLDB
 INIT_FUNCTION = LDB_MODULE(acl)
-
 # End MODULE ldb_acl
 ################################################
 
@@ -454,3 +441,13 @@ INIT_FUNCTION = LDB_MODULE(lazy_commit)
 ################################################
 
 ldb_lazy_commit_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/lazy_commit.o
+
+# Start MODULE ldb_validate_update
+[MODULE::ldb_validate_update]
+PRIVATE_DEPENDENCIES = LIBTALLOC LIBEVENTS LIBSECURITY SAMDB
+SUBSYSTEM = LIBLDB
+INIT_FUNCTION = LDB_MODULE(validate_update)
+# End MODULE ldb_validate_update
+################################################
+
+ldb_validate_update_OBJ_FILES = $(dsdbsrcdir)/samdb/ldb_modules/validate_update.o

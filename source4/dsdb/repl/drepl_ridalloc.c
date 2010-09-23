@@ -24,95 +24,28 @@
 */
 
 #include "includes.h"
+#include "ldb_module.h"
 #include "dsdb/samdb/samdb.h"
 #include "smbd/service.h"
 #include "dsdb/repl/drepl_service.h"
 #include "param/param.h"
 
-
-/*
-  create the RID manager source dsa structure
- */
-static WERROR drepl_create_rid_manager_source_dsa(struct dreplsrv_service *service,
-						  struct ldb_dn *rid_manager_dn, struct ldb_dn *fsmo_role_dn)
-{
-	struct dreplsrv_partition_source_dsa *sdsa;
-	struct ldb_context *ldb = service->samdb;
-	int ret;
-	WERROR werr;
-
-	sdsa = talloc_zero(service, struct dreplsrv_partition_source_dsa);
-	W_ERROR_HAVE_NO_MEMORY(sdsa);
-
-	sdsa->partition = talloc_zero(sdsa, struct dreplsrv_partition);
-	if (!sdsa->partition) {
-		talloc_free(sdsa);
-		return WERR_NOMEM;
-	}
-
-	sdsa->partition->dn = samdb_base_dn(ldb);
-	sdsa->partition->nc.dn = ldb_dn_alloc_linearized(sdsa->partition, rid_manager_dn);
-	ret = dsdb_find_guid_by_dn(ldb, rid_manager_dn, &sdsa->partition->nc.guid);
-	if (ret != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to find GUID for %s\n",
-			 ldb_dn_get_linearized(rid_manager_dn)));
-		talloc_free(sdsa);
-		return WERR_DS_DRA_INTERNAL_ERROR;
-	}
-
-	sdsa->repsFrom1 = &sdsa->_repsFromBlob.ctr.ctr1;
-	ret = dsdb_find_guid_attr_by_dn(ldb, fsmo_role_dn, "objectGUID", &sdsa->repsFrom1->source_dsa_obj_guid);
-	if (ret != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to find objectGUID for %s\n",
-			 ldb_dn_get_linearized(fsmo_role_dn)));
-		talloc_free(sdsa);
-		return WERR_DS_DRA_INTERNAL_ERROR;
-	}
-
-	sdsa->repsFrom1->other_info = talloc_zero(sdsa, struct repsFromTo1OtherInfo);
-	if (!sdsa->repsFrom1->other_info) {
-		talloc_free(sdsa);
-		return WERR_NOMEM;
-	}
-
-	sdsa->repsFrom1->other_info->dns_name =
-		talloc_asprintf(sdsa->repsFrom1->other_info, "%s._msdcs.%s",
-				GUID_string(sdsa->repsFrom1->other_info, &sdsa->repsFrom1->source_dsa_obj_guid),
-				lp_dnsdomain(service->task->lp_ctx));
-	if (!sdsa->repsFrom1->other_info->dns_name) {
-		talloc_free(sdsa);
-		return WERR_NOMEM;
-	}
-
-
-	werr = dreplsrv_out_connection_attach(service, sdsa->repsFrom1, &sdsa->conn);
-	if (!W_ERROR_IS_OK(werr)) {
-		DEBUG(0,(__location__ ": Failed to attach to RID manager connection\n"));
-		talloc_free(sdsa);
-		return werr;
-	}
-
-	service->ridalloc.rid_manager_source_dsa = sdsa;
-	return WERR_OK;
-}
-
 /*
   called when a rid allocation request has completed
  */
-static void drepl_new_rid_pool_callback(struct dreplsrv_service *service, WERROR werr)
+static void drepl_new_rid_pool_callback(struct dreplsrv_service *service,
+					WERROR werr,
+					enum drsuapi_DsExtendedError ext_err,
+					void *cb_data)
 {
 	if (!W_ERROR_IS_OK(werr)) {
-		DEBUG(0,(__location__ ": RID Manager failed RID allocation - %s\n",
-			 win_errstr(werr)));
+		DEBUG(0,(__location__ ": RID Manager failed RID allocation - %s - extended_ret[0x%X]\n",
+			 win_errstr(werr), ext_err));
 	} else {
 		DEBUG(3,(__location__ ": RID Manager completed RID allocation OK\n"));
 	}
 
-	/* don't keep the connection open to the RID Manager */
-	talloc_free(service->ridalloc.rid_manager_source_dsa);
-	service->ridalloc.rid_manager_source_dsa = NULL;
-
-	service->ridalloc.in_progress = false;
+	service->rid_alloc_in_progress = false;
 }
 
 /*
@@ -123,20 +56,16 @@ static WERROR drepl_request_new_rid_pool(struct dreplsrv_service *service,
 					 struct ldb_dn *rid_manager_dn, struct ldb_dn *fsmo_role_dn,
 					 uint64_t alloc_pool)
 {
-	WERROR werr;
-
-	if (service->ridalloc.rid_manager_source_dsa == NULL) {
-		/* we need to establish a connection to the RID
-		   Manager */
-		werr = drepl_create_rid_manager_source_dsa(service, rid_manager_dn, fsmo_role_dn);
-		W_ERROR_NOT_OK_RETURN(werr);
+	WERROR werr = drepl_request_extended_op(service,
+						rid_manager_dn,
+						fsmo_role_dn,
+						DRSUAPI_EXOP_FSMO_RID_ALLOC,
+						alloc_pool,
+						0,
+						drepl_new_rid_pool_callback, NULL);
+	if (W_ERROR_IS_OK(werr)) {
+		service->rid_alloc_in_progress = true;
 	}
-
-	service->ridalloc.in_progress = true;
-
-	werr = dreplsrv_schedule_partition_pull_source(service, service->ridalloc.rid_manager_source_dsa,
-						       DRSUAPI_EXOP_FSMO_RID_ALLOC, alloc_pool,
-						       drepl_new_rid_pool_callback);
 	return werr;
 }
 
@@ -144,19 +73,32 @@ static WERROR drepl_request_new_rid_pool(struct dreplsrv_service *service,
 /*
   see if we are on the last pool we have
  */
-static int drepl_ridalloc_pool_exhausted(struct ldb_context *ldb, bool *exhausted, uint64_t *alloc_pool)
+static int drepl_ridalloc_pool_exhausted(struct ldb_context *ldb,
+					 bool *exhausted,
+					 uint64_t *_alloc_pool)
 {
 	struct ldb_dn *server_dn, *machine_dn, *rid_set_dn;
 	TALLOC_CTX *tmp_ctx = talloc_new(ldb);
-	uint64_t prev_alloc_pool;
-	const char *attrs[] = { "rIDPreviousAllocationPool", "rIDAllocationPool", NULL };
+	uint64_t alloc_pool;
+	uint64_t prev_pool;
+	uint32_t prev_pool_lo, prev_pool_hi;
+	uint32_t next_rid;
+	static const char * const attrs[] = {
+		"rIDAllocationPool",
+		"rIDPreviousAllocationPool",
+		"rIDNextRid",
+		NULL
+	};
 	int ret;
 	struct ldb_result *res;
+
+	*exhausted = false;
+	*_alloc_pool = UINT64_MAX;
 
 	server_dn = ldb_dn_get_parent(tmp_ctx, samdb_ntds_settings_dn(ldb));
 	if (!server_dn) {
 		talloc_free(tmp_ctx);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb);
 	}
 
 	ret = samdb_reference_dn(ldb, tmp_ctx, server_dn, "serverReference", &machine_dn);
@@ -170,6 +112,7 @@ static int drepl_ridalloc_pool_exhausted(struct ldb_context *ldb, bool *exhauste
 	ret = samdb_reference_dn(ldb, tmp_ctx, machine_dn, "rIDSetReferences", &rid_set_dn);
 	if (ret == LDB_ERR_NO_SUCH_ATTRIBUTE) {
 		*exhausted = true;
+		*_alloc_pool = 0;
 		talloc_free(tmp_ctx);
 		return LDB_SUCCESS;
 	}
@@ -188,15 +131,24 @@ static int drepl_ridalloc_pool_exhausted(struct ldb_context *ldb, bool *exhauste
 		return ret;
 	}
 
-	*alloc_pool = ldb_msg_find_attr_as_uint64(res->msgs[0], "rIDAllocationPool", 0);
-	prev_alloc_pool = ldb_msg_find_attr_as_uint64(res->msgs[0], "rIDPreviousAllocationPool", 0);
+	alloc_pool = ldb_msg_find_attr_as_uint64(res->msgs[0], "rIDAllocationPool", 0);
+	prev_pool = ldb_msg_find_attr_as_uint64(res->msgs[0], "rIDPreviousAllocationPool", 0);
+	prev_pool_lo = prev_pool & 0xFFFFFFFF;
+	prev_pool_hi = prev_pool >> 32;
+	next_rid = ldb_msg_find_attr_as_uint(res->msgs[0], "rIDNextRid", 0);
 
-	if (*alloc_pool != prev_alloc_pool) {
-		*exhausted = false;
-	} else {
-		*exhausted = true;
+	if (alloc_pool != prev_pool) {
+		talloc_free(tmp_ctx);
+		return LDB_SUCCESS;
 	}
 
+	if (next_rid < (prev_pool_hi + prev_pool_lo)/2) {
+		talloc_free(tmp_ctx);
+		return LDB_SUCCESS;
+	}
+
+	*exhausted = true;
+	*_alloc_pool = alloc_pool;
 	talloc_free(tmp_ctx);
 	return LDB_SUCCESS;
 }
@@ -217,7 +169,12 @@ WERROR dreplsrv_ridalloc_check_rid_pool(struct dreplsrv_service *service)
 	int ret;
 	uint64_t alloc_pool;
 
-	if (service->ridalloc.in_progress) {
+	if (service->am_rodc) {
+		talloc_free(tmp_ctx);
+		return WERR_OK;
+	}
+
+	if (service->rid_alloc_in_progress) {
 		talloc_free(tmp_ctx);
 		return WERR_OK;
 	}
@@ -262,6 +219,12 @@ WERROR dreplsrv_ridalloc_check_rid_pool(struct dreplsrv_service *service)
 	if (ret != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
 		return WERR_DS_DRA_INTERNAL_ERROR;
+	}
+
+	if (!exhausted) {
+		/* don't need a new pool */
+		talloc_free(tmp_ctx);
+		return WERR_OK;
 	}
 
 	DEBUG(2,(__location__ ": Requesting more RIDs from RID Manager\n"));

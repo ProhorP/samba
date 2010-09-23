@@ -25,6 +25,7 @@
 
 #include "includes.h"
 #include "smbd/globals.h"
+#include "memcache.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_VFS
@@ -111,7 +112,8 @@ bool vfs_init_custom(connection_struct *conn, const char *vfs_object)
 	const struct vfs_init_function_entry *entry;
 
 	if (!conn||!vfs_object||!vfs_object[0]) {
-		DEBUG(0,("vfs_init_custon() called with NULL pointer or emtpy vfs_object!\n"));
+		DEBUG(0, ("vfs_init_custom() called with NULL pointer or "
+			  "empty vfs_object!\n"));
 		return False;
 	}
 
@@ -392,7 +394,7 @@ ssize_t vfs_write_data(struct smb_request *req,
 		/* VFS_RECVFILE must drain the socket
 		 * before returning. */
 		req->unread_bytes = 0;
-		return SMB_VFS_RECVFILE(smbd_server_fd(),
+		return SMB_VFS_RECVFILE(req->sconn->sock,
 					fsp,
 					(SMB_OFF_T)-1,
 					N);
@@ -425,7 +427,7 @@ ssize_t vfs_pwrite_data(struct smb_request *req,
 		/* VFS_RECVFILE must drain the socket
 		 * before returning. */
 		req->unread_bytes = 0;
-		return SMB_VFS_RECVFILE(smbd_server_fd(),
+		return SMB_VFS_RECVFILE(req->sconn->sock,
 					fsp,
 					offset,
 					N);
@@ -928,7 +930,7 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 				break;
 			}
 			default:
-				DEBUG(1,("check_reduced_name: couldn't get "
+				DEBUG(3,("check_reduced_name: couldn't get "
 					 "realpath for %s\n", fname));
 				return map_nt_error_from_unix(errno);
 		}
@@ -964,7 +966,7 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 				strlen(conn_rootdir)) != 0) {
 			    DEBUG(2, ("check_reduced_name: Bad access "
 				      "attempt: %s is a symlink outside the "
-				      "share path", fname));
+				      "share path\n", fname));
 			    if (free_resolved_name) {
 				    SAFE_FREE(resolved_name);
 			    }
@@ -1249,6 +1251,7 @@ NTSTATUS smb_vfs_call_create_file(struct vfs_handle_struct *handle,
 				  uint32_t file_attributes,
 				  uint32_t oplock_request,
 				  uint64_t allocation_size,
+				  uint32_t private_flags,
 				  struct security_descriptor *sd,
 				  struct ea_list *ea_list,
 				  files_struct **result,
@@ -1258,7 +1261,8 @@ NTSTATUS smb_vfs_call_create_file(struct vfs_handle_struct *handle,
 	return handle->fns->create_file(
 		handle, req, root_dir_fid, smb_fname, access_mask,
 		share_access, create_disposition, create_options,
-		file_attributes, oplock_request, allocation_size, sd, ea_list,
+		file_attributes, oplock_request, allocation_size,
+		private_flags, sd, ea_list,
 		result, pinfo);
 }
 

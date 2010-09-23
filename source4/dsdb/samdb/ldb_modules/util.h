@@ -26,12 +26,11 @@ struct dsdb_attribute;
 struct dsdb_fsmo_extended_op;
 
 #include "dsdb/samdb/ldb_modules/util_proto.h"
+#include "dsdb/common/util.h"
 
-#define DSDB_SEARCH_SEARCH_ALL_PARTITIONS     0x0001
-#define DSDB_SEARCH_SHOW_DELETED              0x0002
-#define DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT 0x0004
-#define DSDB_SEARCH_REVEAL_INTERNALS          0x0008
-#define DSDB_SEARCH_SHOW_EXTENDED_DN          0x0010
-#define DSDB_MODIFY_RELAX		      0x0020
-#define DSDB_FLAG_OWN_MODULE		      0x0040
-#define DSDB_FLAG_TOP_MODULE		      0x0080
+/* extend the dsdb_request_add_controls() flags for module
+   specific functions */
+#define DSDB_FLAG_NEXT_MODULE		      0x00100000
+#define DSDB_FLAG_OWN_MODULE		      0x00400000
+#define DSDB_FLAG_TOP_MODULE		      0x00800000
+

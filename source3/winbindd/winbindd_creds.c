@@ -29,7 +29,7 @@
 
 NTSTATUS winbindd_get_creds(struct winbindd_domain *domain,
 			    TALLOC_CTX *mem_ctx,
-			    const DOM_SID *sid,
+			    const struct dom_sid *sid,
 			    struct netr_SamInfo3 **info3,
 			    const uint8 *cached_nt_pass[NT_HASH_LEN],
 			    const uint8 *cred_salt[NT_HASH_LEN])
@@ -54,15 +54,13 @@ NTSTATUS winbindd_get_creds(struct winbindd_domain *domain,
 
 
 NTSTATUS winbindd_store_creds(struct winbindd_domain *domain,
-			      TALLOC_CTX *mem_ctx, 
 			      const char *user, 
 			      const char *pass, 
-			      struct netr_SamInfo3 *info3,
-			      const DOM_SID *user_sid)
+			      struct netr_SamInfo3 *info3)
 {
 	NTSTATUS status;
 	uchar nt_pass[NT_HASH_LEN];
-	DOM_SID cred_sid;
+	struct dom_sid cred_sid;
 
 	if (info3 != NULL) {
 
@@ -70,18 +68,13 @@ NTSTATUS winbindd_store_creds(struct winbindd_domain *domain,
 			    info3->base.rid);
 		info3->base.user_flags |= NETLOGON_CACHED_ACCOUNT;
 
-	} else if (user_sid != NULL) {
-
-		sid_copy(&cred_sid, user_sid);
-
 	} else if (user != NULL) {
 
 		/* do lookup ourself */
 
 		enum lsa_SidType type;
 
-		if (!lookup_cached_name(mem_ctx,
-	        	                domain->name,
+		if (!lookup_cached_name(domain->name,
 					user,
 					&cred_sid,
 					&type)) {
@@ -118,7 +111,7 @@ NTSTATUS winbindd_store_creds(struct winbindd_domain *domain,
 
 		dump_data_pw("nt_pass", nt_pass, NT_HASH_LEN);
 
-		status = wcache_save_creds(domain, mem_ctx, &cred_sid, nt_pass);
+		status = wcache_save_creds(domain, &cred_sid, nt_pass);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
 		}
@@ -134,28 +127,18 @@ NTSTATUS winbindd_store_creds(struct winbindd_domain *domain,
 }
 
 NTSTATUS winbindd_update_creds_by_info3(struct winbindd_domain *domain,
-				        TALLOC_CTX *mem_ctx,
 				        const char *user,
 				        const char *pass,
 				        struct netr_SamInfo3 *info3)
 {
-	return winbindd_store_creds(domain, mem_ctx, user, pass, info3, NULL);
-}
-
-NTSTATUS winbindd_update_creds_by_sid(struct winbindd_domain *domain,
-				      TALLOC_CTX *mem_ctx,
-				      const DOM_SID *sid,
-				      const char *pass)
-{
-	return winbindd_store_creds(domain, mem_ctx, NULL, pass, NULL, sid);
+	return winbindd_store_creds(domain, user, pass, info3);
 }
 
 NTSTATUS winbindd_update_creds_by_name(struct winbindd_domain *domain,
-				       TALLOC_CTX *mem_ctx,
 				       const char *user,
 				       const char *pass)
 {
-	return winbindd_store_creds(domain, mem_ctx, user, pass, NULL, NULL);
+	return winbindd_store_creds(domain, user, pass, NULL);
 }
 
 

@@ -55,7 +55,7 @@ int ldb_handler_fold(struct ldb_context *ldb, void *mem_ctx,
 			    const struct ldb_val *in, struct ldb_val *out)
 {
 	char *s, *t;
-	int l;
+	size_t l;
 
 	if (!in || !out || !(in->data)) {
 		return -1;
@@ -269,7 +269,8 @@ utf8str:
 		 * options but to do a binary compare */
 		talloc_free(b1);
 		talloc_free(b2);
-		if (memcmp(s1, s2, MIN(n1, n2)) == 0) {
+		ret = memcmp(s1, s2, MIN(n1, n2));
+		if (ret == 0) {
 			if (n1 == n2) return 0;
 			if (n1 > n2) {
 				return (int)toupper(s1[n2]);
@@ -277,6 +278,7 @@ utf8str:
 				return -(int)toupper(s2[n1]);
 			}
 		}
+		return ret;
 	}
 
 	u1 = b1;
@@ -456,7 +458,7 @@ static const struct ldb_schema_syntax ldb_standard_syntaxes[] = {
 const struct ldb_schema_syntax *ldb_standard_syntax_by_name(struct ldb_context *ldb,
 							    const char *syntax)
 {
-	int i;
+	unsigned int i;
 	unsigned num_handlers = sizeof(ldb_standard_syntaxes)/sizeof(ldb_standard_syntaxes[0]);
 	/* TODO: should be replaced with a binary search */
 	for (i=0;i<num_handlers;i++) {

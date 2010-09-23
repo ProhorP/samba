@@ -46,19 +46,6 @@ struct rename_context {
 	struct ldb_reply *ares;
 };
 
-static struct ldb_message_element *rdn_name_find_attribute(const struct ldb_message *msg, const char *name)
-{
-	int i;
-
-	for (i = 0; i < msg->num_elements; i++) {
-		if (ldb_attr_cmp(name, msg->elements[i].name) == 0) {
-			return &msg->elements[i];
-		}
-	}
-
-	return NULL;
-}
-
 static int rdn_name_add_callback(struct ldb_request *req,
 				 struct ldb_reply *ares)
 {
@@ -70,6 +57,11 @@ static int rdn_name_add_callback(struct ldb_request *req,
 		return ldb_module_done(ac->req, NULL, NULL,
 					LDB_ERR_OPERATIONS_ERROR);
 	}
+
+	if (ares->type == LDB_REPLY_REFERRAL) {
+		return ldb_module_send_referral(ac->req, ares->referral);
+	}
+
 	if (ares->error != LDB_SUCCESS) {
 		return ldb_module_done(ac->req, ares->controls,
 					ares->response, ares->error);
@@ -94,7 +86,8 @@ static int rdn_name_add(struct ldb_module *module, struct ldb_request *req)
 	const struct ldb_schema_attribute *a;
 	const char *rdn_name;
 	struct ldb_val rdn_val;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	ldb = ldb_module_get_ctx(module);
 
@@ -123,24 +116,36 @@ static int rdn_name_add(struct ldb_module *module, struct ldb_request *req)
 	
 	rdn_val = ldb_val_dup(msg, ldb_dn_get_rdn_val(msg->dn));
 	
-	/* Perhaps someone above us tried to set this? */
-	if ((attribute = rdn_name_find_attribute(msg, "name")) != NULL ) {
-		attribute->num_values = 0;
+	/* Perhaps someone above us tried to set this? Then ignore it */
+	ldb_msg_remove_attr(msg, "name");
+
+	ret = ldb_msg_add_value(msg, "name", &rdn_val, NULL);
+	if (ret != LDB_SUCCESS) {
+		return ret;
 	}
 
-	if (ldb_msg_add_value(msg, "name", &rdn_val, NULL) != 0) {
+	a = ldb_schema_attribute_by_name(ldb, rdn_name);
+	if (a == NULL) {
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
-	attribute = rdn_name_find_attribute(msg, rdn_name);
-
+	attribute = ldb_msg_find_element(msg, rdn_name);
 	if (!attribute) {
-		if (ldb_msg_add_value(msg, rdn_name, &rdn_val, NULL) != 0) {
-			return LDB_ERR_OPERATIONS_ERROR;
+		/* add entry with normalised RDN information if possible */
+		if (a->name != NULL) {
+			ret = ldb_msg_add_value(msg, a->name, &rdn_val, NULL);
+		} else {
+			ret = ldb_msg_add_value(msg, rdn_name, &rdn_val, NULL);
+		}
+		if (ret != LDB_SUCCESS) {
+			return ret;
 		}
 	} else {
-		a = ldb_schema_attribute_by_name(ldb, rdn_name);
-
+		/* normalise attribute name if possible */
+		if (a->name != NULL) {
+			attribute->name = a->name;
+		}
+		/* normalise attribute value */
 		for (i = 0; i < attribute->num_values; i++) {
 			ret = a->syntax->comparison_fn(ldb, msg,
 					&rdn_val, &attribute->values[i]);
@@ -192,6 +197,11 @@ static int rdn_modify_callback(struct ldb_request *req, struct ldb_reply *ares)
 		return ldb_module_done(ac->req, NULL, NULL,
 					LDB_ERR_OPERATIONS_ERROR);
 	}
+
+	if (ares->type == LDB_REPLY_REFERRAL) {
+		return ldb_module_send_referral(ac->req, ares->referral);
+	}
+
 	if (ares->error != LDB_SUCCESS) {
 		return ldb_module_done(ac->req, ares->controls,
 					ares->response, ares->error);
@@ -224,6 +234,11 @@ static int rdn_rename_callback(struct ldb_request *req, struct ldb_reply *ares)
 	if (!ares) {
 		goto error;
 	}
+
+	if (ares->type == LDB_REPLY_REFERRAL) {
+		return ldb_module_send_referral(ac->req, ares->referral);
+	}
+
 	if (ares->error != LDB_SUCCESS) {
 		return ldb_module_done(ac->req, ares->controls,
 					ares->response, ares->error);
@@ -331,6 +346,12 @@ static int rdn_name_modify(struct ldb_module *module, struct ldb_request *req)
 	/* do not manipulate our control entries */
 	if (ldb_dn_is_special(req->op.mod.message->dn)) {
 		return ldb_next_request(module, req);
+	}
+
+	if (ldb_msg_find_element(req->op.mod.message, "distinguishedName")) {
+		ldb_asprintf_errstring(ldb, "Modify of 'distinguishedName' on %s not permitted, must use 'rename' operation instead",
+				       ldb_dn_get_linearized(req->op.mod.message->dn));
+		return LDB_ERR_CONSTRAINT_VIOLATION;
 	}
 
 	if (ldb_msg_find_element(req->op.mod.message, "name")) {

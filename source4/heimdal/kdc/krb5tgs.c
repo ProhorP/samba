@@ -33,8 +33,6 @@
 
 #include "kdc_locl.h"
 
-RCSID("$Id$");
-
 /*
  * return the realm of a krbtgt-ticket or NULL
  */
@@ -488,7 +486,7 @@ check_tgs_flags(krb5_context context,
 }
 
 /*
- *
+ * Determine if constrained delegation is allowed from this client to this server
  */
 
 static krb5_error_code
@@ -527,6 +525,36 @@ check_constrained_delegation(krb5_context context,
     }
     kdc_log(context, config, 0,
 	    "Bad request for constrained delegation");
+    return ret;
+}
+
+/*
+ * Determine if s4u2self is allowed from this client to this server
+ *
+ * For example, regardless of the principal being impersonated, if the
+ * 'client' and 'server' are the same, then it's safe.
+ */
+
+static krb5_error_code
+check_s4u2self(krb5_context context,
+	       krb5_kdc_configuration *config,
+	       HDB *clientdb,
+	       hdb_entry_ex *client,
+	       krb5_const_principal server)
+{
+    krb5_error_code ret;
+
+    /* if client does a s4u2self to itself, that ok */
+    if (krb5_principal_compare(context, client->entry.principal, server) == TRUE)
+	return 0;
+
+    if (clientdb->hdb_check_s4u2self) {
+	ret = clientdb->hdb_check_s4u2self(context, clientdb, client, server);
+	if (ret == 0)
+	    return 0;
+    } else {
+	ret = KRB5KDC_ERR_BADOPTION;
+    }
     return ret;
 }
 
@@ -1416,8 +1444,8 @@ tgs_build_reply(krb5_context context,
     krb5_principal cp = NULL, sp = NULL;
     krb5_principal client_principal = NULL;
     char *spn = NULL, *cpn = NULL;
-    hdb_entry_ex *server = NULL, *client = NULL;
-    HDB *clientdb;
+    hdb_entry_ex *server = NULL, *client = NULL, *s4u2self_impersonated_client = NULL;
+    HDB *clientdb, *s4u2self_impersonated_clientdb;
     krb5_realm ref_realm = NULL;
     EncTicketPart *tgt = &ticket->ticket;
     krb5_principals spp = NULL;
@@ -1633,14 +1661,15 @@ server_lookup:
 	} else {
 	    Key *skey;
 	
-	    ret = _kdc_find_etype(context, server, b->etype.val, b->etype.len,
-				  &skey, &etype);
+	    ret = _kdc_find_etype(context, server,
+				  b->etype.val, b->etype.len, &skey);
 	    if(ret) {
 		kdc_log(context, config, 0,
 			"Server (%s) has no support for etypes", spn);
 		goto out;
 	    }
 	    ekey = &skey->key;
+	    etype = skey->key.keytype;
 	    kvno = server->entry.kvno;
 	}
 	
@@ -1780,17 +1809,59 @@ server_lookup:
 	    if (ret)
 		goto out;
 
+	    /* If we were about to put a PAC into the ticket, we better fix it to be the right PAC */
+	    if(rspac.data) {
+		krb5_pac p = NULL;
+		krb5_data_free(&rspac);
+		ret = _kdc_db_fetch(context, config, client_principal, HDB_F_GET_CLIENT | HDB_F_CANON,
+				    &s4u2self_impersonated_clientdb, &s4u2self_impersonated_client);
+		if (ret) {
+		    const char *msg;
+
+		    /*
+		     * If the client belongs to the same realm as our krbtgt, it
+		     * should exist in the local database.
+		     *
+		     */
+
+		    if (ret == HDB_ERR_NOENTRY)
+			ret = KRB5KDC_ERR_C_PRINCIPAL_UNKNOWN;
+		    msg = krb5_get_error_message(context, ret);
+		    kdc_log(context, config, 1, "S2U4Self principal to impersonate %s not found in database: %s", cpn, msg);
+		    krb5_free_error_message(context, msg);
+		    goto out;
+		}
+		ret = _kdc_pac_generate(context, s4u2self_impersonated_client, &p);
+		if (ret) {
+		    kdc_log(context, config, 0, "PAC generation failed for -- %s",
+			    selfcpn);
+		    goto out;
+		}
+		if (p != NULL) {
+		    ret = _krb5_pac_sign(context, p, ticket->ticket.authtime,
+					 s4u2self_impersonated_client->entry.principal,
+					 ekey, &tkey->key,
+					 &rspac);
+		    krb5_pac_free(context, p);
+		    if (ret) {
+			kdc_log(context, config, 0, "PAC signing failed for -- %s",
+				selfcpn);
+			goto out;
+		    }
+		}
+	    }
+
 	    /*
 	     * Check that service doing the impersonating is
 	     * requesting a ticket to it-self.
 	     */
-	    if (krb5_principal_compare(context, cp, sp) != TRUE) {
+	    ret = check_s4u2self(context, config, clientdb, client, sp);
+	    if (ret) {
 		kdc_log(context, config, 0, "S4U2Self: %s is not allowed "
-			"to impersonate some other user "
+			"to impersonate to service "
 			"(tried for user %s to service %s)",
 			cpn, selfcpn, spn);
 		free(selfcpn);
-		ret = KRB5KDC_ERR_BADOPTION; /* ? */
 		goto out;
 	    }
 
@@ -2017,6 +2088,8 @@ out:
 	_kdc_free_ent(context, server);
     if(client)
 	_kdc_free_ent(context, client);
+    if(s4u2self_impersonated_client)
+	_kdc_free_ent(context, s4u2self_impersonated_client);
 
     if (client_principal && client_principal != cp)
 	krb5_free_principal(context, client_principal);

@@ -31,7 +31,6 @@
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "ldb_wrap.h"
 #include "libcli/security/security.h"
-#include "librpc/rpc/dcerpc.h"
 #include "param/param.h"
 
 struct samsync_ldb_secret {
@@ -222,7 +221,7 @@ static NTSTATUS samsync_ldb_handle_domain(TALLOC_CTX *mem_ctx,
 
 	/* TODO: Account lockout, password properties */
 	
-	ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+	ret = dsdb_replace(state->sam_ldb, msg, 0);
 
 	if (ret) {
 		return NT_STATUS_INTERNAL_ERROR;
@@ -245,7 +244,8 @@ static NTSTATUS samsync_ldb_handle_user(TALLOC_CTX *mem_ctx,
 	struct ldb_message *msg;
 	struct ldb_message **msgs;
 	struct ldb_message **remote_msgs = NULL;
-	int ret, i;
+	unsigned int i;
+	int ret;
 	uint32_t acb;
 	bool add = false;
 	const char *attrs[] = { NULL };
@@ -454,7 +454,7 @@ static NTSTATUS samsync_ldb_handle_user(TALLOC_CTX *mem_ctx,
 			}
 		}
 	} else {
-		ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+		ret = dsdb_replace(state->sam_ldb, msg, 0);
 		if (ret != 0) {
 			*error_string = talloc_asprintf(mem_ctx, "Failed to modify user record %s: %s",
 							ldb_dn_get_linearized(msg->dn),
@@ -593,7 +593,7 @@ static NTSTATUS samsync_ldb_handle_group(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 	} else {
-		ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+		ret = dsdb_replace(state->sam_ldb, msg, 0);
 		if (ret != 0) {
 			*error_string = talloc_asprintf(mem_ctx, "Failed to modify group record %s: %s",
 							ldb_dn_get_linearized(msg->dn),
@@ -658,7 +658,7 @@ static NTSTATUS samsync_ldb_handle_group_member(TALLOC_CTX *mem_ctx,
 	struct ldb_message **msgs;
 	int ret;
 	const char *attrs[] = { NULL };
-	int i;
+	uint32_t i;
 
 	msg = ldb_msg_new(mem_ctx);
 	if (msg == NULL) {
@@ -708,7 +708,7 @@ static NTSTATUS samsync_ldb_handle_group_member(TALLOC_CTX *mem_ctx,
 		talloc_free(msgs);
 	}
 	
-	ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+	ret = dsdb_replace(state->sam_ldb, msg, 0);
 	if (ret != 0) {
 		*error_string = talloc_asprintf(mem_ctx, "Failed to modify group record %s: %s",
 						ldb_dn_get_linearized(msg->dn),
@@ -807,7 +807,7 @@ static NTSTATUS samsync_ldb_handle_alias(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 	} else {
-		ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+		ret = dsdb_replace(state->sam_ldb, msg, 0);
 		if (ret != 0) {
 			*error_string = talloc_asprintf(mem_ctx, "Failed to modify alias record %s: %s",
 							ldb_dn_get_linearized(msg->dn),
@@ -867,7 +867,7 @@ static NTSTATUS samsync_ldb_handle_alias_member(TALLOC_CTX *mem_ctx,
 	struct ldb_message **msgs;
 	int ret;
 	const char *attrs[] = { NULL };
-	int i;
+	uint32_t i;
 
 	msg = ldb_msg_new(mem_ctx);
 	if (msg == NULL) {
@@ -926,7 +926,7 @@ static NTSTATUS samsync_ldb_handle_alias_member(TALLOC_CTX *mem_ctx,
 		talloc_free(msgs);
 	}
 
-	ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+	ret = dsdb_replace(state->sam_ldb, msg, 0);
 	if (ret != 0) {
 		*error_string = talloc_asprintf(mem_ctx, "Failed to modify group record %s: %s",
 						ldb_dn_get_linearized(msg->dn),
@@ -948,7 +948,7 @@ static NTSTATUS samsync_ldb_handle_account(TALLOC_CTX *mem_ctx,
 
 	struct ldb_message *msg;
 	int ret;
-	int i;
+	uint32_t i;
 	char *dnstr, *sidstr;
 
 	msg = ldb_msg_new(mem_ctx);
@@ -970,7 +970,7 @@ static NTSTATUS samsync_ldb_handle_account(TALLOC_CTX *mem_ctx,
 				     account->privilege_name[i].string);
 	}
 
-	ret = samdb_replace(state->pdb, mem_ctx, msg);
+	ret = dsdb_replace(state->pdb, msg, 0);
 	if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		if (samdb_msg_add_dom_sid(state->pdb, msg, msg, "objectSid", sid) != LDB_SUCCESS) {
 			talloc_free(msg);
@@ -1028,7 +1028,7 @@ static NTSTATUS samsync_ldb_delete_account(TALLOC_CTX *mem_ctx,
 	samdb_msg_add_delete(state->sam_ldb, mem_ctx, msg,  
 			     "privilege");
 
-	ret = samdb_replace(state->sam_ldb, mem_ctx, msg);
+	ret = dsdb_replace(state->sam_ldb, msg, 0);
 	if (ret != 0) {
 		*error_string = talloc_asprintf(mem_ctx, "Failed to modify privilege record %s",
 						ldb_dn_get_linearized(msg->dn));
@@ -1186,7 +1186,7 @@ static NTSTATUS libnet_samsync_ldb_init(TALLOC_CTX *mem_ctx,
 		
 		state->remote_ldb = ldb_wrap_connect(mem_ctx, 
 						     state->samsync_state->machine_net_ctx->event_ctx,
-						     state->samsync_state->machine_net_ctx->lp_ctx, 
+						     state->samsync_state->machine_net_ctx->lp_ctx,
 						     ldap_url, 
 						     NULL, state->samsync_state->machine_net_ctx->cred,
 						     0);
@@ -1215,7 +1215,7 @@ NTSTATUS libnet_samsync_ldb(struct libnet_context *ctx, TALLOC_CTX *mem_ctx, str
 
 	state->sam_ldb         = samdb_connect(mem_ctx, 
 					       ctx->event_ctx,
-					       ctx->lp_ctx, 
+					       ctx->lp_ctx,
 					       r->in.session_info);
 	if (!state->sam_ldb) {
 		return NT_STATUS_INTERNAL_DB_ERROR;

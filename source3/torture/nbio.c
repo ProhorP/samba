@@ -245,7 +245,7 @@ void nb_rename(const char *oldname, const char *newname)
 
 void nb_qpathinfo(const char *fname)
 {
-	cli_qpathinfo(c, fname, NULL, NULL, NULL, NULL, NULL);
+	cli_qpathinfo1(c, fname, NULL, NULL, NULL, NULL, NULL);
 }
 
 void nb_qfileinfo(int fnum)
@@ -262,7 +262,8 @@ void nb_qfsinfo(int level)
 	cli_dskattr(c, &bsize, &total, &avail);
 }
 
-static void find_fn(const char *mnt, file_info *finfo, const char *name, void *state)
+static void find_fn(const char *mnt, struct file_info *finfo, const char *name,
+		    void *state)
 {
 	/* noop */
 }
@@ -281,7 +282,8 @@ void nb_flush(int fnum)
 
 static int total_deleted;
 
-static void delete_fn(const char *mnt, file_info *finfo, const char *name, void *state)
+static void delete_fn(const char *mnt, struct file_info *finfo,
+		      const char *name, void *state)
 {
 	char *s, *n;
 	if (finfo->name[0] == '.') return;

@@ -255,7 +255,7 @@ static char *parsetree_to_sql(struct ldb_module *module,
 	char *child, *tmp;
 	char *ret = NULL;
 	char *attr;
-	int i;
+	unsigned int i;
 
 	ldb = ldb_module_get_ctx(module);
 
@@ -557,7 +557,7 @@ query_int(const struct lsqlite3_private * lsqlite3,
 }
 
 /*
- * This is a bad hack to support ldap style comparisons whithin sqlite.
+ * This is a bad hack to support ldap style comparisons within sqlite.
  * val is the attribute in the row currently under test
  * func is the desired test "<=" ">=" "~" ":"
  * cmp is the value to compare against (eg: "test")
@@ -667,7 +667,8 @@ static int lsqlite3_search_callback(void *result, int col_num, char **cols, char
 	struct lsql_context *ac;
 	struct ldb_message *msg;
 	long long eid;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	ac = talloc_get_type(result, struct lsql_context);
 	ldb = ldb_module_get_ctx(ac->module);
@@ -686,14 +687,21 @@ static int lsqlite3_search_callback(void *result, int col_num, char **cols, char
 		/* call the async callback for the last entry
 		 * except the first time */
 		if (ac->current_eid != 0) {
-			msg = ldb_msg_canonicalize(ldb, msg);
-			if (!msg) return SQLITE_ABORT;
+			ret = ldb_msg_normalize(ldb, ac->req, msg, &msg);
+			if (ret != LDB_SUCCESS) {
+				return SQLITE_ABORT;
+			}
 
 			ret = ldb_module_send_entry(ac->req, msg, NULL);
 			if (ret != LDB_SUCCESS) {
 				ac->callback_failed = true;
+				/* free msg object */
+				TALLOC_FREE(msg);
 				return SQLITE_ABORT;
 			}
+
+			/* free msg object */
+			TALLOC_FREE(msg);
 		}
 
 		/* start over */
@@ -959,8 +967,10 @@ int lsql_search(struct lsql_context *ctx)
 
 	/* complete the last message if any */
 	if (ctx->ares) {
-		ctx->ares->message = ldb_msg_canonicalize(ldb, ctx->ares->message);
-		if (ctx->ares->message == NULL) {
+		ret = ldb_msg_normalize(ldb, ctx->ares,
+		                        ctx->ares->message,
+		                        &ctx->ares->message);
+		if (ret != LDB_SUCCESS) {
 			return LDB_ERR_OPERATIONS_ERROR;
 		}
 
@@ -986,7 +996,7 @@ static int lsql_add(struct lsql_context *ctx)
 	char *dn, *ndn;
 	char *errmsg;
 	char *query;
-	int i;
+	unsigned int i;
 	int ret;
 
 	ldb = ldb_module_get_ctx(module);
@@ -1043,7 +1053,7 @@ static int lsql_add(struct lsql_context *ctx)
 		const struct ldb_message_element *el = &msg->elements[i];
 		const struct ldb_schema_attribute *a;
 		char *attr;
-		int j;
+		unsigned int j;
 
 		/* Get a case-folded copy of the attribute name */
 		attr = ldb_attr_casefold(ctx, el->name);
@@ -1057,13 +1067,6 @@ static int lsql_add(struct lsql_context *ctx)
 			ldb_asprintf_errstring(ldb, "attribute %s on %s specified, but with 0 values (illegal)",
 					       el->name, ldb_dn_get_linearized(msg->dn));
 			return LDB_ERR_CONSTRAINT_VIOLATION;
-		}
-		if (a && a->flags & LDB_ATTR_FLAG_SINGLE_VALUE) {
-			if (el->num_values > 1) {
-				ldb_asprintf_errstring(ldb, "SINGLE-VALUED attribute %s on %s specified more than once",
-						       el->name, ldb_dn_get_linearized(msg->dn));
-				return LDB_ERR_CONSTRAINT_VIOLATION;
-			}
 		}
 
 		/* For each value of the specified attribute name... */
@@ -1110,9 +1113,9 @@ static int lsql_modify(struct lsql_context *ctx)
 	struct lsqlite3_private *lsqlite3;
 	struct ldb_context *ldb;
 	struct ldb_message *msg = req->op.mod.message;
-        long long eid;
+	long long eid;
 	char *errmsg;
-	int i;
+	unsigned int i;
 	int ret;
 
 	ldb = ldb_module_get_ctx(module);
@@ -1136,13 +1139,7 @@ static int lsql_modify(struct lsql_context *ctx)
 		int flags = el->flags & LDB_FLAG_MOD_MASK;
 		char *attr;
 		char *mod;
-		int j;
-
-		if (ldb_attr_cmp(el->name, "distinguishedName") == 0) {
-			ldb_asprintf_errstring(ldb, "it is not permitted to perform a modify on 'distinguishedName' (use rename instead): %s",
-					       ldb_dn_get_linearized(msg->dn));
-			return LDB_ERR_CONSTRAINT_VIOLATION;
-		}
+		unsigned int j;
 
 		/* Get a case-folded copy of the attribute name */
 		attr = ldb_attr_casefold(ctx, el->name);
@@ -1155,14 +1152,6 @@ static int lsql_modify(struct lsql_context *ctx)
 		switch (flags) {
 
 		case LDB_FLAG_MOD_REPLACE:
-
-			if (a && a->flags & LDB_ATTR_FLAG_SINGLE_VALUE) {
-				if (el->num_values > 1) {
-					ldb_asprintf_errstring(ldb, "SINGLE-VALUE attribute %s on %s specified more than once",
-						               el->name, ldb_dn_get_linearized(msg->dn));
-					return LDB_ERR_ATTRIBUTE_OR_VALUE_EXISTS;
-				}
-			}
 
 			for (j=0; j<el->num_values; j++) {
 				if (ldb_msg_find_val(el, &el->values[j]) != &el->values[j]) {
@@ -1200,15 +1189,6 @@ static int lsql_modify(struct lsql_context *ctx)
 				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
 
-			if (a && a->flags & LDB_ATTR_FLAG_SINGLE_VALUE) {
-				if (el->num_values > 1) {
-					ldb_asprintf_errstring(ldb, "SINGLE-VALUE attribute %s on %s specified more than once",
-						               el->name, ldb_dn_get_linearized(msg->dn));
-					return LDB_ERR_ATTRIBUTE_OR_VALUE_EXISTS;
-				}
-			}
-
-#warning "We should throw an error if no value is provided!"
 			/* For each value of the specified attribute name... */
 			for (j = 0; j < el->num_values; j++) {
 				struct ldb_val value;
@@ -1894,7 +1874,8 @@ static int lsqlite3_connect(struct ldb_context *ldb,
 {
 	struct ldb_module *module;
 	struct lsqlite3_private *lsqlite3;
-        int i, ret;
+	unsigned int i;
+	int ret;
 
 	module = ldb_module_new(ldb, ldb, "ldb_sqlite3 backend", &lsqlite3_ops);
 	if (!module) return LDB_ERR_OPERATIONS_ERROR;

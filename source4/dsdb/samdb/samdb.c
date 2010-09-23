@@ -41,6 +41,7 @@
 #include "lib/events/events.h"
 #include "auth/credentials/credentials.h"
 #include "param/secrets.h"
+#include "auth/auth.h"
 
 char *samdb_relative_path(struct ldb_context *ldb,
 				 TALLOC_CTX *mem_ctx, 
@@ -82,10 +83,11 @@ static int samdb_credentials_destructor(struct cli_credentials *creds)
   that we always get the same pointer in ldb_wrap_connect()
  */
 struct cli_credentials *samdb_credentials(struct tevent_context *event_ctx, 
-					  struct loadparm_context *lp_ctx) 
+					  struct loadparm_context *lp_ctx)
 {
 	static struct cli_credentials *static_credentials;
 	struct cli_credentials *cred;
+	char *error_string;
 
 	if (static_credentials) {
 		return static_credentials;
@@ -103,7 +105,8 @@ struct cli_credentials *samdb_credentials(struct tevent_context *event_ctx,
 	cli_credentials_set_kerberos_state(cred, CRED_DONT_USE_KERBEROS);
 
 	if (!NT_STATUS_IS_OK(cli_credentials_set_secrets(cred, event_ctx, lp_ctx, NULL, NULL,
-							 SECRETS_LDAP_FILTER))) {
+							 SECRETS_LDAP_FILTER, &error_string))) {
+		DEBUG(5, ("(normal if no LDAP backend) %s", error_string));
 		/* Perfectly OK - if not against an LDAP backend */
 		talloc_free(cred);
 		return NULL;
@@ -123,9 +126,9 @@ struct ldb_context *samdb_connect(TALLOC_CTX *mem_ctx,
 				  struct auth_session_info *session_info)
 {
 	struct ldb_context *ldb;
-	ldb = ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, 
-			       lp_sam_url(lp_ctx), session_info,
-			       samdb_credentials(ev_ctx, lp_ctx), 
+	ldb = ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx,
+			       lpcfg_sam_url(lp_ctx), session_info,
+			       samdb_credentials(ev_ctx, lp_ctx),
 			       0);
 	if (!ldb) {
 		return NULL;
@@ -142,42 +145,70 @@ NTSTATUS security_token_create(TALLOC_CTX *mem_ctx,
 			       struct loadparm_context *lp_ctx,
 			       struct dom_sid *user_sid,
 			       struct dom_sid *group_sid, 
-			       int n_groupSIDs,
+			       unsigned int n_groupSIDs,
 			       struct dom_sid **groupSIDs, 
-			       bool is_authenticated,
+			       uint32_t session_info_flags,
 			       struct security_token **token)
 {
 	struct security_token *ptoken;
-	int i;
+	unsigned int i;
 	NTSTATUS status;
 
 	ptoken = security_token_initialise(mem_ctx);
 	NT_STATUS_HAVE_NO_MEMORY(ptoken);
 
-	ptoken->sids = talloc_array(ptoken, struct dom_sid *, n_groupSIDs + 5);
+	ptoken->sids = talloc_array(ptoken, struct dom_sid, n_groupSIDs + 6 /* over-allocate */);
 	NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
 
-	ptoken->user_sid = talloc_reference(ptoken, user_sid);
-	ptoken->group_sid = talloc_reference(ptoken, group_sid);
-	ptoken->privilege_mask = 0;
+	ptoken->num_sids = 1;
 
-	ptoken->sids[0] = ptoken->user_sid;
-	ptoken->sids[1] = ptoken->group_sid;
+	ptoken->sids = talloc_realloc(ptoken, ptoken->sids, struct dom_sid, ptoken->num_sids + 1);
+	NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
+
+	ptoken->sids[PRIMARY_USER_SID_INDEX] = *user_sid;
+	if (!dom_sid_equal(user_sid, group_sid)) {
+		ptoken->sids[PRIMARY_GROUP_SID_INDEX] = *group_sid;
+		ptoken->num_sids++;
+	}
 
 	/*
 	 * Finally add the "standard" SIDs.
 	 * The only difference between guest and "anonymous"
 	 * is the addition of Authenticated_Users.
 	 */
-	ptoken->sids[2] = dom_sid_parse_talloc(ptoken->sids, SID_WORLD);
-	NT_STATUS_HAVE_NO_MEMORY(ptoken->sids[2]);
-	ptoken->sids[3] = dom_sid_parse_talloc(ptoken->sids, SID_NT_NETWORK);
-	NT_STATUS_HAVE_NO_MEMORY(ptoken->sids[3]);
-	ptoken->num_sids = 4;
 
-	if (is_authenticated) {
-		ptoken->sids[4] = dom_sid_parse_talloc(ptoken->sids, SID_NT_AUTHENTICATED_USERS);
-		NT_STATUS_HAVE_NO_MEMORY(ptoken->sids[4]);
+	if (session_info_flags & AUTH_SESSION_INFO_DEFAULT_GROUPS) {
+		ptoken->sids = talloc_realloc(ptoken, ptoken->sids, struct dom_sid, ptoken->num_sids + 2);
+		NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
+
+		if (!dom_sid_parse(SID_WORLD, &ptoken->sids[ptoken->num_sids])) {
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+		ptoken->num_sids++;
+
+		if (!dom_sid_parse(SID_NT_NETWORK, &ptoken->sids[ptoken->num_sids])) {
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+		ptoken->num_sids++;
+	}
+
+	if (session_info_flags & AUTH_SESSION_INFO_AUTHENTICATED) {
+		ptoken->sids = talloc_realloc(ptoken, ptoken->sids, struct dom_sid, ptoken->num_sids + 1);
+		NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
+
+		if (!dom_sid_parse(SID_NT_AUTHENTICATED_USERS, &ptoken->sids[ptoken->num_sids])) {
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+		ptoken->num_sids++;
+	}
+
+	if (session_info_flags & AUTH_SESSION_INFO_ENTERPRISE_DC) {
+		ptoken->sids = talloc_realloc(ptoken, ptoken->sids, struct dom_sid, ptoken->num_sids + 1);
+		NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
+
+		if (!dom_sid_parse(SID_NT_ENTERPRISE_DCS, &ptoken->sids[ptoken->num_sids])) {
+			return NT_STATUS_INTERNAL_ERROR;
+		}
 		ptoken->num_sids++;
 	}
 
@@ -186,13 +217,17 @@ NTSTATUS security_token_create(TALLOC_CTX *mem_ctx,
 		for (check_sid_idx = 1; 
 		     check_sid_idx < ptoken->num_sids; 
 		     check_sid_idx++) {
-			if (dom_sid_equal(ptoken->sids[check_sid_idx], groupSIDs[i])) {
+			if (dom_sid_equal(&ptoken->sids[check_sid_idx], groupSIDs[i])) {
 				break;
 			}
 		}
 
 		if (check_sid_idx == ptoken->num_sids) {
-			ptoken->sids[ptoken->num_sids++] = talloc_reference(ptoken->sids, groupSIDs[i]);
+			ptoken->sids = talloc_realloc(ptoken, ptoken->sids, struct dom_sid, ptoken->num_sids + 1);
+			NT_STATUS_HAVE_NO_MEMORY(ptoken->sids);
+
+			ptoken->sids[ptoken->num_sids] = *groupSIDs[i];
+			ptoken->num_sids++;
 		}
 	}
 

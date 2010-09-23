@@ -43,11 +43,8 @@
 #include "librpc/gen_ndr/ndr_misc.h"
 
 
-/* Disgusting hack to get a mem_ctx and lp_ctx into the hdb plugin, when
- * used as a keytab */
-TALLOC_CTX *hdb_samba4_mem_ctx;
-struct tevent_context *hdb_samba4_ev_ctx;
-struct loadparm_context *hdb_samba4_lp_ctx;
+extern struct krb5plugin_windc_ftable windc_plugin_table;
+extern struct hdb_method hdb_samba4;
 
 typedef bool (*kdc_process_fn_t)(struct kdc_server *kdc,
 				 TALLOC_CTX *mem_ctx,
@@ -222,10 +219,10 @@ static void kdc_tcp_call_loop(struct tevent_req *subreq)
 
 	/* First add the length of the out buffer */
 	RSIVAL(call->out_hdr, 0, call->out.length);
-	call->out_iov[0].iov_base = call->out_hdr;
+	call->out_iov[0].iov_base = (char *) call->out_hdr;
 	call->out_iov[0].iov_len = 4;
 
-	call->out_iov[1].iov_base = call->out.data;
+	call->out_iov[1].iov_base = (char *) call->out.data;
 	call->out_iov[1].iov_len = call->out.length;
 
 	subreq = tstream_writev_queue_send(call,
@@ -314,7 +311,7 @@ static void kdc_tcp_accept(struct stream_connection *conn)
 
 	TALLOC_FREE(conn->event.fde);
 
-	rc = tstream_bsd_existing_socket(kdc_conn->tstream,
+	rc = tstream_bsd_existing_socket(kdc_conn,
 			socket_get_fd(conn->socket),
 			&kdc_conn->tstream);
 	if (rc < 0) {
@@ -486,7 +483,7 @@ static NTSTATUS kdc_add_socket(struct kdc_server *kdc,
 				     model_ops,
 				     &kdc_tcp_stream_ops,
 				     "ip", address, &port,
-				     lp_socket_options(kdc->task->lp_ctx),
+				     lpcfg_socket_options(kdc->task->lp_ctx),
 				     kdc_socket);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("Failed to bind to %s:%u TCP - %s\n",
@@ -550,8 +547,8 @@ static NTSTATUS kdc_startup_interfaces(struct kdc_server *kdc, struct loadparm_c
 
 	for (i=0; i<num_interfaces; i++) {
 		const char *address = talloc_strdup(tmp_ctx, iface_n_ip(ifaces, i));
-		uint16_t kdc_port = lp_krb5_port(lp_ctx);
-		uint16_t kpasswd_port = lp_kpasswd_port(lp_ctx);
+		uint16_t kdc_port = lpcfg_krb5_port(lp_ctx);
+		uint16_t kpasswd_port = lpcfg_kpasswd_port(lp_ctx);
 
 		if (kdc_port) {
 			status = kdc_add_socket(kdc, model_ops,
@@ -592,9 +589,7 @@ static NTSTATUS kdc_check_generic_kerberos(struct irpc_message *msg,
 	/* There is no reply to this request */
 	r->out.generic_reply = data_blob(NULL, 0);
 
-	ndr_err = ndr_pull_struct_blob(&r->in.generic_request, msg,
-				       lp_iconv_convenience(kdc->task->lp_ctx),
-				       &pac_validate,
+	ndr_err = ndr_pull_struct_blob(&r->in.generic_request, msg, &pac_validate,
 				       (ndr_pull_flags_fn_t)ndr_pull_PAC_Validate);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -625,8 +620,8 @@ static NTSTATUS kdc_check_generic_kerberos(struct irpc_message *msg,
 	}
 
 	ret = krb5_make_principal(kdc->smb_krb5_context->krb5_context, &principal,
-				  lp_realm(kdc->task->lp_ctx),
-				  "krbtgt", lp_realm(kdc->task->lp_ctx),
+				  lpcfg_realm(kdc->task->lp_ctx),
+				  "krbtgt", lpcfg_realm(kdc->task->lp_ctx),
 				  NULL);
 
 	if (ret != 0) {
@@ -683,7 +678,7 @@ static void kdc_task_init(struct task_server *task)
 	krb5_error_code ret;
 	struct interface *ifaces;
 
-	switch (lp_server_role(task->lp_ctx)) {
+	switch (lpcfg_server_role(task->lp_ctx)) {
 	case ROLE_STANDALONE:
 		task_server_terminate(task, "kdc: no KDC required in standalone configuration", false);
 		return;
@@ -695,7 +690,7 @@ static void kdc_task_init(struct task_server *task)
 		break;
 	}
 
-	load_interfaces(task, lp_interfaces(task->lp_ctx), &ifaces);
+	load_interfaces(task, lpcfg_interfaces(task->lp_ctx), &ifaces);
 
 	if (iface_count(ifaces) == 0) {
 		task_server_terminate(task, "kdc: no network interfaces configured", false);
@@ -739,7 +734,18 @@ static void kdc_task_init(struct task_server *task)
 	}
 	kdc->config->num_db = 1;
 
-	status = hdb_samba4_create_kdc(kdc, task->event_ctx, task->lp_ctx,
+	/* Register hdb-samba4 hooks for use as a keytab */
+
+	kdc->base_ctx = talloc_zero(kdc, struct samba_kdc_base_context);
+	if (!kdc->base_ctx) {
+		task_server_terminate(task, "kdc: out of memory", true);
+		return;
+	}
+
+	kdc->base_ctx->ev_ctx = task->event_ctx;
+	kdc->base_ctx->lp_ctx = task->lp_ctx;
+
+	status = hdb_samba4_create_kdc(kdc->base_ctx,
 				       kdc->smb_krb5_context->krb5_context,
 				       &kdc->config->db[0]);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -747,37 +753,26 @@ static void kdc_task_init(struct task_server *task)
 		return;
 	}
 
-	/* Register hdb-samba4 hooks for use as a keytab */
-
-	kdc->hdb_samba4_context = talloc(kdc, struct hdb_samba4_context);
-	if (!kdc->hdb_samba4_context) {
-		task_server_terminate(task, "kdc: out of memory", true);
-		return;
-	}
-
-	kdc->hdb_samba4_context->ev_ctx = task->event_ctx;
-	kdc->hdb_samba4_context->lp_ctx = task->lp_ctx;
-
 	ret = krb5_plugin_register(kdc->smb_krb5_context->krb5_context,
 				   PLUGIN_TYPE_DATA, "hdb",
 				   &hdb_samba4);
 	if(ret) {
-		task_server_terminate(task, "kdc: failed to register hdb keytab", true);
+		task_server_terminate(task, "kdc: failed to register hdb plugin", true);
 		return;
 	}
 
 	ret = krb5_kt_register(kdc->smb_krb5_context->krb5_context, &hdb_kt_ops);
 	if(ret) {
-		task_server_terminate(task, "kdc: failed to register hdb keytab", true);
+		task_server_terminate(task, "kdc: failed to register keytab plugin", true);
 		return;
 	}
 
-	/* Registar WinDC hooks */
+	/* Register WinDC hooks */
 	ret = krb5_plugin_register(kdc->smb_krb5_context->krb5_context,
 				   PLUGIN_TYPE_DATA, "windc",
 				   &windc_plugin_table);
 	if(ret) {
-		task_server_terminate(task, "kdc: failed to register hdb keytab", true);
+		task_server_terminate(task, "kdc: failed to register windc plugin", true);
 		return;
 	}
 

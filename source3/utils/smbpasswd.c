@@ -17,6 +17,8 @@
  * this program; if not, see <http://www.gnu.org/licenses/>.  */
 
 #include "includes.h"
+#include "secrets.h"
+#include "../librpc/gen_ndr/samr.h"
 
 extern bool AllowDebugChange;
 

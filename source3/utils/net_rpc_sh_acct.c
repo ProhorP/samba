@@ -17,6 +17,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "includes.h"
+#include "popt_common.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/cli_samr.h"
 
@@ -155,7 +156,7 @@ static int account_show(struct net_context *c,
 			int argc, const char **argv)
 {
 	if (argc != 0) {
-		d_fprintf(stderr, _("usage: %s\n"), ctx->whoami);
+		d_fprintf(stderr, "%s %s\n", _("Usage:"), ctx->whoami);
 		return -1;
 	}
 
@@ -226,7 +227,7 @@ static int account_set_badpw(struct net_context *c,
 			     int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, "%s %s <count>\n", _("Usage:"), ctx->whoami);
 		return -1;
 	}
 
@@ -256,7 +257,7 @@ static int account_set_lockduration(struct net_context *c,
 				    int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 
@@ -286,7 +287,7 @@ static int account_set_resetduration(struct net_context *c,
 				     int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 
@@ -316,7 +317,7 @@ static int account_set_minpwage(struct net_context *c,
 				int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 
@@ -346,7 +347,7 @@ static int account_set_maxpwage(struct net_context *c,
 				int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 
@@ -376,7 +377,7 @@ static int account_set_minpwlen(struct net_context *c,
 				int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 
@@ -406,7 +407,7 @@ static int account_set_pwhistlen(struct net_context *c,
 				 int argc, const char **argv)
 {
 	if (argc != 1) {
-		d_fprintf(stderr, _("usage: %s <count>\n"), ctx->whoami);
+		d_fprintf(stderr, _("Usage: %s <count>\n"), ctx->whoami);
 		return -1;
 	}
 

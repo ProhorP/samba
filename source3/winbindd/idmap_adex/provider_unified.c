@@ -21,6 +21,8 @@
  */
 
 #include "includes.h"
+#include "ads.h"
+#include "idmap.h"
 #include "idmap_adex.h"
 
 #undef DBGC_CLASS
@@ -35,7 +37,7 @@ struct lwcell_filter
 	enum filterType ftype;
 	bool use2307;
 	union {
-		DOM_SID sid;
+		struct dom_sid sid;
 		struct {
 			uint32_t id;
 			enum id_type type;
@@ -245,7 +247,7 @@ done:
 static NTSTATUS search_domain(struct likewise_cell **cell,
 			      LDAPMessage **msg,
 			      const char *dn,
-			      const DOM_SID *sid)
+			      const struct dom_sid *sid)
 {
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	TALLOC_CTX* frame = talloc_stackframe();
@@ -341,7 +343,7 @@ static NTSTATUS check_result_unique_scoped(ADS_STRUCT **ads_list,
 					   LDAPMessage **msg_list,
 					   int num_resp,
 					   char **dn,
-					   DOM_SID *user_sid)
+					   struct dom_sid *user_sid)
 {
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	int i;
@@ -465,7 +467,7 @@ static NTSTATUS search_forest(struct likewise_cell *forest_cell,
 	LDAPMessage **msg_list = NULL;
 	int num_resp = 0;
 	LDAPMessage *m;
-	DOM_SID user_sid;
+	struct dom_sid user_sid;
 	struct likewise_cell *domain_cell = NULL;
 
 	if ((gc = gc_search_start()) == NULL) {
@@ -611,7 +613,7 @@ done:
 
 static NTSTATUS pull_sid(struct likewise_cell *c,
 			 LDAPMessage *msg,
-			 DOM_SID *sid)
+			 struct dom_sid *sid)
 {
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -967,7 +969,7 @@ done:
 /********************************************************************
  *******************************************************************/
 
-static NTSTATUS _ccp_get_sid_from_id(DOM_SID * sid,
+static NTSTATUS _ccp_get_sid_from_id(struct dom_sid * sid,
 				     uint32_t id, enum id_type type)
 {
 	struct likewise_cell *cell = NULL;
@@ -996,7 +998,7 @@ done:
 
 static NTSTATUS _ccp_get_id_from_sid(uint32_t * id,
 				     enum id_type *type,
-				     const DOM_SID * sid)
+				     const struct dom_sid * sid)
 {
 	struct likewise_cell *cell = NULL;
 	LDAPMessage *msg = NULL;
@@ -1026,7 +1028,7 @@ done:
 /********************************************************************
  *******************************************************************/
 
-static NTSTATUS _ccp_nss_get_info(const DOM_SID * sid,
+static NTSTATUS _ccp_nss_get_info(const struct dom_sid * sid,
 				  TALLOC_CTX * ctx,
 				  const char **homedir,
 				  const char **shell,
@@ -1071,7 +1073,7 @@ static NTSTATUS _ccp_map_to_alias(TALLOC_CTX *ctx,
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
-	DOM_SID sid;
+	struct dom_sid sid;
 	struct likewise_cell *cell = NULL;
 	LDAPMessage *msg = NULL;
 	struct lwcell_filter filter;
@@ -1116,7 +1118,7 @@ static NTSTATUS _ccp_map_from_alias(TALLOC_CTX *mem_ctx,
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
-	DOM_SID sid;
+	struct dom_sid sid;
 	struct likewise_cell *cell_alias = NULL;
 	LDAPMessage *msg_alias = NULL;
 	struct likewise_cell *cell_sid = NULL;

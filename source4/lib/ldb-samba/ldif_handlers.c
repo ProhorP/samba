@@ -30,6 +30,7 @@
 #include "librpc/gen_ndr/ndr_security.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/gen_ndr/ndr_drsblobs.h"
+#include "librpc/gen_ndr/ndr_dnsp.h"
 #include "librpc/ndr/libndr.h"
 #include "libcli/security/security.h"
 #include "param/param.h"
@@ -37,12 +38,18 @@
 
 /*
   use ndr_print_* to convert a NDR formatted blob to a ldif formatted blob
+
+  If mask_errors is true, then function succeeds but out data
+  is set to "<Unable to decode binary data>" message
+
+  \return 0 on success; -1 on error
 */
 static int ldif_write_NDR(struct ldb_context *ldb, void *mem_ctx,
 			  const struct ldb_val *in, struct ldb_val *out,
 			  size_t struct_size,
 			  ndr_pull_flags_fn_t pull_fn,
-			  ndr_print_fn_t print_fn)
+			  ndr_print_fn_t print_fn,
+			  bool mask_errors)
 {
 	uint8_t *p;
 	enum ndr_err_code err;
@@ -51,9 +58,12 @@ static int ldif_write_NDR(struct ldb_context *ldb, void *mem_ctx,
 	}
 	p = talloc_size(mem_ctx, struct_size);
 	err = ndr_pull_struct_blob(in, mem_ctx, 
-				   lp_iconv_convenience(ldb_get_opaque(ldb, "loadparm")), 
 				   p, pull_fn);
 	if (err != NDR_ERR_SUCCESS) {
+		/* fail in not in mask_error mode */
+		if (!mask_errors) {
+			return -1;
+		}
 		talloc_free(p);
 		out->data = (uint8_t *)talloc_strdup(mem_ctx, "<Unable to decode binary data>");
 		out->length = strlen((const char *)out->data);
@@ -80,7 +90,7 @@ static int ldif_read_objectSid(struct ldb_context *ldb, void *mem_ctx,
 	if (sid == NULL) {
 		return -1;
 	}
-	ndr_err = ndr_push_struct_blob(out, mem_ctx, NULL, sid,
+	ndr_err = ndr_push_struct_blob(out, mem_ctx, sid,
 				       (ndr_push_flags_fn_t)ndr_push_dom_sid);
 	talloc_free(sid);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -102,7 +112,7 @@ int ldif_write_objectSid(struct ldb_context *ldb, void *mem_ctx,
 	if (sid == NULL) {
 		return -1;
 	}
-	ndr_err = ndr_pull_struct_blob_all(in, sid, NULL, sid,
+	ndr_err = ndr_pull_struct_blob_all(in, sid, sid,
 					   (ndr_pull_flags_fn_t)ndr_pull_dom_sid);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		talloc_free(sid);
@@ -199,7 +209,7 @@ static int extended_dn_read_SID(struct ldb_context *ldb, void *mem_ctx,
 				     (const char *)in->data, in->length);
 
 	/* Check it looks like a SID */
-	ndr_err = ndr_pull_struct_blob_all(out, mem_ctx, NULL, &sid,
+	ndr_err = ndr_pull_struct_blob_all(out, mem_ctx, &sid,
 					   (ndr_pull_flags_fn_t)ndr_pull_dom_sid);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return -1;
@@ -355,7 +365,7 @@ static int ldif_read_ntSecurityDescriptor(struct ldb_context *ldb, void *mem_ctx
 		return -1;
 	}
 
-	ndr_err = ndr_pull_struct_blob(in, sd, NULL, sd,
+	ndr_err = ndr_pull_struct_blob(in, sd, sd,
 				       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		/* If this does not parse, then it is probably SDDL, and we should try it that way */
@@ -368,7 +378,7 @@ static int ldif_read_ntSecurityDescriptor(struct ldb_context *ldb, void *mem_ctx
 		}
 	}
 
-	ndr_err = ndr_push_struct_blob(out, mem_ctx, NULL, sd,
+	ndr_err = ndr_push_struct_blob(out, mem_ctx, sd,
 				       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
 	talloc_free(sd);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -391,7 +401,8 @@ static int ldif_write_ntSecurityDescriptor(struct ldb_context *ldb, void *mem_ct
 		return ldif_write_NDR(ldb, mem_ctx, in, out, 
 				      sizeof(struct security_descriptor),
 				      (ndr_pull_flags_fn_t)ndr_pull_security_descriptor,
-				      (ndr_print_fn_t)ndr_print_security_descriptor);
+				      (ndr_print_fn_t)ndr_print_security_descriptor,
+				      true);
 				      
 	}
 
@@ -400,7 +411,7 @@ static int ldif_write_ntSecurityDescriptor(struct ldb_context *ldb, void *mem_ct
 		return -1;
 	}
 	/* We can't use ndr_pull_struct_blob_all because this contains relative pointers */
-	ndr_err = ndr_pull_struct_blob(in, sd, NULL, sd,
+	ndr_err = ndr_pull_struct_blob(in, sd, sd,
 					   (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		talloc_free(sd);
@@ -424,7 +435,7 @@ static int ldif_canonicalise_objectCategory(struct ldb_context *ldb, void *mem_c
 					    const struct ldb_val *in, struct ldb_val *out)
 {
 	struct ldb_dn *dn1 = NULL;
-	const struct dsdb_schema *schema = dsdb_get_schema(ldb);
+	const struct dsdb_schema *schema = dsdb_get_schema(ldb, NULL);
 	const struct dsdb_class *sclass;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 	if (!tmp_ctx) {
@@ -481,6 +492,19 @@ static int ldif_comparison_objectCategory(struct ldb_context *ldb, void *mem_ctx
 }
 
 /*
+  convert a NDR formatted blob to a ldif formatted schemaInfo
+*/
+static int ldif_write_schemaInfo(struct ldb_context *ldb, void *mem_ctx,
+				 const struct ldb_val *in, struct ldb_val *out)
+{
+	return ldif_write_NDR(ldb, mem_ctx, in, out,
+			      sizeof(struct repsFromToBlob),
+			      (ndr_pull_flags_fn_t)ndr_pull_schemaInfoBlob,
+			      (ndr_print_fn_t)ndr_print_schemaInfoBlob,
+			      true);
+}
+
+/*
   convert a ldif formatted prefixMap to a NDR formatted blob
 */
 static int ldif_read_prefixMap(struct ldb_context *ldb, void *mem_ctx,
@@ -499,10 +523,24 @@ static int ldif_read_prefixMap(struct ldb_context *ldb, void *mem_ctx,
 
 	blob = talloc_zero(tmp_ctx, struct prefixMapBlob);
 	if (blob == NULL) {
-		talloc_free(blob);
+		talloc_free(tmp_ctx);
 		return -1;
 	}
 
+	ndr_err = ndr_pull_struct_blob(in, tmp_ctx, blob,
+				       (ndr_pull_flags_fn_t)ndr_pull_prefixMapBlob);
+	if (NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		ndr_err = ndr_push_struct_blob(out, mem_ctx,
+					       blob,
+					       (ndr_push_flags_fn_t)ndr_push_prefixMapBlob);
+		talloc_free(tmp_ctx);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			return -1;
+		}
+		return 0;
+	}
+
+	/* If this does not parse, then it is probably the text version, and we should try it that way */
 	blob->version = PREFIX_MAP_VERSION_DSDB;
 	
 	string = talloc_strndup(mem_ctx, (const char *)in->data, in->length);
@@ -522,7 +560,7 @@ static int ldif_read_prefixMap(struct ldb_context *ldb, void *mem_ctx,
 				p[0] = '\0';
 			}
 		}
-		/* allow a traling seperator */
+		/* allow a trailing separator */
 		if (line == p) {
 			break;
 		}
@@ -564,7 +602,6 @@ static int ldif_read_prefixMap(struct ldb_context *ldb, void *mem_ctx,
 	}
 
 	ndr_err = ndr_push_struct_blob(out, mem_ctx, 
-				       lp_iconv_convenience(ldb_get_opaque(ldb, "loadparm")), 
 				       blob,
 				       (ndr_push_flags_fn_t)ndr_push_prefixMapBlob);
 	talloc_free(tmp_ctx);
@@ -586,11 +623,22 @@ static int ldif_write_prefixMap(struct ldb_context *ldb, void *mem_ctx,
 	uint32_t i;
 
 	if (ldb_get_flags(ldb) & LDB_FLG_SHOW_BINARY) {
-		return ldif_write_NDR(ldb, mem_ctx, in, out, 
-				      sizeof(struct prefixMapBlob),
-				      (ndr_pull_flags_fn_t)ndr_pull_prefixMapBlob,
-				      (ndr_print_fn_t)ndr_print_prefixMapBlob);
-				      
+		int err;
+		/* try to decode the blob as S4 prefixMap */
+		err = ldif_write_NDR(ldb, mem_ctx, in, out,
+		                     sizeof(struct prefixMapBlob),
+		                     (ndr_pull_flags_fn_t)ndr_pull_prefixMapBlob,
+		                     (ndr_print_fn_t)ndr_print_prefixMapBlob,
+		                     false);
+		if (0 == err) {
+			return err;
+		}
+		/* try parsing it as Windows PrefixMap value */
+		return ldif_write_NDR(ldb, mem_ctx, in, out,
+		                      sizeof(struct drsuapi_MSPrefixMap_Ctr),
+		                      (ndr_pull_flags_fn_t)ndr_pull_drsuapi_MSPrefixMap_Ctr,
+		                      (ndr_print_fn_t)ndr_print_drsuapi_MSPrefixMap_Ctr,
+		                      true);
 	}
 
 	blob = talloc(mem_ctx, struct prefixMapBlob);
@@ -598,7 +646,6 @@ static int ldif_write_prefixMap(struct ldb_context *ldb, void *mem_ctx,
 		return -1;
 	}
 	ndr_err = ndr_pull_struct_blob_all(in, blob, 
-					   lp_iconv_convenience(ldb_get_opaque(ldb, "loadparm")), 
 					   blob,
 					   (ndr_pull_flags_fn_t)ndr_pull_prefixMapBlob);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -791,7 +838,8 @@ static int ldif_write_repsFromTo(struct ldb_context *ldb, void *mem_ctx,
 	return ldif_write_NDR(ldb, mem_ctx, in, out, 
 			      sizeof(struct repsFromToBlob),
 			      (ndr_pull_flags_fn_t)ndr_pull_repsFromToBlob,
-			      (ndr_print_fn_t)ndr_print_repsFromToBlob);
+			      (ndr_print_fn_t)ndr_print_repsFromToBlob,
+			      true);
 }
 
 /*
@@ -803,7 +851,8 @@ static int ldif_write_replPropertyMetaData(struct ldb_context *ldb, void *mem_ct
 	return ldif_write_NDR(ldb, mem_ctx, in, out, 
 			      sizeof(struct replPropertyMetaDataBlob),
 			      (ndr_pull_flags_fn_t)ndr_pull_replPropertyMetaDataBlob,
-			      (ndr_print_fn_t)ndr_print_replPropertyMetaDataBlob);
+			      (ndr_print_fn_t)ndr_print_replPropertyMetaDataBlob,
+			      true);
 }
 
 /*
@@ -815,7 +864,22 @@ static int ldif_write_replUpToDateVector(struct ldb_context *ldb, void *mem_ctx,
 	return ldif_write_NDR(ldb, mem_ctx, in, out, 
 			      sizeof(struct replUpToDateVectorBlob),
 			      (ndr_pull_flags_fn_t)ndr_pull_replUpToDateVectorBlob,
-			      (ndr_print_fn_t)ndr_print_replUpToDateVectorBlob);
+			      (ndr_print_fn_t)ndr_print_replUpToDateVectorBlob,
+			      true);
+}
+
+
+/*
+  convert a NDR formatted blob to a ldif formatted dnsRecord
+*/
+static int ldif_write_dnsRecord(struct ldb_context *ldb, void *mem_ctx,
+				const struct ldb_val *in, struct ldb_val *out)
+{
+	return ldif_write_NDR(ldb, mem_ctx, in, out,
+			      sizeof(struct dnsp_DnssrvRpcRecord),
+			      (ndr_pull_flags_fn_t)ndr_pull_dnsp_DnssrvRpcRecord,
+			      (ndr_print_fn_t)ndr_print_dnsp_DnssrvRpcRecord,
+			      true);
 }
 
 
@@ -827,6 +891,79 @@ static int extended_dn_write_hex(struct ldb_context *ldb, void *mem_ctx,
 		return -1;
 	}
 	return 0;
+}
+
+/*
+  compare two dns
+*/
+static int samba_ldb_dn_link_comparison(struct ldb_context *ldb, void *mem_ctx,
+					const struct ldb_val *v1, const struct ldb_val *v2)
+{
+	struct ldb_dn *dn1 = NULL, *dn2 = NULL;
+	int ret;
+
+	if (dsdb_dn_is_deleted_val(v1)) {
+		/* If the DN is deleted, then we can't search for it */
+		return -1;
+	}
+
+	if (dsdb_dn_is_deleted_val(v2)) {
+		/* If the DN is deleted, then we can't search for it */
+		return -1;
+	}
+
+	dn1 = ldb_dn_from_ldb_val(mem_ctx, ldb, v1);
+	if ( ! ldb_dn_validate(dn1)) return -1;
+
+	dn2 = ldb_dn_from_ldb_val(mem_ctx, ldb, v2);
+	if ( ! ldb_dn_validate(dn2)) {
+		talloc_free(dn1);
+		return -1;
+	}
+
+	ret = ldb_dn_compare(dn1, dn2);
+
+	talloc_free(dn1);
+	talloc_free(dn2);
+	return ret;
+}
+
+static int samba_ldb_dn_link_canonicalise(struct ldb_context *ldb, void *mem_ctx,
+					  const struct ldb_val *in, struct ldb_val *out)
+{
+	struct ldb_dn *dn;
+	int ret = -1;
+
+	out->length = 0;
+	out->data = NULL;
+
+	dn = ldb_dn_from_ldb_val(mem_ctx, ldb, in);
+	if ( ! ldb_dn_validate(dn)) {
+		return LDB_ERR_INVALID_DN_SYNTAX;
+	}
+
+	/* By including the RMD_FLAGS of a deleted DN, we ensure it
+	 * does not casually match a not deleted DN */
+	if (dsdb_dn_is_deleted_val(in)) {
+		out->data = (uint8_t *)talloc_asprintf(mem_ctx,
+						       "<RMD_FLAGS=%u>%s",
+						       dsdb_dn_val_rmd_flags(in),
+						       ldb_dn_get_casefold(dn));
+	} else {
+		out->data = (uint8_t *)ldb_dn_alloc_casefold(mem_ctx, dn);
+	}
+
+	if (out->data == NULL) {
+		goto done;
+	}
+	out->length = strlen((char *)out->data);
+
+	ret = 0;
+
+done:
+	talloc_free(dn);
+
+	return ret;
 }
 
 
@@ -913,6 +1050,12 @@ static const struct ldb_schema_syntax samba_syntaxes[] = {
 		.canonicalise_fn  = ldif_canonicalise_objectCategory,
 		.comparison_fn	  = ldif_comparison_objectCategory
 	},{
+		.name		  = LDB_SYNTAX_SAMBA_SCHEMAINFO,
+		.ldif_read_fn	  = ldb_handler_copy,
+		.ldif_write_fn	  = ldif_write_schemaInfo,
+		.canonicalise_fn  = ldb_handler_copy,
+		.comparison_fn	  = ldb_comparison_binary
+	},{
 		.name		  = LDB_SYNTAX_SAMBA_PREFIX_MAP,
 		.ldif_read_fn	  = ldif_read_prefixMap,
 		.ldif_write_fn	  = ldif_write_prefixMap,
@@ -955,12 +1098,24 @@ static const struct ldb_schema_syntax samba_syntaxes[] = {
 		.canonicalise_fn  = dsdb_dn_string_canonicalise,
 		.comparison_fn	  = dsdb_dn_string_comparison
 	},{
+		.name		  = LDB_SYNTAX_DN,
+		.ldif_read_fn	  = ldb_handler_copy,
+		.ldif_write_fn	  = ldb_handler_copy,
+		.canonicalise_fn  = samba_ldb_dn_link_canonicalise,
+		.comparison_fn	  = samba_ldb_dn_link_comparison,
+	},{
 		.name		  = LDB_SYNTAX_SAMBA_RANGE64,
 		.ldif_read_fn	  = ldif_read_range64,
 		.ldif_write_fn	  = ldif_write_range64,
 		.canonicalise_fn  = ldif_canonicalise_int64,
 		.comparison_fn	  = ldif_comparison_int64
-	},
+	},{
+		.name		  = LDB_SYNTAX_SAMBA_DNSRECORD,
+		.ldif_read_fn	  = ldb_handler_copy,
+		.ldif_write_fn	  = ldif_write_dnsRecord,
+		.canonicalise_fn  = ldb_handler_copy,
+		.comparison_fn	  = ldb_comparison_binary
+	}
 };
 
 static const struct ldb_dn_extended_syntax samba_dn_syntax[] = {
@@ -1024,20 +1179,11 @@ static const struct {
 } samba_attributes[] = {
 	{ "objectSid",			LDB_SYNTAX_SAMBA_SID },
 	{ "securityIdentifier", 	LDB_SYNTAX_SAMBA_SID },
+	{ "tokenGroups", 	        LDB_SYNTAX_SAMBA_SID },
 	{ "ntSecurityDescriptor",	LDB_SYNTAX_SAMBA_SECURITY_DESCRIPTOR },
-	{ "objectGUID",			LDB_SYNTAX_SAMBA_GUID },
-	{ "invocationId",		LDB_SYNTAX_SAMBA_GUID },
-	{ "schemaIDGUID",		LDB_SYNTAX_SAMBA_GUID },
 	{ "oMSyntax",			LDB_SYNTAX_SAMBA_INT32 },
-	{ "attributeSecurityGUID",	LDB_SYNTAX_SAMBA_GUID },
-	{ "parentGUID",			LDB_SYNTAX_SAMBA_GUID },
-	{ "siteGUID",			LDB_SYNTAX_SAMBA_GUID },
-	{ "pKTGUID",			LDB_SYNTAX_SAMBA_GUID },
-	{ "fRSVersionGUID",		LDB_SYNTAX_SAMBA_GUID },
-	{ "fRSReplicaSetGUID",		LDB_SYNTAX_SAMBA_GUID },
-	{ "netbootGUID",		LDB_SYNTAX_SAMBA_GUID },
-	{ "msDS-OptionalFeatureGUID",	LDB_SYNTAX_SAMBA_GUID },
 	{ "objectCategory",		LDB_SYNTAX_SAMBA_OBJECT_CATEGORY },
+	{ "schemaInfo",			LDB_SYNTAX_SAMBA_SCHEMAINFO },
 	{ "prefixMap",                  LDB_SYNTAX_SAMBA_PREFIX_MAP },
 	{ "repsFrom",                   LDB_SYNTAX_SAMBA_REPSFROMTO },
 	{ "repsTo",                     LDB_SYNTAX_SAMBA_REPSFROMTO },
@@ -1046,11 +1192,48 @@ static const struct {
 	{ "rIDAllocationPool",		LDB_SYNTAX_SAMBA_RANGE64 },
 	{ "rIDPreviousAllocationPool",	LDB_SYNTAX_SAMBA_RANGE64 },
 	{ "rIDAvailablePool",		LDB_SYNTAX_SAMBA_RANGE64 },
+
+	/*
+	 * these are extracted by searching
+	 * (&(attributeSyntax=2.5.5.10)(rangeLower=16)(rangeUpper=16)(omSyntax=4))
+	 */
+	{ "attributeSecurityGUID",		LDB_SYNTAX_SAMBA_GUID },
+	{ "categoryId",				LDB_SYNTAX_SAMBA_GUID },
+	{ "controlAccessRights",		LDB_SYNTAX_SAMBA_GUID },
+	{ "currMachineId",			LDB_SYNTAX_SAMBA_GUID },
+	{ "fRSReplicaSetGUID",			LDB_SYNTAX_SAMBA_GUID },
+	{ "fRSVersionGUID",			LDB_SYNTAX_SAMBA_GUID },
+	{ "implementedCategories",		LDB_SYNTAX_SAMBA_GUID },
+	{ "msDS-AzObjectGuid",			LDB_SYNTAX_SAMBA_GUID },
+	{ "msDFSR-ContentSetGuid",		LDB_SYNTAX_SAMBA_GUID },
+	{ "msDFSR-ReplicationGroupGuid",	LDB_SYNTAX_SAMBA_GUID },
+	{ "mSMQDigests",			LDB_SYNTAX_SAMBA_GUID },
+	{ "mSMQOwnerID",			LDB_SYNTAX_SAMBA_GUID },
+	{ "mSMQQMID",				LDB_SYNTAX_SAMBA_GUID },
+	{ "mSMQQueueType",			LDB_SYNTAX_SAMBA_GUID },
+	{ "mSMQSites",				LDB_SYNTAX_SAMBA_GUID },
+	{ "netbootGUID",			LDB_SYNTAX_SAMBA_GUID },
+	{ "objectGUID",				LDB_SYNTAX_SAMBA_GUID },
+	{ "pKTGuid",				LDB_SYNTAX_SAMBA_GUID },
+	{ "requiredCategories",			LDB_SYNTAX_SAMBA_GUID },
+	{ "schemaIDGUID",			LDB_SYNTAX_SAMBA_GUID },
+	{ "siteGUID",				LDB_SYNTAX_SAMBA_GUID },
+	{ "msDFS-GenerationGUIDv2",		LDB_SYNTAX_SAMBA_GUID },
+	{ "msDFS-LinkIdentityGUIDv2",		LDB_SYNTAX_SAMBA_GUID },
+	{ "msDFS-NamespaceIdentityGUIDv2",	LDB_SYNTAX_SAMBA_GUID },
+
+	/*
+	 * these are known to be GUIDs
+	 */
+	{ "invocationId",			LDB_SYNTAX_SAMBA_GUID },
+	{ "parentGUID",				LDB_SYNTAX_SAMBA_GUID },
+	{ "msDS-OptionalFeatureGUID",		LDB_SYNTAX_SAMBA_GUID },
+	{ "dnsRecord",				LDB_SYNTAX_SAMBA_DNSRECORD },
 };
 
 const struct ldb_schema_syntax *ldb_samba_syntax_by_name(struct ldb_context *ldb, const char *name)
 {
-	uint32_t j;
+	unsigned int j;
 	const struct ldb_schema_syntax *s = NULL;
 	
 	for (j=0; j < ARRAY_SIZE(samba_syntaxes); j++) {
@@ -1064,7 +1247,7 @@ const struct ldb_schema_syntax *ldb_samba_syntax_by_name(struct ldb_context *ldb
 
 const struct ldb_schema_syntax *ldb_samba_syntax_by_lDAPDisplayName(struct ldb_context *ldb, const char *name)
 {
-	uint32_t j;
+	unsigned int j;
 	const struct ldb_schema_syntax *s = NULL;
 
 	for (j=0; j < ARRAY_SIZE(samba_attributes); j++) {
@@ -1082,7 +1265,7 @@ const struct ldb_schema_syntax *ldb_samba_syntax_by_lDAPDisplayName(struct ldb_c
 */
 int ldb_register_samba_handlers(struct ldb_context *ldb)
 {
-	uint32_t i;
+	unsigned int i;
 
 	for (i=0; i < ARRAY_SIZE(samba_attributes); i++) {
 		int ret;
@@ -1095,7 +1278,7 @@ int ldb_register_samba_handlers(struct ldb_context *ldb)
 		}
 
 		if (!s) {
-			return -1;
+			return LDB_ERR_OPERATIONS_ERROR;
 		}
 
 		ret = ldb_schema_attribute_add_with_syntax(ldb, samba_attributes[i].name, LDB_ATTR_FLAG_FIXED, s);

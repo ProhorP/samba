@@ -65,9 +65,10 @@ const char *wbcErrorString(wbcErr error);
  *	 Added wbcGetSidAliases()
  *  0.4: Added wbcSidTypeString()
  *  0.5: Added wbcChangeTrustCredentials()
+ *  0.6: Made struct wbcInterfaceDetails char* members non-const
  **/
 #define WBCLIENT_MAJOR_VERSION 0
-#define WBCLIENT_MINOR_VERSION 5
+#define WBCLIENT_MINOR_VERSION 6
 #define WBCLIENT_VENDOR_VERSION "Samba libwbclient"
 struct wbcLibraryDetails {
 	uint16_t major_version;
@@ -81,11 +82,11 @@ struct wbcLibraryDetails {
  **/
 struct wbcInterfaceDetails {
 	uint32_t interface_version;
-	const char *winbind_version;
+	char *winbind_version;
 	char winbind_separator;
-	const char *netbios_name;
-	const char *netbios_domain;
-	const char *dns_domain;
+	char *netbios_name;
+	char *netbios_domain;
+	char *dns_domain;
 };
 
 /*
@@ -981,13 +982,14 @@ wbcErr wbcGetGroups(const char *account,
 /**
  * @brief Lookup the current status of a trusted domain
  *
- * @param domain      Domain to query
- * @param *info       Pointer to returned domain_info struct
+ * @param domain        The domain to query
+ *
+ * @param dinfo          A pointer to store the returned domain_info struct.
  *
  * @return #wbcErr
  **/
 wbcErr wbcDomainInfo(const char *domain,
-		     struct wbcDomainInfo **info);
+		     struct wbcDomainInfo **dinfo);
 
 /**
  * @brief Enumerate the domain trusts known by Winbind
@@ -1163,6 +1165,16 @@ wbcErr wbcChangeUserPasswordEx(const struct wbcChangePasswordParams *params,
 wbcErr wbcCredentialCache(struct wbcCredentialCacheParams *params,
                           struct wbcCredentialCacheInfo **info,
                           struct wbcAuthErrorInfo **error);
+
+/**
+ * @brief Save a password with winbind for doing wbcCredentialCache() later
+ *
+ * @param *user	     Username
+ * @param *password  Password
+ *
+ * @return #wbcErr
+ **/
+wbcErr wbcCredentialSave(const char *user, const char *password);
 
 /**********************************************************
  * Resolve functions

@@ -22,19 +22,21 @@
 #include "includes.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/cli_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
 #include "../librpc/gen_ndr/cli_dssetup.h"
+#include "secrets.h"
 
 NTSTATUS net_rpc_lookup_name(struct net_context *c,
 			     TALLOC_CTX *mem_ctx, struct cli_state *cli,
 			     const char *name, const char **ret_domain,
-			     const char **ret_name, DOM_SID *ret_sid,
+			     const char **ret_name, struct dom_sid *ret_sid,
 			     enum lsa_SidType *ret_type)
 {
 	struct rpc_pipe_client *lsa_pipe = NULL;
 	struct policy_handle pol;
 	NTSTATUS result = NT_STATUS_OK;
 	const char **dom_names;
-	DOM_SID *sids;
+	struct dom_sid *sids;
 	enum lsa_SidType *types;
 
 	ZERO_STRUCT(pol);
@@ -50,7 +52,7 @@ NTSTATUS net_rpc_lookup_name(struct net_context *c,
 					SEC_FLAG_MAXIMUM_ALLOWED,
 					&pol);
 	if (!NT_STATUS_IS_OK(result)) {
-		d_fprintf(stderr, _("open_policy failed: %s\n"),
+		d_fprintf(stderr, "open_policy %s: %s\n", _("failed"),
 			  nt_errstr(result));
 		return result;
 	}
@@ -107,6 +109,10 @@ NTSTATUS connect_to_service(struct net_context *c,
 
 	if (c->opt_kerberos && c->opt_password) {
 		flags |= CLI_FULL_CONNECTION_FALLBACK_AFTER_KERBEROS;
+	}
+
+	if (c->opt_ccache) {
+		flags |= CLI_FULL_CONNECTION_USE_CCACHE;
 	}
 
 	nt_status = cli_full_connection(cli_ctx, NULL, server_name,

@@ -148,4 +148,36 @@ import "misc.idl", "security.idl", "nbt.idl";
 		[in] astring reason
 		);
 
+	/******************************************************
+         management calls for the drepl server
+	******************************************************/
+	/**
+	 * Force dreplsrv to fefresh internal cache.
+	 * @param partition_dn Partition to refresh cacheh for.
+	 *                     If empy/NULL, refresh all partitions.
+	 */
+	WERROR dreplsrv_refresh();
+
+	/*
+	  called when role transfer is requested via LDAP
+	*/
+	typedef [v1_enum] enum {
+               DREPL_SCHEMA_MASTER,
+               DREPL_RID_MASTER,
+               DREPL_INFRASTRUCTURE_MASTER,
+               DREPL_NAMING_MASTER,
+               DREPL_PDC_MASTER
+	} drepl_role_master;
+
+	WERROR drepl_takeFSMORole(
+		[in] uint32 role
+		);
+
+	/*
+	 * message to tell the drepl server to initiate a REPL_SECRET
+	 * replication of a users secrets
+	 */
+	void drepl_trigger_repl_secret(
+		[in] astring user_dn
+		);
 }

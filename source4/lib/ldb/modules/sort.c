@@ -51,8 +51,8 @@ struct sort_context {
 	struct ldb_request *req;
 	struct ldb_message **msgs;
 	char **referrals;
-	int num_msgs;
-	int num_refs;
+	unsigned int num_msgs;
+	unsigned int num_refs;
 
 	const struct ldb_schema_attribute *a;
 	int sort_result;
@@ -62,7 +62,7 @@ static int build_response(void *mem_ctx, struct ldb_control ***ctrls, int result
 {
 	struct ldb_control **controls;
 	struct ldb_sort_resp_control *resp;
-	int i;
+	unsigned int i;
 
 	if (*ctrls) {
 		controls = *ctrls;
@@ -137,16 +137,15 @@ static int server_sort_results(struct sort_context *ac)
 {
 	struct ldb_context *ldb;
 	struct ldb_reply *ares;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	ldb = ldb_module_get_ctx(ac->module);
 
 	ac->a = ldb_schema_attribute_by_name(ldb, ac->attributeName);
 	ac->sort_result = 0;
 
-	ldb_qsort(ac->msgs, ac->num_msgs,
-		  sizeof(struct ldb_message *),
-		  ac, (ldb_qsort_cmp_fn_t)sort_compare);
+	LDB_TYPESAFE_QSORT(ac->msgs, ac->num_msgs, ac, sort_compare);
 
 	if (ac->sort_result != LDB_SUCCESS) {
 		return ac->sort_result;

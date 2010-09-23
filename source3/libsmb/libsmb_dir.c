@@ -23,6 +23,7 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
 #include "libsmbclient.h"
 #include "libsmb_internal.h"
 #include "../librpc/gen_ndr/cli_srvsvc.h"
@@ -235,7 +236,7 @@ list_fn(const char *name,
 
 static void
 dir_list_fn(const char *mnt,
-            file_info *finfo,
+            struct file_info *finfo,
             const char *mask,
             void *state)
 {
@@ -303,7 +304,7 @@ net_share_enum_rpc(struct cli_state *cli,
         }
 
         /* For each returned entry... */
-        for (i = 0; i < total_entries; i++) {
+        for (i = 0; i < info_ctr.ctr.ctr1->count; i++) {
 
                 /* pull out the share name */
 		fstrcpy(name, info_ctr.ctr.ctr1->array[i].name);
@@ -748,6 +749,7 @@ SMBC_opendir_ctx(SMBCCTX *context,
                          */
 			char *targetpath;
 			struct cli_state *targetcli;
+			NTSTATUS status;
 
 			/* We connect to the server and list the directory */
 			dir->dir_type = SMBC_FILE_SHARE;
@@ -791,10 +793,10 @@ SMBC_opendir_ctx(SMBCCTX *context,
 				return NULL;
 			}
 
-			if (cli_list(targetcli, targetpath,
-                                     aDIR | aSYSTEM | aHIDDEN,
-                                     dir_list_fn, (void *)dir) < 0) {
-
+			status = cli_list(targetcli, targetpath,
+					  aDIR | aSYSTEM | aHIDDEN,
+					  dir_list_fn, (void *)dir);
+			if (!NT_STATUS_IS_OK(status)) {
 				if (dir) {
 					SAFE_FREE(dir->fname);
 					SAFE_FREE(dir);
@@ -1204,7 +1206,7 @@ SMBC_mkdir_ctx(SMBCCTX *context,
 
 static void
 rmdir_list_fn(const char *mnt,
-              file_info *finfo,
+              struct file_info *finfo,
               const char *mask,
               void *state)
 {
@@ -1302,6 +1304,7 @@ SMBC_rmdir_ctx(SMBCCTX *context,
                         /* Local storage to avoid buffer overflows */
 			char *lpath;
 			bool smbc_rmdir_dirempty = true;
+			NTSTATUS status;
 
 			lpath = talloc_asprintf(frame, "%s\\*",
 						targetpath);
@@ -1311,11 +1314,12 @@ SMBC_rmdir_ctx(SMBCCTX *context,
 				return -1;
 			}
 
-			if (cli_list(targetcli, lpath,
-                                     aDIR | aSYSTEM | aHIDDEN,
-                                     rmdir_list_fn,
-				     &smbc_rmdir_dirempty) < 0) {
+			status = cli_list(targetcli, lpath,
+					  aDIR | aSYSTEM | aHIDDEN,
+					  rmdir_list_fn,
+					  &smbc_rmdir_dirempty);
 
+			if (!NT_STATUS_IS_OK(status)) {
 				/* Fix errno to ignore latest error ... */
 				DEBUG(5, ("smbc_rmdir: "
                                           "cli_list returned an error: %d\n",

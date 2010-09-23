@@ -51,17 +51,19 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 					 const char *src_address,
 					 uint32_t version,
 					 struct loadparm_context *lp_ctx,
-					 struct netlogon_samlogon_response *netlogon)
+					 struct netlogon_samlogon_response *netlogon,
+					 bool fill_on_blank_request)
 {
 	const char *dom_attrs[] = {"objectGUID", NULL};
 	const char *none_attrs[] = {NULL};
 	struct ldb_result *dom_res = NULL, *user_res = NULL;
 	int ret;
-	const char **services = lp_server_services(lp_ctx);
+	const char **services = lpcfg_server_services(lp_ctx);
 	uint32_t server_type;
 	const char *pdc_name;
 	struct GUID domain_uuid;
 	const char *dns_domain;
+	const char *forest_domain;
 	const char *pdc_dns_name;
 	const char *flatname;
 	const char *server_site;
@@ -69,38 +71,45 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 	const char *pdc_ip;
 	struct ldb_dn *domain_dn = NULL;
 	struct interface *ifaces;
-	bool user_known;
+	bool user_known, am_rodc;
 	NTSTATUS status;
 
-	/* the domain has an optional trailing . */
+	/* the domain parameter could have an optional trailing "." */
 	if (domain && domain[strlen(domain)-1] == '.') {
 		domain = talloc_strndup(mem_ctx, domain, strlen(domain)-1);
+		NT_STATUS_HAVE_NO_MEMORY(domain);
 	}
 
-	if (domain && strcasecmp_m(domain, lp_dnsdomain(lp_ctx)) == 0) {
+	/* Lookup using long or short domainname */
+	if (domain && (strcasecmp_m(domain, lpcfg_dnsdomain(lp_ctx)) == 0)) {
 		domain_dn = ldb_get_default_basedn(sam_ctx);
 	}
-
-	if (netbios_domain && strcasecmp_m(domain, lp_sam_name(lp_ctx))) {
+	if (netbios_domain && (strcasecmp_m(netbios_domain, lpcfg_sam_name(lp_ctx)) == 0)) {
 		domain_dn = ldb_get_default_basedn(sam_ctx);
 	}
-
 	if (domain_dn) {
+		const char *domain_identifier = domain != NULL ? domain
+							: netbios_domain;
 		ret = ldb_search(sam_ctx, mem_ctx, &dom_res,
 				 domain_dn, LDB_SCOPE_BASE, dom_attrs,
 				 "objectClass=domain");
 		if (ret != LDB_SUCCESS) {
-			DEBUG(2,("Error finding domain '%s'/'%s' in sam: %s\n", domain, ldb_dn_get_linearized(domain_dn), ldb_errstring(sam_ctx)));
+			DEBUG(2,("Error finding domain '%s'/'%s' in sam: %s\n",
+				 domain_identifier,
+				 ldb_dn_get_linearized(domain_dn),
+				 ldb_errstring(sam_ctx)));
 			return NT_STATUS_NO_SUCH_DOMAIN;
 		}
 		if (dom_res->count != 1) {
-			DEBUG(2,("Error finding domain '%s'/'%s' in sam\n", domain, ldb_dn_get_linearized(domain_dn)));
+			DEBUG(2,("Error finding domain '%s'/'%s' in sam\n",
+				 domain_identifier,
+				 ldb_dn_get_linearized(domain_dn)));
 			return NT_STATUS_NO_SUCH_DOMAIN;
 		}
 	}
 
-	if ((dom_res == NULL || dom_res->count == 0) && (domain_guid || domain_sid)) {
-
+	/* Lookup using GUID or SID */
+	if ((dom_res == NULL) && (domain_guid || domain_sid)) {
 		if (domain_guid) {
 			struct GUID binary_guid;
 			struct ldb_val guid_val;
@@ -128,7 +137,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 			enum ndr_err_code ndr_err;
 			
 			/* Rather than go via the string, just push into the NDR form */
-			ndr_err = ndr_push_struct_blob(&sid_val, mem_ctx, NULL, &sid,
+			ndr_err = ndr_push_struct_blob(&sid_val, mem_ctx, &sid,
 						       (ndr_push_flags_fn_t)ndr_push_dom_sid);
 			if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 				return NT_STATUS_INVALID_PARAMETER;
@@ -137,29 +146,49 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 			ret = ldb_search(sam_ctx, mem_ctx, &dom_res,
 						 NULL, LDB_SCOPE_SUBTREE, 
 						 dom_attrs, 
-						 "(&(objectCategory=DomainDNS)(objectSID=%s))", 
+						 "(&(objectCategory=DomainDNS)(objectSid=%s))",
 						 ldb_binary_encode(mem_ctx, sid_val));
 		}
 		
 		if (ret != LDB_SUCCESS) {
-			DEBUG(2,("Unable to find referece to GUID '%s' or SID %s in sam: %s\n",
+			DEBUG(2,("Unable to find a correct reference to GUID '%s' or SID '%s' in sam: %s\n",
 				 domain_guid, dom_sid_string(mem_ctx, domain_sid),
 				 ldb_errstring(sam_ctx)));
 			return NT_STATUS_NO_SUCH_DOMAIN;
 		} else if (dom_res->count == 1) {
 			/* Ok, now just check it is our domain */
-			
-			if (ldb_dn_compare(ldb_get_default_basedn(sam_ctx), dom_res->msgs[0]->dn) != 0) {
+			if (ldb_dn_compare(ldb_get_default_basedn(sam_ctx),
+					   dom_res->msgs[0]->dn) != 0) {
+				DEBUG(2,("The GUID '%s' or SID '%s' doesn't identify our domain\n",
+					 domain_guid,
+					 dom_sid_string(mem_ctx, domain_sid)));
 				return NT_STATUS_NO_SUCH_DOMAIN;
 			}
-		} else if (dom_res->count > 1) {
+		} else {
+			DEBUG(2,("Unable to find a correct reference to GUID '%s' or SID '%s' in sam\n",
+				 domain_guid, dom_sid_string(mem_ctx, domain_sid)));
 			return NT_STATUS_NO_SUCH_DOMAIN;
 		}
 	}
 
+	if (dom_res == NULL && fill_on_blank_request) {
+		/* blank inputs gives our domain - tested against
+		   w2k8r2. Without this ADUC on Win7 won't start */
+		domain_dn = ldb_get_default_basedn(sam_ctx);
+		ret = ldb_search(sam_ctx, mem_ctx, &dom_res,
+				 domain_dn, LDB_SCOPE_BASE, dom_attrs,
+				 "objectClass=domain");
+		if (ret != LDB_SUCCESS) {
+			DEBUG(2,("Error finding domain '%s'/'%s' in sam: %s\n",
+				 lpcfg_dnsdomain(lp_ctx),
+				 ldb_dn_get_linearized(domain_dn),
+				 ldb_errstring(sam_ctx)));
+			return NT_STATUS_NO_SUCH_DOMAIN;
+		}
+	}
 
-	if ((dom_res == NULL || dom_res->count == 0)) {
-		DEBUG(2,("Unable to find domain with name %s or GUID {%s}\n", domain, domain_guid));
+        if (dom_res == NULL) {
+		DEBUG(2,(__location__ ": Unable to get domain informations with no inputs\n"));
 		return NT_STATUS_NO_SUCH_DOMAIN;
 	}
 
@@ -188,7 +217,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 					 ldb_binary_encode_string(mem_ctx, user),
 					 UF_ACCOUNTDISABLE, ds_acb2uf(acct_control));
 		if (ret != LDB_SUCCESS) {
-			DEBUG(2,("Unable to find referece to user '%s' with ACB 0x%8x under %s: %s\n",
+			DEBUG(2,("Unable to find reference to user '%s' with ACB 0x%8x under %s: %s\n",
 				 user, acct_control, ldb_dn_get_linearized(dom_res->msgs[0]->dn),
 				 ldb_errstring(sam_ctx)));
 			return NT_STATUS_NO_SUCH_USER;
@@ -204,7 +233,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		
 	server_type      = 
 		DS_SERVER_DS | DS_SERVER_TIMESERV |
-		DS_SERVER_CLOSEST | DS_SERVER_WRITABLE | 
+		DS_SERVER_CLOSEST |
 		DS_SERVER_GOOD_TIMESERV;
 
 #if 0
@@ -214,9 +243,10 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 
 	if (samdb_is_pdc(sam_ctx)) {
 		server_type |= DS_SERVER_PDC;
-		if (dsdb_functional_level(sam_ctx) >= DS_DOMAIN_FUNCTION_2008) {
-			server_type |= DS_SERVER_FULL_SECRET_DOMAIN_6;
-		}
+	}
+
+	if (dsdb_functional_level(sam_ctx) >= DS_DOMAIN_FUNCTION_2008) {
+		server_type |= DS_SERVER_FULL_SECRET_DOMAIN_6;
 	}
 
 	if (samdb_is_gc(sam_ctx)) {
@@ -231,6 +261,10 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		server_type |= DS_SERVER_KDC;
 	}
 
+	if (samdb_rodc(sam_ctx, &am_rodc) == LDB_SUCCESS && !am_rodc) {
+		server_type |= DS_SERVER_WRITABLE;
+	}
+
 #if 0
 	/* w2k8-r2 as a sole DC does not claim this */
 	if (ldb_dn_compare(ldb_get_root_basedn(sam_ctx), ldb_get_default_basedn(sam_ctx)) == 0) {
@@ -238,21 +272,35 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 	}
 #endif
 
-	pdc_name         = talloc_asprintf(mem_ctx, "\\\\%s", lp_netbios_name(lp_ctx));
+	pdc_name         = talloc_asprintf(mem_ctx, "\\\\%s",
+					   lpcfg_netbios_name(lp_ctx));
+	NT_STATUS_HAVE_NO_MEMORY(pdc_name);
 	domain_uuid      = samdb_result_guid(dom_res->msgs[0], "objectGUID");
-	dns_domain       = lp_dnsdomain(lp_ctx);
+	dns_domain       = lpcfg_dnsdomain(lp_ctx);
+	forest_domain    = samdb_forest_name(sam_ctx, mem_ctx);
+	NT_STATUS_HAVE_NO_MEMORY(forest_domain);
 	pdc_dns_name     = talloc_asprintf(mem_ctx, "%s.%s", 
 					   strlower_talloc(mem_ctx, 
-							   lp_netbios_name(lp_ctx)), 
+							   lpcfg_netbios_name(lp_ctx)),
 					   dns_domain);
-
-	flatname         = lp_sam_name(lp_ctx);
+	NT_STATUS_HAVE_NO_MEMORY(pdc_dns_name);
+	flatname         = lpcfg_workgroup(lp_ctx);
 	server_site      = samdb_server_site_name(sam_ctx, mem_ctx);
-	/* FIXME: Hardcoded site name */
-	client_site      = "Default-First-Site-Name";
-	load_interfaces(mem_ctx, lp_interfaces(lp_ctx), &ifaces);
-	pdc_ip           = iface_best_ip(ifaces, src_address);
-
+	NT_STATUS_HAVE_NO_MEMORY(server_site);
+	client_site      = samdb_client_site_name(sam_ctx, mem_ctx,
+						  src_address, NULL);
+	NT_STATUS_HAVE_NO_MEMORY(client_site);
+	load_interfaces(mem_ctx, lpcfg_interfaces(lp_ctx), &ifaces);
+	/*
+	 * TODO: the caller should pass the address which the client
+	 * used to trigger this call, as the client is able to reach
+	 * this ip.
+	 */
+	if (src_address) {
+		pdc_ip = iface_best_ip(ifaces, src_address);
+	} else {
+		pdc_ip = iface_n_ip(ifaces, 0);
+	}
 	ZERO_STRUCTP(netlogon);
 
 	/* check if either of these bits is present */
@@ -266,17 +314,15 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		} else {
 			netlogon->data.nt5_ex.command      = LOGON_SAM_LOGON_USER_UNKNOWN_EX;
 		}
-		netlogon->data.nt5_ex.server_type  = server_type;
+		netlogon->data.nt5_ex.pdc_name     = pdc_name;
+		netlogon->data.nt5_ex.user_name    = user;
+		netlogon->data.nt5_ex.domain_name  = flatname;
 		netlogon->data.nt5_ex.domain_uuid  = domain_uuid;
-		netlogon->data.nt5_ex.forest       = dns_domain;
+		netlogon->data.nt5_ex.forest       = forest_domain;
 		netlogon->data.nt5_ex.dns_domain   = dns_domain;
 		netlogon->data.nt5_ex.pdc_dns_name = pdc_dns_name;
-		netlogon->data.nt5_ex.domain       = flatname;
-		netlogon->data.nt5_ex.pdc_name     = lp_netbios_name(lp_ctx);
-		netlogon->data.nt5_ex.user_name    = user;
 		netlogon->data.nt5_ex.server_site  = server_site;
 		netlogon->data.nt5_ex.client_site  = client_site;
-
 		if (version & NETLOGON_NT_VERSION_5EX_WITH_IP) {
 			/* Clearly this needs to be fixed up for IPv6 */
 			extra_flags = NETLOGON_NT_VERSION_5EX_WITH_IP;
@@ -284,6 +330,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 			netlogon->data.nt5_ex.sockaddr.pdc_ip       = pdc_ip;
 			netlogon->data.nt5_ex.sockaddr.remaining = data_blob_talloc_zero(mem_ctx, 8);
 		}
+		netlogon->data.nt5_ex.server_type  = server_type;
 		netlogon->data.nt5_ex.nt_version   = NETLOGON_NT_VERSION_1|NETLOGON_NT_VERSION_5EX|extra_flags;
 		netlogon->data.nt5_ex.lmnt_token   = 0xFFFF;
 		netlogon->data.nt5_ex.lm20_token   = 0xFFFF;
@@ -301,7 +348,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		netlogon->data.nt5.user_name    = user;
 		netlogon->data.nt5.domain_name  = flatname;
 		netlogon->data.nt5.domain_uuid  = domain_uuid;
-		netlogon->data.nt5.forest       = dns_domain;
+		netlogon->data.nt5.forest       = forest_domain;
 		netlogon->data.nt5.dns_domain   = dns_domain;
 		netlogon->data.nt5.pdc_dns_name = pdc_dns_name;
 		netlogon->data.nt5.pdc_ip       = pdc_ip;
@@ -318,9 +365,9 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		} else {
 			netlogon->data.nt4.command      = LOGON_SAM_LOGON_USER_UNKNOWN;
 		}
-		netlogon->data.nt4.server      = pdc_name;
+		netlogon->data.nt4.pdc_name    = pdc_name;
 		netlogon->data.nt4.user_name   = user;
-		netlogon->data.nt4.domain      = flatname;
+		netlogon->data.nt4.domain_name = flatname;
 		netlogon->data.nt4.nt_version  = NETLOGON_NT_VERSION_1;
 		netlogon->data.nt4.lmnt_token  = 0xFFFF;
 		netlogon->data.nt4.lm20_token  = 0xFFFF;
@@ -340,12 +387,12 @@ void cldapd_netlogon_request(struct cldap_socket *cldap,
 			     struct ldb_parse_tree *tree,
 			     struct tsocket_address *src)
 {
-	int i;
+	unsigned int i;
 	const char *domain = NULL;
 	const char *host = NULL;
 	const char *user = NULL;
 	const char *domain_guid = NULL;
-	const char *domain_sid = NULL;
+	struct dom_sid *domain_sid = NULL;
 	int acct_control = -1;
 	int version = -1;
 	struct netlogon_samlogon_response netlogon;
@@ -377,9 +424,19 @@ void cldapd_netlogon_request(struct cldap_socket *cldap,
 			}
 		}
 		if (strcasecmp(t->u.equality.attr, "DomainSid") == 0) {
-			domain_sid = talloc_strndup(tmp_ctx, 
-						    (const char *)t->u.equality.value.data,
-						    t->u.equality.value.length);
+			enum ndr_err_code ndr_err;
+
+			domain_sid = talloc(tmp_ctx, struct dom_sid);
+			if (domain_sid == NULL) {
+				goto failed;
+			}
+			ndr_err = ndr_pull_struct_blob(&t->u.equality.value,
+						       domain_sid, domain_sid,
+						       (ndr_pull_flags_fn_t)ndr_pull_dom_sid);
+			if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+				talloc_free(domain_sid);
+				goto failed;
+			}
 		}
 		if (strcasecmp(t->u.equality.attr, "User") == 0) {
 			user = talloc_strndup(tmp_ctx, 
@@ -396,8 +453,8 @@ void cldapd_netlogon_request(struct cldap_socket *cldap,
 		}
 	}
 
-	if (domain_guid == NULL && domain == NULL) {
-		domain = lp_dnsdomain(cldapd->task->lp_ctx);
+	if ((domain == NULL) && (domain_guid == NULL) && (domain_sid == NULL)) {
+		domain = lpcfg_dnsdomain(cldapd->task->lp_ctx);
 	}
 
 	if (version == -1) {
@@ -407,18 +464,18 @@ void cldapd_netlogon_request(struct cldap_socket *cldap,
 	DEBUG(5,("cldap netlogon query domain=%s host=%s user=%s version=%d guid=%s\n",
 		 domain, host, user, version, domain_guid));
 
-	status = fill_netlogon_samlogon_response(cldapd->samctx, tmp_ctx, domain, NULL, NULL, domain_guid,
+	status = fill_netlogon_samlogon_response(cldapd->samctx, tmp_ctx,
+						 domain, NULL, domain_sid,
+						 domain_guid,
 						 user, acct_control,
 						 tsocket_address_inet_addr_string(src, tmp_ctx),
-						 version, cldapd->task->lp_ctx, &netlogon);
+						 version, cldapd->task->lp_ctx,
+						 &netlogon, false);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto failed;
 	}
 
-	status = cldap_netlogon_reply(cldap,
-				      lp_iconv_convenience(cldapd->task->lp_ctx),
-				      message_id, src, version,
-				      &netlogon);
+	status = cldap_netlogon_reply(cldap, message_id, src, version, &netlogon);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto failed;
 	}

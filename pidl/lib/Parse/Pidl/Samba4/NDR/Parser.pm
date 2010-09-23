@@ -567,11 +567,12 @@ sub ParseElementPushLevel
 	}
 
 	if ($l->{TYPE} eq "POINTER" and $deferred) {
+		my $rel_var_name = $var_name;
 		if ($l->{POINTER_TYPE} ne "ref") {
 			$self->pidl("if ($var_name) {");
 			$self->indent;
 			if ($l->{POINTER_TYPE} eq "relative") {
-				$self->pidl("NDR_CHECK(ndr_push_relative_ptr2($ndr, $var_name));");
+				$self->pidl("NDR_CHECK(ndr_push_relative_ptr2_start($ndr, $rel_var_name));");
 			}
 			if ($l->{POINTER_TYPE} eq "relative_short") {
 				$self->pidl("NDR_CHECK(ndr_push_short_relative_ptr2($ndr, $var_name));");
@@ -581,6 +582,9 @@ sub ParseElementPushLevel
 		$self->ParseElementPushLevel($e, GetNextLevel($e, $l), $ndr, $var_name, $env, 1, 1);
 
 		if ($l->{POINTER_TYPE} ne "ref") {
+			if ($l->{POINTER_TYPE} eq "relative") {
+				$self->pidl("NDR_CHECK(ndr_push_relative_ptr2_end($ndr, $rel_var_name));");
+			}
 			$self->deindent;
 			$self->pidl("}");
 		}
@@ -1462,6 +1466,7 @@ sub ParseStructPrint($$$$$)
 	$self->DeclareArrayVariables($_) foreach (@{$struct->{ELEMENTS}});
 
 	$self->pidl("ndr_print_struct($ndr, name, \"$name\");");
+	$self->pidl("if (r == NULL) { ndr_print_null($ndr); return; }");
 
 	$self->start_flags($struct, $ndr);
 
@@ -1614,7 +1619,7 @@ sub ParseStructNdrSize($$$$)
 	if (my $flags = has_property($t, "flag")) {
 		$self->pidl("flags |= $flags;");
 	}
-	$self->pidl("return ndr_size_struct($varname, flags, (ndr_push_flags_fn_t)ndr_push_$name, ic);");
+	$self->pidl("return ndr_size_struct($varname, flags, (ndr_push_flags_fn_t)ndr_push_$name);");
 }
 
 sub DeclStruct($$$$)
@@ -1626,7 +1631,7 @@ sub DeclStruct($$$$)
 sub ArgsStructNdrSize($$$)
 {
 	my ($d, $name, $varname) = @_;
-	return "const struct $name *$varname, struct smb_iconv_convenience *ic, int flags";
+	return "const struct $name *$varname, int flags";
 }
 
 $typefamily{STRUCT} = {
@@ -1649,7 +1654,7 @@ sub ParseUnionNdrSize($$$)
 		$self->pidl("flags |= $flags;");
 	}
 
-	$self->pidl("return ndr_size_union($varname, flags, level, (ndr_push_flags_fn_t)ndr_push_$name, ic);");
+	$self->pidl("return ndr_size_union($varname, flags, level, (ndr_push_flags_fn_t)ndr_push_$name);");
 }
 
 sub ParseUnionPushPrimitives($$$$)
@@ -1937,7 +1942,7 @@ sub DeclUnion($$$$)
 sub ArgsUnionNdrSize($$)
 {
 	my ($d,$name) = @_;
-	return "const union $name *r, uint32_t level, struct smb_iconv_convenience *ic, int flags";
+	return "const union $name *r, uint32_t level, int flags";
 }
 
 $typefamily{UNION} = {
@@ -2035,6 +2040,7 @@ sub ParseFunctionPrint($$)
 	}
 
 	$self->pidl("ndr_print_struct($ndr, name, \"$fn->{NAME}\");");
+	$self->pidl("if (r == NULL) { ndr_print_null($ndr); return; }");
 	$self->pidl("$ndr->depth++;");
 
 	$self->pidl("if (flags & NDR_SET_VALUES) {");

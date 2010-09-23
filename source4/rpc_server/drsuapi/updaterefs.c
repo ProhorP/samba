@@ -23,6 +23,9 @@
 #include "rpc_server/dcerpc_server.h"
 #include "dsdb/samdb/samdb.h"
 #include "rpc_server/drsuapi/dcesrv_drsuapi.h"
+#include "libcli/security/security.h"
+#include "auth/session.h"
+#include "librpc/gen_ndr/ndr_drsuapi.h"
 
 struct repsTo {
 	uint32_t count;
@@ -38,7 +41,7 @@ static WERROR uref_add_dest(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 {
 	struct repsTo reps;
 	WERROR werr;
-	int i;
+	unsigned int i;
 
 	werr = dsdb_loadreps(sam_ctx, mem_ctx, dn, "repsTo", &reps.r, &reps.count);
 	if (!W_ERROR_IS_OK(werr)) {
@@ -48,7 +51,7 @@ static WERROR uref_add_dest(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	for (i=0; i<reps.count; i++) {
 		if (GUID_compare(&dest->source_dsa_obj_guid, 
 				 &reps.r[i].ctr.ctr1.source_dsa_obj_guid) == 0) {
-			if (options & DRSUAPI_DS_REPLICA_UPDATE_GETCHG_CHECK) {
+			if (options & DRSUAPI_DRS_GETCHG_CHECK) {
 				return WERR_OK;
 			} else {
 				return WERR_DS_DRA_REF_ALREADY_EXISTS;
@@ -82,7 +85,7 @@ static WERROR uref_del_dest(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 {
 	struct repsTo reps;
 	WERROR werr;
-	int i;
+	unsigned int i;
 	bool found = false;
 
 	werr = dsdb_loadreps(sam_ctx, mem_ctx, dn, "repsTo", &reps.r, &reps.count);
@@ -106,8 +109,8 @@ static WERROR uref_del_dest(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	}
 
 	if (!found &&
-	    !(options & DRSUAPI_DS_REPLICA_UPDATE_GETCHG_CHECK) &&
-	    !(options & DRSUAPI_DS_REPLICA_UPDATE_ADD_REFERENCE)) {
+	    !(options & DRSUAPI_DRS_GETCHG_CHECK) &&
+	    !(options & DRSUAPI_DRS_ADD_REF)) {
 		return WERR_DS_DRA_REF_NOT_FOUND;
 	}
 
@@ -134,20 +137,22 @@ WERROR drsuapi_UpdateRefs(struct drsuapi_bind_state *b_state, TALLOC_CTX *mem_ct
 	}
 
 	if (ldb_transaction_start(b_state->sam_ctx) != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to start transaction on samdb\n"));
+		DEBUG(0,(__location__ ": Failed to start transaction on samdb: %s\n",
+			 ldb_errstring(b_state->sam_ctx)));
 		return WERR_DS_DRA_INTERNAL_ERROR;		
 	}
 
-	if (req->options & DRSUAPI_DS_REPLICA_UPDATE_DELETE_REFERENCE) {
+	if (req->options & DRSUAPI_DRS_DEL_REF) {
 		werr = uref_del_dest(b_state->sam_ctx, mem_ctx, dn, &req->dest_dsa_guid, req->options);
 		if (!W_ERROR_IS_OK(werr)) {
-			DEBUG(0,("Failed to delete repsTo for %s\n",
-				 GUID_string(mem_ctx, &req->dest_dsa_guid)));
+			DEBUG(0,("Failed to delete repsTo for %s: %s\n",
+				 GUID_string(mem_ctx, &req->dest_dsa_guid),
+				 win_errstr(werr)));
 			goto failed;
 		}
 	}
 
-	if (req->options & DRSUAPI_DS_REPLICA_UPDATE_ADD_REFERENCE) {
+	if (req->options & DRSUAPI_DRS_ADD_REF) {
 		struct repsFromTo1 dest;
 		struct repsFromTo1OtherInfo oi;
 		
@@ -161,14 +166,16 @@ WERROR drsuapi_UpdateRefs(struct drsuapi_bind_state *b_state, TALLOC_CTX *mem_ct
 
 		werr = uref_add_dest(b_state->sam_ctx, mem_ctx, dn, &dest, req->options);
 		if (!W_ERROR_IS_OK(werr)) {
-			DEBUG(0,("Failed to add repsTo for %s\n",
-				 GUID_string(mem_ctx, &dest.source_dsa_obj_guid)));
+			DEBUG(0,("Failed to add repsTo for %s: %s\n",
+				 GUID_string(mem_ctx, &dest.source_dsa_obj_guid),
+				 win_errstr(werr)));
 			goto failed;
 		}
 	}
 
 	if (ldb_transaction_commit(b_state->sam_ctx) != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to commit transaction on samdb\n"));
+		DEBUG(0,(__location__ ": Failed to commit transaction on samdb: %s\n",
+			 ldb_errstring(b_state->sam_ctx)));
 		return WERR_DS_DRA_INTERNAL_ERROR;		
 	}
 
@@ -189,11 +196,14 @@ WERROR dcesrv_drsuapi_DsReplicaUpdateRefs(struct dcesrv_call_state *dce_call, TA
 	struct drsuapi_bind_state *b_state;
 	struct drsuapi_DsReplicaUpdateRefsRequest1 *req;
 	WERROR werr;
+	int ret;
+	enum security_user_level security_level;
 
 	DCESRV_PULL_HANDLE_WERR(h, r->in.bind_handle, DRSUAPI_BIND_HANDLE);
 	b_state = h->data;
 
-	werr = drs_security_level_check(dce_call, "DsReplicaUpdateRefs");
+	werr = drs_security_level_check(dce_call, "DsReplicaUpdateRefs", SECURITY_RO_DOMAIN_CONTROLLER,
+					samdb_domain_sid(b_state->sam_ctx));
 	if (!W_ERROR_IS_OK(werr)) {
 		return werr;
 	}
@@ -205,7 +215,26 @@ WERROR dcesrv_drsuapi_DsReplicaUpdateRefs(struct dcesrv_call_state *dce_call, TA
 
 	req = &r->in.req.req1;
 
-	return drsuapi_UpdateRefs(b_state, mem_ctx, req);
+	security_level = security_session_user_level(dce_call->conn->auth_state.session_info, NULL);
+	if (security_level < SECURITY_ADMINISTRATOR) {
+		/* check that they are using an DSA objectGUID that they own */
+		ret = dsdb_validate_dsa_guid(b_state->sam_ctx,
+		                             &req->dest_dsa_guid,
+		                             &dce_call->conn->auth_state.session_info->security_token->sids[PRIMARY_USER_SID_INDEX]);
+		if (ret != LDB_SUCCESS) {
+			DEBUG(0,(__location__ ": Refusing DsReplicaUpdateRefs for sid %s with GUID %s\n",
+				 dom_sid_string(mem_ctx,
+						&dce_call->conn->auth_state.session_info->security_token->sids[PRIMARY_USER_SID_INDEX]),
+				 GUID_string(mem_ctx, &req->dest_dsa_guid)));
+			return WERR_DS_DRA_ACCESS_DENIED;
+		}
+	}
+
+	werr = drsuapi_UpdateRefs(b_state, mem_ctx, req);
+
+#if 0
+	NDR_PRINT_FUNCTION_DEBUG(drsuapi_DsReplicaUpdateRefs, NDR_BOTH, r);
+#endif
+
+	return werr;
 }
-
-

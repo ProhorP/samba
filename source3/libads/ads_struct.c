@@ -19,6 +19,7 @@
 */
 
 #include "includes.h"
+#include "ads.h"
 
 /* return a ldap dn path from a string, given separators and field name
    caller must free
@@ -149,6 +150,20 @@ ADS_STRUCT *ads_init(const char *realm,
 	ads->auth.flags = wrap_flags;
 
 	return ads;
+}
+
+/****************************************************************
+****************************************************************/
+
+bool ads_set_sasl_wrap_flags(ADS_STRUCT *ads, int flags)
+{
+	if (!ads) {
+		return false;
+	}
+
+	ads->auth.flags = flags;
+
+	return true;
 }
 
 /*

@@ -1267,7 +1267,7 @@ Restore the mappings from the specified file or stdin.
 </refsect2>
 
 <refsect2>
-<title>IDMAP SECRET &lt;DOMAIN&gt;|ALLOC &lt;secret&gt;</title>
+<title>IDMAP SECRET &lt;DOMAIN&gt; &lt;secret&gt;</title>
 
 <para>
 Store a secret for the specified domain, used primarily for domains
@@ -1312,7 +1312,7 @@ can create user defined shares on demand using the commands below.
 <para>The usershare commands are:
 
 <simplelist>
-<member>net usershare add sharename path [comment] [acl] [guest_ok=[y|n]] - to add or change a user defined share.</member>
+<member>net usershare add sharename path [comment [acl] [guest_ok=[y|n]]] - to add or change a user defined share.</member>
 <member>net usershare delete sharename - to delete a user defined share.</member>
 <member>net usershare info [-l|--long] [wildcard sharename] - to print info about a user defined share.</member>
 <member>net usershare list [-l|--long] [wildcard sharename] - to list user defined shares.</member>
@@ -1785,6 +1785,46 @@ Note that you also need to use standard net parameters to connect and authentica
 This example would connect to a computer named XP as the local administrator using password secret, and rename the joined computer to XPNEW using the MYDOM domain administrator account and password topsecret. After successful rename, the computer would reboot.
 </para>
 
+</refsect3>
+
+</refsect2>
+
+<refsect2>
+<title>G_LOCK</title>
+
+<para>Manage global locks.</para>
+
+<refsect3>
+<title>G_LOCK DO <replaceable>lockname</replaceable> <replaceable>timeout</replaceable> <replaceable>command</replaceable></title>
+
+<para>
+Execute a shell command under a global lock. This might be useful to define the
+order in which several shell commands will be executed. The locking information
+is stored in a file called <filename>g_lock.tdb</filename>. In setups with CTDB
+running, the locking information will be available on all cluster nodes.
+</para>
+
+<itemizedlist>
+<listitem><para><replaceable>LOCKNAME</replaceable> defines the name of the global lock.</para></listitem>
+<listitem><para><replaceable>TIMEOUT</replaceable> defines the timeout.</para></listitem>
+<listitem><para><replaceable>COMMAND</replaceable> defines the shell command to execute.</para></listitem>
+</itemizedlist>
+</refsect3>
+
+<refsect3>
+<title>G_LOCK LOCKS</title>
+
+<para>
+Print a list of all currently existing locknames.
+</para>
+</refsect3>
+
+<refsect3>
+<title>G_LOCK DUMP <replaceable>lockname</replaceable></title>
+
+<para>
+Dump the locking table of a certain global lock.
+</para>
 </refsect3>
 
 </refsect2>

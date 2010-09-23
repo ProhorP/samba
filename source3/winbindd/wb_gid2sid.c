@@ -20,6 +20,8 @@
 #include "includes.h"
 #include "winbindd.h"
 #include "librpc/gen_ndr/cli_wbint.h"
+#include "idmap_cache.h"
+#include "idmap.h"
 
 struct wb_gid2sid_state {
 	struct tevent_context *ev;
@@ -74,8 +76,8 @@ struct tevent_req *wb_gid2sid_send(TALLOC_CTX *mem_ctx,
 
 	child = idmap_child();
 
-	subreq = rpccli_wbint_Gid2Sid_send(
-		state, ev, child->rpccli, state->dom_name,
+	subreq = dcerpc_wbint_Gid2Sid_send(
+		state, ev, child->binding_handle, state->dom_name,
 		gid, &state->sid);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
@@ -92,7 +94,7 @@ static void wb_gid2sid_done(struct tevent_req *subreq)
 		req, struct wb_gid2sid_state);
 	NTSTATUS status, result;
 
-	status = rpccli_wbint_Gid2Sid_recv(subreq, state, &result);
+	status = dcerpc_wbint_Gid2Sid_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);

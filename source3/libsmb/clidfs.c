@@ -154,6 +154,7 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 	c->use_kerberos = get_cmdline_auth_info_use_kerberos(auth_info);
 	c->fallback_after_kerberos =
 		get_cmdline_auth_info_fallback_after_kerberos(auth_info);
+	c->use_ccache = get_cmdline_auth_info_use_ccache(auth_info);
 
 	if (!cli_session_request(c, &calling, &called)) {
 		char *p;
@@ -319,7 +320,7 @@ static struct cli_state *cli_cm_connect(TALLOC_CTX *ctx,
 		DLIST_ADD_END(referring_cli, cli, struct cli_state *);
 	}
 
-	if (referring_cli && referring_cli->posix_capabilities) {
+	if (referring_cli && referring_cli->requested_posix_capabilities) {
 		uint16 major, minor;
 		uint32 caplow, caphigh;
 		NTSTATUS status;
@@ -350,7 +351,7 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
 	}
 
 	/* Search to the start of the list. */
-	for (p = cli; p; p = p->prev) {
+	for (p = cli; p; p = DLIST_PREV(p)) {
 		if (strequal(server, p->desthost) &&
 				strequal(share,p->share)) {
 			return p;
@@ -563,7 +564,7 @@ static char *cli_dfs_make_full_path(TALLOC_CTX *ctx,
 		dir++;
 	}
 
-	if (cli->posix_capabilities & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
+	if (cli->requested_posix_capabilities & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
 		path_sep = '/';
 	}
 	return talloc_asprintf(ctx, "%c%s%c%s%c%s",
@@ -716,6 +717,7 @@ bool cli_dfs_get_referral(TALLOC_CTX *ctx,
 				goto out;
 			}
 			clistr_pull_talloc(ctx, cli->inbuf,
+					   SVAL(cli->inbuf, smb_flg2),
 					   &referrals[i].dfspath,
 					   p+node_offset, -1,
 					   STR_TERMINATE|STR_UNICODE);
@@ -771,6 +773,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 	char *ppath = NULL;
 	SMB_STRUCT_STAT sbuf;
 	uint32 attributes;
+	NTSTATUS status;
 
 	if ( !rootcli || !path || !targetcli ) {
 		return false;
@@ -801,7 +804,8 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 		return false;
 	}
 
-	if (cli_qpathinfo_basic( rootcli, dfs_path, &sbuf, &attributes)) {
+	status = cli_qpathinfo_basic( rootcli, dfs_path, &sbuf, &attributes);
+	if (NT_STATUS_IS_OK(status)) {
 		/* This is an ordinary path, just return it. */
 		*targetcli = rootcli;
 		*pp_targetpath = talloc_strdup(ctx, path);

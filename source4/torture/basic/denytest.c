@@ -1399,7 +1399,7 @@ static const struct {
 };
 
 
-static void progress_bar(struct torture_context *tctx, uint_t i, uint_t total)
+static void progress_bar(struct torture_context *tctx, unsigned int i, unsigned int total)
 {
 	if (torture_setting_bool(tctx, "progress", true)) {
 		torture_comment(tctx, "%5d/%5d\r", i, total);
@@ -1416,7 +1416,7 @@ bool torture_denytest1(struct torture_context *tctx,
 	int fnum1, fnum2;
 	int i;
 	bool correct = true;
-	struct timeval tv, tv_start;
+	struct timespec tv, tv_start;
 	const char *fnames[2] = {"\\denytest1.dat", "\\denytest1.exe"};
 	int failures=0;
 
@@ -1429,9 +1429,9 @@ bool torture_denytest1(struct torture_context *tctx,
 		smbcli_close(cli1->tree, fnum1);
 	}
 
-	torture_comment(tctx, "testing %d entries\n", (int)ARRAY_SIZE(denytable1));
+	torture_comment(tctx, "Testing %d entries\n", (int)ARRAY_SIZE(denytable1));
 
-	GetTimeOfDay(&tv_start);
+	clock_gettime_mono(&tv_start);
 
 	for (i=0; i<ARRAY_SIZE(denytable1); i++) {
 		enum deny_result res;
@@ -1474,9 +1474,9 @@ bool torture_denytest1(struct torture_context *tctx,
 		if (torture_setting_bool(tctx, "showall", false) || 
 			res != denytable1[i].result) {
 			int64_t tdif;
-			GetTimeOfDay(&tv);
-			tdif = usec_time_diff(&tv, &tv_start);
-			tdif /= 1000;
+			clock_gettime_mono(&tv);
+			tdif = nsec_time_diff(&tv, &tv_start);
+			tdif /= 1000000;
 			torture_comment(tctx, "%lld: %s %8s %10s    %8s %10s    %s (correct=%s)\n",
 			       (long long)tdif,
 			       fname,
@@ -1518,7 +1518,7 @@ bool torture_denytest2(struct torture_context *tctx,
 	int i;
 	bool correct = true;
 	const char *fnames[2] = {"\\denytest2.dat", "\\denytest2.exe"};
-	struct timeval tv, tv_start;
+	struct timespec tv, tv_start;
 	int failures=0;
 
 	for (i=0;i<2;i++) {
@@ -1528,7 +1528,7 @@ bool torture_denytest2(struct torture_context *tctx,
 		smbcli_close(cli1->tree, fnum1);
 	}
 
-	GetTimeOfDay(&tv_start);
+	clock_gettime_mono(&tv_start);
 
 	for (i=0; i<ARRAY_SIZE(denytable2); i++) {
 		enum deny_result res;
@@ -1571,9 +1571,9 @@ bool torture_denytest2(struct torture_context *tctx,
 		if (torture_setting_bool(tctx, "showall", false) || 
 			res != denytable2[i].result) {
 			int64_t tdif;
-			GetTimeOfDay(&tv);
-			tdif = usec_time_diff(&tv, &tv_start);
-			tdif /= 1000;
+			clock_gettime_mono(&tv);
+			tdif = nsec_time_diff(&tv, &tv_start);
+			tdif /= 1000000;
 			torture_comment(tctx, "%lld: %s %8s %10s    %8s %10s    %s (correct=%s)\n",
 			       (long long)tdif,
 			       fname,
@@ -1763,7 +1763,7 @@ static bool torture_ntdenytest(struct torture_context *tctx,
 	int fnum1;
 	int i;
 	bool correct = true;
-	struct timeval tv, tv_start;
+	struct timespec tv, tv_start;
 	const char *fname;
 	int nbits1 = ARRAY_SIZE(share_access_bits);
 	int nbits2 = ARRAY_SIZE(access_mask_bits);
@@ -1783,7 +1783,7 @@ static bool torture_ntdenytest(struct torture_context *tctx,
 	smbcli_write(cli1->tree, fnum1, 0, buf, 0, sizeof(buf));
 	smbcli_close(cli1->tree, fnum1);
 
-	GetTimeOfDay(&tv_start);
+	clock_gettime_mono(&tv_start);
 
 	io1.ntcreatex.level = RAW_OPEN_NTCREATEX;
 	io1.ntcreatex.in.root_fid.fnum = 0;
@@ -1797,7 +1797,7 @@ static bool torture_ntdenytest(struct torture_context *tctx,
 	io1.ntcreatex.in.fname = fname;
 	io2 = io1;
 
-	torture_comment(tctx, "testing %d entries on %s\n", torture_numops, fname);
+	torture_comment(tctx, "Testing %d entries on %s\n", torture_numops, fname);
 
 	for (i=0;i<torture_numops;i++) {
 		NTSTATUS status1, status2, status2_p;
@@ -1871,9 +1871,9 @@ static bool torture_ntdenytest(struct torture_context *tctx,
 						   read_for_execute,
 						   &res2);
 		
-		GetTimeOfDay(&tv);
-		tdif = usec_time_diff(&tv, &tv_start);
-		tdif /= 1000;
+		clock_gettime_mono(&tv);
+		tdif = nsec_time_diff(&tv, &tv_start);
+		tdif /= 1000000;
 		if (torture_setting_bool(tctx, "showall", false) || 
 		    !NT_STATUS_EQUAL(status2, status2_p) ||
 		    res != res2) {
@@ -2095,13 +2095,6 @@ static int cxd_find_known(struct createx_data *cxd)
 	return -1;
 }
 
-#define FILL_NTCREATEX(_struct, _init...)                       \
-	do {                                                    \
-		(_struct)->generic.level = RAW_OPEN_NTCREATEX;  \
-		(_struct)->ntcreatex.in                         \
-		    = (typeof((_struct)->ntcreatex.in)) {_init};\
-	} while (0)
-
 #define CREATEX_NAME "\\createx_dir"
 
 static bool createx_make_dir(struct torture_context *tctx,
@@ -2124,15 +2117,16 @@ static bool createx_make_file(struct torture_context *tctx,
 	bool ret = true;
 	NTSTATUS status;
 
-	FILL_NTCREATEX(&open_parms,
-	    .flags = 0,
-	    .access_mask = SEC_RIGHTS_FILE_ALL,
-	    .file_attr = FILE_ATTRIBUTE_NORMAL,
-	    .share_access = 0,
-	    .open_disposition = NTCREATEX_DISP_CREATE,
-	    .create_options = 0,
-	    .fname = fname
-	);
+	ZERO_STRUCT(open_parms);
+	open_parms.generic.level = RAW_OPEN_NTCREATEX;
+	open_parms.ntcreatex.in.flags = 0;
+	open_parms.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	open_parms.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	open_parms.ntcreatex.in.share_access = 0;
+	open_parms.ntcreatex.in.open_disposition = NTCREATEX_DISP_CREATE;
+	open_parms.ntcreatex.in.create_options = 0;
+	open_parms.ntcreatex.in.fname = fname;
+
 	status = smb_raw_open(tree, mem_ctx, &open_parms);
 	CHECK_STATUS(status, NT_STATUS_OK);
 
@@ -2146,30 +2140,30 @@ static bool createx_make_file(struct torture_context *tctx,
 static void createx_fill_dir(union smb_open *open_parms, int accessmode,
     int sharemode, const char *fname)
 {
-	FILL_NTCREATEX(open_parms,
-	    .flags = 0,
-	    .access_mask = accessmode,
-	    .file_attr = FILE_ATTRIBUTE_DIRECTORY,
-	    .share_access = sharemode,
-	    .open_disposition = NTCREATEX_DISP_OPEN_IF,
-	    .create_options = NTCREATEX_OPTIONS_DIRECTORY,
-	    .fname = fname
-	);
+	ZERO_STRUCTP(open_parms);
+	open_parms->generic.level = RAW_OPEN_NTCREATEX;
+	open_parms->ntcreatex.in.flags = 0;
+	open_parms->ntcreatex.in.access_mask = accessmode;
+	open_parms->ntcreatex.in.file_attr = FILE_ATTRIBUTE_DIRECTORY;
+	open_parms->ntcreatex.in.share_access = sharemode;
+	open_parms->ntcreatex.in.open_disposition = NTCREATEX_DISP_OPEN_IF;
+	open_parms->ntcreatex.in.create_options = NTCREATEX_OPTIONS_DIRECTORY;
+	open_parms->ntcreatex.in.fname = fname;
 }
 
 static void createx_fill_file(union smb_open *open_parms, int accessmode,
     int sharemode, const char *fname)
 {
-	FILL_NTCREATEX(open_parms,
-	    .flags = 0,
-	    .access_mask = accessmode,
-	    .file_attr = FILE_ATTRIBUTE_NORMAL,
-	    .share_access = sharemode,
-	    .open_disposition = NTCREATEX_DISP_OPEN_IF,
-	    .create_options = 0,
-	    .fname = fname,
-            .root_fid = { .fnum = 0 }
-	);
+	ZERO_STRUCTP(open_parms);
+	open_parms->generic.level = RAW_OPEN_NTCREATEX;
+	open_parms->ntcreatex.in.flags = 0;
+	open_parms->ntcreatex.in.access_mask = accessmode;
+	open_parms->ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	open_parms->ntcreatex.in.share_access = sharemode;
+	open_parms->ntcreatex.in.open_disposition = NTCREATEX_DISP_OPEN_IF;
+	open_parms->ntcreatex.in.create_options = 0;
+	open_parms->ntcreatex.in.fname = fname;
+	open_parms->ntcreatex.in.root_fid.fnum = 0;
 }
 
 static int data_file_fd = -1;
@@ -2184,15 +2178,16 @@ static bool createx_test_dir(struct torture_context *tctx,
 	union smb_open open_parms;
 
 	/* bypass original handle to guarantee creation */
-	FILL_NTCREATEX(&open_parms,
-	    .flags = 0,
-	    .access_mask = SEC_RIGHTS_FILE_ALL,
-	    .file_attr = FILE_ATTRIBUTE_NORMAL,
-	    .share_access = 0,
-	    .open_disposition = NTCREATEX_DISP_CREATE,
-	    .create_options = 0,
-	    .fname = CREATEX_NAME "\\" KNOWN
-	);
+	ZERO_STRUCT(open_parms);
+	open_parms.generic.level = RAW_OPEN_NTCREATEX;
+	open_parms.ntcreatex.in.flags = 0;
+	open_parms.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	open_parms.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	open_parms.ntcreatex.in.share_access = 0;
+	open_parms.ntcreatex.in.open_disposition = NTCREATEX_DISP_CREATE;
+	open_parms.ntcreatex.in.create_options = 0;
+	open_parms.ntcreatex.in.fname = CREATEX_NAME "\\" KNOWN;
+
 	status = smb_raw_open(tree, mem_ctx, &open_parms);
 	CHECK_STATUS(status, NT_STATUS_OK);
 	smbcli_close(tree, open_parms.ntcreatex.out.file.fnum);
@@ -2200,32 +2195,32 @@ static bool createx_test_dir(struct torture_context *tctx,
 	result[CXD_DIR_ENUMERATE] = NT_STATUS_OK;
 
 	/* try to create a child */
-	FILL_NTCREATEX(&open_parms,
-	    .flags = 0,
-	    .access_mask = SEC_RIGHTS_FILE_ALL,
-	    .file_attr = FILE_ATTRIBUTE_NORMAL,
-	    .share_access = 0,
-	    .open_disposition = NTCREATEX_DISP_CREATE,
-	    .create_options = 0,
-	    .fname = CHILD,
-	    .root_fid = { .fnum = fnum }
-	);
+	ZERO_STRUCT(open_parms);
+	open_parms.generic.level = RAW_OPEN_NTCREATEX;
+	open_parms.ntcreatex.in.flags = 0;
+	open_parms.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	open_parms.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	open_parms.ntcreatex.in.share_access = 0;
+	open_parms.ntcreatex.in.open_disposition = NTCREATEX_DISP_CREATE;
+	open_parms.ntcreatex.in.create_options = 0;
+	open_parms.ntcreatex.in.fname = CHILD;
+	open_parms.ntcreatex.in.root_fid.fnum = fnum;
 
 	result[CXD_DIR_CREATE_CHILD] =
 	    smb_raw_open(tree, mem_ctx, &open_parms);
 	smbcli_close(tree, open_parms.ntcreatex.out.file.fnum);
 
 	/* try to traverse dir to known good file */
-	FILL_NTCREATEX(&open_parms,
-	    .flags = 0,
-	    .access_mask = SEC_RIGHTS_FILE_ALL,
-	    .file_attr = FILE_ATTRIBUTE_NORMAL,
-	    .share_access = 0,
-	    .open_disposition = NTCREATEX_DISP_OPEN,
-	    .create_options = 0,
-	    .fname = KNOWN,
-	    .root_fid = {.fnum = fnum}
-	);
+	ZERO_STRUCT(open_parms);
+	open_parms.generic.level = RAW_OPEN_NTCREATEX;
+	open_parms.ntcreatex.in.flags = 0;
+	open_parms.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	open_parms.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	open_parms.ntcreatex.in.share_access = 0;
+	open_parms.ntcreatex.in.open_disposition = NTCREATEX_DISP_OPEN;
+	open_parms.ntcreatex.in.create_options = 0;
+	open_parms.ntcreatex.in.fname = KNOWN;
+	open_parms.ntcreatex.in.root_fid.fnum = fnum;
 
 	result[CXD_DIR_TRAVERSE] =
 	    smb_raw_open(tree, mem_ctx, &open_parms);
@@ -2279,8 +2274,8 @@ static bool createx_test_file(struct torture_context *tctx,
 /* TODO When redirecting stdout to a file, the progress bar really screws up
  * the output. Could use a switch "--noprogress", or direct the progress bar to
  * stderr? No other solution? */
-static void createx_progress_bar(struct torture_context *tctx, uint_t i,
-    uint_t total, uint_t skipped)
+static void createx_progress_bar(struct torture_context *tctx, unsigned int i,
+    unsigned int total, unsigned int skipped)
 {
 	if (torture_setting_bool(tctx, "progress", true)) {
 		torture_comment(tctx, "%5d/%5d (%d skipped)\r", i, total,

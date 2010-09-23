@@ -1,5 +1,6 @@
+#include "config.h"
 
-#line 3 "lex.c"
+#line 3 "heimdal/lib/asn1/lex.c"
 
 #define  YY_INT_ALIGNED short int
 
@@ -847,7 +848,7 @@ static unsigned lineno = 1;
 static void unterminated(const char *, unsigned);
 
 /* This is for broken old lexes (solaris 10 and hpux) */
-#line 851 "lex.c"
+#line 851 "heimdal/lib/asn1/lex.c"
 
 #define INITIAL 0
 
@@ -936,7 +937,7 @@ static int input (void );
 /* This used to be an fputs(), but since the string might contain NUL's,
  * we now use fwrite().
  */
-#define ECHO fwrite( yytext, yyleng, 1, yyout )
+#define ECHO do { if (fwrite( yytext, yyleng, 1, yyout )) {} } while (0)
 #endif
 
 /* Gets input and stuffs it into "buf".  number of characters read, or YY_NULL,
@@ -1031,7 +1032,7 @@ YY_DECL
     
 #line 68 "lex.l"
 
-#line 1035 "lex.c"
+#line 1035 "heimdal/lib/asn1/lex.c"
 
 	if ( !(yy_init) )
 		{
@@ -1700,7 +1701,7 @@ YY_RULE_SETUP
 #line 274 "lex.l"
 ECHO;
 	YY_BREAK
-#line 1704 "lex.c"
+#line 1704 "heimdal/lib/asn1/lex.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 

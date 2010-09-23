@@ -11,6 +11,7 @@ auditingPolicy:: AAE=
 replace: creationTime
 creationTime: ${CREATTIME}
 -
+# "dSCorePropagationDate" should contain the provision data
 replace: forceLogoff
 forceLogoff: -9223372036854775808
 -
@@ -32,11 +33,10 @@ lockoutThreshold: 0
 -
 # "masteredBy" filled in later
 replace: maxPwdAge
-maxPwdAge: -37108517437440
+maxPwdAge: -36288000000000
 -
-# FIXME: This should be "-864000000000" when we fully comply with passwords pol.
 replace: minPwdAge
-minPwdAge: 0
+minPwdAge: -864000000000
 -
 replace: minPwdLength
 minPwdLength: 7
@@ -57,6 +57,9 @@ replace: ms-DS-MachineAccountQuota
 ms-DS-MachineAccountQuota: 10
 -
 # "msDs-masteredBy" filled in later
+replace: msDS-NcType
+msDS-NcType: 0
+-
 replace: msDS-PerUserTrustQuota
 msDS-PerUserTrustQuota: 1
 -
@@ -64,7 +67,7 @@ replace: msDS-PerUserTrustTombstonesQuota
 msDS-PerUserTrustTombstonesQuota: 10
 -
 replace: nextRid
-nextRid: 1000
+nextRid: ${NEXTRID}
 -
 replace: nTMixedDomain
 nTMixedDomain: 0
@@ -72,7 +75,7 @@ nTMixedDomain: 0
 replace: objectSid
 objectSid: ${DOMAINSID}
 -
-# This exists only in SAMBA
+# This does only exist in SAMBA
 replace: oEMInformation
 oEMInformation: Provisioned by SAMBA ${SAMBA_VERSION_STRING}
 -

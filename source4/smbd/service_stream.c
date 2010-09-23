@@ -98,7 +98,7 @@ static void stream_io_handler(struct stream_connection *conn, uint16_t flags)
 	}
 }
 
-static void stream_io_handler_fde(struct tevent_context *ev, struct tevent_fd *fde, 
+void stream_io_handler_fde(struct tevent_context *ev, struct tevent_fd *fde,
 				  uint16_t flags, void *private_data)
 {
 	struct stream_connection *conn = talloc_get_type(private_data,
@@ -121,7 +121,6 @@ void stream_io_handler_callback(void *private_data, uint16_t flags)
 NTSTATUS stream_new_connection_merge(struct tevent_context *ev,
 				     struct loadparm_context *lp_ctx,
 				     const struct model_ops *model_ops,
-				     struct socket_context *sock,
 				     const struct stream_server_ops *stream_ops,
 				     struct messaging_context *msg_ctx,
 				     void *private_data,
@@ -132,23 +131,15 @@ NTSTATUS stream_new_connection_merge(struct tevent_context *ev,
 	srv_conn = talloc_zero(ev, struct stream_connection);
 	NT_STATUS_HAVE_NO_MEMORY(srv_conn);
 
-	talloc_steal(srv_conn, sock);
-
 	srv_conn->private_data  = private_data;
 	srv_conn->model_ops     = model_ops;
-	srv_conn->socket	= sock;
+	srv_conn->socket	= NULL;
 	srv_conn->server_id	= cluster_id(0, 0);
 	srv_conn->ops           = stream_ops;
 	srv_conn->msg_ctx	= msg_ctx;
 	srv_conn->event.ctx	= ev;
 	srv_conn->lp_ctx	= lp_ctx;
-	srv_conn->event.fde	= tevent_add_fd(ev, srv_conn, socket_get_fd(sock),
-						TEVENT_FD_READ,
-						stream_io_handler_fde, srv_conn);
-	if (!srv_conn->event.fde) {
-		talloc_free(srv_conn);
-		return NT_STATUS_NO_MEMORY;
-	}
+	srv_conn->event.fde	= NULL;
 
 	*_srv_conn = srv_conn;
 	return NT_STATUS_OK;
@@ -182,7 +173,7 @@ static void stream_new_connection(struct tevent_context *ev,
 	srv_conn->event.ctx	= ev;
 	srv_conn->lp_ctx	= lp_ctx;
 
-	if (!socket_check_access(sock, "smbd", lp_hostsallow(NULL, lp_default_service(lp_ctx)), lp_hostsdeny(NULL, lp_default_service(lp_ctx)))) {
+	if (!socket_check_access(sock, "smbd", lpcfg_hostsallow(NULL, lpcfg_default_service(lp_ctx)), lpcfg_hostsdeny(NULL, lpcfg_default_service(lp_ctx)))) {
 		stream_terminate_connection(srv_conn, "denied by access rules");
 		return;
 	}
@@ -196,10 +187,8 @@ static void stream_new_connection(struct tevent_context *ev,
 
 	/* setup to receive internal messages on this connection */
 	srv_conn->msg_ctx = messaging_init(srv_conn, 
-					   lp_messaging_path(srv_conn, lp_ctx),
-					   srv_conn->server_id, 
-				           lp_iconv_convenience(lp_ctx),
-					   ev);
+					   lpcfg_messaging_path(srv_conn, lp_ctx),
+					   srv_conn->server_id, ev);
 	if (!srv_conn->msg_ctx) {
 		stream_terminate_connection(srv_conn, "messaging_init() failed");
 		return;
@@ -253,7 +242,7 @@ static void stream_accept_handler(struct tevent_context *ev, struct tevent_fd *f
 	/* ask the process model to create us a process for this new
 	   connection.  When done, it calls stream_new_connection()
 	   with the newly created socket */
-	stream_socket->model_ops->accept_connection(ev, stream_socket->lp_ctx, 
+	stream_socket->model_ops->accept_connection(ev, stream_socket->lp_ctx,
 						    stream_socket->sock, 
 						    stream_new_connection, stream_socket);
 }

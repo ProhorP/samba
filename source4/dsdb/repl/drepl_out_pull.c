@@ -32,12 +32,14 @@
 #include "librpc/gen_ndr/ndr_drsuapi.h"
 #include "librpc/gen_ndr/ndr_drsblobs.h"
 #include "libcli/composite/composite.h"
+#include "libcli/security/dom_sid.h"
 
 WERROR dreplsrv_schedule_partition_pull_source(struct dreplsrv_service *s,
 					       struct dreplsrv_partition_source_dsa *source,
 					       enum drsuapi_DsExtendedOperation extended_op,
 					       uint64_t fsmo_info,
-					       dreplsrv_fsmo_callback_t callback)
+					       dreplsrv_extended_callback_t callback,
+					       void *cb_data)
 {
 	struct dreplsrv_out_operation *op;
 
@@ -49,6 +51,7 @@ WERROR dreplsrv_schedule_partition_pull_source(struct dreplsrv_service *s,
 	op->extended_op = extended_op;
 	op->fsmo_info   = fsmo_info;
 	op->callback    = callback;
+	op->cb_data	= cb_data;
 
 	DLIST_ADD_END(s->ops.pending, op, struct dreplsrv_out_operation *);
 
@@ -63,7 +66,9 @@ static WERROR dreplsrv_schedule_partition_pull(struct dreplsrv_service *s,
 	struct dreplsrv_partition_source_dsa *cur;
 
 	for (cur = p->sources; cur; cur = cur->next) {
-		status = dreplsrv_schedule_partition_pull_source(s, cur, DRSUAPI_EXOP_NONE, 0, NULL);
+		status = dreplsrv_schedule_partition_pull_source(s, cur,
+		                                                 DRSUAPI_EXOP_NONE, 0,
+		                                                 NULL, NULL);
 		W_ERROR_NOT_OK_RETURN(status);
 	}
 
@@ -83,21 +88,6 @@ WERROR dreplsrv_schedule_pull_replication(struct dreplsrv_service *s, TALLOC_CTX
 	return WERR_OK;
 }
 
-
-/* force an immediate of the specified partition by GUID  */
-WERROR dreplsrv_schedule_partition_pull_by_guid(struct dreplsrv_service *s, TALLOC_CTX *mem_ctx,
-						struct GUID *guid)
-{
-	struct dreplsrv_partition *p;
-	
-	for (p = s->partitions; p; p = p->next) {
-		if (GUID_compare(&p->nc.guid, guid) == 0) {
-			return dreplsrv_schedule_partition_pull(s, p, mem_ctx);
-		}
-	}
-
-	return WERR_NOT_FOUND;
-}
 
 static void dreplsrv_pending_op_callback(struct tevent_req *subreq)
 {
@@ -125,13 +115,13 @@ static void dreplsrv_pending_op_callback(struct tevent_req *subreq)
 
 	DEBUG(1,("dreplsrv_op_pull_source(%s/%s) for %s failures[%u]\n",
 		 win_errstr(rf->result_last_attempt),
-		 win_errstr(rf->result_last_attempt),
+		 nt_errstr(werror_to_ntstatus(rf->result_last_attempt)),
 		 ldb_dn_get_linearized(op->source_dsa->partition->dn),
 		 rf->consecutive_sync_failures));
 
 done:
 	if (op->callback) {
-		op->callback(s, rf->result_last_attempt);
+		op->callback(s, rf->result_last_attempt, op->extended_ret, op->cb_data);
 	}
 	talloc_free(op);
 	s->ops.current = NULL;
@@ -171,6 +161,15 @@ void dreplsrv_run_pending_ops(struct dreplsrv_service *s)
 
 		rf->result_last_attempt = WERR_NOMEM;
 		rf->consecutive_sync_failures++;
+		s->ops.current = NULL;
+
+		/*
+		 * call the callback (if any) so it gets the chance
+		 * to do its job just like in any other failure situation
+		 */
+		if (op->callback) {
+			op->callback(s, rf->result_last_attempt, op->extended_ret, op->cb_data);
+		}
 
 		DEBUG(1,("dreplsrv_op_pull_source(%s/%s) failures[%u]\n",
 			win_errstr(rf->result_last_attempt),

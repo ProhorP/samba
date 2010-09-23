@@ -28,6 +28,7 @@
 #include "auth/credentials/credentials.h"
 #include "auth/gensec/gensec.h"
 #include "auth/gensec/gensec_proto.h"
+#include "param/param.h"
 
 enum spnego_state_position {
 	SPNEGO_SERVER_START,
@@ -420,7 +421,7 @@ static NTSTATUS gensec_spnego_parse_negTokenInit(struct gensec_security *gensec_
 
 	if (spnego_state->state_position == SPNEGO_SERVER_START) {
 		for (i=0; all_sec && all_sec[i].op; i++) {
-			/* optomisitic token */
+			/* optimistic token */
 			if (strcmp(all_sec[i].oid, mechType[0]) == 0) {
 				nt_status = gensec_subcontext_start(spnego_state,
 								    gensec_security,
@@ -458,7 +459,7 @@ static NTSTATUS gensec_spnego_parse_negTokenInit(struct gensec_security *gensec_
 		}
 	}
 	
-	/* Having tried any optomisitc token from the client (if we
+	/* Having tried any optimistic token from the client (if we
 	 * were the server), if we didn't get anywhere, walk our list
 	 * in our preference order */
 	
@@ -826,7 +827,9 @@ static NTSTATUS gensec_spnego_update(struct gensec_security *gensec_security, TA
 
 		if (spnego.negTokenInit.targetPrincipal) {
 			DEBUG(5, ("Server claims it's principal name is %s\n", spnego.negTokenInit.targetPrincipal));
-			gensec_set_target_principal(gensec_security, spnego.negTokenInit.targetPrincipal);
+			if (lpcfg_client_use_spnego_principal(gensec_security->settings->lp_ctx)) {
+				gensec_set_target_principal(gensec_security, spnego.negTokenInit.targetPrincipal);
+			}
 		}
 
 		nt_status = gensec_spnego_parse_negTokenInit(gensec_security,

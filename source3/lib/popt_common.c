@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
 
 /* Handle command line options:
  *		-d,--debuglevel 
@@ -32,6 +33,8 @@
  *		-W,--workgroup
  *		-i,--scope
  */
+
+enum {OPT_OPTION=1};
 
 extern bool AllowDebugChange;
 extern bool override_logfile;
@@ -95,6 +98,13 @@ static void popt_common_callback(poptContext con,
 	}
 
 	switch(opt->val) {
+	case OPT_OPTION:
+		if (!lp_set_option(arg)) {
+			fprintf(stderr, "Error setting option '%s'\n", arg);
+			exit(1);
+		}
+		break;
+
 	case 'd':
 		if (arg) {
 			debug_parse_levels(arg);
@@ -163,6 +173,7 @@ struct poptOption popt_common_samba[] = {
 	{ "configfile", 's', POPT_ARG_STRING, NULL, 's', "Use alternate configuration file", "CONFIGFILE" },
 	{ "log-basename", 'l', POPT_ARG_STRING, NULL, 'l', "Base name for log files", "LOGFILEBASE" },
 	{ "version", 'V', POPT_ARG_NONE, NULL, 'V', "Print version" },
+	{ "option",         0, POPT_ARG_STRING, NULL, OPT_OPTION, "Set smb.conf option from command line", "name=value" },
 	POPT_TABLEEND
 };
 
@@ -473,6 +484,7 @@ static void get_credentials_file(struct user_auth_info *auth_info,
  *		-S,--signing
  *              -P --machine-pass
  * 		-e --encrypt
+ * 		-C --use-ccache
  */
 
 
@@ -573,7 +585,9 @@ static void popt_common_credentials_callback(poptContext con,
 	case 'e':
 		set_cmdline_auth_info_smb_encrypt(auth_info);
 		break;
-
+	case 'C':
+		set_cmdline_auth_info_use_ccache(auth_info, true);
+		break;
 	}
 }
 
@@ -595,5 +609,7 @@ struct poptOption popt_common_credentials[] = {
 	{ "signing", 'S', POPT_ARG_STRING, NULL, 'S', "Set the client signing state", "on|off|required" },
 	{"machine-pass", 'P', POPT_ARG_NONE, NULL, 'P', "Use stored machine account password" },
 	{"encrypt", 'e', POPT_ARG_NONE, NULL, 'e', "Encrypt SMB transport (UNIX extended servers only)" },
+	{"use-ccache", 'C', POPT_ARG_NONE, NULL, 'C',
+	 "Use the winbind ccache for authentication" },
 	POPT_TABLEEND
 };

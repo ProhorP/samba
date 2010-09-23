@@ -31,12 +31,12 @@
 #include "libcli/auth/libcli_auth.h"
 #include "param/param.h"
 
-static WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
-				     const struct dsdb_schema *schema,
-				     const struct drsuapi_DsReplicaObjectListItemEx *in,
-				     const DATA_BLOB *gensec_skey,
-				     TALLOC_CTX *mem_ctx,
-				     struct dsdb_extended_replicated_object *out)
+WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
+			      const struct dsdb_schema *schema,
+			      const struct drsuapi_DsReplicaObjectListItemEx *in,
+			      const DATA_BLOB *gensec_skey,
+			      TALLOC_CTX *mem_ctx,
+			      struct dsdb_extended_replicated_object *out)
 {
 	NTSTATUS nt_status;
 	WERROR status;
@@ -115,7 +115,7 @@ static WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 		struct drsuapi_DsReplicaMetaData *d;
 		struct replPropertyMetaData1 *m;
 		struct ldb_message_element *e;
-		int j;
+		uint32_t j;
 
 		a = &in->object.attribute_ctr.attributes[i];
 		d = &in->meta_data_ctr->meta_data[i];
@@ -215,17 +215,22 @@ WERROR dsdb_extended_replicated_objects_convert(struct ldb_context *ldb,
 	const struct drsuapi_DsReplicaObjectListItemEx *cur;
 	uint32_t i;
 
-	schema = dsdb_get_schema(ldb);
+	out = talloc_zero(mem_ctx, struct dsdb_extended_replicated_objects);
+	W_ERROR_HAVE_NO_MEMORY(out);
+	out->version		= DSDB_EXTENDED_REPLICATED_OBJECTS_VERSION;
+
+	/* Get the schema, and ensure it's kept valid for as long as 'out' which may contain pointers to it */
+	schema = dsdb_get_schema(ldb, out);
 	if (!schema) {
+		talloc_free(out);
 		return WERR_DS_SCHEMA_NOT_LOADED;
 	}
 
 	status = dsdb_schema_pfm_contains_drsuapi_pfm(schema->prefixmap, mapping_ctr);
-	W_ERROR_NOT_OK_RETURN(status);
-
-	out = talloc_zero(mem_ctx, struct dsdb_extended_replicated_objects);
-	W_ERROR_HAVE_NO_MEMORY(out);
-	out->version		= DSDB_EXTENDED_REPLICATED_OBJECTS_VERSION;
+	if (!W_ERROR_IS_OK(status)) {
+		talloc_free(out);
+		return status;
+	}
 
 	out->partition_dn	= ldb_dn_new(out, ldb, partition_dn);
 	W_ERROR_HAVE_NO_MEMORY(out->partition_dn);
@@ -246,6 +251,7 @@ WERROR dsdb_extended_replicated_objects_convert(struct ldb_context *ldb,
 
 	for (i=0, cur = first_object; cur; cur = cur->next_object, i++) {
 		if (i == out->num_objects) {
+			talloc_free(out);
 			return WERR_FOOBAR;
 		}
 
@@ -253,11 +259,13 @@ WERROR dsdb_extended_replicated_objects_convert(struct ldb_context *ldb,
 						cur, gensec_skey,
 						out->objects, &out->objects[i]);
 		if (!W_ERROR_IS_OK(status)) {
+			talloc_free(out);
 			DEBUG(0,("Failed to convert object %s\n", cur->object.identifier->dn));
 			return status;
 		}
 	}
 	if (i != out->num_objects) {
+		talloc_free(out);
 		return WERR_FOOBAR;
 	}
 
@@ -284,7 +292,7 @@ WERROR dsdb_extended_replicated_objects_commit(struct ldb_context *ldb,
 		return WERR_FOOBAR;
 	}
 
-	ret = dsdb_load_partition_usn(ldb, objects->partition_dn, &seq_num1);
+	ret = dsdb_load_partition_usn(ldb, objects->partition_dn, &seq_num1, NULL);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0,(__location__ " Failed to load partition uSN\n"));
 		ldb_transaction_cancel(ldb);
@@ -307,7 +315,7 @@ WERROR dsdb_extended_replicated_objects_commit(struct ldb_context *ldb,
 		return WERR_FOOBAR;
 	}
 
-	ret = dsdb_load_partition_usn(ldb, objects->partition_dn, &seq_num2);
+	ret = dsdb_load_partition_usn(ldb, objects->partition_dn, &seq_num2, NULL);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0,(__location__ " Failed to load partition uSN\n"));
 		ldb_transaction_cancel(ldb);
@@ -342,7 +350,7 @@ static WERROR dsdb_convert_object(struct ldb_context *ldb,
 				  struct ldb_message **_msg)
 {
 	WERROR status;
-	uint32_t i;
+	unsigned int i;
 	struct ldb_message *msg;
 
 	if (!in->object.identifier) {
@@ -402,11 +410,6 @@ WERROR dsdb_origin_objects_commit(struct ldb_context *ldb,
 	struct ldb_result *res;
 	int ret;
 
-	schema = dsdb_get_schema(ldb);
-	if (!schema) {
-		return WERR_DS_SCHEMA_NOT_LOADED;
-	}
-
 	for (cur = first_object; cur; cur = cur->next_object) {
 		num_objects++;
 	}
@@ -425,6 +428,11 @@ WERROR dsdb_origin_objects_commit(struct ldb_context *ldb,
 	if (objects == NULL) {
 		status = WERR_NOMEM;
 		goto cancel;
+	}
+
+	schema = dsdb_get_schema(ldb, objects);
+	if (!schema) {
+		return WERR_DS_SCHEMA_NOT_LOADED;
 	}
 
 	for (i=0, cur = first_object; cur; cur = cur->next_object, i++) {

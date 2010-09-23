@@ -55,13 +55,51 @@ _PUBLIC_ void GetTimeOfDay(struct timeval *tval)
 #endif
 }
 
+/**
+a wrapper to preferably get the monotonic time
+**/
+_PUBLIC_ void clock_gettime_mono(struct timespec *tp)
+{
+	if (clock_gettime(CUSTOM_CLOCK_MONOTONIC,tp) != 0) {
+		clock_gettime(CLOCK_REALTIME,tp);
+	}
+}
+
+/**
+a wrapper to preferably get the monotonic time in seconds
+as this is only second resolution we can use the cached
+(and much faster) COARSE clock variant
+**/
+_PUBLIC_ time_t time_mono(time_t *t)
+{
+	struct timespec tp;
+	int rc = -1;
+#ifdef CLOCK_MONOTONIC_COARSE
+	rc = clock_gettime(CLOCK_MONOTONIC_COARSE,&tp);
+#endif
+	if (rc != 0) {
+		clock_gettime_mono(&tp);
+	}
+	if (t != NULL) {
+		*t = tp.tv_sec;
+	}
+	return tp.tv_sec;
+}
+
 
 #define TIME_FIXUP_CONSTANT 11644473600LL
 
 time_t convert_timespec_to_time_t(struct timespec ts)
 {
+	/* Ensure tv_nsec is less than 1sec. */
+	while (ts.tv_nsec > 1000000000) {
+		ts.tv_sec += 1;
+		ts.tv_nsec -= 1000000000;
+	}
+
 	/* 1 ns == 1,000,000,000 - one thousand millionths of a second.
 	   increment if it's greater than 500 millionth of a second. */
+
 	if (ts.tv_nsec > 500000000) {
 		return ts.tv_sec + 1;
 	}
@@ -397,6 +435,15 @@ _PUBLIC_ int64_t usec_time_diff(const struct timeval *tv1, const struct timeval 
 {
 	int64_t sec_diff = tv1->tv_sec - tv2->tv_sec;
 	return (sec_diff * 1000000) + (int64_t)(tv1->tv_usec - tv2->tv_usec);
+}
+
+/**
+  return (tp1 - tp2) in microseconds
+*/
+_PUBLIC_ int64_t nsec_time_diff(const struct timespec *tp1, const struct timespec *tp2)
+{
+	int64_t sec_diff = tp1->tv_sec - tp2->tv_sec;
+	return (sec_diff * 1000000000) + (int64_t)(tp1->tv_nsec - tp2->tv_nsec);
 }
 
 

@@ -19,10 +19,13 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
 #include "../libcli/auth/libcli_auth.h"
 #include "../libcli/auth/spnego.h"
 #include "smb_krb5.h"
-#include "ntlmssp.h"
+#include "../libcli/auth/ntlmssp.h"
+#include "libads/kerberos_proto.h"
+#include "krb5_env.h"
 
 static const struct {
 	int prot;
@@ -264,19 +267,21 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 		req, struct cli_session_setup_guest_state);
 	struct cli_state *cli = state->cli;
 	uint32_t num_bytes;
+	uint8_t *in;
 	char *inbuf;
 	uint8_t *bytes;
 	uint8_t *p;
 	NTSTATUS status;
 
-	status = cli_smb_recv(subreq, 0, NULL, NULL, &num_bytes, &bytes);
+	status = cli_smb_recv(subreq, state, &in, 0, NULL, NULL,
+			      &num_bytes, &bytes);
+	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
-		TALLOC_FREE(subreq);
 		tevent_req_nterror(req, status);
 		return;
 	}
 
-	inbuf = (char *)cli_smb_inbuf(subreq);
+	inbuf = (char *)in;
 	p = bytes;
 
 	cli->vuid = SVAL(inbuf, smb_uid);
@@ -291,8 +296,6 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 	if (strstr(cli->server_type, "Samba")) {
 		cli->is_samba = True;
 	}
-
-	TALLOC_FREE(subreq);
 
 	status = cli_set_username(cli, "");
 	if (!NT_STATUS_IS_OK(status)) {
@@ -730,11 +733,13 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	NTSTATUS status;
 	uint8_t *p;
 	uint16_t blob_length;
+	uint8_t *inbuf;
 
-	status = cli_smb_recv(subreq, 1, &wct, &vwv, &num_bytes, &bytes);
+	status = cli_smb_recv(subreq, state, &inbuf, 1, &wct, &vwv,
+			      &num_bytes, &bytes);
+	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)
 	    && !NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
-		TALLOC_FREE(subreq);
 		tevent_req_nterror(req, status);
 		return;
 	}
@@ -742,12 +747,11 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	state->status = status;
 	TALLOC_FREE(state->buf);
 
-	state->inbuf = (char *)cli_smb_inbuf(subreq);
+	state->inbuf = (char *)inbuf;
 	cli->vuid = SVAL(state->inbuf, smb_uid);
 
 	blob_length = SVAL(vwv+3, 0);
 	if (blob_length > num_bytes) {
-		TALLOC_FREE(subreq);
 		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
 		return;
 	}
@@ -770,7 +774,6 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	}
 
 	if (state->blob.length != 0) {
-		TALLOC_FREE(subreq);
 		/*
 		 * More to send
 		 */
@@ -854,14 +857,14 @@ static struct tevent_req *cli_session_setup_kerberos_send(
 	cli_temp_set_signing(cli);
 
 	/*
-	 * Ok, this is cheated: spnego_gen_negTokenTarg can block if
+	 * Ok, this is cheating: spnego_gen_krb5_negTokenInit can block if
 	 * we have to acquire a ticket. To be fixed later :-)
 	 */
-	rc = spnego_gen_negTokenTarg(principal, 0, &state->negTokenTarg,
+	rc = spnego_gen_krb5_negTokenInit(state, principal, 0, &state->negTokenTarg,
 				     &state->session_key_krb5, 0, NULL);
 	if (rc) {
 		DEBUG(1, ("cli_session_setup_kerberos: "
-			  "spnego_gen_negTokenTarg failed: %s\n",
+			  "spnego_gen_krb5_negTokenInit failed: %s\n",
 			  error_message(rc)));
 		state->ads_status = ADS_ERROR_KRB5(rc);
 		tevent_req_nterror(req, NT_STATUS_UNSUCCESSFUL);
@@ -969,7 +972,7 @@ static int cli_session_setup_ntlmssp_state_destructor(
 	struct cli_session_setup_ntlmssp_state *state)
 {
 	if (state->ntlmssp_state != NULL) {
-		ntlmssp_end(&state->ntlmssp_state);
+		TALLOC_FREE(state->ntlmssp_state);
 	}
 	return 0;
 }
@@ -984,6 +987,7 @@ static struct tevent_req *cli_session_setup_ntlmssp_send(
 	struct cli_session_setup_ntlmssp_state *state;
 	NTSTATUS status;
 	DATA_BLOB blob_out;
+	const char *OIDs_ntlm[] = {OID_NTLMSSP, NULL};
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct cli_session_setup_ntlmssp_state);
@@ -1000,12 +1004,20 @@ static struct tevent_req *cli_session_setup_ntlmssp_send(
 
 	cli_temp_set_signing(cli);
 
-	status = ntlmssp_client_start(&state->ntlmssp_state);
+	status = ntlmssp_client_start(state,
+				      global_myname(),
+				      lp_workgroup(),
+				      lp_client_ntlmv2_auth(),
+				      &state->ntlmssp_state);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
 	}
 	ntlmssp_want_feature(state->ntlmssp_state,
 			     NTLMSSP_FEATURE_SESSION_KEY);
+	if (cli->use_ccache) {
+		ntlmssp_want_feature(state->ntlmssp_state,
+				     NTLMSSP_FEATURE_CCACHE);
+	}
 	status = ntlmssp_set_username(state->ntlmssp_state, user);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
@@ -1024,7 +1036,7 @@ static struct tevent_req *cli_session_setup_ntlmssp_send(
 		goto fail;
 	}
 
-	state->blob_out = gen_negTokenInit(OID_NTLMSSP, blob_out);
+	state->blob_out = spnego_gen_negTokenInit(state, OIDs_ntlm, &blob_out, NULL);
 	data_blob_free(&blob_out);
 
 	subreq = cli_sesssetup_blob_send(state, ev, cli, state->blob_out);
@@ -1057,7 +1069,7 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 	if (NT_STATUS_IS_OK(status)) {
 		if (state->cli->server_domain[0] == '\0') {
 			fstrcpy(state->cli->server_domain,
-				state->ntlmssp_state->server_domain);
+				state->ntlmssp_state->server.netbios_domain);
 		}
 		cli_set_session_key(
 			state->cli, state->ntlmssp_state->session_key);
@@ -1071,7 +1083,7 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 			return;
 		}
 		TALLOC_FREE(subreq);
-		ntlmssp_end(&state->ntlmssp_state);
+		TALLOC_FREE(state->ntlmssp_state);
 		tevent_req_done(req);
 		return;
 	}
@@ -1089,11 +1101,11 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 	    && NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
 		DATA_BLOB tmp_blob = data_blob_null;
 		/* the server might give us back two challenges */
-		parse_ret = spnego_parse_challenge(blob_in, &msg_in,
+		parse_ret = spnego_parse_challenge(state, blob_in, &msg_in,
 						   &tmp_blob);
 		data_blob_free(&tmp_blob);
 	} else {
-		parse_ret = spnego_parse_auth_response(blob_in, status,
+		parse_ret = spnego_parse_auth_response(state, blob_in, status,
 						       OID_NTLMSSP, &msg_in);
 	}
 	state->turn += 1;
@@ -1114,12 +1126,12 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 	if (!NT_STATUS_IS_OK(status)
 	    && !NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
 		TALLOC_FREE(subreq);
-		ntlmssp_end(&state->ntlmssp_state);
+		TALLOC_FREE(state->ntlmssp_state);
 		tevent_req_nterror(req, status);
 		return;
 	}
 
-	state->blob_out = spnego_gen_auth(blob_out);
+	state->blob_out = spnego_gen_auth(state, blob_out);
 	TALLOC_FREE(subreq);
 	if (tevent_req_nomem(state->blob_out.data, req)) {
 		return;
@@ -1216,7 +1228,7 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
 	 * negprot reply. It is WRONG to depend on the principal sent in the
 	 * negprot reply, but right now we do it. If we don't receive one,
 	 * we try to best guess, then fall back to NTLM.  */
-	if (!spnego_parse_negTokenInit(blob, OIDs, &principal)) {
+	if (!spnego_parse_negTokenInit(talloc_tos(), blob, OIDs, &principal, NULL)) {
 		data_blob_free(&blob);
 		return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
 	}
@@ -1239,6 +1251,7 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
 
 	status = cli_set_username(cli, user);
 	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(principal);
 		return ADS_ERROR_NT(status);
 	}
 
@@ -1283,12 +1296,14 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
 
 			host = strchr_m(cli->desthost, '.');
 			if (host) {
+				/* We had a '.' in the name. */
 				machine = SMB_STRNDUP(cli->desthost,
 					host - cli->desthost);
 			} else {
 				machine = SMB_STRDUP(cli->desthost);
 			}
 			if (machine == NULL) {
+				TALLOC_FREE(principal);
 				return ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
 			}
 
@@ -1296,11 +1311,29 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
 				realm = SMB_STRDUP(dest_realm);
 				strupper_m(realm);
 			} else {
-				realm = kerberos_get_default_realm_from_ccache();
+				if (host) {
+					/* DNS name. */
+					realm = kerberos_get_realm_from_hostname(cli->desthost);
+				} else {
+					/* NetBIOS name - use our realm. */
+					realm = kerberos_get_default_realm_from_ccache();
+				}
 			}
+
 			if (realm && *realm) {
-				principal = talloc_asprintf(NULL, "%s$@%s",
-							machine, realm);
+				if (host) {
+					/* DNS name. */
+					principal = talloc_asprintf(talloc_tos(),
+							"cifs/%s@%s",
+							cli->desthost,
+							realm);
+				} else {
+					/* NetBIOS name, use machine account. */
+					principal = talloc_asprintf(talloc_tos(),
+							"%s$@%s",
+							machine,
+							realm);
+				}
 				if (!principal) {
 					SAFE_FREE(machine);
 					SAFE_FREE(realm);
@@ -1504,7 +1537,7 @@ static void cli_ulogoff_done(struct tevent_req *subreq)
 		req, struct cli_ulogoff_state);
 	NTSTATUS status;
 
-	status = cli_smb_recv(subreq, 0, NULL, NULL, NULL, NULL);
+	status = cli_smb_recv(subreq, NULL, NULL, 0, NULL, NULL, NULL, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
 		return;
@@ -1728,19 +1761,23 @@ static void cli_tcon_andx_done(struct tevent_req *subreq)
 	struct cli_tcon_andx_state *state = tevent_req_data(
 		req, struct cli_tcon_andx_state);
 	struct cli_state *cli = state->cli;
-	char *inbuf = (char *)cli_smb_inbuf(subreq);
+	uint8_t *in;
+	char *inbuf;
 	uint8_t wct;
 	uint16_t *vwv;
 	uint32_t num_bytes;
 	uint8_t *bytes;
 	NTSTATUS status;
 
-	status = cli_smb_recv(subreq, 0, &wct, &vwv, &num_bytes, &bytes);
+	status = cli_smb_recv(subreq, state, &in, 0, &wct, &vwv,
+			      &num_bytes, &bytes);
+	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
-		TALLOC_FREE(subreq);
 		tevent_req_nterror(req, status);
 		return;
 	}
+
+	inbuf = (char *)in;
 
 	clistr_pull(inbuf, cli->dev, bytes, sizeof(fstring), num_bytes,
 		    STR_TERMINATE|STR_ASCII);
@@ -1851,7 +1888,7 @@ static void cli_tdis_done(struct tevent_req *subreq)
 		req, struct cli_tdis_state);
 	NTSTATUS status;
 
-	status = cli_smb_recv(subreq, 0, NULL, NULL, NULL, NULL);
+	status = cli_smb_recv(subreq, NULL, NULL, 0, NULL, NULL, NULL, NULL);
 	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
@@ -2006,10 +2043,12 @@ static void cli_negprot_done(struct tevent_req *subreq)
 	uint8_t *bytes;
 	NTSTATUS status;
 	uint16_t protnum;
+	uint8_t *inbuf;
 
-	status = cli_smb_recv(subreq, 1, &wct, &vwv, &num_bytes, &bytes);
+	status = cli_smb_recv(subreq, state, &inbuf, 1, &wct, &vwv,
+			      &num_bytes, &bytes);
+	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
-		TALLOC_FREE(subreq);
 		tevent_req_nterror(req, status);
 		return;
 	}
@@ -2096,6 +2135,11 @@ static void cli_negprot_done(struct tevent_req *subreq)
 			SAFE_FREE(cli->inbuf);
 			cli->outbuf = (char *)SMB_MALLOC(CLI_SAMBA_MAX_LARGE_READX_SIZE+LARGE_WRITEX_HDR_SIZE+SAFETY_MARGIN);
 			cli->inbuf = (char *)SMB_MALLOC(CLI_SAMBA_MAX_LARGE_READX_SIZE+LARGE_WRITEX_HDR_SIZE+SAFETY_MARGIN);
+			if (!cli->outbuf || !cli->inbuf) {
+				tevent_req_nterror(req,
+						NT_STATUS_NO_MEMORY);
+				return;
+			}
 			cli->bufsize = CLI_SAMBA_MAX_LARGE_READX_SIZE + LARGE_WRITEX_HDR_SIZE;
 		}
 
@@ -2108,8 +2152,8 @@ static void cli_negprot_done(struct tevent_req *subreq)
 		cli->serverzone = SVALS(vwv + 10, 0);
 		cli->serverzone *= 60;
 		/* this time is converted to GMT by make_unix_date */
-		cli->servertime = cli_make_unix_date(
-			cli, (char *)(vwv + 8));
+		cli->servertime = make_unix_date(
+			(char *)(vwv + 8), cli->serverzone);
 		cli->readbraw_supported = ((SVAL(vwv + 5, 0) & 0x1) != 0);
 		cli->writebraw_supported = ((SVAL(vwv + 5, 0) & 0x2) != 0);
 		cli->secblob = data_blob(bytes, num_bytes);
@@ -2548,6 +2592,9 @@ again:
 	if ((flags & CLI_FULL_CONNECTION_FALLBACK_AFTER_KERBEROS) &&
 	     cli->use_kerberos) {
 		cli->fallback_after_kerberos = true;
+	}
+	if (flags & CLI_FULL_CONNECTION_USE_CCACHE) {
+		cli->use_ccache = true;
 	}
 
 	nt_status = cli_negprot(cli);

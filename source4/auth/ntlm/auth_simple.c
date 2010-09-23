@@ -56,7 +56,7 @@ _PUBLIC_ NTSTATUS authenticate_username_pw(TALLOC_CTX *mem_ctx,
 		return nt_status;
 	}
 
-	user_info = talloc(tmp_ctx, struct auth_usersupplied_info);
+	user_info = talloc_zero(tmp_ctx, struct auth_usersupplied_info);
 	if (!user_info) {
 		talloc_free(tmp_ctx);
 		return NT_STATUS_NO_MEMORY;
@@ -87,7 +87,14 @@ _PUBLIC_ NTSTATUS authenticate_username_pw(TALLOC_CTX *mem_ctx,
 	}
 
 	if (session_info) {
-		nt_status = auth_generate_session_info(tmp_ctx, ev, lp_ctx, server_info, session_info);
+		uint32_t flags = AUTH_SESSION_INFO_DEFAULT_GROUPS;
+		if (server_info->authenticated) {
+			flags |= AUTH_SESSION_INFO_AUTHENTICATED;
+		}
+		nt_status = auth_context->generate_session_info(tmp_ctx, auth_context,
+								server_info,
+								flags,
+								session_info);
 
 		if (NT_STATUS_IS_OK(nt_status)) {
 			talloc_steal(mem_ctx, *session_info);

@@ -25,12 +25,19 @@
 #include <hdb.h>
 #include <kdc.h>
 #include <krb5/windc_plugin.h>
-#include "kdc/pac-glue.h"
-#include "kdc/hdb-samba4.h"
+#include "kdc/samba_kdc.h"
 
-struct kdc_server;
 struct tsocket_address;
 
+/*
+  top level context structure for the kdc server
+*/
+struct kdc_server {
+	struct task_server *task;
+	krb5_kdc_configuration *config;
+	struct smb_krb5_context *smb_krb5_context;
+	struct samba_kdc_base_context *base_ctx;
+};
 
 bool kpasswdd_process(struct kdc_server *kdc,
 		      TALLOC_CTX *mem_ctx,
@@ -40,14 +47,6 @@ bool kpasswdd_process(struct kdc_server *kdc,
 		      struct tsocket_address *my_addr,
 		      int datagram_reply);
 
-/*
-  top level context structure for the kdc server
-*/
-struct kdc_server {
-	struct task_server *task;
-	krb5_kdc_configuration *config;
-	struct smb_krb5_context *smb_krb5_context;
-	struct hdb_samba4_context *hdb_samba4_context;
-};
-
-
+/* from hdb-samba4.c */
+NTSTATUS hdb_samba4_create_kdc(struct samba_kdc_base_context *base_ctx,
+			       krb5_context context, struct HDB **db);

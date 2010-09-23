@@ -57,7 +57,7 @@ do
 done
 
 echo "Installing sbin scripts from scripting/bin/*"
-for p in upgradeprovision
+for p in upgradeprovision samba_dnsupdate samba_spnupdate
 do
 	cp scripting/bin/$p $SBINDIR || exit 1
 	chmod a+x $SBINDIR/$p
@@ -74,8 +74,25 @@ cp setup/*.zone $SETUPDIR || exit 1
 cp setup/*.conf $SETUPDIR || exit 1
 cp setup/*.php $SETUPDIR || exit 1
 cp setup/*.txt $SETUPDIR || exit 1
+cp setup/named.conf $SETUPDIR || exit 1
+cp setup/named.conf.update $SETUPDIR || exit 1
 cp setup/provision.smb.conf.dc $SETUPDIR || exit 1
 cp setup/provision.smb.conf.member $SETUPDIR || exit 1
 cp setup/provision.smb.conf.standalone $SETUPDIR || exit 1
+cp setup/dns_update_list $SETUPDIR || exit 1
+cp setup/spn_update_list $SETUPDIR || exit 1
+
+echo "Installing external python libraries"
+mkdir -p $DESTDIR$PYTHONDIR || exit 1
+MISSING="$($PYTHON scripting/python/samba_external/missing.py)"
+for p in $MISSING
+do
+  package=`basename $p`
+  echo "Installing missing python package $package"
+  mkdir -p $DESTDIR$PYTHONDIR/samba/external/$package
+  touch $DESTDIR$PYTHONDIR/samba/external/__init__.py
+  cp -r ../lib/$p/* $DESTDIR$PYTHONDIR/samba/external/$package/ || exit 1
+done
+
 
 exit 0

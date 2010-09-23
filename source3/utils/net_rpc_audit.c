@@ -19,6 +19,7 @@
 #include "includes.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/cli_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
 
 /********************************************************************
 ********************************************************************/
@@ -55,7 +56,7 @@ static void print_auditing_category(const char *policy, const char *value)
 ********************************************************************/
 
 static NTSTATUS rpc_audit_get_internal(struct net_context *c,
-				       const DOM_SID *domain_sid,
+				       const struct dom_sid *domain_sid,
 				       const char *domain_name,
 				       struct cli_state *cli,
 				       struct rpc_pipe_client *pipe_hnd,
@@ -123,7 +124,7 @@ static NTSTATUS rpc_audit_get_internal(struct net_context *c,
 ********************************************************************/
 
 static NTSTATUS rpc_audit_set_internal(struct net_context *c,
-				       const DOM_SID *domain_sid,
+				       const struct dom_sid *domain_sid,
 				       const char *domain_name,
 				       struct cli_state *cli,
 				       struct rpc_pipe_client *pipe_hnd,
@@ -264,7 +265,7 @@ static NTSTATUS rpc_audit_enable_internal_ext(struct rpc_pipe_client *pipe_hnd,
 ********************************************************************/
 
 static NTSTATUS rpc_audit_disable_internal(struct net_context *c,
-					   const DOM_SID *domain_sid,
+					   const struct dom_sid *domain_sid,
 					   const char *domain_name,
 					   struct cli_state *cli,
 					   struct rpc_pipe_client *pipe_hnd,
@@ -280,7 +281,7 @@ static NTSTATUS rpc_audit_disable_internal(struct net_context *c,
 ********************************************************************/
 
 static NTSTATUS rpc_audit_enable_internal(struct net_context *c,
-					  const DOM_SID *domain_sid,
+					  const struct dom_sid *domain_sid,
 					  const char *domain_name,
 					  struct cli_state *cli,
 					  struct rpc_pipe_client *pipe_hnd,
@@ -296,7 +297,7 @@ static NTSTATUS rpc_audit_enable_internal(struct net_context *c,
 ********************************************************************/
 
 static NTSTATUS rpc_audit_list_internal(struct net_context *c,
-					const DOM_SID *domain_sid,
+					const struct dom_sid *domain_sid,
 					const char *domain_name,
 					struct cli_state *cli,
 					struct rpc_pipe_client *pipe_hnd,
@@ -364,9 +365,11 @@ static NTSTATUS rpc_audit_list_internal(struct net_context *c,
 static int rpc_audit_get(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc audit get\n"
-			   "    View configured audit setting\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("View configured audit setting"));
 		return 0;
 	}
 
@@ -380,9 +383,11 @@ static int rpc_audit_get(struct net_context *c, int argc, const char **argv)
 static int rpc_audit_set(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc audit set\n"
-			   "    Set audit policies\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("Set audit policies"));
 		return 0;
 	}
 
@@ -396,9 +401,11 @@ static int rpc_audit_set(struct net_context *c, int argc, const char **argv)
 static int rpc_audit_enable(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc audit enable\n"
-			   "    Enable auditing\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("Enable auditing"));
 		return 0;
 	}
 
@@ -412,9 +419,11 @@ static int rpc_audit_enable(struct net_context *c, int argc, const char **argv)
 static int rpc_audit_disable(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc audit disable\n"
-			   "    Disable auditing\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("Disable auditing"));
 		return 0;
 	}
 
@@ -428,9 +437,11 @@ static int rpc_audit_disable(struct net_context *c, int argc, const char **argv)
 static int rpc_audit_list(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf( "%s\n"
 			   "net rpc audit list\n"
-			   "    List auditing settings\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("List auditing settings"));
 		return 0;
 	}
 

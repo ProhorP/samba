@@ -71,7 +71,7 @@ struct torture_context *torture_context_child(struct torture_context *parent)
 	subtorture->results = talloc_reference(subtorture, parent->results);
 
 	return subtorture;
-}	
+}
 
 /**
  create a temporary directory.
@@ -245,6 +245,23 @@ struct torture_tcase *torture_suite_add_tcase(struct torture_suite *suite,
 	return tcase;
 }
 
+int torture_suite_children_count(const struct torture_suite *suite)
+{
+	int ret = 0;
+	struct torture_tcase *tcase;
+	struct torture_test *test;
+	struct torture_suite *tsuite;
+	for (tcase = suite->testcases; tcase; tcase = tcase->next) {
+		for (test = tcase->tests; test; test = test->next) {
+			ret++;
+		}
+	}
+	for (tsuite = suite->children; tsuite; tsuite = tsuite->next) {
+		ret ++;
+	}
+	return ret;
+}
+
 /**
  * Run a torture test suite.
  */
@@ -259,6 +276,8 @@ bool torture_run_suite(struct torture_context *context,
 	if (context->results->ui_ops->suite_start)
 		context->results->ui_ops->suite_start(context, suite);
 
+	context->results->ui_ops->progress(context, 
+		torture_suite_children_count(suite), TORTURE_PROGRESS_SET); 
 	old_testname = context->active_testname;
 	if (old_testname != NULL)
 		context->active_testname = talloc_asprintf(context, "%s-%s", 
@@ -271,7 +290,9 @@ bool torture_run_suite(struct torture_context *context,
 	}
 
 	for (tsuite = suite->children; tsuite; tsuite = tsuite->next) {
+		context->results->ui_ops->progress(context, 0, TORTURE_PROGRESS_PUSH);
 		ret &= torture_run_suite(context, tsuite);
+		context->results->ui_ops->progress(context, 0, TORTURE_PROGRESS_POP);
 	}
 
 	talloc_free(context->active_testname);
@@ -281,6 +302,13 @@ bool torture_run_suite(struct torture_context *context,
 		context->results->ui_ops->suite_finish(context, suite);
 
 	return ret;
+}
+
+bool torture_run_suite_restricted(struct torture_context *context, 
+		       struct torture_suite *suite, const char **restricted)
+{
+	/* FIXME */
+	return false;
 }
 
 void torture_ui_test_start(struct torture_context *context, 
@@ -373,43 +401,58 @@ bool torture_run_tcase(struct torture_context *context,
 	bool ret = true;
 	char *old_testname;
 	struct torture_test *test;
+	bool setup_succeeded = true;
+	const char * setup_reason = "Setup failed";
 
 	context->active_tcase = tcase;
 	if (context->results->ui_ops->tcase_start) 
 		context->results->ui_ops->tcase_start(context, tcase);
 
-	if (tcase->fixture_persistent && tcase->setup 
-		&& !tcase->setup(context, &tcase->data)) {
-		/* FIXME: Use torture ui ops for reporting this error */
-		fprintf(stderr, "Setup failed: ");
-		if (context->last_reason != NULL)
-			fprintf(stderr, "%s", context->last_reason);
-		fprintf(stderr, "\n");
-		ret = false;
-		goto done;
+	if (tcase->fixture_persistent && tcase->setup) {
+		setup_succeeded = tcase->setup(context, &tcase->data);
+	}
+
+	if (!setup_succeeded) {
+		/* Uh-oh. The setup failed, so we can't run any of the tests
+		 * in this testcase. The subunit format doesn't specify what
+		 * to do here, so we keep the failure reason, and manually
+		 * use it to fail every test.
+		 */
+		if (context->last_reason != NULL) {
+			setup_reason = talloc_asprintf(context,
+				"Setup failed: %s", context->last_reason);
+		}
 	}
 
 	old_testname = context->active_testname;
 	context->active_testname = talloc_asprintf(context, "%s-%s", 
 						   old_testname, tcase->name);
 	for (test = tcase->tests; test; test = test->next) {
-		ret &= internal_torture_run_test(context, tcase, test, 
-				tcase->fixture_persistent);
+		if (setup_succeeded) {
+			ret &= internal_torture_run_test(context, tcase, test,
+					tcase->fixture_persistent);
+		} else {
+			context->active_tcase = tcase;
+			context->active_test = test;
+			torture_ui_test_start(context, tcase, test);
+			torture_ui_test_result(context, TORTURE_FAIL, setup_reason);
+		}
 	}
 	talloc_free(context->active_testname);
 	context->active_testname = old_testname;
 
-	if (tcase->fixture_persistent && tcase->teardown &&
-		!tcase->teardown(context, tcase->data))
+	if (setup_succeeded && tcase->fixture_persistent && tcase->teardown &&
+		!tcase->teardown(context, tcase->data)) {
 		ret = false;
+	}
 
-done:
 	context->active_tcase = NULL;
+	context->active_test = NULL;
 
 	if (context->results->ui_ops->tcase_finish)
 		context->results->ui_ops->tcase_finish(context, tcase);
 
-	return ret;
+	return (!setup_succeeded) ? false : ret;
 }
 
 bool torture_run_test(struct torture_context *context, 
@@ -422,27 +465,27 @@ bool torture_run_test(struct torture_context *context,
 int torture_setting_int(struct torture_context *test, const char *name, 
 							int default_value)
 {
-	return lp_parm_int(test->lp_ctx, NULL, "torture", name, default_value);
+	return lpcfg_parm_int(test->lp_ctx, NULL, "torture", name, default_value);
 }
 
 unsigned long torture_setting_ulong(struct torture_context *test,
 				    const char *name,
 				    unsigned long default_value)
 {
-	return lp_parm_ulong(test->lp_ctx, NULL, "torture", name,
+	return lpcfg_parm_ulong(test->lp_ctx, NULL, "torture", name,
 			     default_value);
 }
 
 double torture_setting_double(struct torture_context *test, const char *name, 
 							double default_value)
 {
-	return lp_parm_double(test->lp_ctx, NULL, "torture", name, default_value);
+	return lpcfg_parm_double(test->lp_ctx, NULL, "torture", name, default_value);
 }
 
 bool torture_setting_bool(struct torture_context *test, const char *name, 
 							bool default_value)
 {
-	return lp_parm_bool(test->lp_ctx, NULL, "torture", name, default_value);
+	return lpcfg_parm_bool(test->lp_ctx, NULL, "torture", name, default_value);
 }
 
 const char *torture_setting_string(struct torture_context *test, 
@@ -454,7 +497,7 @@ const char *torture_setting_string(struct torture_context *test,
 	SMB_ASSERT(test != NULL);
 	SMB_ASSERT(test->lp_ctx != NULL);
 	
-	ret = lp_parm_string(test->lp_ctx, NULL, "torture", name);
+	ret = lpcfg_parm_string(test->lp_ctx, NULL, "torture", name);
 
 	if (ret == NULL)
 		return default_value;

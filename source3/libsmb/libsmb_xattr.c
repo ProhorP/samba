@@ -25,6 +25,8 @@
 #include "includes.h"
 #include "libsmbclient.h"
 #include "libsmb_internal.h"
+#include "../librpc/gen_ndr/ndr_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
 
 
 /*
@@ -53,8 +55,8 @@ find_lsa_pipe_hnd(struct cli_state *ipc_cli)
  */
 
 static int
-ace_compare(SEC_ACE *ace1,
-            SEC_ACE *ace2)
+ace_compare(struct security_ace *ace1,
+            struct security_ace *ace2)
 {
         bool b1;
         bool b2;
@@ -135,18 +137,17 @@ ace_compare(SEC_ACE *ace1,
 		return ace1->size - ace2->size;
         }
 
-	return memcmp(ace1, ace2, sizeof(SEC_ACE));
+	return memcmp(ace1, ace2, sizeof(struct security_ace));
 }
 
 
 static void
-sort_acl(SEC_ACL *the_acl)
+sort_acl(struct security_acl *the_acl)
 {
 	uint32 i;
 	if (!the_acl) return;
 
-	qsort(the_acl->aces, the_acl->num_aces, sizeof(the_acl->aces[0]),
-              QSORT_CAST ace_compare);
+	TYPESAFE_QSORT(the_acl->aces, the_acl->num_aces, ace_compare);
 
 	for (i=1;i<the_acl->num_aces;) {
 		if (sec_ace_equal(&the_acl->aces[i-1], &the_acl->aces[i])) {
@@ -167,7 +168,7 @@ convert_sid_to_string(struct cli_state *ipc_cli,
                       struct policy_handle *pol,
                       fstring str,
                       bool numeric,
-                      DOM_SID *sid)
+                      struct dom_sid *sid)
 {
 	char **domains = NULL;
 	char **names = NULL;
@@ -211,11 +212,11 @@ static bool
 convert_string_to_sid(struct cli_state *ipc_cli,
                       struct policy_handle *pol,
                       bool numeric,
-                      DOM_SID *sid,
+                      struct dom_sid *sid,
                       const char *str)
 {
 	enum lsa_SidType *types = NULL;
-	DOM_SID *sids = NULL;
+	struct dom_sid *sids = NULL;
 	bool result = True;
 	TALLOC_CTX *ctx = NULL;
 	struct rpc_pipe_client *pipe_hnd = find_lsa_pipe_hnd(ipc_cli);
@@ -249,11 +250,11 @@ done:
 }
 
 
-/* parse an ACE in the same format as print_ace() */
+/* parse an struct security_ace in the same format as print_ace() */
 static bool
 parse_ace(struct cli_state *ipc_cli,
           struct policy_handle *pol,
-          SEC_ACE *ace,
+          struct security_ace *ace,
           bool numeric,
           char *str)
 {
@@ -263,7 +264,7 @@ parse_ace(struct cli_state *ipc_cli,
 	unsigned int atype;
         unsigned int aflags;
         unsigned int amask;
-	DOM_SID sid;
+	struct dom_sid sid;
 	uint32_t mask;
 	const struct perm_value *v;
         struct perm_value {
@@ -386,26 +387,26 @@ done:
 	return true;
 }
 
-/* add an ACE to a list of ACEs in a SEC_ACL */
+/* add an struct security_ace to a list of struct security_aces in a struct security_acl */
 static bool
-add_ace(SEC_ACL **the_acl,
-        SEC_ACE *ace,
+add_ace(struct security_acl **the_acl,
+        struct security_ace *ace,
         TALLOC_CTX *ctx)
 {
-	SEC_ACL *newacl;
-	SEC_ACE *aces;
+	struct security_acl *newacl;
+	struct security_ace *aces;
 
 	if (! *the_acl) {
 		(*the_acl) = make_sec_acl(ctx, 3, 1, ace);
 		return True;
 	}
 
-	if ((aces = SMB_CALLOC_ARRAY(SEC_ACE,
+	if ((aces = SMB_CALLOC_ARRAY(struct security_ace,
                                      1+(*the_acl)->num_aces)) == NULL) {
 		return False;
 	}
-	memcpy(aces, (*the_acl)->aces, (*the_acl)->num_aces * sizeof(SEC_ACE));
-	memcpy(aces+(*the_acl)->num_aces, ace, sizeof(SEC_ACE));
+	memcpy(aces, (*the_acl)->aces, (*the_acl)->num_aces * sizeof(struct security_ace));
+	memcpy(aces+(*the_acl)->num_aces, ace, sizeof(struct security_ace));
 	newacl = make_sec_acl(ctx, (*the_acl)->revision,
                               1+(*the_acl)->num_aces, aces);
 	SAFE_FREE(aces);
@@ -415,7 +416,7 @@ add_ace(SEC_ACL **the_acl,
 
 
 /* parse a ascii version of a security descriptor */
-static SEC_DESC *
+static struct security_descriptor *
 sec_desc_parse(TALLOC_CTX *ctx,
                struct cli_state *ipc_cli,
                struct policy_handle *pol,
@@ -424,11 +425,11 @@ sec_desc_parse(TALLOC_CTX *ctx,
 {
 	const char *p = str;
 	char *tok;
-	SEC_DESC *ret = NULL;
+	struct security_descriptor *ret = NULL;
 	size_t sd_size;
-	DOM_SID *group_sid=NULL;
-        DOM_SID *owner_sid=NULL;
-	SEC_ACL *dacl=NULL;
+	struct dom_sid *group_sid=NULL;
+        struct dom_sid *owner_sid=NULL;
+	struct security_acl *dacl=NULL;
 	int revision=1;
 
 	while (next_token_talloc(ctx, &p, &tok, "\t,\r\n")) {
@@ -443,7 +444,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 				DEBUG(5,("OWNER specified more than once!\n"));
 				goto done;
 			}
-			owner_sid = SMB_CALLOC_ARRAY(DOM_SID, 1);
+			owner_sid = SMB_CALLOC_ARRAY(struct dom_sid, 1);
 			if (!owner_sid ||
 			    !convert_string_to_sid(ipc_cli, pol,
                                                    numeric,
@@ -459,7 +460,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 				DEBUG(5,("OWNER specified more than once!\n"));
 				goto done;
 			}
-			owner_sid = SMB_CALLOC_ARRAY(DOM_SID, 1);
+			owner_sid = SMB_CALLOC_ARRAY(struct dom_sid, 1);
 			if (!owner_sid ||
 			    !convert_string_to_sid(ipc_cli, pol,
                                                    False,
@@ -475,7 +476,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 				DEBUG(5,("GROUP specified more than once!\n"));
 				goto done;
 			}
-			group_sid = SMB_CALLOC_ARRAY(DOM_SID, 1);
+			group_sid = SMB_CALLOC_ARRAY(struct dom_sid, 1);
 			if (!group_sid ||
 			    !convert_string_to_sid(ipc_cli, pol,
                                                    numeric,
@@ -491,7 +492,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 				DEBUG(5,("GROUP specified more than once!\n"));
 				goto done;
 			}
-			group_sid = SMB_CALLOC_ARRAY(DOM_SID, 1);
+			group_sid = SMB_CALLOC_ARRAY(struct dom_sid, 1);
 			if (!group_sid ||
 			    !convert_string_to_sid(ipc_cli, pol,
                                                    False,
@@ -503,7 +504,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 		}
 
 		if (StrnCaseCmp(tok,"ACL:", 4) == 0) {
-			SEC_ACE ace;
+			struct security_ace ace;
 			if (!parse_ace(ipc_cli, pol, &ace, numeric, tok+4)) {
 				DEBUG(5, ("Failed to parse ACL %s\n", tok));
 				goto done;
@@ -516,7 +517,7 @@ sec_desc_parse(TALLOC_CTX *ctx,
 		}
 
 		if (StrnCaseCmp(tok,"ACL+:", 5) == 0) {
-			SEC_ACE ace;
+			struct security_ace ace;
 			if (!parse_ace(ipc_cli, pol, &ace, False, tok+5)) {
 				DEBUG(5, ("Failed to parse ACL %s\n", tok));
 				goto done;
@@ -726,7 +727,7 @@ cacl_get(SMBCCTX *context,
         bool numeric = True;
         bool determine_size = (bufsize == 0);
 	uint16_t fnum;
-	SEC_DESC *sd;
+	struct security_descriptor *sd;
 	fstring sidstr;
         fstring name_sandbox;
         char *name;
@@ -1053,7 +1054,7 @@ cacl_get(SMBCCTX *context,
                         /* Add aces to value buffer  */
                         for (i = 0; sd->dacl && i < sd->dacl->num_aces; i++) {
 
-                                SEC_ACE *ace = &sd->dacl->aces[i];
+                                struct security_ace *ace = &sd->dacl->aces[i];
                                 convert_sid_to_string(ipc_cli, pol,
                                                       sidstr, numeric,
                                                       &ace->trustee);
@@ -1501,10 +1502,10 @@ cacl_set(SMBCCTX *context,
 {
 	uint16_t fnum = (uint16_t)-1;
         int err = 0;
-	SEC_DESC *sd = NULL, *old;
-        SEC_ACL *dacl = NULL;
-	DOM_SID *owner_sid = NULL;
-	DOM_SID *group_sid = NULL;
+	struct security_descriptor *sd = NULL, *old;
+        struct security_acl *dacl = NULL;
+	struct dom_sid *owner_sid = NULL;
+	struct dom_sid *group_sid = NULL;
 	uint32 i, j;
 	size_t sd_size;
 	int ret = 0;

@@ -114,8 +114,7 @@ static int np_part_search_callback(struct ldb_request *req, struct ldb_reply *ar
 	/* Now that we know it does not exist, we can try and create the partition */
 	ex_op = talloc(ac, struct dsdb_create_partition_exop);
 	if (ex_op == NULL) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 	
 	ex_op->new_dn = ac->req->op.add.message->dn;
@@ -135,7 +134,6 @@ static int np_part_search_callback(struct ldb_request *req, struct ldb_reply *ar
 static int new_partition_add(struct ldb_module *module, struct ldb_request *req)
 {
 	struct ldb_context *ldb;
-	struct ldb_request *down_req;
 	struct np_context *ac;
 	int ret;
 
@@ -148,13 +146,24 @@ static int new_partition_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_next_request(module, req);
 	}
 
-	if (!ldb_msg_find_element(req->op.add.message, "instanceType")) {
-		return ldb_next_request(module, req);		
-	} else {
+	if (ldb_msg_find_element(req->op.add.message, "instanceType")) {
 		/* This needs to be 'static' to ensure it does not move, and is not on the stack */
 		static const char *no_attrs[] = { NULL };
 		unsigned int instanceType = ldb_msg_find_attr_as_uint(req->op.add.message, "instanceType", 0);
-		if (!(instanceType & INSTANCE_TYPE_IS_NC_HEAD)) {
+		if (!(instanceType & INSTANCE_TYPE_IS_NC_HEAD) ||
+		    (instanceType & INSTANCE_TYPE_UNINSTANT)) {
+			return ldb_next_request(module, req);
+		}
+
+		if (instanceType & INSTANCE_TYPE_UNINSTANT) {
+			DEBUG(0,(__location__ ": Skipping uninstantiated partition %s\n",
+				 ldb_dn_get_linearized(req->op.add.message->dn)));
+			return ldb_next_request(module, req);
+		}
+
+		if (ldb_msg_find_attr_as_bool(req->op.add.message, "isDeleted", false)) {
+			DEBUG(0,(__location__ ": Skipping deleted partition %s\n",
+				 ldb_dn_get_linearized(req->op.add.message->dn)));
 			return ldb_next_request(module, req);		
 		}
 
@@ -164,7 +173,7 @@ static int new_partition_add(struct ldb_module *module, struct ldb_request *req)
 		 * record already exists */
 		ac = talloc(req, struct np_context);
 		if (ac == NULL) {
-			return LDB_ERR_OPERATIONS_ERROR;
+			return ldb_oom(ldb);
 		}
 		ac->module = module;
 		ac->req = req;
@@ -181,7 +190,7 @@ static int new_partition_add(struct ldb_module *module, struct ldb_request *req)
 	}
 
 	/* go on with the call chain */
-	return ldb_next_request(module, down_req);
+	return ldb_next_request(module, req);
 }
 
 _PUBLIC_ const struct ldb_module_ops ldb_new_partition_module_ops = {

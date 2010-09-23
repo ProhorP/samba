@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # Enables an user account on a Samba4 server
 # Copyright Jelmer Vernooij 2008
@@ -27,7 +27,7 @@ from samba.netcmd import Command, CommandError, Option
 from samba.samdb import SamDB
 
 class cmd_enableaccount(Command):
-    """Enable an account."""
+    """Enables a user"""
 
     synopsis = "enableaccount [username] [options]"
 
@@ -55,11 +55,6 @@ class cmd_enableaccount(Command):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
 
-        if H is not None:
-            url = H
-        else:
-            url = lp.get("sam database")
-
-        samdb = SamDB(url=url, session_info=system_session(),
+        samdb = SamDB(url=H, session_info=system_session(),
             credentials=creds, lp=lp)
         samdb.enable_account(filter)

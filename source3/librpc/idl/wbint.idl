@@ -1,12 +1,13 @@
 #include "idl_types.h"
-import "lsa.idl", "netlogon.idl";
+import "lsa.idl", "netlogon.idl", "misc.idl", "security.idl";
 
 [
     uuid("bf09192c-ed60-4928-9dff-d0d7bcb03ed8"),
     endpoint("ncalrpc:"),
     pointer_default(unique),
     version(1.0),
-    helpstring("winbind parent-child protocol")
+    helpstring("winbind parent-child protocol"),
+    no_srv_register
 ]
 interface wbint
 {
@@ -151,28 +152,5 @@ interface wbint
 	);
 
     NTSTATUS wbint_PingDc(
-	);
-
-    typedef [public] enum {
-	WBINT_ID_TYPE_NOT_SPECIFIED,
-	WBINT_ID_TYPE_UID,
-	WBINT_ID_TYPE_GID
-    } wbint_IdType;
-
-    NTSTATUS wbint_SetMapping(
-	[in] dom_sid *sid,
-	[in] wbint_IdType type,
-	[in] hyper id
-	);
-
-    NTSTATUS wbint_RemoveMapping(
-	[in] dom_sid *sid,
-	[in] wbint_IdType type,
-	[in] hyper id
-	);
-
-    NTSTATUS wbint_SetHWM(
-	[in] wbint_IdType type,
-	[in] hyper id
 	);
 }

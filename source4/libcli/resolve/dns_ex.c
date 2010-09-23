@@ -67,7 +67,6 @@ static int dns_ex_destructor(struct dns_ex_state *state)
 	int status;
 
 	kill(state->child, SIGTERM);
-	close(state->child_fd);
 	if (waitpid(state->child, &status, WNOHANG) == 0) {
 		kill(state->child, SIGKILL);
 		waitpid(state->child, &status, 0);
@@ -168,7 +167,7 @@ static void run_child_dns_lookup(struct dns_ex_state *state, int fd)
 
 		if (do_srv) {
 			/* we are only interested in SRV records */
-			if (rr->type != rk_ns_c_in) {
+			if (rr->type != rk_ns_t_srv) {
 				continue;
 			}
 
@@ -208,7 +207,7 @@ static void run_child_dns_lookup(struct dns_ex_state *state, int fd)
 				continue;
 			}
 
-			/* we are only interested in SRV records */
+			/* we are only interested in A records */
 			if (rr->type != rk_ns_t_a) {
 				continue;
 			}
@@ -369,7 +368,6 @@ static void pipe_handler(struct tevent_context *ev, struct tevent_fd *fde,
 	} else {
 		ret = -1;
 	}
-	close(state->child_fd);
 	if (waitpid(state->child, &status, WNOHANG) == 0) {
 		kill(state->child, SIGKILL);
 		waitpid(state->child, &status, 0);
@@ -498,6 +496,7 @@ struct composite_context *resolve_name_dns_ex_send(TALLOC_CTX *mem_ctx,
 		close(fd[1]);
 		return c;
 	}
+	tevent_fd_set_auto_close(state->fde);
 
 	state->child = fork();
 	if (state->child == (pid_t)-1) {

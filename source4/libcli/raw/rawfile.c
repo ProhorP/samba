@@ -348,7 +348,7 @@ static struct smbcli_request *smb_raw_nttrans_create_send(struct smbcli_tree *tr
 
 	if (parms->ntcreatex.in.sec_desc) {
 		enum ndr_err_code ndr_err;
-		ndr_err = ndr_push_struct_blob(&sd_blob, mem_ctx, NULL,
+		ndr_err = ndr_push_struct_blob(&sd_blob, mem_ctx, 
 					       parms->ntcreatex.in.sec_desc,
 					       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -918,8 +918,8 @@ struct smbcli_request *smb_raw_lock_send(struct smbcli_tree *tree, union smb_loc
 		
 	case RAW_LOCK_LOCKX: {
 		struct smb_lock_entry *lockp;
-		uint_t lck_size = (parms->lockx.in.mode & LOCKING_ANDX_LARGE_FILES)? 20 : 10;
-		uint_t lock_count = parms->lockx.in.ulock_cnt + parms->lockx.in.lock_cnt;
+		unsigned int lck_size = (parms->lockx.in.mode & LOCKING_ANDX_LARGE_FILES)? 20 : 10;
+		unsigned int lock_count = parms->lockx.in.ulock_cnt + parms->lockx.in.lock_cnt;
 		int i;
 
 		SETUP_REQUEST(SMBlockingX, 8, lck_size * lock_count);

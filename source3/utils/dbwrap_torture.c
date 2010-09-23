@@ -20,6 +20,8 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
+#include "dbwrap.h"
 
 #if 0
 #include "lib/events/events.h"
@@ -287,7 +289,7 @@ int main(int argc, const char *argv[])
 		goto done;
 	}
 
-	msg_ctx = messaging_init(mem_ctx, server_id_self(), ev_ctx);
+	msg_ctx = messaging_init(mem_ctx, procid_self(), ev_ctx);
 	if (msg_ctx == NULL) {
 		d_fprintf(stderr, "ERROR: could not init messaging context\n");
 		goto done;
@@ -297,6 +299,10 @@ int main(int argc, const char *argv[])
 		tdb_flags = TDB_NOSYNC;
 	} else {
 		tdb_flags = TDB_DEFAULT;
+	}
+
+	if (no_trans) {
+		tdb_flags |= TDB_CLEAR_IF_FIRST;
 	}
 
 	db = db_open(mem_ctx, db_name, 0, tdb_flags,  O_RDWR | O_CREAT, 0644);

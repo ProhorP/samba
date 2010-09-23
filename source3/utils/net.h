@@ -22,8 +22,6 @@
  * include
  */
 
-#include "lib/netapi/netapi.h"
-#include "libnet/libnet.h"
 #include "localedir.h"
 
 #ifdef HAVE_LIBINTL_H
@@ -70,8 +68,9 @@ struct net_context {
 	const char *opt_exclude;
 	const char *opt_destination;
 	int opt_testmode;
-	bool opt_kerberos;
+	int opt_kerberos;
 	int opt_force_full_repl;
+	int opt_ccache;
 	int opt_single_obj_repl;
 	int opt_clean_old_entries;
 
@@ -108,7 +107,7 @@ struct functable {
 };
 
 typedef NTSTATUS (*rpc_command_fn)(struct net_context *c,
-				const DOM_SID *,
+				const struct dom_sid *,
 				const char *,
 				struct cli_state *cli,
 				struct rpc_pipe_client *,
@@ -128,7 +127,7 @@ typedef struct copy_clistate {
 struct rpc_sh_ctx {
 	struct cli_state *cli;
 
-	DOM_SID *domain_sid;
+	struct dom_sid *domain_sid;
 	const char *domain_name;
 
 	const char *whoami;

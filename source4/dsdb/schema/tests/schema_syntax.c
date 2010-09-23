@@ -101,6 +101,10 @@ static bool torture_test_syntax(struct torture_context *torture,
 	struct ldb_message_element el;
 	struct ldb_context *ldb = priv->ldb;
 	struct dsdb_schema *schema = priv->schema;
+	struct dsdb_syntax_ctx syntax_ctx;
+
+	/* use default syntax conversion context */
+	dsdb_syntax_ctx_init(&syntax_ctx, ldb, schema);
 
 	drs.value_ctr.num_values = 1;
 	drs.value_ctr.values = &val;
@@ -111,11 +115,11 @@ static bool torture_test_syntax(struct torture_context *torture,
 	torture_assert_str_equal(torture, attr->syntax->name, syntax->name, "Syntax from schema not as expected");
 	
 
-	torture_assert_werr_ok(torture, syntax->drsuapi_to_ldb(ldb, schema, attr, &drs, tmp_ctx, &el), "Failed to convert from DRS to ldb format");
+	torture_assert_werr_ok(torture, syntax->drsuapi_to_ldb(&syntax_ctx, attr, &drs, tmp_ctx, &el), "Failed to convert from DRS to ldb format");
 
 	torture_assert_data_blob_equal(torture, el.values[0], ldb_blob, "Incorrect conversion from DRS to ldb format");
 
-	torture_assert_werr_ok(torture, syntax->ldb_to_drsuapi(ldb, schema, attr, &el, tmp_ctx, &drs2), "Failed to convert from ldb to DRS format");
+	torture_assert_werr_ok(torture, syntax->ldb_to_drsuapi(&syntax_ctx, attr, &el, tmp_ctx, &drs2), "Failed to convert from ldb to DRS format");
 	
 	torture_assert(torture, drs2.value_ctr.values[0].blob, "No blob returned from conversion");
 
@@ -201,10 +205,10 @@ static bool torture_dsdb_syntax_tcase_setup(struct torture_context *tctx, void *
 	priv = talloc_zero(tctx, struct torture_dsdb_syntax);
 	torture_assert(tctx, priv, "No memory");
 
-	priv->ldb = provision_get_schema(priv, tctx->lp_ctx);
+	priv->ldb = provision_get_schema(priv, tctx->lp_ctx, NULL);
 	torture_assert(tctx, priv->ldb, "Failed to load schema from disk");
 
-	priv->schema = dsdb_get_schema(priv->ldb);
+	priv->schema = dsdb_get_schema(priv->ldb, NULL);
 	torture_assert(tctx, priv->schema, "Failed to fetch schema");
 
 	/* add 'authOrig' attribute with OR-Name syntax to schema */

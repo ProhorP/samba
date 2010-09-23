@@ -25,11 +25,22 @@
 #include "system/network.h"
 #include "system/filesys.h"
 #include "system/locale.h"
+#include "system/shmem.h"
+
 #undef malloc
 #undef strcasecmp
 #undef strncasecmp
 #undef strdup
 #undef realloc
+
+#if defined(UID_WRAPPER)
+#if !defined(UID_WRAPPER_REPLACE) && !defined(UID_WRAPPER_NOT_REPLACE)
+#define UID_WRAPPER_REPLACE
+#include "../uid_wrapper/uid_wrapper.h"
+#endif
+#else
+#define uwrap_enabled() 0
+#endif
 
 /**
  * @file
@@ -342,7 +353,7 @@ _PUBLIC_ void dump_data(int level, const uint8_t *buf, int len)
  * Write dump of binary data to the log file.
  *
  * The data is only written if the log level is at least level.
- * 16 zero bytes in a row are ommited
+ * 16 zero bytes in a row are omitted
  */
 _PUBLIC_ void dump_data_skip_zeros(int level, const uint8_t *buf, int len)
 {
@@ -853,4 +864,49 @@ bool next_token_no_ltrim_talloc(TALLOC_CTX *ctx,
 	return next_token_internal_talloc(ctx, ptr, pp_buff, sep, false);
 }
 
+/* Map a shared memory buffer of at least nelem counters. */
+void *allocate_anonymous_shared(size_t bufsz)
+{
+	void *buf;
+	size_t pagesz = getpagesize();
 
+	if (bufsz % pagesz) {
+		bufsz = (bufsz + pagesz) % pagesz; /* round up to pagesz */
+	}
+
+#ifdef MAP_ANON
+	/* BSD */
+	buf = mmap(NULL, bufsz, PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED,
+			-1 /* fd */, 0 /* offset */);
+#else
+	buf = mmap(NULL, bufsz, PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED,
+			open("/dev/zero", O_RDWR), 0 /* offset */);
+#endif
+
+	if (buf == MAP_FAILED) {
+		return NULL;
+	}
+
+	return buf;
+
+}
+
+#ifdef DEVELOPER
+/* used when you want a debugger started at a particular point in the
+   code. Mostly useful in code that runs as a child process, where
+   normal gdb attach is harder to organise.
+*/
+void samba_start_debugger(void)
+{
+	char *cmd = NULL;
+	if (asprintf(&cmd, "xterm -e \"gdb --pid %u\"&", getpid()) == -1) {
+		return;
+	}
+	if (system(cmd) == -1) {
+		free(cmd);
+		return;
+	}
+	free(cmd);
+	sleep(2);
+}
+#endif

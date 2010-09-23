@@ -37,10 +37,11 @@ EOF
 
 cat <<EOF | $VALGRIND ldbmodify --controls "relax:0" && exit 1
 dn: dc=bar
-changetype: replace
+changetype: modify
 replace someThing
 someThing: someThingElseBetter
 EOF
 
+$VALGRIND ldbsearch --controls "bypassoperational:0" >/dev/null 2>&1 || exit 1
 
 set

@@ -65,8 +65,7 @@ static int kccsrv_add_connection(struct kccsrv_service *s,
 		ret = LDB_ERR_INVALID_DN_SYNTAX;
 		goto done;
 	}
-	ret = dsdb_find_dn_by_guid(s->samdb, tmp_ctx, GUID_string(tmp_ctx,
-				   &conn->dsa_guid), &server_dn);
+	ret = dsdb_find_dn_by_guid(s->samdb, tmp_ctx, &conn->dsa_guid, &server_dn);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0, ("failed to find fromServer DN '%s'\n",
 			  GUID_string(tmp_ctx, &conn->dsa_guid)));
@@ -105,8 +104,7 @@ static int kccsrv_delete_connection(struct kccsrv_service *s,
 	int ret;
 
 	tmp_ctx = talloc_new(s);
-	ret = dsdb_find_dn_by_guid(s->samdb, tmp_ctx,
-				   GUID_string(tmp_ctx, &conn->obj_guid), &dn);
+	ret = dsdb_find_dn_by_guid(s->samdb, tmp_ctx, &conn->obj_guid, &dn);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0, ("failed to find nTDSConnection's DN: %s\n",
 			  ldb_strerror(ret)));
@@ -131,7 +129,8 @@ void kccsrv_apply_connections(struct kccsrv_service *s,
 			      struct kcc_connection_list *ntds_list,
 			      struct kcc_connection_list *dsa_list)
 {
-	int i, j, deleted = 0, added = 0, ret;
+	unsigned int i, j, deleted = 0, added = 0;
+	int ret;
 
 	for (i = 0; ntds_list && i < ntds_list->count; i++) {
 		struct kcc_connection *ntds = &ntds_list->servers[i];
@@ -171,11 +170,14 @@ void kccsrv_apply_connections(struct kccsrv_service *s,
 struct kcc_connection_list *kccsrv_find_connections(struct kccsrv_service *s,
 						    TALLOC_CTX *mem_ctx)
 {
-	int ret, i;
+	unsigned int i;
+	int ret;
 	struct ldb_dn *base_dn;
 	struct ldb_result *res;
 	const char *attrs[] = { "objectGUID", "fromServer", NULL };
 	struct kcc_connection_list *list;
+
+	kcctpl_test(s->samdb);
 
 	base_dn = samdb_ntds_settings_dn(s->samdb);
 	if (!base_dn) {
@@ -214,8 +216,8 @@ struct kcc_connection_list *kccsrv_find_connections(struct kccsrv_service *s,
 		ret = dsdb_find_guid_by_dn(s->samdb, server_dn,
 					   &list->servers[i].dsa_guid);
 		if (ret != LDB_SUCCESS) {
-			DEBUG(0, ("failed to find connection server's GUID"
-				  "by DN=%s: %s\n",
+			DEBUG(0, ("Failed to find connection server's GUID by "
+				  "DN=%s: %s\n",
 				  ldb_dn_get_linearized(server_dn),
 				  ldb_strerror(ret)));
 			continue;

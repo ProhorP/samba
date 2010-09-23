@@ -21,20 +21,20 @@
    License along with this library; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "ldb_includes.h"
-#include "ldb.h"
-#include "tools/cmdline.h"
-
 #if (_SAMBA_BUILD_ >= 4)
 #include "includes.h"
 #include "lib/cmdline/popt_common.h"
-#include "lib/ldb-samba/ldif_handlers.h"
 #include "auth/gensec/gensec.h"
 #include "auth/auth.h"
-#include "ldb_wrap.h"
 #include "param/param.h"
-#include "dsdb/common/proto.h"
+#include "dsdb/samdb/samdb.h"
+#include "ldb_wrap.h"
+#else
+#include "ldb_includes.h"
+#include "ldb.h"
 #endif
+
+#include "tools/cmdline.h"
 
 static struct ldb_cmdline options; /* needs to be static for older compilers */
 
@@ -54,8 +54,6 @@ static struct poptOption popt_options[] = {
 	{ "all", 'a',    POPT_ARG_NONE, &options.all_records, 0, "(|(objectClass=*)(distinguishedName=*))", NULL },
 	{ "nosync", 0,   POPT_ARG_NONE, &options.nosync, 0, "non-synchronous transactions", NULL },
 	{ "sorted", 'S', POPT_ARG_NONE, &options.sorted, 0, "sort attributes", NULL },
-	{ "input", 'I', POPT_ARG_STRING, &options.input, 0, "Input File", "Input" },
-	{ "output", 'O', POPT_ARG_STRING, &options.output, 0, "Output File", "Output" },
 	{ NULL,    'o', POPT_ARG_STRING, NULL, 'o', "ldb_connect option", "OPTION" },
 	{ "controls", 0, POPT_ARG_STRING, NULL, 'c', "controls", NULL },
 	{ "show-binary", 0, POPT_ARG_NONE, &options.show_binary, 0, "display binary LDIF", NULL },
@@ -88,7 +86,7 @@ void ldb_cmdline_help(const char *cmdname, FILE *f)
  */
 static bool add_control(TALLOC_CTX *mem_ctx, const char *control)
 {
-	int i;
+	unsigned int i;
 
 	/* count how many controls we already have */
 	for (i=0; options.controls && options.controls[i]; i++) ;
@@ -120,7 +118,7 @@ struct ldb_cmdline *ldb_cmdline_process(struct ldb_context *ldb,
 
 #if (_SAMBA_BUILD_ >= 4)
 	r = ldb_register_samba_handlers(ldb);
-	if (r != 0) {
+	if (r != LDB_SUCCESS) {
 		goto failed;
 	}
 
@@ -345,8 +343,8 @@ failed:
  */
 int handle_controls_reply(struct ldb_control **reply, struct ldb_control **request)
 {
-	int i, j;
-       	int ret = 0;
+	unsigned int i, j;
+	int ret = 0;
 
 	if (reply == NULL || request == NULL) return -1;
 	

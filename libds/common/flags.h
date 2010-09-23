@@ -51,6 +51,7 @@
 
 #define UF_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION 0x01000000
 #define UF_NO_AUTH_DATA_REQUIRED		0x02000000
+#define UF_PARTIAL_SECRETS_ACCOUNT		0x04000000
 
 #define UF_MACHINE_ACCOUNT_MASK (\
 		UF_INTERDOMAIN_TRUST_ACCOUNT |\
@@ -110,7 +111,7 @@
 		GROUP_TYPE_SECURITY_ENABLED \
 		)
 #define GTYPE_SECURITY_UNIVERSAL_GROUP ( \
-		/* 0x80000008 -2147483656 */ \
+		/* 0x80000008 -2147483640 */ \
 		GROUP_TYPE_UNIVERSAL_GROUP| \
 		GROUP_TYPE_SECURITY_ENABLED \
 		)
@@ -155,6 +156,9 @@
 #define SYSTEM_FLAG_CONFIG_ALLOW_RENAME		0x40000000
 #define SYSTEM_FLAG_DISALLOW_DELETE		0x80000000
 
+/* schemaFlags_Ex */
+#define SCHEMA_FLAG_ATTR_IS_CRITICAL	0x0000001
+
 /* "searchFlags" */
 #define SEARCH_FLAG_ATTINDEX		0x0000001
 #define SEARCH_FLAG_PDNTATTINDEX	0x0000002
@@ -167,21 +171,18 @@
 #define SEARCH_FLAG_NEVERVALUEAUDIT	0x0000100
 #define SEARCH_FLAG_RODC_ATTRIBUTE	0x0000200
 
-/* "domainFunctionality", "forestFunctionality" in the rootDSE */
+/* "domainFunctionality", "forestFunctionality" and "domainControllerFunctionality" in the rootDSE */
 #define DS_DOMAIN_FUNCTION_2000		0
-#define DS_DOMAIN_FUNCTION_2003_MIXED	1
+#define DS_DOMAIN_FUNCTION_2003_MIXED	1 /* Not a valid/meaningful
+					   * domainControllerFunctionality
+					   * Level */
 #define DS_DOMAIN_FUNCTION_2003		2
 #define DS_DOMAIN_FUNCTION_2008		3
 #define DS_DOMAIN_FUNCTION_2008_R2	4 
 
-/* "domainControllerFunctionality" in the rootDSE */
-#define DS_DC_FUNCTION_2000		0
-#define DS_DC_FUNCTION_2003		2
-#define DS_DC_FUNCTION_2008		3
-#define DS_DC_FUNCTION_2008_R2		4
-
 /* sa->systemFlags on attributes */
 #define DS_FLAG_ATTR_NOT_REPLICATED    0x00000001
+#define DS_FLAG_ATTR_REQ_PARTIAL_SET_MEMBER 0x00000002
 #define DS_FLAG_ATTR_IS_CONSTRUCTED    0x00000004
 
 /* 7.1.1.2.2.1.2.1.1           nTDSDSA Object options flags */
@@ -203,3 +204,29 @@
 #define DS_GUID_PROGRAM_DATA_CONTAINER                "09460C08AE1E4A4EA0F64AEE7DAA1E5A"
 #define DS_GUID_SYSTEMS_CONTAINER                     "AB1D30F3768811D1ADED00C04FD8D5CD"
 #define DS_GUID_USERS_CONTAINER                       "A9D1CA15768811D1ADED00C04FD8D5CD"
+
+/* wellknown GUIDs for optional directory features */
+#define DS_GUID_FEATURE_RECYCLE_BIN		      "766ddcd8-acd0-445e-f3b9-a7f9b6744f2a"
+
+/* dsHeurisrics character indexes see MS-ADTS 7.1.1.2.4.1.2 */
+
+#define DS_HR_SUPFIRSTLASTANR                     0x00000001
+#define DS_HR_SUPLASTFIRSTANR                     0x00000002
+#define DS_HR_DOLISTOBJECT                        0x00000003
+#define DS_HR_DONICKRES                           0x00000004
+#define DS_HR_LDAP_USEPERMMOD                     0x00000005
+#define DS_HR_HIDEDSID                            0x00000006
+#define DS_HR_BLOCK_ANONYMOUS_OPS                 0x00000007
+#define DS_HR_ALLOW_ANON_NSPI                     0x00000008
+#define DS_HR_USER_PASSWORD_SUPPORT               0x00000009
+#define DS_HR_TENTH_CHAR                          0x0000000A
+#define DS_HR_SPECIFY_GUID_ON_ADD                 0x0000000B
+#define DS_HR_NO_STANDARD_SD                      0x0000000C
+#define DS_HR_ALLOW_NONSECURE_PWD_OPS             0x0000000D
+#define DS_HR_NO_PROPAGATE_ON_NOCHANGE            0x0000000E
+#define DS_HR_COMPUTE_ANR_STATS                   0x0000000F
+#define DS_HR_ADMINSDEXMASK                       0x00000010
+#define DS_HR_KVNOEMUW2K                          0x00000011
+#define DS_HR_LDAP_BYPASS_UPPER_LIMIT_BOUNDS      0x00000012
+
+

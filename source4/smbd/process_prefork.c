@@ -31,7 +31,7 @@
 #include "system/filesys.h"
 #include "cluster/cluster.h"
 #include "param/param.h"
-#include "lib/ldb_wrap.h"
+#include "ldb_wrap.h"
 
 #ifdef HAVE_SETPROCTITLE
 #ifdef HAVE_SETPROCTITLE_H
@@ -94,7 +94,7 @@ static void prefork_accept_connection(struct tevent_context *ev,
 static void prefork_new_task(struct tevent_context *ev, 
 			     struct loadparm_context *lp_ctx,
 			     const char *service_name,
-			     void (*new_task_fn)(struct tevent_context *, struct loadparm_context *lp_ctx, struct server_id , void *), 
+			     void (*new_task_fn)(struct tevent_context *, struct loadparm_context *lp_ctx, struct server_id , void *),
 			     void *private_data)
 {
 	pid_t pid;
@@ -133,7 +133,7 @@ static void prefork_new_task(struct tevent_context *ev,
 	/* setup this new connection: process will bind to it's sockets etc */
 	new_task_fn(ev2, lp_ctx, cluster_id(pid, 0), private_data);
 
-	num_children = lp_parm_int(lp_ctx, NULL, "prefork children", service_name, 0);
+	num_children = lpcfg_parm_int(lp_ctx, NULL, "prefork children", service_name, 0);
 	if (num_children == 0) {
 
 		/* We don't want any kids hanging around for this one,
@@ -192,7 +192,7 @@ static void prefork_new_task(struct tevent_context *ev,
 
 
 /* called when a task goes down */
-_NORETURN_ static void prefork_terminate(struct tevent_context *ev, struct loadparm_context *lp_ctx, const char *reason) 
+static void prefork_terminate(struct tevent_context *ev, struct loadparm_context *lp_ctx, const char *reason)
 {
 	DEBUG(2,("prefork_terminate: reason[%s]\n",reason));
 }

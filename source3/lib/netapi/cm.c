@@ -18,6 +18,7 @@
  */
 
 #include "includes.h"
+#include "popt_common.h"
 
 #include "lib/netapi/netapi.h"
 #include "lib/netapi/netapi_private.h"
@@ -53,6 +54,10 @@ static WERROR libnetapi_open_ipc_connection(struct libnetapi_ctx *ctx,
 	    ctx->password && ctx->password[0] &&
 	    ctx->use_kerberos) {
 		set_cmdline_auth_info_fallback_after_kerberos(auth_info, true);
+	}
+
+	if (ctx->use_ccache) {
+		set_cmdline_auth_info_use_ccache(auth_info, true);
 	}
 
 	cli_ipc = cli_cm_open(ctx, NULL,

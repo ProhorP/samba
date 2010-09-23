@@ -76,7 +76,7 @@ static int dn_list_cmp(const struct ldb_val *v1, const struct ldb_val *v2)
  */
 static int ltdb_dn_list_find_val(const struct dn_list *list, const struct ldb_val *v)
 {
-	int i;
+	unsigned int i;
 	for (i=0; i<list->count; i++) {
 		if (dn_list_cmp(&list->dn[i], v) == 0) return i;
 	}
@@ -95,6 +95,11 @@ static int ltdb_dn_list_find_str(struct dn_list *list, const char *dn)
 	return ltdb_dn_list_find_val(list, &v);
 }
 
+/*
+  this is effectively a cast function, but with lots of paranoia
+  checks and also copes with CPUs that are fussy about pointer
+  alignment
+ */
 static struct dn_list *ltdb_index_idxptr(struct ldb_module *module, TDB_DATA rec, bool check_parent)
 {
 	struct dn_list *list;
@@ -103,12 +108,15 @@ static struct dn_list *ltdb_index_idxptr(struct ldb_module *module, TDB_DATA rec
 				       "Bad data size for idxptr %u", (unsigned)rec.dsize);
 		return NULL;
 	}
-	
-	list = talloc_get_type(*(struct dn_list **)rec.dptr, struct dn_list);
+	/* note that we can't just use a cast here, as rec.dptr may
+	   not be aligned sufficiently for a pointer. A cast would cause
+	   platforms like some ARM CPUs to crash */
+	memcpy(&list, rec.dptr, sizeof(void *));
+	list = talloc_get_type(list, struct dn_list);
 	if (list == NULL) {
 		ldb_asprintf_errstring(ldb_module_get_ctx(module), 
 				       "Bad type '%s' for idxptr", 
-				       talloc_get_name(*(struct dn_list **)rec.dptr));
+				       talloc_get_name(list));
 		return NULL;
 	}
 	if (check_parent && list->dn && talloc_parent(list->dn) != list) {
@@ -967,13 +975,13 @@ static int ltdb_index_filter(const struct dn_list *dn_list,
  */
 static void ltdb_dn_list_remove_duplicates(struct dn_list *list)
 {
-	int i, new_count;
+	unsigned int i, new_count;
 
 	if (list->count < 2) {
 		return;
 	}
 
-	qsort(list->dn, list->count, sizeof(struct ldb_val), (comparison_fn_t) dn_list_cmp);
+	TYPESAFE_QSORT(list->dn, list->count, dn_list_cmp);
 
 	new_count = 1;
 	for (i=1; i<list->count; i++) {
@@ -1279,12 +1287,13 @@ int ltdb_index_add_new(struct ldb_module *module, const struct ldb_message *msg)
   delete an index entry for one message element
 */
 int ltdb_index_del_value(struct ldb_module *module, struct ldb_dn *dn,
-			 struct ldb_message_element *el, int v_idx)
+			 struct ldb_message_element *el, unsigned int v_idx)
 {
 	struct ldb_context *ldb;
 	struct ldb_dn *dn_key;
 	const char *dn_str;
 	int ret, i;
+	unsigned int j;
 	struct dn_list *list;
 
 	ldb = ldb_module_get_ctx(module);
@@ -1329,8 +1338,9 @@ int ltdb_index_del_value(struct ldb_module *module, struct ldb_dn *dn,
 		return LDB_SUCCESS;		
 	}
 
-	if (i != list->count-1) {
-		memmove(&list->dn[i], &list->dn[i+1], sizeof(list->dn[0])*(list->count - (i+1)));
+	j = (unsigned int) i;
+	if (j != list->count - 1) {
+		memmove(&list->dn[j], &list->dn[j+1], sizeof(list->dn[0])*(list->count - (j+1)));
 	}
 	list->count--;
 	list->dn = talloc_realloc(list, list->dn, struct ldb_val, list->count);
@@ -1436,8 +1446,10 @@ static int delete_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, vo
 	 * index entry */
 	list.dn = NULL;
 	list.count = 0;
-	v.data = key.dptr;
-	v.length = strnlen((char *)key.dptr, key.dsize);
+
+	/* the offset of 3 is to remove the DN= prefix. */
+	v.data = key.dptr + 3;
+	v.length = strnlen((char *)key.dptr, key.dsize) - 3;
 
 	dn = ldb_dn_from_ldb_val(ltdb, ldb_module_get_ctx(module), &v);
 	ret = ltdb_dn_list_store(module, dn, &list);

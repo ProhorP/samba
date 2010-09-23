@@ -19,6 +19,7 @@
 */
 
 #include "includes.h"
+#include "ads.h"
 #include "nss_info.h"
 
 /************************************************************************
@@ -33,7 +34,7 @@ static NTSTATUS nss_template_init( struct nss_domain_entry *e )
  ***********************************************************************/
 
 static NTSTATUS nss_template_get_info( struct nss_domain_entry *e,
-				       const DOM_SID *sid, 
+				       const struct dom_sid *sid,
 				       TALLOC_CTX *ctx,
 				       ADS_STRUCT *ads,
 				       LDAPMessage *msg,

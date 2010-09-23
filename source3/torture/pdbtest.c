@@ -21,6 +21,7 @@
 
 
 #include "includes.h"
+#include "popt_common.h"
 
 static bool samu_correct(struct samu *s1, struct samu *s2)
 {
@@ -247,7 +248,7 @@ int main(int argc, char **argv)
 
 	load_case_tables();
 
-	pc = poptGetContext("vfstest", argc, (const char **) argv,
+	pc = poptGetContext("pdbtest", argc, (const char **) argv,
 			    long_options, 0);
 
 	poptSetOtherOptionHelp(pc, "backend[:settings] username");

@@ -19,6 +19,9 @@
 
 #include "includes.h"
 #include "../libcli/auth/libcli_auth.h"
+#include "../librpc/gen_ndr/ndr_netlogon.h"
+#include "rpc_client/cli_netlogon.h"
+#include "secrets.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -32,7 +35,7 @@ static NTSTATUS netlogond_validate(TALLOC_CTX *mem_ctx,
 				   NTSTATUS *schannel_bind_result)
 {
 	struct rpc_pipe_client *p = NULL;
-	struct cli_pipe_auth_data *auth = NULL;
+	struct pipe_auth_data *auth = NULL;
 	struct netr_SamInfo3 *info3 = NULL;
 	NTSTATUS status;
 
@@ -78,16 +81,16 @@ static NTSTATUS netlogond_validate(TALLOC_CTX *mem_ctx,
 
 	status = rpccli_netlogon_sam_network_logon_ex(
 		p, p,
-		user_info->logon_parameters,/* flags such as 'allow
-					     * workstation logon' */
-		global_myname(),            /* server name */
-		user_info->smb_name,        /* user name logging on. */
-		user_info->client_domain,   /* domain name */
-		user_info->wksta_name,      /* workstation name */
+		user_info->logon_parameters,           /* flags such as 'allow
+					                * workstation logon' */
+		global_myname(),                       /* server name */
+		user_info->client.account_name,        /* user name logging on. */
+		user_info->client.domain_name,         /* domain name */
+		user_info->workstation_name,           /* workstation name */
 		(uchar *)auth_context->challenge.data, /* 8 byte challenge. */
-		user_info->lm_resp,         /* lanman 24 byte response */
-		user_info->nt_resp,         /* nt 24 byte response */
-		&info3);                    /* info3 out */
+		user_info->password.response.lanman,   /* lanman 24 byte response */
+		user_info->password.response.nt,       /* nt 24 byte response */
+		&info3);                               /* info3 out */
 
 	DEBUG(10, ("rpccli_netlogon_sam_network_logon_ex returned %s\n",
 		   nt_errstr(status)));
@@ -159,7 +162,7 @@ static NTSTATUS check_netlogond_security(const struct auth_context *auth_context
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct netr_SamInfo3 *info3 = NULL;
 	struct rpc_pipe_client *p = NULL;
-	struct cli_pipe_auth_data *auth = NULL;
+	struct pipe_auth_data *auth = NULL;
 	uint32_t neg_flags = NETLOGON_NEG_AUTH2_ADS_FLAGS;
 	char *plaintext_machinepw = NULL;
 	uint8_t machine_password[16];
@@ -167,6 +170,8 @@ static NTSTATUS check_netlogond_security(const struct auth_context *auth_context
 	NTSTATUS schannel_bind_result, status;
 	struct named_mutex *mutex = NULL;
 	const char *ncalrpcsock;
+
+	DEBUG(10, ("Check auth for: [%s]\n", user_info->mapped.account_name));
 
 	ncalrpcsock = lp_parm_const_string(
 		GLOBAL_SECTION_SNUM, "auth_netlogond", "socket", NULL);
@@ -277,8 +282,8 @@ static NTSTATUS check_netlogond_security(const struct auth_context *auth_context
 
  okay:
 
-	status = make_server_info_info3(mem_ctx, user_info->smb_name,
-					user_info->domain, server_info,
+	status = make_server_info_info3(mem_ctx, user_info->client.account_name,
+					user_info->mapped.domain_name, server_info,
 					info3);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("make_server_info_info3 failed: %s\n",
@@ -299,12 +304,16 @@ static NTSTATUS auth_init_netlogond(struct auth_context *auth_context,
 				    const char *param,
 				    auth_methods **auth_method)
 {
-	if (!make_auth_methods(auth_context, auth_method)) {
+	struct auth_methods *result;
+
+	result = TALLOC_ZERO_P(auth_context, struct auth_methods);
+	if (result == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
+	result->name = "netlogond";
+	result->auth = check_netlogond_security;
 
-	(*auth_method)->name = "netlogond";
-	(*auth_method)->auth = check_netlogond_security;
+        *auth_method = result;
 	return NT_STATUS_OK;
 }
 

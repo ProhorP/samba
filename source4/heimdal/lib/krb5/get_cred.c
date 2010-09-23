@@ -3,6 +3,8 @@
  * (Royal Institute of Technology, Stockholm, Sweden).
  * All rights reserved.
  *
+ * Portions Copyright (c) 2009 Apple Inc. All rights reserved.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -31,7 +33,7 @@
  * SUCH DAMAGE.
  */
 
-#include <krb5_locl.h>
+#include "krb5_locl.h"
 #include <assert.h>
 
 /*
@@ -145,7 +147,6 @@ init_tgs_req (krb5_context context,
 {
     krb5_auth_context ac = NULL;
     krb5_error_code ret = 0;
-    krb5_keyblock *key = NULL;
 
     memset(t, 0, sizeof(*t));
     t->pvno = 5;
@@ -607,7 +608,7 @@ get_cred_kdc_address(krb5_context context,
     return ret;
 }
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_kdc_cred(krb5_context context,
 		  krb5_ccache id,
 		  krb5_kdc_flags flags,
@@ -951,9 +952,7 @@ get_cred_kdc_referral(krb5_context context,
 					     ticket.server))
 	    break;
 
-	if (ticket.server->name.name_string.len != 2 &&
-	    strcmp(ticket.server->name.name_string.val[0], KRB5_TGS_NAME) != 0)
-	{
+	if (!krb5_principal_is_krbtgt(context, ticket.server)) {
 	    krb5_set_error_message(context, KRB5KRB_AP_ERR_NOT_US,
 				   N_("Got back an non krbtgt "
 				      "ticket referrals", ""));
@@ -1038,6 +1037,13 @@ _krb5_get_cred_kdc_any(krb5_context context,
 		       krb5_creds ***ret_tgts)
 {
     krb5_error_code ret;
+    krb5_deltat offset;
+
+    ret = krb5_cc_get_kdc_offset(context, ccache, &offset);
+    if (ret) {
+	context->kdc_sec_offset = offset;
+	context->kdc_usec_offset = 0;
+    }
 
     ret = get_cred_kdc_referral(context,
 				flags,
@@ -1060,7 +1066,7 @@ _krb5_get_cred_kdc_any(krb5_context context,
 }
 
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_credentials_with_flags(krb5_context context,
 				krb5_flags options,
 				krb5_kdc_flags flags,
@@ -1146,7 +1152,7 @@ krb5_get_credentials_with_flags(krb5_context context,
     return ret;
 }
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_credentials(krb5_context context,
 		     krb5_flags options,
 		     krb5_ccache ccache,
@@ -1167,7 +1173,7 @@ struct krb5_get_creds_opt_data {
 };
 
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_creds_opt_alloc(krb5_context context, krb5_get_creds_opt *opt)
 {
     *opt = calloc(1, sizeof(**opt));
@@ -1179,7 +1185,7 @@ krb5_get_creds_opt_alloc(krb5_context context, krb5_get_creds_opt *opt)
     return 0;
 }
 
-void KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION void KRB5_LIB_CALL
 krb5_get_creds_opt_free(krb5_context context, krb5_get_creds_opt opt)
 {
     if (opt->self)
@@ -1192,7 +1198,7 @@ krb5_get_creds_opt_free(krb5_context context, krb5_get_creds_opt opt)
     free(opt);
 }
 
-void KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION void KRB5_LIB_CALL
 krb5_get_creds_opt_set_options(krb5_context context,
 			       krb5_get_creds_opt opt,
 			       krb5_flags options)
@@ -1200,7 +1206,7 @@ krb5_get_creds_opt_set_options(krb5_context context,
     opt->options = options;
 }
 
-void KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION void KRB5_LIB_CALL
 krb5_get_creds_opt_add_options(krb5_context context,
 			       krb5_get_creds_opt opt,
 			       krb5_flags options)
@@ -1208,7 +1214,7 @@ krb5_get_creds_opt_add_options(krb5_context context,
     opt->options |= options;
 }
 
-void KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION void KRB5_LIB_CALL
 krb5_get_creds_opt_set_enctype(krb5_context context,
 			       krb5_get_creds_opt opt,
 			       krb5_enctype enctype)
@@ -1216,7 +1222,7 @@ krb5_get_creds_opt_set_enctype(krb5_context context,
     opt->enctype = enctype;
 }
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_creds_opt_set_impersonate(krb5_context context,
 				   krb5_get_creds_opt opt,
 				   krb5_const_principal self)
@@ -1226,7 +1232,7 @@ krb5_get_creds_opt_set_impersonate(krb5_context context,
     return krb5_copy_principal(context, self, &opt->self);
 }
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_creds_opt_set_ticket(krb5_context context,
 			      krb5_get_creds_opt opt,
 			      const Ticket *ticket)
@@ -1259,7 +1265,7 @@ krb5_get_creds_opt_set_ticket(krb5_context context,
 
 
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_creds(krb5_context context,
 	       krb5_get_creds_opt opt,
 	       krb5_ccache ccache,
@@ -1326,14 +1332,14 @@ krb5_get_creds(krb5_context context,
         if(options & KRB5_GC_EXPIRED_OK) {
             *out_creds = res_creds;
 	    krb5_free_principal(context, in_creds.client);
-            return 0;
+            goto out;
         }
 	
 	krb5_timeofday(context, &timeret);
 	if(res_creds->times.endtime > timeret) {
 	    *out_creds = res_creds;
 	    krb5_free_principal(context, in_creds.client);
-	    return 0;
+            goto out;
 	}
 	if(options & KRB5_GC_CACHED)
 	    krb5_cc_remove_cred(context, ccache, 0, res_creds);
@@ -1341,12 +1347,13 @@ krb5_get_creds(krb5_context context,
     } else if(ret != KRB5_CC_END) {
         free(res_creds);
 	krb5_free_principal(context, in_creds.client);
-        return ret;
+	goto out;
     }
     free(res_creds);
     if(options & KRB5_GC_CACHED) {
 	krb5_free_principal(context, in_creds.client);
-	return not_found(context, in_creds.server, KRB5_CC_NOTFOUND);
+	ret = not_found(context, in_creds.server, KRB5_CC_NOTFOUND);
+	goto out;
     }
     if(options & KRB5_GC_USER_USER) {
 	flags.b.enc_tkt_in_skey = 1;
@@ -1375,6 +1382,10 @@ krb5_get_creds(krb5_context context,
     free(tgts);
     if(ret == 0 && (options & KRB5_GC_NO_STORE) == 0)
 	krb5_cc_store_cred(context, ccache, *out_creds);
+
+ out:
+    _krb5_debug(context, 5, "krb5_get_creds: ret = %d", ret);
+
     return ret;
 }
 
@@ -1382,7 +1393,7 @@ krb5_get_creds(krb5_context context,
  *
  */
 
-krb5_error_code KRB5_LIB_FUNCTION
+KRB5_LIB_FUNCTION krb5_error_code KRB5_LIB_CALL
 krb5_get_renewed_creds(krb5_context context,
 		       krb5_creds *creds,
 		       krb5_const_principal client,

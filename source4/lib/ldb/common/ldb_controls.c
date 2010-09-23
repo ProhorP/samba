@@ -37,7 +37,7 @@
 /* returns NULL if not found */
 struct ldb_control *ldb_request_get_control(struct ldb_request *req, const char *oid)
 {
-	int i;
+	unsigned int i;
 
 	if (req->controls != NULL) {
 		for (i = 0; req->controls[i]; i++) {
@@ -56,7 +56,7 @@ struct ldb_control *ldb_request_get_control(struct ldb_request *req, const char 
 /* returns NULL if not found */
 struct ldb_control *ldb_reply_get_control(struct ldb_reply *rep, const char *oid)
 {
-	int i;
+	unsigned int i;
 
 	if (rep->controls != NULL) {
 		for (i = 0; rep->controls[i]; i++) {
@@ -77,7 +77,7 @@ the "exclude" control */
 int save_controls(struct ldb_control *exclude, struct ldb_request *req, struct ldb_control ***saver)
 {
 	struct ldb_control **lcs;
-	int i, j;
+	unsigned int i, j;
 
 	*saver = req->controls;
 	for (i = 0; req->controls[i]; i++);
@@ -110,7 +110,7 @@ struct ldb_control **controls_except_specified(struct ldb_control **controls_in,
 					       struct ldb_control *exclude)
 {
 	struct ldb_control **lcs = NULL;
-	int i, j;
+	unsigned int i, j;
 
 	for (i = 0; controls_in && controls_in[i]; i++);
 
@@ -147,7 +147,7 @@ struct ldb_control **controls_except_specified(struct ldb_control **controls_in,
 /* return True if any, False if none */
 int check_critical_controls(struct ldb_control **controls)
 {
-	int i;
+	unsigned int i;
 
 	if (controls == NULL) {
 		return 0;
@@ -164,7 +164,7 @@ int check_critical_controls(struct ldb_control **controls)
 
 int ldb_request_add_control(struct ldb_request *req, const char *oid, bool critical, void *data)
 {
-	unsigned i, n;
+	unsigned int i, n;
 	struct ldb_control **ctrls;
 	struct ldb_control *ctrl;
 
@@ -236,9 +236,9 @@ int ldb_reply_add_control(struct ldb_reply *ares, const char *oid, bool critical
 
 /* Parse controls from the format used on the command line and in ejs */
 
-struct ldb_control **ldb_parse_control_strings(struct ldb_context *ldb, void *mem_ctx, const char **control_strings)
+struct ldb_control **ldb_parse_control_strings(struct ldb_context *ldb, TALLOC_CTX *mem_ctx, const char **control_strings)
 {
-	int i;
+	unsigned int i;
 	struct ldb_control **ctrl;
 
 	char *error_string = NULL;
@@ -486,6 +486,33 @@ struct ldb_control **ldb_parse_control_strings(struct ldb_context *ldb, void *me
 			continue;
 		}
 
+		if (strncmp(control_strings[i], "bypassoperational:", 18) == 0) {
+			const char *p;
+			int crit, ret;
+
+			p = &(control_strings[i][18]);
+			ret = sscanf(p, "%d", &crit);
+			if ((ret != 1) || (crit < 0) || (crit > 1)) {
+				error_string = talloc_asprintf(mem_ctx, "invalid bypassopreational control syntax\n");
+				error_string = talloc_asprintf_append(error_string, " syntax: crit(b)\n");
+				error_string = talloc_asprintf_append(error_string, "   note: b = boolean");
+				ldb_set_errstring(ldb, error_string);
+				talloc_free(error_string);
+				return NULL;
+			}
+
+			ctrl[i] = talloc(ctrl, struct ldb_control);
+			if (!ctrl[i]) {
+				ldb_oom(ldb);
+				return NULL;
+			}
+			ctrl[i]->oid = LDB_CONTROL_BYPASSOPERATIONAL_OID;
+			ctrl[i]->critical = crit;
+			ctrl[i]->data = NULL;
+
+			continue;
+		}
+
 		if (strncmp(control_strings[i], "relax:", 6) == 0) {
 			const char *p;
 			int crit, ret;
@@ -667,6 +694,33 @@ struct ldb_control **ldb_parse_control_strings(struct ldb_context *ldb, void *me
 			continue;
 		}
 
+		if (strncmp(control_strings[i], "tree_delete:", 12) == 0) {
+			const char *p;
+			int crit, ret;
+
+			p = &(control_strings[i][12]);
+			ret = sscanf(p, "%d", &crit);
+			if ((ret != 1) || (crit < 0) || (crit > 1)) {
+				error_string = talloc_asprintf(mem_ctx, "invalid tree_delete control syntax\n");
+				error_string = talloc_asprintf_append(error_string, " syntax: crit(b)\n");
+				error_string = talloc_asprintf_append(error_string, "   note: b = boolean");
+				ldb_set_errstring(ldb, error_string);
+				talloc_free(error_string);
+				return NULL;
+			}
+
+			ctrl[i] = talloc(ctrl, struct ldb_control);
+			if (!ctrl[i]) {
+				ldb_oom(ldb);
+				return NULL;
+			}
+			ctrl[i]->oid = LDB_CONTROL_TREE_DELETE_OID;
+			ctrl[i]->critical = crit;
+			ctrl[i]->data = NULL;
+
+			continue;
+		}
+
 		if (strncmp(control_strings[i], "show_deleted:", 13) == 0) {
 			const char *p;
 			int crit, ret;
@@ -796,6 +850,67 @@ struct ldb_control **ldb_parse_control_strings(struct ldb_context *ldb, void *me
 				return NULL;
 			}
 			ctrl[i]->oid = LDB_CONTROL_REVEAL_INTERNALS;
+			ctrl[i]->critical = crit;
+			ctrl[i]->data = NULL;
+
+			continue;
+		}
+
+		if (strncmp(control_strings[i], "local_oid:", 10) == 0) {
+			const char *p;
+			int crit = 0, ret = 0;
+			char oid[256];
+
+			oid[0] = '\0';
+			p = &(control_strings[i][10]);
+			ret = sscanf(p, "%64[^:]:%d", oid, &crit);
+
+			if ((ret != 2) || strlen(oid) == 0 || (crit < 0) || (crit > 1)) {
+				error_string = talloc_asprintf(mem_ctx, "invalid local_oid control syntax\n");
+				error_string = talloc_asprintf_append(error_string, " syntax: oid(s):crit(b)\n");
+				error_string = talloc_asprintf_append(error_string, "   note: b = boolean, s = string");
+				ldb_set_errstring(ldb, error_string);
+				talloc_free(error_string);
+				return NULL;
+			}
+
+			ctrl[i] = talloc(ctrl, struct ldb_control);
+			if (!ctrl[i]) {
+				ldb_oom(ldb);
+				return NULL;
+			}
+			ctrl[i]->oid = talloc_strdup(ctrl[i], oid);
+			if (!ctrl[i]->oid) {
+				ldb_oom(ldb);
+				return NULL;
+			}
+			ctrl[i]->critical = crit;
+			ctrl[i]->data = NULL;
+
+			continue;
+		}
+
+		if (strncmp(control_strings[i], "rodc_join:", 10) == 0) {
+			const char *p;
+			int crit, ret;
+
+			p = &(control_strings[i][10]);
+			ret = sscanf(p, "%d", &crit);
+			if ((ret != 1) || (crit < 0) || (crit > 1)) {
+				error_string = talloc_asprintf(mem_ctx, "invalid rodc_join control syntax\n");
+				error_string = talloc_asprintf_append(error_string, " syntax: crit(b)\n");
+				error_string = talloc_asprintf_append(error_string, "   note: b = boolean");
+				ldb_set_errstring(ldb, error_string);
+				talloc_free(error_string);
+				return NULL;
+			}
+
+			ctrl[i] = talloc(ctrl, struct ldb_control);
+			if (!ctrl[i]) {
+				ldb_oom(ldb);
+				return NULL;
+			}
+			ctrl[i]->oid = LDB_CONTROL_RODC_DCPROMO_OID;
 			ctrl[i]->critical = crit;
 			ctrl[i]->data = NULL;
 

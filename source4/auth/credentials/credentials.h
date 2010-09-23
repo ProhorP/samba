@@ -44,6 +44,12 @@ enum credentials_use_kerberos {
 	CRED_MUST_USE_KERBEROS      /* Sometimes administrators are parinoid, so always do kerberos */
 };
 
+enum credentials_krb_forwardable {
+	CRED_AUTO_KRB_FORWARDABLE = 0, /* Default, follow library defaults */
+	CRED_NO_KRB_FORWARDABLE,       /* not forwardable */
+	CRED_FORCE_KRB_FORWARDABLE     /* forwardable */
+};
+
 #define CLI_CRED_NTLM2       0x01
 #define CLI_CRED_NTLMv2_AUTH 0x02
 #define CLI_CRED_LANMAN_AUTH 0x04
@@ -76,7 +82,9 @@ struct cli_credentials {
 	const char *domain;
 	const char *realm;
 	const char *principal;
-	const char *salt_principal;
+	char *salt_principal;
+	char *impersonate_principal;
+	char *target_service;
 
 	const char *bind_dn;
 
@@ -105,6 +113,7 @@ struct cli_credentials {
 	struct netlogon_creds_CredentialState *netlogon_creds;
 	enum netr_SchannelType secure_channel_type;
 	int kvno;
+	time_t password_last_changed_time;
 
 	struct smb_krb5_context *smb_krb5_context;
 
@@ -118,6 +127,9 @@ struct cli_credentials {
 
 	/* Should we be trying to use kerberos? */
 	enum credentials_use_kerberos use_kerberos;
+
+	/* Should we get a forwardable ticket? */
+	enum credentials_krb_forwardable krb_forwardable;
 
 	/* gensec features which should be used for connections */
 	uint32_t gensec_features;
@@ -161,7 +173,13 @@ int cli_credentials_get_krb5_context(struct cli_credentials *cred,
 int cli_credentials_get_ccache(struct cli_credentials *cred, 
 			       struct tevent_context *event_ctx,
 			       struct loadparm_context *lp_ctx,
-			       struct ccache_container **ccc);
+			       struct ccache_container **ccc,
+			       const char **error_string);
+int cli_credentials_get_named_ccache(struct cli_credentials *cred, 
+				     struct tevent_context *event_ctx,
+				     struct loadparm_context *lp_ctx,
+				     char *ccache_name,
+				     struct ccache_container **ccc, const char **error_string);
 int cli_credentials_get_keytab(struct cli_credentials *cred, 
 			       struct tevent_context *event_ctx,
 			       struct loadparm_context *lp_ctx,
@@ -180,9 +198,12 @@ int cli_credentials_get_server_gss_creds(struct cli_credentials *cred,
 int cli_credentials_get_client_gss_creds(struct cli_credentials *cred, 
 					 struct tevent_context *event_ctx,
 					 struct loadparm_context *lp_ctx,
-					 struct gssapi_creds_container **_gcc);
+					 struct gssapi_creds_container **_gcc,
+					 const char **error_string);
 void cli_credentials_set_kerberos_state(struct cli_credentials *creds, 
 					enum credentials_use_kerberos use_kerberos);
+void cli_credentials_set_krb_forwardable(struct cli_credentials *creds,
+					 enum credentials_krb_forwardable krb_forwardable);
 bool cli_credentials_set_domain(struct cli_credentials *cred, 
 				const char *val, 
 				enum credentials_obtained obtained);
@@ -209,6 +230,8 @@ bool cli_credentials_set_realm(struct cli_credentials *cred,
 			       enum credentials_obtained obtained);
 void cli_credentials_set_secure_channel_type(struct cli_credentials *cred,
 				     enum netr_SchannelType secure_channel_type);
+void cli_credentials_set_password_last_changed_time(struct cli_credentials *cred,
+							     time_t last_change_time);
 void cli_credentials_set_netlogon_creds(struct cli_credentials *cred, 
 					struct netlogon_creds_CredentialState *netlogon_creds);
 NTSTATUS cli_credentials_set_krb5_context(struct cli_credentials *cred, 
@@ -230,6 +253,7 @@ const char *cli_credentials_get_unparsed_name(struct cli_credentials *credential
 bool cli_credentials_set_password_callback(struct cli_credentials *cred,
 					   const char *(*password_cb) (struct cli_credentials *));
 enum netr_SchannelType cli_credentials_get_secure_channel_type(struct cli_credentials *cred);
+time_t cli_credentials_get_password_last_changed_time(struct cli_credentials *cred);
 void cli_credentials_set_kvno(struct cli_credentials *cred,
 			      int kvno);
 bool cli_credentials_set_nt_hash(struct cli_credentials *cred,
@@ -253,20 +277,28 @@ int cli_credentials_set_ccache(struct cli_credentials *cred,
 			       struct tevent_context *event_ctx,
 			       struct loadparm_context *lp_ctx,
 			       const char *name, 
-			       enum credentials_obtained obtained);
+			       enum credentials_obtained obtained,
+			       const char **error_string);
 bool cli_credentials_parse_password_file(struct cli_credentials *credentials, const char *file, enum credentials_obtained obtained);
 bool cli_credentials_parse_password_fd(struct cli_credentials *credentials, 
 				       int fd, enum credentials_obtained obtained);
 void cli_credentials_invalidate_ccache(struct cli_credentials *cred, 
 				       enum credentials_obtained obtained);
 void cli_credentials_set_salt_principal(struct cli_credentials *cred, const char *principal);
+void cli_credentials_set_impersonate_principal(struct cli_credentials *cred, const char *principal);
+void cli_credentials_set_target_service(struct cli_credentials *cred, const char *principal);
+const char *cli_credentials_get_salt_principal(struct cli_credentials *cred);
+const char *cli_credentials_get_impersonate_principal(struct cli_credentials *cred);
+const char *cli_credentials_get_target_service(struct cli_credentials *cred);
 enum credentials_use_kerberos cli_credentials_get_kerberos_state(struct cli_credentials *creds);
+enum credentials_krb_forwardable cli_credentials_get_krb_forwardable(struct cli_credentials *creds);
 NTSTATUS cli_credentials_set_secrets(struct cli_credentials *cred, 
 				     struct tevent_context *event_ctx,
 				     struct loadparm_context *lp_ctx,
 				     struct ldb_context *ldb,
 				     const char *base,
-				     const char *filter);
+				     const char *filter, 
+				     char **error_string);
  int cli_credentials_get_kvno(struct cli_credentials *cred);
 
 #endif /* __CREDENTIALS_H__ */

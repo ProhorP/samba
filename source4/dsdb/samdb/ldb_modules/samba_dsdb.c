@@ -49,18 +49,17 @@ static int read_at_rootdse_record(struct ldb_context *ldb, struct ldb_module *mo
 	struct ldb_dn *rootdse_dn;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 	if (!tmp_ctx) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	rootdse_dn = ldb_dn_new(tmp_ctx, ldb, "@ROOTDSE");
 	if (!rootdse_dn) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
-	ret = dsdb_module_search_dn(module, tmp_ctx, &rootdse_res, rootdse_dn, rootdse_attrs, 0);
+	ret = dsdb_module_search_dn(module, tmp_ctx, &rootdse_res, rootdse_dn,
+	                            rootdse_attrs, DSDB_FLAG_NEXT_MODULE);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
 		return ret;
@@ -87,8 +86,7 @@ static int prepare_modules_line(struct ldb_context *ldb,
 	char *full_string;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 	if (!tmp_ctx) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	if (backend_attr) {
@@ -112,22 +110,19 @@ static int prepare_modules_line(struct ldb_context *ldb,
 	}
 	if (!backend_full_list) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	backend_full_list = str_list_append_const(backend_full_list, backend_mod_list);
 	if (!backend_full_list) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	mod_list_string = str_list_join(tmp_ctx, backend_full_list, ',');
 	if (!mod_list_string) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	full_string = talloc_asprintf(tmp_ctx, "%s:%s", backend_dn, mod_list_string);
@@ -155,9 +150,11 @@ static int samba_dsdb_init(struct ldb_module *module)
 	  Some Known ordering constraints:
 	  - rootdse must be first, as it makes redirects from "" -> cn=rootdse
 	  - extended_dn_in must be before objectclass.c, as it resolves the DN
-	  - objectclass must be before password_hash, because password_hash checks
-	    that the objectclass is of type person (filled in by objectclass
-	    module when expanding the objectclass list)
+	  - objectclass must be before password_hash and samldb since these LDB
+	    modules require the expanded "objectClass" list
+	  - objectclass_attrs must be behind operational in order to see all
+	    attributes (the operational module protects and therefore
+	    suppresses per default some important ones)
 	  - partition must be last
 	  - each partition has its own module list then
 
@@ -175,20 +172,24 @@ static int samba_dsdb_init(struct ldb_module *module)
 					     "asq",
 					     "extended_dn_store",
 					     "extended_dn_in",
-					     "rdn_name",
 					     "objectclass",
 					     "descriptor",
 					     "acl",
 					     "samldb",
 					     "password_hash",
 					     "operational",
-					     "kludge_acl",
 					     "schema_load",
 					     "instancetype",
+					     "objectclass_attrs",
 					     NULL };
 
 	const char **link_modules;
+	static const char *fedora_ds_modules[] = {
+		"rdn_name", NULL };
+	static const char *openldap_modules[] = {
+		NULL };
 	static const char *tdb_modules_list[] = {
+		"rdn_name",
 		"subtree_delete",
 		"repl_meta_data",
 		"subtree_rename",
@@ -215,15 +216,13 @@ static int samba_dsdb_init(struct ldb_module *module)
 	const char *backendType, *serverRole;
 
 	if (!tmp_ctx) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	samba_dsdb_dn = ldb_dn_new(tmp_ctx, ldb, "@SAMBA_DSDB");
 	if (!samba_dsdb_dn) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 #define CHECK_LDB_RET(check_ret)				\
@@ -234,7 +233,8 @@ static int samba_dsdb_init(struct ldb_module *module)
 		}						\
 	} while (0)
 
-	ret = dsdb_module_search_dn(module, tmp_ctx, &res, samba_dsdb_dn, samba_dsdb_attrs, 0);
+	ret = dsdb_module_search_dn(module, tmp_ctx, &res, samba_dsdb_dn,
+	                            samba_dsdb_attrs, DSDB_FLAG_NEXT_MODULE);
 	if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		backendType = "ldb";
 		serverRole = "domain controller";
@@ -251,13 +251,20 @@ static int samba_dsdb_init(struct ldb_module *module)
 		extended_dn_module = extended_dn_module_ldb;
 		link_modules = tdb_modules_list;
 	} else {
-		link_modules = NULL;
 		if (strcasecmp(backendType, "fedora-ds") == 0) {
+			link_modules = fedora_ds_modules;
 			backend_modules = fedora_ds_backend_modules;
 			extended_dn_module = extended_dn_module_fds;
 		} else if (strcasecmp(backendType, "openldap") == 0) {
+			link_modules = openldap_modules;
 			backend_modules = openldap_backend_modules;
 			extended_dn_module = extended_dn_module_openldap;
+		} else {
+			return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR, "invalid backend type");
+		}
+		ret = ldb_set_opaque(ldb, "readOnlySchema", (void*)1);
+		if (ret != LDB_SUCCESS) {
+			ldb_set_errstring(ldb, "Failed to set readOnlySchema opaque");
 		}
 	}
 
@@ -265,8 +272,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 	do {							\
 		if (!final_module_list) {			\
 			talloc_free(tmp_ctx);			\
-			ldb_oom(ldb);				\
-			return LDB_ERR_OPERATIONS_ERROR;	\
+			return ldb_oom(ldb);			\
 		}						\
 	} while (0)
 
@@ -324,8 +330,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 	reverse_module_list = talloc_array(tmp_ctx, const char *, len+1);
 	if (!reverse_module_list) {
 		talloc_free(tmp_ctx);
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 	for (i=0; i < len; i++) {
 		reverse_module_list[i] = final_module_list[(len - 1) - i];
@@ -346,7 +351,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 	return ldb_next_init(module);
 }
 
-const struct ldb_module_ops ldb_samba_dsdb_module_ops = {
+_PUBLIC_ const struct ldb_module_ops ldb_samba_dsdb_module_ops = {
 	.name		   = "samba_dsdb",
 	.init_context	   = samba_dsdb_init,
 };

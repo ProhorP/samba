@@ -1,4 +1,4 @@
-/* 
+/*
    ldb database library
 
    Copyright (C) Andrew Tridgell  2004
@@ -6,7 +6,7 @@
      ** NOTE! The following LGPL license applies to the ldb
      ** library. This does NOT imply that all of Samba is released
      ** under the LGPL
-   
+
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Lesser General Public
    License as published by the Free Software Foundation; either
@@ -35,12 +35,12 @@
 #include "tools/cmdline.h"
 #include "ldbutil.h"
 
-static int failures;
+static unsigned int failures;
 static struct ldb_cmdline *options;
 
 static void usage(void)
 {
-	printf("Usage: ldbadd <options> <ldif...>\n");	
+	printf("Usage: ldbadd <options> <ldif...>\n");
 	printf("Adds records to a ldb, reading ldif the specified list of files\n\n");
 	ldb_cmdline_help("ldbadd", stdout);
 	exit(1);
@@ -50,7 +50,7 @@ static void usage(void)
 /*
   add records from an opened file
 */
-static int process_file(struct ldb_context *ldb, FILE *f, int *count)
+static int process_file(struct ldb_context *ldb, FILE *f, unsigned int *count)
 {
 	struct ldb_ldif *ldif;
 	int ret = LDB_SUCCESS;
@@ -68,7 +68,15 @@ static int process_file(struct ldb_context *ldb, FILE *f, int *count)
 			break;
 		}
 
-		ldif->msg = ldb_msg_canonicalize(ldb, ldif->msg);
+		ret = ldb_msg_normalize(ldb, ldif, ldif->msg, &ldif->msg);
+		if (ret != LDB_SUCCESS) {
+			fprintf(stderr,
+			        "ERR: Message canonicalize failed - %s\n",
+			        ldb_strerror(ret));
+			failures++;
+			ldb_ldif_read_free(ldb, ldif);
+			continue;
+		}
 
 		ret = ldb_add_ctrl(ldb, ldif->msg,req_ctrls);
 		if (ret != LDB_SUCCESS) {
@@ -93,9 +101,11 @@ static int process_file(struct ldb_context *ldb, FILE *f, int *count)
 int main(int argc, const char **argv)
 {
 	struct ldb_context *ldb;
-	int i, ret=0, count=0;
+	unsigned int i, count = 0;
+	int ret=0;
+	TALLOC_CTX *mem_ctx = talloc_new(NULL);
 
-	ldb = ldb_init(NULL, NULL);
+	ldb = ldb_init(mem_ctx, NULL);
 
 	options = ldb_cmdline_process(ldb, argc, argv, usage);
 
@@ -129,9 +139,9 @@ int main(int argc, const char **argv)
 		ldb_transaction_cancel(ldb);
 	}
 
-	talloc_free(ldb);
+	talloc_free(mem_ctx);
 
 	printf("Added %d records with %d failures\n", count, failures);
-	
+
 	return ret;
 }

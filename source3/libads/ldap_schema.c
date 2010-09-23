@@ -19,6 +19,8 @@
 */
 
 #include "includes.h"
+#include "ads.h"
+#include "libads/ldap_schema.h"
 
 #ifdef HAVE_LDAP
 

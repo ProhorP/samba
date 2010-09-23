@@ -29,7 +29,10 @@
 #include "librpc/rpc/dcerpc.h"
 #include "auth/credentials/credentials.h"
 #include "auth/gensec/gensec.h"
+#include "auth/auth.h"
+#include "auth/system_session_proto.h"
 #include "param/param.h"
+#include "lib/util/tsort.h"
 
 /* the list of currently registered GENSEC backends */
 static struct gensec_security_ops **generic_security_ops;
@@ -44,7 +47,7 @@ _PUBLIC_ struct gensec_security_ops **gensec_security_all(void)
 
 bool gensec_security_ops_enabled(struct gensec_security_ops *ops, struct gensec_security *security)
 {
-	return lp_parm_bool(security->settings->lp_ctx, NULL, "gensec", ops->name, ops->enabled);
+	return lpcfg_parm_bool(security->settings->lp_ctx, NULL, "gensec", ops->name, ops->enabled);
 }
 
 /* Sometimes we want to force only kerberos, sometimes we want to
@@ -594,6 +597,8 @@ _PUBLIC_ NTSTATUS gensec_client_start(TALLOC_CTX *mem_ctx,
 
 	return status;
 }
+
+
 
 /**
   Start the GENSEC system, in server mode, returning a context pointer.
@@ -1291,14 +1296,13 @@ _PUBLIC_ const struct tsocket_address *gensec_get_remote_address(struct gensec_s
 	return gensec_security->remote_addr;
 }
 
-
 /** 
  * Set the target principal (assuming it it known, say from the SPNEGO reply)
  *  - ensures it is talloc()ed 
  *
  */
 
-NTSTATUS gensec_set_target_principal(struct gensec_security *gensec_security, const char *principal) 
+_PUBLIC_ NTSTATUS gensec_set_target_principal(struct gensec_security *gensec_security, const char *principal)
 {
 	gensec_security->target.principal = talloc_strdup(gensec_security, principal);
 	if (!gensec_security->target.principal) {
@@ -1314,6 +1318,28 @@ const char *gensec_get_target_principal(struct gensec_security *gensec_security)
 	}
 
 	return NULL;
+}
+
+NTSTATUS gensec_generate_session_info(TALLOC_CTX *mem_ctx,
+				      struct gensec_security *gensec_security,
+				      struct auth_serversupplied_info *server_info,
+				      struct auth_session_info **session_info)
+{
+	NTSTATUS nt_status;
+	if (gensec_security->auth_context) {
+		uint32_t flags = AUTH_SESSION_INFO_DEFAULT_GROUPS;
+		if (server_info->authenticated) {
+			flags |= AUTH_SESSION_INFO_AUTHENTICATED;
+		}
+		nt_status = gensec_security->auth_context->generate_session_info(mem_ctx, gensec_security->auth_context,
+										 server_info,
+										 flags,
+										 session_info);
+	} else {
+		nt_status = auth_generate_simple_session_info(mem_ctx,
+							      server_info, session_info);
+	}
+	return nt_status;
 }
 
 /*
@@ -1371,12 +1397,12 @@ static int sort_gensec(struct gensec_security_ops **gs1, struct gensec_security_
 
 int gensec_setting_int(struct gensec_settings *settings, const char *mechanism, const char *name, int default_value)
 {
-	return lp_parm_int(settings->lp_ctx, NULL, mechanism, name, default_value);
+	return lpcfg_parm_int(settings->lp_ctx, NULL, mechanism, name, default_value);
 }
 
 bool gensec_setting_bool(struct gensec_settings *settings, const char *mechanism, const char *name, bool default_value)
 {
-	return lp_parm_bool(settings->lp_ctx, NULL, mechanism, name, default_value);
+	return lpcfg_parm_bool(settings->lp_ctx, NULL, mechanism, name, default_value);
 }
 
 /*
@@ -1405,7 +1431,7 @@ _PUBLIC_ NTSTATUS gensec_init(struct loadparm_context *lp_ctx)
 
 	talloc_free(shared_init);
 
-	qsort(generic_security_ops, gensec_num_backends, sizeof(*generic_security_ops), QSORT_CAST sort_gensec);
+	TYPESAFE_QSORT(generic_security_ops, gensec_num_backends, sort_gensec);
 	
 	return NT_STATUS_OK;
 }

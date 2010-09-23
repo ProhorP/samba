@@ -20,6 +20,8 @@
 #include "includes.h"
 #include "winbindd.h"
 #include "winbindd_proto.h"
+#include "idmap.h"
+#include "idmap_cache.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -29,7 +31,7 @@
  If mapping is not possible returns an error.
 *****************************************************************/  
 
-NTSTATUS idmap_uid_to_sid(const char *domname, DOM_SID *sid, uid_t uid)
+NTSTATUS idmap_uid_to_sid(const char *domname, struct dom_sid *sid, uid_t uid)
 {
 	NTSTATUS ret;
 	struct id_map map;
@@ -88,7 +90,7 @@ backend:
  If mapping is not possible returns an error.
 *****************************************************************/  
 
-NTSTATUS idmap_gid_to_sid(const char *domname, DOM_SID *sid, gid_t gid)
+NTSTATUS idmap_gid_to_sid(const char *domname, struct dom_sid *sid, gid_t gid)
 {
 	NTSTATUS ret;
 	struct id_map map;
@@ -147,7 +149,7 @@ backend:
  If mapping is not possible or SID maps to a GID returns an error.
 *****************************************************************/  
 
-NTSTATUS idmap_sid_to_uid(const char *dom_name, DOM_SID *sid, uid_t *uid)
+NTSTATUS idmap_sid_to_uid(const char *dom_name, struct dom_sid *sid, uid_t *uid)
 {
 	NTSTATUS ret;
 	struct id_map map;
@@ -178,37 +180,8 @@ backend:
 
 	ret = idmap_backends_sid_to_unixid(dom_name, &map);
 
-	if (NT_STATUS_IS_OK(ret) && (map.status == ID_MAPPED)) {
-		if (map.xid.type != ID_TYPE_UID) {
-			DEBUG(10, ("sid [%s] not mapped to a uid "
-				   "[%u,%u,%u]\n",
-				   sid_string_dbg(sid),
-				   map.status,
-				   map.xid.type,
-				   map.xid.id));
-			if (winbindd_use_idmap_cache()) {
-				idmap_cache_set_sid2uid(sid, -1);
-			}
-			return NT_STATUS_NONE_MAPPED;
-		}
-		goto done;
-	}
-
-	if (dom_name[0] != '\0') {
-		/*
-		 * We had the task to go to a specific domain which
-		 * could not answer our request. Fail.
-		 */
-		if (winbindd_use_idmap_cache()) {
-			idmap_cache_set_sid2uid(sid, -1);
-		}
-		return NT_STATUS_NONE_MAPPED;
-	}
-
-	ret = idmap_new_mapping(sid, ID_TYPE_UID, &map.xid);
-
 	if (!NT_STATUS_IS_OK(ret)) {
-		DEBUG(10, ("idmap_new_mapping failed: %s\n",
+		DEBUG(10, ("idmap_backends_sid_to_unixid failed: %s\n",
 			   nt_errstr(ret)));
 		if (winbindd_use_idmap_cache()) {
 			idmap_cache_set_sid2uid(sid, -1);
@@ -216,7 +189,27 @@ backend:
 		return ret;
 	}
 
-done:
+	if (map.status != ID_MAPPED) {
+		DEBUG(10, ("sid [%s] is not mapped\n", sid_string_dbg(sid)));
+		if (winbindd_use_idmap_cache()) {
+			idmap_cache_set_sid2uid(sid, -1);
+		}
+		return NT_STATUS_NONE_MAPPED;
+	}
+
+	if (map.xid.type != ID_TYPE_UID) {
+		DEBUG(10, ("sid [%s] not mapped to a uid "
+			   "[%u,%u,%u]\n",
+			   sid_string_dbg(sid),
+			   map.status,
+			   map.xid.type,
+			   map.xid.id));
+		if (winbindd_use_idmap_cache()) {
+			idmap_cache_set_sid2uid(sid, -1);
+		}
+		return NT_STATUS_NONE_MAPPED;
+	}
+
 	*uid = (uid_t)map.xid.id;
 	if (winbindd_use_idmap_cache()) {
 		idmap_cache_set_sid2uid(sid, *uid);
@@ -229,7 +222,7 @@ done:
  If mapping is not possible or SID maps to a UID returns an error.
 *****************************************************************/  
 
-NTSTATUS idmap_sid_to_gid(const char *domname, DOM_SID *sid, gid_t *gid)
+NTSTATUS idmap_sid_to_gid(const char *domname, struct dom_sid *sid, gid_t *gid)
 {
 	NTSTATUS ret;
 	struct id_map map;
@@ -259,48 +252,59 @@ backend:
 	map.xid.type = ID_TYPE_GID;
 
 	ret = idmap_backends_sid_to_unixid(domname, &map);
-	if (NT_STATUS_IS_OK(ret) && (map.status == ID_MAPPED)) {
-		if (map.xid.type != ID_TYPE_GID) {
-			DEBUG(10, ("sid [%s] not mapped to a gid "
-				   "[%u,%u,%u]\n",
-				   sid_string_dbg(sid),
-				   map.status,
-				   map.xid.type,
-				   map.xid.id));
-			if (winbindd_use_idmap_cache()) {
-				idmap_cache_set_sid2gid(sid, -1);
-			}
-			return NT_STATUS_NONE_MAPPED;
+
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(10, ("idmap_backends_sid_to_unixid failed: %s\n",
+			   nt_errstr(ret)));
+		if (winbindd_use_idmap_cache()) {
+			idmap_cache_set_sid2uid(sid, -1);
 		}
-		goto done;
+		return ret;
 	}
 
-	if (domname[0] != '\0') {
-		/*
-		 * We had the task to go to a specific domain which
-		 * could not answer our request. Fail.
-		 */
+	if (map.status != ID_MAPPED) {
+		DEBUG(10, ("sid [%s] is not mapped\n", sid_string_dbg(sid)));
 		if (winbindd_use_idmap_cache()) {
 			idmap_cache_set_sid2uid(sid, -1);
 		}
 		return NT_STATUS_NONE_MAPPED;
 	}
 
-	ret = idmap_new_mapping(sid, ID_TYPE_GID, &map.xid);
-
-	if (!NT_STATUS_IS_OK(ret)) {
-		DEBUG(10, ("idmap_new_mapping failed: %s\n",
-			   nt_errstr(ret)));
+	if (map.xid.type != ID_TYPE_GID) {
+		DEBUG(10, ("sid [%s] not mapped to a gid "
+			   "[%u,%u,%u]\n",
+			   sid_string_dbg(sid),
+			   map.status,
+			   map.xid.type,
+			   map.xid.id));
 		if (winbindd_use_idmap_cache()) {
 			idmap_cache_set_sid2gid(sid, -1);
 		}
-		return ret;
+		return NT_STATUS_NONE_MAPPED;
 	}
 
-done:
 	*gid = map.xid.id;
 	if (winbindd_use_idmap_cache()) {
 		idmap_cache_set_sid2gid(sid, *gid);
 	}
 	return NT_STATUS_OK;
+}
+
+/**
+ * check whether a given unix id is inside the filter range of an idmap domain
+ */
+bool idmap_unix_id_is_in_range(uint32_t id, struct idmap_domain *dom)
+{
+	if (id == 0) {
+		/* 0 is not an allowed unix id for id mapping */
+		return false;
+	}
+
+	if ((dom->low_id && (id < dom->low_id)) ||
+	    (dom->high_id && (id > dom->high_id)))
+	{
+		return false;
+	}
+
+	return true;
 }

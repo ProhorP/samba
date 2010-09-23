@@ -19,6 +19,10 @@
 
 #include "includes.h"
 #include "utils/net.h"
+#include "ads.h"
+#include "../libgpo/gpo.h"
+#include "libgpo/gpo_proto.h"
+#include "../libds/common/flags.h"
 
 #ifdef HAVE_ADS
 
@@ -34,12 +38,13 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 	uint32 flags = 0;
 	struct GROUP_POLICY_OBJECT *gpo;
 	NTSTATUS result;
-	struct nt_user_token *token = NULL;
+	struct security_token *token = NULL;
 
 	if (argc < 1 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net ads gpo refresh <username|machinename>\n"
-			   "  Lists all GPOs assigned to an account and "
+		d_printf("%s\n%s\n%s",
+			 _("Usage:"),
+			 _("net ads gpo refresh <username|machinename>"),
+			 _("  Lists all GPOs assigned to an account and "
 			   "downloads them\n"
 			   "    username\tUser to refresh GPOs for\n"
 			   "    machinename\tMachine to refresh GPOs for\n"));
@@ -152,7 +157,7 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 
 	{
 		WERROR werr = gp_reg_state_read(mem_ctx, flags,
-						&token->user_sids[0],
+						&token->sids[0],
 						&read_list);
 		if (!W_ERROR_IS_OK(werr)) {
 			d_printf(_("failed: %s\n"), win_errstr(werr));
@@ -223,9 +228,11 @@ static int net_ads_gpo_list_all(struct net_context *c, int argc, const char **ar
 	};
 
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net ads gpo listall\n"
-			   "    List all GPOs on the DC\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("List all GPOs on the DC"));
 		return 0;
 	}
 
@@ -243,7 +250,7 @@ static int net_ads_gpo_list_all(struct net_context *c, int argc, const char **ar
 					    LDAP_SCOPE_SUBTREE,
 					    "(objectclass=groupPolicyContainer)",
 					    attrs,
-					    DACL_SECURITY_INFORMATION,
+					    SECINFO_DACL,
 					    &res);
 
 	if (!ADS_ERR_OK(status)) {
@@ -286,7 +293,7 @@ out:
 
 static int net_ads_gpo_list(struct net_context *c, int argc, const char **argv)
 {
-	ADS_STRUCT *ads;
+	ADS_STRUCT *ads = NULL;
 	ADS_STATUS status;
 	LDAPMessage *res = NULL;
 	TALLOC_CTX *mem_ctx;
@@ -294,12 +301,13 @@ static int net_ads_gpo_list(struct net_context *c, int argc, const char **argv)
 	uint32 uac = 0;
 	uint32 flags = 0;
 	struct GROUP_POLICY_OBJECT *gpo_list;
-	struct nt_user_token *token = NULL;
+	struct security_token *token = NULL;
 
 	if (argc < 1 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net ads gpo list <username|machinename>\n"
-			   "  Lists all GPOs for machine/user\n"
+		d_printf("%s\n%s\n%s",
+			 _("Usage:"),
+			 _("net ads gpo list <username|machinename>"),
+			 _("  Lists all GPOs for machine/user\n"
 			   "    username\tUser to list GPOs for\n"
 			   "    machinename\tMachine to list GPOs for\n"));
 		return -1;
@@ -354,7 +362,6 @@ out:
 	return 0;
 }
 
-#if 0
 static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 {
 	TALLOC_CTX *mem_ctx;
@@ -364,7 +371,7 @@ static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 	struct GROUP_POLICY_OBJECT *gpo_list;
 	uint32 uac = 0;
 	uint32 flags = 0;
-	struct nt_user_token *token = NULL;
+	struct security_token *token = NULL;
 	const char *filter = NULL;
 
 	if (argc < 1 || c->display_usage) {
@@ -386,6 +393,8 @@ static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 	}
 
 	status = ads_startup(c, false, &ads);
+	/* filter = cse_gpo_name_to_guid_string("Security"); */
+
 	if (!ADS_ERR_OK(status)) {
 		d_printf("got: %s\n", ads_errstr(status));
 		goto out;
@@ -438,7 +447,6 @@ out:
 	talloc_destroy(mem_ctx);
 	return 0;
 }
-#endif
 
 static int net_ads_gpo_link_get(struct net_context *c, int argc, const char **argv)
 {
@@ -448,9 +456,10 @@ static int net_ads_gpo_link_get(struct net_context *c, int argc, const char **ar
 	struct GP_LINK gp_link;
 
 	if (argc < 1 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net ads gpo linkget <container>\n"
-			   "  Lists gPLink of a containter\n"
+		d_printf("%s\n%s\n%s",
+			 _("Usage:"),
+			 _("net ads gpo linkget <container>"),
+			 _("  Lists gPLink of a containter\n"
 			   "    container\tContainer to get link for\n"));
 		return -1;
 	}
@@ -489,9 +498,10 @@ static int net_ads_gpo_link_add(struct net_context *c, int argc, const char **ar
 	TALLOC_CTX *mem_ctx;
 
 	if (argc < 2 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net ads gpo linkadd <linkdn> <gpodn> [options]\n"
-			   "  Link a container to a GPO\n"
+		d_printf("%s\n%s\n%s",
+			 _("Usage:"),
+			 _("net ads gpo linkadd <linkdn> <gpodn> [options]"),
+			 _("  Link a container to a GPO\n"
 			   "    linkdn\tContainer to link to a GPO\n"
 			   "    gpodn\tGPO to link container to\n"));
 		d_printf(_("note: DNs must be provided properly escaped.\n"
@@ -576,9 +586,10 @@ static int net_ads_gpo_get_gpo(struct net_context *c, int argc, const char **arg
 	struct GROUP_POLICY_OBJECT gpo;
 
 	if (argc < 1 || c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net ads gpo getgpo <gpo>\n"
-			   "  List speciefied GPO\n"
+		d_printf("%s\n%s\n%s",
+			 _("Usage:"),
+			 _("net ads gpo getgpo <gpo>"),
+			 _("  List speciefied GPO\n"
 			   "    gpo\t\tGPO to list\n"));
 		return -1;
 	}
@@ -617,7 +628,6 @@ out:
 int net_ads_gpo(struct net_context *c, int argc, const char **argv)
 {
 	struct functable func[] = {
-#if 0
 		{
 			"apply",
 			net_ads_gpo_apply,
@@ -626,7 +636,6 @@ int net_ads_gpo(struct net_context *c, int argc, const char **argv)
 			"net ads gpo apply\n"
 			"    Apply GPO to container"
 		},
-#endif
 		{
 			"getgpo",
 			net_ads_gpo_get_gpo,

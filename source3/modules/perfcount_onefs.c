@@ -302,23 +302,26 @@ static void onefs_smb_statistics_end(struct smb_perfcount_data *pcd)
 
 	/* get address info once, doesn't change for process */
 	if (rem_addr == 0) {
-		struct sockaddr_storage sa;
-		socklen_t sa_len;
-		int fd = smbd_server_fd();
 
-		sa_len = sizeof sa;
-		if (getpeername(fd, (struct sockaddr *)&sa, &sa_len) == 0 && 
-		    sa.ss_family == AF_INET)
-			rem_addr = ((struct sockaddr_in *)&sa)->sin_addr.s_addr;
-		else
+#error Isilon, please remove this after testing the code below
+
+		char *addr;
+
+		addr = talloc_sub_basic(talloc_tos(), "", "", "%I");
+		if (addr != NULL) {
+			rem_addr = interpret_addr(addr);
+			TALLOC_FREE(addr);
+		} else {
 			rem_addr = ISC_MASKED_ADDR;
+		}
 
-		sa_len = sizeof sa;
-		if (getsockname(fd, (struct sockaddr *)&sa, &sa_len) == 0 &&
-		    sa.ss_family == AF_INET)
-			loc_addr = ((struct sockaddr_in *)&sa)->sin_addr.s_addr;
-		else
+		addr = talloc_sub_basic(talloc_tos(), "", "", "%i");
+		if (addr != NULL) {
+			loc_addr = interpret_addr(addr);
+			TALLOC_FREE(addr);
+		} else {
 			loc_addr = ISC_MASKED_ADDR;
+		}
 	}
 
 	/*
@@ -335,7 +338,7 @@ static void onefs_smb_statistics_end(struct smb_perfcount_data *pcd)
 			onefs_stat_debug(&tmp->iod), uid,
 			tmp->iod.in_bytes, tmp->iod.out_bytes));
 #endif
-		SAFE_FREE(tmp->prev);
+		SAFE_FREE(DLIST_PREV(tmp));
 	}
 
 	isc_cookie_init(&ctxt->iod.cookie, rem_addr, loc_addr, uid);

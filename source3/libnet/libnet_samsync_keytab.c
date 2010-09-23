@@ -19,9 +19,13 @@
 */
 
 #include "includes.h"
-#include "libnet/libnet.h"
+#include "smb_krb5.h"
+#include "ads.h"
+#include "libnet/libnet_keytab.h"
+#include "libnet/libnet_samsync.h"
+#include "krb5_env.h"
 
-#if defined(HAVE_ADS) && defined(ENCTYPE_ARCFOUR_HMAC)
+#if defined(HAVE_ADS)
 
 /****************************************************************
 ****************************************************************/
@@ -293,7 +297,7 @@ static NTSTATUS close_keytab(TALLOC_CTX *mem_ctx,
 	return NT_STATUS_NOT_SUPPORTED;
 }
 
-#endif /* defined(HAVE_ADS) && defined(ENCTYPE_ARCFOUR_HMAC) */
+#endif /* defined(HAVE_ADS) */
 
 const struct samsync_ops libnet_samsync_keytab_ops = {
 	.startup		= init_keytab,

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007
@@ -23,12 +23,11 @@ Note that this just tests the bindings work. It does not intend to test
 the functionality, that's already done in other tests.
 """
 
-import unittest
 from samba import auth
+import samba.tests
 
-class AuthTests(unittest.TestCase):
+class AuthTests(samba.tests.TestCase):
+
     def test_system_session(self):
         auth.system_session()
 
-    def test_system_session_anon(self):
-        auth.system_session_anonymous()

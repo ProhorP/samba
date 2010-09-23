@@ -17,9 +17,10 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <Python.h>
 #include "replace.h"
 #include <talloc.h>
-#include <pytalloc.h>
+#include "pytalloc.h"
 
 /**
  * Simple dealloc for talloc-wrapping PyObjects
@@ -46,8 +47,17 @@ PyObject *py_talloc_steal_ex(PyTypeObject *py_type, TALLOC_CTX *mem_ctx,
 	if (talloc_steal(ret->talloc_ctx, mem_ctx) == NULL) {
 		return NULL;
 	}
+	talloc_set_name_const(ret->talloc_ctx, py_type->tp_name);
 	ret->ptr = ptr;
 	return (PyObject *)ret;
+}
+
+/**
+ * Import an existing talloc pointer into a Python object.
+ */
+PyObject *py_talloc_steal(PyTypeObject *py_type, void *ptr)
+{
+	return py_talloc_steal_ex(py_type, ptr, ptr);
 }
 
 
@@ -58,7 +68,13 @@ PyObject *py_talloc_steal_ex(PyTypeObject *py_type, TALLOC_CTX *mem_ctx,
  */
 PyObject *py_talloc_reference_ex(PyTypeObject *py_type, TALLOC_CTX *mem_ctx, void *ptr)
 {
-	py_talloc_Object *ret = (py_talloc_Object *)py_type->tp_alloc(py_type, 0);
+	py_talloc_Object *ret;
+
+	if (ptr == NULL) {
+		Py_RETURN_NONE;
+	}
+
+	ret = (py_talloc_Object *)py_type->tp_alloc(py_type, 0);
 	ret->talloc_ctx = talloc_new(NULL);
 	if (ret->talloc_ctx == NULL) {
 		return NULL;
@@ -66,6 +82,7 @@ PyObject *py_talloc_reference_ex(PyTypeObject *py_type, TALLOC_CTX *mem_ctx, voi
 	if (talloc_reference(ret->talloc_ctx, mem_ctx) == NULL) {
 		return NULL;
 	}
+	talloc_set_name_const(ret->talloc_ctx, py_type->tp_name);
 	ret->ptr = ptr;
 	return (PyObject *)ret;
 }
@@ -89,5 +106,25 @@ static void py_cobject_talloc_free(void *ptr)
 
 PyObject *PyCObject_FromTallocPtr(void *ptr)
 {
+	if (ptr == NULL) {
+		Py_RETURN_NONE;
+	}
 	return PyCObject_FromVoidPtr(ptr, py_cobject_talloc_free);
+}
+
+PyObject *PyString_FromString_check_null(const char *ptr)
+{
+	if (ptr == NULL) {
+		Py_RETURN_NONE;
+	}
+	return PyString_FromString(ptr);
+}
+
+PyObject *PyUnicode_Decode_check_null(const void *ptr, size_t len,
+				      const char *charset, const char *options)
+{
+	if (ptr == NULL) {
+		Py_RETURN_NONE;
+	}
+	return PyUnicode_Decode(ptr, len, charset, options);
 }

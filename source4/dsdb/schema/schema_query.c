@@ -23,6 +23,7 @@
 #include "includes.h"
 #include "dsdb/samdb/samdb.h"
 #include "lib/util/binsearch.h"
+#include "lib/util/tsort.h"
 
 static const char **dsdb_full_attribute_list_internal(TALLOC_CTX *mem_ctx, 
 						      const struct dsdb_schema *schema, 
@@ -64,11 +65,9 @@ const struct dsdb_attribute *dsdb_attribute_by_attributeID_id(const struct dsdb_
 
 	/* check for msDS-IntId type attribute */
 	if (dsdb_pfm_get_attid_type(id) == dsdb_attid_type_intid) {
-		for (c = schema->attributes; c; c = c->next) {
-			if (c->msDS_IntId == id) {
-				return c;
-			}
-		}
+		BINARY_ARRAY_SEARCH_P(schema->attributes_by_msDS_IntId,
+				      schema->num_int_id_attr, msDS_IntId, id, uint32_cmp, c);
+		return c;
 	}
 
 	BINARY_ARRAY_SEARCH_P(schema->attributes_by_attributeID_id,
@@ -218,7 +217,7 @@ WERROR dsdb_linked_attribute_lDAPDisplayName_list(const struct dsdb_schema *sche
 {
 	const char **attr_list = NULL;
 	struct dsdb_attribute *cur;
-	int i = 0;
+	unsigned int i = 0;
 	for (cur = schema->attributes; cur; cur = cur->next) {
 		if (cur->linkID == 0) continue;
 		
@@ -238,7 +237,7 @@ const char **merge_attr_list(TALLOC_CTX *mem_ctx,
 		       const char **attrs, const char * const*new_attrs) 
 {
 	const char **ret_attrs;
-	int i;
+	unsigned int i;
 	size_t new_len, orig_len = str_list_length(attrs);
 	if (!new_attrs) {
 		return attrs;
@@ -338,7 +337,7 @@ static const char **dsdb_full_attribute_list_internal(TALLOC_CTX *mem_ctx,
 						      const char **class_list,
 						      enum dsdb_attr_list_query query)
 {
-	int i;
+	unsigned int i;
 	const char **attr_list = NULL;
 
 	for (i=0; class_list && class_list[i]; i++) {
@@ -365,7 +364,7 @@ static const char **dsdb_full_attribute_list_internal_el(TALLOC_CTX *mem_ctx,
 							 const struct ldb_message_element *el,
 							 enum dsdb_attr_list_query query)
 {
-	int i;
+	unsigned int i;
 	const char **attr_list = NULL;
 
 	for (i=0; i < el->num_values; i++) {
@@ -379,11 +378,8 @@ static const char **dsdb_full_attribute_list_internal_el(TALLOC_CTX *mem_ctx,
 	return attr_list;
 }
 
-static int qsort_string(const void *v1,
-			const void *v2)
+static int qsort_string(const char **s1, const char **s2)
 {
-	char * const *s1 = v1;
-	char * const *s2 = v2;
 	return strcasecmp(*s1, *s2);
 }
 
@@ -393,12 +389,10 @@ static const char **dedup_attr_list(const char **attr_list)
 	size_t new_len = str_list_length(attr_list);
 	/* Remove duplicates */
 	if (new_len > 1) {
-		int i;
-		qsort(attr_list, new_len,
-		      sizeof(*attr_list),
-		      (comparison_fn_t)qsort_string);
+		size_t i;
+		TYPESAFE_QSORT(attr_list, new_len, qsort_string);
 		
-		for (i=1 ; i < new_len; i++) {
+		for (i=1; i < new_len; i++) {
 			const char **val1 = &attr_list[i-1];
 			const char **val2 = &attr_list[i];
 			if (ldb_attr_cmp(*val1, *val2) == 0) {

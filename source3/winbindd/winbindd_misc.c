@@ -130,6 +130,8 @@ void winbindd_list_trusted_domains(struct winbindd_cli_state *state)
 			is_online ? "Online" : "Offline" );
 	}
 
+	state->response->data.num_entries = num_domains;
+
 	extra_data_len = strlen(extra_data);
 	if (extra_data_len > 0) {
 
@@ -203,25 +205,6 @@ enum winbindd_result winbindd_dual_list_trusted_domains(struct winbindd_domain *
 		state->response->extra_data.data = extra_data;
 		state->response->length += extra_data_len+1;
 	}
-
-	return WINBINDD_OK;
-}
-
-/* This is the child-only version of --sequence. It only allows for a single
- * domain (ie "our" one) to be displayed. */
-
-enum winbindd_result winbindd_dual_show_sequence(struct winbindd_domain *domain,
-						 struct winbindd_cli_state *state)
-{
-	DEBUG(3, ("[%5lu]: show sequence\n", (unsigned long)state->pid));
-
-	/* Ensure null termination */
-	state->request->domain_name[sizeof(state->request->domain_name)-1]='\0';
-
-	domain->methods->sequence_number(domain, &domain->sequence_number);
-
-	state->response->data.sequence_number =
-		domain->sequence_number;
 
 	return WINBINDD_OK;
 }

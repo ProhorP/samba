@@ -24,6 +24,7 @@
 #include "dsdb/samdb/samdb.h"
 #include "libcli/security/security.h"
 #include "param/param.h"
+#include "auth/session.h"
 
 /*
   format a drsuapi_DsReplicaObjectIdentifier naming context as a string
@@ -100,17 +101,24 @@ int drsuapi_search_with_extended_dn(struct ldb_context *ldb,
 	return ret;
 }
 
-WERROR drs_security_level_check(struct dcesrv_call_state *dce_call, const char* call)
+WERROR drs_security_level_check(struct dcesrv_call_state *dce_call,
+				const char* call,
+				enum security_user_level minimum_level,
+				const struct dom_sid *domain_sid)
 {
-	if (lp_parm_bool(dce_call->conn->dce_ctx->lp_ctx, NULL, 
+	enum security_user_level level;
+
+	if (lpcfg_parm_bool(dce_call->conn->dce_ctx->lp_ctx, NULL,
 			 "drs", "disable_sec_check", false)) {
 		return WERR_OK;
 	}
 
-	if (security_session_user_level(dce_call->conn->auth_state.session_info) <
-		SECURITY_DOMAIN_CONTROLLER) {
+	level = security_session_user_level(dce_call->conn->auth_state.session_info, domain_sid);
+	if (level < minimum_level) {
 		if (call) {
-			DEBUG(0,("%s refused for security token\n", call));
+			DEBUG(0,("%s refused for security token (level=%u)\n",
+				 call, (unsigned)level));
+			security_token_debug(2, dce_call->conn->auth_state.session_info->security_token);
 		}
 		return WERR_DS_DRA_ACCESS_DENIED;
 	}
@@ -146,5 +154,4 @@ void drsuapi_process_secret_attribute(struct drsuapi_DsReplicaAttribute *attr,
 	default:
 		return;
 	}
-	return;
 }

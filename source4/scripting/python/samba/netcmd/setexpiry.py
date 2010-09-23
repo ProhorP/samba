@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # Sets the user password expiry on a Samba4 server
 # Copyright Jelmer Vernooij 2008
@@ -28,7 +28,7 @@ from samba.auth import system_session
 from samba.samdb import SamDB
 
 class cmd_setexpiry(Command):
-    """Set the expiration of a user account."""
+    """Sets the expiration of a user account"""
 
     synopsis = "setexpiry [username] [options]"
 
@@ -61,12 +61,7 @@ class cmd_setexpiry(Command):
         if days is None:
             days = 0
 
-        if H is not None:
-            url = H
-        else:
-            url = lp.get("sam database")
-
-        samdb = SamDB(url=url, session_info=system_session(),
+        samdb = SamDB(url=H, session_info=system_session(),
             credentials=creds, lp=lp)
 
         samdb.setexpiry(filter, days*24*3600, no_expiry_req=noexpiry)

@@ -19,10 +19,22 @@
  */
 
 #include "includes.h"
-#include "libnet/libnet.h"
+#include "ads.h"
+#include "librpc/gen_ndr/ndr_libnet_join.h"
+#include "libnet/libnet_join.h"
 #include "libcli/auth/libcli_auth.h"
 #include "../librpc/gen_ndr/cli_samr.h"
+#include "rpc_client/init_samr.h"
 #include "../librpc/gen_ndr/cli_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
+#include "../librpc/gen_ndr/cli_netlogon.h"
+#include "rpc_client/cli_netlogon.h"
+#include "lib/smbconf/smbconf.h"
+#include "lib/smbconf/smbconf_reg.h"
+#include "../libds/common/flags.h"
+#include "secrets.h"
+#include "rpc_client/init_lsa.h"
+#include "krb5_env.h"
 
 /****************************************************************
 ****************************************************************/
@@ -103,6 +115,7 @@ static ADS_STATUS libnet_connect_ads(const char *dns_domain_name,
 {
 	ADS_STATUS status;
 	ADS_STRUCT *my_ads = NULL;
+	char *cp;
 
 	my_ads = ads_init(dns_domain_name,
 			  netbios_domain_name,
@@ -114,6 +127,12 @@ static ADS_STATUS libnet_connect_ads(const char *dns_domain_name,
 	if (user_name) {
 		SAFE_FREE(my_ads->auth.user_name);
 		my_ads->auth.user_name = SMB_STRDUP(user_name);
+		if ((cp = strchr_m(my_ads->auth.user_name, '@'))!=0) {
+			*cp++ = '\0';
+			SAFE_FREE(my_ads->auth.realm);
+			my_ads->auth.realm = smb_xstrdup(cp);
+			strupper_m(my_ads->auth.realm);
+		}
 	}
 
 	if (password) {
@@ -965,12 +984,6 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 	/* Fill in the additional account flags now */
 
 	acct_flags |= ACB_PWNOEXP;
-	if (r->out.domain_is_ad) {
-#if !defined(ENCTYPE_ARCFOUR_HMAC)
-		acct_flags |= ACB_USE_DES_KEY_ONLY;
-#endif
-		;;
-	}
 
 	/* Set account flags on machine account */
 	ZERO_STRUCT(user_info.info16);

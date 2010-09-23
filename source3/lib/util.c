@@ -22,6 +22,8 @@
 */
 
 #include "includes.h"
+#include "popt_common.h"
+#include "secrets.h"
 
 extern char *global_clobber_region_function;
 extern unsigned int global_clobber_region_line;
@@ -73,49 +75,9 @@ static enum remote_arch_types ra_type = RA_UNKNOWN;
  Definitions for all names.
 ***********************************************************************/
 
-static char *smb_myname;
-static char *smb_myworkgroup;
 static char *smb_scope;
 static int smb_num_netbios_names;
 static char **smb_my_netbios_names;
-
-/***********************************************************************
- Allocate and set myname. Ensure upper case.
-***********************************************************************/
-
-bool set_global_myname(const char *myname)
-{
-	SAFE_FREE(smb_myname);
-	smb_myname = SMB_STRDUP(myname);
-	if (!smb_myname)
-		return False;
-	strupper_m(smb_myname);
-	return True;
-}
-
-const char *global_myname(void)
-{
-	return smb_myname;
-}
-
-/***********************************************************************
- Allocate and set myworkgroup. Ensure upper case.
-***********************************************************************/
-
-bool set_global_myworkgroup(const char *myworkgroup)
-{
-	SAFE_FREE(smb_myworkgroup);
-	smb_myworkgroup = SMB_STRDUP(myworkgroup);
-	if (!smb_myworkgroup)
-		return False;
-	strupper_m(smb_myworkgroup);
-	return True;
-}
-
-const char *lp_workgroup(void)
-{
-	return smb_myworkgroup;
-}
 
 /***********************************************************************
  Allocate and set scope. Ensure upper case.
@@ -184,8 +146,7 @@ static bool set_my_netbios_names(const char *name, int i)
 
 void gfree_names(void)
 {
-	SAFE_FREE( smb_myname );
-	SAFE_FREE( smb_myworkgroup );
+	gfree_netbios_names();
 	SAFE_FREE( smb_scope );
 	free_netbios_names_array();
 	free_local_machine_name();
@@ -261,13 +222,13 @@ bool init_names(void)
 
 	if (global_myname() == NULL || *global_myname() == '\0') {
 		if (!set_global_myname(myhostname())) {
-			DEBUG( 0, ( "init_structs: malloc fail.\n" ) );
+			DEBUG( 0, ( "init_names: malloc fail.\n" ) );
 			return False;
 		}
 	}
 
 	if (!set_netbios_aliases(lp_netbios_aliases())) {
-		DEBUG( 0, ( "init_structs: malloc fail.\n" ) );
+		DEBUG( 0, ( "init_names: malloc fail.\n" ) );
 		return False;
 	}
 
@@ -380,6 +341,16 @@ bool set_cmdline_auth_info_signing_state(struct user_auth_info *auth_info,
 int get_cmdline_auth_info_signing_state(const struct user_auth_info *auth_info)
 {
 	return auth_info->signing_state;
+}
+
+void set_cmdline_auth_info_use_ccache(struct user_auth_info *auth_info, bool b)
+{
+        auth_info->use_ccache = b;
+}
+
+bool get_cmdline_auth_info_use_ccache(const struct user_auth_info *auth_info)
+{
+	return auth_info->use_ccache;
 }
 
 void set_cmdline_auth_info_use_kerberos(struct user_auth_info *auth_info,
@@ -903,8 +874,9 @@ void smb_msleep(unsigned int t)
 }
 
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
-		       struct event_context *ev_ctx,
-		       bool parent_longlived)
+			   struct event_context *ev_ctx,
+			   struct server_id id,
+			   bool parent_longlived)
 {
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -921,8 +893,8 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 		goto done;
 	}
 
-	if (ev_ctx) {
-		event_context_reinit(ev_ctx);
+	if (ev_ctx && tevent_re_initialise(ev_ctx) != 0) {
+		smb_panic(__location__ ": Failed to re-initialise event context");
 	}
 
 	if (msg_ctx) {
@@ -930,7 +902,7 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 		 * For clustering, we need to re-init our ctdbd connection after the
 		 * fork
 		 */
-		status = messaging_reinit(msg_ctx);
+		status = messaging_reinit(msg_ctx, id);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("messaging_reinit() failed: %s\n",
 				 nt_errstr(status)));
@@ -938,24 +910,6 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 	}
  done:
 	return status;
-}
-
-/****************************************************************************
- Put up a yes/no prompt.
-****************************************************************************/
-
-bool yesno(const char *p)
-{
-	char ans[20];
-	printf("%s",p);
-
-	if (!fgets(ans,sizeof(ans)-1,stdin))
-		return(False);
-
-	if (*ans == 'y' || *ans == 'Y')
-		return(True);
-
-	return(False);
 }
 
 #if defined(PARANOID_MALLOC_CHECKER)
@@ -1302,6 +1256,9 @@ char *automount_lookup(TALLOC_CTX *ctx, const char *user_name)
 	if ((nis_error = yp_match(nis_domain, nis_map, user_name,
 					strlen(user_name), &nis_result,
 					&nis_result_len)) == 0) {
+		if (nis_result_len > 0 && nis_result[nis_result_len] == '\n') {
+			nis_result[nis_result_len] = '\0';
+		}
 		value = talloc_strdup(ctx, nis_result);
 		if (!value) {
 			return NULL;
@@ -1339,8 +1296,8 @@ bool process_exists(const struct server_id pid)
 	}
 
 #ifdef CLUSTER_SUPPORT
-	return ctdbd_process_exists(messaging_ctdbd_connection(), pid.vnn,
-				    pid.pid);
+	return ctdbd_process_exists(messaging_ctdbd_connection(),
+				    pid.vnn, pid.pid);
 #else
 	return False;
 #endif
@@ -2655,10 +2612,18 @@ uint32 get_my_vnn(void)
 	return my_vnn;
 }
 
+static uint64_t my_unique_id = 0;
+
+void set_my_unique_id(uint64_t unique_id)
+{
+	my_unique_id = unique_id;
+}
+
 struct server_id pid_to_procid(pid_t pid)
 {
 	struct server_id result;
 	result.pid = pid;
+	result.unique_id = my_unique_id;
 #ifdef CLUSTER_SUPPORT
 	result.vnn = my_vnn;
 #endif
@@ -2668,11 +2633,6 @@ struct server_id pid_to_procid(pid_t pid)
 struct server_id procid_self(void)
 {
 	return pid_to_procid(sys_getpid());
-}
-
-struct server_id server_id_self(void)
-{
-	return procid_self();
 }
 
 bool procid_equal(const struct server_id *p1, const struct server_id *p2)
@@ -2733,6 +2693,7 @@ struct server_id interpret_pid(const char *pid_string)
 	if (result.pid < 0) {
 		result.pid = -1;
 	}
+	result.unique_id = 0;
 	return result;
 }
 
@@ -2773,23 +2734,6 @@ bool procid_is_local(const struct server_id *pid)
 	return pid->vnn == my_vnn;
 #else
 	return True;
-#endif
-}
-
-int this_is_smp(void)
-{
-#if defined(HAVE_SYSCONF)
-
-#if defined(SYSCONF_SC_NPROC_ONLN)
-        return (sysconf(_SC_NPROC_ONLN) > 1) ? 1 : 0;
-#elif defined(SYSCONF_SC_NPROCESSORS_ONLN)
-        return (sysconf(_SC_NPROCESSORS_ONLN) > 1) ? 1 : 0;
-#else
-	return 0;
-#endif
-
-#else
-	return 0;
 #endif
 }
 

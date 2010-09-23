@@ -20,6 +20,8 @@
 #include "includes.h"
 #include "lib/netapi/netapi.h"
 #include "lib/netapi/netapi_private.h"
+#include "secrets.h"
+#include "krb5_env.h"
 
 extern bool AllowDebugChange;
 
@@ -247,6 +249,12 @@ NET_API_STATUS libnetapi_set_workgroup(struct libnetapi_ctx *ctx,
 NET_API_STATUS libnetapi_set_use_kerberos(struct libnetapi_ctx *ctx)
 {
 	ctx->use_kerberos = true;
+	return NET_API_STATUS_SUCCESS;
+}
+
+NET_API_STATUS libnetapi_set_use_ccache(struct libnetapi_ctx *ctx)
+{
+	ctx->use_ccache = true;
 	return NET_API_STATUS_SUCCESS;
 }
 

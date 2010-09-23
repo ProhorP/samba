@@ -33,6 +33,7 @@
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/gen_ndr/ndr_drsuapi.h"
 #include "librpc/gen_ndr/ndr_drsblobs.h"
+#include "librpc/gen_ndr/ndr_irpc_c.h"
 #include "param/param.h"
 
 /*
@@ -40,7 +41,7 @@
  */
 static bool reps_in_list(struct repsFromToBlob *r, struct repsFromToBlob *reps, uint32_t count)
 {
-	int i;
+	uint32_t i;
 	for (i=0; i<count; i++) {
 		if (strcmp(r->ctr.ctr1.other_info->dns_name, 
 			   reps[i].ctr.ctr1.other_info->dns_name) == 0 &&
@@ -52,21 +53,118 @@ static bool reps_in_list(struct repsFromToBlob *r, struct repsFromToBlob *reps, 
 	return false;
 }
 
+/*
+  make sure we only add repsFrom entries for DCs who are masters for
+  the partition
+ */
+static bool check_MasterNC(struct kccsrv_partition *p, struct repsFromToBlob *r,
+			   struct ldb_result *res)
+{
+	struct repsFromTo1 *r1 = &r->ctr.ctr1;
+	struct GUID invocation_id = r1->source_dsa_invocation_id;
+	unsigned int i, j;
+
+	/* we are expecting only version 1 */
+	SMB_ASSERT(r->version == 1);
+
+	for (i=0; i<res->count; i++) {
+		struct ldb_message *msg = res->msgs[i];
+		struct ldb_message_element *el;
+		struct ldb_dn *dn;
+
+		struct GUID id2 = samdb_result_guid(msg, "invocationID");
+		if (!GUID_equal(&invocation_id, &id2)) {
+			continue;
+		}
+
+		el = ldb_msg_find_element(msg, "hasMasterNCs");
+		if (!el || el->num_values == 0) {
+			continue;
+		}
+		for (j=0; j<el->num_values; j++) {
+			dn = ldb_dn_from_ldb_val(p, p->service->samdb, &el->values[j]);
+			if (!ldb_dn_validate(dn)) {
+				talloc_free(dn);
+				continue;
+			}
+			if (ldb_dn_compare(dn, p->dn) == 0) {
+				talloc_free(dn);
+				return true;
+			}
+			talloc_free(dn);
+		}
+	}
+	return false;
+}
+
+struct kccsrv_notify_drepl_server_state {
+	struct dreplsrv_refresh r;
+};
+
+static void kccsrv_notify_drepl_server_done(struct tevent_req *subreq);
+
+/**
+ * Force dreplsrv to update its state as topology is changed
+ */
+static void kccsrv_notify_drepl_server(struct kccsrv_service *s,
+				       TALLOC_CTX *mem_ctx)
+{
+	struct kccsrv_notify_drepl_server_state *state;
+	struct dcerpc_binding_handle *irpc_handle;
+	struct tevent_req *subreq;
+
+	state = talloc_zero(s, struct kccsrv_notify_drepl_server_state);
+	if (state == NULL) {
+		return;
+	}
+
+	irpc_handle = irpc_binding_handle_by_name(state, s->task->msg_ctx,
+						  "dreplsrv", &ndr_table_irpc);
+	if (irpc_handle == NULL) {
+		/* dreplsrv is not running yet */
+		TALLOC_FREE(state);
+		return;
+	}
+
+	subreq = dcerpc_dreplsrv_refresh_r_send(state, s->task->event_ctx,
+						irpc_handle, &state->r);
+	if (subreq == NULL) {
+		TALLOC_FREE(state);
+		return;
+	}
+	tevent_req_set_callback(subreq, kccsrv_notify_drepl_server_done, state);
+}
+
+static void kccsrv_notify_drepl_server_done(struct tevent_req *subreq)
+{
+	struct kccsrv_notify_drepl_server_state *state =
+		tevent_req_callback_data(subreq,
+		struct kccsrv_notify_drepl_server_state);
+	NTSTATUS status;
+
+	status = dcerpc_dreplsrv_refresh_r_recv(subreq, state);
+	TALLOC_FREE(subreq);
+
+	/* we don't care about errors */
+	TALLOC_FREE(state);
+}
 
 /*
  * add any missing repsFrom structures to our partitions
  */
 static NTSTATUS kccsrv_add_repsFrom(struct kccsrv_service *s, TALLOC_CTX *mem_ctx,
-				    struct repsFromToBlob *reps, uint32_t count)
+				    struct repsFromToBlob *reps, uint32_t count,
+				    struct ldb_result *res)
 {
 	struct kccsrv_partition *p;
+	bool notify_dreplsrv = false;
 
 	/* update the repsFrom on all partitions */
 	for (p=s->partitions; p; p=p->next) {
-		struct repsFromToBlob *old_reps;
-		uint32_t old_count;
+		struct repsFromToBlob *old_reps, *reps_to;
+		uint32_t old_count, to_count;
 		WERROR werr;
-		int i;
+		uint32_t i;
 		bool modified = false;
 
 		werr = dsdb_loadreps(s->samdb, mem_ctx, p->dn, "repsFrom", &old_reps, &old_count);
@@ -78,7 +176,8 @@ static NTSTATUS kccsrv_add_repsFrom(struct kccsrv_service *s, TALLOC_CTX *mem_ct
 
 		/* add any new ones */
 		for (i=0; i<count; i++) {
-			if (!reps_in_list(&reps[i], old_reps, old_count)) {
+			if (!reps_in_list(&reps[i], old_reps, old_count) &&
+			    check_MasterNC(p, &reps[i], res)) {
 				old_reps = talloc_realloc(mem_ctx, old_reps, struct repsFromToBlob, old_count+1);
 				NT_STATUS_HAVE_NO_MEMORY(old_reps);
 				old_reps[old_count] = reps[i];
@@ -89,7 +188,8 @@ static NTSTATUS kccsrv_add_repsFrom(struct kccsrv_service *s, TALLOC_CTX *mem_ct
 
 		/* remove any stale ones */
 		for (i=0; i<old_count; i++) {
-			if (!reps_in_list(&old_reps[i], reps, count)) {
+			if (!reps_in_list(&old_reps[i], reps, count) ||
+			    !check_MasterNC(p, &old_reps[i], res)) {
 				memmove(&old_reps[i], &old_reps[i+1], (old_count-(i+1))*sizeof(old_reps[0]));
 				old_count--;
 				i--;
@@ -104,7 +204,44 @@ static NTSTATUS kccsrv_add_repsFrom(struct kccsrv_service *s, TALLOC_CTX *mem_ct
 					 ldb_dn_get_linearized(p->dn), ldb_errstring(s->samdb)));
 				return NT_STATUS_INTERNAL_DB_CORRUPTION;
 			}
+			/* dreplsrv should refresh its state */
+			notify_dreplsrv = true;
 		}
+
+		werr = dsdb_loadreps(s->samdb, mem_ctx, p->dn, "repsTo", &reps_to, &to_count);
+		if (!W_ERROR_IS_OK(werr)) {
+			DEBUG(0,(__location__ ": Failed to load repsTo from %s - %s\n",
+				 ldb_dn_get_linearized(p->dn), ldb_errstring(s->samdb)));
+			return NT_STATUS_INTERNAL_DB_CORRUPTION;
+		}
+
+		modified = false;
+		/* add any new ones */
+		for (i=0; i<old_count; i++) {
+			if (!reps_in_list(&old_reps[i], reps_to, to_count)) {
+				reps_to = talloc_realloc(mem_ctx, reps_to, struct repsFromToBlob, to_count+1);
+				NT_STATUS_HAVE_NO_MEMORY(reps_to);
+				reps_to[to_count] = old_reps[i];
+				to_count++;
+				modified = true;
+			}
+		}
+
+		if (modified) {
+			werr = dsdb_savereps(s->samdb, mem_ctx, p->dn, "repsTo", reps_to, to_count);
+			if (!W_ERROR_IS_OK(werr)) {
+				DEBUG(0,(__location__ ": Failed to save repsTo to %s - %s\n",
+					 ldb_dn_get_linearized(p->dn), ldb_errstring(s->samdb)));
+				return NT_STATUS_INTERNAL_DB_CORRUPTION;
+			}
+			/* dreplsrv should refresh its state */
+			notify_dreplsrv = true;
+		}
+	}
+
+	/* notify dreplsrv toplogy has changed */
+	if (notify_dreplsrv) {
+		kccsrv_notify_drepl_server(s, mem_ctx);
 	}
 
 	return NT_STATUS_OK;
@@ -119,8 +256,9 @@ static NTSTATUS kccsrv_add_repsFrom(struct kccsrv_service *s, TALLOC_CTX *mem_ct
 NTSTATUS kccsrv_simple_update(struct kccsrv_service *s, TALLOC_CTX *mem_ctx)
 {
 	struct ldb_result *res;
-	int ret, i;
-	const char *attrs[] = { "objectGUID", "invocationID", NULL };
+	unsigned int i;
+	int ret;
+	const char *attrs[] = { "objectGUID", "invocationID", "hasMasterNCs", NULL };
 	struct repsFromToBlob *reps = NULL;
 	uint32_t count = 0;
 	struct kcc_connection_list *ntds_conn, *dsa_conn;
@@ -159,13 +297,13 @@ NTSTATUS kccsrv_simple_update(struct kccsrv_service *s, TALLOC_CTX *mem_ctx)
 		r1->other_info               = talloc_zero(reps, struct repsFromTo1OtherInfo);
 		r1->other_info->dns_name     = talloc_asprintf(r1->other_info, "%s._msdcs.%s",
 							       GUID_string(mem_ctx, &ntds_guid),
-							       lp_dnsdomain(s->task->lp_ctx));
+							       lpcfg_dnsdomain(s->task->lp_ctx));
 		r1->source_dsa_obj_guid      = ntds_guid;
 		r1->source_dsa_invocation_id = invocation_id;
 		r1->replica_flags            = 
-			DRSUAPI_DS_REPLICA_NEIGHBOUR_WRITEABLE | 
-			DRSUAPI_DS_REPLICA_NEIGHBOUR_SYNC_ON_STARTUP | 
-			DRSUAPI_DS_REPLICA_NEIGHBOUR_DO_SCHEDULED_SYNCS;
+			DRSUAPI_DRS_WRIT_REP |
+			DRSUAPI_DRS_INIT_SYNC |
+			DRSUAPI_DRS_PER_SYNC;
 		memset(r1->schedule, 0x11, sizeof(r1->schedule));
 
 		dsa_conn->servers = talloc_realloc(dsa_conn, dsa_conn->servers,
@@ -180,7 +318,7 @@ NTSTATUS kccsrv_simple_update(struct kccsrv_service *s, TALLOC_CTX *mem_ctx)
 
 	kccsrv_apply_connections(s, ntds_conn, dsa_conn);
 
-	return kccsrv_add_repsFrom(s, mem_ctx, reps, count);
+	return kccsrv_add_repsFrom(s, mem_ctx, reps, count, res);
 }
 
 

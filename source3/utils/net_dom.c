@@ -20,16 +20,24 @@
 #include "includes.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/cli_initshutdown.h"
+#include "../librpc/gen_ndr/ndr_winreg.h"
+#include "lib/netapi/netapi.h"
 
 int net_dom_usage(struct net_context *c, int argc, const char **argv)
 {
-	d_printf(_("usage: net dom join "
+	d_printf("%s\n%s",
+		_("Usage:"),
+		_("net dom join "
 		   "<domain=DOMAIN> <ou=OU> <account=ACCOUNT> "
 		   "<password=PASSWORD> <reboot>\n  Join a remote machine\n"));
-	d_printf(_("usage: net dom unjoin "
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _("net dom unjoin "
 		   "<account=ACCOUNT> <password=PASSWORD> <reboot>\n"
 		   "  Unjoin a remote machine\n"));
-	d_printf(_("usage: net dom renamecomputer "
+	d_printf("%s\n%s",
+		 _("Usage:"),
+		 _("net dom renamecomputer "
 		   "<newname=NEWNAME> "
 		   "<account=ACCOUNT> <password=PASSWORD> <reboot>\n"
 		   "  Rename joined computer\n"));

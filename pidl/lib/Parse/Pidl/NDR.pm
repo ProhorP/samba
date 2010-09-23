@@ -74,7 +74,8 @@ my $scalar_alignment = {
 	'COMRESULT' => 4,
 	'nbt_string' => 4,
 	'wrepl_nbt_name' => 4,
-	'ipv4address' => 4
+	'ipv4address' => 4,
+	'dnsp_name' => 1
 };
 
 sub GetElementLevelTable($$)
@@ -103,7 +104,7 @@ sub GetElementLevelTable($$)
 	if (has_property($e, "out")) {
 		my $needptrs = 1;
 
-		if (has_property($e, "string")) { $needptrs++; }
+		if (has_property($e, "string") and not has_property($e, "in")) { $needptrs++; }
 		if ($#bracket_array >= 0) { $needptrs = 0; }
 
 		warning($e, "[out] argument `$e->{NAME}' not a pointer") if ($needptrs > $e->{POINTERS});
@@ -124,6 +125,10 @@ sub GetElementLevelTable($$)
 		if ($d eq "*") {
 			$is_conformant = 1;
 			if ($size = shift @size_is) {
+				if ($e->{POINTERS} < 1 and has_property($e, "string")) {
+					$is_string = 1;
+					delete($e->{PROPERTIES}->{string});
+				}
 			} elsif ((scalar(@size_is) == 0) and has_property($e, "string")) {
 				$is_string = 1;
 				delete($e->{PROPERTIES}->{string});
@@ -882,7 +887,8 @@ my %property_list = (
 	"helper"		=> ["INTERFACE"],
 	"pyhelper"		=> ["INTERFACE"],
 	"authservice"		=> ["INTERFACE"],
-	"restricted"	=> ["INTERFACE"],
+	"restricted"	        => ["INTERFACE"],
+        "no_srv_register"       => ["INTERFACE"],
 
 	# dcom
 	"object"		=> ["INTERFACE"],
@@ -917,6 +923,7 @@ my %property_list = (
 	"nopull"		=> ["FUNCTION", "TYPEDEF", "STRUCT", "UNION", "ENUM", "BITMAP"],
 	"nosize"		=> ["FUNCTION", "TYPEDEF", "STRUCT", "UNION", "ENUM", "BITMAP"],
 	"noprint"		=> ["FUNCTION", "TYPEDEF", "STRUCT", "UNION", "ENUM", "BITMAP", "ELEMENT"],
+	"nopython"		=> ["FUNCTION", "TYPEDEF", "STRUCT", "UNION", "ENUM", "BITMAP"],
 	"todo"			=> ["FUNCTION"],
 
 	# union

@@ -59,6 +59,27 @@ Run this::
   $ ./configure
   $ make
 
+
+Step 2bis: recompile Samba4
+---------------------------
+
+This only applies for those who are recompiling Samba4 after updating the code
+(using "rsync" or "git").
+
+Due to some imperfections in our actual build system (hope that this changes
+soon) it is recommended to perform this after the source upgrade:
+
+  $ cd samba4/source
+  $ make clean
+  $ ./autogen.sh
+  $ ./configure
+  $ make idl_full
+  $ make
+
+Not all the steps are needed every time but doing so makes sure that you won't
+have old compiled objects standing in the way and cause malfunctions.
+It also makes sure that changes in the IDL files are correctly catched up.
+
 Step 3: install Samba4
 ----------------------
 

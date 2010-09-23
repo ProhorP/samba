@@ -67,13 +67,12 @@ static bool token_contains_name(TALLOC_CTX *mem_ctx,
 				const char *username,
 				const char *domain,
 				const char *sharename,
-				const struct nt_user_token *token,
+				const struct security_token *token,
 				const char *name)
 {
 	const char *prefix;
-	DOM_SID sid;
+	struct dom_sid sid;
 	enum lsa_SidType type;
-	struct smbd_server_connection *sconn = smbd_server_conn;
 
 	if (username != NULL) {
 		name = talloc_sub_basic(mem_ctx, username, domain, name);
@@ -131,7 +130,7 @@ static bool token_contains_name(TALLOC_CTX *mem_ctx,
 		}
 		if (*prefix == '&') {
 			if (username) {
-				if (user_in_netgroup(sconn, username, name)) {
+				if (user_in_netgroup(username, name)) {
 					return True;
 				}
 			}
@@ -156,7 +155,7 @@ static bool token_contains_name(TALLOC_CTX *mem_ctx,
 bool token_contains_name_in_list(const char *username,
 				 const char *domain,
 				 const char *sharename,
-				 const struct nt_user_token *token,
+				 const struct security_token *token,
 				 const char **list)
 {
 	TALLOC_CTX *mem_ctx;
@@ -196,7 +195,7 @@ bool token_contains_name_in_list(const char *username,
  */
 
 bool user_ok_token(const char *username, const char *domain,
-		   const struct nt_user_token *token, int snum)
+		   const struct security_token *token, int snum)
 {
 	if (lp_invalid_users(snum) != NULL) {
 		if (token_contains_name_in_list(username, domain,
@@ -256,7 +255,7 @@ bool user_ok_token(const char *username, const char *domain,
 
 bool is_share_read_only_for_token(const char *username,
 				  const char *domain,
-				  const struct nt_user_token *token,
+				  const struct security_token *token,
 				  connection_struct *conn)
 {
 	int snum = SNUM(conn);

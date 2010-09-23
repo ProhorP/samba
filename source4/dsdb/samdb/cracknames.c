@@ -34,6 +34,7 @@
 #include "auth/auth.h"
 #include "../lib/util/util_ldb.h"
 #include "dsdb/samdb/samdb.h"
+#include "dsdb/common/util.h"
 #include "param/param.h"
 
 static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
@@ -79,7 +80,7 @@ static enum drsuapi_DsNameStatus LDB_lookup_spn_alias(krb5_context context, stru
 						      const char *alias_from,
 						      char **alias_to)
 {
-	int i;
+	unsigned int i;
 	int ret;
 	struct ldb_result *res;
 	struct ldb_message_element *spnmappings;
@@ -98,7 +99,7 @@ static enum drsuapi_DsNameStatus LDB_lookup_spn_alias(krb5_context context, stru
 	}
 
 	service_dn = ldb_dn_new(tmp_ctx, ldb_ctx, "CN=Directory Service,CN=Windows NT,CN=Services");
-	if ( ! ldb_dn_add_base(service_dn, samdb_config_dn(ldb_ctx))) {
+	if ( ! ldb_dn_add_base(service_dn, ldb_get_config_basedn(ldb_ctx))) {
 		return DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 	}
 	service_dn_str = ldb_dn_alloc_linearized(tmp_ctx, service_dn);
@@ -373,7 +374,7 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	switch (format_offered) {
 	case DRSUAPI_DS_NAME_FORMAT_UNKNOWN:
 	{
-		int i;
+		unsigned int i;
 		enum drsuapi_DsNameFormat formats[] = {
 			DRSUAPI_DS_NAME_FORMAT_FQDN_1779, DRSUAPI_DS_NAME_FORMAT_USER_PRINCIPAL,
 			DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT, DRSUAPI_DS_NAME_FORMAT_CANONICAL,
@@ -452,6 +453,7 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	case DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT: {
 		char *p;
 		char *domain;
+		struct ldb_dn *dn_domain;
 		const char *account = NULL;
 
 		domain = talloc_strdup(mem_ctx, name);
@@ -469,9 +471,14 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 			account = &p[1];
 		}
 
+		/* it could be in DNS domain form */
+		dn_domain = samdb_dns_domain_to_dn(sam_ctx, mem_ctx, domain);
+		W_ERROR_HAVE_NO_MEMORY(dn_domain);
+
 		domain_filter = talloc_asprintf(mem_ctx, 
-						"(&(&(nETBIOSName=%s)(objectclass=crossRef))(ncName=*))", 
-						ldb_binary_encode_string(mem_ctx, domain));
+						"(&(&(|(nETBIOSName=%s)(nCName=%s))(objectclass=crossRef))(ncName=*))",
+						ldb_binary_encode_string(mem_ctx, domain),
+						ldb_dn_get_linearized(dn_domain));
 		W_ERROR_HAVE_NO_MEMORY(domain_filter);
 		if (account) {
 			result_filter = talloc_asprintf(mem_ctx, "(sAMAccountName=%s)",
@@ -721,7 +728,6 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 	const char * const *result_attrs;
 	struct ldb_message **result_res = NULL;
 	struct ldb_message *result = NULL;
-	struct ldb_dn *result_basedn = NULL;
 	int i;
 	char *p;
 	struct ldb_dn *partitions_basedn = samdb_partitions_dn(sam_ctx, mem_ctx);
@@ -809,66 +815,33 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 	if (result_filter) {
 		int ret;
 		struct ldb_result *res;
+		uint32_t dsdb_flags = 0;
+		struct ldb_dn *search_dn;
+
 		if (domain_res) {
-			result_basedn = samdb_result_dn(sam_ctx, mem_ctx, domain_res->msgs[0], "ncName", NULL);
-
-			ret = ldb_search(sam_ctx, mem_ctx, &res,
-						 result_basedn, LDB_SCOPE_SUBTREE, 
-						 result_attrs, "%s", result_filter);
-			if (ret != LDB_SUCCESS) {
-				talloc_free(result_res);
-				info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
-				return WERR_OK;
-			}
-			ldb_ret = res->count;
-			result_res = res->msgs;
+			dsdb_flags = 0;
+			search_dn = samdb_result_dn(sam_ctx, mem_ctx, domain_res->msgs[0], "ncName", NULL);
 		} else {
-			/* search with the 'phantom root' flag */
-			struct ldb_request *req;
-
-			res = talloc_zero(mem_ctx, struct ldb_result);
-			W_ERROR_HAVE_NO_MEMORY(res);
-
-			ret = ldb_build_search_req(&req, sam_ctx, mem_ctx,
-						   ldb_get_root_basedn(sam_ctx),
-						   LDB_SCOPE_SUBTREE,
-						   result_filter,
-						   result_attrs,
-						   NULL,
-						   res,
-						   ldb_search_default_callback,
-						   NULL);
-			if (ret == LDB_SUCCESS) {
-				struct ldb_search_options_control *search_options;
-				search_options = talloc(req, struct ldb_search_options_control);
-				W_ERROR_HAVE_NO_MEMORY(search_options);
-				search_options->search_options = LDB_SEARCH_OPTION_PHANTOM_ROOT;
-
-				ret = ldb_request_add_control(req, LDB_CONTROL_SEARCH_OPTIONS_OID, false, search_options);
-			}
-			if (ret != LDB_SUCCESS) {
-				talloc_free(res);
-				info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
-				return WERR_OK;
-			}
-
-			ret = ldb_request(sam_ctx, req);
-
-			if (ret == LDB_SUCCESS) {
-				ret = ldb_wait(req->handle, LDB_WAIT_ALL);
-			}
-
-			talloc_free(req);
-
-			if (ret != LDB_SUCCESS) {
-				DEBUG(2, ("DsCrackNameOneFilter phantom root search failed: %s", 
-					  ldb_errstring(sam_ctx)));
-				info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
-				return WERR_OK;
-			}
-			ldb_ret = res->count;
-			result_res = res->msgs;
+			dsdb_flags = DSDB_SEARCH_SEARCH_ALL_PARTITIONS;
+			search_dn = ldb_get_root_basedn(sam_ctx);
 		}
+
+		/* search with the 'phantom root' flag */
+		ret = dsdb_search(sam_ctx, mem_ctx, &res,
+				  search_dn,
+				  LDB_SCOPE_SUBTREE,
+				  result_attrs,
+				  DSDB_SEARCH_SEARCH_ALL_PARTITIONS,
+				  "%s", result_filter);
+		if (ret != LDB_SUCCESS) {
+			DEBUG(2, ("DsCrackNameOneFilter phantom root search failed: %s",
+				  ldb_errstring(sam_ctx)));
+			info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
+			return WERR_OK;
+		}
+
+		ldb_ret = res->count;
+		result_res = res->msgs;
 	} else if (format_offered == DRSUAPI_DS_NAME_FORMAT_FQDN_1779) {
 		ldb_ret = gendb_search_dn(sam_ctx, mem_ctx, name_dn, &result_res,
 					  result_attrs);
@@ -878,7 +851,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 					  result_attrs);
 	} else {
 		/* Can't happen */
-		DEBUG(0, ("LOGIC ERROR: DsCrackNameOneFilter domain ref search not availible: This can't happen..."));
+		DEBUG(0, ("LOGIC ERROR: DsCrackNameOneFilter domain ref search not available: This can't happen..."));
 		info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 		return WERR_OK;
 	}

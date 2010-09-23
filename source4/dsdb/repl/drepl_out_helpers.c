@@ -37,6 +37,8 @@
 #include "../lib/util/tevent_ntstatus.h"
 
 struct dreplsrv_out_drsuapi_state {
+	struct tevent_context *ev;
+
 	struct dreplsrv_out_connection *conn;
 
 	struct dreplsrv_drsuapi_connection *drsuapi;
@@ -61,6 +63,7 @@ struct tevent_req *dreplsrv_out_drsuapi_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
+	state->ev	= ev;
 	state->conn	= conn;
 	state->drsuapi	= conn->drsuapi;
 
@@ -90,7 +93,7 @@ struct tevent_req *dreplsrv_out_drsuapi_send(TALLOC_CTX *mem_ctx,
 	return req;
 }
 
-static void dreplsrv_out_drsuapi_bind_done(struct rpc_request *rreq);
+static void dreplsrv_out_drsuapi_bind_done(struct tevent_req *subreq);
 
 static void dreplsrv_out_drsuapi_connect_done(struct composite_context *creq)
 {
@@ -99,7 +102,7 @@ static void dreplsrv_out_drsuapi_connect_done(struct composite_context *creq)
 	struct dreplsrv_out_drsuapi_state *state = tevent_req_data(req,
 						   struct dreplsrv_out_drsuapi_state);
 	NTSTATUS status;
-	struct rpc_request *rreq;
+	struct tevent_req *subreq;
 
 	status = dcerpc_pipe_connect_b_recv(creq,
 					    state->drsuapi,
@@ -107,6 +110,8 @@ static void dreplsrv_out_drsuapi_connect_done(struct composite_context *creq)
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
+
+	state->drsuapi->drsuapi_handle = state->drsuapi->pipe->binding_handle;
 
 	status = gensec_session_key(state->drsuapi->pipe->conn->security_state.generic_state,
 				    &state->drsuapi->gensec_skey);
@@ -121,24 +126,26 @@ static void dreplsrv_out_drsuapi_connect_done(struct composite_context *creq)
 	state->bind_r.in.bind_info = &state->bind_info_ctr;
 	state->bind_r.out.bind_handle = &state->drsuapi->bind_handle;
 
-	rreq = dcerpc_drsuapi_DsBind_send(state->drsuapi->pipe,
-					  state,
-					  &state->bind_r);
-	if (tevent_req_nomem(rreq, req)) {
+	subreq = dcerpc_drsuapi_DsBind_r_send(state,
+					      state->ev,
+					      state->drsuapi->drsuapi_handle,
+					      &state->bind_r);
+	if (tevent_req_nomem(subreq, req)) {
 		return;
 	}
-	composite_continue_rpc(NULL, rreq, dreplsrv_out_drsuapi_bind_done, req);
+	tevent_req_set_callback(subreq, dreplsrv_out_drsuapi_bind_done, req);
 }
 
-static void dreplsrv_out_drsuapi_bind_done(struct rpc_request *rreq)
+static void dreplsrv_out_drsuapi_bind_done(struct tevent_req *subreq)
 {
-	struct tevent_req *req = talloc_get_type(rreq->async.private_data,
-						 struct tevent_req);
+	struct tevent_req *req = tevent_req_callback_data(subreq,
+				 struct tevent_req);
 	struct dreplsrv_out_drsuapi_state *state = tevent_req_data(req,
 						   struct dreplsrv_out_drsuapi_state);
 	NTSTATUS status;
 
-	status = dcerpc_ndr_request_recv(rreq);
+	status = dcerpc_drsuapi_DsBind_r_recv(subreq, state);
+	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
@@ -202,7 +209,9 @@ NTSTATUS dreplsrv_out_drsuapi_recv(struct tevent_req *req)
 }
 
 struct dreplsrv_op_pull_source_state {
+	struct tevent_context *ev;
 	struct dreplsrv_out_operation *op;
+	void *ndr_struct_ptr;
 };
 
 static void dreplsrv_op_pull_source_connect_done(struct tevent_req *subreq);
@@ -220,7 +229,7 @@ struct tevent_req *dreplsrv_op_pull_source_send(TALLOC_CTX *mem_ctx,
 	if (req == NULL) {
 		return NULL;
 	}
-
+	state->ev = ev;
 	state->op = op;
 
 	subreq = dreplsrv_out_drsuapi_send(state, ev, op->source_dsa->conn);
@@ -249,7 +258,44 @@ static void dreplsrv_op_pull_source_connect_done(struct tevent_req *subreq)
 	dreplsrv_op_pull_source_get_changes_trigger(req);
 }
 
-static void dreplsrv_op_pull_source_get_changes_done(struct rpc_request *rreq);
+static void dreplsrv_op_pull_source_get_changes_done(struct tevent_req *subreq);
+
+/*
+  get a partial attribute set for a replication call
+ */
+static NTSTATUS dreplsrv_get_rodc_partial_attribute_set(struct dreplsrv_service *service,
+							TALLOC_CTX *mem_ctx,
+							struct drsuapi_DsPartialAttributeSet **_pas,
+							bool for_schema)
+{
+	struct drsuapi_DsPartialAttributeSet *pas;
+	struct dsdb_schema *schema;
+	int i;
+
+	pas = talloc_zero(mem_ctx, struct drsuapi_DsPartialAttributeSet);
+	NT_STATUS_HAVE_NO_MEMORY(pas);
+
+	schema = dsdb_get_schema(service->samdb, NULL);
+
+	pas->version = 1;
+	pas->attids = talloc_array(pas, enum drsuapi_DsAttributeId, schema->num_attributes);
+	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(pas->attids, pas);
+
+	for (i=0; i<schema->num_attributes; i++) {
+		struct dsdb_attribute *a;
+		a = schema->attributes_by_attributeID_id[i];
+                if (a->systemFlags & (DS_FLAG_ATTR_NOT_REPLICATED | DS_FLAG_ATTR_IS_CONSTRUCTED)) {
+			continue;
+		}
+		if (a->searchFlags & SEARCH_FLAG_RODC_ATTRIBUTE) {
+			continue;
+		}
+		pas->attids[pas->num_attids] = dsdb_attribute_get_attid(a, for_schema);
+		pas->num_attids++;
+	}
+	*_pas = pas;
+	return NT_STATUS_OK;
+}
 
 static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 {
@@ -259,16 +305,24 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 	struct dreplsrv_service *service = state->op->service;
 	struct dreplsrv_partition *partition = state->op->source_dsa->partition;
 	struct dreplsrv_drsuapi_connection *drsuapi = state->op->source_dsa->conn->drsuapi;
-	struct rpc_request *rreq;
 	struct drsuapi_DsGetNCChanges *r;
 	struct drsuapi_DsReplicaCursorCtrEx *uptodateness_vector;
+	struct tevent_req *subreq;
+	struct drsuapi_DsPartialAttributeSet *pas = NULL;
+	NTSTATUS status;
+	uint32_t replica_flags;
+
+	if ((rf1->replica_flags & DRSUAPI_DRS_WRIT_REP) == 0 &&
+	    state->op->extended_op == DRSUAPI_EXOP_NONE) {
+		return;
+	}
 
 	r = talloc(state, struct drsuapi_DsGetNCChanges);
 	if (tevent_req_nomem(r, req)) {
 		return;
 	}
 
-	r->out.level_out = talloc(r, int32_t);
+	r->out.level_out = talloc(r, uint32_t);
 	if (tevent_req_nomem(r->out.level_out, req)) {
 		return;
 	}
@@ -287,6 +341,23 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 		uptodateness_vector = &partition->uptodatevector_ex;
 	}
 
+	replica_flags = rf1->replica_flags;
+
+	if (service->am_rodc) {
+		bool for_schema = false;
+		if (ldb_dn_compare_base(ldb_get_schema_basedn(service->samdb), partition->dn) == 0) {
+			for_schema = true;
+		}
+
+		status = dreplsrv_get_rodc_partial_attribute_set(service, r, &pas, for_schema);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0,(__location__ ": Failed to construct partial attribute set : %s\n", nt_errstr(status)));
+			return;
+		}
+
+		replica_flags &= ~DRSUAPI_DRS_WRIT_REP;
+	}
+
 	r->in.bind_handle	= &drsuapi->bind_handle;
 	if (drsuapi->remote_info28.supported_extensions & DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8) {
 		r->in.level				= 8;
@@ -295,12 +366,12 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 		r->in.req->req8.naming_context		= &partition->nc;
 		r->in.req->req8.highwatermark		= rf1->highwatermark;
 		r->in.req->req8.uptodateness_vector	= uptodateness_vector;
-		r->in.req->req8.replica_flags		= rf1->replica_flags;
+		r->in.req->req8.replica_flags		= replica_flags;
 		r->in.req->req8.max_object_count	= 133;
 		r->in.req->req8.max_ndr_size		= 1336811;
 		r->in.req->req8.extended_op		= state->op->extended_op;
 		r->in.req->req8.fsmo_info		= state->op->fsmo_info;
-		r->in.req->req8.partial_attribute_set	= NULL;
+		r->in.req->req8.partial_attribute_set	= pas;
 		r->in.req->req8.partial_attribute_set_ex= NULL;
 		r->in.req->req8.mapping_ctr.num_mappings= 0;
 		r->in.req->req8.mapping_ctr.mappings	= NULL;
@@ -311,7 +382,7 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 		r->in.req->req5.naming_context		= &partition->nc;
 		r->in.req->req5.highwatermark		= rf1->highwatermark;
 		r->in.req->req5.uptodateness_vector	= uptodateness_vector;
-		r->in.req->req5.replica_flags		= rf1->replica_flags;
+		r->in.req->req5.replica_flags		= replica_flags;
 		r->in.req->req5.max_object_count	= 133;
 		r->in.req->req5.max_ndr_size		= 1336770;
 		r->in.req->req5.extended_op		= state->op->extended_op;
@@ -322,11 +393,15 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 	NDR_PRINT_IN_DEBUG(drsuapi_DsGetNCChanges, r);
 #endif
 
-	rreq = dcerpc_drsuapi_DsGetNCChanges_send(drsuapi->pipe, r, r);
-	if (tevent_req_nomem(rreq, req)) {
+	state->ndr_struct_ptr = r;
+	subreq = dcerpc_drsuapi_DsGetNCChanges_r_send(state,
+						      state->ev,
+						      drsuapi->drsuapi_handle,
+						      r);
+	if (tevent_req_nomem(subreq, req)) {
 		return;
 	}
-	composite_continue_rpc(NULL, rreq, dreplsrv_op_pull_source_get_changes_done, req);
+	tevent_req_set_callback(subreq, dreplsrv_op_pull_source_get_changes_done, req);
 }
 
 static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req,
@@ -335,18 +410,23 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 						          struct drsuapi_DsGetNCChangesCtr1 *ctr1,
 						          struct drsuapi_DsGetNCChangesCtr6 *ctr6);
 
-static void dreplsrv_op_pull_source_get_changes_done(struct rpc_request *rreq)
+static void dreplsrv_op_pull_source_get_changes_done(struct tevent_req *subreq)
 {
-	struct tevent_req *req = talloc_get_type(rreq->async.private_data,
-						 struct tevent_req);
+	struct tevent_req *req = tevent_req_callback_data(subreq,
+				 struct tevent_req);
+	struct dreplsrv_op_pull_source_state *state = tevent_req_data(req,
+						      struct dreplsrv_op_pull_source_state);
 	NTSTATUS status;
-	struct drsuapi_DsGetNCChanges *r = talloc_get_type(rreq->ndr.struct_ptr,
+	struct drsuapi_DsGetNCChanges *r = talloc_get_type(state->ndr_struct_ptr,
 					   struct drsuapi_DsGetNCChanges);
 	uint32_t ctr_level = 0;
 	struct drsuapi_DsGetNCChangesCtr1 *ctr1 = NULL;
 	struct drsuapi_DsGetNCChangesCtr6 *ctr6 = NULL;
+	enum drsuapi_DsExtendedError extended_ret;
+	state->ndr_struct_ptr = NULL;
 
-	status = dcerpc_ndr_request_recv(rreq);
+	status = dcerpc_drsuapi_DsGetNCChanges_r_recv(subreq, r);
+	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
@@ -394,6 +474,21 @@ static void dreplsrv_op_pull_source_get_changes_done(struct rpc_request *rreq)
 	if (ctr_level == 6) {
 		if (!W_ERROR_IS_OK(ctr6->drs_error)) {
 			status = werror_to_ntstatus(ctr6->drs_error);
+			tevent_req_nterror(req, status);
+			return;
+		}
+		extended_ret = ctr6->extended_ret;
+	}
+
+	if (ctr_level == 1) {
+		extended_ret = ctr1->extended_ret;
+	}
+
+	if (state->op->extended_op != DRSUAPI_EXOP_NONE) {
+		state->op->extended_ret = extended_ret;
+
+		if (extended_ret != DRSUAPI_EXOP_ERR_SUCCESS) {
+			status = NT_STATUS_UNSUCCESSFUL;
 			tevent_req_nterror(req, status);
 			return;
 		}
@@ -484,10 +579,10 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 		tevent_req_nterror(req, nt_status);
 		return;
 	}
-
-	/* if it applied fine, we need to update the highwatermark */
-	*state->op->source_dsa->repsFrom1 = rf1;
-
+	if (state->op->extended_op == DRSUAPI_EXOP_NONE) {
+		/* if it applied fine, we need to update the highwatermark */
+		*state->op->source_dsa->repsFrom1 = rf1;
+	}
 	/*
 	 * TODO: update our uptodatevector!
 	 */
@@ -505,10 +600,14 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 	   we join the domain, but they quickly expire.  We do it here
 	   so we can use the already established DRSUAPI pipe
 	*/
-	dreplsrv_update_refs_trigger(req);
+	if (state->op->extended_op == DRSUAPI_EXOP_NONE) {
+		dreplsrv_update_refs_trigger(req);
+	} else {
+		tevent_req_done(req);
+	}
 }
 
-static void dreplsrv_update_refs_done(struct rpc_request *rreq);
+static void dreplsrv_update_refs_done(struct tevent_req *subreq);
 
 /*
   send a UpdateRefs request to refresh our repsTo record on the server
@@ -520,10 +619,10 @@ static void dreplsrv_update_refs_trigger(struct tevent_req *req)
 	struct dreplsrv_service *service = state->op->service;
 	struct dreplsrv_partition *partition = state->op->source_dsa->partition;
 	struct dreplsrv_drsuapi_connection *drsuapi = state->op->source_dsa->conn->drsuapi;
-	struct rpc_request *rreq;
 	struct drsuapi_DsReplicaUpdateRefs *r;
 	char *ntds_guid_str;
 	char *ntds_dns_name;
+	struct tevent_req *subreq;
 
 	r = talloc(state, struct drsuapi_DsReplicaUpdateRefs);
 	if (tevent_req_nomem(r, req)) {
@@ -537,7 +636,7 @@ static void dreplsrv_update_refs_trigger(struct tevent_req *req)
 
 	ntds_dns_name = talloc_asprintf(r, "%s._msdcs.%s",
 					ntds_guid_str,
-					lp_dnsdomain(service->task->lp_ctx));
+					lpcfg_dnsdomain(service->task->lp_ctx));
 	if (tevent_req_nomem(ntds_dns_name, req)) {
 		return;
 	}
@@ -547,32 +646,39 @@ static void dreplsrv_update_refs_trigger(struct tevent_req *req)
 	r->in.req.req1.naming_context	  = &partition->nc;
 	r->in.req.req1.dest_dsa_dns_name  = ntds_dns_name;
 	r->in.req.req1.dest_dsa_guid	  = service->ntds_guid;
-	r->in.req.req1.options	          =
-		DRSUAPI_DS_REPLICA_UPDATE_ADD_REFERENCE |
-		DRSUAPI_DS_REPLICA_UPDATE_DELETE_REFERENCE;
-	if (!samdb_rodc(service->task->lp_ctx)) {
-		r->in.req.req1.options |= DRSUAPI_DS_REPLICA_UPDATE_WRITEABLE;
+	r->in.req.req1.options	          = DRSUAPI_DRS_ADD_REF | DRSUAPI_DRS_DEL_REF;
+	if (!service->am_rodc) {
+		r->in.req.req1.options |= DRSUAPI_DRS_WRIT_REP;
 	}
 
-	rreq = dcerpc_drsuapi_DsReplicaUpdateRefs_send(drsuapi->pipe, r, r);
-	if (tevent_req_nomem(rreq, req)) {
+	state->ndr_struct_ptr = r;
+	subreq = dcerpc_drsuapi_DsReplicaUpdateRefs_r_send(state,
+							   state->ev,
+							   drsuapi->drsuapi_handle,
+							   r);
+	if (tevent_req_nomem(subreq, req)) {
 		return;
 	}
-	composite_continue_rpc(NULL, rreq, dreplsrv_update_refs_done, req);
+	tevent_req_set_callback(subreq, dreplsrv_update_refs_done, req);
 }
 
 /*
   receive a UpdateRefs reply
  */
-static void dreplsrv_update_refs_done(struct rpc_request *rreq)
+static void dreplsrv_update_refs_done(struct tevent_req *subreq)
 {
-	struct tevent_req *req = talloc_get_type(rreq->async.private_data,
+	struct tevent_req *req = tevent_req_callback_data(subreq,
 				 struct tevent_req);
-	struct drsuapi_DsReplicaUpdateRefs *r = talloc_get_type(rreq->ndr.struct_ptr,
+	struct dreplsrv_op_pull_source_state *state = tevent_req_data(req,
+						      struct dreplsrv_op_pull_source_state);
+	struct drsuapi_DsReplicaUpdateRefs *r = talloc_get_type(state->ndr_struct_ptr,
 								struct drsuapi_DsReplicaUpdateRefs);
 	NTSTATUS status;
 
-	status = dcerpc_ndr_request_recv(rreq);
+	state->ndr_struct_ptr = NULL;
+
+	status = dcerpc_drsuapi_DsReplicaUpdateRefs_r_recv(subreq, r);
+	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("UpdateRefs failed with %s\n", 
 			 nt_errstr(status)));

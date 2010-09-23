@@ -20,13 +20,15 @@
 #include "includes.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/cli_lsa.h"
+#include "rpc_client/cli_lsarpc.h"
+#include "rpc_client/init_lsa.h"
 
 /********************************************************************
 ********************************************************************/
 
 static NTSTATUS sid_to_name(struct rpc_pipe_client *pipe_hnd,
 				TALLOC_CTX *mem_ctx,
-				DOM_SID *sid,
+				struct dom_sid *sid,
 				fstring name)
 {
 	struct policy_handle pol;
@@ -58,12 +60,12 @@ static NTSTATUS sid_to_name(struct rpc_pipe_client *pipe_hnd,
 
 static NTSTATUS name_to_sid(struct rpc_pipe_client *pipe_hnd,
 			    TALLOC_CTX *mem_ctx,
-			    DOM_SID *sid, const char *name)
+			    struct dom_sid *sid, const char *name)
 {
 	struct policy_handle pol;
 	enum lsa_SidType *sid_types;
 	NTSTATUS result;
-	DOM_SID *sids;
+	struct dom_sid *sids;
 
 	/* maybe its a raw SID */
 	if ( strncmp(name, "S-", 2) == 0 && string_to_sid(sid, name) ) {
@@ -150,7 +152,7 @@ static NTSTATUS enum_privileges(struct rpc_pipe_client *pipe_hnd,
 static NTSTATUS check_privilege_for_user(struct rpc_pipe_client *pipe_hnd,
 					TALLOC_CTX *ctx,
 					struct policy_handle *pol,
-					DOM_SID *sid,
+					struct dom_sid *sid,
 					const char *right)
 {
 	NTSTATUS result;
@@ -185,7 +187,7 @@ static NTSTATUS check_privilege_for_user(struct rpc_pipe_client *pipe_hnd,
 static NTSTATUS enum_privileges_for_user(struct rpc_pipe_client *pipe_hnd,
 					TALLOC_CTX *ctx,
 					struct policy_handle *pol,
-					DOM_SID *sid )
+					struct dom_sid *sid )
 {
 	NTSTATUS result;
 	struct lsa_RightSet rights;
@@ -310,7 +312,7 @@ static NTSTATUS enum_privileges_for_accounts(struct rpc_pipe_client *pipe_hnd,
 ********************************************************************/
 
 static NTSTATUS rpc_rights_list_internal(struct net_context *c,
-					const DOM_SID *domain_sid,
+					const struct dom_sid *domain_sid,
 					const char *domain_name,
 					struct cli_state *cli,
 					struct rpc_pipe_client *pipe_hnd,
@@ -320,7 +322,7 @@ static NTSTATUS rpc_rights_list_internal(struct net_context *c,
 {
 	struct policy_handle pol;
 	NTSTATUS result;
-	DOM_SID sid;
+	struct dom_sid sid;
 	fstring privname;
 	struct lsa_String lsa_name;
 	struct lsa_StringLarge *description = NULL;
@@ -413,8 +415,8 @@ static NTSTATUS rpc_rights_list_internal(struct net_context *c,
 	/* backward comaptibility: if no keyword provided, treat the key
 	   as an account name */
 	if (argc > 1) {
-		d_printf(_("Usage: net rpc rights list [[accounts|privileges] "
-			   "[name|SID]]\n"));
+		d_printf("%s net rpc rights list [[accounts|privileges] "
+			 "[name|SID]]\n", _("Usage:"));
 		result = NT_STATUS_OK;
 		goto done;
 	}
@@ -435,7 +437,7 @@ done:
 ********************************************************************/
 
 static NTSTATUS rpc_rights_grant_internal(struct net_context *c,
-					const DOM_SID *domain_sid,
+					const struct dom_sid *domain_sid,
 					const char *domain_name,
 					struct cli_state *cli,
 					struct rpc_pipe_client *pipe_hnd,
@@ -448,11 +450,12 @@ static NTSTATUS rpc_rights_grant_internal(struct net_context *c,
 	struct lsa_RightSet rights;
 	int i;
 
-	DOM_SID sid;
+	struct dom_sid sid;
 
 	if (argc < 2 ) {
-		d_printf(_("Usage: net rpc rights grant <name|SID> "
-			   "<rights...>\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _(" net rpc rights grant <name|SID> <rights...>\n"));
 		return NT_STATUS_OK;
 	}
 
@@ -506,7 +509,7 @@ static NTSTATUS rpc_rights_grant_internal(struct net_context *c,
 ********************************************************************/
 
 static NTSTATUS rpc_rights_revoke_internal(struct net_context *c,
-					const DOM_SID *domain_sid,
+					const struct dom_sid *domain_sid,
 					const char *domain_name,
 					struct cli_state *cli,
 					struct rpc_pipe_client *pipe_hnd,
@@ -517,12 +520,13 @@ static NTSTATUS rpc_rights_revoke_internal(struct net_context *c,
 	struct policy_handle dom_pol;
 	NTSTATUS result = NT_STATUS_UNSUCCESSFUL;
 	struct lsa_RightSet rights;
-	DOM_SID sid;
+	struct dom_sid sid;
 	int i;
 
 	if (argc < 2 ) {
-		d_printf(_("Usage: net rpc rights revoke <name|SID> "
-			   "<rights...>\n"));
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _(" net rpc rights revoke <name|SID> <rights...>\n"));
 		return NT_STATUS_OK;
 	}
 
@@ -577,8 +581,9 @@ done:
 static int rpc_rights_list(struct net_context *c, int argc, const char **argv )
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net rpc rights list [{accounts|privileges} "
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net rpc rights list [{accounts|privileges} "
 			   "[name|SID]]\n"
 			   "    View available/assigned privileges\n"));
 		return 0;
@@ -594,8 +599,9 @@ static int rpc_rights_list(struct net_context *c, int argc, const char **argv )
 static int rpc_rights_grant(struct net_context *c, int argc, const char **argv )
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net rpc rights grant <name|SID> <right>\n"
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net rpc rights grant <name|SID> <right>\n"
 			   "    Assign privilege[s]\n"));
 		d_printf(_("For example:\n"
 			   "    net rpc rights grant 'VALE\\biddle' "
@@ -615,8 +621,9 @@ static int rpc_rights_grant(struct net_context *c, int argc, const char **argv )
 static int rpc_rights_revoke(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
-			   "net rpc rights revoke <name|SID> <right>\n"
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net rpc rights revoke <name|SID> <right>\n"
 			   "    Revoke privilege[s]\n"));
 		d_printf(_("For example:\n"
 			   "    net rpc rights revoke 'VALE\\biddle' "

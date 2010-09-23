@@ -19,12 +19,11 @@
 
 #include "includes.h"
 
+#include "../librpc/gen_ndr/cli_netlogon.h"
 #include "librpc/gen_ndr/libnetapi.h"
 #include "lib/netapi/netapi.h"
 #include "lib/netapi/netapi_private.h"
 #include "lib/netapi/libnetapi.h"
-#include "libnet/libnet.h"
-#include "../librpc/gen_ndr/cli_netlogon.h"
 
 /********************************************************************
 ********************************************************************/
@@ -144,6 +143,19 @@ WERROR DsGetDcName_r(struct libnetapi_ctx *ctx,
 				   &ndr_table_netlogon.syntax_id,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
+
+	status = rpccli_netr_DsRGetDCNameEx(pipe_cli,
+					    ctx,
+					    r->in.server_name,
+					    r->in.domain_name,
+					    r->in.domain_guid,
+					    r->in.site_name,
+					    r->in.flags,
+					    (struct netr_DsRGetDCNameInfo **)r->out.dc_info,
+					    &werr);
+	if (NT_STATUS_IS_OK(status)) {
 		goto done;
 	}
 

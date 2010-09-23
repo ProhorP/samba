@@ -176,20 +176,19 @@ static bool open_connection_no_level2_oplocks(struct torture_context *tctx,
 	struct smbcli_options options;
 	struct smbcli_session_options session_options;
 
-	lp_smbcli_options(tctx->lp_ctx, &options);
-	lp_smbcli_session_options(tctx->lp_ctx, &session_options);
+	lpcfg_smbcli_options(tctx->lp_ctx, &options);
+	lpcfg_smbcli_session_options(tctx->lp_ctx, &session_options);
 
 	options.use_level2_oplocks = false;
 
 	status = smbcli_full_connection(tctx, c,
 					torture_setting_string(tctx, "host", NULL),
-					lp_smb_ports(tctx->lp_ctx),
+					lpcfg_smb_ports(tctx->lp_ctx),
 					torture_setting_string(tctx, "share", NULL),
-					NULL, lp_socket_options(tctx->lp_ctx), cmdline_credentials,
-					lp_resolve_context(tctx->lp_ctx),
+					NULL, lpcfg_socket_options(tctx->lp_ctx), cmdline_credentials,
+					lpcfg_resolve_context(tctx->lp_ctx),
 					tctx->ev, &options, &session_options,
-					lp_iconv_convenience(tctx->lp_ctx),
-					lp_gensec_settings(tctx, tctx->lp_ctx));
+					lpcfg_gensec_settings(tctx, tctx->lp_ctx));
 	if (!NT_STATUS_IS_OK(status)) {
 		torture_comment(tctx, "Failed to open connection - %s\n",
 				nt_errstr(status));
@@ -2933,13 +2932,19 @@ static bool test_raw_oplock_batch22(struct torture_context *tctx, struct smbcli_
 	smbcli_oplock_handler(cli1->transport, oplock_handler_ack_to_given, cli1->tree);
 	status = smb_raw_open(cli1->tree, tctx, &io);
 	CHECK_STATUS(tctx, status, NT_STATUS_OK);
+#if 0
+	/* Samba 3.6.0 and above behave as Windows. */
 	if (TARGET_IS_SAMBA3(tctx)) {
 		/* samba3 doesn't grant additional oplocks to bad clients. */
 		CHECK_VAL(io.ntcreatex.out.oplock_level, NO_OPLOCK_RETURN);
 	} else {
 		CHECK_VAL(io.ntcreatex.out.oplock_level,
-			  LEVEL_II_OPLOCK_RETURN);
+			LEVEL_II_OPLOCK_RETURN);
 	}
+#else
+	CHECK_VAL(io.ntcreatex.out.oplock_level,
+		  LEVEL_II_OPLOCK_RETURN);
+#endif
 	torture_wait_for_oplock_break(tctx);
 	te = (int)timeval_elapsed(&tv);
 	/* it should come in without delay */

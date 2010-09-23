@@ -1787,17 +1787,9 @@ done:
 	return ret;
 }
 
-#define FILL_NTCREATEX(_struct, _init...)                       \
-	do {                                                    \
-		(_struct)->generic.level = RAW_OPEN_NTCREATEX;  \
-		(_struct)->ntcreatex.in                         \
-		    = (typeof((_struct)->ntcreatex.in)) {_init};\
-	} while (0)
-
 static bool test_ntcreatex_opendisp_dir(struct torture_context *tctx,
 					struct smbcli_state *cli)
 {
-	union smb_open io;
 	const char *dname = BASEDIR "\\torture_ntcreatex_opendisp_dir";
 	NTSTATUS status;
 	bool ret = true;
@@ -1822,19 +1814,20 @@ static bool test_ntcreatex_opendisp_dir(struct torture_context *tctx,
 		{ 6,                            true,  NT_STATUS_INVALID_PARAMETER },
 		{ 6,                            false, NT_STATUS_INVALID_PARAMETER },
 	};
+	union smb_open io;
+
+	ZERO_STRUCT(io);
+	io.generic.level = RAW_OPEN_NTCREATEX;
+	io.ntcreatex.in.flags = NTCREATEX_FLAGS_EXTENDED;
+	io.ntcreatex.in.access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_DIRECTORY;
+	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_READ | NTCREATEX_SHARE_ACCESS_WRITE;
+	io.ntcreatex.in.create_options = NTCREATEX_OPTIONS_DIRECTORY;
+	io.ntcreatex.in.fname = dname;
 
 	if (!torture_setup_dir(cli, BASEDIR)) {
 		return false;
 	}
-
-	FILL_NTCREATEX(&io,
-	    .flags = NTCREATEX_FLAGS_EXTENDED,
-	    .access_mask = SEC_FLAG_MAXIMUM_ALLOWED,
-	    .file_attr = FILE_ATTRIBUTE_DIRECTORY,
-	    .share_access = NTCREATEX_SHARE_ACCESS_READ | NTCREATEX_SHARE_ACCESS_WRITE,
-	    .create_options = NTCREATEX_OPTIONS_DIRECTORY,
-	    .fname = dname,
-	);
 
 	smbcli_rmdir(cli->tree, dname);
 	smbcli_unlink(cli->tree, dname);
@@ -1889,13 +1882,10 @@ static bool test_ntcreatexdir(struct torture_context *tctx,
     struct smbcli_state *cli)
 {
 	union smb_open io;
-	union smb_fileinfo finfo;
 	const char *fname = BASEDIR "\\torture_ntcreatex.txt";
 	const char *dname = BASEDIR "\\torture_ntcreatex_dir";
-	NTSTATUS status, expected_status;
-	bool ret = true;
+	NTSTATUS status;
 	int i;
-	uint32_t access_mask = 0;
 
 	struct {
 		uint32_t open_disp;
@@ -1962,7 +1952,7 @@ static bool test_ntcreatexdir(struct torture_context *tctx,
 				__location__, nt_errstr(status),
 				nt_errstr(open_funcs[i].correct_status),
 				i, (int)open_funcs[i].open_disp);
-			ret = false;
+			return false;
 		}
 		/* Close and delete the file. */
 		if (NT_STATUS_IS_OK(status)) {
@@ -2070,11 +2060,9 @@ static bool test_ntcreatexdir(struct torture_context *tctx,
 	    "NTCREATEX_OPTIONS_NON_DIRECTORY_FILE should be returned ");
 	smbcli_close(cli->tree, io.ntcreatex.out.file.fnum);
 
-done:
-	smbcli_close(cli->tree, io.ntcreatex.out.file.fnum);
 	smbcli_deltree(cli->tree, BASEDIR);
 
-	return ret;
+	return true;
 }
 
 /* basic testing of all RAW_OPEN_* calls

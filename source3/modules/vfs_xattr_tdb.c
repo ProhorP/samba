@@ -20,6 +20,8 @@
 #include "includes.h"
 #include "librpc/gen_ndr/xattr.h"
 #include "librpc/gen_ndr/ndr_xattr.h"
+#include "../librpc/gen_ndr/ndr_netlogon.h"
+#include "dbwrap.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_VFS
@@ -47,8 +49,7 @@ static NTSTATUS xattr_tdb_pull_attrs(TALLOC_CTX *mem_ctx,
 
 	blob = data_blob_const(data->dptr, data->dsize);
 
-	ndr_err = ndr_pull_struct_blob(
-		&blob, result, NULL, result,
+	ndr_err = ndr_pull_struct_blob(&blob, result, result,
 		(ndr_pull_flags_fn_t)ndr_pull_tdb_xattrs);
 
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -73,8 +74,7 @@ static NTSTATUS xattr_tdb_push_attrs(TALLOC_CTX *mem_ctx,
 	DATA_BLOB blob;
 	enum ndr_err_code ndr_err;
 
-	ndr_err = ndr_push_struct_blob(
-		&blob, mem_ctx, NULL, attribs,
+	ndr_err = ndr_push_struct_blob(&blob, mem_ctx, attribs,
 		(ndr_push_flags_fn_t)ndr_push_tdb_xattrs);
 
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {

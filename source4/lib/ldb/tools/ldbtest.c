@@ -31,31 +31,40 @@
  *  Author: Andrew Tridgell
  */
 
+#ifdef _SAMBA_BUILD_
+#include "includes.h"
+#else
 #include "ldb_includes.h"
+#endif
+
 #include "ldb.h"
 #include "tools/cmdline.h"
 
-static struct timeval tp1,tp2;
+static struct timespec tp1,tp2;
 static struct ldb_cmdline *options;
 
 static void _start_timer(void)
 {
-	gettimeofday(&tp1,NULL);
+	if (clock_gettime(CUSTOM_CLOCK_MONOTONIC, &tp1) != 0) {
+		clock_gettime(CLOCK_REALTIME, &tp1);
+	}
 }
 
 static double _end_timer(void)
 {
-	gettimeofday(&tp2,NULL);
+	if (clock_gettime(CUSTOM_CLOCK_MONOTONIC, &tp2) != 0) {
+		clock_gettime(CLOCK_REALTIME, &tp2);
+	}
 	return((tp2.tv_sec - tp1.tv_sec) + 
-	       (tp2.tv_usec - tp1.tv_usec)*1.0e-6);
+	       (tp2.tv_nsec - tp1.tv_nsec)*1.0e-9);
 }
 
 static void add_records(struct ldb_context *ldb,
 			struct ldb_dn *basedn,
-			int count)
+			unsigned int count)
 {
 	struct ldb_message msg;
-	int i;
+	unsigned int i;
 
 #if 0
         if (ldb_lock(ldb, "transaction") != 0) {
@@ -141,10 +150,10 @@ static void add_records(struct ldb_context *ldb,
 
 static void modify_records(struct ldb_context *ldb,
 			   struct ldb_dn *basedn,
-			   int count)
+			   unsigned int count)
 {
 	struct ldb_message msg;
-	int i;
+	unsigned int i;
 
 	for (i=0;i<count;i++) {
 		struct ldb_message_element el[3];
@@ -194,9 +203,9 @@ static void modify_records(struct ldb_context *ldb,
 
 static void delete_records(struct ldb_context *ldb,
 			   struct ldb_dn *basedn,
-			   int count)
+			   unsigned int count)
 {
-	int i;
+	unsigned int i;
 
 	for (i=0;i<count;i++) {
 		struct ldb_dn *dn;
@@ -217,9 +226,10 @@ static void delete_records(struct ldb_context *ldb,
 	printf("\n");
 }
 
-static void search_uid(struct ldb_context *ldb, struct ldb_dn *basedn, int nrecords, int nsearches)
+static void search_uid(struct ldb_context *ldb, struct ldb_dn *basedn,
+		       unsigned int nrecords, unsigned int nsearches)
 {
-	int i;
+	unsigned int i;
 
 	for (i=0;i<nsearches;i++) {
 		int uid = (i * 700 + 17) % (nrecords * 2);
@@ -240,7 +250,7 @@ static void search_uid(struct ldb_context *ldb, struct ldb_dn *basedn, int nreco
 			exit(1);
 		}
 
-		printf("testing uid %d/%d - %d  \r", i, uid, res->count);
+		printf("Testing uid %d/%d - %d  \r", i, uid, res->count);
 		fflush(stdout);
 
 		talloc_free(res);
@@ -250,7 +260,8 @@ static void search_uid(struct ldb_context *ldb, struct ldb_dn *basedn, int nreco
 	printf("\n");
 }
 
-static void start_test(struct ldb_context *ldb, int nrecords, int nsearches)
+static void start_test(struct ldb_context *ldb, unsigned int nrecords,
+		       unsigned int nsearches)
 {
 	struct ldb_dn *basedn;
 
@@ -411,7 +422,9 @@ int main(int argc, const char **argv)
 	printf("Testing with num-records=%d and num-searches=%d\n", 
 	       options->num_records, options->num_searches);
 
-	start_test(ldb, options->num_records, options->num_searches);
+	start_test(ldb,
+		   (unsigned int) options->num_records,
+		   (unsigned int) options->num_searches);
 
 	start_test_index(&ldb);
 

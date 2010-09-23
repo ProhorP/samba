@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009
@@ -18,7 +18,7 @@
 #
 
 import optparse
-from samba import getopt as options, Ldb
+from samba import getopt as options
 import sys
 
 
@@ -54,6 +54,8 @@ class Command(object):
 
     synopsis = property(_get_synopsis)
 
+    outf = sys.stdout
+
     takes_args = []
     takes_options = []
     takes_optiongroups = {}
@@ -79,7 +81,8 @@ class Command(object):
         kwargs = dict(opts.__dict__)
         for option_group in parser.option_groups:
             for option in option_group.option_list:
-                del kwargs[option.dest]
+                if option.dest is not None:
+                    del kwargs[option.dest]
         kwargs.update(optiongroups)
         min_args = 0
         max_args = 0
@@ -143,3 +146,25 @@ from samba.netcmd.enableaccount import cmd_enableaccount
 commands["enableaccount"] = cmd_enableaccount()
 from samba.netcmd.newuser import cmd_newuser
 commands["newuser"] = cmd_newuser()
+from samba.netcmd.netacl import cmd_acl
+commands["acl"] = cmd_acl()
+from samba.netcmd.fsmo import cmd_fsmo
+commands["fsmo"] = cmd_fsmo()
+from samba.netcmd.export import cmd_export
+commands["export"] = cmd_export()
+from samba.netcmd.time import cmd_time
+commands["time"] = cmd_time()
+from samba.netcmd.user import cmd_user
+commands["user"] = cmd_user()
+from samba.netcmd.vampire import cmd_vampire
+commands["vampire"] = cmd_vampire()
+from samba.netcmd.machinepw import cmd_machinepw
+commands["machinepw"] = cmd_machinepw()
+from samba.netcmd.spn import cmd_spn
+commands["spn"] = cmd_spn()
+from samba.netcmd.group import cmd_group
+commands["group"] = cmd_group()
+from samba.netcmd.join import cmd_join
+commands["join"] = cmd_join()
+from samba.netcmd.rodc import cmd_rodc
+commands["rodc"] = cmd_rodc()

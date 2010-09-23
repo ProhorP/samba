@@ -2,23 +2,24 @@
    Unix SMB/CIFS implementation.
    service (connection) opening and closing
    Copyright (C) Andrew Tridgell 1992-1998
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "includes.h"
 #include "smbd/globals.h"
+#include "../librpc/gen_ndr/netlogon.h"
 
 extern userdom_struct current_user_info;
 
@@ -60,7 +61,8 @@ bool set_conn_connectpath(connection_struct *conn, const char *connectpath)
 		return false;
 	}
 
-	destname = SMB_STRDUP(connectpath);
+	/* Allocate for strlen + '\0' + possible leading '/' */
+	destname = (char *)SMB_MALLOC(strlen(connectpath) + 2);
 	if (!destname) {
 		return false;
 	}
@@ -182,7 +184,7 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir)
 	conn->lastused_count++;
 
 	snum = SNUM(conn);
-  
+
 	if (do_chdir &&
 	    vfs_ChDir(conn,conn->connectpath) != 0 &&
 	    vfs_ChDir(conn,conn->origpath) != 0) {
@@ -197,7 +199,7 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir)
 
 	last_conn = conn;
 	last_flags = flags;
-	
+
 	/* Obey the client case sensitivity requests - only for clients that support it. */
 	switch (lp_casesensitive(snum)) {
 		case Auto:
@@ -291,7 +293,7 @@ int add_home_service(const char *service, const char *username, const char *home
 	if (!lp_add_home(service, iHomeService, username, homedir)) {
 		return -1;
 	}
-	
+
 	return lp_servicenumber(service);
 
 }
@@ -305,7 +307,6 @@ int add_home_service(const char *service, const char *username, const char *home
 int find_service(fstring service)
 {
 	int iService;
-	struct smbd_server_connection *sconn = smbd_server_conn;
 
 	all_string_sub(service,"\\","/",0);
 
@@ -320,7 +321,7 @@ int find_service(fstring service)
 			 * Try mapping the servicename, it may
 			 * be a Windows to unix mapped user name.
 			 */
-			if(map_username(sconn, service))
+			if(map_username(service))
 				phome_dir = get_user_home_dir(
 					talloc_tos(), service);
 		}
@@ -338,7 +339,7 @@ int find_service(fstring service)
 		if ((iPrinterService = lp_servicenumber(PRINTERS_NAME)) < 0) {
 			iPrinterService = load_registry_service(PRINTERS_NAME);
 		}
-		if (iPrinterService) {
+		if (iPrinterService >= 0) {
 			DEBUG(3,("checking whether %s is a valid printer name...\n", service));
 			if (pcap_printername_ok(service)) {
 				DEBUG(3,("%s is a valid printer name\n", service));
@@ -423,12 +424,12 @@ int find_service(fstring service)
  This function modifies dev, ecode.
 ****************************************************************************/
 
-static NTSTATUS share_sanity_checks(int snum, fstring dev) 
+static NTSTATUS share_sanity_checks(struct client_address *client_id, int snum,
+				    fstring dev)
 {
-	
 	if (!lp_snum_ok(snum) || 
-	    !check_access(smbd_server_fd(), 
-			  lp_hostsallow(snum), lp_hostsdeny(snum))) {    
+	    !allow_access(lp_hostsdeny(snum), lp_hostsallow(snum),
+			  client_id->name, client_id->addr)) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -473,12 +474,12 @@ static NTSTATUS share_sanity_checks(int snum, fstring dev)
 
 static NTSTATUS find_forced_group(bool force_user,
 				  int snum, const char *username,
-				  DOM_SID *pgroup_sid,
+				  struct dom_sid *pgroup_sid,
 				  gid_t *pgid)
 {
 	NTSTATUS result = NT_STATUS_NO_SUCH_GROUP;
 	TALLOC_CTX *frame = talloc_stackframe();
-	DOM_SID group_sid;
+	struct dom_sid group_sid;
 	enum lsa_SidType type;
 	char *groupname;
 	bool user_must_be_member = False;
@@ -588,7 +589,7 @@ static NTSTATUS create_connection_server_info(struct smbd_server_connection *sco
                         }
                 } else {
                         if (!user_ok_token(vuid_serverinfo->unix_name,
-					   pdb_get_domain(vuid_serverinfo->sam_account),
+					   vuid_serverinfo->info3->base.domain.string,
                                            vuid_serverinfo->ptok, snum)) {
                                 DEBUG(2, ("user '%s' (from session setup) not "
                                           "permitted to access this share "
@@ -646,25 +647,28 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					const char *pdev,
 					NTSTATUS *pstatus)
 {
-	connection_struct *conn;
+	connection_struct *conn = NULL;
 	struct smb_filename *smb_fname_cpath = NULL;
 	fstring dev;
 	int ret;
-	char addr[INET6_ADDRSTRLEN];
 	bool on_err_call_dis_hook = false;
+	bool claimed_connection = false;
+	uid_t effuid;
+	gid_t effgid;
 	NTSTATUS status;
 
 	fstrcpy(dev, pdev);
 
-	if (NT_STATUS_IS_ERR(*pstatus = share_sanity_checks(snum, dev))) {
-		return NULL;
-	}	
+	*pstatus = share_sanity_checks(&sconn->client_id, snum, dev);
+	if (NT_STATUS_IS_ERR(*pstatus)) {
+		goto err_root_exit;
+	}
 
 	conn = conn_new(sconn);
 	if (!conn) {
 		DEBUG(0,("Couldn't find free connection.\n"));
 		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
-		return NULL;
+		goto err_root_exit;
 	}
 
 	conn->params->service = snum;
@@ -677,8 +681,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		DEBUG(1, ("create_connection_server_info failed: %s\n",
 			  nt_errstr(status)));
 		*pstatus = status;
-		conn_free(conn);
-		return NULL;
+		goto err_root_exit;
 	}
 
 	if ((lp_guest_only(snum)) || (lp_security() == SEC_SHARE)) {
@@ -687,9 +690,6 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	add_session_user(sconn, conn->server_info->unix_name);
 
-	safe_strcpy(conn->client_address,
-			client_addr(get_client_fd(),addr,sizeof(addr)), 
-			sizeof(conn->client_address)-1);
 	conn->num_files_open = 0;
 	conn->lastused = conn->lastused_count = time(NULL);
 	conn->used = True;
@@ -717,7 +717,6 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	conn->aio_write_behind_list = NULL;
 
 	conn->read_only = lp_readonly(SNUM(conn));
-	conn->admin_user = False;
 
 	if (*lp_force_user(snum)) {
 
@@ -732,18 +731,16 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		fuser = talloc_string_sub(conn, lp_force_user(snum), "%S",
 					  lp_servicename(snum));
 		if (fuser == NULL) {
-			conn_free(conn);
 			*pstatus = NT_STATUS_NO_MEMORY;
-			return NULL;
+			goto err_root_exit;
 		}
 
 		status = make_serverinfo_from_username(
 			conn, fuser, conn->server_info->guest,
 			&forced_serverinfo);
 		if (!NT_STATUS_IS_OK(status)) {
-			conn_free(conn);
 			*pstatus = status;
-			return NULL;
+			goto err_root_exit;
 		}
 
 		TALLOC_FREE(conn->server_info);
@@ -762,13 +759,12 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 		status = find_forced_group(
 			conn->force_user, snum, conn->server_info->unix_name,
-			&conn->server_info->ptok->user_sids[1],
+			&conn->server_info->ptok->sids[1],
 			&conn->server_info->utok.gid);
 
 		if (!NT_STATUS_IS_OK(status)) {
-			conn_free(conn);
 			*pstatus = status;
-			return NULL;
+			goto err_root_exit;
 		}
 
 		/*
@@ -789,19 +785,17 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					conn->connectpath,
 					conn->server_info->utok.gid,
 					conn->server_info->sanitized_username,
-					pdb_get_domain(conn->server_info->sam_account),
+					conn->server_info->info3->base.domain.string,
 					lp_pathname(snum));
 		if (!s) {
-			conn_free(conn);
 			*pstatus = NT_STATUS_NO_MEMORY;
-			return NULL;
+			goto err_root_exit;
 		}
 
 		if (!set_conn_connectpath(conn,s)) {
 			TALLOC_FREE(s);
-			conn_free(conn);
 			*pstatus = NT_STATUS_NO_MEMORY;
-			return NULL;
+			goto err_root_exit;
 		}
 		DEBUG(3,("Connect path is '%s' for service [%s]\n",s,
 			 lp_servicename(snum)));
@@ -831,9 +825,8 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					 "denied due to security "
 					 "descriptor.\n",
 					  lp_servicename(snum)));
-				conn_free(conn);
 				*pstatus = NT_STATUS_ACCESS_DENIED;
-				return NULL;
+				goto err_root_exit;
 			} else {
 				conn->read_only = True;
 			}
@@ -844,38 +837,15 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (!smbd_vfs_init(conn)) {
 		DEBUG(0, ("vfs_init failed for service %s\n",
 			  lp_servicename(snum)));
-		conn_free(conn);
 		*pstatus = NT_STATUS_BAD_NETWORK_NAME;
-		return NULL;
+		goto err_root_exit;
 	}
 
-	/*
-	 * If widelinks are disallowed we need to canonicalise the connect
-	 * path here to ensure we don't have any symlinks in the
-	 * connectpath. We will be checking all paths on this connection are
-	 * below this directory. We must do this after the VFS init as we
-	 * depend on the realpath() pointer in the vfs table. JRA.
-	 */
-	if (!lp_widelinks(snum)) {
-		if (!canonicalize_connect_path(conn)) {
-			DEBUG(0, ("canonicalize_connect_path failed "
-			"for service %s, path %s\n",
-				lp_servicename(snum),
-				conn->connectpath));
-			conn_free(conn);
-			*pstatus = NT_STATUS_BAD_NETWORK_NAME;
-			return NULL;
-		}
-	}
+/* ROOT Activities: */
+	/* explicitly check widelinks here so that we can correctly warn
+	 * in the logs. */
+	widelinks_warning(snum);
 
-	if ((!conn->printer) && (!conn->ipc)) {
-		conn->notify_ctx = notify_init(conn, server_id_self(),
-					       smbd_messaging_context(),
-					       smbd_event_context(),
-					       conn);
-	}
-
-/* ROOT Activities: */	
 	/*
 	 * Enforce the max connections parameter.
 	 */
@@ -886,20 +856,52 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 		DEBUG(1, ("Max connections (%d) exceeded for %s\n",
 			  lp_max_connections(snum), lp_servicename(snum)));
-		conn_free(conn);
 		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
-		return NULL;
-	}  
+		goto err_root_exit;
+	}
 
 	/*
 	 * Get us an entry in the connections db
 	 */
-	if (!claim_connection(conn, lp_servicename(snum), 0)) {
+	if (!claim_connection(conn, lp_servicename(snum))) {
 		DEBUG(1, ("Could not store connections entry\n"));
-		conn_free(conn);
 		*pstatus = NT_STATUS_INTERNAL_DB_ERROR;
-		return NULL;
-	}  
+		goto err_root_exit;
+	}
+	claimed_connection = true;
+
+	/* Invoke VFS make connection hook - this must be the first
+	   filesystem operation that we do. */
+
+	if (SMB_VFS_CONNECT(conn, lp_servicename(snum),
+			    conn->server_info->unix_name) < 0) {
+		DEBUG(0,("make_connection: VFS make connection failed!\n"));
+		*pstatus = NT_STATUS_UNSUCCESSFUL;
+		goto err_root_exit;
+	}
+
+	/* Any error exit after here needs to call the disconnect hook. */
+	on_err_call_dis_hook = true;
+
+	if ((!conn->printer) && (!conn->ipc)) {
+		conn->notify_ctx = notify_init(conn,
+					       sconn_server_id(sconn),
+					       sconn->msg_ctx,
+					       smbd_event_context(),
+					       conn);
+	}
+
+	/*
+	 * Fix compatibility issue pointed out by Volker.
+	 * We pass the conn->connectpath to the preexec
+	 * scripts as a parameter, so attempt to canonicalize
+	 * it here before calling the preexec scripts.
+	 * We ignore errors here, as it is possible that
+	 * the conn->connectpath doesn't exist yet and
+	 * the preexec scripts will create them.
+	 */
+
+	(void)canonicalize_connect_path(conn);
 
 	/* Preexecs are done here as they might make the dir we are to ChDir
 	 * to below */
@@ -911,7 +913,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					conn->connectpath,
 					conn->server_info->utok.gid,
 					conn->server_info->sanitized_username,
-					pdb_get_domain(conn->server_info->sam_account),
+					conn->server_info->info3->base.domain.string,
 					lp_rootpreexec(snum));
 		DEBUG(5,("cmd=%s\n",cmd));
 		ret = smbrun(cmd,NULL);
@@ -919,10 +921,8 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		if (ret != 0 && lp_rootpreexec_close(snum)) {
 			DEBUG(1,("root preexec gave %d - failing "
 				 "connection\n", ret));
-			yield_connection(conn, lp_servicename(snum));
-			conn_free(conn);
 			*pstatus = NT_STATUS_ACCESS_DENIED;
-			return NULL;
+			goto err_root_exit;
 		}
 	}
 
@@ -930,15 +930,16 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (!change_to_user(conn, conn->vuid)) {
 		/* No point continuing if they fail the basic checks */
 		DEBUG(0,("Can't become connected user!\n"));
-		yield_connection(conn, lp_servicename(snum));
-		conn_free(conn);
 		*pstatus = NT_STATUS_LOGON_FAILURE;
-		return NULL;
+		goto err_root_exit;
 	}
+
+	effuid = geteuid();
+	effgid = getegid();
 
 	/* Remember that a different vuid can connect later without these
 	 * checks... */
-	
+
 	/* Preexecs are done here as they might make the dir we are to ChDir
 	 * to below */
 
@@ -950,7 +951,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					conn->connectpath,
 					conn->server_info->utok.gid,
 					conn->server_info->sanitized_username,
-					pdb_get_domain(conn->server_info->sam_account),
+					conn->server_info->info3->base.domain.string,
 					lp_preexec(snum));
 		ret = smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);
@@ -967,7 +968,33 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		afs_login(conn);
 	}
 #endif
-	
+
+	/*
+	 * we've finished with the user stuff - go back to root
+	 * so the SMB_VFS_STAT call will only fail on path errors,
+	 * not permission problems.
+	 */
+	change_to_root_user();
+/* ROOT Activites: */
+
+	/*
+	 * If widelinks are disallowed we need to canonicalise the connect
+	 * path here to ensure we don't have any symlinks in the
+	 * connectpath. We will be checking all paths on this connection are
+	 * below this directory. We must do this after the VFS init as we
+	 * depend on the realpath() pointer in the vfs table. JRA.
+	 */
+	if (!lp_widelinks(snum)) {
+		if (!canonicalize_connect_path(conn)) {
+			DEBUG(0, ("canonicalize_connect_path failed "
+			"for service %s, path %s\n",
+				lp_servicename(snum),
+				conn->connectpath));
+			*pstatus = NT_STATUS_BAD_NETWORK_NAME;
+			goto err_root_exit;
+		}
+	}
+
 	/* Add veto/hide lists */
 	if (!IS_IPC(conn) && !IS_PRINT(conn)) {
 		set_namearray( &conn->veto_list, lp_veto_files(snum));
@@ -976,21 +1003,6 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		set_namearray( &conn->aio_write_behind_list,
 				lp_aio_write_behind(snum));
 	}
-	
-	/* Invoke VFS make connection hook - do this before the VFS_STAT call
-	   to allow any filesystems needing user credentials to initialize
-	   themselves. */
-
-	if (SMB_VFS_CONNECT(conn, lp_servicename(snum),
-			    conn->server_info->unix_name) < 0) {
-		DEBUG(0,("make_connection: VFS make connection failed!\n"));
-		*pstatus = NT_STATUS_UNSUCCESSFUL;
-		goto err_root_exit;
-	}
-
-	/* Any error exit after here needs to call the disconnect hook. */
-	on_err_call_dis_hook = true;
-
 	status = create_synthetic_smb_fname(talloc_tos(), conn->connectpath,
 					    NULL, NULL, &smb_fname_cpath);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1003,6 +1015,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	   check during individual operations. To match this behaviour
 	   I have disabled this chdir check (tridge) */
 	/* the alternative is just to check the directory exists */
+
 	if ((ret = SMB_VFS_STAT(conn, smb_fname_cpath)) != 0 ||
 	    !S_ISDIR(smb_fname_cpath->st.st_ex_mode)) {
 		if (ret == 0 && !S_ISDIR(smb_fname_cpath->st.st_ex_mode)) {
@@ -1018,25 +1031,9 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		*pstatus = NT_STATUS_BAD_NETWORK_NAME;
 		goto err_root_exit;
 	}
+	conn->base_share_dev = smb_fname_cpath->st.st_ex_dev;
 
 	string_set(&conn->origpath,conn->connectpath);
-
-#if SOFTLINK_OPTIMISATION
-	/* resolve any soft links early if possible */
-	if (vfs_ChDir(conn,conn->connectpath) == 0) {
-		TALLOC_CTX *ctx = talloc_tos();
-		char *s = vfs_GetWd(ctx,s);
-		if (!s) {
-			*status = map_nt_error_from_unix(errno);
-			goto err_root_exit;
-		}
-		if (!set_conn_connectpath(conn,s)) {
-			*status = NT_STATUS_NO_MEMORY;
-			goto err_root_exit;
-		}
-		vfs_ChDir(conn,conn->connectpath);
-	}
-#endif
 
 	/* Figure out the characteristics of the underlying filesystem. This
 	 * assumes that all the filesystem mounted withing a share path have
@@ -1053,28 +1050,33 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	if( DEBUGLVL( IS_IPC(conn) ? 3 : 1 ) ) {
 		dbgtext( "%s (%s) ", get_remote_machine_name(),
-			 conn->client_address );
-		dbgtext( "%s", srv_is_signing_active(smbd_server_conn) ? "signed " : "");
+			 conn->sconn->client_id.addr );
+		dbgtext( "%s", srv_is_signing_active(sconn) ? "signed " : "");
 		dbgtext( "connect to service %s ", lp_servicename(snum) );
 		dbgtext( "initially as user %s ",
 			 conn->server_info->unix_name );
-		dbgtext( "(uid=%d, gid=%d) ", (int)geteuid(), (int)getegid() );
+		dbgtext( "(uid=%d, gid=%d) ", (int)effuid, (int)effgid );
 		dbgtext( "(pid %d)\n", (int)sys_getpid() );
 	}
 
-	/* we've finished with the user stuff - go back to root */
-	change_to_root_user();
 	return(conn);
 
   err_root_exit:
 	TALLOC_FREE(smb_fname_cpath);
-	change_to_root_user();
+	/* We must exit this function as root. */
+	if (geteuid() != 0) {
+		change_to_root_user();
+	}
 	if (on_err_call_dis_hook) {
 		/* Call VFS disconnect hook */
 		SMB_VFS_DISCONNECT(conn);
 	}
-	yield_connection(conn, lp_servicename(snum));
-	conn_free(conn);
+	if (claimed_connection) {
+		yield_connection(conn, lp_servicename(snum));
+	}
+	if (conn) {
+		conn_free(conn);
+	}
 	return NULL;
 }
 
@@ -1094,7 +1096,6 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 	fstring service;
 	fstring dev;
 	int snum = -1;
-	char addr[INET6_ADDRSTRLEN];
 
 	fstrcpy(dev, pdev);
 
@@ -1154,7 +1155,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 				fstring unix_username;
 				fstrcpy(unix_username,
 					current_user_info.smb_name);
-				map_username(sconn, unix_username);
+				map_username(unix_username);
 				snum = find_service(unix_username);
 			} 
 			if (snum != -1) {
@@ -1178,7 +1179,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 					    vuser, no_pw, 
 					    dev, status);
 	}
-	
+
 	fstrcpy(service, service_in);
 
 	strlower_m(service);
@@ -1195,7 +1196,8 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 
 		DEBUG(3,("%s (%s) couldn't find service %s\n",
 			get_remote_machine_name(),
-			client_addr(get_client_fd(),addr,sizeof(addr)),
+			tsocket_address_string(
+				sconn->remote_address, talloc_tos()),
 			service));
 		*status = NT_STATUS_BAD_NETWORK_NAME;
 		return NULL;
@@ -1233,7 +1235,7 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 
 	DEBUG(IS_IPC(conn)?3:1, ("%s (%s) closed connection to service %s\n",
 				 get_remote_machine_name(),
-				 conn->client_address,
+				 conn->sconn->client_id.addr,
 				 lp_servicename(SNUM(conn))));
 
 	/* Call VFS disconnect hook */    
@@ -1253,7 +1255,7 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 					conn->connectpath,
 					conn->server_info->utok.gid,
 					conn->server_info->sanitized_username,
-					pdb_get_domain(conn->server_info->sam_account),
+					conn->server_info->info3->base.domain.string,
 					lp_postexec(SNUM(conn)));
 		smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);
@@ -1269,7 +1271,7 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 					conn->connectpath,
 					conn->server_info->utok.gid,
 					conn->server_info->sanitized_username,
-					pdb_get_domain(conn->server_info->sam_account),
+					conn->server_info->info3->base.domain.string,
 					lp_rootpostexec(SNUM(conn)));
 		smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);

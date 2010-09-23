@@ -3,6 +3,8 @@
  * (Royal Institute of Technology, Stockholm, Sweden).
  * All rights reserved.
  *
+ * Portions Copyright (c) 2009 Apple Inc. All rights reserved.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -33,8 +35,8 @@
 
 #include "kuser_locl.h"
 
-#ifndef HEIMDAL_SMALLER
-#include "krb5-v4compat.h"
+#ifdef __APPLE__
+#include <Security/Security.h>
 #endif
 
 struct krb5_dh_moduli;
@@ -68,11 +70,6 @@ struct getarg_strings etype_str;
 int use_keytab		= 0;
 char *keytab_str	= NULL;
 int do_afslog		= -1;
-#ifndef HEIMDAL_SMALLER
-int get_v4_tgt		= -1;
-int convert_524		= 0;
-static char *krb4_cc_name;
-#endif
 int fcache_version;
 char *password_file	= NULL;
 char *pk_user_id	= NULL;
@@ -99,21 +96,18 @@ static struct getargs args[] = {
      * P: ~p
      * C: v4 cache name?
      * 5:
+     *
+     * old flags
+     * 4:
+     * 9:
      */
-#ifndef HEIMDAL_SMALLER
-    { "524init", 	'4', arg_flag, &get_v4_tgt,
-      NP_("obtain version 4 TGT", "") },
-
-    { "524convert", 	'9', arg_flag, &convert_524,
-      NP_("only convert ticket to version 4", "") },
-#endif
     { "afslog", 	0  , arg_flag, &do_afslog,
       NP_("obtain afs tokens", "")  },
 
     { "cache", 		'c', arg_string, &cred_cache,
       NP_("credentials cache", ""), "cachename" },
 
-    { "forwardable",	'f', arg_flag, &forwardable_flag,
+    { "forwardable",	'f', arg_negative_flag, &forwardable_flag,
       NP_("get forwardable tickets", "")},
 
     { "keytab",         't', arg_string, &keytab_str,
@@ -233,58 +227,6 @@ get_server(krb5_context context,
 			       KRB5_TGS_NAME, realm, NULL);
 }
 
-#ifndef HEIMDAL_SMALLER
-
-static krb5_error_code
-do_524init(krb5_context context, krb5_ccache ccache,
-	   krb5_creds *creds, const char *server)
-{
-    krb5_error_code ret;
-
-    struct credentials c;
-    krb5_creds in_creds, *real_creds;
-
-    if(creds != NULL)
-	real_creds = creds;
-    else {
-	krb5_principal client;
-	ret = krb5_cc_get_principal(context, ccache, &client);
-	if (ret) {
-	    krb5_warn(context, ret, "524init: can't get client principal");
-	    return ret;
-	}
-	memset(&in_creds, 0, sizeof(in_creds));
-	ret = get_server(context, client, server, &in_creds.server);
-	if(ret) {
-	    krb5_warn(context, ret, "524init: can't get server principal");
-	    krb5_free_principal(context, client);
-	    return ret;
-	}
-	in_creds.client = client;
-	ret = krb5_get_credentials(context, 0, ccache, &in_creds, &real_creds);
-	krb5_free_principal(context, client);
-	krb5_free_principal(context, in_creds.server);
-	if(ret)
-	    return ret;
-    }
-    ret = krb524_convert_creds_kdc_ccache(context, ccache, real_creds, &c);
-    if(ret)
-	krb5_warn(context, ret, "converting creds");
-    else {
-	krb5_error_code tret = _krb5_krb_tf_setup(context, &c, NULL, 0);
-	if(tret)
-	    krb5_warn(context, tret, "saving v4 creds");
-    }
-
-    if(creds == NULL)
-	krb5_free_creds(context, real_creds);
-    memset(&c, 0, sizeof(c));
-
-    return ret;
-}
-
-#endif
-
 static int
 renew_validate(krb5_context context,
 	       int renew,
@@ -364,10 +306,6 @@ renew_validate(krb5_context context,
 
     if(ret == 0 && server == NULL) {
 	/* only do this if it's a general renew-my-tgt request */
-#ifndef HEIMDAL_SMALLER
-	if(get_v4_tgt)
-	    do_524init(context, cache, out, NULL);
-#endif
 #ifndef NO_AFS
 	if(do_afslog && k_hasafs())
 	    krb5_afslog(context, cache, NULL, NULL);
@@ -422,7 +360,7 @@ get_new_tickets(krb5_context context,
     char passwd[256];
     krb5_deltat start_time = 0;
     krb5_deltat renew = 0;
-    const char *renewstr = NULL;
+    char *renewstr = NULL;
     krb5_enctype *enctype = NULL;
     krb5_ccache tempccache;
 #ifndef NO_NTLM
@@ -451,6 +389,33 @@ get_new_tickets(krb5_context context,
 	passwd[strcspn(passwd, "\n")] = '\0';
     }
 
+#ifdef __APPLE__
+    if (passwd[0] == '\0') {
+	const char *realm;
+	OSStatus osret;
+	UInt32 length;
+	void *buffer;
+	char *name;
+
+	realm = krb5_principal_get_realm(context, principal);
+
+	ret = krb5_unparse_name_flags(context, principal,
+				      KRB5_PRINCIPAL_UNPARSE_NO_REALM, &name);
+	if (ret)
+	    goto nopassword;
+
+	osret = SecKeychainFindGenericPassword(NULL, strlen(realm), realm,
+					       strlen(name), name,
+					       &length, &buffer, NULL);
+	free(name);
+	if (osret == noErr && length < sizeof(passwd) - 1) {
+	    memcpy(passwd, buffer, length);
+	    passwd[length] = '\0';
+	}
+    nopassword:
+	do { } while(0);
+    }
+#endif
 
     memset(&cred, 0, sizeof(cred));
 
@@ -472,7 +437,7 @@ get_new_tickets(krb5_context context,
 						pac_flag ? TRUE : FALSE);
     if (canonicalize_flag)
 	krb5_get_init_creds_opt_set_canonicalize(context, opt, TRUE);
-    if (pk_enterprise_flag && windows_flag)
+    if ((pk_enterprise_flag || enterprise_flag || canonicalize_flag) && windows_flag)
 	krb5_get_init_creds_opt_set_win2k(context, opt, TRUE);
     if (pk_user_id || ent_user_id || anonymous_flag) {
 	ret = krb5_get_init_creds_opt_set_pkinit(context, opt,
@@ -749,10 +714,6 @@ renew_func(void *ptr)
 	get_new_tickets(ctx->context, ctx->principal,
 			ctx->ccache, ctx->ticket_life, 0);
 
-#ifndef HEIMDAL_SMALLER
-    if(get_v4_tgt || convert_524)
-	do_524init(ctx->context, ctx->ccache, NULL, server_str);
-#endif
 #ifndef NO_AFS
     if(do_afslog && k_hasafs())
 	krb5_afslog(ctx->context, ctx->ccache, NULL, NULL);
@@ -842,12 +803,6 @@ main (int argc, char **argv)
 	krb5_appdefault_boolean(context, "kinit",
 				krb5_principal_get_realm(context, principal),
 				"renewable", FALSE, &renewable_flag);
-#ifndef HEIMDAL_SMALLER
-    if(get_v4_tgt == -1)
-	krb5_appdefault_boolean(context, "kinit",
-				krb5_principal_get_realm(context, principal),
-				"krb4_get_tickets", FALSE, &get_v4_tgt);
-#endif
     if(do_afslog == -1)
 	krb5_appdefault_boolean(context, "kinit",
 				krb5_principal_get_realm(context, principal),
@@ -865,24 +820,25 @@ main (int argc, char **argv)
 		     krb5_cc_get_type(context, ccache),
 		     krb5_cc_get_name(context, ccache));
 	    setenv("KRB5CCNAME", s, 1);
-#ifndef HEIMDAL_SMALLER
-	    if (get_v4_tgt) {
-		int fd;
-		if (asprintf(&krb4_cc_name, "%s_XXXXXX", TKT_ROOT) < 0)
-		    krb5_errx(context, 1, "out of memory");
-		if((fd = mkstemp(krb4_cc_name)) >= 0) {
-		    close(fd);
-		    setenv("KRBTKFILE", krb4_cc_name, 1);
-		} else {
-		    free(krb4_cc_name);
-		    krb4_cc_name = NULL;
-		}
-	    }
-#endif
 	} else {
 	    ret = krb5_cc_cache_match(context, principal, &ccache);
-	    if (ret)
+	    if (ret) {
+		const char *type;
 		ret = krb5_cc_default (context, &ccache);
+		if (ret)
+		    krb5_err (context, 1, ret, N_("resolving credentials cache", ""));
+
+		/* 
+		 * Check if the type support switching, and we do,
+		 * then do that instead over overwriting the current
+		 * default credential
+		 */
+		type = krb5_cc_get_type(context, ccache);
+		if (krb5_cc_support_switch(context, type)) {
+		    krb5_cc_close(context, ccache);
+		    ret = krb5_cc_new_unique(context, type, NULL, &ccache);
+		}
+	    }
 	}
     }
     if (ret)
@@ -926,15 +882,8 @@ main (int argc, char **argv)
 	exit(ret != 0);
     }
 
-#ifndef HEIMDAL_SMALLER
-    if(!convert_524)
-#endif
-	get_new_tickets(context, principal, ccache, ticket_life, 1);
+    get_new_tickets(context, principal, ccache, ticket_life, 1);
 
-#ifndef HEIMDAL_SMALLER
-    if(get_v4_tgt || convert_524)
-	do_524init(context, ccache, NULL, server_str);
-#endif
 #ifndef NO_AFS
     if(do_afslog && k_hasafs())
 	krb5_afslog(context, ccache, NULL, NULL);
@@ -960,9 +909,6 @@ main (int argc, char **argv)
 	    krb5_warnx(context, N_("command not found: %s", ""), argv[1]);
 	
 	krb5_cc_destroy(context, ccache);
-#ifndef HEIMDAL_SMALLER
-	_krb5_krb_dest_tkt(context, krb4_cc_name);
-#endif
 #ifndef NO_AFS
 	if(k_hasafs())
 	    k_unlog();

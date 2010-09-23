@@ -50,7 +50,7 @@ NTTIME nttime_from_string(const char *s)
  preserve the "special" values.
 **************************************************************/
 
-uint32_t convert_time_t_to_uint32(time_t t)
+uint32_t convert_time_t_to_uint32_t(time_t t)
 {
 #if (defined(SIZEOF_TIME_T) && (SIZEOF_TIME_T == 8))
 	/* time_t is 64-bit. */
@@ -63,7 +63,7 @@ uint32_t convert_time_t_to_uint32(time_t t)
 	return (uint32_t)t;
 }
 
-time_t convert_uint32_to_time_t(uint32_t u)
+time_t convert_uint32_t_to_time_t(uint32_t u)
 {
 #if (defined(SIZEOF_TIME_T) && (SIZEOF_TIME_T == 8))
 	/* time_t is 64-bit. */
@@ -259,7 +259,7 @@ void dos_filetime_timespec(struct timespec *tsp)
  localtime).
 ********************************************************************/
 
-static time_t make_unix_date(const void *date_ptr, int zone_offset)
+time_t make_unix_date(const void *date_ptr, int zone_offset)
 {
 	uint32_t dos_date=0;
 	struct tm t;
@@ -356,11 +356,8 @@ struct timeval convert_timespec_to_timeval(const struct timespec ts)
 
 struct timespec timespec_current(void)
 {
-	struct timeval tv;
 	struct timespec ts;
-	GetTimeOfDay(&tv);
-	ts.tv_sec = tv.tv_sec;
-	ts.tv_nsec = tv.tv_usec * 1000;
+	clock_gettime(CLOCK_REALTIME, &ts);
 	return ts;
 }
 
@@ -412,6 +409,10 @@ void round_timespec_to_usec(struct timespec *ts)
 {
 	struct timeval tv = convert_timespec_to_timeval(*ts);
 	*ts = convert_timeval_to_timespec(tv);
+	while (ts->tv_nsec > 1000000000) {
+		ts->tv_sec += 1;
+		ts->tv_nsec -= 1000000000;
+	}
 }
 
 /****************************************************************************
@@ -432,41 +433,6 @@ struct timespec interpret_long_date(const char *p)
 	}
 	return nt_time_to_unix_timespec(&nt);
 }
-
-/***************************************************************************
- Client versions of the above functions.
-***************************************************************************/
-
-void cli_put_dos_date(struct cli_state *cli, char *buf, int offset, time_t unixdate)
-{
-	push_dos_date((uint8_t *)buf, offset, unixdate, cli->serverzone);
-}
-
-void cli_put_dos_date2(struct cli_state *cli, char *buf, int offset, time_t unixdate)
-{
-	push_dos_date2((uint8_t *)buf, offset, unixdate, cli->serverzone);
-}
-
-void cli_put_dos_date3(struct cli_state *cli, char *buf, int offset, time_t unixdate)
-{
-	push_dos_date3((uint8_t *)buf, offset, unixdate, cli->serverzone);
-}
-
-time_t cli_make_unix_date(struct cli_state *cli, const void *date_ptr)
-{
-	return make_unix_date(date_ptr, cli->serverzone);
-}
-
-time_t cli_make_unix_date2(struct cli_state *cli, const void *date_ptr)
-{
-	return make_unix_date2(date_ptr, cli->serverzone);
-}
-
-time_t cli_make_unix_date3(struct cli_state *cli, const void *date_ptr)
-{
-	return make_unix_date3(date_ptr, cli->serverzone);
-}
-
 
 /*******************************************************************
  Re-read the smb serverzone value.
@@ -505,6 +471,19 @@ void get_process_uptime(struct timeval *ret_time)
 		ret_time->tv_usec = time_now_hires.tv_usec - start_time_hires.tv_usec;
 	}
 }
+
+/**
+ * @brief Get the startup time of the server.
+ *
+ * @param[out] ret_time A pointer to a timveal structure to set the startup
+ *                      time.
+ */
+void get_startup_time(struct timeval *ret_time)
+{
+	ret_time->tv_sec = start_time_hires.tv_sec;
+	ret_time->tv_usec = start_time_hires.tv_usec;
+}
+
 
 /****************************************************************************
  Convert a NTTIME structure to a time_t.

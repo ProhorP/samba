@@ -176,6 +176,13 @@ int tevent_common_context_destructor(struct tevent_context *ev)
 		sn = se->next;
 		se->event_ctx = NULL;
 		DLIST_REMOVE(ev->signal_events, se);
+		/*
+		 * This is important, Otherwise signals
+		 * are handled twice in child. eg, SIGHUP.
+		 * one added in parent, and another one in
+		 * the child. -- BoYang
+		 */
+		tevent_cleanup_pending_signal_handlers(se);
 	}
 
 	return 0;
@@ -255,9 +262,6 @@ struct tevent_context *tevent_context_init(TALLOC_CTX *mem_ctx)
 /*
   add a fd based event
   return NULL on failure (memory allocation error)
-
-  if flags contains TEVENT_FD_AUTOCLOSE then the fd will be closed when
-  the returned fd_event context is freed
 */
 struct tevent_fd *_tevent_add_fd(struct tevent_context *ev,
 				 TALLOC_CTX *mem_ctx,
@@ -608,4 +612,19 @@ int tevent_common_loop_wait(struct tevent_context *ev,
 int _tevent_loop_wait(struct tevent_context *ev, const char *location)
 {
 	return ev->ops->loop_wait(ev, location);
+}
+
+
+/*
+  re-initialise a tevent context. This leaves you with the same
+  event context, but all events are wiped and the structure is
+  re-initialised. This is most useful after a fork()  
+
+  zero is returned on success, non-zero on failure
+*/
+int tevent_re_initialise(struct tevent_context *ev)
+{
+	tevent_common_context_destructor(ev);
+
+	return ev->ops->context_init(ev);
 }

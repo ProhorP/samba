@@ -31,6 +31,7 @@
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/gen_ndr/ndr_drsuapi.h"
 #include "librpc/gen_ndr/ndr_drsblobs.h"
+#include "libcli/security/dom_sid.h"
 #include "param/param.h"
 
 WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
@@ -39,8 +40,8 @@ WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 	struct ldb_dn *basedn;
 	struct ldb_result *r;
 	struct ldb_message_element *el;
-	static const char *attrs[] = { "hasMasterNCs", NULL };
-	uint32_t i;
+	static const char *attrs[] = { "hasMasterNCs", "msDS-hasFullReplicaNCs", NULL };
+	unsigned int i;
 	int ret;
 
 	basedn = samdb_ntds_settings_dn(s->samdb);
@@ -55,10 +56,9 @@ WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 		return WERR_FOOBAR;
 	}
 
+
+
 	el = ldb_msg_find_element(r->msgs[0], "hasMasterNCs");
-	if (!el) {
-		return WERR_FOOBAR;
-	}
 
 	for (i=0; el && i < el->num_values; i++) {
 		const char *v = (const char *)el->values[i].data;
@@ -78,6 +78,29 @@ WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 		DLIST_ADD(s->partitions, p);
 
 		DEBUG(2, ("dreplsrv_partition[%s] loaded\n", v));
+	}
+
+	el = ldb_msg_find_element(r->msgs[0], "msDS-hasFullReplicaNCs");
+
+	for (i=0; el && i < el->num_values; i++) {
+		const char *v = (const char *)el->values[i].data;
+		struct ldb_dn *pdn;
+		struct dreplsrv_partition *p;
+
+		pdn = ldb_dn_new(s, s->samdb, v);
+		if (!ldb_dn_validate(pdn)) {
+			return WERR_FOOBAR;
+		}
+
+		p = talloc_zero(s, struct dreplsrv_partition);
+		W_ERROR_HAVE_NO_MEMORY(p);
+
+		p->dn = talloc_steal(p, pdn);
+		p->incoming_only = true;
+
+		DLIST_ADD(s->partitions, p);
+
+		DEBUG(2, ("dreplsrv_partition[%s] loaded (incoming only)\n", v));
 	}
 
 	talloc_free(r);
@@ -153,7 +176,7 @@ static WERROR dreplsrv_partition_add_source_dsa(struct dreplsrv_service *s,
 	W_ERROR_HAVE_NO_MEMORY(source);
 
 	ndr_err = ndr_pull_struct_blob(val, source, 
-				       lp_iconv_convenience(s->task->lp_ctx), &source->_repsFromBlob,
+				       &source->_repsFromBlob,
 				       (ndr_pull_flags_fn_t)ndr_pull_repsFromToBlob);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		NTSTATUS nt_status = ndr_map_error2ntstatus(ndr_err);
@@ -195,7 +218,7 @@ static WERROR udv_convert(TALLOC_CTX *mem_ctx,
 			  const struct replUpToDateVectorCtr2 *udv,
 			  struct drsuapi_DsReplicaCursorCtrEx *udv_ex)
 {
-	int i;
+	uint32_t i;
 
 	udv_ex->version = 2;
 	udv_ex->reserved1 = 0;
@@ -212,57 +235,92 @@ static WERROR udv_convert(TALLOC_CTX *mem_ctx,
 	return WERR_OK;
 }
 
-/*
-  add our local UDV element for the partition
- */
-static WERROR add_local_udv(struct dreplsrv_service *s,
-			    struct dreplsrv_partition *p,
-			    const struct GUID *our_invocation_id,
-			    struct drsuapi_DsReplicaCursorCtrEx *udv)
+WERROR dreplsrv_partition_find_for_nc(struct dreplsrv_service *s,
+				      const struct GUID *nc_guid,
+				      const struct dom_sid *nc_sid,
+				      const char *nc_dn_str,
+				      struct dreplsrv_partition **_p)
 {
-	int ret;
-	uint64_t highest_usn;
-	int i;
+	struct dreplsrv_partition *p;
+	bool valid_sid, valid_guid;
+	struct dom_sid null_sid;
+	ZERO_STRUCT(null_sid);
 
-	ret = dsdb_load_partition_usn(s->samdb, p->dn, &highest_usn);
-	if (ret != LDB_SUCCESS) {
-		/* nothing to add */
-		return WERR_OK;
+	SMB_ASSERT(_p);
+
+	valid_sid  = nc_sid && !dom_sid_equal(&null_sid, nc_sid);
+	valid_guid = nc_guid && !GUID_all_zero(nc_guid);
+
+	if (!valid_sid && !valid_guid && !nc_dn_str) {
+		return WERR_DS_DRA_INVALID_PARAMETER;
 	}
 
-	for (i=0; i<udv->count; i++) {
-		if (GUID_equal(our_invocation_id, &udv->cursors[i].source_dsa_invocation_id)) {
-			udv->cursors[i].highest_usn = highest_usn;
+	for (p = s->partitions; p; p = p->next) {
+		if ((valid_guid && GUID_equal(&p->nc.guid, nc_guid))
+		    || strequal(p->nc.dn, nc_dn_str)
+		    || (valid_sid && dom_sid_equal(&p->nc.sid, nc_sid)))
+		{
+			*_p = p;
 			return WERR_OK;
 		}
 	}
 
-	udv->cursors = talloc_realloc(p, udv->cursors, struct drsuapi_DsReplicaCursor, udv->count+1);
-	W_ERROR_HAVE_NO_MEMORY(udv->cursors);
-
-	udv->cursors[udv->count].source_dsa_invocation_id = *our_invocation_id;
-	udv->cursors[udv->count].highest_usn = highest_usn;
-	udv->count++;
-
-	return WERR_OK;
+	return WERR_DS_DRA_BAD_NC;
 }
+
+WERROR dreplsrv_partition_source_dsa_by_guid(struct dreplsrv_partition *p,
+					     const struct GUID *dsa_guid,
+					     struct dreplsrv_partition_source_dsa **_dsa)
+{
+	struct dreplsrv_partition_source_dsa *dsa;
+
+	SMB_ASSERT(dsa_guid != NULL);
+	SMB_ASSERT(!GUID_all_zero(dsa_guid));
+	SMB_ASSERT(_dsa);
+
+	for (dsa = p->sources; dsa; dsa = dsa->next) {
+		if (GUID_equal(dsa_guid, &dsa->repsFrom1->source_dsa_obj_guid)) {
+			*_dsa = dsa;
+			return WERR_OK;
+		}
+	}
+
+	return WERR_DS_DRA_NO_REPLICA;
+}
+
+WERROR dreplsrv_partition_source_dsa_by_dns(const struct dreplsrv_partition *p,
+					    const char *dsa_dns,
+					    struct dreplsrv_partition_source_dsa **_dsa)
+{
+	struct dreplsrv_partition_source_dsa *dsa;
+
+	SMB_ASSERT(dsa_dns != NULL);
+	SMB_ASSERT(_dsa);
+
+	for (dsa = p->sources; dsa; dsa = dsa->next) {
+		if (strequal(dsa_dns, dsa->repsFrom1->other_info->dns_name)) {
+			*_dsa = dsa;
+			return WERR_OK;
+		}
+	}
+
+	return WERR_DS_DRA_NO_REPLICA;
+}
+
 
 static WERROR dreplsrv_refresh_partition(struct dreplsrv_service *s,
 					 struct dreplsrv_partition *p)
 {
 	WERROR status;
-	const struct ldb_val *ouv_value;
-	struct replUpToDateVectorBlob ouv;
 	struct dom_sid *nc_sid;
 	struct ldb_message_element *orf_el = NULL;
 	struct ldb_result *r;
-	uint32_t i;
+	unsigned int i;
 	int ret;
 	TALLOC_CTX *mem_ctx = talloc_new(p);
 	static const char *attrs[] = {
 		"objectSid",
 		"objectGUID",
-		"replUpToDateVector",
 		"repsFrom",
 		NULL
 	};
@@ -273,9 +331,6 @@ static WERROR dreplsrv_refresh_partition(struct dreplsrv_service *s,
 	ret = ldb_search(s->samdb, mem_ctx, &r, p->dn, LDB_SCOPE_BASE, attrs,
 			 "(objectClass=*)");
 	if (ret != LDB_SUCCESS) {
-		talloc_free(mem_ctx);
-		return WERR_FOOBAR;
-	} else if (r->count != 1) {
 		talloc_free(mem_ctx);
 		return WERR_FOOBAR;
 	}
@@ -296,33 +351,11 @@ static WERROR dreplsrv_refresh_partition(struct dreplsrv_service *s,
 	ZERO_STRUCT(p->uptodatevector);
 	ZERO_STRUCT(p->uptodatevector_ex);
 
-	ouv_value = ldb_msg_find_ldb_val(r->msgs[0], "replUpToDateVector");
-	if (ouv_value) {
-		enum ndr_err_code ndr_err;
-		ndr_err = ndr_pull_struct_blob(ouv_value, mem_ctx, 
-					       lp_iconv_convenience(s->task->lp_ctx), &ouv,
-					       (ndr_pull_flags_fn_t)ndr_pull_replUpToDateVectorBlob);
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-			NTSTATUS nt_status = ndr_map_error2ntstatus(ndr_err);
-			talloc_free(mem_ctx);
-			return ntstatus_to_werror(nt_status);
-		}
-		/* NDR_PRINT_DEBUG(replUpToDateVectorBlob, &ouv); */
-		if (ouv.version != 2) {
-			talloc_free(mem_ctx);
-			return WERR_DS_DRA_INTERNAL_ERROR;
-		}
-
-		p->uptodatevector.count		= ouv.ctr.ctr2.count;
-		p->uptodatevector.reserved	= ouv.ctr.ctr2.reserved;
-		p->uptodatevector.cursors	= talloc_steal(p, ouv.ctr.ctr2.cursors);
-
+	ret = dsdb_load_udv_v2(s->samdb, p->dn, p, &p->uptodatevector.cursors, &p->uptodatevector.count);
+	if (ret == LDB_SUCCESS) {
 		status = udv_convert(p, &p->uptodatevector, &p->uptodatevector_ex);
 		W_ERROR_NOT_OK_RETURN(status);
 	}
-
-	status = add_local_udv(s, p, samdb_ntds_invocation_id(s->samdb), &p->uptodatevector_ex);
-	W_ERROR_NOT_OK_RETURN(status);
 
 	orf_el = ldb_msg_find_element(r->msgs[0], "repsFrom");
 	if (orf_el) {

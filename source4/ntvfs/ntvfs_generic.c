@@ -148,7 +148,7 @@ static NTSTATUS ntvfs_map_open_finish(struct ntvfs_module_context *ntvfs,
 	time_t write_time = 0;
 	uint32_t set_size = 0;
 	union smb_setfileinfo *sf;
-	uint_t state;
+	unsigned int state;
 
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -284,6 +284,7 @@ static NTSTATUS map_openx_open(uint16_t flags, uint16_t open_mode,
 			       union smb_open *io2)
 {
 	io2->generic.in.create_options = NTCREATEX_OPTIONS_NON_DIRECTORY_FILE;
+	io2->generic.in.private_flags = 0;
 
 	if (flags & OPENX_FLAGS_REQUEST_OPLOCK) {
 		io2->generic.in.flags |= NTCREATEX_FLAGS_REQUEST_OPLOCK;
@@ -327,7 +328,7 @@ static NTSTATUS map_openx_open(uint16_t flags, uint16_t open_mode,
 		break;
 	case OPENX_MODE_DENY_DOS:
 		/* DENY_DOS is quite strange - it depends on the filename! */
-		io2->generic.in.create_options |= 
+		io2->generic.in.private_flags |=
 			NTCREATEX_OPTIONS_PRIVATE_DENY_DOS;
 		if (is_exe_filename(fname)) {
 			io2->generic.in.share_access = 
@@ -342,7 +343,7 @@ static NTSTATUS map_openx_open(uint16_t flags, uint16_t open_mode,
 		}
 		break;
 	case OPENX_MODE_DENY_FCB:
-		io2->generic.in.create_options |= NTCREATEX_OPTIONS_PRIVATE_DENY_FCB;
+		io2->generic.in.private_flags |= NTCREATEX_OPTIONS_PRIVATE_DENY_FCB;
 		io2->generic.in.share_access = NTCREATEX_SHARE_ACCESS_NONE;
 		break;
 	default:
@@ -528,6 +529,7 @@ NTSTATUS ntvfs_map_open(struct ntvfs_module_context *ntvfs,
 		io2->generic.in.sec_desc	= io->smb2.in.sec_desc;
 		io2->generic.in.ea_list		= &io->smb2.in.eas;
 		io2->generic.in.query_maximal_access = io->smb2.in.query_maximal_access; 
+		io2->generic.in.private_flags	= 0;
 
 		/* we don't support timewarp yet */
 		if (io->smb2.in.timewarp != 0) {
@@ -579,7 +581,7 @@ static NTSTATUS ntvfs_map_fsinfo_finish(struct ntvfs_module_context *ntvfs,
 
 	case RAW_QFS_DSKATTR: {
 		/* map from generic to DSKATTR */
-		uint_t bpunit = 64;
+		unsigned int bpunit = 64;
 
 		/* we need to scale the sizes to fit */
 		for (bpunit=64; bpunit<0x10000; bpunit *= 2) {
@@ -1187,7 +1189,7 @@ static NTSTATUS ntvfs_map_write_finish(struct ntvfs_module_context *ntvfs,
 {
 	union smb_lock *lck;
 	union smb_close *cl;
-	uint_t state;
+	unsigned int state;
 
 	if (NT_STATUS_IS_ERR(status)) {
 		return status;
@@ -1381,7 +1383,7 @@ NTSTATUS ntvfs_map_read(struct ntvfs_module_context *ntvfs,
 	union smb_read *rd2;
 	union smb_lock *lck;
 	NTSTATUS status;
-	uint_t state;
+	unsigned int state;
 
 	rd2 = talloc(req, union smb_read);
 	if (rd2 == NULL) {

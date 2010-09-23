@@ -190,6 +190,7 @@ static ssize_t tsocket_bsd_pending(int fd)
 static const struct tsocket_address_ops tsocket_address_bsd_ops;
 
 struct tsocket_address_bsd {
+	socklen_t sa_socklen;
 	union {
 		struct sockaddr sa;
 		struct sockaddr_in in;
@@ -261,6 +262,8 @@ int _tsocket_address_bsd_from_sockaddr(TALLOC_CTX *mem_ctx,
 
 	memcpy(&bsda->u.ss, sa, sa_socklen);
 
+	bsda->sa_socklen = sa_socklen;
+
 	*_addr = addr;
 	return 0;
 }
@@ -271,42 +274,61 @@ ssize_t tsocket_address_bsd_sockaddr(const struct tsocket_address *addr,
 {
 	struct tsocket_address_bsd *bsda = talloc_get_type(addr->private_data,
 					   struct tsocket_address_bsd);
-	ssize_t rlen = 0;
 
 	if (!bsda) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	switch (bsda->u.sa.sa_family) {
-	case AF_UNIX:
-		rlen = sizeof(struct sockaddr_un);
-		break;
-	case AF_INET:
-		rlen = sizeof(struct sockaddr_in);
-		break;
-#ifdef HAVE_IPV6
-	case AF_INET6:
-		rlen = sizeof(struct sockaddr_in6);
-		break;
-#endif
-	default:
-		errno = EAFNOSUPPORT;
-		return -1;
-	}
-
-	if (sa_socklen < rlen) {
+	if (sa_socklen < bsda->sa_socklen) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (sa_socklen > sizeof(struct sockaddr_storage)) {
+	if (sa_socklen > bsda->sa_socklen) {
 		memset(sa, 0, sa_socklen);
-		sa_socklen = sizeof(struct sockaddr_storage);
+		sa_socklen = bsda->sa_socklen;
 	}
 
 	memcpy(sa, &bsda->u.ss, sa_socklen);
-	return rlen;
+	return sa_socklen;
+}
+
+bool tsocket_address_is_inet(const struct tsocket_address *addr, const char *fam)
+{
+	struct tsocket_address_bsd *bsda = talloc_get_type(addr->private_data,
+					   struct tsocket_address_bsd);
+
+	if (!bsda) {
+		return false;
+	}
+
+	switch (bsda->u.sa.sa_family) {
+	case AF_INET:
+		if (strcasecmp(fam, "ip") == 0) {
+			return true;
+		}
+
+		if (strcasecmp(fam, "ipv4") == 0) {
+			return true;
+		}
+
+		return false;
+#ifdef HAVE_IPV6
+	case AF_INET6:
+		if (strcasecmp(fam, "ip") == 0) {
+			return true;
+		}
+
+		if (strcasecmp(fam, "ipv6") == 0) {
+			return true;
+		}
+
+		return false;
+#endif
+	}
+
+	return false;
 }
 
 int _tsocket_address_inet_from_strings(TALLOC_CTX *mem_ctx,
@@ -481,6 +503,23 @@ int tsocket_address_inet_set_port(struct tsocket_address *addr,
 	return 0;
 }
 
+bool tsocket_address_is_unix(const struct tsocket_address *addr)
+{
+	struct tsocket_address_bsd *bsda = talloc_get_type(addr->private_data,
+					   struct tsocket_address_bsd);
+
+	if (!bsda) {
+		return false;
+	}
+
+	switch (bsda->u.sa.sa_family) {
+	case AF_UNIX:
+		return true;
+	}
+
+	return false;
+}
+
 int _tsocket_address_unix_from_path(TALLOC_CTX *mem_ctx,
 				    const char *path,
 				    struct tsocket_address **_addr,
@@ -588,7 +627,7 @@ static struct tsocket_address *tsocket_address_bsd_copy(const struct tsocket_add
 
 	ret = _tsocket_address_bsd_from_sockaddr(mem_ctx,
 						 &bsda->u.sa,
-						 sizeof(bsda->u.ss),
+						 bsda->sa_socklen,
 						 &copy,
 						 location);
 	if (ret != 0) {
@@ -827,8 +866,6 @@ static void tdgram_bsd_recvfrom_handler(void *private_data)
 	struct tdgram_bsd *bsds = tdgram_context_data(dgram, struct tdgram_bsd);
 	struct tsocket_address_bsd *bsda;
 	ssize_t ret;
-	struct sockaddr *sa = NULL;
-	socklen_t sa_socklen = 0;
 	int err;
 	bool retry;
 
@@ -862,18 +899,10 @@ static void tdgram_bsd_recvfrom_handler(void *private_data)
 	}
 
 	ZERO_STRUCTP(bsda);
+	bsda->sa_socklen = sizeof(bsda->u.ss);
 
-	sa = &bsda->u.sa;
-	sa_socklen = sizeof(bsda->u.ss);
-	/*
-	 * for unix sockets we can't use the size of sockaddr_storage
-	 * we would get EINVAL
-	 */
-	if (bsda->u.sa.sa_family == AF_UNIX) {
-		sa_socklen = sizeof(bsda->u.un);
-	}
-
-	ret = recvfrom(bsds->fd, state->buf, state->len, 0, sa, &sa_socklen);
+	ret = recvfrom(bsds->fd, state->buf, state->len, 0,
+		       &bsda->u.sa, &bsda->sa_socklen);
 	err = tsocket_bsd_error_from_errno(ret, errno, &retry);
 	if (retry) {
 		/* retry later */
@@ -883,10 +912,17 @@ static void tdgram_bsd_recvfrom_handler(void *private_data)
 		return;
 	}
 
-	if (ret != state->len) {
-		tevent_req_error(req, EIO);
+	/*
+	 * Some systems (FreeBSD, see bug #7115) return too much
+	 * bytes in tsocket_bsd_pending()/ioctl(fd, FIONREAD, ...),
+	 * the return value includes some IP/UDP header bytes,
+	 * while recvfrom() just returns the payload.
+	 */
+	state->buf = talloc_realloc(state, state->buf, uint8_t, ret);
+	if (tevent_req_nomem(state->buf, req)) {
 		return;
 	}
+	state->len = ret;
 
 	tevent_req_done(req);
 }
@@ -1012,14 +1048,7 @@ static void tdgram_bsd_sendto_handler(void *private_data)
 			struct tsocket_address_bsd);
 
 		sa = &bsda->u.sa;
-		sa_socklen = sizeof(bsda->u.ss);
-		/*
-		 * for unix sockets we can't use the size of sockaddr_storage
-		 * we would get EINVAL
-		 */
-		if (bsda->u.sa.sa_family == AF_UNIX) {
-			sa_socklen = sizeof(bsda->u.un);
-		}
+		sa_socklen = bsda->sa_socklen;
 	}
 
 	ret = sendto(bsds->fd, state->buf, state->len, 0, sa, sa_socklen);
@@ -1142,7 +1171,9 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 	int ret;
 	bool do_bind = false;
 	bool do_reuseaddr = false;
-	socklen_t sa_socklen = sizeof(lbsda->u.ss);
+	bool do_ipv6only = false;
+	bool is_inet = false;
+	int sa_fam = lbsda->u.sa.sa_family;
 
 	if (remote) {
 		rbsda = talloc_get_type_abort(remote->private_data,
@@ -1159,20 +1190,16 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 			do_reuseaddr = true;
 			do_bind = true;
 		}
-		/*
-		 * for unix sockets we can't use the size of sockaddr_storage
-		 * we would get EINVAL
-		 */
-		sa_socklen = sizeof(lbsda->u.un);
 		break;
 	case AF_INET:
 		if (lbsda->u.in.sin_port != 0) {
 			do_reuseaddr = true;
 			do_bind = true;
 		}
-		if (lbsda->u.in.sin_addr.s_addr == INADDR_ANY) {
+		if (lbsda->u.in.sin_addr.s_addr != INADDR_ANY) {
 			do_bind = true;
 		}
+		is_inet = true;
 		break;
 #ifdef HAVE_IPV6
 	case AF_INET6:
@@ -1185,6 +1212,8 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 			   sizeof(in6addr_any)) != 0) {
 			do_bind = true;
 		}
+		is_inet = true;
+		do_ipv6only = true;
 		break;
 #endif
 	default:
@@ -1192,14 +1221,28 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 		return -1;
 	}
 
-	fd = socket(lbsda->u.sa.sa_family, SOCK_DGRAM, 0);
+	if (!do_bind && is_inet && rbsda) {
+		sa_fam = rbsda->u.sa.sa_family;
+		switch (sa_fam) {
+		case AF_INET:
+			do_ipv6only = false;
+			break;
+#ifdef HAVE_IPV6
+		case AF_INET6:
+			do_ipv6only = true;
+			break;
+#endif
+		}
+	}
+
+	fd = socket(sa_fam, SOCK_DGRAM, 0);
 	if (fd < 0) {
-		return fd;
+		return -1;
 	}
 
 	fd = tsocket_bsd_common_prepare_fd(fd, true);
 	if (fd < 0) {
-		return fd;
+		return -1;
 	}
 
 	dgram = tdgram_context_create(mem_ctx,
@@ -1217,6 +1260,21 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 	bsds->fd = fd;
 	talloc_set_destructor(bsds, tdgram_bsd_destructor);
 
+#ifdef HAVE_IPV6
+	if (do_ipv6only) {
+		int val = 1;
+
+		ret = setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY,
+				 (const void *)&val, sizeof(val));
+		if (ret == -1) {
+			int saved_errno = errno;
+			talloc_free(dgram);
+			errno = saved_errno;
+			return -1;
+		}
+	}
+#endif
+
 	if (broadcast) {
 		int val = 1;
 
@@ -1226,7 +1284,7 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 			int saved_errno = errno;
 			talloc_free(dgram);
 			errno = saved_errno;
-			return ret;
+			return -1;
 		}
 	}
 
@@ -1239,27 +1297,33 @@ static int tdgram_bsd_dgram_socket(const struct tsocket_address *local,
 			int saved_errno = errno;
 			talloc_free(dgram);
 			errno = saved_errno;
-			return ret;
+			return -1;
 		}
 	}
 
 	if (do_bind) {
-		ret = bind(fd, &lbsda->u.sa, sa_socklen);
+		ret = bind(fd, &lbsda->u.sa, lbsda->sa_socklen);
 		if (ret == -1) {
 			int saved_errno = errno;
 			talloc_free(dgram);
 			errno = saved_errno;
-			return ret;
+			return -1;
 		}
 	}
 
 	if (rbsda) {
-		ret = connect(fd, &rbsda->u.sa, sa_socklen);
+		if (rbsda->u.sa.sa_family != sa_fam) {
+			talloc_free(dgram);
+			errno = EINVAL;
+			return -1;
+		}
+
+		ret = connect(fd, &rbsda->u.sa, rbsda->sa_socklen);
 		if (ret == -1) {
 			int saved_errno = errno;
 			talloc_free(dgram);
 			errno = saved_errno;
-			return ret;
+			return -1;
 		}
 	}
 
@@ -1599,7 +1663,7 @@ static void tstream_bsd_readv_handler(void *private_data)
 			uint8_t *base;
 			base = (uint8_t *)state->vector[0].iov_base;
 			base += ret;
-			state->vector[0].iov_base = base;
+			state->vector[0].iov_base = (void *)base;
 			state->vector[0].iov_len -= ret;
 			break;
 		}
@@ -1759,7 +1823,7 @@ static void tstream_bsd_writev_handler(void *private_data)
 			uint8_t *base;
 			base = (uint8_t *)state->vector[0].iov_base;
 			base += ret;
-			state->vector[0].iov_base = base;
+			state->vector[0].iov_base = (void *)base;
 			state->vector[0].iov_len -= ret;
 			break;
 		}
@@ -1944,7 +2008,9 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 	bool retry;
 	bool do_bind = false;
 	bool do_reuseaddr = false;
-	socklen_t sa_socklen = sizeof(rbsda->u.ss);
+	bool do_ipv6only = false;
+	bool is_inet = false;
+	int sa_fam = lbsda->u.sa.sa_family;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct tstream_bsd_connect_state);
@@ -1968,20 +2034,16 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 			do_reuseaddr = true;
 			do_bind = true;
 		}
-		/*
-		 * for unix sockets we can't use the size of sockaddr_storage
-		 * we would get EINVAL
-		 */
-		sa_socklen = sizeof(rbsda->u.un);
 		break;
 	case AF_INET:
 		if (lbsda->u.in.sin_port != 0) {
 			do_reuseaddr = true;
 			do_bind = true;
 		}
-		if (lbsda->u.in.sin_addr.s_addr == INADDR_ANY) {
+		if (lbsda->u.in.sin_addr.s_addr != INADDR_ANY) {
 			do_bind = true;
 		}
+		is_inet = true;
 		break;
 #ifdef HAVE_IPV6
 	case AF_INET6:
@@ -1994,6 +2056,8 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 			   sizeof(in6addr_any)) != 0) {
 			do_bind = true;
 		}
+		is_inet = true;
+		do_ipv6only = true;
 		break;
 #endif
 	default:
@@ -2001,7 +2065,21 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 		goto post;
 	}
 
-	state->fd = socket(lbsda->u.sa.sa_family, SOCK_STREAM, 0);
+	if (!do_bind && is_inet) {
+		sa_fam = rbsda->u.sa.sa_family;
+		switch (sa_fam) {
+		case AF_INET:
+			do_ipv6only = false;
+			break;
+#ifdef HAVE_IPV6
+		case AF_INET6:
+			do_ipv6only = true;
+			break;
+#endif
+		}
+	}
+
+	state->fd = socket(sa_fam, SOCK_STREAM, 0);
 	if (state->fd == -1) {
 		tevent_req_error(req, errno);
 		goto post;
@@ -2012,6 +2090,19 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 		tevent_req_error(req, errno);
 		goto post;
 	}
+
+#ifdef HAVE_IPV6
+	if (do_ipv6only) {
+		int val = 1;
+
+		ret = setsockopt(state->fd, IPPROTO_IPV6, IPV6_V6ONLY,
+				 (const void *)&val, sizeof(val));
+		if (ret == -1) {
+			tevent_req_error(req, errno);
+			goto post;
+		}
+	}
+#endif
 
 	if (do_reuseaddr) {
 		int val = 1;
@@ -2025,14 +2116,19 @@ static struct tevent_req * tstream_bsd_connect_send(TALLOC_CTX *mem_ctx,
 	}
 
 	if (do_bind) {
-		ret = bind(state->fd, &lbsda->u.sa, sizeof(lbsda->u.ss));
+		ret = bind(state->fd, &lbsda->u.sa, lbsda->sa_socklen);
 		if (ret == -1) {
 			tevent_req_error(req, errno);
 			goto post;
 		}
 	}
 
-	ret = connect(state->fd, &rbsda->u.sa, sa_socklen);
+	if (rbsda->u.sa.sa_family != sa_fam) {
+		tevent_req_error(req, EINVAL);
+		goto post;
+	}
+
+	ret = connect(state->fd, &rbsda->u.sa, rbsda->sa_socklen);
 	err = tsocket_bsd_error_from_errno(ret, errno, &retry);
 	if (retry) {
 		/* retry later */

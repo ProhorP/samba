@@ -25,6 +25,10 @@
 
 #include "includes.h"
 #include "utils/net.h"
+#include "../librpc/gen_ndr/ndr_netlogon.h"
+#include "../librpc/gen_ndr/ndr_drsuapi.h"
+#include "libnet/libnet_samsync.h"
+#include "libnet/libnet_dssync.h"
 
 static void parse_samsync_partial_replication_objects(TALLOC_CTX *mem_ctx,
 						      int argc,
@@ -103,7 +107,7 @@ static void parse_samsync_partial_replication_objects(TALLOC_CTX *mem_ctx,
 
 /* dump sam database via samsync rpc calls */
 NTSTATUS rpc_samdump_internals(struct net_context *c,
-				const DOM_SID *domain_sid,
+				const struct dom_sid *domain_sid,
 				const char *domain_name,
 				struct cli_state *cli,
 				struct rpc_pipe_client *pipe_hnd,
@@ -172,7 +176,7 @@ int rpc_vampire_usage(struct net_context *c, int argc, const char **argv)
 
 /* dump sam database via samsync rpc calls */
 NTSTATUS rpc_vampire_internals(struct net_context *c,
-				const DOM_SID *domain_sid,
+				const struct dom_sid *domain_sid,
 				const char *domain_name,
 				struct cli_state *cli,
 				struct rpc_pipe_client *pipe_hnd,
@@ -252,9 +256,11 @@ NTSTATUS rpc_vampire_internals(struct net_context *c,
 int rpc_vampire_passdb(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc vampire passdb\n"
-			   "    Dump remote SAM database to passdb\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("Dump remote SAM database to passdb"));
 		return 0;
 	}
 
@@ -263,7 +269,7 @@ int rpc_vampire_passdb(struct net_context *c, int argc, const char **argv)
 }
 
 NTSTATUS rpc_vampire_ldif_internals(struct net_context *c,
-				    const DOM_SID *domain_sid,
+				    const struct dom_sid *domain_sid,
 				    const char *domain_name,
 				    struct cli_state *cli,
 				    struct rpc_pipe_client *pipe_hnd,
@@ -333,10 +339,12 @@ NTSTATUS rpc_vampire_ldif_internals(struct net_context *c,
 int rpc_vampire_ldif(struct net_context *c, int argc, const char **argv)
 {
 	if (c->display_usage) {
-		d_printf(_("Usage:\n"
+		d_printf(  "%s\n"
 			   "net rpc vampire ldif\n"
-			   "    Dump remote SAM database to LDIF file or "
-			   "stdout\n"));
+			   "    %s\n",
+			 _("Usage:"),
+			 _("Dump remote SAM database to LDIF file or "
+			   "stdout"));
 		return 0;
 	}
 
@@ -346,7 +354,7 @@ int rpc_vampire_ldif(struct net_context *c, int argc, const char **argv)
 
 
 NTSTATUS rpc_vampire_keytab_internals(struct net_context *c,
-				      const DOM_SID *domain_sid,
+				      const struct dom_sid *domain_sid,
 				      const char *domain_name,
 				      struct cli_state *cli,
 				      struct rpc_pipe_client *pipe_hnd,
@@ -406,7 +414,7 @@ NTSTATUS rpc_vampire_keytab_internals(struct net_context *c,
 }
 
 static NTSTATUS rpc_vampire_keytab_ds_internals(struct net_context *c,
-						const DOM_SID *domain_sid,
+						const struct dom_sid *domain_sid,
 						const char *domain_name,
 						struct cli_state *cli,
 						struct rpc_pipe_client *pipe_hnd,
@@ -477,8 +485,9 @@ int rpc_vampire_keytab(struct net_context *c, int argc, const char **argv)
 	struct net_dc_info dc_info;
 
 	if (c->display_usage || (argc < 1)) {
-		d_printf(_("Usage:\n"
-			   "net rpc vampire keytab <keytabfile>\n"
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net rpc vampire keytab <keytabfile>\n"
 			   "    Dump remote SAM database to Kerberos keytab "
 			   "file\n"));
 		return 0;

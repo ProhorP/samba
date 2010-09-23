@@ -61,8 +61,8 @@ struct tevent_req *winbindd_check_machine_acct_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 
-	subreq = rpccli_wbint_CheckMachineAccount_send(state, ev,
-						       domain->child.rpccli);
+	subreq = dcerpc_wbint_CheckMachineAccount_send(state, ev,
+						       domain->child.binding_handle);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -78,7 +78,7 @@ static void winbindd_check_machine_acct_done(struct tevent_req *subreq)
 		req, struct winbindd_check_machine_acct_state);
 	NTSTATUS status, result;
 
-	status = rpccli_wbint_CheckMachineAccount_recv(subreq, state, &result);
+	status = dcerpc_wbint_CheckMachineAccount_recv(subreq, state, &result);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
 		return;
@@ -93,5 +93,8 @@ static void winbindd_check_machine_acct_done(struct tevent_req *subreq)
 NTSTATUS winbindd_check_machine_acct_recv(struct tevent_req *req,
 					  struct winbindd_response *presp)
 {
-	return tevent_req_simple_recv_ntstatus(req);
+	NTSTATUS status = tevent_req_simple_recv_ntstatus(req);
+
+	set_auth_errors(presp, status);
+	return status;
 }

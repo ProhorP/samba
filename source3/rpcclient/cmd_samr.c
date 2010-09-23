@@ -25,9 +25,13 @@
 #include "includes.h"
 #include "rpcclient.h"
 #include "../libcli/auth/libcli_auth.h"
+#include "../librpc/gen_ndr/ndr_samr.h"
 #include "../librpc/gen_ndr/cli_samr.h"
+#include "rpc_client/cli_samr.h"
+#include "rpc_client/init_samr.h"
+#include "rpc_client/init_lsa.h"
 
-extern DOM_SID domain_sid;
+extern struct dom_sid domain_sid;
 
 /****************************************************************************
  display samr_user_info_7 structure
@@ -628,8 +632,8 @@ static NTSTATUS cmd_samr_query_useraliases(struct rpc_pipe_client *cli,
 {
 	struct policy_handle 		connect_pol, domain_pol;
 	NTSTATUS		result = NT_STATUS_UNSUCCESSFUL;
-	DOM_SID                *sids;
-	size_t                     num_sids;
+	struct dom_sid                *sids;
+	uint32_t                     num_sids;
 	uint32			access_mask = MAXIMUM_ALLOWED_ACCESS;
 	int 			i;
 	struct lsa_SidArray sid_array;
@@ -644,7 +648,7 @@ static NTSTATUS cmd_samr_query_useraliases(struct rpc_pipe_client *cli,
 	num_sids = 0;
 
 	for (i=2; i<argc; i++) {
-		DOM_SID tmp_sid;
+		struct dom_sid tmp_sid;
 		if (!string_to_sid(&tmp_sid, argv[i])) {
 			printf("%s is not a legal SID\n", argv[i]);
 			return NT_STATUS_INVALID_PARAMETER;
@@ -2158,10 +2162,10 @@ static NTSTATUS cmd_samr_query_sec_obj(struct rpc_pipe_client *cli,
 {
 	struct policy_handle connect_pol, domain_pol, user_pol, *pol;
 	NTSTATUS result = NT_STATUS_UNSUCCESSFUL;
-	uint32 sec_info = DACL_SECURITY_INFORMATION;
+	uint32 sec_info = SECINFO_DACL;
 	uint32 user_rid = 0;
 	TALLOC_CTX *ctx = NULL;
-	SEC_DESC_BUF *sec_desc_buf=NULL;
+	struct sec_desc_buf *sec_desc_buf=NULL;
 	bool domain = False;
 
 	ctx=talloc_init("cmd_samr_query_sec_obj");
@@ -2337,7 +2341,7 @@ static NTSTATUS cmd_samr_lookup_domain(struct rpc_pipe_client *cli,
 	uint32 access_mask = MAXIMUM_ALLOWED_ACCESS;
 	fstring sid_string;
 	struct lsa_String domain_name;
-	DOM_SID *sid = NULL;
+	struct dom_sid *sid = NULL;
 
 	if (argc != 2) {
 		printf("Usage: %s domain_name\n", argv[0]);

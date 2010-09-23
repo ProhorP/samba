@@ -20,6 +20,8 @@
 */
 
 #include "includes.h"
+#include "librpc/gen_ndr/messaging.h"
+#include "libsmb/clidgram.h"
 
 /*
  * cli_send_mailslot, send a mailslot for client code ...
@@ -130,7 +132,7 @@ bool send_getdc_request(TALLOC_CTX *mem_ctx,
 			struct messaging_context *msg_ctx,
 			struct sockaddr_storage *dc_ss,
 			const char *domain_name,
-			const DOM_SID *sid,
+			const struct dom_sid *sid,
 			uint32_t nt_version)
 {
 	struct in_addr dc_ip;
@@ -181,7 +183,7 @@ bool send_getdc_request(TALLOC_CTX *mem_ctx,
 		NDR_PRINT_DEBUG(nbt_netlogon_packet, &packet);
 	}
 
-	ndr_err = ndr_push_struct_blob(&blob, mem_ctx, NULL, &packet,
+	ndr_err = ndr_push_struct_blob(&blob, mem_ctx, &packet,
 		       (ndr_push_flags_fn_t)ndr_push_nbt_netlogon_packet);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return false;
@@ -199,13 +201,13 @@ bool receive_getdc_response(TALLOC_CTX *mem_ctx,
 			    const char *domain_name,
 			    uint32_t *nt_version,
 			    const char **dc_name,
-			    struct netlogon_samlogon_response **_r)
+			    struct netlogon_samlogon_response **samlogon_response)
 {
 	struct packet_struct *packet;
 	const char *my_mailslot = NULL;
 	struct in_addr dc_ip;
 	DATA_BLOB blob;
-	struct netlogon_samlogon_response r;
+	struct netlogon_samlogon_response *r;
 	union dgram_message_body p;
 	enum ndr_err_code ndr_err;
 	NTSTATUS status;
@@ -249,7 +251,7 @@ bool receive_getdc_response(TALLOC_CTX *mem_ctx,
 	blob.data += 4;
 	blob.length -= 4;
 
-	ndr_err = ndr_pull_union_blob_all(&blob, mem_ctx, NULL, &p, DGRAM_SMB,
+	ndr_err = ndr_pull_union_blob_all(&blob, mem_ctx, &p, DGRAM_SMB,
 		       (ndr_pull_flags_fn_t)ndr_pull_dgram_smb_packet);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		DEBUG(0,("failed to parse packet\n"));
@@ -267,41 +269,45 @@ bool receive_getdc_response(TALLOC_CTX *mem_ctx,
 
 	blob = p.smb.body.trans.data;
 
-	ZERO_STRUCT(r);
-
-	status = pull_netlogon_samlogon_response(&blob, mem_ctx, NULL, &r);
-	if (!NT_STATUS_IS_OK(status)) {
+	r = TALLOC_ZERO_P(mem_ctx, struct netlogon_samlogon_response);
+	if (!r) {
 		return false;
 	}
 
-	map_netlogon_samlogon_response(&r);
+	status = pull_netlogon_samlogon_response(&blob, mem_ctx, r);
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(r);
+		return false;
+	}
+
+	map_netlogon_samlogon_response(r);
 
 	/* do we still need this ? */
-	*nt_version = r.ntver;
+	*nt_version = r->ntver;
 
-	returned_domain = r.data.nt5_ex.domain;
-	returned_dc = r.data.nt5_ex.pdc_name;
+	returned_domain = r->data.nt5_ex.domain_name;
+	returned_dc = r->data.nt5_ex.pdc_name;
 
 	if (!strequal(returned_domain, domain_name)) {
 		DEBUG(3, ("GetDC: Expected domain %s, got %s\n",
 			  domain_name, returned_domain));
+		TALLOC_FREE(r);
 		return false;
 	}
 
 	*dc_name = talloc_strdup(mem_ctx, returned_dc);
 	if (!*dc_name) {
+		TALLOC_FREE(r);
 		return false;
 	}
 
 	if (**dc_name == '\\')	*dc_name += 1;
 	if (**dc_name == '\\')	*dc_name += 1;
 
-	if (_r) {
-		*_r = (struct netlogon_samlogon_response *)talloc_memdup(
-			mem_ctx, &r, sizeof(struct netlogon_samlogon_response));
-		if (!*_r) {
-			return false;
-		}
+	if (samlogon_response) {
+		*samlogon_response = r;
+	} else {
+		TALLOC_FREE(r);
 	}
 
 	DEBUG(10, ("GetDC gave name %s for domain %s\n",

@@ -33,6 +33,7 @@
 #include "auth/credentials/credentials_krb5.h"
 #include "auth/auth.h"
 #include "dsdb/samdb/samdb.h"
+#include "../lib/util/util_ldb.h"
 #include "rpc_server/dcerpc_server.h"
 #include "rpc_server/samr/proto.h"
 #include "libcli/security/security.h"
@@ -158,7 +159,7 @@ static bool kpasswd_make_pwchange_reply(struct kdc_server *kdc,
 /*
    A user password change
 
-   Return true if there is a valid error packet (or sucess) formed in
+   Return true if there is a valid error packet (or success) formed in
    the error_blob
 */
 static bool kpasswdd_change_password(struct kdc_server *kdc,
@@ -170,9 +171,49 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 	NTSTATUS status;
 	enum samPwdChangeReason reject_reason;
 	struct samr_DomInfo1 *dominfo;
+	struct samr_Password *oldLmHash, *oldNtHash;
 	struct ldb_context *samdb;
+	const char * const attrs[] = { "dBCSPwd", "unicodePwd", NULL };
+	struct ldb_message **res;
+	int ret;
 
-	samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx, system_session(kdc->task->lp_ctx));
+	/* Connect to a SAMDB with system privileges for fetching the old pw
+	 * hashes. */
+	samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx,
+			      system_session(kdc->task->lp_ctx));
+	if (!samdb) {
+		return kpasswdd_make_error_reply(kdc, mem_ctx,
+						KRB5_KPASSWD_HARDERROR,
+						"Failed to open samdb",
+						reply);
+	}
+
+	/* Fetch the old hashes to get the old password in order to perform
+	 * the password change operation. Naturally it would be much better to
+	 * have a password hash from an authentication around but this doesn't
+	 * seem to be the case here. */
+	ret = gendb_search(samdb, mem_ctx, NULL, &res, attrs,
+			   "(&(objectClass=user)(sAMAccountName=%s))",
+			   session_info->server_info->account_name);
+	if (ret != 1) {
+		return kpasswdd_make_error_reply(kdc, mem_ctx,
+						KRB5_KPASSWD_ACCESSDENIED,
+						"No such user when changing password",
+						reply);
+	}
+
+	status = samdb_result_passwords(mem_ctx, kdc->task->lp_ctx, res[0],
+					&oldLmHash, &oldNtHash);
+	if (!NT_STATUS_IS_OK(status)) {
+		return kpasswdd_make_error_reply(kdc, mem_ctx,
+						KRB5_KPASSWD_ACCESSDENIED,
+						"Not permitted to change password",
+						reply);
+	}
+
+	/* Start a SAM with user privileges for the password change */
+	samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx,
+			      session_info);
 	if (!samdb) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
 						KRB5_KPASSWD_HARDERROR,
@@ -183,13 +224,13 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 	DEBUG(3, ("Changing password of %s\\%s (%s)\n",
 		  session_info->server_info->domain_name,
 		  session_info->server_info->account_name,
-		  dom_sid_string(mem_ctx, session_info->security_token->user_sid)));
+		  dom_sid_string(mem_ctx, &session_info->security_token->sids[PRIMARY_USER_SID_INDEX])));
 
-	/* User password change */
+	/* Performs the password change */
 	status = samdb_set_password_sid(samdb, mem_ctx,
-					session_info->security_token->user_sid,
+					&session_info->security_token->sids[PRIMARY_USER_SID_INDEX],
 					password, NULL, NULL,
-					true, /* this is a user password change */
+					oldLmHash, oldNtHash, /* this is a user password change */
 					&reject_reason,
 					&dominfo);
 	return kpasswd_make_pwchange_reply(kdc, mem_ctx,
@@ -222,7 +263,7 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 	case KRB5_KPASSWD_VERS_CHANGEPW:
 	{
 		DATA_BLOB password;
-		if (!convert_string_talloc_convenience(mem_ctx, lp_iconv_convenience(kdc->task->lp_ctx),
+		if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(kdc->task->lp_ctx),
 					       CH_UTF8, CH_UTF16,
 					       (const char *)input->data,
 					       input->length,
@@ -233,7 +274,6 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 
 		return kpasswdd_change_password(kdc, mem_ctx, session_info,
 						&password, reply);
-		break;
 	}
 	case KRB5_KPASSWD_VERS_SETPW:
 	{
@@ -241,7 +281,6 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		enum samPwdChangeReason reject_reason = SAM_PWD_CHANGE_NO_ERROR;
 		struct samr_DomInfo1 *dominfo = NULL;
 		struct ldb_context *samdb;
-		struct ldb_message *msg;
 		krb5_context context = kdc->smb_krb5_context->krb5_context;
 
 		ChangePasswdDataMS chpw;
@@ -250,14 +289,10 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		krb5_principal principal;
 		char *set_password_on_princ;
 		struct ldb_dn *set_password_on_dn;
+		bool service_principal_name = false;
 
 		size_t len;
 		int ret;
-
-		msg = ldb_msg_new(mem_ctx);
-		if (!msg) {
-			return false;
-		}
 
 		ret = decode_ChangePasswdDataMS(input->data, input->length,
 						&chpw, &len);
@@ -268,7 +303,7 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 							reply);
 		}
 
-		if (!convert_string_talloc_convenience(mem_ctx, lp_iconv_convenience(kdc->task->lp_ctx),
+		if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(kdc->task->lp_ctx),
 					       CH_UTF8, CH_UTF16,
 					       (const char *)chpw.newpasswd.data,
 					       chpw.newpasswd.length,
@@ -311,14 +346,29 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		}
 		free_ChangePasswdDataMS(&chpw);
 
-		if (krb5_unparse_name(context, principal, &set_password_on_princ) != 0) {
-			krb5_free_principal(context, principal);
-			return kpasswdd_make_error_reply(kdc, mem_ctx,
-							KRB5_KPASSWD_MALFORMED,
-							"krb5_unparse_name failed!",
-							reply);
-		}
+		if (principal->name.name_string.len >= 2) {
+			service_principal_name = true;
 
+			/* We use this, rather than 'no realm' flag,
+			 * as we don't want to accept a password
+			 * change on a principal from another realm */
+
+			if (krb5_unparse_name_short(context, principal, &set_password_on_princ) != 0) {
+				krb5_free_principal(context, principal);
+				return kpasswdd_make_error_reply(kdc, mem_ctx,
+								 KRB5_KPASSWD_MALFORMED,
+								 "krb5_unparse_name failed!",
+								 reply);
+			}
+		} else {
+			if (krb5_unparse_name(context, principal, &set_password_on_princ) != 0) {
+				krb5_free_principal(context, principal);
+				return kpasswdd_make_error_reply(kdc, mem_ctx,
+								 KRB5_KPASSWD_MALFORMED,
+								 "krb5_unparse_name failed!",
+								 reply);
+			}
+		}
 		krb5_free_principal(context, principal);
 
 		samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx, session_info);
@@ -332,10 +382,10 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		DEBUG(3, ("%s\\%s (%s) is changing password of %s\n",
 			  session_info->server_info->domain_name,
 			  session_info->server_info->account_name,
-			  dom_sid_string(mem_ctx, session_info->security_token->user_sid),
+			  dom_sid_string(mem_ctx, &session_info->security_token->sids[PRIMARY_USER_SID_INDEX]),
 			  set_password_on_princ));
 		ret = ldb_transaction_start(samdb);
-		if (ret) {
+		if (ret != LDB_SUCCESS) {
 			status = NT_STATUS_TRANSACTION_ABORTED;
 			return kpasswd_make_pwchange_reply(kdc, mem_ctx,
 							   status,
@@ -344,9 +394,15 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 							   reply);
 		}
 
-		status = crack_user_principal_name(samdb, mem_ctx,
-						   set_password_on_princ,
-						   &set_password_on_dn, NULL);
+		if (service_principal_name) {
+			status = crack_service_principal_name(samdb, mem_ctx,
+							      set_password_on_princ,
+							      &set_password_on_dn, NULL);
+		} else {
+			status = crack_user_principal_name(samdb, mem_ctx,
+							   set_password_on_princ,
+							   &set_password_on_dn, NULL);
+		}
 		free(set_password_on_princ);
 		if (!NT_STATUS_IS_OK(status)) {
 			ldb_transaction_cancel(samdb);
@@ -357,41 +413,20 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 							   reply);
 		}
 
-		msg = ldb_msg_new(mem_ctx);
-		if (msg == NULL) {
-			ldb_transaction_cancel(samdb);
-			status = NT_STATUS_NO_MEMORY;
-		} else {
-			msg->dn = ldb_dn_copy(msg, set_password_on_dn);
-			if (!msg->dn) {
-				status = NT_STATUS_NO_MEMORY;
-			}
-		}
-
 		if (NT_STATUS_IS_OK(status)) {
 			/* Admin password set */
 			status = samdb_set_password(samdb, mem_ctx,
 						    set_password_on_dn, NULL,
-						    msg, &password, NULL, NULL,
-						    false, /* this is not a user password change */
+						    &password, NULL, NULL,
+						    NULL, NULL, /* this is not a user password change */
 						    &reject_reason, &dominfo);
 		}
 
 		if (NT_STATUS_IS_OK(status)) {
-			/* modify the samdb record */
-			ret = samdb_replace(samdb, mem_ctx, msg);
-			if (ret != 0) {
-				DEBUG(2,("Failed to modify record to set password on %s: %s\n",
-					 ldb_dn_get_linearized(msg->dn),
-					 ldb_errstring(samdb)));
-				status = NT_STATUS_ACCESS_DENIED;
-			}
-		}
-		if (NT_STATUS_IS_OK(status)) {
 			ret = ldb_transaction_commit(samdb);
-			if (ret != 0) {
+			if (ret != LDB_SUCCESS) {
 				DEBUG(1,("Failed to commit transaction to set password on %s: %s\n",
-					 ldb_dn_get_linearized(msg->dn),
+					 ldb_dn_get_linearized(set_password_on_dn),
 					 ldb_errstring(samdb)));
 				status = NT_STATUS_TRANSACTION_ABORTED;
 			}
@@ -412,7 +447,6 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 								 version),
 						 reply);
 	}
-	return true;
 }
 
 bool kpasswdd_process(struct kdc_server *kdc,
@@ -482,7 +516,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	cli_credentials_set_krb5_context(server_credentials, kdc->smb_krb5_context);
 	cli_credentials_set_conf(server_credentials, kdc->task->lp_ctx);
 
-	keytab_name = talloc_asprintf(server_credentials, "HDB:samba4&%p", kdc->hdb_samba4_context);
+	keytab_name = talloc_asprintf(server_credentials, "HDB:samba4&%p", kdc->base_ctx);
 
 	cli_credentials_set_username(server_credentials, "kadmin/changepw", CRED_SPECIFIED);
 	ret = cli_credentials_set_keytab_name(server_credentials, kdc->task->event_ctx, kdc->task->lp_ctx, keytab_name, CRED_SPECIFIED);

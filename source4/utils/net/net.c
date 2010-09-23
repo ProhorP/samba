@@ -41,6 +41,7 @@
 /*                                                   */
 /*****************************************************/
 
+#include <Python.h>
 #include "includes.h"
 #include "utils/net/net.h"
 #include "lib/cmdline/popt_common.h"
@@ -49,8 +50,13 @@
 #include "param/param.h"
 #include "lib/events/events.h"
 #include "auth/credentials/credentials.h"
-#include <Python.h>
 #include "scripting/python/modules.h"
+#include "utils/net/drs/net_drs.h"
+
+/* There's no Py_ssize_t in 2.4, apparently */
+#if PY_MAJOR_VERSION == 2 && PY_MINOR_VERSION < 5
+typedef int Py_ssize_t;
+#endif
 
 static PyObject *py_tuple_from_argv(int argc, const char *argv[])
 {
@@ -190,15 +196,11 @@ int net_run_usage(struct net_context *ctx,
 
 /* main function table */
 static const struct net_functable net_functable[] = {
-	{"password", "change password\n", net_password, net_password_usage},
-	{"time", "get remote server's time\n", net_time, net_time_usage},
-	{"join", "join a domain\n", net_join, net_join_usage},
+	{"password", "Changes/Sets the password on a user account [server connection needed]\n", net_password, net_password_usage},
 	{"samdump", "dump the sam of a domain\n", net_samdump, net_samdump_usage},
-	{"export", "dump the sam of this domain\n", net_export, net_export_usage},
-	{"vampire", "join and syncronise an AD domain onto the local server\n", net_vampire, net_vampire_usage},
 	{"samsync", "synchronise into the local ldb the sam of an NT4 domain\n", net_samsync_ldb, net_samsync_ldb_usage},
-	{"user", "manage user accounts\n", net_user, net_user_usage},
-	{"machinepw", "Get a machine password out of our SAM\n", net_machinepw, net_machinepw_usage},
+	{"drs", "Implements functionality offered by repadmin.exe utility in Windows\n", net_drs, net_drs_usage},
+	{"gpo", "Administer group policies\n", net_gpo, net_gpo_usage},
 	{NULL, NULL, NULL, NULL}
 };
 
@@ -271,7 +273,7 @@ static int net_usage(struct net_context *ctx, int argc, const char **argv)
 {
 	d_printf("Usage:\n");
 	d_printf("net <command> [options]\n");
-	d_printf("Type 'net help' for all available commands\n");
+	net_help(ctx, net_functable);
 	return 0;
 }
 
@@ -306,9 +308,8 @@ static int binary_net(int argc, const char **argv)
 		d_printf("Failed to create an event context\n");
 		exit(1);
 	}
-	py_load_samba_modules();
 	Py_Initialize();
-	PySys_SetArgv(argc, argv);
+	PySys_SetArgv(argc, discard_const_p(char *, argv));
 	py_update_path("bin"); /* FIXME: Can't assume this is always the case */
 
 	py_cmds = py_commands();

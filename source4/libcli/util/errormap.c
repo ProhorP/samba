@@ -179,6 +179,7 @@ static const struct {
 	 during the session setup }
 */
 	{ERRSRV,	ERRbadpw,	NT_STATUS_WRONG_PASSWORD},
+	{ERRSRV,	ERRbaduid,	NT_STATUS_USER_SESSION_DELETED},
 	{ERRHRD,	ERRgeneral,	NT_STATUS_ILL_FORMED_PASSWORD},
 	{ERRHRD,	ERRgeneral,	NT_STATUS_PASSWORD_RESTRICTION},
 	{ERRDOS,	ERRnoaccess,	NT_STATUS_LOGON_FAILURE},
@@ -1321,7 +1322,7 @@ const struct unix_error_map unix_nt_errmap[] = {
 	{ ENODATA,      NT_STATUS_NOT_FOUND },
 #endif
 #ifdef EDQUOT
-	{ EDQUOT,       NT_STATUS_QUOTA_EXCEEDED },
+	{ EDQUOT,       NT_STATUS_DISK_FULL }, /* Windows does NOT return NT_STATUS_QUOTA_EXCEEDED */
 #endif
 #ifdef ENOTEMPTY
 	{ ENOTEMPTY,    NT_STATUS_DIRECTORY_NOT_EMPTY },

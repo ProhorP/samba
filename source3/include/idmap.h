@@ -30,9 +30,14 @@
 
 #define SMB_IDMAP_INTERFACE_VERSION 5
 
+#include "librpc/gen_ndr/idmap.h"
+
 struct idmap_domain {
 	const char *name;
 	struct idmap_methods *methods;
+	uint32_t low_id;
+	uint32_t high_id;
+	bool read_only;
 	void *private_data;
 };
 
@@ -50,28 +55,13 @@ struct idmap_methods {
 	   and type and gets back a uid or gid. */
 	NTSTATUS (*sids_to_unixids)(struct idmap_domain *dom, struct id_map **ids);
 
-	NTSTATUS (*set_mapping)(struct idmap_domain *dom, const struct id_map *map);
-	NTSTATUS (*remove_mapping)(struct idmap_domain *dom, const struct id_map *map);
-
-	/* Called to dump backends data */
-	/* NOTE: caller must use talloc_free to free maps when done */
-	NTSTATUS (*dump_data)(struct idmap_domain *dom, struct id_map **maps, int *num_maps);
+	/* Allocate a Unix-ID. */
+	NTSTATUS (*allocate_id)(struct idmap_domain *dom, struct unixid *id);
 
 	/* Called when backend is unloaded */
 	NTSTATUS (*close_fn)(struct idmap_domain *dom);
 };
 
-struct idmap_alloc_methods {
-
-	/* Called when backend is first loaded */
-	NTSTATUS (*init)(const char *compat_params);
-
-	NTSTATUS (*allocate_id)(struct unixid *id);
-	NTSTATUS (*get_id_hwm)(struct unixid *id);
-	NTSTATUS (*set_id_hwm)(struct unixid *id);
-
-	/* Called when backend is unloaded */
-	NTSTATUS (*close_fn)(void);
-};
+#include "winbindd/idmap_proto.h"
 
 #endif /* _IDMAP_H_ */

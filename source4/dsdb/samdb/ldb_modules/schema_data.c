@@ -92,37 +92,6 @@ struct schema_data_search_data {
 	const struct dsdb_schema *schema;
 };
 
-/* context to be used during async operations */
-struct schema_data_context {
-	struct ldb_module *module;
-	struct ldb_request *req;
-
-	const struct dsdb_schema *schema;
-};
-
-/* Create new context using
- * ldb_request as memory context */
-static int _schema_data_context_new(struct ldb_module *module,
-				    struct ldb_request *req,
-				    struct schema_data_context **pac)
-{
-	struct schema_data_context *ac;
-	struct ldb_context *ldb;
-
-	ldb = ldb_module_get_ctx(module);
-
-	*pac = ac = talloc_zero(req, struct schema_data_context);
-	if (ac == NULL) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
-	}
-	ac->module = module;
-	ac->req = req;
-	ac->schema = dsdb_get_schema(ldb);
-
-	return LDB_SUCCESS;
-}
-
 static int schema_data_init(struct ldb_module *module)
 {
 	struct ldb_context *ldb;
@@ -136,7 +105,7 @@ static int schema_data_init(struct ldb_module *module)
 	}
 
 	ldb = ldb_module_get_ctx(module);
-	schema_dn = samdb_schema_dn(ldb);
+	schema_dn = ldb_get_schema_basedn(ldb);
 	if (!schema_dn) {
 		ldb_reset_err_string(ldb);
 		ldb_debug(ldb, LDB_DEBUG_WARNING,
@@ -146,8 +115,7 @@ static int schema_data_init(struct ldb_module *module)
 
 	data = talloc(module, struct schema_data_private_data);
 	if (data == NULL) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	data->schema_dn = schema_dn;
@@ -155,63 +123,12 @@ static int schema_data_init(struct ldb_module *module)
 	/* Used to check to see if this is a result on the CN=Aggregate schema */
 	data->aggregate_dn = samdb_aggregate_schema_dn(ldb, data);
 	if (!data->aggregate_dn) {
-		ldb_set_errstring(ldb, "Could not build aggregate schema DN");
+		ldb_asprintf_errstring(ldb, "schema_data_init: Could not build aggregate schema DN for schema in %s", ldb_dn_get_linearized(schema_dn));
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
 	ldb_module_set_private(module, data);
 	return LDB_SUCCESS;
-}
-
-
-/* Generate new value for msDs-IntId
- * Value should be in 0x80000000..0xBFFFFFFF range
- * Generated value is added ldb_msg */
-static int _schema_data_gen_msds_intid(struct schema_data_context *ac,
-				       struct ldb_message *ldb_msg)
-{
-	uint32_t id;
-
-	/* generate random num in 0x80000000..0xBFFFFFFF */
-	id = generate_random() % 0X3FFFFFFF;
-	id += 0x80000000;
-
-	/* make sure id is unique and adjust if not */
-	while (dsdb_attribute_by_attributeID_id(ac->schema, id)) {
-		id++;
-		if (id > 0xBFFFFFFF) {
-			id = 0x80000001;
-		}
-	}
-
-	/* add generated msDS-IntId value to ldb_msg */
-	return ldb_msg_add_fmt(ldb_msg, "msDS-IntId", "%d", id);
-}
-
-static int _schema_data_add_callback(struct ldb_request *req,
-				     struct ldb_reply *ares)
-{
-	struct schema_data_context *ac;
-
-	ac = talloc_get_type(req->context, struct schema_data_context);
-
-	if (!ares) {
-		return ldb_module_done(ac->req, NULL, NULL,
-					LDB_ERR_OPERATIONS_ERROR);
-	}
-	if (ares->error != LDB_SUCCESS) {
-		return ldb_module_done(ac->req, ares->controls,
-					ares->response, ares->error);
-	}
-
-	if (ares->type != LDB_REPLY_DONE) {
-		talloc_free(ares);
-		return ldb_module_done(ac->req, NULL, NULL,
-					LDB_ERR_OPERATIONS_ERROR);
-	}
-
-	return ldb_module_done(ac->req, ares->controls,
-				ares->response, ares->error);
 }
 
 static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
@@ -223,6 +140,8 @@ static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
 	const char *oid_attr = NULL;
 	const char *oid = NULL;
 	WERROR status;
+	bool rodc;
+	int ret;
 
 	ldb = ldb_module_get_ctx(module);
 
@@ -236,12 +155,17 @@ static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_next_request(module, req);
 	}
 
-	schema = dsdb_get_schema(ldb);
+	schema = dsdb_get_schema(ldb, req);
 	if (!schema) {
 		return ldb_next_request(module, req);
 	}
 
-	if (!schema->fsmo.we_are_master) {
+	ret = samdb_rodc(ldb, &rodc);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(4, (__location__ ": unable to tell if we are an RODC \n"));
+	}
+
+	if (!schema->fsmo.we_are_master && !rodc) {
 		ldb_debug_set(ldb, LDB_DEBUG_ERROR,
 			  "schema_data_add: we are not master: reject request\n");
 		return LDB_ERR_UNWILLING_TO_PERFORM;
@@ -251,11 +175,6 @@ static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
 	governsID = ldb_msg_find_ldb_val(req->op.add.message, "governsID");
 
 	if (attributeID) {
-		/* Sanity check for not allowed attributes */
-		if (ldb_msg_find_ldb_val(req->op.add.message, "msDS-IntId")) {
-			return LDB_ERR_UNWILLING_TO_PERFORM;
-		}
-
 		oid_attr = "attributeID";
 		oid = talloc_strndup(req, (const char *)attributeID->data, attributeID->length);
 	} else if (governsID) {
@@ -266,8 +185,7 @@ static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
 	}
 
 	if (!oid) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	status = dsdb_schema_pfm_find_oid(schema->prefixmap, oid, NULL);
@@ -290,67 +208,6 @@ static int schema_data_add(struct ldb_module *module, struct ldb_request *req)
 		}
 	}
 
-	/* bypass further processing if CONTROL_RELAX is set */
-	if (ldb_request_get_control(req, LDB_CONTROL_RELAX_OID)) {
-		return ldb_next_request(module, req);
-	}
-
-	/* generate and add msDS-IntId attr value */
-	if (attributeID
-	    && (dsdb_functional_level(ldb) >= DS_DOMAIN_FUNCTION_2003)
-	    && !(ldb_msg_find_attr_as_uint(req->op.add.message, "systemFlags", 0) & SYSTEM_FLAG_SCHEMA_BASE_OBJECT)) {
-		struct ldb_message *msg;
-		struct schema_data_context *ac;
-		struct ldb_request *add_req;
-
-		if (_schema_data_context_new(module, req, &ac) != LDB_SUCCESS) {
-			return LDB_ERR_OPERATIONS_ERROR;
-		}
-
-		/* we have to copy the message as the caller might have it as a const */
-		msg = ldb_msg_copy_shallow(ac, req->op.add.message);
-		if (msg == NULL) {
-			ldb_oom(ldb);
-			return LDB_ERR_OPERATIONS_ERROR;
-		}
-
-		/* generate unique value for msDS-IntId attr value */
-		if (_schema_data_gen_msds_intid(ac, msg) != LDB_SUCCESS) {
-			ldb_debug_set(ldb, LDB_DEBUG_ERROR,
-			              "_schema_data_gen_msds_intid() failed to generate msDS-IntId value\n");
-			return LDB_ERR_OPERATIONS_ERROR;
-		}
-
-		ldb_build_add_req(&add_req, ldb, ac,
-				  msg,
-				  req->controls,
-				  ac, _schema_data_add_callback,
-				  req);
-
-		return ldb_next_request(module, add_req);
-	}
-
-	return ldb_next_request(module, req);
-}
-
-static int schema_data_modify(struct ldb_module *module, struct ldb_request *req)
-{
-	/* special objects should always go through */
-	if (ldb_dn_is_special(req->op.mod.message->dn)) {
-		return ldb_next_request(module, req);
-	}
-
-	/* replicated update should always go through */
-	if (ldb_request_get_control(req, DSDB_CONTROL_REPLICATED_UPDATE_OID)) {
-		return ldb_next_request(module, req);
-	}
-
-	/* msDS-IntId is not allowed to be modified */
-	if (ldb_msg_find_ldb_val(req->op.mod.message, "msDS-IntId")) {
-		return LDB_ERR_CONSTRAINT_VIOLATION;
-	}
-
-	/* go on with the call chain */
 	return ldb_next_request(module, req);
 }
 
@@ -393,8 +250,7 @@ static int generate_dITContentRules(struct ldb_context *ldb, struct ldb_message 
 		if (sclass->auxiliaryClass || sclass->systemAuxiliaryClass) {
 			char *ditcontentrule = schema_class_to_dITContentRule(msg, sclass, schema);
 			if (!ditcontentrule) {
-				ldb_oom(ldb);
-				return LDB_ERR_OPERATIONS_ERROR;
+				return ldb_oom(ldb);
 			}
 			ret = ldb_msg_add_steal_string(msg, "dITContentRules", ditcontentrule);
 			if (ret != LDB_SUCCESS) {
@@ -415,8 +271,7 @@ static int generate_extendedAttributeInfo(struct ldb_context *ldb,
 	for (attribute = schema->attributes; attribute; attribute = attribute->next) {
 		char *val = schema_attribute_to_extendedInfo(msg, attribute);
 		if (!val) {
-			ldb_oom(ldb);
-			return LDB_ERR_OPERATIONS_ERROR;
+			return ldb_oom(ldb);
 		}
 
 		ret = ldb_msg_add_string(msg, "extendedAttributeInfo", val);
@@ -438,8 +293,7 @@ static int generate_extendedClassInfo(struct ldb_context *ldb,
 	for (sclass = schema->classes; sclass; sclass = sclass->next) {
 		char *val = schema_class_to_extendedInfo(msg, sclass);
 		if (!val) {
-			ldb_oom(ldb);
-			return LDB_ERR_OPERATIONS_ERROR;
+			return ldb_oom(ldb);
 		}
 
 		ret = ldb_msg_add_string(msg, "extendedClassInfo", val);
@@ -456,7 +310,8 @@ static int generate_possibleInferiors(struct ldb_context *ldb, struct ldb_messag
 				      const struct dsdb_schema *schema) 
 {
 	struct ldb_dn *dn = msg->dn;
-	int ret, i;
+	unsigned int i;
+	int ret;
 	const char *first_component_name = ldb_dn_get_component_name(dn, 0);
 	const struct ldb_val *first_component_val;
 	const struct dsdb_class *schema_class;
@@ -497,7 +352,8 @@ static int schema_data_search_callback(struct ldb_request *req, struct ldb_reply
 	struct ldb_context *ldb;
 	struct schema_data_search_data *ac;
 	struct schema_data_private_data *mc;
-	int i, ret;
+	unsigned int i;
+	int ret;
 
 	ac = talloc_get_type(req->context, struct schema_data_search_data);
 	mc = talloc_get_type(ldb_module_get_private(ac->module), struct schema_data_private_data);
@@ -559,15 +415,21 @@ static int schema_data_search_callback(struct ldb_request *req, struct ldb_reply
 static int schema_data_search(struct ldb_module *module, struct ldb_request *req)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(module);
-	int i, ret;
+	unsigned int i;
+	int ret;
 	struct schema_data_search_data *search_context;
 	struct ldb_request *down_req;
-	struct dsdb_schema *schema = dsdb_get_schema(ldb);
-
-	if (!schema || !ldb_module_get_private(module)) {
-		/* If there is no schema, there is little we can do */
+	const struct dsdb_schema *schema;
+	if (!ldb_module_get_private(module)) {
+		/* If there is no module data, there is little we can do */
 		return ldb_next_request(module, req);
 	}
+
+	/* The schema manipulation does not apply to special DNs */
+	if (ldb_dn_is_special(req->op.search.base)) {
+		return ldb_next_request(module, req);
+	}
+
 	for (i=0; i < ARRAY_SIZE(generated_attrs); i++) {
 		if (ldb_attr_in_list(req->op.search.attrs, generated_attrs[i].attr)) {
 			break;
@@ -579,15 +441,23 @@ static int schema_data_search(struct ldb_module *module, struct ldb_request *req
 		return ldb_next_request(module, req);
 	}
 
+	schema = dsdb_get_schema(ldb, NULL);
+	if (!schema || !ldb_module_get_private(module)) {
+		/* If there is no schema, there is little we can do */
+		return ldb_next_request(module, req);
+	}
+
 	search_context = talloc(req, struct schema_data_search_data);
 	if (!search_context) {
-		ldb_oom(ldb);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ldb);
 	}
 
 	search_context->module = module;
 	search_context->req = req;
-	search_context->schema = schema;
+	search_context->schema = talloc_reference(search_context, schema);
+	if (!search_context->schema) {
+		return ldb_oom(ldb);
+	}
 
 	ret = ldb_build_search_req_ex(&down_req, ldb, search_context,
 					req->op.search.base,
@@ -598,7 +468,7 @@ static int schema_data_search(struct ldb_module *module, struct ldb_request *req
 					search_context, schema_data_search_callback,
 					req);
 	if (ret != LDB_SUCCESS) {
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb);
 	}
 
 	return ldb_next_request(module, down_req);
@@ -609,6 +479,5 @@ _PUBLIC_ const struct ldb_module_ops ldb_schema_data_module_ops = {
 	.name		= "schema_data",
 	.init_context	= schema_data_init,
 	.add		= schema_data_add,
-	.modify		= schema_data_modify,
 	.search         = schema_data_search
 };

@@ -60,10 +60,9 @@ struct ndr_pull {
 	uint32_t data_size;
 	uint32_t offset;
 
-	struct smb_iconv_convenience *iconv_convenience;
-
 	uint32_t relative_highest_offset;
 	uint32_t relative_base_offset;
+	uint32_t relative_rap_convert;
 	struct ndr_token_list *relative_base_list;
 
 	struct ndr_token_list *relative_list;
@@ -86,17 +85,17 @@ struct ndr_push {
 	uint32_t offset;
 
 	uint32_t relative_base_offset;
+	uint32_t relative_end_offset;
 	struct ndr_token_list *relative_base_list;
 
 	struct ndr_token_list *switch_list;
 	struct ndr_token_list *relative_list;
+	struct ndr_token_list *relative_begin_list;
 	struct ndr_token_list *nbt_string_list;
 	struct ndr_token_list *full_ptr_list;
 
 	/* this is used to ensure we generate unique reference IDs */
 	uint32_t ptr_count;
-
-	struct smb_iconv_convenience *iconv_convenience;
 };
 
 /* structure passed to functions that print IDL structures */
@@ -104,9 +103,9 @@ struct ndr_print {
 	uint32_t flags; /* LIBNDR_FLAG_* */
 	uint32_t depth;
 	struct ndr_token_list *switch_list;
-	struct smb_iconv_convenience *iconv_convenience;
 	void (*print)(struct ndr_print *, const char *, ...) PRINTF_ATTRIBUTE(2,3);
 	void *private_data;
+	bool no_newline;
 };
 
 #define LIBNDR_FLAG_BIGENDIAN  (1<<0)
@@ -124,6 +123,11 @@ struct ndr_print {
 #define LIBNDR_FLAG_STR_UTF8		(1<<12)
 #define LIBNDR_STRING_FLAGS		(0x7FFC)
 
+/* set if relative pointers should *not* be marshalled in reverse order */
+#define LIBNDR_FLAG_NO_RELATIVE_REVERSE	(1<<18)
+
+/* set if relative pointers are marshalled in reverse order */
+#define LIBNDR_FLAG_RELATIVE_REVERSE	(1<<19)
 
 #define LIBNDR_FLAG_REF_ALLOC    (1<<20)
 #define LIBNDR_FLAG_REMAINING    (1<<21)
@@ -374,17 +378,18 @@ size_t ndr_size_dom_sid0(const struct dom_sid *sid, int flags);
 void ndr_print_ipv4_addr(struct ndr_print *ndr, const char *name, const struct in_addr *_ip);
 void ndr_print_GUID(struct ndr_print *ndr, const char *name, const struct GUID *guid);
 bool ndr_syntax_id_equal(const struct ndr_syntax_id *i1, const struct ndr_syntax_id *i2); 
-enum ndr_err_code ndr_push_struct_blob(DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, const void *p, ndr_push_flags_fn_t fn);
-enum ndr_err_code ndr_push_union_blob(DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, void *p, uint32_t level, ndr_push_flags_fn_t fn);
-size_t ndr_size_struct(const void *p, int flags, ndr_push_flags_fn_t push, struct smb_iconv_convenience *);
-size_t ndr_size_union(const void *p, int flags, uint32_t level, ndr_push_flags_fn_t push, struct smb_iconv_convenience *);
+enum ndr_err_code ndr_push_struct_blob(DATA_BLOB *blob, TALLOC_CTX *mem_ctx, const void *p, ndr_push_flags_fn_t fn);
+enum ndr_err_code ndr_push_union_blob(DATA_BLOB *blob, TALLOC_CTX *mem_ctx, void *p, uint32_t level, ndr_push_flags_fn_t fn);
+size_t ndr_size_struct(const void *p, int flags, ndr_push_flags_fn_t push);
+size_t ndr_size_union(const void *p, int flags, uint32_t level, ndr_push_flags_fn_t push);
 uint32_t ndr_push_get_relative_base_offset(struct ndr_push *ndr);
 void ndr_push_restore_relative_base_offset(struct ndr_push *ndr, uint32_t offset);
 enum ndr_err_code ndr_push_setup_relative_base_offset1(struct ndr_push *ndr, const void *p, uint32_t offset);
 enum ndr_err_code ndr_push_setup_relative_base_offset2(struct ndr_push *ndr, const void *p);
 enum ndr_err_code ndr_push_relative_ptr1(struct ndr_push *ndr, const void *p);
 enum ndr_err_code ndr_push_short_relative_ptr1(struct ndr_push *ndr, const void *p);
-enum ndr_err_code ndr_push_relative_ptr2(struct ndr_push *ndr, const void *p);
+enum ndr_err_code ndr_push_relative_ptr2_start(struct ndr_push *ndr, const void *p);
+enum ndr_err_code ndr_push_relative_ptr2_end(struct ndr_push *ndr, const void *p);
 enum ndr_err_code ndr_push_short_relative_ptr2(struct ndr_push *ndr, const void *p);
 uint32_t ndr_pull_get_relative_base_offset(struct ndr_pull *ndr);
 void ndr_pull_restore_relative_base_offset(struct ndr_pull *ndr, uint32_t offset);
@@ -394,9 +399,9 @@ enum ndr_err_code ndr_pull_relative_ptr1(struct ndr_pull *ndr, const void *p, ui
 enum ndr_err_code ndr_pull_relative_ptr2(struct ndr_pull *ndr, const void *p);
 enum ndr_err_code ndr_pull_relative_ptr_short(struct ndr_pull *ndr, uint16_t *v);
 size_t ndr_align_size(uint32_t offset, size_t n);
-struct ndr_pull *ndr_pull_init_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience);
+struct ndr_pull *ndr_pull_init_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx);
 enum ndr_err_code ndr_pull_advance(struct ndr_pull *ndr, uint32_t size);
-struct ndr_push *ndr_push_init_ctx(TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience);
+struct ndr_push *ndr_push_init_ctx(TALLOC_CTX *mem_ctx);
 DATA_BLOB ndr_push_blob(struct ndr_push *ndr);
 enum ndr_err_code ndr_push_expand(struct ndr_push *ndr, uint32_t extra_size);
 void ndr_print_debug_helper(struct ndr_print *ndr, const char *format, ...) PRINTF_ATTRIBUTE(2,3);
@@ -451,10 +456,10 @@ enum ndr_err_code ndr_print_set_switch_value(struct ndr_print *ndr, const void *
 uint32_t ndr_push_get_switch_value(struct ndr_push *ndr, const void *p);
 uint32_t ndr_pull_get_switch_value(struct ndr_pull *ndr, const void *p);
 uint32_t ndr_print_get_switch_value(struct ndr_print *ndr, const void *p);
-enum ndr_err_code ndr_pull_struct_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, void *p, ndr_pull_flags_fn_t fn);
-enum ndr_err_code ndr_pull_struct_blob_all(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, void *p, ndr_pull_flags_fn_t fn);
-enum ndr_err_code ndr_pull_union_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, void *p, uint32_t level, ndr_pull_flags_fn_t fn);
-enum ndr_err_code ndr_pull_union_blob_all(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, struct smb_iconv_convenience *iconv_convenience, void *p, uint32_t level, ndr_pull_flags_fn_t fn);
+enum ndr_err_code ndr_pull_struct_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, void *p, ndr_pull_flags_fn_t fn);
+enum ndr_err_code ndr_pull_struct_blob_all(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, void *p, ndr_pull_flags_fn_t fn);
+enum ndr_err_code ndr_pull_union_blob(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, void *p, uint32_t level, ndr_pull_flags_fn_t fn);
+enum ndr_err_code ndr_pull_union_blob_all(const DATA_BLOB *blob, TALLOC_CTX *mem_ctx, void *p, uint32_t level, ndr_pull_flags_fn_t fn);
 
 /* from libndr_basic.h */
 #define NDR_SCALAR_PROTO(name, type) \
@@ -515,6 +520,7 @@ enum ndr_err_code ndr_push_unique_ptr(struct ndr_push *ndr, const void *p);
 enum ndr_err_code ndr_push_full_ptr(struct ndr_push *ndr, const void *p);
 enum ndr_err_code ndr_push_ref_ptr(struct ndr_push *ndr);
 void ndr_print_struct(struct ndr_print *ndr, const char *name, const char *type);
+void ndr_print_null(struct ndr_print *ndr);
 void ndr_print_enum(struct ndr_print *ndr, const char *name, const char *type, const char *val, uint32_t value);
 void ndr_print_bitmap_flag(struct ndr_print *ndr, size_t size, const char *flag_name, uint32_t flag, uint32_t value);
 void ndr_print_bitmap_flag(struct ndr_print *ndr, size_t size, const char *flag_name, uint32_t flag, uint32_t value);

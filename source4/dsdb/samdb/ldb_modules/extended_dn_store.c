@@ -78,7 +78,7 @@ static struct extended_dn_context *extended_dn_context_init(struct ldb_module *m
 		return NULL;
 	}
 
-	ac->schema = dsdb_get_schema(ldb_module_get_ctx(module));
+	ac->schema = dsdb_get_schema(ldb_module_get_ctx(module), ac);
 	ac->module = module;
 	ac->ldb = ldb;
 	ac->req = req;
@@ -233,7 +233,7 @@ static int extended_store_replace(struct extended_dn_context *ac,
 
 	os = talloc_zero(ac, struct extended_dn_replace_list);
 	if (!os) {
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_oom(ac->ldb);
 	}
 
 	os->ac = ac;
@@ -275,7 +275,7 @@ static int extended_store_replace(struct extended_dn_context *ac,
 		return ret;
 	}
 
-	ret = dsdb_request_add_controls(ac->module, os->search_req,
+	ret = dsdb_request_add_controls(os->search_req,
 					DSDB_SEARCH_SHOW_DELETED|DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(os);
@@ -307,7 +307,7 @@ static int extended_dn_add(struct ldb_module *module, struct ldb_request *req)
 
 	ac = extended_dn_context_init(module, req);
 	if (!ac) {
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb_module_get_ctx(module));
 	}
 
 	if (!ac->schema) {
@@ -333,8 +333,7 @@ static int extended_dn_add(struct ldb_module *module, struct ldb_request *req)
 		if (!ac->new_req) {
 			struct ldb_message *msg = ldb_msg_copy(ac, req->op.add.message);
 			if (!msg) {
-				ldb_oom(ldb_module_get_ctx(module));
-				return LDB_ERR_OPERATIONS_ERROR;
+				return ldb_oom(ldb_module_get_ctx(module));
 			}
 		   
 			ret = ldb_build_add_req(&ac->new_req, ac->ldb, ac, msg, req->controls, ac, extended_final_callback, req);
@@ -382,7 +381,7 @@ static int extended_dn_modify(struct ldb_module *module, struct ldb_request *req
 
 	ac = extended_dn_context_init(module, req);
 	if (!ac) {
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb_module_get_ctx(module));
 	}
 
 	if (!ac->schema) {
@@ -409,8 +408,7 @@ static int extended_dn_modify(struct ldb_module *module, struct ldb_request *req
 			struct ldb_message *msg = ldb_msg_copy(ac, req->op.mod.message);
 			if (!msg) {
 				talloc_free(ac);
-				ldb_oom(ac->ldb);
-				return LDB_ERR_OPERATIONS_ERROR;
+				return ldb_oom(ac->ldb);
 			}
 		   
 			ret = ldb_build_mod_req(&ac->new_req, ac->ldb, ac, msg, req->controls, ac, extended_final_callback, req);
@@ -427,7 +425,7 @@ static int extended_dn_modify(struct ldb_module *module, struct ldb_request *req
 			 * element, only do a lookup if
 			 * extended_store_replace determines it's an
 			 * input of an extended DN */
-			bool is_delete = ((el->flags & LDB_FLAG_MOD_MASK) == LDB_FLAG_MOD_DELETE);
+			bool is_delete = (LDB_FLAG_MOD_TYPE(el->flags) == LDB_FLAG_MOD_DELETE);
 
 			ret = extended_store_replace(ac, req->op.mod.message->elements, &el->values[j],
 						     is_delete, schema_attr->syntax->ldap_oid);

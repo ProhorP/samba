@@ -23,6 +23,9 @@
 
 #include "includes.h"
 #include "smb_krb5.h"
+#include "../librpc/gen_ndr/ndr_misc.h"
+#include "libads/kerberos_proto.h"
+#include "secrets.h"
 
 #ifdef HAVE_KRB5
 
@@ -90,9 +93,8 @@ kerb_prompter(krb5_context ctx, void *data,
 
 	data_blob_free(&edata);
 
-	ndr_err = ndr_pull_struct_blob_all(&unwrapped_edata, mem_ctx, NULL,
-			&parsed_edata,
-			(ndr_pull_flags_fn_t)ndr_pull_KRB5_EDATA_NTSTATUS);
+	ndr_err = ndr_pull_struct_blob_all(&unwrapped_edata, mem_ctx, 
+		&parsed_edata, (ndr_pull_flags_fn_t)ndr_pull_KRB5_EDATA_NTSTATUS);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		data_blob_free(&unwrapped_edata);
 		TALLOC_FREE(mem_ctx);
@@ -284,58 +286,6 @@ int kerberos_kinit_password_ext(const char *principal,
 	return code;
 }
 
-
-
-/* run kinit to setup our ccache */
-int ads_kinit_password(ADS_STRUCT *ads)
-{
-	char *s;
-	int ret;
-	const char *account_name;
-	fstring acct_name;
-
-	if (ads->auth.flags & ADS_AUTH_USER_CREDS) {
-		account_name = ads->auth.user_name;
-		goto got_accountname;
-	}
-
-	if ( IS_DC ) {
-		/* this will end up getting a ticket for DOMAIN@RUSTED.REA.LM */
-		account_name = lp_workgroup();
-	} else {
-		/* always use the sAMAccountName for security = domain */
-		/* global_myname()$@REA.LM */
-		if ( lp_security() == SEC_DOMAIN ) {
-			fstr_sprintf( acct_name, "%s$", global_myname() );
-			account_name = acct_name;
-		}
-		else 
-			/* This looks like host/global_myname()@REA.LM */
-			account_name = ads->auth.user_name;
-	}
-
- got_accountname:
-	if (asprintf(&s, "%s@%s", account_name, ads->auth.realm) == -1) {
-		return KRB5_CC_NOMEM;
-	}
-
-	if (!ads->auth.password) {
-		SAFE_FREE(s);
-		return KRB5_LIBOS_CANTREADPWD;
-	}
-	
-	ret = kerberos_kinit_password_ext(s, ads->auth.password, ads->auth.time_offset,
-			&ads->auth.tgt_expire, NULL, NULL, False, False, ads->auth.renewable, 
-			NULL);
-
-	if (ret) {
-		DEBUG(0,("kerberos_kinit_password %s failed: %s\n", 
-			 s, error_message(ret)));
-	}
-	SAFE_FREE(s);
-	return ret;
-}
-
 int ads_kdestroy(const char *cc_name)
 {
 	krb5_error_code code;
@@ -525,6 +475,58 @@ char *kerberos_get_default_realm_from_ccache( void )
 	return realm;
 }
 
+/************************************************************************
+ Routine to get the realm from a given DNS name. Returns malloc'ed memory.
+ Caller must free() if the return value is not NULL.
+************************************************************************/
+
+char *kerberos_get_realm_from_hostname(const char *hostname)
+{
+#if defined(HAVE_KRB5_GET_HOST_REALM) && defined(HAVE_KRB5_FREE_HOST_REALM)
+#if defined(HAVE_KRB5_REALM_TYPE)
+	/* Heimdal. */
+	krb5_realm *realm_list = NULL;
+#else
+	/* MIT */
+	char **realm_list = NULL;
+#endif
+	char *realm = NULL;
+	krb5_error_code kerr;
+	krb5_context ctx = NULL;
+
+	initialize_krb5_error_table();
+	if (krb5_init_context(&ctx)) {
+		return NULL;
+	}
+
+	kerr = krb5_get_host_realm(ctx, hostname, &realm_list);
+	if (kerr != 0) {
+		DEBUG(3,("kerberos_get_realm_from_hostname %s: "
+			"failed %s\n",
+			hostname ? hostname : "(NULL)",
+			error_message(kerr) ));
+		goto out;
+	}
+
+	if (realm_list && realm_list[0]) {
+		realm = SMB_STRDUP(realm_list[0]);
+	}
+
+  out:
+
+	if (ctx) {
+		if (realm_list) {
+			krb5_free_host_realm(ctx, realm_list);
+			realm_list = NULL;
+		}
+		krb5_free_context(ctx);
+		ctx = NULL;
+	}
+	return realm;
+#else
+	return NULL;
+#endif
+}
 
 /************************************************************************
  Routine to get the salting principal for this service.  This is 
@@ -663,7 +665,8 @@ int kerberos_kinit_password(const char *principal,
 
 static char *print_kdc_line(char *mem_ctx,
 			const char *prev_line,
-			const struct sockaddr_storage *pss)
+			const struct sockaddr_storage *pss,
+			const char *kdc_name)
 {
 	char *kdc_str = NULL;
 
@@ -674,6 +677,9 @@ static char *print_kdc_line(char *mem_ctx,
 	} else {
 		char addr[INET6_ADDRSTRLEN];
 		uint16_t port = get_sockaddr_port(pss);
+
+		DEBUG(10,("print_kdc_line: IPv6 case for kdc_name: %s, port: %d\n",
+			kdc_name, port));
 
 		if (port != 0 && port != DEFAULT_KRB5_PORT) {
 			/* Currently for IPv6 we can't specify a non-default
@@ -691,6 +697,7 @@ static char *print_kdc_line(char *mem_ctx,
 					"Error %s\n.",
 					print_canonical_sockaddr(mem_ctx, pss),
 					gai_strerror(ret)));
+				return NULL;
 			}
 			/* Success, use host:port */
 			kdc_str = talloc_asprintf(mem_ctx,
@@ -699,11 +706,22 @@ static char *print_kdc_line(char *mem_ctx,
 					hostname,
 					(unsigned int)port);
 		} else {
-			kdc_str = talloc_asprintf(mem_ctx, "%s\tkdc = %s\n",
-					prev_line,
-					print_sockaddr(addr,
-						sizeof(addr),
-						pss));
+
+			/* no krb5 lib currently supports "kdc = ipv6 address"
+			 * at all, so just fill in just the kdc_name if we have
+			 * it and let the krb5 lib figure out the appropriate
+			 * ipv6 address - gd */
+
+			if (kdc_name) {
+				kdc_str = talloc_asprintf(mem_ctx, "%s\tkdc = %s\n",
+						prev_line, kdc_name);
+			} else {
+				kdc_str = talloc_asprintf(mem_ctx, "%s\tkdc = %s\n",
+						prev_line,
+						print_sockaddr(addr,
+							sizeof(addr),
+							pss));
+			}
 		}
 	}
 	return kdc_str;
@@ -720,14 +738,15 @@ static char *print_kdc_line(char *mem_ctx,
 static char *get_kdc_ip_string(char *mem_ctx,
 		const char *realm,
 		const char *sitename,
-		struct sockaddr_storage *pss)
+		struct sockaddr_storage *pss,
+		const char *kdc_name)
 {
 	int i;
 	struct ip_service *ip_srv_site = NULL;
 	struct ip_service *ip_srv_nonsite = NULL;
 	int count_site = 0;
 	int count_nonsite;
-	char *kdc_str = print_kdc_line(mem_ctx, "", pss);
+	char *kdc_str = print_kdc_line(mem_ctx, "", pss, kdc_name);
 
 	if (kdc_str == NULL) {
 		return NULL;
@@ -751,7 +770,8 @@ static char *get_kdc_ip_string(char *mem_ctx,
 			 * but not done often. */
 			kdc_str = print_kdc_line(mem_ctx,
 						kdc_str,
-						&ip_srv_site[i].ss);
+						&ip_srv_site[i].ss,
+						NULL);
 			if (!kdc_str) {
 				SAFE_FREE(ip_srv_site);
 				return NULL;
@@ -788,7 +808,8 @@ static char *get_kdc_ip_string(char *mem_ctx,
 		/* Append to the string - inefficient but not done often. */
 		kdc_str = print_kdc_line(mem_ctx,
 				kdc_str,
-				&ip_srv_nonsite[i].ss);
+				&ip_srv_nonsite[i].ss,
+				NULL);
 		if (!kdc_str) {
 			SAFE_FREE(ip_srv_site);
 			SAFE_FREE(ip_srv_nonsite);
@@ -816,7 +837,8 @@ static char *get_kdc_ip_string(char *mem_ctx,
 bool create_local_private_krb5_conf_for_domain(const char *realm,
 						const char *domain,
 						const char *sitename,
-						struct sockaddr_storage *pss)
+						struct sockaddr_storage *pss,
+						const char *kdc_name)
 {
 	char *dname;
 	char *tmpname = NULL;
@@ -860,7 +882,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	realm_upper = talloc_strdup(fname, realm);
 	strupper_m(realm_upper);
 
-	kdc_ip_string = get_kdc_ip_string(dname, realm, sitename, pss);
+	kdc_ip_string = get_kdc_ip_string(dname, realm, sitename, pss, kdc_name);
 	if (!kdc_ip_string) {
 		goto done;
 	}
