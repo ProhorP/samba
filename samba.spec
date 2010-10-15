@@ -1,13 +1,8 @@
-%define main_release 65
-%define samba_version 3.5.5
-%define pre_release %nil
-
-%define samba_release %main_release%pre_release%{?dist}
-
 %define samba_source source3
+
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: %samba_version
+Version: 3.5.6
 Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
@@ -15,7 +10,7 @@ Url: http://www.samba.org/
 
 Packager: Vitaly Kuznetsov <vitty@altlinux.ru>
 
-Source: http://www.samba.org/samba/ftp/stable/%name-%samba_version%pre_release.tar.gz
+Source: http://www.samba.org/samba/ftp/stable/%name-%version.tar.gz
 
 # Red Hat specific replacement-files
 Source1: samba.log
@@ -41,12 +36,12 @@ Patch104: samba-3.0.0rc3-nmbd-netbiosname.patch
 Patch107: samba-3.2.0pre1-grouppwd.patch
 Patch200: samba-3.2.5-inotify.patch
 
-Requires(pre): samba-common = %samba_version-%release
+Requires(pre): samba-common = %version-%release
 
 BuildRequires: libpam0-devel, libreadline-devel, libncurses-devel, libacl-devel, libkrb5-devel, libldap-devel, libssl-devel, libcups-devel, ctdb-devel
 BuildRequires: gawk, libpopt-devel, libgtk+2-devel, libcap-devel, libuuid-devel
 BuildRequires: libtalloc-devel, libtdb-devel
-BuildRequires: inkscape xsltproc netpbm dblatex html2text
+BuildRequires: inkscape xsltproc netpbm dblatex html2text docbook-style-xsl
 
 %description
 Samba is the suite of programs by which a lot of PC-related machines
@@ -63,8 +58,8 @@ need the NetBEUI (Microsoft Raw NetBIOS frame) protocol.
 Summary: Samba client programs
 Group: Networking/Other
 PreReq: samba-client-control >= 0:1.2
-Requires: samba-common = %samba_version-%release
-Provides: samba-client-cups = %samba_version-%release
+Requires: samba-common = %version-%release
+Provides: samba-client-cups = %version-%release
 
 %description client
 The samba-client package provides some SMB/CIFS clients to complement
@@ -74,7 +69,7 @@ of SMB/CIFS shares and printing to SMB/CIFS printers.
 %package common
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
-Provides: samba-utils = %samba_version-%release
+Provides: samba-utils = %version-%release
 Requires: libtalloc >= 2.0.1
 
 %description common
@@ -98,8 +93,8 @@ Samba netapi development files
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
-Requires: samba-common = %samba_version-%release
-Requires: samba-winbind-clients = %samba_version-%release
+Requires: samba-common = %version-%release
+Requires: samba-winbind-clients = %version-%release
 
 %description winbind
 The samba-winbind package provides the winbind daemon and some client tools.
@@ -117,7 +112,7 @@ module necessary to communicate to the Winbind Daemon
 %package winbind-devel
 Summary: Developer tools for the winbind library
 Group: Development/Other
-Requires: samba-winbind = %samba_version-%release
+Requires: samba-winbind = %version-%release
 
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
@@ -125,7 +120,7 @@ The samba-winbind package provides developer tools for the wbclient library.
 %package swat
 Summary: The Samba SMB server Web configuration program
 Group: Security/Networking
-Requires: samba = %samba_version-%release, xinetd
+Requires: samba = %version-%release, xinetd
 
 %description swat
 The samba-swat package includes the new SWAT (Samba Web Administration
@@ -135,7 +130,7 @@ Web browser.
 %package doc
 Summary: Documentation for the Samba suite
 Group: Networking/Other
-Requires: samba-common = %samba_version-%release
+Requires: samba-common = %version-%release
 BuildArch: noarch
 
 %description doc
@@ -145,7 +140,7 @@ Samba suite.
 %package domainjoin-gui
 Summary: Domainjoin GUI
 Group: Networking/Other
-Requires: samba-common = %samba_version-%release
+Requires: samba-common = %version-%release
 
 %description domainjoin-gui
 The samba-domainjoin-gui package includes a domainjoin gtk application.
@@ -160,7 +155,7 @@ The libsmbclient contains the SMB client library from the Samba suite.
 %package -n libsmbclient-devel
 Summary: Developer tools for the SMB client library
 Group: Development/C
-Requires: libsmbclient = %samba_version-%release
+Requires: libsmbclient = %version-%release
 
 %description -n libsmbclient-devel
 The libsmbclient-devel package contains the header files and libraries needed to
@@ -168,7 +163,7 @@ develop programs that link against the SMB client library in the Samba suite.
 
 %prep
 # TAG: change for non-pre
-%setup -q -n %name-%samba_version%pre_release
+%setup -q -n %name-%version
 #%setup -q
 
 # copy Red Hat specific scripts
@@ -190,8 +185,7 @@ cp %SOURCE11 packaging/Fedora/
 %patch107 -p1 -b .grouppwd
 %patch200 -p0 -b .inotify
 
-mv %samba_source/VERSION %samba_source/VERSION.orig
-sed -e 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&\"%samba_release\"/' < %samba_source/VERSION.orig > %samba_source/VERSION
+sed -i 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&\"%release\"/' %samba_source/VERSION
 cd %samba_source
 script/mkversion.sh
 cd ..
@@ -255,11 +249,11 @@ CFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -DLDAP_DEPRECATED" %configure \
 
 make  pch
 
-make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%samba_version%pre_release/%samba_source/bin \
+make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%version/%samba_source/bin \
 %{?_smp_mflags} \
     all ../nsswitch/libnss_wins.so modules test_pam_modules test_nss_modules test_shlibs
 
-make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%samba_version%pre_release/%samba_source/bin \
+make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%version/%samba_source/bin \
 %{?_smp_mflags} \
     -C lib/netapi/examples
 
@@ -268,6 +262,7 @@ popd
 
 pushd docs-xml
 %configure  --with-samba-sources=../source3
+make smbdotconf/parameters.all.xml
 make release
 popd
 
@@ -632,6 +627,10 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Fri Oct 15 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.6-alt1
+- 3.5.6
+- fix smb.conf.5 assembly (ALT #24303)
+
 * Tue Sep 14 2010 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.5-alt1
 - 3.5.5 (CVE-2010-3069)
 
