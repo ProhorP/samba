@@ -97,7 +97,7 @@
  * error if it is. If you wish to disable this check, then set the following
  * #define to 1, but please realize that you do so at your own peril.
  */
-#define CIFS_DISABLE_SETUID_CHECK 0
+#define CIFS_DISABLE_SETUID_CHECK 1
 
 /*
  * By default, mount.cifs follows the conventions set forth by /bin/mount
@@ -112,7 +112,7 @@
  * The legacy behavior is now disabled by default. To reenable it, set the
  * following #define to true.
  */
-#define CIFS_LEGACY_SETUID_CHECK 0
+#define CIFS_LEGACY_SETUID_CHECK 1
 
 /*
  * When an unprivileged user runs a setuid mount.cifs, we set certain mount

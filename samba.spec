@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.5.8
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -41,7 +41,7 @@ Requires(pre): samba-common = %version-%release
 BuildRequires: libpam0-devel, libreadline-devel, libncurses-devel, libacl-devel, libkrb5-devel, libldap-devel, libssl-devel, libcups-devel, ctdb-devel
 BuildRequires: gawk, libpopt-devel, libgtk+2-devel, libcap-devel, libuuid-devel
 BuildRequires: libtalloc-devel, libtdb-devel
-BuildRequires: inkscape xsltproc netpbm dblatex html2text docbook-style-xsl
+BuildRequires: inkscape xsltproc netpbm dblatex html2text docbook-style-xsl libkeyutils-devel
 
 %description
 Samba is the suite of programs by which a lot of PC-related machines
@@ -627,6 +627,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Fri Mar 18 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.8-alt2
+- build with CIFS_DISABLE_SETUID_CHECK and CIFS_LEGACY_SETUID_CHECK
+
 * Tue Mar 08 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.8-alt1
 - 3.5.8
 
