@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.5.8
-Release: alt2
+Release: alt3
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -394,6 +394,8 @@ mv -f %buildroot%_man1dir/ldbmodify.1 %buildroot%_man1dir/ldb3modify.1
 mv -f %buildroot%_man1dir/ldbsearch.1 %buildroot%_man1dir/ldb3search.1
 mv -f %buildroot%_man1dir/ldbrename.1 %buildroot%_man1dir/ldb3rename.1
 
+mv -f %buildroot%_sbindir/cifs.upcall %buildroot/sbin/
+
 #rm -f %buildroot%_libdir/libtalloc.so.*
 #rm -f %buildroot%_includedir/talloc.h
 #rm -f %buildroot%_libdir/libtalloc.so
@@ -485,7 +487,7 @@ true
 %files client
 /sbin/mount.cifs
 /sbin/umount.cifs
-%_sbindir/cifs.upcall
+/sbin/cifs.upcall
 %_bindir/rpcclient
 %_bindir/smbcacls
 %_bindir/findsmb
@@ -627,6 +629,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Tue Mar 22 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.8-alt3
+- move cifs.upcall to /sbin
+
 * Fri Mar 18 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.8-alt2
 - build with CIFS_DISABLE_SETUID_CHECK and CIFS_LEGACY_SETUID_CHECK
 
