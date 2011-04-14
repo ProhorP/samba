@@ -137,7 +137,6 @@ domains and to use Windows user and group accounts on Linux.
 	--with-lockdir=/var/lib/%name \
 	--with-piddir=/var/run \
 	--with-privatedir=/var/lib/%name/private \
-	--with-logfilebase=/var/log/%name \
 	--sysconfdir=%_sysconfdir/%name \
 	--with-winbindd-socket-dir=/var/run/winbind \
 	--with-ntp-signd-socket-dir=/var/run/ntp_signd \
