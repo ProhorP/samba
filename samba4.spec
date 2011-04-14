@@ -1,6 +1,6 @@
 %define samba4_version 4.0.0
-%define pre_release alpha13
-%define main_release 25
+%define pre_release alpha15
+%define main_release 34
 
 # Most of these subpackages are disabled because they are not
 # needed by OpenChange, and to avoid file conflicts with Samba3.
@@ -10,12 +10,9 @@
 %def_disable python
 %def_disable winbind
 
-# Install libraries not needed by OpenChange.
-%def_disable all_libraries
-
 Name: samba4
 Version: %samba4_version
-Release: alt1.%pre_release
+Release: alt0.%pre_release
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -29,7 +26,7 @@ Source1: %name.log
 Source4: %name.sysconfig
 Source5: %name.init
 
-Patch1: samba-4.0.0alpha6-GIT-3508a66-undefined-comparison_fn_t.patch
+Patch01: 0001-s4-auth-Remove-partly-implemented-libwbclient-module.patch
 
 %if_enabled common
 Requires(pre): %name-common = %version-%release
@@ -50,7 +47,8 @@ BuildRequires: libldap-devel
 BuildRequires: libxslt xsltproc
 BuildRequires: docbook-style-xsl
 
-BuildRequires: libtalloc-devel, libtdb-devel, libtevent-devel, libldb-devel
+BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
+BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
 
 %description
 Samba 4 is the ambitious next version of the Samba suite that is being
@@ -130,20 +128,10 @@ domains and to use Windows user and group accounts on Linux.
 %setup -q
 
 # copy Red Hat specific scripts
-
-%patch1 -p1 -b .undefined-comparison_fn_t
-
-mv source4/VERSION source4/VERSION.orig
-sed -e 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&%main_release/' < source4/VERSION.orig > source4/VERSION
-#cd source4
-#script/mkversion.sh
-#cd ..
+%patch01 -p1 -b .rm-libwbclient-dep
 
 %build
-
-cd source4
-./autogen.sh
-
+%undefine _configure_gettext
 %configure \
 	--enable-fhs \
 	--with-lockdir=/var/lib/%name \
@@ -153,7 +141,9 @@ cd source4
 	--sysconfdir=%_sysconfdir/%name \
 	--with-winbindd-socket-dir=/var/run/winbind \
 	--with-ntp-signd-socket-dir=/var/run/ntp_signd \
-	--disable-gnutls
+	--disable-gnutls \
+	--disable-rpath-install \
+	--bundled-libraries=heimdal
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
@@ -165,7 +155,6 @@ cd source4
 make
 
 %install
-cd source4
 
 # Don't call 'make install' as we want to call out to the PIDL
 # install manually.
@@ -182,7 +171,6 @@ rm -rf %buildroot%_datadir/perl5
 find %buildroot -type f -name .packlist -exec rm -f {} \;
 find %buildroot -depth -type d -exec rmdir {} 2>/dev/null \;
 
-cd ..
 
 %if_enabled samba4
 mkdir -p %buildroot%_initdir
@@ -209,13 +197,15 @@ install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/%name
 install -m644 %SOURCE4 %buildroot%_sysconfdir/sysconfig/%name
 %endif
 
-%if_enabled winbind
-mkdir -p %buildroot%_lib
-ln -sf ../%_libdir/libnss_winbind.so  %buildroot%_lib/libnss_winbind.so.2
-%else
+%if_disabled winbind
 rm -f %buildroot%_bindir/ntlm_auth
 rm -f %buildroot%_bindir/wbinfo
-rm -f %buildroot%_libdir/libnss_winbind.so
+rm -f %buildroot%_libdir/libnss_winbind.so.2
+rm -f %buildroot%_libdir/pam_winbind.so
+rm -f %buildroot%_libdir/libwbclient.so
+rm -f %buildroot%_libdir/libwbclient.so.*
+rm -f %buildroot%_mandir/man1/ntlm_auth.*
+rm -f %buildroot%_includedir/samba-4.0/wbclient.h
 %endif
 
 # libs {
@@ -229,15 +219,18 @@ mkdir -p %buildroot%_libdir %buildroot%_includedir
 
 #rm %buildroot%_bindir/epdump
 rm -f %buildroot%_bindir/gentest
+rm -f %buildroot%_mandir/man1/gentest.*
 rm -f %buildroot%_bindir/getntacl
 rm -f %buildroot%_bindir/locktest
+rm -f %buildroot%_mandir/man1/locktest.*
 rm -f %buildroot%_bindir/masktest
-#rm -f %buildroot%_bindir/minschema
+rm -f %buildroot%_mandir/man1/masktest.*
 rm -f %buildroot%_bindir/ndrdump
+rm -f %buildroot%_mandir/man1/ndrdump.*
 rm -f %buildroot%_bindir/nsstest
 rm -f %buildroot%_bindir/setnttoken
 rm -f %buildroot%_bindir/smbtorture
-#rm %buildroot%_bindir/subunitrun
+rm -f %buildroot%_mandir/man1/smbtorture.*
 #depending on the environemnt this file might or might not be generated
 rm -f %buildroot%_bindir/tdbtorture
 
@@ -252,6 +245,11 @@ rm -f %buildroot%_sbindir/samba
 rm -f %buildroot%_sbindir/upgradeprovision
 rm -r %buildroot%_datadir/samba/setup
 rm -rf %buildroot%_libdir/samba/ldb
+rm -f %buildroot%_sbindir/samba_dnsupdate
+rm -f %buildroot%_sbindir/samba_spnupdate
+rm -f %buildroot%_bindir/samba-tool
+rm -f %buildroot%_libdir/mit_samba.so
+rm -f %buildroot%_mandir/man8/samba.*
 %endif
 
 %if_enabled client
@@ -266,46 +264,34 @@ ln -s ../../sbin/umount.cifs %buildroot%_bindir/cifsumount
 rm -f %buildroot%_bindir/nmblookup
 rm -f %buildroot%_bindir/smbclient
 rm -f %buildroot%_bindir/cifsdd
+rm -f %buildroot%_mandir/man1/nmblookup.*
 %endif
 %if_disabled common
-rm -f %buildroot%_bindir/net
 rm -f %buildroot%_bindir/regdiff
 rm -f %buildroot%_bindir/regpatch
 rm -f %buildroot%_bindir/regshell
 rm -f %buildroot%_bindir/regtree
 rm -f %buildroot%_bindir/testparm
-%endif
-%if_disabled all_libraries
-rm -f %buildroot%_libdir/libdcerpc_atsvc.so
-rm -f %buildroot%_libdir/libdcerpc_atsvc.so.*
-rm -f %buildroot%_libdir/libgensec.so
-rm -f %buildroot%_libdir/libgensec.so.*
-rm -f %buildroot%_libdir/libregistry.so
-rm -f %buildroot%_libdir/libregistry.so.*
-rm -f %buildroot%_libdir/libtorture.so
-rm -f %buildroot%_libdir/libtorture.so.*
-rm -f %buildroot%_pkgconfigdir/dcerpc_atsvc.pc
-rm -f %buildroot%_pkgconfigdir/gensec.pc
-rm -f %buildroot%_pkgconfigdir/registry.pc
-rm -f %buildroot%_pkgconfigdir/torture.pc
-rm -f %buildroot%_includedir/samba-4.0/gensec.h
-rm -f %buildroot%_includedir/samba-4.0/registry.h
+rm -f %buildroot%_mandir/man1/regdiff.*
+rm -f %buildroot%_mandir/man1/regpatch.*
+rm -f %buildroot%_mandir/man1/regshell.*
+rm -f %buildroot%_mandir/man1/regtree.*
 %endif
 
 # the samba4 build process rebuilds libraries internally,
 # but we want to use the standalone build for now.
 #rm -f %buildroot%_libdir/libldb.so*
 #rm -f %buildroot%_bindir/ad2oLschema
-rm -f %buildroot%_bindir/ldbadd
-rm -f %buildroot%_bindir/ldbdel
-rm -f %buildroot%_bindir/ldbedit
-rm -f %buildroot%_bindir/ldbmodify
-rm -f %buildroot%_bindir/ldbrename
-rm -f %buildroot%_bindir/ldbsearch
+#rm -f %buildroot%_bindir/ldbadd
+#rm -f %buildroot%_bindir/ldbdel
+#rm -f %buildroot%_bindir/ldbedit
+#rm -f %buildroot%_bindir/ldbmodify
+#rm -f %buildroot%_bindir/ldbrename
+#rm -f %buildroot%_bindir/ldbsearch
 rm -f %buildroot%_bindir/oLschema2ldif
-rm -f %buildroot%_bindir/tdbbackup
-rm -f %buildroot%_bindir/tdbdump
-rm -f %buildroot%_bindir/tdbtool
+#rm -f %buildroot%_bindir/tdbbackup
+#rm -f %buildroot%_bindir/tdbdump
+#rm -f %buildroot%_bindir/tdbtool
 
 rm -f %buildroot%_libdir/lib*.a
 
@@ -316,9 +302,9 @@ rm -fr %buildroot%python_libdir/lib
 
 # These may be created in non mock systems, but we do not want to package them
 # for now
-rm -f %buildroot%_man1dir/ad2oLschema.1
+#rm -f %buildroot%_man1dir/ad2oLschema.1
 rm -f %buildroot%_man1dir/oLschema2ldif.1
-rm -f %buildroot%_datadir/swig/*/talloc.i
+#rm -f %buildroot%_datadir/swig/*/talloc.i
 
 # This makes the right links, as rpmlint requires that
 # the ldconfig-created links be recorded in the RPM.
@@ -352,12 +338,15 @@ find source4/heimdal -type f | xargs chmod -x
 %files
 %doc COPYING WHATSNEW4.txt
 %if_enabled samba4
-%_bindir/mymachinepw
-%_bindir/smbstatus
 %_sbindir/provision
 %_sbindir/samba
 %_sbindir/upgradeprovision
+%_sbindir/samba_dnsupdate
+%_sbindir/samba_spnupdate
+%_bindir/samba-tool
 %_datadir/samba/setup
+%_libdir/mit_samba.so
+%_mandir/man8/samba.*
 %dir /var/lib/%name/sysvol
 %config(noreplace) %_sysconfdir/logrotate.d/%name
 %config(noreplace) %_sysconfdir/sysconfig/%name
@@ -370,66 +359,90 @@ find source4/heimdal -type f | xargs chmod -x
 %doc PFIF.txt
 %dir %_datadir/samba
 %_datadir/samba/*.dat
+
+%_libdir/libdcerpc-atsvc.so.*
+%_libdir/libdcerpc-samr.so.*
+%_libdir/libdcerpc-server.so.*
 %_libdir/libdcerpc.so.*
-%_libdir/libdcerpc_samr.so.*
+%_libdir/libgensec.so.*
+%_libdir/libndr-krb5pac.so.*
 %_libdir/libndr.so.*
-%_libdir/libndr_standard.so.*
+%_libdir/libndr-standard.so.*
+%_libdir/libpolicy.so.*
+%_libdir/libregistry.so.*
 %_libdir/libsamba-hostconfig.so.*
 %_libdir/libsamba-util.so.*
+%_libdir/libsamdb.so.*
+%_libdir/libtorture.so.*
+
+# internal ldb modules
+%_libdir/samba/ldb/*.so
+
+# samba internal libraries
+%_libdir/samba/gensec/*.so
+%_libdir/samba/*.so.*
+%_libdir/samba/*.so
+%_libdir/samba/process_model/*.so
+%_libdir/samba/service/*.so
+
 #%_libdir/libtorture.so.*
 #Only needed if Samba's build produces plugins
 #%_libdir/samba
-%dir %_sysconfdir/%name
+#%dir %_sysconfdir/%name
 #Need to mark this as being owned by Samba, but it is normally created
 #by the provision script, which runs best if there is no existing
 #smb.conf
 #%config(noreplace) %_sysconfdir/%name/smb.conf
-%if_enabled all_libraries
-%_libdir/libdcerpc_atsvc.so.*
-%_libdir/libgensec.so.*
-%_libdir/libregistry.so.*
-%endif
 
 %if_enabled winbind
 %files winbind
 %_bindir/ntlm_auth
 %_bindir/wbinfo
-%_libdir/libnss_winbind.so
-/%_lib/libnss_winbind.so.2
+%_libdir/libwbclient.so.0
+%_libdir/libnss_winbind.so.2
+%_libdir/libnss-winbind.inst.so.2
+%_libdir/pam_winbind.so
 %dir /var/run/winbindd
 %attr(750,root,wbpriv) %dir /var/lib/%name/winbindd_privileged
+%_mandir/man1/ntlm_auth.*
 %endif
 
 %if_enabled python
 %files -n python-module-%name
 %python_sitelibdir/*
-%python_libdir/lib
 %endif
 
 %files devel
 %_includedir/samba-4.0
 %_libdir/libdcerpc.so
-%_libdir/libdcerpc_samr.so
+%_libdir/libdcerpc-samr.so
 %_libdir/libndr.so
-%_libdir/libndr_standard.so
+%_libdir/libndr-standard.so
 %_libdir/libsamba-hostconfig.so
 %_libdir/libsamba-util.so
+%_libdir/libdcerpc-atsvc.so
+%_libdir/libdcerpc-server.so
+%_libdir/libgensec.so
+%_libdir/libndr-krb5pac.so
+%_libdir/libpolicy.so
+%_libdir/libregistry.so
+%_libdir/libsamdb.so
+%_libdir/libtorture.so
+
 %_pkgconfigdir/dcerpc.pc
 %_pkgconfigdir/dcerpc_samr.pc
 %_pkgconfigdir/ndr.pc
 %_pkgconfigdir/ndr_standard.pc
 %_pkgconfigdir/samba-hostconfig.pc
-%if_enabled all_libraries
-%_libdir/libdcerpc_atsvc.so
-%_libdir/libgensec.so
-%_libdir/libregistry.so
-%_libdir/libtorture.so
+%_pkgconfigdir/samba-util.pc
 %_pkgconfigdir/dcerpc_atsvc.pc
+%_pkgconfigdir/dcerpc_server.pc
 %_pkgconfigdir/gensec.pc
+%_pkgconfigdir/ndr_krb5pac.pc
+%_pkgconfigdir/policy.pc
 %_pkgconfigdir/registry.pc
+%_pkgconfigdir/samdb.pc
 %_pkgconfigdir/torture.pc
-%_includedir/samba-4.0/gen_ndr
-%endif
 
 %files pidl
 %perl_vendor_privlib/*
@@ -445,30 +458,20 @@ find source4/heimdal -type f | xargs chmod -x
 %_bindir/nmblookup
 %_bindir/smbclient
 %_bindir/cifsdd
-
-%_bindir/autoidl
-%_bindir/epdump
-%_bindir/gentest
-%_bindir/getntacl
-%_bindir/locktest
-%_bindir/masktest
-%_bindir/ndrdump
-%_bindir/nsstest
-%_bindir/rpcclient
-%_bindir/samba3dump
-%_bindir/setnttoken
-%_bindir/smbtorture
-
+%_mandir/man1/nmblookup.*
 %endif
 
 %if_enabled common
 %files common
-%_bindir/net
 %_bindir/testparm
 %_bindir/regdiff
 %_bindir/regpatch
 %_bindir/regshell
 %_bindir/regtree
+%_mandir/man1/regdiff.*
+%_mandir/man1/regpatch.*
+%_mandir/man1/regshell.*
+%_mandir/man1/regtree.*
 
 %dir /var/lib/%name
 %attr(700,root,root) %dir /var/lib/%name/private
@@ -477,6 +480,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Thu Apr 14 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt0.alpha15
+- pre alpha15 snapshot
+
 * Thu Sep 23 2010 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha13
 - Upgrade to alpha13
 
