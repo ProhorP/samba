@@ -8,26 +8,28 @@
    Copyright (C) Jeremy Allison 2006
    Copyright (C) Simo Sorce 2003-2006
    Copyright (C) Michael Adam 2009-2010
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "winbindd.h"
 #include "idmap.h"
 #include "idmap_rw.h"
 #include "dbwrap.h"
+#include "../libcli/security/security.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -196,7 +198,7 @@ static bool idmap_tdb_upgrade(struct idmap_domain *dom, struct db_context *db)
 	}
 
 	if (dbwrap_store_int32(db, "IDMAP_VERSION", IDMAP_VERSION) == -1) {
-		DEBUG(0, ("Unable to store idmap version in databse\n"));
+		DEBUG(0, ("Unable to store idmap version in database\n"));
 		return False;
 	}
 
@@ -341,7 +343,7 @@ done:
 /**********************************************************************
  IDMAP ALLOC TDB BACKEND
 **********************************************************************/
- 
+
 /**********************************
  Allocate a new id. 
 **********************************/
@@ -485,7 +487,7 @@ static NTSTATUS idmap_tdb_get_new_id(struct idmap_domain *dom,
 static NTSTATUS idmap_tdb_set_mapping(struct idmap_domain *dom,
 				      const struct id_map *map);
 
-static NTSTATUS idmap_tdb_db_init(struct idmap_domain *dom, const char *params)
+static NTSTATUS idmap_tdb_db_init(struct idmap_domain *dom)
 {
 	NTSTATUS ret;
 	struct idmap_tdb_context *ctx;
@@ -683,7 +685,7 @@ static NTSTATUS idmap_tdb_id_to_sid(struct idmap_domain *dom, struct id_map *map
 	case ID_TYPE_UID:
 		keystr = talloc_asprintf(ctx, "UID %lu", (unsigned long)map->xid.id);
 		break;
-		
+
 	case ID_TYPE_GID:
 		keystr = talloc_asprintf(ctx, "GID %lu", (unsigned long)map->xid.id);
 		break;
@@ -712,7 +714,7 @@ static NTSTATUS idmap_tdb_id_to_sid(struct idmap_domain *dom, struct id_map *map
 		ret = NT_STATUS_NONE_MAPPED;
 		goto done;
 	}
-		
+
 	if (!string_to_sid(map->sid, (const char *)data.dptr)) {
 		DEBUG(10,("INVALID SID (%s) in record %s\n",
 			(const char *)data.dptr, keystr));
@@ -798,7 +800,6 @@ done:
 
 static NTSTATUS idmap_tdb_unixids_to_sids(struct idmap_domain *dom, struct id_map **ids)
 {
-	struct idmap_tdb_context *ctx;
 	NTSTATUS ret;
 	int i;
 
@@ -806,8 +807,6 @@ static NTSTATUS idmap_tdb_unixids_to_sids(struct idmap_domain *dom, struct id_ma
 	for (i = 0; ids[i]; i++) {
 		ids[i]->status = ID_UNKNOWN;
 	}
-	
-	ctx = talloc_get_type(dom->private_data, struct idmap_tdb_context);
 
 	for (i = 0; ids[i]; i++) {
 		ret = idmap_tdb_id_to_sid(dom, ids[i]);
@@ -820,7 +819,7 @@ static NTSTATUS idmap_tdb_unixids_to_sids(struct idmap_domain *dom, struct id_ma
 				ids[i]->status = ID_UNMAPPED;
 				continue;
 			}
-			
+
 			/* some fatal error occurred, return immediately */
 			goto done;
 		}
@@ -911,7 +910,7 @@ static NTSTATUS idmap_tdb_sids_to_unixids(struct idmap_domain *dom, struct id_ma
 	for (i = 0; ids[i]; i++) {
 		ids[i]->status = ID_UNKNOWN;
 	}
-	
+
 	ctx = talloc_get_type(dom->private_data, struct idmap_tdb_context);
 
 	state.dom = dom;
@@ -935,24 +934,11 @@ static NTSTATUS idmap_tdb_sids_to_unixids(struct idmap_domain *dom, struct id_ma
  Close the idmap tdb instance
 **********************************/
 
-static NTSTATUS idmap_tdb_close(struct idmap_domain *dom)
-{
-	struct idmap_tdb_context *ctx;
-
-	if (dom->private_data) {
-		ctx = talloc_get_type(dom->private_data, struct idmap_tdb_context);
-
-		TALLOC_FREE(ctx->db);
-	}
-	return NT_STATUS_OK;
-}
-
 static struct idmap_methods db_methods = {
 	.init = idmap_tdb_db_init,
 	.unixids_to_sids = idmap_tdb_unixids_to_sids,
 	.sids_to_unixids = idmap_tdb_sids_to_unixids,
 	.allocate_id = idmap_tdb_get_new_id,
-	.close_fn = idmap_tdb_close
 };
 
 NTSTATUS idmap_tdb_init(void)

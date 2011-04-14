@@ -1169,7 +1169,7 @@ static bool test_plaintext(struct samlogon_state *samlogon_state, enum ntlm_brea
 	char *password;
 	char *dospw;
 	smb_ucs2_t *unicodepw;
-
+	size_t converted_size = 0;
 	uint8_t user_session_key[16];
 	uint8_t lm_key[16];
 	uint8_t lm_hash[16];
@@ -1180,7 +1180,7 @@ static bool test_plaintext(struct samlogon_state *samlogon_state, enum ntlm_brea
 	ZERO_STRUCT(user_session_key);
 
 	if (!push_ucs2_talloc(samlogon_state->mem_ctx,
-			      &unicodepw, samlogon_state->password, NULL)) {
+			      &unicodepw, samlogon_state->password, &converted_size)) {
 		DEBUG(0, ("push_ucs2_allocate failed!\n"));
 		exit(1);
 	}
@@ -1192,7 +1192,7 @@ static bool test_plaintext(struct samlogon_state *samlogon_state, enum ntlm_brea
 	if (!convert_string_talloc(samlogon_state->mem_ctx,
 				   CH_UNIX, CH_DOS,
 				   password, strlen(password)+1,
-				   (void**)&dospw, NULL, false)) {
+				   (void**)&dospw, &converted_size)) {
 		DEBUG(0, ("convert_string_talloc failed!\n"));
 		exit(1);
 	}

@@ -23,10 +23,15 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "../librpc/gen_ndr/cli_netlogon.h"
+#include "rpc_client/rpc_client.h"
+#include "../librpc/gen_ndr/ndr_netlogon_c.h"
 #include "../libds/common/flags.h"
 #include "ads.h"
 #include "secrets.h"
+#include "../libcli/ldap/ldap_ndr.h"
+#include "../libcli/security/security.h"
+#include "../libds/common/flag_mapping.h"
+#include "passdb.h"
 
 #ifdef HAVE_ADS
 
@@ -243,14 +248,8 @@ static NTSTATUS query_user_list(struct winbindd_domain *domain,
 		const char *gecos = NULL;
 		gid_t primary_gid = (gid_t)-1;
 
-		/*
-		 * Don't use our variable "ads" in this call here, every call
-		 * to nss_get_info_cached can destroy the connection inside
-		 * the domain.
-		 */
 		status = nss_get_info_cached(domain, &info->user_sid, mem_ctx,
-					     ads_cached_connection(domain),
-					     msg, &info->homedir, &info->shell,
+					     &info->homedir, &info->shell,
 					     &gecos, &primary_gid);
 		if (!NT_STATUS_IS_OK(status)) {
 			/*
@@ -278,7 +277,7 @@ done:
 static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
 				TALLOC_CTX *mem_ctx,
 				uint32 *num_entries, 
-				struct acct_info **info)
+				struct wb_acct_info **info)
 {
 	ADS_STRUCT *ads = NULL;
 	const char *attrs[] = {"userPrincipalName", "sAMAccountName",
@@ -352,7 +351,7 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
 		goto done;
 	}
 
-	(*info) = TALLOC_ZERO_ARRAY(mem_ctx, struct acct_info, count);
+	(*info) = TALLOC_ZERO_ARRAY(mem_ctx, struct wb_acct_info, count);
 	if (!*info) {
 		status = NT_STATUS_NO_MEMORY;
 		goto done;
@@ -400,7 +399,7 @@ done:
 static NTSTATUS enum_local_groups(struct winbindd_domain *domain,
 				TALLOC_CTX *mem_ctx,
 				uint32 *num_entries, 
-				struct acct_info **info)
+				struct wb_acct_info **info)
 {
 	/*
 	 * This is a stub function only as we returned the domain 
@@ -501,7 +500,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 		info->acct_name = talloc_strdup(mem_ctx, user->base.account_name.string);
 		info->full_name = talloc_strdup(mem_ctx, user->base.full_name.string);
 
-		nss_get_info_cached( domain, sid, mem_ctx, NULL, NULL, 
+		nss_get_info_cached( domain, sid, mem_ctx,
 			      &info->homedir, &info->shell, &info->full_name, 
 			      &gid );
 		info->primary_gid = gid;
@@ -527,7 +526,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 
 		/* Try to fill in what the nss_info backend can do */
 
-		nss_get_info_cached( domain, sid, mem_ctx, NULL, NULL, 
+		nss_get_info_cached( domain, sid, mem_ctx,
 			      &info->homedir, &info->shell, &info->full_name, 
 			      &gid);
 		info->primary_gid = gid;
@@ -542,7 +541,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 		return NT_STATUS_SERVER_DISABLED;
 	}
 
-	sidstr = sid_binstring(talloc_tos(), sid);
+	sidstr = ldap_encode_ndr_dom_sid(talloc_tos(), sid);
 
 	ret = asprintf(&ldap_exp, "(objectSid=%s)", sidstr);
 	TALLOC_FREE(sidstr);
@@ -586,7 +585,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 	ads_msgfree(ads, msg);
 	msg = NULL;
 
-	status = nss_get_info_cached( domain, sid, mem_ctx, ads, msg,
+	status = nss_get_info_cached( domain, sid, mem_ctx,
 		      &info->homedir, &info->shell, &info->full_name, 
 		      &gid);
 	info->primary_gid = gid;
@@ -1044,7 +1043,7 @@ static NTSTATUS lookup_groupmem(struct winbindd_domain *domain,
 		goto done;
 	}
 
-	if ((sidbinstr = sid_binstring(talloc_tos(), group_sid)) == NULL) {
+	if ((sidbinstr = ldap_encode_ndr_dom_sid(talloc_tos(), group_sid)) == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto done;
 	}
@@ -1290,10 +1289,12 @@ static NTSTATUS trusted_domains(struct winbindd_domain *domain,
 				struct netr_DomainTrustList *trusts)
 {
 	NTSTATUS 		result = NT_STATUS_UNSUCCESSFUL;
+	WERROR werr;
 	int			i;
 	uint32			flags;	
 	struct rpc_pipe_client *cli;
 	int ret_count;
+	struct dcerpc_binding_handle *b;
 
 	DEBUG(3,("ads: trusted_domains\n"));
 
@@ -1320,13 +1321,19 @@ static NTSTATUS trusted_domains(struct winbindd_domain *domain,
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	result = rpccli_netr_DsrEnumerateDomainTrusts(cli, mem_ctx,
+	b = cli->binding_handle;
+
+	result = dcerpc_netr_DsrEnumerateDomainTrusts(b, mem_ctx,
 						      cli->desthost,
 						      flags,
 						      trusts,
-						      NULL);
+						      &werr);
 	if (!NT_STATUS_IS_OK(result)) {
 		return result;
+	}
+
+	if (!W_ERROR_IS_OK(werr)) {
+		return werror_to_ntstatus(werr);
 	}
 	if (trusts->count == 0) {
 		return NT_STATUS_OK;

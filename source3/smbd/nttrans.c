@@ -19,9 +19,16 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "fake_file.h"
+#include "../libcli/security/security.h"
 #include "../librpc/gen_ndr/ndr_security.h"
+#include "passdb/lookup_sid.h"
+#include "auth.h"
+#include "ntioctl.h"
+#include "smbprofile.h"
 
 extern const struct generic_mapping file_generic_mapping;
 
@@ -46,10 +53,10 @@ static char *nttrans_realloc(char **ptr, size_t size)
  HACK ! Always assumes smb_setup field is zero.
 ****************************************************************************/
 
-void send_nt_replies(connection_struct *conn,
-			struct smb_request *req, NTSTATUS nt_error,
-		     char *params, int paramsize,
-		     char *pdata, int datasize)
+static void send_nt_replies(connection_struct *conn,
+			    struct smb_request *req, NTSTATUS nt_error,
+			    char *params, int paramsize,
+			    char *pdata, int datasize)
 {
 	int data_to_send = datasize;
 	int params_to_send = paramsize;
@@ -57,7 +64,7 @@ void send_nt_replies(connection_struct *conn,
 	char *pp = params;
 	char *pd = pdata;
 	int params_sent_thistime, data_sent_thistime, total_sent_thistime;
-	int alignment_offset = 3;
+	int alignment_offset = 1;
 	int data_alignment_offset = 0;
 	struct smbd_server_connection *sconn = req->sconn;
 	int max_send = sconn->smb1.sessions.max_send;
@@ -653,7 +660,7 @@ void reply_ntcreate_and_X(struct smb_request *req)
 	/* Deal with other possible opens having a modified
 	   write time. JRA. */
 	ZERO_STRUCT(write_time_ts);
-	get_file_infos(fsp->file_id, NULL, &write_time_ts);
+	get_file_infos(fsp->file_id, 0, NULL, &write_time_ts);
 	if (!null_timespec(write_time_ts)) {
 		update_stat_ex_mtime(&smb_fname->st, write_time_ts);
 	}
@@ -836,11 +843,15 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 	struct security_descriptor *psd = NULL;
 	NTSTATUS status;
 
+	if (sd_len == 0) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
 	if (!CAN_WRITE(fsp->conn)) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	if (sd_len == 0 || !lp_nt_acl_support(SNUM(fsp->conn))) {
+	if (!lp_nt_acl_support(SNUM(fsp->conn))) {
 		return NT_STATUS_OK;
 	}
 
@@ -857,9 +868,43 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 		security_info_sent &= ~SECINFO_GROUP;
 	}
 
-	/* Convert all the generic bits. */
-	security_acl_map_generic(psd->dacl, &file_generic_mapping);
-	security_acl_map_generic(psd->sacl, &file_generic_mapping);
+	/* Ensure we have at least one thing set. */
+	if ((security_info_sent & (SECINFO_OWNER|SECINFO_GROUP|SECINFO_DACL|SECINFO_SACL)) == 0) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	/* Ensure we have the rights to do this. */
+	if (security_info_sent & SECINFO_OWNER) {
+		if (!(fsp->access_mask & SEC_STD_WRITE_OWNER)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+	}
+
+	if (security_info_sent & SECINFO_GROUP) {
+		if (!(fsp->access_mask & SEC_STD_WRITE_OWNER)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+	}
+
+	if (security_info_sent & SECINFO_DACL) {
+		if (!(fsp->access_mask & SEC_STD_WRITE_DAC)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+		/* Convert all the generic bits. */
+		if (psd->dacl) {
+			security_acl_map_generic(psd->dacl, &file_generic_mapping);
+		}
+	}
+
+	if (security_info_sent & SECINFO_SACL) {
+		if (!(fsp->access_mask & SEC_FLAG_SYSTEM_SECURITY)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+		/* Convert all the generic bits. */
+		if (psd->sacl) {
+			security_acl_map_generic(psd->sacl, &file_generic_mapping);
+		}
+	}
 
 	if (DEBUGLEVEL >= 10) {
 		DEBUG(10,("set_sd for file %s\n", fsp_str_dbg(fsp)));
@@ -1193,7 +1238,7 @@ static void call_nt_transact_create(connection_struct *conn,
 	/* Deal with other possible opens having a modified
 	   write time. JRA. */
 	ZERO_STRUCT(write_time_ts);
-	get_file_infos(fsp->file_id, NULL, &write_time_ts);
+	get_file_infos(fsp->file_id, 0, NULL, &write_time_ts);
 	if (!null_timespec(write_time_ts)) {
 		update_stat_ex_mtime(&smb_fname->st, write_time_ts);
 	}
@@ -1350,7 +1395,8 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 		req,					/* req */
 		0,					/* root_dir_fid */
 		smb_fname_src,				/* fname */
-		FILE_READ_DATA,				/* access_mask */
+		FILE_READ_DATA|FILE_READ_ATTRIBUTES|
+			FILE_READ_EA,			/* access_mask */
 		(FILE_SHARE_READ | FILE_SHARE_WRITE |	/* share_access */
 		    FILE_SHARE_DELETE),
 		FILE_OPEN,				/* create_disposition*/
@@ -1373,7 +1419,8 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 		req,					/* req */
 		0,					/* root_dir_fid */
 		smb_fname_dst,				/* fname */
-		FILE_WRITE_DATA,			/* access_mask */
+		FILE_WRITE_DATA|FILE_WRITE_ATTRIBUTES|
+			FILE_WRITE_EA,			/* access_mask */
 		(FILE_SHARE_READ | FILE_SHARE_WRITE |	/* share_access */
 		    FILE_SHARE_DELETE),
 		FILE_CREATE,				/* create_disposition*/
@@ -1454,6 +1501,7 @@ void reply_ntrename(struct smb_request *req)
 	uint32_t ucf_flags_dst = 0;
 	uint16 rename_type;
 	TALLOC_CTX *ctx = talloc_tos();
+	bool stream_rename = false;
 
 	START_PROFILE(SMBntrename);
 
@@ -1486,10 +1534,16 @@ void reply_ntrename(struct smb_request *req)
 		goto out;
 	}
 
-	/* The newname must begin with a ':' if the oldname contains a ':'. */
-	if (strchr_m(oldname, ':') && (newname[0] != ':')) {
-		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
-		goto out;
+	if (!lp_posix_pathnames()) {
+		/* The newname must begin with a ':' if the
+		   oldname contains a ':'. */
+		if (strchr_m(oldname, ':')) {
+			if (newname[0] != ':') {
+				reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				goto out;
+			}
+			stream_rename = true;
+		}
 	}
 
 	/*
@@ -1536,6 +1590,17 @@ void reply_ntrename(struct smb_request *req)
 		}
 		reply_nterror(req, status);
 		goto out;
+	}
+
+	if (stream_rename) {
+		/* smb_fname_new must be the same as smb_fname_old. */
+		TALLOC_FREE(smb_fname_new->base_name);
+		smb_fname_new->base_name = talloc_strdup(smb_fname_new,
+						smb_fname_old->base_name);
+		if (!smb_fname_new->base_name) {
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			goto out;
+		}
 	}
 
 	DEBUG(3,("reply_ntrename: %s -> %s\n",
@@ -1798,6 +1863,16 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 	 * Get the permissions to return.
 	 */
 
+	if ((security_info_wanted & SECINFO_SACL) &&
+			!(fsp->access_mask & SEC_FLAG_SYSTEM_SECURITY)) {
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	if ((security_info_wanted & (SECINFO_DACL|SECINFO_OWNER|SECINFO_GROUP)) &&
+			!(fsp->access_mask & SEC_STD_READ_CONTROL)) {
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	if (!lp_nt_acl_support(SNUM(conn))) {
 		status = get_null_nt_acl(mem_ctx, &psd);
 	} else {
@@ -1806,6 +1881,19 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 	}
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
+	}
+
+	if (!(security_info_wanted & SECINFO_OWNER)) {
+		psd->owner_sid = NULL;
+	}
+	if (!(security_info_wanted & SECINFO_GROUP)) {
+		psd->group_sid = NULL;
+	}
+	if (!(security_info_wanted & SECINFO_DACL)) {
+		psd->dacl = NULL;
+	}
+	if (!(security_info_wanted & SECINFO_SACL)) {
+		psd->sacl = NULL;
 	}
 
 	/* If the SACL/DACL is NULL, but was requested, we mark that it is
@@ -2043,14 +2131,34 @@ static void call_nt_transact_ioctl(connection_struct *conn,
 
 	switch (function) {
 	case FSCTL_SET_SPARSE:
-		/* pretend this succeeded - tho strictly we should
-		   mark the file sparse (if the local fs supports it)
-		   so we can know if we need to pre-allocate or not */
+	{
+		bool set_sparse = true;
+		NTSTATUS status;
 
-		DEBUG(10,("FSCTL_SET_SPARSE: called on FID[0x%04X](but not implemented)\n", fidnum));
+		if (data_count >= 1 && pdata[0] == 0) {
+			set_sparse = false;
+		}
+
+		DEBUG(10,("FSCTL_SET_SPARSE: called on FID[0x%04X]set[%u]\n",
+			 fidnum, set_sparse));
+
+		if (!check_fsp_open(conn, req, fsp)) {
+			return;
+		}
+
+		status = file_set_sparse(conn, fsp, set_sparse);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(9,("FSCTL_SET_SPARSE: fname[%s] set[%u] - %s\n",
+				 smb_fname_str_dbg(fsp->fsp_name), set_sparse, nt_errstr(status)));
+			reply_nterror(req, status);
+			return;
+		}
+
+		DEBUG(10,("FSCTL_SET_SPARSE: fname[%s] set[%u] - %s\n",
+			 smb_fname_str_dbg(fsp->fsp_name), set_sparse, nt_errstr(status)));
 		send_nt_replies(conn, req, NT_STATUS_OK, NULL, 0, NULL, 0);
 		return;
-
+	}
 	case FSCTL_CREATE_OR_GET_OBJECT_ID:
 	{
 		unsigned char objid[16];
@@ -2348,10 +2456,21 @@ static void call_nt_transact_ioctl(connection_struct *conn,
 		}
 		return;
 	}
+	case FSCTL_IS_VOLUME_DIRTY:
+		DEBUG(10,("FSCTL_IS_VOLUME_DIRTY: called on FID[0x%04X] "
+			  "(but not implemented)\n", (int)fidnum));
+		/*
+		 * http://msdn.microsoft.com/en-us/library/cc232128%28PROT.10%29.aspx
+		 * says we have to respond with NT_STATUS_INVALID_PARAMETER
+		 */
+		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		return;
 	default:
+		/* Only print this once... */
 		if (!logged_ioctl_message) {
-			logged_ioctl_message = true; /* Only print this once... */
-			DEBUG(0,("call_nt_transact_ioctl(0x%x): Currently not implemented.\n",
+			logged_ioctl_message = true;
+			DEBUG(2,("call_nt_transact_ioctl(0x%x): "
+				 "Currently not implemented.\n",
 				 function));
 		}
 	}
@@ -2394,10 +2513,10 @@ static void call_nt_transact_get_user_quota(connection_struct *conn,
 	ZERO_STRUCT(qt);
 
 	/* access check */
-	if (conn->server_info->utok.uid != 0) {
+	if (get_current_uid(conn) != 0) {
 		DEBUG(1,("get_user_quota: access_denied service [%s] user "
 			 "[%s]\n", lp_servicename(SNUM(conn)),
-			 conn->server_info->unix_name));
+			 conn->session_info->unix_name));
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return;
 	}
@@ -2664,10 +2783,10 @@ static void call_nt_transact_set_user_quota(connection_struct *conn,
 	ZERO_STRUCT(qt);
 
 	/* access check */
-	if (conn->server_info->utok.uid != 0) {
+	if (get_current_uid(conn) != 0) {
 		DEBUG(1,("set_user_quota: access_denied service [%s] user "
 			 "[%s]\n", lp_servicename(SNUM(conn)),
-			 conn->server_info->unix_name));
+			 conn->session_info->unix_name));
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return;
 	}

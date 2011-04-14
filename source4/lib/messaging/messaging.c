@@ -30,7 +30,7 @@
 #include "tdb_wrap.h"
 #include "../lib/util/unix_privs.h"
 #include "librpc/rpc/dcerpc.h"
-#include "../tdb/include/tdb.h"
+#include <tdb.h>
 #include "../lib/util/util_tdb.h"
 #include "cluster/cluster.h"
 #include "../lib/util/tevent_ntstatus.h"
@@ -717,6 +717,7 @@ NTSTATUS irpc_send_reply(struct irpc_message *m, NTSTATUS status)
 	}
 
 	m->header.flags |= IRPC_FLAG_REPLY;
+	m->header.creds.token= NULL;
 
 	/* construct the packet */
 	ndr_err = ndr_push_irpc_header(push, NDR_SCALARS|NDR_BUFFERS, &m->header);
@@ -768,6 +769,8 @@ static void irpc_handler_request(struct messaging_context *msg_ctx,
 	/* allocate space for the structure */
 	r = talloc_zero_size(m->ndr, i->table->calls[m->header.callnum].struct_size);
 	if (r == NULL) goto failed;
+
+	m->ndr->flags |= LIBNDR_FLAG_REF_ALLOC;
 
 	/* parse the request data */
 	ndr_err = i->table->calls[i->callnum].ndr_pull(m->ndr, NDR_IN, r);
@@ -1012,6 +1015,7 @@ struct irpc_bh_state {
 	struct server_id server_id;
 	const struct ndr_interface_table *table;
 	uint32_t timeout;
+	struct security_token *token;
 };
 
 static bool irpc_bh_is_connected(struct dcerpc_binding_handle *h)
@@ -1109,6 +1113,7 @@ static struct tevent_req *irpc_bh_raw_call_send(TALLOC_CTX *mem_ctx,
 	header.callnum    = state->opnum;
 	header.flags      = 0;
 	header.status     = NT_STATUS_OK;
+	header.creds.token= hs->token;
 
 	/* construct the irpc packet */
 	ndr = ndr_push_init_ctx(state->irpc);
@@ -1322,4 +1327,14 @@ struct dcerpc_binding_handle *irpc_binding_handle_by_name(TALLOC_CTX *mem_ctx,
 	}
 
 	return h;
+}
+
+void irpc_binding_handle_add_security_token(struct dcerpc_binding_handle *h,
+					    struct security_token *token)
+{
+	struct irpc_bh_state *hs =
+		dcerpc_binding_handle_data(h,
+		struct irpc_bh_state);
+
+	hs->token = token;
 }

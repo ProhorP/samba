@@ -40,7 +40,7 @@
 /* The use of strcasecmp here is safe, all the comparison strings are ASCII */
 #undef strcasecmp
 
-#define NUM_SHORT_LIST_PRIVS 8
+#define NUM_SHORT_LIST_PRIVS 9
 
 static const struct {
 	enum sec_privilege luid;
@@ -58,15 +58,12 @@ static const struct {
 	{SEC_PRIV_PRINT_OPERATOR,  SEC_PRIV_PRINT_OPERATOR_BIT,	 "SePrintOperatorPrivilege",	"Manage printers"},
 	{SEC_PRIV_ADD_USERS,       SEC_PRIV_ADD_USERS_BIT,	 "SeAddUsersPrivilege",		"Add users and groups to the domain"},
 	{SEC_PRIV_DISK_OPERATOR,   SEC_PRIV_DISK_OPERATOR_BIT,	 "SeDiskOperatorPrivilege",	"Manage disk shares"},
+	{SEC_PRIV_SECURITY,	   SEC_PRIV_SECURITY_BIT,	 "SeSecurityPrivilege",	"System security"},
+
 
 	/* The list from here on is not displayed in the code from
 	 * source3, and is after index NUM_SHORT_LIST_PRIVS for that
 	 * reason */ 
-
-	{SEC_PRIV_SECURITY,
-	 SEC_PRIV_SECURITY_BIT,
-	 "SeSecurityPrivilege",
-	"System security"},
 
 	{SEC_PRIV_SYSTEMTIME,
 	 SEC_PRIV_SYSTEMTIME_BIT,
@@ -193,10 +190,9 @@ uint64_t sec_privilege_mask(enum sec_privilege privilege)
 void se_priv_put_all_privileges(uint64_t *privilege_mask)
 {
 	int i;
-	uint32_t num_privs = ARRAY_SIZE(privs);
 
 	*privilege_mask = 0;
-	for ( i=0; i<num_privs; i++ ) {
+	for ( i=0; i<ARRAY_SIZE(privs); i++ ) {
 		*privilege_mask |= privs[i].privilege_mask;
 	}
 }
@@ -208,8 +204,7 @@ void se_priv_put_all_privileges(uint64_t *privilege_mask)
 bool se_priv_from_name( const char *name, uint64_t *privilege_mask )
 {
 	int i;
-	uint32_t num_privs = ARRAY_SIZE(privs);
-	for ( i=0; i<num_privs; i++ ) {
+	for ( i=0; i<ARRAY_SIZE(privs); i++ ) {
 		if ( strequal( privs[i].name, name ) ) {
 			*privilege_mask = privs[i].privilege_mask;
 			return true;
@@ -223,13 +218,11 @@ const char* get_privilege_dispname( const char *name )
 {
 	int i;
 
-	uint32_t num_privs = ARRAY_SIZE(privs);
-
 	if (!name) {
 		return NULL;
 	}
 
-	for ( i=0; i<num_privs; i++ ) {
+	for ( i=0; i<ARRAY_SIZE(privs); i++ ) {
 		if ( strequal( privs[i].name, name ) ) {
 			return privs[i].description;
 		}
@@ -279,13 +272,12 @@ static bool privilege_set_add(PRIVILEGE_SET *priv_set, struct lsa_LUIDAttribute 
 bool se_priv_to_privilege_set( PRIVILEGE_SET *set, uint64_t privilege_mask )
 {
 	int i;
-	uint32_t num_privs = ARRAY_SIZE(privs);
 	struct lsa_LUIDAttribute luid;
 
 	luid.attribute = 0;
 	luid.luid.high = 0;
 
-	for ( i=0; i<num_privs; i++ ) {
+	for ( i=0; i<ARRAY_SIZE(privs); i++ ) {
 		if ((privilege_mask & privs[i].privilege_mask) == 0)
 			continue;
 
@@ -304,7 +296,7 @@ bool se_priv_to_privilege_set( PRIVILEGE_SET *set, uint64_t privilege_mask )
 
 bool privilege_set_to_se_priv( uint64_t *privilege_mask, struct lsa_PrivilegeSet *privset )
 {
-	int i;
+	uint32_t i;
 
 	ZERO_STRUCTP( privilege_mask );
 
@@ -415,6 +407,10 @@ bool security_token_has_privilege(const struct security_token *token, enum sec_p
 {
 	uint64_t mask;
 
+	if (!token) {
+		return false;
+	}
+
 	mask = sec_privilege_mask(privilege);
 	if (mask == 0) {
 		return false;
@@ -443,31 +439,33 @@ void security_token_set_right_bit(struct security_token *token, uint32_t right_b
 	token->rights_mask |= right_bit;
 }
 
-void security_token_debug_privileges(int dbg_lev, const struct security_token *token)
+void security_token_debug_privileges(int dbg_class, int dbg_lev, const struct security_token *token)
 {
-	DEBUGADD(dbg_lev, (" Privileges (0x%16llX):\n",
-			    (unsigned long long) token->privilege_mask));
+	DEBUGADDC(dbg_class, dbg_lev, (" Privileges (0x%16llX):\n",
+				       (unsigned long long) token->privilege_mask));
 
 	if (token->privilege_mask) {
 		int idx = 0;
 		int i = 0;
 		for (idx = 0; idx<ARRAY_SIZE(privs); idx++) {
 			if (token->privilege_mask & privs[idx].privilege_mask) {
-				DEBUGADD(dbg_lev, ("  Privilege[%3lu]: %s\n", (unsigned long)i++,
-						   privs[idx].name));
+				DEBUGADDC(dbg_class, dbg_lev,
+					  ("  Privilege[%3lu]: %s\n", (unsigned long)i++,
+					   privs[idx].name));
 			}
 		}
 	}
-	DEBUGADD(dbg_lev, (" Rights (0x%16lX):\n",
-			    (unsigned long) token->rights_mask));
+	DEBUGADDC(dbg_class, dbg_lev, (" Rights (0x%16lX):\n",
+				       (unsigned long) token->rights_mask));
 
 	if (token->rights_mask) {
 		int idx = 0;
 		int i = 0;
 		for (idx = 0; idx<ARRAY_SIZE(rights); idx++) {
 			if (token->rights_mask & rights[idx].right_mask) {
-				DEBUGADD(dbg_lev, ("  Right[%3lu]: %s\n", (unsigned long)i++,
-						   rights[idx].name));
+				DEBUGADDC(dbg_class, dbg_lev,
+					  ("  Right[%3lu]: %s\n", (unsigned long)i++,
+					   rights[idx].name));
 			}
 		}
 	}

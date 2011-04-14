@@ -5,6 +5,7 @@
    Copyright (C) Jim McDonough <jmcd@us.ibm.com>	2003
    Copyright (C) Simo Sorce 2003-2007
    Copyright (C) Jeremy Allison 2006
+   Copyright (C) Michael Adam 2010
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,6 +24,7 @@
 #include "includes.h"
 #include "winbindd.h"
 #include "idmap.h"
+#include "passdb/machine_sid.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -152,73 +154,23 @@ NTSTATUS smb_register_idmap(int version, const char *name,
 	return NT_STATUS_OK;
 }
 
-static int close_domain_destructor(struct idmap_domain *dom)
-{
-	NTSTATUS ret;
-
-	ret = dom->methods->close_fn(dom);
-	if (!NT_STATUS_IS_OK(ret)) {
-		DEBUG(3, ("Failed to close idmap domain [%s]!\n", dom->name));
-	}
-
-	return 0;
-}
-
-static bool parse_idmap_module(TALLOC_CTX *mem_ctx, const char *param,
-			       char **pmodulename, char **pargs)
-{
-	char *modulename;
-	char *args;
-
-	if (strncmp(param, "idmap_", 6) == 0) {
-		param += 6;
-		DEBUG(1, ("idmap_init: idmap backend uses deprecated "
-			  "'idmap_' prefix.  Please replace 'idmap_%s' by "
-			  "'%s'\n", param, param));
-	}
-
-	modulename = talloc_strdup(mem_ctx, param);
-	if (modulename == NULL) {
-		return false;
-	}
-
-	args = strchr(modulename, ':');
-	if (args == NULL) {
-		*pmodulename = modulename;
-		*pargs = NULL;
-		return true;
-	}
-
-	*args = '\0';
-
-	args = talloc_strdup(mem_ctx, args+1);
-	if (args == NULL) {
-		TALLOC_FREE(modulename);
-		return false;
-	}
-
-	*pmodulename = modulename;
-	*pargs = args;
-	return true;
-}
-
 /**
  * Initialize a domain structure
  * @param[in] mem_ctx		memory context for the result
  * @param[in] domainname	which domain is this for
  * @param[in] modulename	which backend module
- * @param[in] params		parameter to pass to the init function
  * @param[in] check_range	whether range checking should be done
  * @result The initialized structure
  */
 static struct idmap_domain *idmap_init_domain(TALLOC_CTX *mem_ctx,
 					      const char *domainname,
 					      const char *modulename,
-					      const char *params,
 					      bool check_range)
 {
 	struct idmap_domain *result;
 	NTSTATUS status;
+	char *config_option = NULL;
+	const char *range;
 
 	result = talloc_zero(mem_ctx, struct idmap_domain);
 	if (result == NULL) {
@@ -235,78 +187,34 @@ static struct idmap_domain *idmap_init_domain(TALLOC_CTX *mem_ctx,
 	/*
 	 * load ranges and read only information from the config
 	 */
-	if (strequal(result->name, "*")) {
-		/*
-		 * The default domain "*" is configured differently
-		 * from named domains.
-		 */
-		uid_t low_uid = 0;
-		uid_t high_uid = 0;
-		gid_t low_gid = 0;
-		gid_t high_gid = 0;
 
-		result->low_id = 0;
-		result->high_id = 0;
+	config_option = talloc_asprintf(result, "idmap config %s",
+					result->name);
+	if (config_option == NULL) {
+		DEBUG(0, ("Out of memory!\n"));
+		goto fail;
+	}
 
-		if (!lp_idmap_uid(&low_uid, &high_uid)) {
-			DEBUG(1, ("'idmap uid' not set!\n"));
-			if (check_range) {
-				goto fail;
-			}
-		}
-
-		result->low_id = low_uid;
-		result->high_id = high_uid;
-
-		if (!lp_idmap_gid(&low_gid, &high_gid)) {
-			DEBUG(1, ("'idmap gid' not set!\n"));
-			if (check_range) {
-				goto fail;
-			}
-		}
-
-		if ((low_gid != low_uid) || (high_gid != high_uid)) {
-			DEBUG(1, ("Warning: 'idmap uid' and 'idmap gid'"
-			      " ranges do not agree -- building "
-			      "intersection\n"));
-			result->low_id = MAX(result->low_id, low_gid);
-			result->high_id = MIN(result->high_id, high_gid);
-		}
-
-		result->read_only = lp_idmap_read_only();
-	} else {
-		char *config_option = NULL;
-		const char *range;
-
-		config_option = talloc_asprintf(result, "idmap config %s",
-						result->name);
-		if (config_option == NULL) {
-			DEBUG(0, ("Out of memory!\n"));
+	range = lp_parm_const_string(-1, config_option, "range", NULL);
+	if (range == NULL) {
+		DEBUG(1, ("idmap range not specified for domain %s\n",
+			  result->name));
+		if (check_range) {
 			goto fail;
 		}
-
-		range = lp_parm_const_string(-1, config_option, "range", NULL);
-		if (range == NULL) {
-			DEBUG(1, ("idmap range not specified for domain %s\n",
-				  result ->name));
-			if (check_range) {
-				goto fail;
-			}
-		} else if (sscanf(range, "%u - %u", &result->low_id,
-				  &result->high_id) != 2)
-		{
-			DEBUG(1, ("invalid range '%s' specified for domain "
-				  "'%s'\n", range, result->name));
-			if (check_range) {
-				goto fail;
-			}
+	} else if (sscanf(range, "%u - %u", &result->low_id,
+			  &result->high_id) != 2)
+	{
+		DEBUG(1, ("invalid range '%s' specified for domain "
+			  "'%s'\n", range, result->name));
+		if (check_range) {
+			goto fail;
 		}
-
-		result->read_only = lp_parm_bool(-1, config_option, "read only",
-						 false);
-
-		talloc_free(config_option);
 	}
+
+	result->read_only = lp_parm_bool(-1, config_option, "read only", false);
+
+	talloc_free(config_option);
 
 	if (result->low_id > result->high_id) {
 		DEBUG(1, ("Error: invalid idmap range detected: %lu - %lu\n",
@@ -335,59 +243,16 @@ static struct idmap_domain *idmap_init_domain(TALLOC_CTX *mem_ctx,
 		goto fail;
 	}
 
-	status = result->methods->init(result, params);
+	status = result->methods->init(result);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("idmap initialization returned %s\n",
 			  nt_errstr(status)));
 		goto fail;
 	}
 
-	talloc_set_destructor(result, close_domain_destructor);
-
 	return result;
 
 fail:
-	TALLOC_FREE(result);
-	return NULL;
-}
-
-/**
- * Initialize the default domain structure
- * @param[in] mem_ctx		memory context for the result
- * @result The default domain structure
- *
- * This routine takes the module name from the "idmap backend" parameter,
- * passing a possible parameter like ldap:ldap://ldap-url/ to the module.
- */
-
-static struct idmap_domain *idmap_init_default_domain(TALLOC_CTX *mem_ctx)
-{
-	struct idmap_domain *result;
-	char *modulename;
-	char *params;
-
-	idmap_init();
-
-	if (!parse_idmap_module(talloc_tos(), lp_idmap_backend(), &modulename,
-				&params)) {
-		DEBUG(1, ("parse_idmap_module failed\n"));
-		return NULL;
-	}
-
-	DEBUG(3, ("idmap_init: using '%s' as remote backend\n", modulename));
-
-	result = idmap_init_domain(mem_ctx, "*", modulename, params, true);
-	if (result == NULL) {
-		goto fail;
-	}
-
-	TALLOC_FREE(modulename);
-	TALLOC_FREE(params);
-	return result;
-
-fail:
-	TALLOC_FREE(modulename);
-	TALLOC_FREE(params);
 	TALLOC_FREE(result);
 	return NULL;
 }
@@ -409,6 +274,8 @@ static struct idmap_domain *idmap_init_named_domain(TALLOC_CTX *mem_ctx,
 	char *config_option;
 	const char *backend;
 
+	idmap_init();
+
 	config_option = talloc_asprintf(talloc_tos(), "idmap config %s",
 					domname);
 	if (config_option == NULL) {
@@ -422,7 +289,7 @@ static struct idmap_domain *idmap_init_named_domain(TALLOC_CTX *mem_ctx,
 		goto fail;
 	}
 
-	result = idmap_init_domain(mem_ctx, domname, backend, NULL, true);
+	result = idmap_init_domain(mem_ctx, domname, backend, true);
 	if (result == NULL) {
 		goto fail;
 	}
@@ -437,6 +304,20 @@ fail:
 }
 
 /**
+ * Initialize the default domain structure
+ * @param[in] mem_ctx		memory context for the result
+ * @result The default domain structure
+ *
+ * This routine takes the module name from the "idmap backend" parameter,
+ * passing a possible parameter like ldap:ldap://ldap-url/ to the module.
+ */
+
+static struct idmap_domain *idmap_init_default_domain(TALLOC_CTX *mem_ctx)
+{
+	return idmap_init_named_domain(mem_ctx, "*");
+}
+
+/**
  * Initialize the passdb domain structure
  * @param[in] mem_ctx		memory context for the result
  * @result The default domain structure
@@ -448,12 +329,22 @@ static struct idmap_domain *idmap_init_passdb_domain(TALLOC_CTX *mem_ctx)
 {
 	idmap_init();
 
+	/*
+	 * Always init the default domain, we can't go without one
+	 */
+	if (default_idmap_domain == NULL) {
+		default_idmap_domain = idmap_init_default_domain(NULL);
+	}
+	if (default_idmap_domain == NULL) {
+		return NULL;
+	}
+
 	if (passdb_idmap_domain != NULL) {
 		return passdb_idmap_domain;
 	}
 
 	passdb_idmap_domain = idmap_init_domain(NULL, get_global_sam_name(),
-						"passdb", NULL, false);
+						"passdb", false);
 	if (passdb_idmap_domain == NULL) {
 		DEBUG(1, ("Could not init passdb idmap domain\n"));
 	}
@@ -476,13 +367,15 @@ static struct idmap_domain *idmap_init_passdb_domain(TALLOC_CTX *mem_ctx)
  * add_trusted_domain.
  */
 
-static struct idmap_domain *idmap_find_domain(const char *domname)
+struct idmap_domain *idmap_find_domain(const char *domname)
 {
 	struct idmap_domain *result;
 	int i;
 
 	DEBUG(10, ("idmap_find_domain called for domain '%s'\n",
 		   domname?domname:"NULL"));
+
+	idmap_init();
 
 	/*
 	 * Always init the default domain, we can't go without one
@@ -633,7 +526,9 @@ NTSTATUS idmap_backends_sid_to_unixid(const char *domain, struct id_map *id)
 			return status;
 		}
 
-		DEBUG(10, ("passdb could not map, asking backends...\n"));
+		DEBUG(10, ("passdb could not map.\n"));
+
+		return NT_STATUS_NONE_MAPPED;
 	}
 
 	dom = idmap_find_domain(domain);

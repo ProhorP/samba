@@ -9,12 +9,12 @@
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -23,10 +23,20 @@
 #include "popt_common.h"
 #include "rpcclient.h"
 #include "../libcli/auth/libcli_auth.h"
-#include "../librpc/gen_ndr/cli_lsa.h"
+#include "../librpc/gen_ndr/ndr_lsa_c.h"
 #include "rpc_client/cli_lsarpc.h"
 #include "../librpc/gen_ndr/ndr_netlogon.h"
 #include "rpc_client/cli_netlogon.h"
+#include "../libcli/smbreadline/smbreadline.h"
+#include "../libcli/security/security.h"
+#include "passdb.h"
+#include "ntdomain.h"
+
+enum pipe_auth_type_spnego {
+	PIPE_AUTH_TYPE_SPNEGO_NONE = 0,
+	PIPE_AUTH_TYPE_SPNEGO_NTLMSSP,
+	PIPE_AUTH_TYPE_SPNEGO_KRB5
+};
 
 struct dom_sid domain_sid;
 
@@ -54,7 +64,7 @@ handle completion of commands for readline
 ****************************************************************************/
 static char **completion_fn(const char *text, int start, int end)
 {
-#define MAX_COMPLETIONS 100
+#define MAX_COMPLETIONS 1000
 	char **matches;
 	int i, count=0;
 	struct cmd_list *commands = cmd_list;
@@ -87,7 +97,7 @@ static char **completion_fn(const char *text, int start, int end)
 		if (!commands->cmd_set) {
 			break;
 		}
-		
+
 		for (i=0; commands->cmd_set[i].name; i++) {
 			if ((strncmp(text, commands->cmd_set[i].name, strlen(text)) == 0) &&
 				(( commands->cmd_set[i].returntype == RPC_RTYPE_NTSTATUS &&
@@ -106,7 +116,6 @@ static char **completion_fn(const char *text, int start, int end)
 			}
 		}
 		commands = commands->next;
-		
 	}
 
 	if (count == 2) {
@@ -121,10 +130,10 @@ static char *next_command (char **cmdstr)
 {
 	char *command;
 	char			*p;
-	
+
 	if (!cmdstr || !(*cmdstr))
 		return NULL;
-	
+
 	p = strchr_m(*cmdstr, ';');
 	if (p)
 		*p = '\0';
@@ -133,7 +142,7 @@ static char *next_command (char **cmdstr)
 		*cmdstr = p + 1;
 	else
 		*cmdstr = NULL;
-	
+
 	return command;
 }
 
@@ -142,11 +151,12 @@ static char *next_command (char **cmdstr)
 static void fetch_machine_sid(struct cli_state *cli)
 {
 	struct policy_handle pol;
-	NTSTATUS result = NT_STATUS_OK;
+	NTSTATUS result = NT_STATUS_OK, status;
 	static bool got_domain_sid;
 	TALLOC_CTX *mem_ctx;
 	struct rpc_pipe_client *lsapipe = NULL;
 	union lsa_PolicyInformation *info = NULL;
+	struct dcerpc_binding_handle *b;
 
 	if (got_domain_sid) return;
 
@@ -161,7 +171,9 @@ static void fetch_machine_sid(struct cli_state *cli)
 		fprintf(stderr, "could not initialise lsa pipe. Error was %s\n", nt_errstr(result) );
 		goto error;
 	}
-	
+
+	b = lsapipe->binding_handle;
+
 	result = rpccli_lsa_open_policy(lsapipe, mem_ctx, True, 
 				     SEC_FLAG_MAXIMUM_ALLOWED,
 				     &pol);
@@ -169,10 +181,15 @@ static void fetch_machine_sid(struct cli_state *cli)
 		goto error;
 	}
 
-	result = rpccli_lsa_QueryInfoPolicy(lsapipe, mem_ctx,
+	status = dcerpc_lsa_QueryInfoPolicy(b, mem_ctx,
 					    &pol,
 					    LSA_POLICY_INFO_ACCOUNT_DOMAIN,
-					    &info);
+					    &info,
+					    &result);
+	if (!NT_STATUS_IS_OK(status)) {
+		result = status;
+		goto error;
+	}
 	if (!NT_STATUS_IS_OK(result)) {
 		goto error;
 	}
@@ -180,7 +197,7 @@ static void fetch_machine_sid(struct cli_state *cli)
 	got_domain_sid = True;
 	sid_copy(&domain_sid, info->account_domain.sid);
 
-	rpccli_lsa_Close(lsapipe, mem_ctx, &pol);
+	dcerpc_lsa_Close(b, mem_ctx, &pol, &result);
 	TALLOC_FREE(lsapipe);
 	talloc_destroy(mem_ctx);
 
@@ -222,7 +239,7 @@ static NTSTATUS cmd_listcommands(struct rpc_pipe_client *cli, TALLOC_CTX *mem_ct
 	for (tmp = cmd_list; tmp; tmp = tmp->next) 
 	{
 		tmp_set = tmp->cmd_set;
-		
+
 		if (!StrCaseCmp(argv[1], tmp_set->name))
 		{
 			printf("Available commands on the %s pipe:\n\n", tmp_set->name);
@@ -236,7 +253,7 @@ static NTSTATUS cmd_listcommands(struct rpc_pipe_client *cli, TALLOC_CTX *mem_ct
 				if (i%3 == 0)
 					printf("\n");
 			}
-			
+
 			/* drop out of the loop */
 			break;
 		}
@@ -265,7 +282,7 @@ static NTSTATUS cmd_help(struct rpc_pipe_client *cli, TALLOC_CTX *mem_ctx,
 
         if (argc == 2) {
                 for (tmp = cmd_list; tmp; tmp = tmp->next) {
-                        
+
                         tmp_set = tmp->cmd_set;
 
                         while(tmp_set->name) {
@@ -317,7 +334,7 @@ static NTSTATUS cmd_debuglevel(struct rpc_pipe_client *cli, TALLOC_CTX *mem_ctx,
 	}
 
 	if (argc == 2) {
-		DEBUGLEVEL = atoi(argv[1]);
+		lp_set_cmdline("log level", argv[1]);
 	}
 
 	printf("debuglevel is %d\n", DEBUGLEVEL);
@@ -475,7 +492,7 @@ static NTSTATUS cmd_timeout(struct rpc_pipe_client *cli, TALLOC_CTX *mem_ctx,
 		timeout = atoi(argv[1]);
 
 		for (tmp = cmd_list; tmp; tmp = tmp->next) {
-			
+
 			struct cmd_set *tmp_set;
 
 			for (tmp_set = tmp->cmd_set; tmp_set->name; tmp_set++) {
@@ -570,7 +587,7 @@ static struct cmd_set rpcclient_commands[] = {
 	{ "seal", RPC_RTYPE_NTSTATUS, cmd_seal, NULL,	  NULL,	NULL, "Force RPC pipe connections to be sealed", "" },
 	{ "schannel", RPC_RTYPE_NTSTATUS, cmd_schannel, NULL,	  NULL, NULL,	"Force RPC pipe connections to be sealed with 'schannel'.  Assumes valid machine account to this domain controller.", "" },
 	{ "schannelsign", RPC_RTYPE_NTSTATUS, cmd_schannel_sign, NULL,	  NULL, NULL, "Force RPC pipe connections to be signed (not sealed) with 'schannel'.  Assumes valid machine account to this domain controller.", "" },
-	{ "timeout", RPC_RTYPE_NTSTATUS, cmd_timeout, NULL,	  NULL, NULL, "Set timeout (in milliseonds) for RPC operations", "" },
+	{ "timeout", RPC_RTYPE_NTSTATUS, cmd_timeout, NULL,	  NULL, NULL, "Set timeout (in milliseconds) for RPC operations", "" },
 	{ "transport", RPC_RTYPE_NTSTATUS, cmd_choose_transport, NULL,	  NULL, NULL, "Choose ncacn transport for RPC operations", "" },
 	{ "none", RPC_RTYPE_NTSTATUS, cmd_none, NULL,	  NULL, NULL, "Force RPC pipe connections to have no special properties", "" },
 
@@ -600,6 +617,7 @@ extern struct cmd_set wkssvc_commands[];
 extern struct cmd_set ntsvcs_commands[];
 extern struct cmd_set drsuapi_commands[];
 extern struct cmd_set eventlog_commands[];
+extern struct cmd_set winreg_commands[];
 
 static struct cmd_set *rpcclient_command_list[] = {
 	rpcclient_commands,
@@ -618,6 +636,7 @@ static struct cmd_set *rpcclient_command_list[] = {
 	ntsvcs_commands,
 	drsuapi_commands,
 	eventlog_commands,
+	winreg_commands,
 	NULL
 };
 
@@ -650,7 +669,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 {
 	NTSTATUS ntresult;
 	WERROR wresult;
-	
+
 	TALLOC_CTX *mem_ctx;
 
 	/* Create mem_ctx */
@@ -903,7 +922,7 @@ out_free:
 
 	/* the following functions are part of the Samba debugging
 	   facilities.  See lib/debug.c */
-	setup_logging("rpcclient", True);
+	setup_logging("rpcclient", DEBUG_STDOUT);
 
 	rpcclient_auth_info = user_auth_info_init(frame);
 	if (rpcclient_auth_info == NULL) {
@@ -1079,8 +1098,7 @@ out_free:
 					get_cmdline_auth_info_domain(rpcclient_auth_info),
 					get_cmdline_auth_info_password(rpcclient_auth_info),
 					flags,
-					get_cmdline_auth_info_signing_state(rpcclient_auth_info),
-					NULL);
+					get_cmdline_auth_info_signing_state(rpcclient_auth_info));
 
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("Cannot connect to server.  Error was %s\n", nt_errstr(nt_status)));

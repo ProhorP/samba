@@ -21,31 +21,26 @@
 */
 
 #include "includes.h"
+#include "auth.h"
 #include "../libcli/auth/ntlmssp.h"
 #include "ntlmssp_wrap.h"
 #include "../librpc/gen_ndr/netlogon.h"
+#include "smbd/smbd.h"
 
-NTSTATUS auth_ntlmssp_steal_server_info(TALLOC_CTX *mem_ctx,
+NTSTATUS auth_ntlmssp_steal_session_info(TALLOC_CTX *mem_ctx,
 					struct auth_ntlmssp_state *auth_ntlmssp_state,
-					struct auth_serversupplied_info **server_info)
+					struct auth_serversupplied_info **session_info)
 {
-	/* Free the current server_info user_session_key and reset it from the
-	 * current ntlmssp_state session_key */
-	data_blob_free(&auth_ntlmssp_state->server_info->user_session_key);
-	/* Set up the final session key for the connection */
-	auth_ntlmssp_state->server_info->user_session_key =
-		data_blob_talloc(
-			auth_ntlmssp_state->server_info,
-			auth_ntlmssp_state->ntlmssp_state->session_key.data,
-			auth_ntlmssp_state->ntlmssp_state->session_key.length);
-	if (auth_ntlmssp_state->ntlmssp_state->session_key.length &&
-	    !auth_ntlmssp_state->server_info->user_session_key.data) {
-		*server_info = NULL;
-		return NT_STATUS_NO_MEMORY;
+	NTSTATUS nt_status = create_local_token(mem_ctx,
+						auth_ntlmssp_state->server_info,
+						&auth_ntlmssp_state->ntlmssp_state->session_key,
+						session_info);
+
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(10, ("create_local_token failed: %s\n",
+			   nt_errstr(nt_status)));
 	}
-	/* Steal server_info away from auth_ntlmssp_state */
-	*server_info = talloc_move(mem_ctx, &auth_ntlmssp_state->server_info);
-	return NT_STATUS_OK;
+	return nt_status;
 }
 
 /**
@@ -107,7 +102,7 @@ static NTSTATUS auth_ntlmssp_set_challenge(struct ntlmssp_state *ntlmssp_state, 
  */
 
 static NTSTATUS auth_ntlmssp_check_password(struct ntlmssp_state *ntlmssp_state, TALLOC_CTX *mem_ctx,
-					    DATA_BLOB *user_session_key, DATA_BLOB *lm_session_key)
+					    DATA_BLOB *session_key, DATA_BLOB *lm_session_key)
 {
 	struct auth_ntlmssp_state *auth_ntlmssp_state =
 		(struct auth_ntlmssp_state *)ntlmssp_state->callback_private;
@@ -135,11 +130,11 @@ static NTSTATUS auth_ntlmssp_check_password(struct ntlmssp_state *ntlmssp_state,
 				       NULL, NULL, NULL,
 				       AUTH_PASSWORD_RESPONSE);
 
-	user_info->logon_parameters = MSV1_0_ALLOW_SERVER_TRUST_ACCOUNT | MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT;
-
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		return nt_status;
 	}
+
+	user_info->logon_parameters = MSV1_0_ALLOW_SERVER_TRUST_ACCOUNT | MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT;
 
 	nt_status = auth_ntlmssp_state->auth_context->check_ntlm_password(auth_ntlmssp_state->auth_context, 
 									  user_info, &auth_ntlmssp_state->server_info); 
@@ -154,25 +149,17 @@ static NTSTATUS auth_ntlmssp_check_password(struct ntlmssp_state *ntlmssp_state,
 
 	auth_ntlmssp_state->server_info->nss_token |= username_was_mapped;
 
-	nt_status = create_local_token(auth_ntlmssp_state->server_info);
-
-	if (!NT_STATUS_IS_OK(nt_status)) {
-		DEBUG(10, ("create_local_token failed: %s\n",
-			nt_errstr(nt_status)));
-		return nt_status;
-	}
-
 	/* Clear out the session keys, and pass them to the caller.
 	 * They will not be used in this form again - instead the
 	 * NTLMSSP code will decide on the final correct session key,
 	 * and put it back here at the end of
 	 * auth_ntlmssp_steal_server_info */
-	if (auth_ntlmssp_state->server_info->user_session_key.length) {
+	if (auth_ntlmssp_state->server_info->session_key.length) {
 		DEBUG(10, ("Got NT session key of length %u\n",
-			(unsigned int)auth_ntlmssp_state->server_info->user_session_key.length));
-		*user_session_key = auth_ntlmssp_state->server_info->user_session_key;
-		talloc_steal(mem_ctx, auth_ntlmssp_state->server_info->user_session_key.data);
-		auth_ntlmssp_state->server_info->user_session_key = data_blob_null;
+			(unsigned int)auth_ntlmssp_state->server_info->session_key.length));
+		*session_key = auth_ntlmssp_state->server_info->session_key;
+		talloc_steal(mem_ctx, auth_ntlmssp_state->server_info->session_key.data);
+		auth_ntlmssp_state->server_info->session_key = data_blob_null;
 	}
 	if (auth_ntlmssp_state->server_info->lm_session_key.length) {
 		DEBUG(10, ("Got LM session key of length %u\n",
@@ -229,7 +216,7 @@ NTSTATUS auth_ntlmssp_start(struct auth_ntlmssp_state **auth_ntlmssp_state)
 		return nt_status;
 	}
 
-	nt_status = make_auth_context_subsystem(&auth_context);
+	nt_status = make_auth_context_subsystem(talloc_tos(), &auth_context);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		return nt_status;
 	}

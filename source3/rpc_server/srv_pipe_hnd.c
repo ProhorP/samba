@@ -28,6 +28,7 @@
 #include "fake_file.h"
 #include "rpc_dce.h"
 #include "rpc_server/rpc_ncacn_np.h"
+#include "ntdomain.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_RPC_SRV
@@ -411,7 +412,7 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 		 const struct tsocket_address *local_address,
 		 const struct tsocket_address *remote_address,
 		 struct client_address *client_id,
-		 struct auth_serversupplied_info *server_info,
+		 struct auth_serversupplied_info *session_info,
 		 struct messaging_context *msg_ctx,
 		 struct fake_file_handle **phandle)
 {
@@ -447,7 +448,7 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 		p = make_external_rpc_pipe_p(handle, name,
 					     local_address,
 					     remote_address,
-					     server_info);
+					     session_info);
 
 		handle->type = FAKE_FILE_TYPE_NAMED_PIPE_PROXY;
 		handle->private_data = p;
@@ -461,7 +462,7 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 		}
 
 		p = make_internal_rpc_pipe_p(handle, &syntax, client_id,
-					     server_info, msg_ctx);
+					     session_info, msg_ctx);
 
 		handle->type = FAKE_FILE_TYPE_NAMED_PIPE;
 		handle->private_data = p;

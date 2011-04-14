@@ -22,11 +22,11 @@
 */
 
 #include "includes.h"
-#include "popt_common.h"
-#include "secrets.h"
-
-extern char *global_clobber_region_function;
-extern unsigned int global_clobber_region_line;
+#include "system/passwd.h"
+#include "system/filesys.h"
+#include "ctdbd_conn.h"
+#include "../lib/util/util_pw.h"
+#include "messages.h"
 
 /* Max allowable allococation - 256mb - 0x10000000 */
 #define MAX_ALLOC_SIZE (1024*1024*256)
@@ -156,7 +156,6 @@ void gfree_all( void )
 {
 	gfree_names();
 	gfree_loadparm();
-	gfree_case_tables();
 	gfree_charcnv();
 	gfree_interfaces();
 	gfree_debugsyms();
@@ -241,257 +240,6 @@ bool init_names(void)
 	}
 
 	return( True );
-}
-
-/**************************************************************************n
-  Code to cope with username/password auth options from the commandline.
-  Used mainly in client tools.
-****************************************************************************/
-
-struct user_auth_info *user_auth_info_init(TALLOC_CTX *mem_ctx)
-{
-	struct user_auth_info *result;
-
-	result = TALLOC_ZERO_P(mem_ctx, struct user_auth_info);
-	if (result == NULL) {
-		return NULL;
-	}
-
-	result->signing_state = Undefined;
-	return result;
-}
-
-const char *get_cmdline_auth_info_username(const struct user_auth_info *auth_info)
-{
-	if (!auth_info->username) {
-		return "";
-	}
-	return auth_info->username;
-}
-
-void set_cmdline_auth_info_username(struct user_auth_info *auth_info,
-				    const char *username)
-{
-	TALLOC_FREE(auth_info->username);
-	auth_info->username = talloc_strdup(auth_info, username);
-	if (!auth_info->username) {
-		exit(ENOMEM);
-	}
-}
-
-const char *get_cmdline_auth_info_domain(const struct user_auth_info *auth_info)
-{
-	if (!auth_info->domain) {
-		return "";
-	}
-	return auth_info->domain;
-}
-
-void set_cmdline_auth_info_domain(struct user_auth_info *auth_info,
-				  const char *domain)
-{
-	TALLOC_FREE(auth_info->domain);
-	auth_info->domain = talloc_strdup(auth_info, domain);
-	if (!auth_info->domain) {
-		exit(ENOMEM);
-	}
-}
-
-const char *get_cmdline_auth_info_password(const struct user_auth_info *auth_info)
-{
-	if (!auth_info->password) {
-		return "";
-	}
-	return auth_info->password;
-}
-
-void set_cmdline_auth_info_password(struct user_auth_info *auth_info,
-				    const char *password)
-{
-	TALLOC_FREE(auth_info->password);
-	if (password == NULL) {
-		password = "";
-	}
-	auth_info->password = talloc_strdup(auth_info, password);
-	if (!auth_info->password) {
-		exit(ENOMEM);
-	}
-	auth_info->got_pass = true;
-}
-
-bool set_cmdline_auth_info_signing_state(struct user_auth_info *auth_info,
-					 const char *arg)
-{
-	auth_info->signing_state = -1;
-	if (strequal(arg, "off") || strequal(arg, "no") ||
-			strequal(arg, "false")) {
-		auth_info->signing_state = false;
-	} else if (strequal(arg, "on") || strequal(arg, "yes") ||
-			strequal(arg, "true") || strequal(arg, "auto")) {
-		auth_info->signing_state = true;
-	} else if (strequal(arg, "force") || strequal(arg, "required") ||
-			strequal(arg, "forced")) {
-		auth_info->signing_state = Required;
-	} else {
-		return false;
-	}
-	return true;
-}
-
-int get_cmdline_auth_info_signing_state(const struct user_auth_info *auth_info)
-{
-	return auth_info->signing_state;
-}
-
-void set_cmdline_auth_info_use_ccache(struct user_auth_info *auth_info, bool b)
-{
-        auth_info->use_ccache = b;
-}
-
-bool get_cmdline_auth_info_use_ccache(const struct user_auth_info *auth_info)
-{
-	return auth_info->use_ccache;
-}
-
-void set_cmdline_auth_info_use_kerberos(struct user_auth_info *auth_info,
-					bool b)
-{
-        auth_info->use_kerberos = b;
-}
-
-bool get_cmdline_auth_info_use_kerberos(const struct user_auth_info *auth_info)
-{
-	return auth_info->use_kerberos;
-}
-
-void set_cmdline_auth_info_fallback_after_kerberos(struct user_auth_info *auth_info,
-					bool b)
-{
-	auth_info->fallback_after_kerberos = b;
-}
-
-bool get_cmdline_auth_info_fallback_after_kerberos(const struct user_auth_info *auth_info)
-{
-	return auth_info->fallback_after_kerberos;
-}
-
-/* This should only be used by lib/popt_common.c JRA */
-void set_cmdline_auth_info_use_krb5_ticket(struct user_auth_info *auth_info)
-{
-	auth_info->use_kerberos = true;
-	auth_info->got_pass = true;
-}
-
-/* This should only be used by lib/popt_common.c JRA */
-void set_cmdline_auth_info_smb_encrypt(struct user_auth_info *auth_info)
-{
-	auth_info->smb_encrypt = true;
-}
-
-void set_cmdline_auth_info_use_machine_account(struct user_auth_info *auth_info)
-{
-	auth_info->use_machine_account = true;
-}
-
-bool get_cmdline_auth_info_got_pass(const struct user_auth_info *auth_info)
-{
-	return auth_info->got_pass;
-}
-
-bool get_cmdline_auth_info_smb_encrypt(const struct user_auth_info *auth_info)
-{
-	return auth_info->smb_encrypt;
-}
-
-bool get_cmdline_auth_info_use_machine_account(const struct user_auth_info *auth_info)
-{
-	return auth_info->use_machine_account;
-}
-
-struct user_auth_info *get_cmdline_auth_info_copy(TALLOC_CTX *mem_ctx,
-						  const struct user_auth_info *src)
-{
-	struct user_auth_info *result;
-
-	result = user_auth_info_init(mem_ctx);
-	if (result == NULL) {
-		return NULL;
-	}
-
-	*result = *src;
-
-	result->username = talloc_strdup(
-		result, get_cmdline_auth_info_username(src));
-	result->password = talloc_strdup(
-		result, get_cmdline_auth_info_password(src));
-	if ((result->username == NULL) || (result->password == NULL)) {
-		TALLOC_FREE(result);
-		return NULL;
-	}
-
-	return result;
-}
-
-bool set_cmdline_auth_info_machine_account_creds(struct user_auth_info *auth_info)
-{
-	char *pass = NULL;
-	char *account = NULL;
-
-	if (!get_cmdline_auth_info_use_machine_account(auth_info)) {
-		return false;
-	}
-
-	if (!secrets_init()) {
-		d_printf("ERROR: Unable to open secrets database\n");
-		return false;
-	}
-
-	if (asprintf(&account, "%s$@%s", global_myname(), lp_realm()) < 0) {
-		return false;
-	}
-
-	pass = secrets_fetch_machine_password(lp_workgroup(), NULL, NULL);
-	if (!pass) {
-		d_printf("ERROR: Unable to fetch machine password for "
-			"%s in domain %s\n",
-			account, lp_workgroup());
-		SAFE_FREE(account);
-		return false;
-	}
-
-	set_cmdline_auth_info_username(auth_info, account);
-	set_cmdline_auth_info_password(auth_info, pass);
-
-	SAFE_FREE(account);
-	SAFE_FREE(pass);
-
-	return true;
-}
-
-/****************************************************************************
- Ensure we have a password if one not given.
-****************************************************************************/
-
-void set_cmdline_auth_info_getpass(struct user_auth_info *auth_info)
-{
-	char *label = NULL;
-	char *pass;
-	TALLOC_CTX *frame;
-
-	if (get_cmdline_auth_info_got_pass(auth_info) ||
-			get_cmdline_auth_info_use_kerberos(auth_info)) {
-		/* Already got one... */
-		return;
-	}
-
-	frame = talloc_stackframe();
-	label = talloc_asprintf(frame, "Enter %s's password: ",
-			get_cmdline_auth_info_username(auth_info));
-	pass = getpass(label);
-	if (pass) {
-		set_cmdline_auth_info_password(auth_info, pass);
-	}
-	TALLOC_FREE(frame);
 }
 
 /*******************************************************************
@@ -823,55 +571,6 @@ ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, SMB_OFF_T pos
 #endif
 }
 
-/*******************************************************************
- Sleep for a specified number of milliseconds.
-********************************************************************/
-
-void smb_msleep(unsigned int t)
-{
-#if defined(HAVE_NANOSLEEP)
-	struct timespec tval;
-	int ret;
-
-	tval.tv_sec = t/1000;
-	tval.tv_nsec = 1000000*(t%1000);
-
-	do {
-		errno = 0;
-		ret = nanosleep(&tval, &tval);
-	} while (ret < 0 && errno == EINTR && (tval.tv_sec > 0 || tval.tv_nsec > 0));
-#else
-	unsigned int tdiff=0;
-	struct timeval tval,t1,t2;  
-	fd_set fds;
-
-	GetTimeOfDay(&t1);
-	t2 = t1;
-
-	while (tdiff < t) {
-		tval.tv_sec = (t-tdiff)/1000;
-		tval.tv_usec = 1000*((t-tdiff)%1000);
-
-		/* Never wait for more than 1 sec. */
-		if (tval.tv_sec > 1) {
-			tval.tv_sec = 1; 
-			tval.tv_usec = 0;
-		}
-
-		FD_ZERO(&fds);
-		errno = 0;
-		sys_select_intr(0,&fds,NULL,NULL,&tval);
-
-		GetTimeOfDay(&t2);
-		if (t2.tv_sec < t1.tv_sec) {
-			/* Someone adjusted time... */
-			t1 = t2;
-		}
-
-		tdiff = TvalDiff(&t1,&t2);
-	}
-#endif
-}
 
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 			   struct event_context *ev_ctx,
@@ -1354,7 +1053,7 @@ uid_t nametouid(const char *name)
 	char *p;
 	uid_t u;
 
-	pass = getpwnam_alloc(talloc_autofree_context(), name);
+	pass = Get_Pwnam_alloc(talloc_tos(), name);
 	if (pass) {
 		u = pass->pw_uid;
 		TALLOC_FREE(pass);
@@ -1392,21 +1091,10 @@ gid_t nametogid(const char *name)
  Something really nasty happened - panic !
 ********************************************************************/
 
-void smb_panic(const char *const why)
+void smb_panic_s3(const char *why)
 {
 	char *cmd;
 	int result;
-
-#ifdef DEVELOPER
-	{
-
-		if (global_clobber_region_function) {
-			DEBUG(0,("smb_panic: clobber_region() last called from [%s(%u)]\n",
-					 global_clobber_region_function,
-					 global_clobber_region_line));
-		} 
-	}
-#endif
 
 	DEBUG(0,("PANIC (pid %llu): %s\n",
 		    (unsigned long long)sys_getpid(), why));
@@ -1906,6 +1594,9 @@ void set_remote_arch(enum remote_arch_types type)
 	case RA_CIFSFS:
 		remote_arch_str = "CIFSFS";
 		break;
+	case RA_OSX:
+		remote_arch_str = "OSX";
+		break;
 	default:
 		ra_type = RA_UNKNOWN;
 		remote_arch_str = "UNKNOWN";
@@ -1944,17 +1635,8 @@ const char *tab_depth(int level, int depth)
 
 int str_checksum(const char *s)
 {
-	int res = 0;
-	int c;
-	int i=0;
-
-	while(*s) {
-		c = *s;
-		res ^= (c << (i % 15)) ^ (c >> (15-(i%15)));
-		s++;
-		i++;
-	}
-	return(res);
+	TDB_DATA key = string_tdb_data(s);
+	return tdb_jenkins_hash(&key);
 }
 
 /*****************************************************************
@@ -2098,9 +1780,7 @@ char *myhostname(void)
 {
 	static char *ret;
 	if (ret == NULL) {
-		/* This is cached forever so
-		 * use talloc_autofree_context() ctx. */
-		ret = get_myname(talloc_autofree_context());
+		ret = get_myname(NULL);
 	}
 	return ret;
 }
@@ -2624,9 +2304,7 @@ struct server_id pid_to_procid(pid_t pid)
 	struct server_id result;
 	result.pid = pid;
 	result.unique_id = my_unique_id;
-#ifdef CLUSTER_SUPPORT
 	result.vnn = my_vnn;
-#endif
 	return result;
 }
 
@@ -2639,10 +2317,8 @@ bool procid_equal(const struct server_id *p1, const struct server_id *p2)
 {
 	if (p1->pid != p2->pid)
 		return False;
-#ifdef CLUSTER_SUPPORT
 	if (p1->vnn != p2->vnn)
 		return False;
-#endif
 	return True;
 }
 
@@ -2656,10 +2332,8 @@ bool procid_is_me(const struct server_id *pid)
 {
 	if (pid->pid != sys_getpid())
 		return False;
-#ifdef CLUSTER_SUPPORT
 	if (pid->vnn != my_vnn)
 		return False;
-#endif
 	return True;
 }
 
@@ -2667,7 +2341,6 @@ struct server_id interpret_pid(const char *pid_string)
 {
 	struct server_id result;
 	int pid;
-#ifdef CLUSTER_SUPPORT
 	unsigned int vnn;
 	if (sscanf(pid_string, "%u:%d", &vnn, &pid) == 2) {
 		result.vnn = vnn;
@@ -2681,13 +2354,6 @@ struct server_id interpret_pid(const char *pid_string)
 		result.vnn = NONCLUSTER_VNN;
 		result.pid = -1;
 	}
-#else
-	if (sscanf(pid_string, "%d", &pid) != 1) {
-		result.pid = -1;
-	} else {
-		result.pid = pid;
-	}
-#endif
 	/* Assigning to result.pid may have overflowed
 	   Map negative pid to -1: i.e. error */
 	if (result.pid < 0) {
@@ -2699,7 +2365,6 @@ struct server_id interpret_pid(const char *pid_string)
 
 char *procid_str(TALLOC_CTX *mem_ctx, const struct server_id *pid)
 {
-#ifdef CLUSTER_SUPPORT
 	if (pid->vnn == NONCLUSTER_VNN) {
 		return talloc_asprintf(mem_ctx,
 				"%d",
@@ -2711,11 +2376,6 @@ char *procid_str(TALLOC_CTX *mem_ctx, const struct server_id *pid)
 					(unsigned)pid->vnn,
 					(int)pid->pid);
 	}
-#else
-	return talloc_asprintf(mem_ctx,
-			"%d",
-			(int)pid->pid);
-#endif
 }
 
 char *procid_str_static(const struct server_id *pid)
@@ -2730,11 +2390,7 @@ bool procid_valid(const struct server_id *pid)
 
 bool procid_is_local(const struct server_id *pid)
 {
-#ifdef CLUSTER_SUPPORT
 	return pid->vnn == my_vnn;
-#else
-	return True;
-#endif
 }
 
 /****************************************************************
@@ -2968,23 +2624,6 @@ void *talloc_zeronull(const void *context, size_t size, const char *name)
 }
 #endif
 
-bool is_valid_policy_hnd(const struct policy_handle *hnd)
-{
-	struct policy_handle tmp;
-	ZERO_STRUCT(tmp);
-	return (memcmp(&tmp, hnd, sizeof(tmp)) != 0);
-}
-
-bool policy_hnd_equal(const struct policy_handle *hnd1,
-		      const struct policy_handle *hnd2)
-{
-	if (!hnd1 || !hnd2) {
-		return false;
-	}
-
-	return (memcmp(hnd1, hnd2, sizeof(*hnd1)) == 0);
-}
-
 /****************************************************************
  strip off leading '\\' from a hostname
 ****************************************************************/
@@ -3014,4 +2653,22 @@ bool tevent_req_poll_ntstatus(struct tevent_req *req,
 		*status = map_nt_error_from_unix(errno);
 	}
 	return ret;
+}
+
+bool any_nt_status_not_ok(NTSTATUS err1, NTSTATUS err2, NTSTATUS *result)
+{
+	if (!NT_STATUS_IS_OK(err1)) {
+		*result = err1;
+		return true;
+	}
+	if (!NT_STATUS_IS_OK(err2)) {
+		*result = err2;
+		return true;
+	}
+	return false;
+}
+
+int timeval_to_msec(struct timeval t)
+{
+	return t.tv_sec * 1000 + (t.tv_usec+999) / 1000;
 }

@@ -154,7 +154,7 @@ static struct smbcli_state *connect_one(struct tevent_context *ev,
 	}
 
 
-	myname = talloc_asprintf(mem_ctx, "lock-%u-%u", getpid(), snum);
+	myname = talloc_asprintf(mem_ctx, "lock-%d-%d", (int) getpid(), snum);
 	cli_credentials_set_workstation(servers[snum], myname, CRED_SPECIFIED);
 
 	do {
@@ -405,7 +405,7 @@ static int retest(struct smbcli_state *cli[NSERVERS][NCONNECTIONS],
  */
 static int test_locks(struct tevent_context *ev,
 		      struct loadparm_context *lp_ctx,
-			  TALLOC_CTX *mem_ctx,
+		      TALLOC_CTX *mem_ctx,
 		      char *share[NSERVERS])
 {
 	struct smbcli_state *cli[NSERVERS][NCONNECTIONS];

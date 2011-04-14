@@ -19,8 +19,14 @@
 
 
 #include "includes.h"
+#include "system/passwd.h"
 #include "utils/net.h"
 #include "../librpc/gen_ndr/samr.h"
+#include "smbldap.h"
+#include "../libcli/security/security.h"
+#include "lib/winbind_util.h"
+#include "passdb.h"
+#include "lib/privileges.h"
 
 /*
  * Set a user's data
@@ -1582,6 +1588,7 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 	gid_t domadmins_gid = -1;
 	struct samu *samuser;
 	struct passwd *pwd;
+	bool is_ipa = false;
 
 	if (c->display_usage) {
 		d_printf(  "%s\n"
@@ -1612,7 +1619,11 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 
 	trim_char(ldap_bk, ' ', ' ');
 
-	if (strcmp(ldap_bk, "ldapsam") != 0) {
+	if (strcmp(ldap_bk, "IPA_ldapsam") == 0 ) {
+		is_ipa = true;
+	}
+
+	if (strcmp(ldap_bk, "ldapsam") != 0 && !is_ipa ) {
 		d_fprintf(stderr,
 			  _("Provisioning works only with ldapsam backend\n"));
 		goto failed;
@@ -1626,7 +1637,7 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 		goto failed;
 	}
 
-	if (!winbind_ping()) {
+	if (!is_ipa && !winbind_ping()) {
 		d_fprintf(stderr, _("winbind seems not to run. Provisioning "
 			    "LDAP only works when winbind runs.\n"));
 		goto failed;
@@ -1653,10 +1664,14 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 		d_printf(_("Adding the Domain Users group.\n"));
 
 		/* lets allocate a new groupid for this group */
-		if (!winbind_allocate_gid(&domusers_gid)) {
-			d_fprintf(stderr, _("Unable to allocate a new gid to "
-					    "create Domain Users group!\n"));
-			goto domu_done;
+		if (is_ipa) {
+			domusers_gid = 999;
+		} else {
+			if (!winbind_allocate_gid(&domusers_gid)) {
+				d_fprintf(stderr, _("Unable to allocate a new gid to "
+						    "create Domain Users group!\n"));
+				goto domu_done;
+			}
 		}
 
 		uname = talloc_strdup(tc, "domusers");
@@ -1672,6 +1687,11 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_POSIXGROUP);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_GROUPMAP);
+		if (is_ipa) {
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "groupofnames");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "nestedgroup");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "ipausergroup");
+		}
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "cn", uname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "displayName", wname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "gidNumber", gidstr);
@@ -1686,6 +1706,16 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 		if (rc != LDAP_SUCCESS) {
 			d_fprintf(stderr, _("Failed to add Domain Users group "
 					    "to ldap directory\n"));
+		}
+
+		if (is_ipa) {
+			if (!pdb_getgrsid(&gmap, gsid)) {
+				d_fprintf(stderr, _("Failed to read just "
+						    "created domain group.\n"));
+				goto failed;
+			} else {
+				domusers_gid = gmap.gid;
+			}
 		}
 	} else {
 		domusers_gid = gmap.gid;
@@ -1710,10 +1740,14 @@ domu_done:
 		d_printf(_("Adding the Domain Admins group.\n"));
 
 		/* lets allocate a new groupid for this group */
-		if (!winbind_allocate_gid(&domadmins_gid)) {
-			d_fprintf(stderr, _("Unable to allocate a new gid to "
-					    "create Domain Admins group!\n"));
-			goto doma_done;
+		if (is_ipa) {
+			domadmins_gid = 999;
+		} else {
+			if (!winbind_allocate_gid(&domadmins_gid)) {
+				d_fprintf(stderr, _("Unable to allocate a new gid to "
+						    "create Domain Admins group!\n"));
+				goto doma_done;
+			}
 		}
 
 		uname = talloc_strdup(tc, "domadmins");
@@ -1729,6 +1763,11 @@ domu_done:
 
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_POSIXGROUP);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_GROUPMAP);
+		if (is_ipa) {
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "groupofnames");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "nestedgroup");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "ipausergroup");
+		}
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "cn", uname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "displayName", wname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "gidNumber", gidstr);
@@ -1743,6 +1782,16 @@ domu_done:
 		if (rc != LDAP_SUCCESS) {
 			d_fprintf(stderr, _("Failed to add Domain Admins group "
 					    "to ldap directory\n"));
+		}
+
+		if (is_ipa) {
+			if (!pdb_getgrsid(&gmap, gsid)) {
+				d_fprintf(stderr, _("Failed to read just "
+						    "created domain group.\n"));
+				goto failed;
+			} else {
+				domadmins_gid = gmap.gid;
+			}
 		}
 	} else {
 		domadmins_gid = gmap.gid;
@@ -1768,6 +1817,7 @@ doma_done:
 		char *gidstr;
 		char *shell;
 		char *dir;
+		char *princ;
 		uid_t uid;
 		int rc;
 
@@ -1779,6 +1829,18 @@ doma_done:
 				    "Admins group not available!\n"));
 			goto done;
 		}
+
+		if (is_ipa) {
+			uid = 999;
+		} else {
+			if (!winbind_allocate_uid(&uid)) {
+				d_fprintf(stderr,
+					  _("Unable to allocate a new uid to create "
+					    "the Administrator user!\n"));
+				goto done;
+			}
+		}
+
 		name = talloc_strdup(tc, "Administrator");
 		dn = talloc_asprintf(tc, "uid=Administrator,%s", lp_ldap_user_suffix());
 		uidstr = talloc_asprintf(tc, "%u", (unsigned int)uid);
@@ -1799,16 +1861,24 @@ doma_done:
 
 		sid_compose(&sid, get_global_sam_sid(), DOMAIN_RID_ADMINISTRATOR);
 
-		if (!winbind_allocate_uid(&uid)) {
-			d_fprintf(stderr,
-				  _("Unable to allocate a new uid to create "
-				    "the Administrator user!\n"));
-			goto done;
-		}
-
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_ACCOUNT);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_POSIXACCOUNT);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_SAMBASAMACCOUNT);
+		if (is_ipa) {
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "person");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "organizationalperson");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "inetorgperson");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "inetuser");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "krbprincipalaux");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "krbticketpolicyaux");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "sn", name);
+			princ = talloc_asprintf(tc, "%s@%s", name, lp_realm());
+			if (!princ) {
+				d_fprintf(stderr, _("Out of Memory!\n"));
+				goto failed;
+			}
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "krbPrincipalName", princ);
+		}
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "uid", name);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "cn", name);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "displayName", name);
@@ -1829,6 +1899,14 @@ doma_done:
 		if (rc != LDAP_SUCCESS) {
 			d_fprintf(stderr, _("Failed to add Administrator user "
 					    "to ldap directory\n"));
+		}
+
+		if (is_ipa) {
+			if (!pdb_getsampwnam(samuser, "Administrator")) {
+				d_fprintf(stderr, _("Failed to read just "
+						    "created user.\n"));
+				goto failed;
+			}
 		}
 	} else {
 		d_printf(_("found!\n"));
@@ -1854,7 +1932,7 @@ doma_done:
 
 		sid_compose(&sid, get_global_sam_sid(), DOMAIN_RID_GUEST);
 
-		pwd = getpwnam_alloc(tc, lp_guestaccount());
+		pwd = Get_Pwnam_alloc(tc, lp_guestaccount());
 
 		if (!pwd) {
 			if (domusers_gid == -1) {
@@ -1868,11 +1946,16 @@ doma_done:
 				goto done;
 			}
 			pwd->pw_name = talloc_strdup(pwd, lp_guestaccount());
-			if (!winbind_allocate_uid(&(pwd->pw_uid))) {
-				d_fprintf(stderr,
-					  _("Unable to allocate a new uid to "
-					    "create the Guest user!\n"));
-				goto done;
+
+			if (is_ipa) {
+				pwd->pw_uid = 999;
+			} else {
+				if (!winbind_allocate_uid(&(pwd->pw_uid))) {
+					d_fprintf(stderr,
+						  _("Unable to allocate a new uid to "
+						    "create the Guest user!\n"));
+					goto done;
+				}
 			}
 			pwd->pw_gid = domusers_gid;
 			pwd->pw_dir = talloc_strdup(tc, "/");
@@ -1894,6 +1977,15 @@ doma_done:
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_ACCOUNT);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_POSIXACCOUNT);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_SAMBASAMACCOUNT);
+		if (is_ipa) {
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "person");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "organizationalperson");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "inetorgperson");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "inetuser");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "krbprincipalaux");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "krbticketpolicyaux");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "sn", pwd->pw_name);
+		}
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "uid", pwd->pw_name);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "cn", pwd->pw_name);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "displayName", pwd->pw_name);
@@ -1919,13 +2011,21 @@ doma_done:
 			d_fprintf(stderr, _("Failed to add Guest user to "
 					    "ldap directory\n"));
 		}
+
+		if (is_ipa) {
+			if (!pdb_getsampwnam(samuser, lp_guestaccount())) {
+				d_fprintf(stderr, _("Failed to read just "
+						    "created user.\n"));
+				goto failed;
+			}
+		}
 	} else {
 		d_printf(_("found!\n"));
 	}
 
 	d_printf(_("Checking Guest's group.\n"));
 
-	pwd = getpwnam_alloc(talloc_autofree_context(), lp_guestaccount());
+	pwd = Get_Pwnam_alloc(tc, lp_guestaccount());
 	if (!pwd) {
 		d_fprintf(stderr,
 			  _("Failed to find just created Guest account!\n"
@@ -1964,6 +2064,11 @@ doma_done:
 
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_POSIXGROUP);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", LDAP_OBJ_GROUPMAP);
+		if (is_ipa) {
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "groupofnames");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "nestedgroup");
+			smbldap_set_mod(&mods, LDAP_MOD_ADD, "objectClass", "ipausergroup");
+		}
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "cn", uname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "displayName", wname);
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "gidNumber", gidstr);

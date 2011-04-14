@@ -26,6 +26,7 @@
 /* function(s) moved from auth/auth_util.c to minimize linker deps */
 
 #include "includes.h"
+#include "../libcli/security/security.h"
 
 /****************************************************************************
  Duplicate a SID token.
@@ -57,6 +58,7 @@ struct security_token *dup_nt_token(TALLOC_CTX *mem_ctx, const struct security_t
 	}
 	
 	token->privilege_mask = ptoken->privilege_mask;
+	token->rights_mask = ptoken->rights_mask;
 
 	return token;
 }
@@ -106,6 +108,9 @@ NTSTATUS merge_nt_token(TALLOC_CTX *mem_ctx,
 	token->privilege_mask |= token_1->privilege_mask;
 	token->privilege_mask |= token_2->privilege_mask;
 
+	token->rights_mask |= token_1->rights_mask;
+	token->rights_mask |= token_2->rights_mask;
+
 	*token_out = token;
 
 	return NT_STATUS_OK;
@@ -120,7 +125,7 @@ bool token_sid_in_ace(const struct security_token *token, const struct security_
 	size_t i;
 
 	for (i = 0; i < token->num_sids; i++) {
-		if (sid_equal(&ace->trustee, &token->sids[i]))
+		if (dom_sid_equal(&ace->trustee, &token->sids[i]))
 			return true;
 	}
 

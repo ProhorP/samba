@@ -48,6 +48,9 @@
 
 #define TESTFILE "testfile.dat"
 
+struct torture_context;
+bool torture_local_replace(struct torture_context *ctx);
+
 /*
   test ftruncate() function
  */
@@ -771,7 +774,7 @@ static int test_FUNCTION(void)
 {
 	printf("test: FUNCTION\n");
 	if (strcmp(__FUNCTION__, "test_FUNCTION") != 0) {
-		printf("failure: FAILURE [\nFAILURE invalid\n]\n");
+		printf("failure: FUNCTION [\nFUNCTION invalid\n]\n");
 		return false;
 	}
 	printf("success: FUNCTION\n");
@@ -1052,7 +1055,6 @@ static int test_memmem(void)
 }
 
 
-struct torture_context;
 bool torture_local_replace(struct torture_context *ctx)
 {
 	bool ret = true;

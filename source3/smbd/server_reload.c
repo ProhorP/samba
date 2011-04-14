@@ -22,16 +22,21 @@
 */
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
-#include "librpc/gen_ndr/messaging.h"
 #include "nt_printing.h"
+#include "printing/pcap.h"
+#include "printing/load.h"
+#include "auth.h"
+#include "messages.h"
 
 /****************************************************************************
- Reload printers
+ purge stale printers and reload from pre-populated pcap cache
 **************************************************************************/
-void reload_printers(struct messaging_context *msg_ctx)
+void reload_printers(struct tevent_context *ev,
+		     struct messaging_context *msg_ctx)
 {
-	struct auth_serversupplied_info *server_info = NULL;
+	struct auth_serversupplied_info *session_info = NULL;
 	struct spoolss_PrinterInfo2 *pinfo2 = NULL;
 	int snum;
 	int n_services = lp_numservices();
@@ -40,12 +45,13 @@ void reload_printers(struct messaging_context *msg_ctx)
 	NTSTATUS status;
 	bool skip = false;
 
-	pcap_cache_reload(server_event_context(), msg_ctx);
+	SMB_ASSERT(pcap_cache_loaded());
+	DEBUG(10, ("reloading printer services from pcap cache\n"));
 
-	status = make_server_info_system(talloc_tos(), &server_info);
+	status = make_session_info_system(talloc_tos(), &session_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("reload_printers: "
-			  "Could not create system server_info\n"));
+			  "Could not create system session_info\n"));
 		/* can't remove stale printers before we
 		 * are fully initilized */
 		skip = true;
@@ -62,26 +68,26 @@ void reload_printers(struct messaging_context *msg_ctx)
 		if (!pcap_printername_ok(pname)) {
 			DEBUG(3, ("removing stale printer %s\n", pname));
 
-			if (is_printer_published(server_info, server_info,
+			if (is_printer_published(session_info, session_info,
 						 msg_ctx,
 						 NULL, lp_servicename(snum),
 						 NULL, &pinfo2)) {
-				nt_printer_publish(server_info,
-						   server_info,
+				nt_printer_publish(session_info,
+						   session_info,
 						   msg_ctx,
 						   pinfo2,
 						   DSPRINT_UNPUBLISH);
 				TALLOC_FREE(pinfo2);
 			}
-			nt_printer_remove(server_info, server_info, msg_ctx,
+			nt_printer_remove(session_info, session_info, msg_ctx,
 					  pname);
 			lp_killservice(snum);
 		}
 	}
 
-	load_printers(server_event_context(), msg_ctx);
+	load_printers(ev, msg_ctx);
 
-	TALLOC_FREE(server_info);
+	TALLOC_FREE(session_info);
 }
 
 /****************************************************************************
@@ -111,8 +117,6 @@ bool reload_services(struct messaging_context *msg_ctx, int smb_sock,
 
 	ret = lp_load(get_dyn_CONFIGFILE(), False, False, True, True);
 
-	reload_printers(msg_ctx);
-
 	/* perhaps the config filename is now set */
 	if (!test)
 		reload_services(msg_ctx, smb_sock, True);
@@ -133,4 +137,13 @@ bool reload_services(struct messaging_context *msg_ctx, int smb_sock,
 	set_current_service(NULL,0,True);
 
 	return(ret);
+}
+
+/****************************************************************************
+ Notify smbds of new printcap data
+**************************************************************************/
+void reload_pcap_change_notify(struct tevent_context *ev,
+			       struct messaging_context *msg_ctx)
+{
+	message_send_all(msg_ctx, MSG_PRINTER_PCAP, NULL, 0, NULL);
 }

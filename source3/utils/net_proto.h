@@ -24,22 +24,6 @@
 #define _NET_PROTO_H_
 
 
-/* The following definitions come from auth/token_util.c  */
-
-bool nt_token_check_sid ( const struct dom_sid *sid, const struct security_token *token );
-bool nt_token_check_domain_rid( struct security_token *token, uint32 rid );
-struct security_token *get_root_nt_token( void );
-NTSTATUS add_aliases(const struct dom_sid *domain_sid,
-		     struct security_token *token);
-struct security_token *create_local_nt_token(TALLOC_CTX *mem_ctx,
-					    const struct dom_sid *user_sid,
-					    bool is_guest,
-					    int num_groupsids,
-					    const struct dom_sid *groupsids);
-void debug_nt_user_token(int dbg_class, int dbg_lev, struct security_token *token);
-void debug_unix_user_token(int dbg_class, int dbg_lev, uid_t uid, gid_t gid,
-			   int n_groups, gid_t *groups);
-
 /* The following definitions come from utils/net.c  */
 
 enum netr_SchannelType get_sec_channel_type(const char *param);
@@ -102,10 +86,6 @@ int net_help(struct net_context *c, int argc, const char **argv);
 
 /* The following definitions come from utils/net_idmap.c  */
 
-bool idmap_store_secret(const char *backend, bool alloc,
-			const char *domain, const char *identity,
-			const char *secret);
-int net_help_idmap(struct net_context *c, int argc, const char **argv);
 int net_idmap(struct net_context *c, int argc, const char **argv);
 
 /* The following definitions come from utils/net_join.c  */
@@ -351,32 +331,8 @@ NTSTATUS rpc_samdump_internals(struct net_context *c,
 				int argc,
 				const char **argv);
 int rpc_vampire_usage(struct net_context *c, int argc, const char **argv);
-NTSTATUS rpc_vampire_internals(struct net_context *c,
-				const struct dom_sid *domain_sid,
-				const char *domain_name,
-				struct cli_state *cli,
-				struct rpc_pipe_client *pipe_hnd,
-				TALLOC_CTX *mem_ctx,
-				int argc,
-				const char **argv);
 int rpc_vampire_passdb(struct net_context *c, int argc, const char **argv);
 int rpc_vampire_ldif(struct net_context *c, int argc, const char **argv);
-NTSTATUS rpc_vampire_ldif_internals(struct net_context *c,
-				    const struct dom_sid *domain_sid,
-				    const char *domain_name,
-				    struct cli_state *cli,
-				    struct rpc_pipe_client *pipe_hnd,
-				    TALLOC_CTX *mem_ctx,
-				    int argc,
-				    const char **argv);
-NTSTATUS rpc_vampire_keytab_internals(struct net_context *c,
-				      const struct dom_sid *domain_sid,
-				      const char *domain_name,
-				      struct cli_state *cli,
-				      struct rpc_pipe_client *pipe_hnd,
-				      TALLOC_CTX *mem_ctx,
-				      int argc,
-				      const char **argv);
 int rpc_vampire_keytab(struct net_context *c, int argc, const char **argv);
 
 /* The following definitions come from utils/net_rpc_service.c  */
@@ -507,5 +463,8 @@ char *get_pass( const char *prompt, bool stdin_get);
 
 /* The following definitions come from utils/net_g_lock.c  */
 int net_g_lock(struct net_context *c, int argc, const char **argv);
+
+/* The following definitions come from utils/net_rpc_trust.c  */
+int net_rpc_trust(struct net_context *c, int argc, const char **argv);
 
 #endif /*  _NET_PROTO_H_  */

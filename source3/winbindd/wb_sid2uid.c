@@ -19,8 +19,9 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 #include "idmap_cache.h"
+#include "../libcli/security/security.h"
 
 struct wb_sid2uid_state {
 	struct tevent_context *ev;
@@ -142,12 +143,8 @@ static void wb_sid2uid_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_Sid2Uid_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 

@@ -27,13 +27,15 @@
 #include "cldap_server/cldap_server.h"
 #include "system/network.h"
 #include "lib/socket/netif.h"
-#include "lib/ldb/include/ldb.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb.h>
+#include <ldb_errors.h>
 #include "dsdb/samdb/samdb.h"
 #include "ldb_wrap.h"
 #include "auth/auth.h"
 #include "param/param.h"
 #include "../lib/tsocket/tsocket.h"
+
+NTSTATUS server_service_cldapd_init(void);
 
 /*
   handle incoming cldap requests
@@ -212,7 +214,7 @@ static void cldapd_task_init(struct task_server *task)
 	}
 
 	cldapd->task = task;
-	cldapd->samctx = samdb_connect(cldapd, task->event_ctx, task->lp_ctx, system_session(task->lp_ctx));
+	cldapd->samctx = samdb_connect(cldapd, task->event_ctx, task->lp_ctx, system_session(task->lp_ctx), 0);
 	if (cldapd->samctx == NULL) {
 		task_server_terminate(task, "cldapd failed to open samdb", true);
 		return;

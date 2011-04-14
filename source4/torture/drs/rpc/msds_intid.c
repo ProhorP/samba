@@ -460,17 +460,17 @@ static bool _test_GetNCChanges(struct torture_context *tctx,
 }
 
 static char * _make_error_message(TALLOC_CTX *mem_ctx,
-                                  const struct dsdb_attribute *dsdb_attr,
-                                  const struct drsuapi_DsReplicaAttribute *drs_attr,
-                                  const struct drsuapi_DsReplicaObjectListItemEx *drs_obj)
+				  enum drsuapi_DsAttributeId drs_attid,
+				  const struct dsdb_attribute *dsdb_attr,
+				  const struct drsuapi_DsReplicaObjectIdentifier *identifier)
 {
 	return talloc_asprintf(mem_ctx, "\nInvalid ATTID for %1$s (%2$s)\n"
 			       " drs_attid:      %3$11d (0x%3$08X)\n"
 			       " msDS_IntId:     %4$11d (0x%4$08X)\n"
 			       " attributeId_id: %5$11d (0x%5$08X)",
 			       dsdb_attr->lDAPDisplayName,
-			       drs_obj->object.identifier->dn,
-			       drs_attr->attid,
+			       identifier->dn,
+			       drs_attid,
 			       dsdb_attr->msDS_IntId,
 			       dsdb_attr->attributeID_id);
 }
@@ -489,6 +489,7 @@ static bool test_dsintid_schema(struct torture_context *tctx, struct DsIntIdTest
 	const struct drsuapi_DsReplicaAttribute *drs_attr;
 	const struct drsuapi_DsReplicaAttributeCtr *attr_ctr;
 	const struct drsuapi_DsReplicaObjectListItemEx *cur;
+	const struct drsuapi_DsReplicaLinkedAttribute *la;
 	TALLOC_CTX *mem_ctx;
 
 	mem_ctx = talloc_new(ctx);
@@ -518,12 +519,37 @@ static bool test_dsintid_schema(struct torture_context *tctx, struct DsIntIdTest
 
 			torture_assert(tctx,
 				       drs_attr->attid == dsdb_attr->attributeID_id,
-				       _make_error_message(ctx, dsdb_attr, drs_attr, cur))
+				       _make_error_message(ctx, drs_attr->attid,
+							   dsdb_attr,
+							   cur->object.identifier));
 			if (dsdb_attr->msDS_IntId) {
 				torture_assert(tctx,
-				               drs_attr->attid != dsdb_attr->msDS_IntId,
-				               _make_error_message(ctx, dsdb_attr, drs_attr, cur))
+					       drs_attr->attid != dsdb_attr->msDS_IntId,
+					       _make_error_message(ctx, drs_attr->attid,
+								   dsdb_attr,
+								   cur->object.identifier));
 			}
+		}
+	}
+
+	/* verify ATTIDs for Linked Attributes */
+	torture_comment(tctx, "Verify ATTIDs for Linked Attributes (%u)\n",
+			ctr6->linked_attributes_count);
+	for (i = 0; i < ctr6->linked_attributes_count; i++) {
+		la = &ctr6->linked_attributes[i];
+		dsdb_attr = dsdb_attribute_by_attributeID_id(ldap_schema, la->attid);
+
+		torture_assert(tctx,
+			       la->attid == dsdb_attr->attributeID_id,
+			       _make_error_message(ctx, la->attid,
+						   dsdb_attr,
+						   la->identifier))
+		if (dsdb_attr->msDS_IntId) {
+			torture_assert(tctx,
+				       la->attid != dsdb_attr->msDS_IntId,
+				       _make_error_message(ctx, la->attid,
+							   dsdb_attr,
+							   la->identifier))
 		}
 	}
 
@@ -533,12 +559,14 @@ static bool test_dsintid_schema(struct torture_context *tctx, struct DsIntIdTest
 }
 
 /**
- * Fetch Domain NC and check ATTID values returned.
- * When Domain partition is replicated, ATTID
+ * Fetch non-Schema NC and check ATTID values returned.
+ * When non-Schema partition is replicated, ATTID
  * should be msDS-IntId value for the attribute
  * if this value exists
  */
-static bool test_dsintid_domain(struct torture_context *tctx, struct DsIntIdTestCtx *ctx)
+static bool _test_dsintid(struct torture_context *tctx,
+			  struct DsIntIdTestCtx *ctx,
+			  const char *nc_dn_str)
 {
 	uint32_t i;
 	const struct dsdb_schema *ldap_schema;
@@ -547,14 +575,15 @@ static bool test_dsintid_domain(struct torture_context *tctx, struct DsIntIdTest
 	const struct drsuapi_DsReplicaAttribute *drs_attr;
 	const struct drsuapi_DsReplicaAttributeCtr *attr_ctr;
 	const struct drsuapi_DsReplicaObjectListItemEx *cur;
+	const struct drsuapi_DsReplicaLinkedAttribute *la;
 	TALLOC_CTX *mem_ctx;
 
 	mem_ctx = talloc_new(ctx);
 	torture_assert(tctx, mem_ctx, "Not enough memory");
 
 	/* fetch whole Schema partition */
-	torture_comment(tctx, "Fetch partition: %s\n", ctx->schema_dn);
-	if (!_test_GetNCChanges(tctx, &ctx->dsa_bind, ctx->domain_dn, mem_ctx, &ctr6)) {
+	torture_comment(tctx, "Fetch partition: %s\n", nc_dn_str);
+	if (!_test_GetNCChanges(tctx, &ctx->dsa_bind, nc_dn_str, mem_ctx, &ctr6)) {
 		torture_fail(tctx, "_test_GetNCChanges() failed");
 	}
 
@@ -576,18 +605,66 @@ static bool test_dsintid_domain(struct torture_context *tctx, struct DsIntIdTest
 			if (dsdb_attr->msDS_IntId) {
 				torture_assert(tctx,
 				               drs_attr->attid == dsdb_attr->msDS_IntId,
-				               _make_error_message(ctx, dsdb_attr, drs_attr, cur))
+					       _make_error_message(ctx, drs_attr->attid,
+								   dsdb_attr,
+								   cur->object.identifier));
 			} else {
 				torture_assert(tctx,
 					       drs_attr->attid == dsdb_attr->attributeID_id,
-					       _make_error_message(ctx, dsdb_attr, drs_attr, cur))
+					       _make_error_message(ctx, drs_attr->attid,
+								   dsdb_attr,
+								   cur->object.identifier));
 			}
+		}
+	}
+
+	/* verify ATTIDs for Linked Attributes */
+	torture_comment(tctx, "Verify ATTIDs for Linked Attributes (%u)\n",
+			ctr6->linked_attributes_count);
+	for (i = 0; i < ctr6->linked_attributes_count; i++) {
+		la = &ctr6->linked_attributes[i];
+		dsdb_attr = dsdb_attribute_by_attributeID_id(ldap_schema, la->attid);
+
+		if (dsdb_attr->msDS_IntId) {
+			torture_assert(tctx,
+				       la->attid == dsdb_attr->msDS_IntId,
+				       _make_error_message(ctx, la->attid,
+							   dsdb_attr,
+							   la->identifier));
+		} else {
+			torture_assert(tctx,
+				       la->attid == dsdb_attr->attributeID_id,
+				       _make_error_message(ctx, la->attid,
+							   dsdb_attr,
+							   la->identifier));
 		}
 	}
 
 	talloc_free(mem_ctx);
 
 	return true;
+}
+
+/**
+ * Fetch Domain NC and check ATTID values returned.
+ * When Domain partition is replicated, ATTID
+ * should be msDS-IntId value for the attribute
+ * if this value exists
+ */
+static bool test_dsintid_configuration(struct torture_context *tctx, struct DsIntIdTestCtx *ctx)
+{
+	return _test_dsintid(tctx, ctx, ctx->config_dn);
+}
+
+/**
+ * Fetch Configuration NC and check ATTID values returned.
+ * When Configuration partition is replicated, ATTID
+ * should be msDS-IntId value for the attribute
+ * if this value exists
+ */
+static bool test_dsintid_domain(struct torture_context *tctx, struct DsIntIdTestCtx *ctx)
+{
+	return _test_dsintid(tctx, ctx, ctx->domain_dn);
 }
 
 
@@ -655,5 +732,6 @@ void torture_drs_rpc_dsintid_tcase(struct torture_suite *suite)
 				  torture_dsintid_tcase_teardown);
 
 	test = torture_tcase_add_simple_test(tcase, "Schema", (run_func)test_dsintid_schema);
+	test = torture_tcase_add_simple_test(tcase, "Configuration", (run_func)test_dsintid_configuration);
 	test = torture_tcase_add_simple_test(tcase, "Domain", (run_func)test_dsintid_domain);
 }

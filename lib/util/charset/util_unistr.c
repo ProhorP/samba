@@ -21,180 +21,16 @@
 #include "includes.h"
 #include "system/locale.h"
 
-struct smb_iconv_convenience *global_iconv_convenience = NULL;
-
-static inline struct smb_iconv_convenience *get_iconv_convenience(void)
-{
-	if (global_iconv_convenience == NULL)
-		global_iconv_convenience = smb_iconv_convenience_reinit(talloc_autofree_context(),
-									"ASCII", "UTF-8", true, NULL);
-	return global_iconv_convenience;
-}
-
-/**
- Case insensitive string compararison
-**/
-_PUBLIC_ int strcasecmp_m(const char *s1, const char *s2)
-{
-	codepoint_t c1=0, c2=0;
-	size_t size1, size2;
-	struct smb_iconv_convenience *iconv_convenience = get_iconv_convenience();
-
-	/* handle null ptr comparisons to simplify the use in qsort */
-	if (s1 == s2) return 0;
-	if (s1 == NULL) return -1;
-	if (s2 == NULL) return 1;
-
-	while (*s1 && *s2) {
-		c1 = next_codepoint_convenience(iconv_convenience, s1, &size1);
-		c2 = next_codepoint_convenience(iconv_convenience, s2, &size2);
-
-		s1 += size1;
-		s2 += size2;
-
-		if (c1 == c2) {
-			continue;
-		}
-
-		if (c1 == INVALID_CODEPOINT ||
-		    c2 == INVALID_CODEPOINT) {
-			/* what else can we do?? */
-			return strcasecmp(s1, s2);
-		}
-
-		if (toupper_m(c1) != toupper_m(c2)) {
-			return c1 - c2;
-		}
-	}
-
-	return *s1 - *s2;
-}
-
-/**
- * Get the next token from a string, return False if none found.
- * Handles double-quotes.
- * 
- * Based on a routine by GJC@VILLAGE.COM. 
- * Extensively modified by Andrew.Tridgell@anu.edu.au
- **/
-_PUBLIC_ bool next_token(const char **ptr,char *buff, const char *sep, size_t bufsize)
-{
-	const char *s;
-	bool quoted;
-	size_t len=1;
-
-	if (!ptr)
-		return false;
-
-	s = *ptr;
-
-	/* default to simple separators */
-	if (!sep)
-		sep = " \t\n\r";
-
-	/* find the first non sep char */
-	while (*s && strchr_m(sep,*s))
-		s++;
-	
-	/* nothing left? */
-	if (!*s)
-		return false;
-	
-	/* copy over the token */
-	for (quoted = false; len < bufsize && *s && (quoted || !strchr_m(sep,*s)); s++) {
-		if (*s == '\"') {
-			quoted = !quoted;
-		} else {
-			len++;
-			*buff++ = *s;
-		}
-	}
-	
-	*ptr = (*s) ? s+1 : s;  
-	*buff = 0;
-	
-	return true;
-}
-
-/**
- Case insensitive string compararison, length limited
-**/
-_PUBLIC_ int strncasecmp_m(const char *s1, const char *s2, size_t n)
-{
-	codepoint_t c1=0, c2=0;
-	size_t size1, size2;
-	struct smb_iconv_convenience *iconv_convenience = get_iconv_convenience();
-
-	/* handle null ptr comparisons to simplify the use in qsort */
-	if (s1 == s2) return 0;
-	if (s1 == NULL) return -1;
-	if (s2 == NULL) return 1;
-
-	while (*s1 && *s2 && n) {
-		n--;
-
-		c1 = next_codepoint_convenience(iconv_convenience, s1, &size1);
-		c2 = next_codepoint_convenience(iconv_convenience, s2, &size2);
-
-		s1 += size1;
-		s2 += size2;
-
-		if (c1 == c2) {
-			continue;
-		}
-
-		if (c1 == INVALID_CODEPOINT ||
-		    c2 == INVALID_CODEPOINT) {
-			/* what else can we do?? */
-			return strcasecmp(s1, s2);
-		}
-
-		if (toupper_m(c1) != toupper_m(c2)) {
-			return c1 - c2;
-		}
-	}
-
-	if (n == 0) {
-		return 0;
-	}
-
-	return *s1 - *s2;
-}
-
-/**
- * Compare 2 strings.
- *
- * @note The comparison is case-insensitive.
- **/
-_PUBLIC_ bool strequal_m(const char *s1, const char *s2)
-{
-	return strcasecmp_m(s1,s2) == 0;
-}
-
-/**
- Compare 2 strings (case sensitive).
-**/
-_PUBLIC_ bool strcsequal_m(const char *s1,const char *s2)
-{
-	if (s1 == s2)
-		return true;
-	if (!s1 || !s2)
-		return false;
-	
-	return strcmp(s1,s2) == 0;
-}
-
-
 /**
  String replace.
  NOTE: oldc and newc must be 7 bit characters
 **/
 _PUBLIC_ void string_replace_m(char *s, char oldc, char newc)
 {
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
+	struct smb_iconv_handle *ic = get_iconv_handle();
 	while (s && *s) {
 		size_t size;
-		codepoint_t c = next_codepoint_convenience(ic, s, &size);
+		codepoint_t c = next_codepoint_handle(ic, s, &size);
 		if (c == oldc) {
 			*s = newc;
 		}
@@ -203,233 +39,13 @@ _PUBLIC_ void string_replace_m(char *s, char oldc, char newc)
 }
 
 /**
- Paranoid strcpy into a buffer of given length (includes terminating
- zero. Strips out all but 'a-Z0-9' and the character in other_safe_chars
- and replaces with '_'. Deliberately does *NOT* check for multibyte
- characters. Don't change it !
-**/
-
-_PUBLIC_ char *alpha_strcpy(char *dest, const char *src, const char *other_safe_chars, size_t maxlength)
-{
-	size_t len, i;
-
-	if (maxlength == 0) {
-		/* can't fit any bytes at all! */
-		return NULL;
-	}
-
-	if (!dest) {
-		DEBUG(0,("ERROR: NULL dest in alpha_strcpy\n"));
-		return NULL;
-	}
-
-	if (!src) {
-		*dest = 0;
-		return dest;
-	}  
-
-	len = strlen(src);
-	if (len >= maxlength)
-		len = maxlength - 1;
-
-	if (!other_safe_chars)
-		other_safe_chars = "";
-
-	for(i = 0; i < len; i++) {
-		int val = (src[i] & 0xff);
-		if (isupper(val) || islower(val) || isdigit(val) || strchr_m(other_safe_chars, val))
-			dest[i] = src[i];
-		else
-			dest[i] = '_';
-	}
-
-	dest[i] = '\0';
-
-	return dest;
-}
-
-/**
- Count the number of UCS2 characters in a string. Normally this will
- be the same as the number of bytes in a string for single byte strings,
- but will be different for multibyte.
-**/
-_PUBLIC_ size_t strlen_m(const char *s)
-{
-	size_t count = 0;
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
-
-	if (!s) {
-		return 0;
-	}
-
-	while (*s && !(((uint8_t)*s) & 0x80)) {
-		s++;
-		count++;
-	}
-
-	if (!*s) {
-		return count;
-	}
-
-	while (*s) {
-		size_t c_size;
-		codepoint_t c = next_codepoint_convenience(ic, s, &c_size);
-		if (c < 0x10000) {
-			count += 1;
-		} else {
-			count += 2;
-		}
-		s += c_size;
-	}
-
-	return count;
-}
-
-/**
-   Work out the number of multibyte chars in a string, including the NULL
-   terminator.
-**/
-_PUBLIC_ size_t strlen_m_term(const char *s)
-{
-	if (!s) {
-		return 0;
-	}
-
-	return strlen_m(s) + 1;
-}
-
-/*
- * Weird helper routine for the winreg pipe: If nothing is around, return 0,
- * if a string is there, include the terminator.
- */
-
-_PUBLIC_ size_t strlen_m_term_null(const char *s)
-{
-	size_t len;
-	if (!s) {
-		return 0;
-	}
-	len = strlen_m(s);
-	if (len == 0) {
-		return 0;
-	}
-
-	return len+1;
-}
-
-/**
- Strchr and strrchr_m are a bit complex on general multi-byte strings. 
-**/
-_PUBLIC_ char *strchr_m(const char *s, char c)
-{
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
-	if (s == NULL) {
-		return NULL;
-	}
-	/* characters below 0x3F are guaranteed to not appear in
-	   non-initial position in multi-byte charsets */
-	if ((c & 0xC0) == 0) {
-		return strchr(s, c);
-	}
-
-	while (*s) {
-		size_t size;
-		codepoint_t c2 = next_codepoint_convenience(ic, s, &size);
-		if (c2 == c) {
-			return discard_const_p(char, s);
-		}
-		s += size;
-	}
-
-	return NULL;
-}
-
-/**
- * Multibyte-character version of strrchr
- */
-_PUBLIC_ char *strrchr_m(const char *s, char c)
-{
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
-	char *ret = NULL;
-
-	if (s == NULL) {
-		return NULL;
-	}
-
-	/* characters below 0x3F are guaranteed to not appear in
-	   non-initial position in multi-byte charsets */
-	if ((c & 0xC0) == 0) {
-		return strrchr(s, c);
-	}
-
-	while (*s) {
-		size_t size;
-		codepoint_t c2 = next_codepoint_convenience(ic, s, &size);
-		if (c2 == c) {
-			ret = discard_const_p(char, s);
-		}
-		s += size;
-	}
-
-	return ret;
-}
-
-/**
-  return True if any (multi-byte) character is lower case
-*/
-_PUBLIC_ bool strhaslower(const char *string)
-{
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
-	while (*string) {
-		size_t c_size;
-		codepoint_t s;
-		codepoint_t t;
-
-		s = next_codepoint_convenience(ic, string, &c_size);
-		string += c_size;
-
-		t = toupper_m(s);
-
-		if (s != t) {
-			return true; /* that means it has lower case chars */
-		}
-	}
-
-	return false;
-} 
-
-/**
-  return True if any (multi-byte) character is upper case
-*/
-_PUBLIC_ bool strhasupper(const char *string)
-{
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
-	while (*string) {
-		size_t c_size;
-		codepoint_t s;
-		codepoint_t t;
-
-		s = next_codepoint_convenience(ic, string, &c_size);
-		string += c_size;
-
-		t = tolower_m(s);
-
-		if (s != t) {
-			return true; /* that means it has upper case chars */
-		}
-	}
-
-	return false;
-} 
-
-/**
  Convert a string to lower case, allocated with talloc
 **/
-_PUBLIC_ char *strlower_talloc(TALLOC_CTX *ctx, const char *src)
+_PUBLIC_ char *strlower_talloc_handle(struct smb_iconv_handle *iconv_handle,
+				      TALLOC_CTX *ctx, const char *src)
 {
 	size_t size=0;
 	char *dest;
-	struct smb_iconv_convenience *iconv_convenience = get_iconv_convenience();
 
 	if(src == NULL) {
 		return NULL;
@@ -444,12 +60,64 @@ _PUBLIC_ char *strlower_talloc(TALLOC_CTX *ctx, const char *src)
 
 	while (*src) {
 		size_t c_size;
-		codepoint_t c = next_codepoint_convenience(iconv_convenience, src, &c_size);
+		codepoint_t c = next_codepoint_handle(iconv_handle, src, &c_size);
 		src += c_size;
 
 		c = tolower_m(c);
 
-		c_size = push_codepoint_convenience(iconv_convenience, dest+size, c);
+		c_size = push_codepoint_handle(iconv_handle, dest+size, c);
+		if (c_size == -1) {
+			talloc_free(dest);
+			return NULL;
+		}
+		size += c_size;
+	}
+
+	dest[size] = 0;
+
+	/* trim it so talloc_append_string() works */
+	dest = talloc_realloc(ctx, dest, char, size+1);
+
+	talloc_set_name_const(dest, dest);
+
+	return dest;
+}
+
+_PUBLIC_ char *strlower_talloc(TALLOC_CTX *ctx, const char *src)
+{
+	struct smb_iconv_handle *iconv_handle = get_iconv_handle();
+	return strlower_talloc_handle(iconv_handle, ctx, src);
+}
+
+/**
+ Convert a string to UPPER case, allocated with talloc
+ source length limited to n bytes, iconv handle supplied
+**/
+_PUBLIC_ char *strupper_talloc_n_handle(struct smb_iconv_handle *iconv_handle,
+					TALLOC_CTX *ctx, const char *src, size_t n)
+{
+	size_t size=0;
+	char *dest;
+
+	if (!src) {
+		return NULL;
+	}
+
+	/* this takes advantage of the fact that upper/lower can't
+	   change the length of a character by more than 1 byte */
+	dest = talloc_array(ctx, char, 2*(n+1));
+	if (dest == NULL) {
+		return NULL;
+	}
+
+	while (n-- && *src) {
+		size_t c_size;
+		codepoint_t c = next_codepoint_handle(iconv_handle, src, &c_size);
+		src += c_size;
+
+		c = toupper_m(c);
+
+		c_size = push_codepoint_handle(iconv_handle, dest+size, c);
 		if (c_size == -1) {
 			talloc_free(dest);
 			return NULL;
@@ -473,46 +141,9 @@ _PUBLIC_ char *strlower_talloc(TALLOC_CTX *ctx, const char *src)
 **/
 _PUBLIC_ char *strupper_talloc_n(TALLOC_CTX *ctx, const char *src, size_t n)
 {
-	size_t size=0;
-	char *dest;
-	struct smb_iconv_convenience *iconv_convenience = get_iconv_convenience();
-	
-	if (!src) {
-		return NULL;
-	}
-
-	/* this takes advantage of the fact that upper/lower can't
-	   change the length of a character by more than 1 byte */
-	dest = talloc_array(ctx, char, 2*(n+1));
-	if (dest == NULL) {
-		return NULL;
-	}
-
-	while (n-- && *src) {
-		size_t c_size;
-		codepoint_t c = next_codepoint_convenience(iconv_convenience, src, &c_size);
-		src += c_size;
-
-		c = toupper_m(c);
-
-		c_size = push_codepoint_convenience(iconv_convenience, dest+size, c);
-		if (c_size == -1) {
-			talloc_free(dest);
-			return NULL;
-		}
-		size += c_size;
-	}
-
-	dest[size] = 0;
-
-	/* trim it so talloc_append_string() works */
-	dest = talloc_realloc(ctx, dest, char, size+1);
-
-	talloc_set_name_const(dest, dest);
-
-	return dest;
+	struct smb_iconv_handle *iconv_handle = get_iconv_handle();
+	return strupper_talloc_n_handle(iconv_handle, ctx, src, n);
 }
-
 /**
  Convert a string to UPPER case, allocated with talloc
 **/
@@ -535,7 +166,7 @@ _PUBLIC_ char *talloc_strdup_upper(TALLOC_CTX *ctx, const char *src)
 _PUBLIC_ void strlower_m(char *s)
 {
 	char *d;
-	struct smb_iconv_convenience *iconv_convenience;
+	struct smb_iconv_handle *iconv_handle;
 
 	/* this is quite a common operation, so we want it to be
 	   fast. We optimise for the ascii case, knowing that all our
@@ -549,14 +180,14 @@ _PUBLIC_ void strlower_m(char *s)
 	if (!*s)
 		return;
 
-	iconv_convenience = get_iconv_convenience();
+	iconv_handle = get_iconv_handle();
 
 	d = s;
 
 	while (*s) {
 		size_t c_size, c_size2;
-		codepoint_t c = next_codepoint_convenience(iconv_convenience, s, &c_size);
-		c_size2 = push_codepoint_convenience(iconv_convenience, d, tolower_m(c));
+		codepoint_t c = next_codepoint_handle(iconv_handle, s, &c_size);
+		c_size2 = push_codepoint_handle(iconv_handle, d, tolower_m(c));
 		if (c_size2 > c_size) {
 			DEBUG(0,("FATAL: codepoint 0x%x (0x%x) expanded from %d to %d bytes in strlower_m\n",
 				 c, tolower_m(c), (int)c_size, (int)c_size2));
@@ -574,7 +205,7 @@ _PUBLIC_ void strlower_m(char *s)
 _PUBLIC_ void strupper_m(char *s)
 {
 	char *d;
-	struct smb_iconv_convenience *iconv_convenience;
+	struct smb_iconv_handle *iconv_handle;
 
 	/* this is quite a common operation, so we want it to be
 	   fast. We optimise for the ascii case, knowing that all our
@@ -588,14 +219,14 @@ _PUBLIC_ void strupper_m(char *s)
 	if (!*s)
 		return;
 
-	iconv_convenience = get_iconv_convenience();
+	iconv_handle = get_iconv_handle();
 
 	d = s;
 
 	while (*s) {
 		size_t c_size, c_size2;
-		codepoint_t c = next_codepoint_convenience(iconv_convenience, s, &c_size);
-		c_size2 = push_codepoint_convenience(iconv_convenience, d, toupper_m(c));
+		codepoint_t c = next_codepoint_handle(iconv_handle, s, &c_size);
+		c_size2 = push_codepoint_handle(iconv_handle, d, toupper_m(c));
 		if (c_size2 > c_size) {
 			DEBUG(0,("FATAL: codepoint 0x%x (0x%x) expanded from %d to %d bytes in strupper_m\n",
 				 c, toupper_m(c), (int)c_size, (int)c_size2));
@@ -613,12 +244,12 @@ _PUBLIC_ void strupper_m(char *s)
 **/
 _PUBLIC_ size_t count_chars_m(const char *s, char c)
 {
-	struct smb_iconv_convenience *ic = get_iconv_convenience();
+	struct smb_iconv_handle *ic = get_iconv_handle();
 	size_t count = 0;
 
 	while (*s) {
 		size_t size;
-		codepoint_t c2 = next_codepoint_convenience(ic, s, &size);
+		codepoint_t c2 = next_codepoint_handle(ic, s, &size);
 		if (c2 == c) count++;
 		s += size;
 	}
@@ -630,7 +261,8 @@ _PUBLIC_ size_t count_chars_m(const char *s, char c)
 /**
  * Copy a string from a char* unix src to a dos codepage string destination.
  *
- * @return the number of bytes occupied by the string in the destination.
+ * @converted_size the number of bytes occupied by the string in the destination.
+ * @return bool true if success.
  *
  * @param flags can include
  * <dl>
@@ -641,17 +273,17 @@ _PUBLIC_ size_t count_chars_m(const char *s, char c)
  * @param dest_len the maximum length in bytes allowed in the
  * destination.  If @p dest_len is -1 then no maximum is used.
  **/
-static ssize_t push_ascii(void *dest, const char *src, size_t dest_len, int flags)
+static bool push_ascii(void *dest, const char *src, size_t dest_len, int flags, size_t *converted_size)
 {
 	size_t src_len;
-	ssize_t ret;
+	bool ret;
 
 	if (flags & STR_UPPER) {
 		char *tmpbuf = strupper_talloc(NULL, src);
 		if (tmpbuf == NULL) {
-			return -1;
+			return false;
 		}
-		ret = push_ascii(dest, tmpbuf, dest_len, flags & ~STR_UPPER);
+		ret = push_ascii(dest, tmpbuf, dest_len, flags & ~STR_UPPER, converted_size);
 		talloc_free(tmpbuf);
 		return ret;
 	}
@@ -661,7 +293,7 @@ static ssize_t push_ascii(void *dest, const char *src, size_t dest_len, int flag
 	if (flags & (STR_TERMINATE | STR_TERMINATE_ASCII))
 		src_len++;
 
-	return convert_string(CH_UNIX, CH_DOS, src, src_len, dest, dest_len, false);
+	return convert_string(CH_UNIX, CH_DOS, src, src_len, dest, dest_len, converted_size);
 }
 
 /**
@@ -677,7 +309,7 @@ _PUBLIC_ bool push_ascii_talloc(TALLOC_CTX *ctx, char **dest, const char *src, s
 {
 	size_t src_len = strlen(src)+1;
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_UNIX, CH_DOS, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_UNIX, CH_DOS, src, src_len, (void **)dest, converted_size);
 }
 
 
@@ -698,7 +330,7 @@ _PUBLIC_ bool push_ascii_talloc(TALLOC_CTX *ctx, char **dest, const char *src, s
  **/
 static ssize_t pull_ascii(char *dest, const void *src, size_t dest_len, size_t src_len, int flags)
 {
-	size_t ret;
+	size_t size = 0;
 
 	if (flags & (STR_TERMINATE | STR_TERMINATE_ASCII)) {
 		if (src_len == (size_t)-1) {
@@ -711,10 +343,11 @@ static ssize_t pull_ascii(char *dest, const void *src, size_t dest_len, size_t s
 		}
 	}
 
-	ret = convert_string(CH_DOS, CH_UNIX, src, src_len, dest, dest_len, false);
+	/* We're ignoring the return here.. */
+	(void)convert_string(CH_DOS, CH_UNIX, src, src_len, dest, dest_len, &size);
 
 	if (dest_len)
-		dest[MIN(ret, dest_len-1)] = 0;
+		dest[MIN(size, dest_len-1)] = 0;
 
 	return src_len;
 }
@@ -739,16 +372,18 @@ static ssize_t push_ucs2(void *dest, const char *src, size_t dest_len, int flags
 {
 	size_t len=0;
 	size_t src_len = strlen(src);
-	size_t ret;
+	size_t size = 0;
+	bool ret;
 
 	if (flags & STR_UPPER) {
 		char *tmpbuf = strupper_talloc(NULL, src);
+		ssize_t retval;
 		if (tmpbuf == NULL) {
 			return -1;
 		}
-		ret = push_ucs2(dest, tmpbuf, dest_len, flags & ~STR_UPPER);
+		retval = push_ucs2(dest, tmpbuf, dest_len, flags & ~STR_UPPER);
 		talloc_free(tmpbuf);
-		return ret;
+		return retval;
 	}
 
 	if (flags & STR_TERMINATE)
@@ -764,14 +399,14 @@ static ssize_t push_ucs2(void *dest, const char *src, size_t dest_len, int flags
 	/* ucs2 is always a multiple of 2 bytes */
 	dest_len &= ~1;
 
-	ret = convert_string(CH_UNIX, CH_UTF16, src, src_len, dest, dest_len, false);
-	if (ret == (size_t)-1) {
+	ret = convert_string(CH_UNIX, CH_UTF16, src, src_len, dest, dest_len, &size);
+	if (ret == false) {
 		return 0;
 	}
 
-	len += ret;
+	len += size;
 
-	return len;
+	return (ssize_t)len;
 }
 
 
@@ -788,7 +423,7 @@ _PUBLIC_ bool push_ucs2_talloc(TALLOC_CTX *ctx, smb_ucs2_t **dest, const char *s
 {
 	size_t src_len = strlen(src)+1;
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_UNIX, CH_UTF16, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_UNIX, CH_UTF16, src, src_len, (void **)dest, converted_size);
 }
 
 
@@ -804,7 +439,7 @@ _PUBLIC_ bool push_utf8_talloc(TALLOC_CTX *ctx, char **dest, const char *src, si
 {
 	size_t src_len = strlen(src)+1;
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_UNIX, CH_UTF8, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_UNIX, CH_UTF8, src, src_len, (void **)dest, converted_size);
 }
 
 /**
@@ -820,7 +455,7 @@ _PUBLIC_ bool push_utf8_talloc(TALLOC_CTX *ctx, char **dest, const char *src, si
 
 static size_t pull_ucs2(char *dest, const void *src, size_t dest_len, size_t src_len, int flags)
 {
-	size_t ret;
+	size_t size = 0;
 
 	if (ucs2_align(NULL, src, flags)) {
 		src = (const void *)((const char *)src + 1);
@@ -839,10 +474,11 @@ static size_t pull_ucs2(char *dest, const void *src, size_t dest_len, size_t src
 	/* ucs2 is always a multiple of 2 bytes */
 	if (src_len != (size_t)-1)
 		src_len &= ~1;
-	
-	ret = convert_string(CH_UTF16, CH_UNIX, src, src_len, dest, dest_len, false);
+
+	/* We're ignoring the return here.. */
+	(void)convert_string(CH_UTF16, CH_UNIX, src, src_len, dest, dest_len, &size);
 	if (dest_len)
-		dest[MIN(ret, dest_len-1)] = 0;
+		dest[MIN(size, dest_len-1)] = 0;
 
 	return src_len;
 }
@@ -859,7 +495,7 @@ _PUBLIC_ bool pull_ascii_talloc(TALLOC_CTX *ctx, char **dest, const char *src, s
 {
 	size_t src_len = strlen(src)+1;
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_DOS, CH_UNIX, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_DOS, CH_UNIX, src, src_len, (void **)dest, converted_size);
 }
 
 /**
@@ -874,7 +510,7 @@ _PUBLIC_ bool pull_ucs2_talloc(TALLOC_CTX *ctx, char **dest, const smb_ucs2_t *s
 {
 	size_t src_len = utf16_len(src);
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_UTF16, CH_UNIX, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_UTF16, CH_UNIX, src, src_len, (void **)dest, converted_size);
 }
 
 /**
@@ -889,7 +525,7 @@ _PUBLIC_ bool pull_utf8_talloc(TALLOC_CTX *ctx, char **dest, const char *src, si
 {
 	size_t src_len = strlen(src)+1;
 	*dest = NULL;
-	return convert_string_talloc(ctx, CH_UTF8, CH_UNIX, src, src_len, (void **)dest, converted_size, false);
+	return convert_string_talloc(ctx, CH_UTF8, CH_UNIX, src, src_len, (void **)dest, converted_size);
 }
 
 /**
@@ -909,7 +545,12 @@ _PUBLIC_ bool pull_utf8_talloc(TALLOC_CTX *ctx, char **dest, const char *src, si
 _PUBLIC_ ssize_t push_string(void *dest, const char *src, size_t dest_len, int flags)
 {
 	if (flags & STR_ASCII) {
-		return push_ascii(dest, src, dest_len, flags);
+		size_t size = 0;
+		if (push_ascii(dest, src, dest_len, flags, &size)) {
+			return (ssize_t)size;
+		} else {
+			return (ssize_t)-1;
+		}
 	} else if (flags & STR_UNICODE) {
 		return push_ucs2(dest, src, dest_len, flags);
 	} else {
@@ -953,20 +594,39 @@ _PUBLIC_ ssize_t pull_string(char *dest, const void *src, size_t dest_len, size_
  * @param srclen length of the source string in bytes
  * @param dest pointer to destination string (multibyte or singlebyte)
  * @param destlen maximal length allowed for string
- * @returns the number of bytes occupied in the destination
+ * @param converted_size the number of bytes occupied in the destination
+ *
+ * @returns true on success, false on fail.
  **/
-_PUBLIC_ size_t convert_string(charset_t from, charset_t to,
-				void const *src, size_t srclen, 
-				void *dest, size_t destlen, 
-				bool allow_badcharcnv)
+_PUBLIC_ bool convert_string(charset_t from, charset_t to,
+			       void const *src, size_t srclen, 
+			       void *dest, size_t destlen,
+			       size_t *converted_size)
 {
-	size_t ret;
-	if (!convert_string_convenience(get_iconv_convenience(), from, to, 
-									  src, srclen,
-									  dest, destlen, &ret,
-									  allow_badcharcnv))
-		return -1;
-	return ret;
+	return convert_string_handle(get_iconv_handle(), from, to,
+					src, srclen,
+					dest, destlen, converted_size);
+}
+
+/**
+ * Convert string from one encoding to another, making error checking etc
+ *
+ * @param src pointer to source string (multibyte or singlebyte)
+ * @param srclen length of the source string in bytes
+ * @param dest pointer to destination string (multibyte or singlebyte)
+ * @param destlen maximal length allowed for string
+ * @param converted_size the number of bytes occupied in the destination
+ *
+ * @returns true on success, false on fail.
+ **/
+_PUBLIC_ bool convert_string_error(charset_t from, charset_t to,
+				   void const *src, size_t srclen,
+				   void *dest, size_t destlen,
+				   size_t *converted_size)
+{
+	return convert_string_error_handle(get_iconv_handle(), from, to,
+					   src, srclen,
+					   dest, destlen, converted_size);
 }
 
 /**
@@ -981,24 +641,12 @@ _PUBLIC_ size_t convert_string(charset_t from, charset_t to,
  **/
 
 _PUBLIC_ bool convert_string_talloc(TALLOC_CTX *ctx, 
-				       charset_t from, charset_t to, 
-				       void const *src, size_t srclen, 
-				       void *dest, size_t *converted_size, 
-					   bool allow_badcharcnv)
+				    charset_t from, charset_t to, 
+				    void const *src, size_t srclen, 
+				    void *dest, size_t *converted_size)
 {
-	return convert_string_talloc_convenience(ctx, get_iconv_convenience(),
-											 from, to, src, srclen, dest,
-											 converted_size, 
-											 allow_badcharcnv);
+	return convert_string_talloc_handle(ctx, get_iconv_handle(),
+						 from, to, src, srclen, dest,
+						 converted_size);
 }
 
-
-_PUBLIC_ codepoint_t next_codepoint(const char *str, size_t *size)
-{
-	return next_codepoint_convenience(get_iconv_convenience(), str, size);
-}
-
-_PUBLIC_ ssize_t push_codepoint(char *str, codepoint_t c)
-{
-	return push_codepoint_convenience(get_iconv_convenience(), str, c);
-}

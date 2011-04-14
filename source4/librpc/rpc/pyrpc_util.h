@@ -25,11 +25,6 @@
 
 #include "librpc/rpc/pyrpc.h"
 
-/* This macro is only provided by Python >= 2.3 */
-#ifndef PyAPI_DATA
-#   define PyAPI_DATA(RTYPE) extern RTYPE
-#endif
-
 #define PyErr_FromNdrError(err) Py_BuildValue("(is)", err, ndr_map_error2string(err))
 
 #define PyErr_SetNdrError(err) \
@@ -51,11 +46,13 @@ struct PyNdrRpcMethodDef {
 	const struct ndr_interface_table *table;
 };
 
-bool py_check_dcerpc_type(PyObject *obj, const char *module, const char *typename);
+bool py_check_dcerpc_type(PyObject *obj, const char *module, const char *type_name);
 bool PyInterface_AddNdrRpcMethods(PyTypeObject *object, const struct PyNdrRpcMethodDef *mds);
 PyObject *py_dcerpc_interface_init_helper(PyTypeObject *type, PyObject *args, PyObject *kwargs, const struct ndr_interface_table *table);
 
 PyObject *py_return_ndr_struct(const char *module_name, const char *type_name,
 			       TALLOC_CTX *r_ctx, void *r);
+
+PyObject *PyString_FromStringOrNULL(const char *str);
 
 #endif /* __PYRPC_UTIL_H__ */

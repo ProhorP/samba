@@ -38,6 +38,8 @@
  */
 
 #include "includes.h"
+#include "auth.h"
+#include "nsswitch/libwbclient/wbclient.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -59,6 +61,9 @@ static NTSTATUS check_wbc_security(const struct auth_context *auth_context,
 	if (!user_info || !auth_context || !server_info) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
+
+	ZERO_STRUCT(params);
+
 	/* Send off request */
 
 	DEBUG(10, ("Check auth for: [%s]", user_info->mapped.account_name));
@@ -79,6 +84,7 @@ static NTSTATUS check_wbc_security(const struct auth_context *auth_context,
 		params.level = WBC_AUTH_USER_LEVEL_PLAIN;
 
 		params.password.plaintext = user_info->password.plaintext;
+		break;
 	}
 	case AUTH_PASSWORD_RESPONSE:
 	case AUTH_PASSWORD_HASH:
@@ -91,14 +97,23 @@ static NTSTATUS check_wbc_security(const struct auth_context *auth_context,
 		    auth_context->challenge.data,
 		    sizeof(params.password.response.challenge));
 
-		params.password.response.nt_length = user_info->password.response.nt.length;
-		params.password.response.nt_data = user_info->password.response.nt.data;
-		params.password.response.lm_length = user_info->password.response.lanman.length;
-		params.password.response.lm_data = user_info->password.response.lanman.data;
+		if (user_info->password.response.nt.length != 0) {
+			params.password.response.nt_length =
+				user_info->password.response.nt.length;
+			params.password.response.nt_data =
+				user_info->password.response.nt.data;
+		}
+		if (user_info->password.response.lanman.length != 0) {
+			params.password.response.lm_length =
+				user_info->password.response.lanman.length;
+			params.password.response.lm_data =
+				user_info->password.response.lanman.data;
+		}
+		break;
+	}
 	default:
 		DEBUG(0,("user_info constructed for user '%s' was invalid - password_state=%u invalid.\n",user_info->mapped.account_name, user_info->password_state));
 		return NT_STATUS_INTERNAL_ERROR;
-	}
 #if 0 /* If ever implemented in libwbclient */
 	case AUTH_PASSWORD_HASH:
 	{

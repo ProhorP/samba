@@ -21,6 +21,8 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "mangle.h"
 
@@ -62,6 +64,40 @@ static const char basechars[43]="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_-!@#$%";
 #define isbasechar(C) ( (chartest[ ((C) & 0xff) ]) & BASECHAR_MASK )
 
 /* -------------------------------------------------------------------- */
+
+
+/*******************************************************************
+ Determine if a character is valid in a 8.3 name.
+********************************************************************/
+
+/**
+ * Load the valid character map table from <tt>valid.dat</tt> or
+ * create from the configured codepage.
+ *
+ * This function is called whenever the configuration is reloaded.
+ * However, the valid character table is not changed if it's loaded
+ * from a file, because we can't unmap files.
+ **/
+
+static uint8 *valid_table;
+static void init_valid_table(void)
+{
+	if (valid_table) {
+		return;
+	}
+
+	valid_table = (uint8 *)map_file(data_path("valid.dat"), 0x10000);
+	if (!valid_table) {
+		smb_panic("Could not load valid.dat file required for mangle method=hash");
+		return;
+	}
+}
+
+static bool isvalid83_w(smb_ucs2_t c)
+{
+	init_valid_table();
+	return valid_table[SVAL(&c,0)] != 0;
+}
 
 static NTSTATUS has_valid_83_chars(const smb_ucs2_t *s, bool allow_wildcards)
 {
@@ -105,6 +141,25 @@ static NTSTATUS has_illegal_chars(const smb_ucs2_t *s, bool allow_wildcards)
 	}
 
 	return NT_STATUS_OK;
+}
+
+/*******************************************************************
+ Duplicate string.
+********************************************************************/
+
+static smb_ucs2_t *strdup_w(const smb_ucs2_t *src)
+{
+	smb_ucs2_t *dest;
+	size_t len = strlen_w(src);
+	dest = SMB_MALLOC_ARRAY(smb_ucs2_t, len + 1);
+	if (!dest) {
+		DEBUG(0,("strdup_w: out of memory!\n"));
+		return NULL;
+	}
+
+	memcpy(dest, src, len * sizeof(smb_ucs2_t));
+	dest[len] = 0;
+	return dest;
 }
 
 /* return False if something fail and
@@ -531,6 +586,19 @@ static bool lookup_name_from_8_3(TALLOC_CTX *ctx,
 
 	return *out ? True : False;
 }
+
+/**
+ Check if a string is in "normal" case.
+**/
+
+static bool strisnormal(const char *s, int case_default)
+{
+	if (case_default == CASE_UPPER)
+		return(!strhaslower(s));
+
+	return(!strhasupper(s));
+}
+
 
 /*****************************************************************************
  Do the actual mangling to 8.3 format.

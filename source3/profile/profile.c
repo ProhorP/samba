@@ -20,7 +20,9 @@
 */
 
 #include "includes.h"
-#include "librpc/gen_ndr/messaging.h"
+#include "system/shmem.h"
+#include "messages.h"
+#include "smbprofile.h"
 
 #ifdef WITH_PROFILE
 #define IPC_PERMS ((S_IRUSR | S_IWUSR) | S_IRGRP | S_IROTH)
@@ -234,6 +236,7 @@ bool profile_setup(struct messaging_context *msg_ctx, bool rdonly)
 	    "syscall_getwd",		/* PR_VALUE_SYSCALL_GETWD */
 	    "syscall_ntimes",		/* PR_VALUE_SYSCALL_NTIMES */
 	    "syscall_ftruncate",	/* PR_VALUE_SYSCALL_FTRUNCATE */
+	    "syscall_fallocate",	/* PR_VALUE_SYSCALL_FALLOCATE */
 	    "syscall_fcntl_lock",	/* PR_VALUE_SYSCALL_FCNTL_LOCK */
 	    "syscall_kernel_flock",     /* PR_VALUE_SYSCALL_KERNEL_FLOCK */
 	    "syscall_linux_setlease",   /* PR_VALUE_SYSCALL_LINUX_SETLEASE */

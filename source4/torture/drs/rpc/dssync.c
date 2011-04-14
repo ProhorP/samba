@@ -340,15 +340,16 @@ static bool test_analyse_objects(struct torture_context *tctx,
 		       "drs_util_dsdb_schema_load_ldb() failed");
 	ldap_schema = dsdb_get_schema(ldb, NULL);
 
-	status = dsdb_extended_replicated_objects_convert(ldb,
-							  partition,
-							  mapping_ctr,
-							  object_count,
-							  first_object,
-							  0, NULL,
-							  NULL, NULL,
-							  gensec_skey,
-							  ctx, &objs);
+	status = dsdb_replicated_objects_convert(ldb,
+						 ldap_schema,
+						 partition,
+						 mapping_ctr,
+						 object_count,
+						 first_object,
+						 0, NULL,
+						 NULL, NULL,
+						 gensec_skey,
+						 ctx, &objs);
 	torture_assert_werr_ok(tctx, status, "dsdb_extended_replicated_objects_convert() failed!");
 
 	extended_dn_ctrl = talloc(objs, struct ldb_extended_dn_control);
@@ -532,10 +533,7 @@ static bool test_analyse_objects(struct torture_context *tctx,
 		}
 
 		for (i=0; i < cur->object.attribute_ctr.num_attributes; i++) {
-			WERROR werr;
 			const char *name = NULL;
-			bool rcrypt = false;
-			DATA_BLOB *enc_data = NULL;
 			DATA_BLOB plain_data;
 			struct drsuapi_DsReplicaAttribute *attr;
 			ndr_pull_flags_fn_t pull_fn = NULL;
@@ -544,50 +542,46 @@ static bool test_analyse_objects(struct torture_context *tctx,
 			attr = &cur->object.attribute_ctr.attributes[i];
 
 			switch (attr->attid) {
-			case DRSUAPI_ATTRIBUTE_dBCSPwd:
+			case DRSUAPI_ATTID_dBCSPwd:
 				name	= "dBCSPwd";
-				rcrypt	= true;
 				break;
-			case DRSUAPI_ATTRIBUTE_unicodePwd:
+			case DRSUAPI_ATTID_unicodePwd:
 				name	= "unicodePwd";
-				rcrypt	= true;
 				break;
-			case DRSUAPI_ATTRIBUTE_ntPwdHistory:
+			case DRSUAPI_ATTID_ntPwdHistory:
 				name	= "ntPwdHistory";
-				rcrypt	= true;
 				break;
-			case DRSUAPI_ATTRIBUTE_lmPwdHistory:
+			case DRSUAPI_ATTID_lmPwdHistory:
 				name	= "lmPwdHistory";
-				rcrypt	= true;
 				break;
-			case DRSUAPI_ATTRIBUTE_supplementalCredentials:
+			case DRSUAPI_ATTID_supplementalCredentials:
 				name	= "supplementalCredentials";
 				pull_fn = (ndr_pull_flags_fn_t)ndr_pull_supplementalCredentialsBlob;
 				print_fn = (ndr_print_fn_t)ndr_print_supplementalCredentialsBlob;
 				ptr = talloc(ctx, struct supplementalCredentialsBlob);
 				break;
-			case DRSUAPI_ATTRIBUTE_priorValue:
+			case DRSUAPI_ATTID_priorValue:
 				name	= "priorValue";
 				break;
-			case DRSUAPI_ATTRIBUTE_currentValue:
+			case DRSUAPI_ATTID_currentValue:
 				name	= "currentValue";
 				break;
-			case DRSUAPI_ATTRIBUTE_trustAuthOutgoing:
+			case DRSUAPI_ATTID_trustAuthOutgoing:
 				name	= "trustAuthOutgoing";
 				pull_fn = (ndr_pull_flags_fn_t)ndr_pull_trustAuthInOutBlob;
 				print_fn = (ndr_print_fn_t)ndr_print_trustAuthInOutBlob;
 				ptr = talloc(ctx, struct trustAuthInOutBlob);
 				break;
-			case DRSUAPI_ATTRIBUTE_trustAuthIncoming:
+			case DRSUAPI_ATTID_trustAuthIncoming:
 				name	= "trustAuthIncoming";
 				pull_fn = (ndr_pull_flags_fn_t)ndr_pull_trustAuthInOutBlob;
 				print_fn = (ndr_print_fn_t)ndr_print_trustAuthInOutBlob;
 				ptr = talloc(ctx, struct trustAuthInOutBlob);
 				break;
-			case DRSUAPI_ATTRIBUTE_initialAuthOutgoing:
+			case DRSUAPI_ATTID_initialAuthOutgoing:
 				name	= "initialAuthOutgoing";
 				break;
-			case DRSUAPI_ATTRIBUTE_initialAuthIncoming:
+			case DRSUAPI_ATTID_initialAuthIncoming:
 				name	= "initialAuthIncoming";
 				break;
 			default:
@@ -598,23 +592,15 @@ static bool test_analyse_objects(struct torture_context *tctx,
 
 			if (!attr->value_ctr.values[0].blob) continue;
 
-			enc_data = attr->value_ctr.values[0].blob;
-			ZERO_STRUCT(plain_data);
+			plain_data = *attr->value_ctr.values[0].blob;
 
-			werr = drsuapi_decrypt_attribute_value(ctx, gensec_skey, rcrypt,
-							       rid,
-							       enc_data, &plain_data);
-			if (!W_ERROR_IS_OK(werr)) {
-				DEBUG(0, ("Failed to decrypt %s\n", name));
-				continue;
-			}
 			if (!dn_printed) {
 				object_id++;
 				DEBUG(0,("DN[%u] %s\n", object_id, dn));
 				dn_printed = true;
 			}
-			DEBUGADD(0,("ATTR: %s enc.length=%lu plain.length=%lu\n",
-				    name, (long)enc_data->length, (long)plain_data.length));
+			DEBUGADD(0,("ATTR: %s plain.length=%lu\n",
+				    name, (long)plain_data.length));
 			if (plain_data.length) {
 				enum ndr_err_code ndr_err;
 				dump_data(0, plain_data.data, plain_data.length);
@@ -643,8 +629,6 @@ static bool test_analyse_objects(struct torture_context *tctx,
 						DEBUG(0, ("Failed to decode %s\n", name));
 					}
 				}
-			} else {
-				dump_data(0, enc_data->data, enc_data->length);
 			}
 			talloc_free(ptr);
 		}
@@ -793,16 +777,16 @@ static bool test_GetNCChanges(struct torture_context *tctx,
 				torture_comment(tctx,
 						"start[%d] tmp_higest_usn: %llu , highest_usn: %llu\n",
 						y,
-						r.in.req->req5.highwatermark.tmp_highest_usn,
-						r.in.req->req5.highwatermark.highest_usn);
+						(unsigned long long) r.in.req->req5.highwatermark.tmp_highest_usn,
+						(unsigned long long) r.in.req->req5.highwatermark.highest_usn);
 			}
 
 			if (r.in.level == 8) {
 				torture_comment(tctx,
 						"start[%d] tmp_higest_usn: %llu , highest_usn: %llu\n",
 						y,
-						r.in.req->req8.highwatermark.tmp_highest_usn,
-						r.in.req->req8.highwatermark.highest_usn);
+						(unsigned long long) r.in.req->req8.highwatermark.tmp_highest_usn,
+						(unsigned long long) r.in.req->req8.highwatermark.highest_usn);
 			}
 
 			status = dcerpc_drsuapi_DsGetNCChanges_r(ctx->new_dc.drsuapi.drs_handle, ctx, &r);
@@ -822,8 +806,8 @@ static bool test_GetNCChanges(struct torture_context *tctx,
 				torture_comment(tctx,
 						"end[%d] tmp_highest_usn: %llu , highest_usn: %llu\n",
 						y,
-						ctr1->new_highwatermark.tmp_highest_usn,
-						ctr1->new_highwatermark.highest_usn);
+						(unsigned long long) ctr1->new_highwatermark.tmp_highest_usn,
+						(unsigned long long) ctr1->new_highwatermark.highest_usn);
 
 				if (!test_analyse_objects(tctx, ctx, nc_dn_str, &ctr1->mapping_ctr,  ctr1->object_count,
 							  ctr1->first_object, &gensec_skey)) {
@@ -857,8 +841,8 @@ static bool test_GetNCChanges(struct torture_context *tctx,
 				torture_comment(tctx,
 						"end[%d] tmp_highest_usn: %llu , highest_usn: %llu\n",
 						y,
-						ctr6->new_highwatermark.tmp_highest_usn,
-						ctr6->new_highwatermark.highest_usn);
+						(unsigned long long) ctr6->new_highwatermark.tmp_highest_usn,
+						(unsigned long long) ctr6->new_highwatermark.highest_usn);
 
 				if (!test_analyse_objects(tctx, ctx, nc_dn_str, &ctr6->mapping_ctr,  ctr6->object_count,
 							  ctr6->first_object, &gensec_skey)) {
@@ -1054,7 +1038,7 @@ void torture_drs_rpc_dssync_tcase(struct torture_suite *suite)
 	typedef bool (*run_func) (struct torture_context *test, void *tcase_data);
 
 	struct torture_test *test;
-	struct torture_tcase *tcase = torture_suite_add_tcase(suite, "DSSYNC");
+	struct torture_tcase *tcase = torture_suite_add_tcase(suite, "dssync");
 
 	torture_tcase_set_fixture(tcase,
 				  torture_dssync_tcase_setup,

@@ -226,7 +226,8 @@ int ldb_msg_add_value(struct ldb_message *msg,
 		}
 	}
 
-	vals = talloc_realloc(msg, el->values, struct ldb_val, el->num_values+1);
+	vals = talloc_realloc(msg->elements, el->values, struct ldb_val,
+			      el->num_values+1);
 	if (!vals) {
 		errno = ENOMEM;
 		return LDB_ERR_OPERATIONS_ERROR;
@@ -307,8 +308,14 @@ int ldb_msg_add_steal_string(struct ldb_message *msg,
 int ldb_msg_add_linearized_dn(struct ldb_message *msg, const char *attr_name,
 			      struct ldb_dn *dn)
 {
-	return ldb_msg_add_steal_string(msg, attr_name,
-					ldb_dn_alloc_linearized(msg, dn));
+	char *str = ldb_dn_alloc_linearized(msg, dn);
+
+	if (str == NULL) {
+		/* we don't want to have unknown DNs added */
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
+	return ldb_msg_add_steal_string(msg, attr_name, str);
 }
 
 /*
@@ -384,30 +391,63 @@ int ldb_msg_find_attr_as_int(const struct ldb_message *msg,
 			     int default_value)
 {
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
+	char buf[sizeof("-2147483648")];
+	char *end = NULL;
+	int ret;
+
 	if (!v || !v->data) {
 		return default_value;
 	}
-	return strtol((const char *)v->data, NULL, 0);
+
+	ZERO_STRUCT(buf);
+	if (v->length >= sizeof(buf)) {
+		return default_value;
+	}
+
+	memcpy(buf, v->data, v->length);
+	errno = 0;
+	ret = (int) strtoll(buf, &end, 10);
+	if (errno != 0) {
+		return default_value;
+	}
+	if (end && end[0] != '\0') {
+		return default_value;
+	}
+	return ret;
 }
 
-unsigned int ldb_msg_find_attr_as_uint(const struct ldb_message *msg, 
+unsigned int ldb_msg_find_attr_as_uint(const struct ldb_message *msg,
 				       const char *attr_name,
 				       unsigned int default_value)
 {
-	unsigned int ret;
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
+	char buf[sizeof("-2147483648")];
+	char *end = NULL;
+	unsigned int ret;
+
 	if (!v || !v->data) {
 		return default_value;
 	}
 
-	/* in LDAP there're only int32_t values */
-	errno = 0;
-	ret = strtol((const char *)v->data, NULL, 0);
-	if (errno == 0) {
-		return ret;
+	ZERO_STRUCT(buf);
+	if (v->length >= sizeof(buf)) {
+		return default_value;
 	}
 
-	return strtoul((const char *)v->data, NULL, 0);
+	memcpy(buf, v->data, v->length);
+	errno = 0;
+	ret = (unsigned int) strtoll(buf, &end, 10);
+	if (errno != 0) {
+		errno = 0;
+		ret = (unsigned int) strtoull(buf, &end, 10);
+		if (errno != 0) {
+			return default_value;
+		}
+	}
+	if (end && end[0] != '\0') {
+		return default_value;
+	}
+	return ret;
 }
 
 int64_t ldb_msg_find_attr_as_int64(const struct ldb_message *msg, 
@@ -415,30 +455,63 @@ int64_t ldb_msg_find_attr_as_int64(const struct ldb_message *msg,
 				   int64_t default_value)
 {
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
+	char buf[sizeof("-9223372036854775808")];
+	char *end = NULL;
+	int64_t ret;
+
 	if (!v || !v->data) {
 		return default_value;
 	}
-	return strtoll((const char *)v->data, NULL, 0);
+
+	ZERO_STRUCT(buf);
+	if (v->length >= sizeof(buf)) {
+		return default_value;
+	}
+
+	memcpy(buf, v->data, v->length);
+	errno = 0;
+	ret = (int64_t) strtoll(buf, &end, 10);
+	if (errno != 0) {
+		return default_value;
+	}
+	if (end && end[0] != '\0') {
+		return default_value;
+	}
+	return ret;
 }
 
-uint64_t ldb_msg_find_attr_as_uint64(const struct ldb_message *msg, 
+uint64_t ldb_msg_find_attr_as_uint64(const struct ldb_message *msg,
 				     const char *attr_name,
 				     uint64_t default_value)
 {
-	uint64_t ret;
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
+	char buf[sizeof("-9223372036854775808")];
+	char *end = NULL;
+	uint64_t ret;
+
 	if (!v || !v->data) {
 		return default_value;
 	}
 
-	/* in LDAP there're only int64_t values */
-	errno = 0;
-	ret = strtoll((const char *)v->data, NULL, 0);
-	if (errno == 0) {
-		return ret;
+	ZERO_STRUCT(buf);
+	if (v->length >= sizeof(buf)) {
+		return default_value;
 	}
 
-	return strtoull((const char *)v->data, NULL, 0);
+	memcpy(buf, v->data, v->length);
+	errno = 0;
+	ret = (uint64_t) strtoll(buf, &end, 10);
+	if (errno != 0) {
+		errno = 0;
+		ret = (uint64_t) strtoull(buf, &end, 10);
+		if (errno != 0) {
+			return default_value;
+		}
+	}
+	if (end && end[0] != '\0') {
+		return default_value;
+	}
+	return ret;
 }
 
 double ldb_msg_find_attr_as_double(const struct ldb_message *msg, 
@@ -446,10 +519,28 @@ double ldb_msg_find_attr_as_double(const struct ldb_message *msg,
 				   double default_value)
 {
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
+	char *buf;
+	char *end = NULL;
+	double ret;
+
 	if (!v || !v->data) {
 		return default_value;
 	}
-	return strtod((const char *)v->data, NULL);
+	buf = talloc_strndup(msg, (const char *)v->data, v->length);
+	if (buf == NULL) {
+		return default_value;
+	}
+
+	errno = 0;
+	ret = strtod(buf, &end);
+	talloc_free(buf);
+	if (errno != 0) {
+		return default_value;
+	}
+	if (end && end[0] != '\0') {
+		return default_value;
+	}
+	return ret;
 }
 
 int ldb_msg_find_attr_as_bool(const struct ldb_message *msg, 
@@ -475,6 +566,9 @@ const char *ldb_msg_find_attr_as_string(const struct ldb_message *msg,
 {
 	const struct ldb_val *v = ldb_msg_find_ldb_val(msg, attr_name);
 	if (!v || !v->data) {
+		return default_value;
+	}
+	if (v->data[v->length] != '\0') {
 		return default_value;
 	}
 	return (const char *)v->data;
@@ -765,7 +859,6 @@ int ldb_msg_sanity_check(struct ldb_context *ldb,
 
 	/* basic check on DN */
 	if (msg->dn == NULL) {
-		/* TODO: return also an error string */
 		ldb_set_errstring(ldb, "ldb message lacks a DN!");
 		return LDB_ERR_INVALID_DN_SYNTAX;
 	}
@@ -774,13 +867,10 @@ int ldb_msg_sanity_check(struct ldb_context *ldb,
 	for (i = 0; i < msg->num_elements; i++) {
 		for (j = 0; j < msg->elements[i].num_values; j++) {
 			if (msg->elements[i].values[j].length == 0) {
-				TALLOC_CTX *mem_ctx = talloc_new(ldb);
 				/* an attribute cannot be empty */
-				/* TODO: return also an error string */
 				ldb_asprintf_errstring(ldb, "Element %s has empty attribute in ldb message (%s)!",
 							    msg->elements[i].name, 
 							    ldb_dn_get_linearized(msg->dn));
-				talloc_free(mem_ctx);
 				return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
 			}
 		}
@@ -883,11 +973,14 @@ int ldb_msg_rename_attr(struct ldb_message *msg, const char *attr, const char *r
 int ldb_msg_copy_attr(struct ldb_message *msg, const char *attr, const char *replace)
 {
 	struct ldb_message_element *el = ldb_msg_find_element(msg, attr);
+	int ret;
+
 	if (el == NULL) {
 		return LDB_SUCCESS;
 	}
-	if (ldb_msg_add(msg, el, 0) != 0) {
-		return LDB_ERR_OPERATIONS_ERROR;
+	ret = ldb_msg_add(msg, el, 0);
+	if (ret != LDB_SUCCESS) {
+		return ret;
 	}
 	return ldb_msg_rename_attr(msg, attr, replace);
 }

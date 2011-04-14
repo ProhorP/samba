@@ -23,6 +23,7 @@
 #include "lib/cmdline/popt_common.h"
 #include "torture/torture.h"
 #include "param/param.h"
+#include "torture/auth/proto.h"
 
 static bool torture_ntlmssp_self_check(struct torture_context *tctx)
 {
@@ -151,8 +152,7 @@ static bool torture_ntlmssp_self_check(struct torture_context *tctx)
 
 struct torture_suite *torture_ntlmssp(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, 
-													   "NTLMSSP");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "ntlmssp");
 
 	torture_suite_add_simple_test(suite, "NTLMSSP self check",
 								   torture_ntlmssp_self_check);

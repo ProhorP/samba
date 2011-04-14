@@ -26,10 +26,12 @@
 #include "system/filesys.h"
 #include "cluster/cluster.h"
 
+NTSTATUS process_model_single_init(void);
+
 /*
   called when the process model is selected
 */
-static void single_model_init(struct tevent_context *ev)
+static void single_model_init(void)
 {
 }
 

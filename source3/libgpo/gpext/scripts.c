@@ -22,6 +22,8 @@
 #include "../libgpo/gpo.h"
 #include "libgpo/gpo_proto.h"
 #include "registry.h"
+#include "registry/reg_api.h"
+#include "../libcli/registry/util_reg.h"
 
 #define GP_EXT_NAME "scripts"
 
@@ -300,7 +302,7 @@ static WERROR scripts_apply(TALLOC_CTX *mem_ctx,
 				 section, count++);
 	W_ERROR_HAVE_NO_MEMORY(keystr);
 
-	reg_deletekey_recursive(mem_ctx, root_key, keystr);
+	reg_deletekey_recursive(root_key, keystr);
 
 	werr = gp_store_reg_subkey(mem_ctx, keystr,
 				   root_key, &root_key);

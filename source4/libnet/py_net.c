@@ -20,19 +20,19 @@
 
 #include <Python.h>
 #include "includes.h"
+#include <ldb.h>
+#include <pyldb.h>
 #include "libnet.h"
 #include "auth/credentials/pycredentials.h"
 #include "libcli/security/security.h"
 #include "lib/events/events.h"
-#include "param/param.h"
 #include "param/pyparam.h"
-#include "lib/ldb/pyldb.h"
 #include "auth/gensec/gensec.h"
-#include "librpc/rpc/pyrpc.h"
 #include "librpc/rpc/pyrpc_util.h"
-#include "lib/messaging/messaging.h"
 #include "libcli/finddc.h"
 #include "libcli/resolve/resolve.h"
+
+void initnet(void);
 
 typedef struct {
 	PyObject_HEAD
@@ -55,6 +55,10 @@ static PyObject *py_net_join(py_net_Object *self, PyObject *args, PyObject *kwar
 		return NULL;
 
 	mem_ctx = talloc_new(self->mem_ctx);
+	if (mem_ctx == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 
 	status = libnet_Join(self->libnet_ctx, mem_ctx, &r);
 	if (NT_STATUS_IS_ERR(status)) {
@@ -95,7 +99,12 @@ static PyObject *py_net_set_password(py_net_Object *self, PyObject *args, PyObje
 	/* FIXME: we really need to get a context from the caller or we may end
 	 * up with 2 event contexts */
 	ev = s4_event_context_init(NULL);
+
 	mem_ctx = talloc_new(ev);
+	if (mem_ctx == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 
 	status = libnet_SetPassword(self->libnet_ctx, mem_ctx, &r);
 	if (NT_STATUS_IS_ERR(status)) {
@@ -131,6 +140,10 @@ static PyObject *py_net_export_keytab(py_net_Object *self, PyObject *args, PyObj
 	}
 
 	mem_ctx = talloc_new(self->mem_ctx);
+	if (mem_ctx == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 
 	status = libnet_export_keytab(self->libnet_ctx, mem_ctx, &r);
 	if (NT_STATUS_IS_ERR(status)) {
@@ -529,17 +542,20 @@ static PyMethodDef net_obj_methods[] = {
 static void py_net_dealloc(py_net_Object *self)
 {
 	talloc_free(self->mem_ctx);
+	PyObject_Del(self);
 }
 
 static PyObject *net_obj_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
 	PyObject *py_creds, *py_lp = Py_None;
-	const char *kwnames[] = { "creds", "lp", NULL };
+	const char *kwnames[] = { "creds", "lp", "server", NULL };
 	py_net_Object *ret;
 	struct loadparm_context *lp;
+	const char *server_address = NULL;
 
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|O", 
-			discard_const_p(char *, kwnames), &py_creds, &py_lp))
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|Oz",
+					 discard_const_p(char *, kwnames), &py_creds, &py_lp,
+					 &server_address))
 		return NULL;
 
 	ret = PyObject_New(py_net_Object, type);
@@ -564,6 +580,8 @@ static PyObject *net_obj_new(PyTypeObject *type, PyObject *args, PyObject *kwarg
 		Py_DECREF(ret);
 		return NULL;
 	}
+
+	ret->libnet_ctx->server_address = server_address;
 
 	ret->libnet_ctx->cred = cli_credentials_from_py_object(py_creds);
 	if (ret->libnet_ctx->cred == NULL) {

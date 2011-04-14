@@ -24,6 +24,7 @@
 #include "libcli/libcli.h"
 #include "torture/util.h"
 #include "lib/util/tsort.h"
+#include "torture/raw/proto.h"
 
 
 #define BASEDIR "\\testsearch"
@@ -1510,7 +1511,7 @@ done:
 */
 struct torture_suite *torture_raw_search(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "SEARCH");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "search");
 
 	torture_suite_add_1smb_test(suite, "one file search", test_one_file);
 	torture_suite_add_1smb_test(suite, "many files", test_many_files);

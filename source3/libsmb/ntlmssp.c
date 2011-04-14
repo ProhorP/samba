@@ -30,6 +30,7 @@
 #include "../lib/crypto/md5.h"
 #include "../lib/crypto/arcfour.h"
 #include "../lib/crypto/hmacmd5.h"
+#include "../nsswitch/libwbclient/wbclient.h"
 
 static NTSTATUS ntlmssp_client_initial(struct ntlmssp_state *ntlmssp_state,
 				       TALLOC_CTX *out_mem_ctx, /* Unused at this time */
@@ -377,6 +378,8 @@ static NTSTATUS ntlmssp_client_initial(struct ntlmssp_state *ntlmssp_state,
 				  TALLOC_CTX *out_mem_ctx, /* Unused at this time */
 				  DATA_BLOB reply, DATA_BLOB *next_request)
 {
+	NTSTATUS status;
+
 	if (ntlmssp_state->unicode) {
 		ntlmssp_state->neg_flags |= NTLMSSP_NEGOTIATE_UNICODE;
 	} else {
@@ -388,18 +391,22 @@ static NTSTATUS ntlmssp_client_initial(struct ntlmssp_state *ntlmssp_state,
 	}
 
 	/* generate the ntlmssp negotiate packet */
-	msrpc_gen(ntlmssp_state, next_request, "CddAA",
+	status = msrpc_gen(ntlmssp_state, next_request, "CddAA",
 		  "NTLMSSP",
 		  NTLMSSP_NEGOTIATE,
 		  ntlmssp_state->neg_flags,
 		  ntlmssp_state->client.netbios_domain,
 		  ntlmssp_state->client.netbios_name);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("ntlmssp_client_initial: failed to generate "
+			"ntlmssp negotiate packet\n"));
+		return status;
+	}
 
 	if (DEBUGLEVEL >= 10) {
 		struct NEGOTIATE_MESSAGE *negotiate = talloc(
 			talloc_tos(), struct NEGOTIATE_MESSAGE);
 		if (negotiate != NULL) {
-			NTSTATUS status;
 			status = ntlmssp_pull_NEGOTIATE_MESSAGE(
 				next_request, negotiate, negotiate);
 			if (NT_STATUS_IS_OK(status)) {
@@ -463,9 +470,7 @@ static NTSTATUS ntlmssp_client_challenge(struct ntlmssp_state *ntlmssp_state,
 		params.blobs = &auth_blob;
 
 		wbc_status = wbcCredentialCache(&params, &info, &error);
-		if (error != NULL) {
-			wbcFreeMemory(error);
-		}
+		wbcFreeMemory(error);
 		if (!WBC_ERROR_IS_OK(wbc_status)) {
 			goto noccache;
 		}
@@ -685,7 +690,7 @@ noccache:
 	}
 
 	/* this generates the actual auth packet */
-	if (!msrpc_gen(ntlmssp_state, next_request, auth_gen_string,
+	nt_status = msrpc_gen(ntlmssp_state, next_request, auth_gen_string,
 		       "NTLMSSP",
 		       NTLMSSP_AUTH,
 		       lm_response.data, lm_response.length,
@@ -694,8 +699,9 @@ noccache:
 		       ntlmssp_state->user,
 		       ntlmssp_state->client.netbios_name,
 		       encrypted_session_key.data, encrypted_session_key.length,
-		       ntlmssp_state->neg_flags)) {
+		       ntlmssp_state->neg_flags);
 
+	if (!NT_STATUS_IS_OK(nt_status)) {
 		return NT_STATUS_NO_MEMORY;
 	}
 

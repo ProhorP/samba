@@ -44,40 +44,19 @@
 */
 
 #include "includes.h"
+#include "passdb.h"
 #include "../libcli/auth/libcli_auth.h"
 #include "secrets.h"
 #include "idmap_cache.h"
+#include "../libcli/security/security.h"
+#include "../lib/util/util_pw.h"
+#include "lib/winbind_util.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_PASSDB
 
 #include <lber.h>
 #include <ldap.h>
-
-/*
- * Work around versions of the LDAP client libs that don't have the OIDs
- * defined, or have them defined under the old name.  
- * This functionality is really a factor of the server, not the client 
- *
- */
-
-#if defined(LDAP_EXOP_X_MODIFY_PASSWD) && !defined(LDAP_EXOP_MODIFY_PASSWD)
-#define LDAP_EXOP_MODIFY_PASSWD LDAP_EXOP_X_MODIFY_PASSWD
-#elif !defined(LDAP_EXOP_MODIFY_PASSWD)
-#define LDAP_EXOP_MODIFY_PASSWD "1.3.6.1.4.1.4203.1.11.1"
-#endif
-
-#if defined(LDAP_EXOP_X_MODIFY_PASSWD_ID) && !defined(LDAP_EXOP_MODIFY_PASSWD_ID)
-#define LDAP_TAG_EXOP_MODIFY_PASSWD_ID LDAP_EXOP_X_MODIFY_PASSWD_ID
-#elif !defined(LDAP_EXOP_MODIFY_PASSWD_ID)
-#define LDAP_TAG_EXOP_MODIFY_PASSWD_ID        ((ber_tag_t) 0x80U)
-#endif
-
-#if defined(LDAP_EXOP_X_MODIFY_PASSWD_NEW) && !defined(LDAP_EXOP_MODIFY_PASSWD_NEW)
-#define LDAP_TAG_EXOP_MODIFY_PASSWD_NEW LDAP_EXOP_X_MODIFY_PASSWD_NEW
-#elif !defined(LDAP_EXOP_MODIFY_PASSWD_NEW)
-#define LDAP_TAG_EXOP_MODIFY_PASSWD_NEW       ((ber_tag_t) 0x82U)
-#endif
 
 
 #include "smbldap.h"
@@ -86,7 +65,7 @@
  Simple helper function to make stuff better readable
  **********************************************************************/
 
-static LDAP *priv2ld(struct ldapsam_privates *priv)
+LDAP *priv2ld(struct ldapsam_privates *priv)
 {
 	return priv->smbldap_state->ldap_struct;
 }
@@ -1026,7 +1005,7 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 	if (temp) {
 		pdb_gethexhours(temp, hours);
 		memset((char *)temp, '\0', strlen(temp) +1);
-		pdb_set_hours(sampass, hours, PDB_SET);
+		pdb_set_hours(sampass, hours, hours_len, PDB_SET);
 		ZERO_STRUCT(hours);
 	}
 
@@ -1106,7 +1085,7 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 
 		gid_to_sid(&mapped_gsid, sampass->unix_pw->pw_gid);
 		primary_gsid = pdb_get_group_sid(sampass);
-		if (primary_gsid && sid_equal(primary_gsid, &mapped_gsid)) {
+		if (primary_gsid && dom_sid_equal(primary_gsid, &mapped_gsid)) {
 			store_gid_sid_cache(primary_gsid,
 					    sampass->unix_pw->pw_gid);
 			idmap_cache_set_sid2gid(primary_gsid,
@@ -2079,7 +2058,7 @@ static NTSTATUS ldapsam_enum_group_memberships(struct pdb_methods *methods,
 					       struct samu *user,
 					       struct dom_sid **pp_sids,
 					       gid_t **pp_gids,
-					       size_t *p_num_groups);
+					       uint32_t *p_num_groups);
 
 static NTSTATUS ldapsam_rename_sam_account(struct pdb_methods *my_methods,
 					   struct samu *old_acct,
@@ -2682,7 +2661,7 @@ static bool ldapsam_extract_rid_from_entry(LDAP *ldap_struct,
 		return False;
 	}
 
-	if (sid_compare_domain(&sid, domain_sid) != 0) {
+	if (dom_sid_compare_domain(&sid, domain_sid) != 0) {
 		DEBUG(10, ("SID %s is not in expected domain %s\n",
 			   str, sid_string_dbg(domain_sid)));
 		return False;
@@ -2901,7 +2880,7 @@ static NTSTATUS ldapsam_enum_group_memberships(struct pdb_methods *methods,
 					       struct samu *user,
 					       struct dom_sid **pp_sids,
 					       gid_t **pp_gids,
-					       size_t *p_num_groups)
+					       uint32_t *p_num_groups)
 {
 	struct ldapsam_privates *ldap_state =
 		(struct ldapsam_privates *)methods->private_data;
@@ -2914,7 +2893,7 @@ static NTSTATUS ldapsam_enum_group_memberships(struct pdb_methods *methods,
 	LDAPMessage *entry;
 	NTSTATUS ret = NT_STATUS_UNSUCCESSFUL;
 	uint32_t num_sids;
-	size_t num_gids;
+	uint32_t num_gids;
 	char *gidstr;
 	gid_t primary_gid = -1;
 
@@ -3055,7 +3034,7 @@ static NTSTATUS ldapsam_enum_group_memberships(struct pdb_methods *methods,
 		}
 	}
 
-	if (sid_compare(&global_sid_NULL, &(*pp_sids)[0]) == 0) {
+	if (dom_sid_compare(&global_sid_NULL, &(*pp_sids)[0]) == 0) {
 		DEBUG(3, ("primary group of [%s] not found\n",
 			  pdb_get_username(user)));
 		goto done;
@@ -3515,7 +3494,7 @@ static NTSTATUS ldapsam_enum_group_mapping(struct pdb_methods *methods,
 					   size_t *p_num_entries,
 					   bool unix_only)
 {
-	GROUP_MAP map;
+	GROUP_MAP map = { 0, };
 	size_t entries = 0;
 
 	*p_num_entries = 0;
@@ -4813,7 +4792,7 @@ static bool ldapgroup2displayentry(struct ldap_search_state *state,
 			break;
 
 		default:
-			DEBUG(0,("unkown group type: %d\n", group_type));
+			DEBUG(0,("unknown group type: %d\n", group_type));
 			return False;
 	}
 
@@ -5388,7 +5367,7 @@ static NTSTATUS ldapsam_create_user(struct pdb_methods *my_methods,
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	if (!init_ldap_from_sam(ldap_state, NULL, &mods, user, element_is_set_or_changed)) {
+	if (!init_ldap_from_sam(ldap_state, entry, &mods, user, element_is_set_or_changed)) {
 		DEBUG(1,("ldapsam_create_user: Unable to fill user structs\n"));
 		return NT_STATUS_UNSUCCESSFUL;
 	}
@@ -5535,7 +5514,7 @@ static NTSTATUS ldapsam_delete_user(struct pdb_methods *my_methods, TALLOC_CTX *
 		NTSTATUS status;
 		struct dom_sid *sids = NULL;
 		gid_t *gids = NULL;
-		size_t num_groups = 0;
+		uint32_t num_groups = 0;
 		int i;
 		uint32_t user_rid = pdb_get_user_rid(sam_acct);
 
@@ -6624,7 +6603,7 @@ NTSTATUS pdb_init_ldapsam(struct pdb_methods **pdb_method, const char *location)
 			  "info, nor add one to the domain\n"));
 		DEBUGADD(2, ("pdb_init_ldapsam: Continuing on regardless, "
 			     "will be unable to allocate new users/groups, "
-			     "and will risk BDCs having inconsistant SIDs\n"));
+			     "and will risk BDCs having inconsistent SIDs\n"));
 		sid_copy(&ldap_state->domain_sid, get_global_sam_sid());
 		return NT_STATUS_OK;
 	}
@@ -6668,7 +6647,7 @@ NTSTATUS pdb_init_ldapsam(struct pdb_methods **pdb_method, const char *location)
 		}
 		found_sid = secrets_fetch_domain_sid(ldap_state->domain_name,
 						     &secrets_domain_sid);
-		if (!found_sid || !sid_equal(&secrets_domain_sid,
+		if (!found_sid || !dom_sid_equal(&secrets_domain_sid,
 					     &ldap_domain_sid)) {
 			DEBUG(1, ("pdb_init_ldapsam: Resetting SID for domain "
 				  "%s based on pdb_ldap results %s -> %s\n",
@@ -6720,6 +6699,8 @@ NTSTATUS pdb_ldap_init(void)
 
 	/* Let pdb_nds register backends */
 	pdb_nds_init();
+
+	pdb_ipa_init();
 
 	return NT_STATUS_OK;
 }

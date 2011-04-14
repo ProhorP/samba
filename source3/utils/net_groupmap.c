@@ -22,7 +22,10 @@
 
 
 #include "includes.h"
+#include "system/passwd.h"
 #include "utils/net.h"
+#include "../libcli/security/security.h"
+#include "passdb.h"
 
 /*********************************************************
  Figure out if the input was an NT group or a SID string.
@@ -55,19 +58,19 @@ static bool get_sid_from_input(struct dom_sid *sid, char *input)
  Dump a GROUP_MAP entry to stdout (long or short listing)
 **********************************************************/
 
-static void print_map_entry ( GROUP_MAP map, bool long_list )
+static void print_map_entry (const GROUP_MAP *map, bool long_list)
 {
 	if (!long_list)
-		d_printf("%s (%s) -> %s\n", map.nt_name,
-			 sid_string_tos(&map.sid), gidtoname(map.gid));
+		d_printf("%s (%s) -> %s\n", map->nt_name,
+			 sid_string_tos(&map->sid), gidtoname(map->gid));
 	else {
-		d_printf("%s\n", map.nt_name);
-		d_printf(_("\tSID       : %s\n"), sid_string_tos(&map.sid));
-		d_printf(_("\tUnix gid  : %u\n"), (unsigned int)map.gid);
-		d_printf(_("\tUnix group: %s\n"), gidtoname(map.gid));
+		d_printf("%s\n", map->nt_name);
+		d_printf(_("\tSID       : %s\n"), sid_string_tos(&map->sid));
+		d_printf(_("\tUnix gid  : %u\n"), (unsigned int)map->gid);
+		d_printf(_("\tUnix group: %s\n"), gidtoname(map->gid));
 		d_printf(_("\tGroup type: %s\n"),
-			 sid_type_lookup(map.sid_name_use));
-		d_printf(_("\tComment   : %s\n"), map.comment);
+			 sid_type_lookup(map->sid_name_use));
+		d_printf(_("\tComment   : %s\n"), map->comment);
 	}
 
 }
@@ -141,7 +144,7 @@ static int net_groupmap_list(struct net_context *c, int argc, const char **argv)
 			return -1;
 		}
 
-		print_map_entry( map, long_list );
+		print_map_entry(&map, long_list );
 	}
 	else {
 		GROUP_MAP *map=NULL;
@@ -150,7 +153,7 @@ static int net_groupmap_list(struct net_context *c, int argc, const char **argv)
 			return -1;
 
 		for (i=0; i<entries; i++) {
-			print_map_entry( map[i], long_list );
+			print_map_entry(&map[i], long_list);
 		}
 
 		SAFE_FREE(map);

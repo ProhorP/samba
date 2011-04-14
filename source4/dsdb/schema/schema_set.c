@@ -23,7 +23,7 @@
 #include "includes.h"
 #include "lib/util/dlinklist.h"
 #include "dsdb/samdb/samdb.h"
-#include "lib/ldb/include/ldb_module.h"
+#include <ldb_module.h>
 #include "param/param.h"
 #include "librpc/ndr/libndr.h"
 #include "librpc/gen_ndr/ndr_misc.h"
@@ -264,8 +264,8 @@ static void dsdb_sorted_accessors_free(struct dsdb_schema *schema)
 /*
   create the sorted accessor arrays for the schema
  */
-static int dsdb_setup_sorted_accessors(struct ldb_context *ldb,
-				       struct dsdb_schema *schema)
+int dsdb_setup_sorted_accessors(struct ldb_context *ldb,
+				struct dsdb_schema *schema)
 {
 	struct dsdb_class *cur;
 	struct dsdb_attribute *a;
@@ -452,6 +452,12 @@ int dsdb_reference_schema(struct ldb_context *ldb, struct dsdb_schema *schema,
 		return ldb_oom(ldb);
 	}
 
+	/* Make this ldb use local schema preferably */
+	ret = ldb_set_opaque(ldb, "dsdb_use_global_schema", NULL);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
 	ret = dsdb_schema_set_attributes(ldb, schema, write_attributes);
 	if (ret != LDB_SUCCESS) {
 		return ret;
@@ -487,6 +493,11 @@ int dsdb_set_global_schema(struct ldb_context *ldb)
 	return ret;
 }
 
+bool dsdb_uses_global_schema(struct ldb_context *ldb)
+{
+	return (ldb_get_opaque(ldb, "dsdb_use_global_schema") != NULL);
+}
+
 /**
  * Find the schema object for this ldb
  *
@@ -505,7 +516,7 @@ struct dsdb_schema *dsdb_get_schema(struct ldb_context *ldb, TALLOC_CTX *referen
 	}
 
 	/* see if we have a cached copy */
-	use_global_schema = (ldb_get_opaque(ldb, "dsdb_use_global_schema") != NULL);
+	use_global_schema = dsdb_uses_global_schema(ldb);
 	if (use_global_schema) {
 		schema_in = global_schema;
 	} else {

@@ -48,6 +48,8 @@
  */
 
 #include "includes.h"
+#include "smbd/smbd.h"
+#include "system/filesys.h"
 
 #include "config.h"
 
@@ -426,8 +428,8 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 		retval = SMB_VFS_NEXT_STAT(handle, cache_smb_fname);
 	}
 	if (retval == 0 && VALID_STAT(cache_smb_fname->st)) {
-		if (timespec_is_newer(&smb_fname->st.st_ex_mtime,
-				      &cache_smb_fname->st.st_ex_mtime)) {
+		if (timespec_is_newer(&smb_fname->st.st_ex_ctime,
+				      &cache_smb_fname->st.st_ex_ctime)) {
 			talloc_free(cache_smb_fname);
 			return true;
 		}
@@ -476,21 +478,20 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 		flush_sendbuffer(handle);
 		while (retval != 0	/*&& errno == ENOENT */
 		       && i < recheck_tries) {
-			struct timespec req = { 0, recheck_time * 10000 };
 			DEBUG(SCANNEDONLY_DEBUG,
 			      ("scannedonly_allow_access, wait (try=%d "
 			       "(max %d), %d ms) for %s\n",
 			       i, recheck_tries,
 			       recheck_time, cache_smb_fname->base_name));
-			nanosleep(&req, NULL);
+			smb_msleep(recheck_time);
 			retval = SMB_VFS_NEXT_STAT(handle, cache_smb_fname);
 			i++;
 		}
 	}
 	/* still no cachefile, or still too old, return 0 */
 	if (retval != 0
-	    || !timespec_is_newer(&smb_fname->st.st_ex_mtime,
-				  &cache_smb_fname->st.st_ex_mtime)) {
+	    || !timespec_is_newer(&smb_fname->st.st_ex_ctime,
+				  &cache_smb_fname->st.st_ex_ctime)) {
 		DEBUG(SCANNEDONLY_DEBUG,
 		      ("retval=%d, return 0\n",retval));
 		return false;
@@ -526,6 +527,35 @@ static SMB_STRUCT_DIR *scannedonly_opendir(vfs_handle_struct * handle,
 	sDIR->notify_loop_done = 0;
 	return (SMB_STRUCT_DIR *) sDIR;
 }
+
+static SMB_STRUCT_DIR *scannedonly_fdopendir(vfs_handle_struct * handle,
+					   files_struct *fsp,
+					   const char *mask, uint32 attr)
+{
+	SMB_STRUCT_DIR *DIRp;
+	struct scannedonly_DIR *sDIR;
+	const char *fname;
+
+	DIRp = SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attr);
+	if (!DIRp) {
+		return NULL;
+	}
+
+	fname = (const char *)fsp->fsp_name->base_name;
+
+	sDIR = TALLOC_P(NULL, struct scannedonly_DIR);
+	if (fname[0] != '/') {
+		sDIR->base = construct_full_path(sDIR,handle, fname, true);
+	} else {
+		sDIR->base = name_w_ending_slash(sDIR, fname);
+	}
+	DEBUG(SCANNEDONLY_DEBUG,
+			("scannedonly_fdopendir, fname=%s, base=%s\n",fname,sDIR->base));
+	sDIR->DIR = DIRp;
+	sDIR->notify_loop_done = 0;
+	return (SMB_STRUCT_DIR *) sDIR;
+}
+
 
 static SMB_STRUCT_DIRENT *scannedonly_readdir(vfs_handle_struct *handle,
 					      SMB_STRUCT_DIR * dirp,
@@ -987,6 +1017,7 @@ static int scannedonly_connect(struct vfs_handle_struct *handle,
 /* VFS operations structure */
 static struct vfs_fn_pointers vfs_scannedonly_fns = {
 	.opendir = scannedonly_opendir,
+	.fdopendir = scannedonly_fdopendir,
 	.readdir = scannedonly_readdir,
 	.seekdir = scannedonly_seekdir,
 	.telldir = scannedonly_telldir,

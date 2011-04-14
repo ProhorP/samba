@@ -18,6 +18,7 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "dbwrap.h"
 #include "printer_list.h"
 
@@ -35,8 +36,8 @@ static struct db_context *get_printer_list_db(void)
 	if (db != NULL) {
 		return db;
 	}
-	db = db_open(talloc_autofree_context(), PL_DB_NAME(), 0,
-		     TDB_DEFAULT|TDB_CLEAR_IF_FIRST,
+	db = db_open(NULL, PL_DB_NAME(), 0,
+		     TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
 		     O_RDWR|O_CREAT, 0644);
 	return db;
 }
@@ -215,32 +216,6 @@ done:
 	return status;
 }
 
-bool printer_list_need_refresh(void)
-{
-	NTSTATUS status;
-	time_t last_refresh;
-	int timediff;
-
-	status = printer_list_get_last_refresh(&last_refresh);
-	if (!NT_STATUS_IS_OK(status)) {
-		return true;
-	}
-	timediff = time_mono(NULL) - last_refresh;
-
-	if (timediff > 1 ) {
-		/* if refresh occurred more than 1s (TODO:use lp_printcap_cache_time) ago,
-		 * then we need to refresh */
-		return true;
-	} else if (timediff < 0) {
-		/* last_refresh newer than now. Seems we have no monotonic
-		 * clock and the clock was adjusted backwards.
-		 * we need to refresh which also resets last_refresh */
-		return true;
-	}
-
-	return false;
-}
-
 NTSTATUS printer_list_mark_reload(void)
 {
 	struct db_context *db;
@@ -293,7 +268,7 @@ static NTSTATUS printer_list_traverse(printer_list_trv_fn_t *fn,
 	}
 
 	ret = db->traverse(db, fn, private_data);
-	if (ret != 0) {
+	if (ret < 0) {
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
@@ -379,6 +354,11 @@ static int printer_list_exec_fn(struct db_record *rec, void *private_data)
 	char *name;
 	char *comment;
 	int ret;
+
+	/* always skip PL_TIMESTAMP_KEY key */
+	if (strequal((const char *)rec->key.dptr, PL_TIMESTAMP_KEY)) {
+		return 0;
+	}
 
 	ret = tdb_unpack(rec->value.dptr, rec->value.dsize,
 			 PL_DATA_FORMAT, &time_h, &time_l, &name, &comment);

@@ -47,7 +47,7 @@ static int ldb_parse_hex2char(const char *x)
 {
 	if (isxdigit(x[0]) && isxdigit(x[1])) {
 		const char h1 = x[0], h2 = x[1];
-		int c;
+		int c = 0;
 
 		if (h1 >= 'a') c = h1 - (int)'a' + 10;
 		else if (h1 >= 'A') c = h1 - (int)'A' + 10;
@@ -154,6 +154,9 @@ char *ldb_binary_encode(TALLOC_CTX *mem_ctx, struct ldb_val val)
 char *ldb_binary_encode_string(TALLOC_CTX *mem_ctx, const char *string)
 {
 	struct ldb_val val;
+	if (string == NULL) {
+		return NULL;
+	}
 	val.data = discard_const_p(uint8_t, string);
 	val.length = strlen(string);
 	return ldb_binary_encode(mem_ctx, val);
@@ -676,7 +679,7 @@ struct ldb_parse_tree *ldb_parse_tree(TALLOC_CTX *mem_ctx, const char *s)
 /*
   construct a ldap parse filter given a parse tree
 */
-char *ldb_filter_from_tree(TALLOC_CTX *mem_ctx, struct ldb_parse_tree *tree)
+char *ldb_filter_from_tree(TALLOC_CTX *mem_ctx, const struct ldb_parse_tree *tree)
 {
 	char *s, *s2, *ret;
 	unsigned int i;

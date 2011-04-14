@@ -23,53 +23,54 @@ from samba.dcerpc import drsuapi, misc
 from samba.net import Net
 import samba, ldb
 
+
+def drs_DsBind(drs):
+    '''make a DsBind call, returning the binding handle'''
+    bind_info = drsuapi.DsBindInfoCtr()
+    bind_info.length = 28
+    bind_info.info = drsuapi.DsBindInfo28()
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_BASE
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ASYNC_REPLICATION
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_REMOVEAPI
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_MOVEREQ_V2
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHG_COMPRESS
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V1
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_RESTORE_USN_OPTIMIZATION
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_KCC_EXECUTE
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY_V2
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_LINKED_VALUE_REPLICATION
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V2
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_INSTANCE_TYPE_NOT_REQ_ON_MOD
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_CRYPTO_BIND
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GET_REPL_INFO
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_STRONG_ENCRYPTION
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V01
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_TRANSITIVE_MEMBERSHIP
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADD_SID_HISTORY
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_POST_BETA3
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GET_MEMBERSHIPS2
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V6
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_NONDOMAIN_NCS
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V5
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V6
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADDENTRYREPLY_V3
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V7
+    bind_info.info.supported_extensions |= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_VERIFY_OBJECT
+    (info, handle) = drs.DsBind(misc.GUID(drsuapi.DRSUAPI_DS_BIND_GUID), bind_info)
+
+    return (handle, info.info.supported_extensions)
+
+
 class drs_Replicate:
     '''DRS replication calls'''
 
     def __init__(self, binding_string, lp, creds, samdb):
         self.drs = drsuapi.drsuapi(binding_string, lp, creds)
-        self.drs_handle = self.drs_DsBind()
+        (self.drs_handle, self.supported_extensions) = drs_DsBind(self.drs)
         self.net = Net(creds=creds, lp=lp)
         self.samdb = samdb
         self.replication_state = self.net.replicate_init(self.samdb, lp, self.drs)
-
-
-    def drs_DsBind(self):
-        '''make a DsBind call, returning the binding handle'''
-        bind_info = drsuapi.DsBindInfoCtr()
-        bind_info.length = 28
-        bind_info.info = drsuapi.DsBindInfo28()
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_BASE;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ASYNC_REPLICATION;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_REMOVEAPI;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_MOVEREQ_V2;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHG_COMPRESS;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V1;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_RESTORE_USN_OPTIMIZATION;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_KCC_EXECUTE;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY_V2;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_LINKED_VALUE_REPLICATION;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V2;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_INSTANCE_TYPE_NOT_REQ_ON_MOD;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_CRYPTO_BIND;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GET_REPL_INFO;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_STRONG_ENCRYPTION;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V01;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_TRANSITIVE_MEMBERSHIP;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADD_SID_HISTORY;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_POST_BETA3;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GET_MEMBERSHIPS2;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V6;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_NONDOMAIN_NCS;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V5;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V6;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_ADDENTRYREPLY_V3;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V7;
-        bind_info.info.supported_extensions	|= drsuapi.DRSUAPI_SUPPORTED_EXTENSION_VERIFY_OBJECT;
-        (info, handle) = self.drs.DsBind(misc.GUID(drsuapi.DRSUAPI_DS_BIND_GUID), bind_info)
-        return handle
-
 
     def drs_get_rodc_partial_attribute_set(self):
         '''get a list of attributes for RODC replication'''
@@ -79,7 +80,7 @@ class drs_Replicate:
         attids = []
 
         # the exact list of attids we send is quite critical. Note that
-        # we do ask for the secret attributes, but set set SPECIAL_SECRET_PROCESSING
+        # we do ask for the secret attributes, but set SPECIAL_SECRET_PROCESSING
         # to zero them out
         schema_dn = self.samdb.get_schema_basedn()
         res = self.samdb.search(base=schema_dn, scope=ldb.SCOPE_SUBTREE,
@@ -108,31 +109,36 @@ class drs_Replicate:
         partial_attribute_set.num_attids = len(attids)
         return partial_attribute_set
 
-
     def replicate(self, dn, source_dsa_invocation_id, destination_dsa_guid,
-                  schema=False, exop=drsuapi.DRSUAPI_EXOP_NONE):
+                  schema=False, exop=drsuapi.DRSUAPI_EXOP_NONE, rodc=False,
+                  replica_flags=None):
         '''replicate a single DN'''
 
         # setup for a GetNCChanges call
         req8 = drsuapi.DsGetNCChangesRequest8()
 
         req8.destination_dsa_guid           = destination_dsa_guid
-        req8.source_dsa_invocation_id	    = source_dsa_invocation_id
-        req8.naming_context		    = drsuapi.DsReplicaObjectIdentifier()
-        req8.naming_context.dn              = dn.decode("utf-8")
+        req8.source_dsa_invocation_id       = source_dsa_invocation_id
+        req8.naming_context                 = drsuapi.DsReplicaObjectIdentifier()
+        req8.naming_context.dn              = dn
         req8.highwatermark                  = drsuapi.DsReplicaHighWaterMark()
         req8.highwatermark.tmp_highest_usn  = 0
-        req8.highwatermark.reserved_usn	    = 0
-        req8.highwatermark.highest_usn	    = 0
-        req8.uptodateness_vector	    = None
-        if exop == drsuapi.DRSUAPI_EXOP_REPL_SECRET:
-            req8.replica_flags		    = 0
+        req8.highwatermark.reserved_usn     = 0
+        req8.highwatermark.highest_usn      = 0
+        req8.uptodateness_vector            = None
+        if replica_flags is not None:
+            req8.replica_flags = replica_flags
+        elif exop == drsuapi.DRSUAPI_EXOP_REPL_SECRET:
+            req8.replica_flags              = 0
         else:
-            req8.replica_flags		    =  (drsuapi.DRSUAPI_DRS_INIT_SYNC |
-                                                drsuapi.DRSUAPI_DRS_PER_SYNC |
-                                                drsuapi.DRSUAPI_DRS_GET_ANC |
-                                                drsuapi.DRSUAPI_DRS_NEVER_SYNCED |
-                                                drsuapi.DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING)
+            req8.replica_flags              = (drsuapi.DRSUAPI_DRS_INIT_SYNC |
+                                               drsuapi.DRSUAPI_DRS_PER_SYNC |
+                                               drsuapi.DRSUAPI_DRS_GET_ANC |
+                                               drsuapi.DRSUAPI_DRS_NEVER_SYNCED)
+            if rodc:
+                req8.replica_flags |= drsuapi.DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING
+            else:
+                req8.replica_flags |= drsuapi.DRSUAPI_DRS_WRIT_REP
         req8.max_object_count		     = 402
         req8.max_ndr_size		     = 402116
         req8.extended_op		     = exop
@@ -142,12 +148,26 @@ class drs_Replicate:
         req8.mapping_ctr.num_mappings	     = 0
         req8.mapping_ctr.mappings	     = None
 
-        if not schema:
+        if not schema and rodc:
             req8.partial_attribute_set = self.drs_get_rodc_partial_attribute_set()
 
+        if self.supported_extensions & drsuapi.DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8:
+            req_level = 8
+            req = req8
+        else:
+            req_level = 5
+            req5 = drsuapi.DsGetNCChangesRequest5()
+            for a in dir(req5):
+                if a[0] != '_':
+                    setattr(req5, a, getattr(req8, a))
+            req = req5
+
+
         while True:
-            (level, ctr) = self.drs.DsGetNCChanges(self.drs_handle, 8, req8)
+            (level, ctr) = self.drs.DsGetNCChanges(self.drs_handle, req_level, req)
+            if ctr.first_object == None and ctr.object_count != 0:
+                raise RuntimeError("DsGetNCChanges: NULL first_object with object_count=%u" % (ctr.object_count))
             self.net.replicate_chunk(self.replication_state, level, ctr, schema=schema)
             if ctr.more_data == 0:
                 break
-            req8.highwatermark.tmp_highest_usn = ctr.new_highwatermark.tmp_highest_usn
+            req.highwatermark.tmp_highest_usn = ctr.new_highwatermark.tmp_highest_usn

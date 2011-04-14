@@ -26,12 +26,15 @@
 #include "popt_common.h"
 #include "winbindd.h"
 #include "nsswitch/winbind_client.h"
-#include "../../nsswitch/libwbclient/wbc_async.h"
-#include "librpc/gen_ndr/messaging.h"
+#include "nsswitch/wb_reqtrans.h"
 #include "../librpc/gen_ndr/srv_lsa.h"
 #include "../librpc/gen_ndr/srv_samr.h"
 #include "secrets.h"
 #include "idmap.h"
+#include "lib/addrchange.h"
+#include "serverid.h"
+#include "auth.h"
+#include "messages.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -43,6 +46,16 @@ static bool opt_nocache = False;
 static bool interactive = False;
 
 extern bool override_logfile;
+
+struct messaging_context *winbind_messaging_context(void)
+{
+	struct messaging_context *msg_ctx = server_messaging_context();
+	if (likely(msg_ctx != NULL)) {
+		return msg_ctx;
+	}
+	smb_panic("Could not init winbindd's messaging context.\n");
+	return NULL;
+}
 
 /* Reload configuration */
 
@@ -73,15 +86,6 @@ static bool reload_services_file(const char *lfile)
 	return(ret);
 }
 
-
-/**************************************************************************** **
- Handle a fault..
- **************************************************************************** */
-
-static void fault_quit(void)
-{
-	dump_core();
-}
 
 static void winbindd_status(void)
 {
@@ -432,6 +436,7 @@ static struct winbindd_dispatch_table {
 	  "INTERFACE_VERSION" },
 	{ WINBINDD_DOMAIN_NAME, winbindd_domain_name, "DOMAIN_NAME" },
 	{ WINBINDD_DOMAIN_INFO, winbindd_domain_info, "DOMAIN_INFO" },
+	{ WINBINDD_DC_INFO, winbindd_dc_info, "DC_INFO" },
 	{ WINBINDD_NETBIOS_NAME, winbindd_netbios_name, "NETBIOS_NAME" },
 	{ WINBINDD_PRIV_PIPE_DIR, winbindd_priv_pipe_dir,
 	  "WINBINDD_PRIV_PIPE_DIR" },
@@ -466,6 +471,8 @@ static struct winbindd_async_dispatch_table async_nonpriv_table[] = {
 	  wb_ping_send, wb_ping_recv },
 	{ WINBINDD_LOOKUPSID, "LOOKUPSID",
 	  winbindd_lookupsid_send, winbindd_lookupsid_recv },
+	{ WINBINDD_LOOKUPSIDS, "LOOKUPSIDS",
+	  winbindd_lookupsids_send, winbindd_lookupsids_recv },
 	{ WINBINDD_LOOKUPNAME, "LOOKUPNAME",
 	  winbindd_lookupname_send, winbindd_lookupname_recv },
 	{ WINBINDD_SID_TO_UID, "SID_TO_UID",
@@ -476,6 +483,8 @@ static struct winbindd_async_dispatch_table async_nonpriv_table[] = {
 	  winbindd_uid_to_sid_send, winbindd_uid_to_sid_recv },
 	{ WINBINDD_GID_TO_SID, "GID_TO_SID",
 	  winbindd_gid_to_sid_send, winbindd_gid_to_sid_recv },
+	{ WINBINDD_SIDS_TO_XIDS, "SIDS_TO_XIDS",
+	  winbindd_sids_to_xids_send, winbindd_sids_to_xids_recv },
 	{ WINBINDD_GETPWSID, "GETPWSID",
 	  winbindd_getpwsid_send, winbindd_getpwsid_recv },
 	{ WINBINDD_GETPWNAM, "GETPWNAM",
@@ -756,13 +765,15 @@ static void new_connection(int listen_sock, bool privileged)
 
 	len = sizeof(sunaddr);
 
-	do {
-		sock = accept(listen_sock, (struct sockaddr *)(void *)&sunaddr,
-			      &len);
-	} while (sock == -1 && errno == EINTR);
+	sock = accept(listen_sock, (struct sockaddr *)(void *)&sunaddr, &len);
 
-	if (sock == -1)
+	if (sock == -1) {
+		if (errno != EINTR) {
+			DEBUG(0, ("Faild to accept socket - %s\n",
+				  strerror(errno)));
+		}
 		return;
+	}
 
 	DEBUG(6,("accepted socket %d\n", sock));
 
@@ -1006,7 +1017,6 @@ bool winbindd_use_cache(void)
 
 void winbindd_register_handlers(void)
 {
-	struct tevent_timer *te;
 	/* Setup signal handlers */
 
 	if (!winbindd_setup_sig_term_handler(true))
@@ -1062,6 +1072,10 @@ void winbindd_register_handlers(void)
 			   MSG_WINBIND_DUMP_DOMAIN_LIST,
 			   winbind_msg_dump_domain_list);
 
+	messaging_register(winbind_messaging_context(), NULL,
+			   MSG_WINBIND_IP_DROPPED,
+			   winbind_msg_ip_dropped_parent);
+
 	/* Register handler for MSG_DEBUG. */
 	messaging_register(winbind_messaging_context(), NULL,
 			   MSG_DEBUG,
@@ -1084,13 +1098,98 @@ void winbindd_register_handlers(void)
 	smb_nscd_flush_user_cache();
 	smb_nscd_flush_group_cache();
 
-	te = tevent_add_timer(winbind_event_context(), NULL, timeval_zero(),
-			      rescan_trusted_domains, NULL);
-	if (te == NULL) {
-		DEBUG(0, ("Could not trigger rescan_trusted_domains()\n"));
-		exit(1);
+	if (lp_allow_trusted_domains()) {
+		if (tevent_add_timer(winbind_event_context(), NULL, timeval_zero(),
+			      rescan_trusted_domains, NULL) == NULL) {
+			DEBUG(0, ("Could not trigger rescan_trusted_domains()\n"));
+			exit(1);
+		}
 	}
 
+}
+
+struct winbindd_addrchanged_state {
+	struct addrchange_context *ctx;
+	struct tevent_context *ev;
+	struct messaging_context *msg_ctx;
+};
+
+static void winbindd_addr_changed(struct tevent_req *req);
+
+static void winbindd_init_addrchange(TALLOC_CTX *mem_ctx,
+				     struct tevent_context *ev,
+				     struct messaging_context *msg_ctx)
+{
+	struct winbindd_addrchanged_state *state;
+	struct tevent_req *req;
+	NTSTATUS status;
+
+	state = talloc(mem_ctx, struct winbindd_addrchanged_state);
+	if (state == NULL) {
+		DEBUG(10, ("talloc failed\n"));
+		return;
+	}
+	state->ev = ev;
+	state->msg_ctx = msg_ctx;
+
+	status = addrchange_context_create(state, &state->ctx);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("addrchange_context_create failed: %s\n",
+			   nt_errstr(status)));
+		TALLOC_FREE(state);
+		return;
+	}
+	req = addrchange_send(state, ev, state->ctx);
+	if (req == NULL) {
+		DEBUG(0, ("addrchange_send failed\n"));
+		TALLOC_FREE(state);
+		return;
+	}
+	tevent_req_set_callback(req, winbindd_addr_changed, state);
+}
+
+static void winbindd_addr_changed(struct tevent_req *req)
+{
+	struct winbindd_addrchanged_state *state = tevent_req_callback_data(
+		req, struct winbindd_addrchanged_state);
+	enum addrchange_type type;
+	struct sockaddr_storage addr;
+	NTSTATUS status;
+
+	status = addrchange_recv(req, &type, &addr);
+	TALLOC_FREE(req);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("addrchange_recv failed: %s, stop listening\n",
+			   nt_errstr(status)));
+		TALLOC_FREE(state);
+		return;
+	}
+	if (type == ADDRCHANGE_DEL) {
+		char addrstr[INET6_ADDRSTRLEN];
+		DATA_BLOB blob;
+
+		print_sockaddr(addrstr, sizeof(addrstr), &addr);
+
+		DEBUG(3, ("winbindd: kernel (AF_NETLINK) dropped ip %s\n",
+			  addrstr));
+
+		blob = data_blob_const(addrstr, strlen(addrstr)+1);
+
+		status = messaging_send(state->msg_ctx,
+					messaging_server_id(state->msg_ctx),
+					MSG_WINBIND_IP_DROPPED, &blob);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(10, ("messaging_send failed: %s - ignoring\n",
+				   nt_errstr(status)));
+		}
+	}
+	req = addrchange_send(state, state->ev, state->ctx);
+	if (req == NULL) {
+		DEBUG(0, ("addrchange_send failed\n"));
+		TALLOC_FREE(state);
+		return;
+	}
+	tevent_req_set_callback(req, winbindd_addr_changed, state);
 }
 
 /* Main function */
@@ -1120,8 +1219,14 @@ int main(int argc, char **argv, char **envp)
 	};
 	poptContext pc;
 	int opt;
-	TALLOC_CTX *frame = talloc_stackframe();
+	TALLOC_CTX *frame;
 	NTSTATUS status;
+
+	/*
+	 * Do this before any other talloc operation
+	 */
+	talloc_enable_null_tracking();
+	frame = talloc_stackframe();
 
 	/* glibc (?) likes to print "User defined signal 1" and exit if a
 	   SIGUSR[12] is received before a handler is installed */
@@ -1129,8 +1234,8 @@ int main(int argc, char **argv, char **envp)
  	CatchSignal(SIGUSR1, SIG_IGN);
  	CatchSignal(SIGUSR2, SIG_IGN);
 
-	fault_setup((void (*)(void *))fault_quit );
-	dump_core_setup("winbindd");
+	fault_setup();
+	dump_core_setup("winbindd", lp_logfile());
 
 	load_case_tables();
 
@@ -1207,14 +1312,18 @@ int main(int argc, char **argv, char **envp)
 			SAFE_FREE(lfile);
 		}
 	}
-	setup_logging("winbindd", log_stdout);
+	if (log_stdout) {
+		setup_logging("winbindd", DEBUG_STDOUT);
+	} else {
+		setup_logging("winbindd", DEBUG_FILE);
+	}
 	reopen_logs();
 
 	DEBUG(0,("winbindd version %s started.\n", samba_version_string()));
 	DEBUGADD(0,("%s\n", COPYRIGHT_STARTUP_MESSAGE));
 
 	if (!lp_load_initial_only(get_dyn_CONFIGFILE())) {
-		DEBUG(0, ("error opening config file\n"));
+		DEBUG(0, ("error opening config file '%s'\n", get_dyn_CONFIGFILE()));
 		exit(1);
 	}
 
@@ -1288,13 +1397,18 @@ int main(int argc, char **argv, char **envp)
 
 	winbindd_register_handlers();
 
+	status = init_system_info();
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(1, ("ERROR: failed to setup system user info: %s.\n",
+			  nt_errstr(status)));
+		exit(1);
+	}
+
 	rpc_lsarpc_init(NULL);
 	rpc_samr_init(NULL);
 
-	if (!init_system_info()) {
-		DEBUG(0,("ERROR: failed to setup system user info.\n"));
-		exit(1);
-	}
+	winbindd_init_addrchange(NULL, winbind_event_context(),
+				 winbind_messaging_context());
 
 	/* setup listen sockets */
 

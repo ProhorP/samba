@@ -24,8 +24,10 @@
 */
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "popt_common.h"
 #include "vfstest.h"
+#include "../libcli/smbreadline/smbreadline.h"
 
 /* List to hold groups of commands */
 static struct cmd_list {
@@ -187,7 +189,7 @@ static NTSTATUS cmd_debuglevel(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int a
 	}
 
 	if (argc == 2) {
-		DEBUGLEVEL = atoi(argv[1]);
+		lp_set_cmdline("log level", argv[1]);
 	}
 
 	printf("debuglevel is %d\n", DEBUGLEVEL);
@@ -456,12 +458,14 @@ int main(int argc, char *argv[])
 
 	poptFreeContext(pc);
 
+	lp_load_initial_only(get_dyn_CONFIGFILE());
+
 	/* TODO: check output */
 	reload_services(smbd_messaging_context(), -1, False);
 
 	/* the following functions are part of the Samba debugging
 	   facilities.  See lib/debug.c */
-	setup_logging("vfstest", True);
+	setup_logging("vfstest", DEBUG_STDOUT);
 	
 	/* Load command lists */
 

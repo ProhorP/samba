@@ -1,21 +1,21 @@
-/* 
+/*
    Unix SMB/CIFS implementation.
 
    samr server password set/change handling
 
    Copyright (C) Andrew Tridgell 2004
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2005
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -29,11 +29,12 @@
 #include "auth/auth.h"
 #include "libcli/auth/libcli_auth.h"
 #include "../lib/util/util_ldb.h"
+#include "rpc_server/samr/proto.h"
 
-/* 
-  samr_ChangePasswordUser 
+/*
+  samr_ChangePasswordUser
 */
-NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call, 
+NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call,
 					TALLOC_CTX *mem_ctx,
 					struct samr_ChangePasswordUser *r)
 {
@@ -64,7 +65,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call,
 	 * hashes. */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				system_session(dce_call->conn->dce_ctx->lp_ctx));
+				system_session(dce_call->conn->dce_ctx->lp_ctx), 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -98,7 +99,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call,
 	if (memcmp(checkHash.hash, nt_pwd, 16) != 0) {
 		return NT_STATUS_WRONG_PASSWORD;
 	}
-	
+
 	/* The NT Cross is not required by Win2k3 R2, but if present
 	   check the nt cross hash */
 	if (r->in.cross1_present && r->in.nt_cross && lm_pwd) {
@@ -120,7 +121,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call,
 	/* Start a SAM with user privileges for the password change */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				dce_call->conn->auth_state.session_info);
+				dce_call->conn->auth_state.session_info, 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -159,8 +160,8 @@ NTSTATUS dcesrv_samr_ChangePasswordUser(struct dcesrv_call_state *dce_call,
 	return NT_STATUS_OK;
 }
 
-/* 
-  samr_OemChangePasswordUser2 
+/*
+  samr_OemChangePasswordUser2
 */
 NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 					    TALLOC_CTX *mem_ctx,
@@ -180,6 +181,7 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	uint8_t new_lm_hash[16];
 	struct samr_Password lm_verifier;
 	size_t unicode_pw_len;
+	size_t converted_size = 0;
 
 	if (pwbuf == NULL) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -198,7 +200,7 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	 * hashes. */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				system_session(dce_call->conn->dce_ctx->lp_ctx));
+				system_session(dce_call->conn->dce_ctx->lp_ctx), 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -206,7 +208,7 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	/* we need the users dn and the domain dn (derived from the
 	   user SID). We also need the current lm password hash in
 	   order to decrypt the incoming password */
-	ret = gendb_search(sam_ctx, 
+	ret = gendb_search(sam_ctx,
 			   mem_ctx, NULL, &res, attrs,
 			   "(&(sAMAccountName=%s)(objectclass=user))",
 			   r->in.account->string);
@@ -224,29 +226,29 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	}
 
 	/* decrypt the password we have been given */
-	lm_pwd_blob = data_blob(lm_pwd->hash, sizeof(lm_pwd->hash)); 
+	lm_pwd_blob = data_blob(lm_pwd->hash, sizeof(lm_pwd->hash));
 	arcfour_crypt_blob(pwbuf->data, 516, &lm_pwd_blob);
 	data_blob_free(&lm_pwd_blob);
-	
+
 	if (!extract_pw_from_buffer(mem_ctx, pwbuf->data, &new_password)) {
 		DEBUG(3,("samr: failed to decode password buffer\n"));
 		return NT_STATUS_WRONG_PASSWORD;
 	}
-		
-	if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(dce_call->conn->dce_ctx->lp_ctx),
-				  CH_DOS, CH_UNIX, 
-				  (const char *)new_password.data, 
+
+	if (!convert_string_talloc_handle(mem_ctx, lpcfg_iconv_handle(dce_call->conn->dce_ctx->lp_ctx),
+				  CH_DOS, CH_UNIX,
+				  (const char *)new_password.data,
 				  new_password.length,
-				  (void **)&new_pass, NULL, false)) {
+				  (void **)&new_pass, &converted_size)) {
 		DEBUG(3,("samr: failed to convert incoming password buffer to unix charset\n"));
 		return NT_STATUS_WRONG_PASSWORD;
 	}
 
-	if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(dce_call->conn->dce_ctx->lp_ctx),
-					       CH_DOS, CH_UTF16, 
-					       (const char *)new_password.data, 
+	if (!convert_string_talloc_handle(mem_ctx, lpcfg_iconv_handle(dce_call->conn->dce_ctx->lp_ctx),
+					       CH_DOS, CH_UTF16,
+					       (const char *)new_password.data,
 					       new_password.length,
-					       (void **)&new_unicode_password.data, &unicode_pw_len, false)) {
+					       (void **)&new_unicode_password.data, &unicode_pw_len)) {
 		DEBUG(3,("samr: failed to convert incoming password buffer to UTF16 charset\n"));
 		return NT_STATUS_WRONG_PASSWORD;
 	}
@@ -261,7 +263,7 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	/* Connect to a SAMDB with user privileges for the password change */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				dce_call->conn->auth_state.session_info);
+				dce_call->conn->auth_state.session_info, 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -277,11 +279,11 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 	 * from the database since they were already checked against the user-
 	 * provided ones. */
 	status = samdb_set_password(sam_ctx, mem_ctx,
-				    user_dn, NULL, 
+				    user_dn, NULL,
 				    &new_unicode_password,
 				    NULL, NULL,
 				    lm_pwd, NULL, /* this is a user password change */
-				    NULL, 
+				    NULL,
 				    NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		ldb_transaction_cancel(sam_ctx);
@@ -301,13 +303,13 @@ NTSTATUS dcesrv_samr_OemChangePasswordUser2(struct dcesrv_call_state *dce_call,
 }
 
 
-/* 
-  samr_ChangePasswordUser3 
+/*
+  samr_ChangePasswordUser3
 */
-NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call, 
+NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 					 TALLOC_CTX *mem_ctx,
 					 struct samr_ChangePasswordUser3 *r)
-{	
+{
 	NTSTATUS status;
 	DATA_BLOB new_password;
 	struct ldb_context *sam_ctx = NULL;
@@ -335,7 +337,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 	 * hashes. */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				system_session(dce_call->conn->dce_ctx->lp_ctx));
+				system_session(dce_call->conn->dce_ctx->lp_ctx), 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -343,7 +345,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 	/* we need the users dn and the domain dn (derived from the
 	   user SID). We also need the current lm and nt password hashes
 	   in order to decrypt the incoming passwords */
-	ret = gendb_search(sam_ctx, 
+	ret = gendb_search(sam_ctx,
 			   mem_ctx, NULL, &res, attrs,
 			   "(&(sAMAccountName=%s)(objectclass=user))",
 			   r->in.account->string);
@@ -376,7 +378,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 		status =  NT_STATUS_WRONG_PASSWORD;
 		goto failed;
 	}
-		
+
 	if (r->in.nt_verifier == NULL) {
 		status = NT_STATUS_WRONG_PASSWORD;
 		goto failed;
@@ -396,11 +398,13 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 	 * this) */
 	if (lm_pwd && r->in.lm_verifier != NULL) {
 		char *new_pass;
-		if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(dce_call->conn->dce_ctx->lp_ctx),
-					  CH_UTF16, CH_UNIX, 
-					  (const char *)new_password.data, 
+		size_t converted_size = 0;
+
+		if (!convert_string_talloc_handle(mem_ctx, lpcfg_iconv_handle(dce_call->conn->dce_ctx->lp_ctx),
+					  CH_UTF16, CH_UNIX,
+					  (const char *)new_password.data,
 					  new_password.length,
-					  (void **)&new_pass, NULL, false)) {
+					  (void **)&new_pass, &converted_size)) {
 			E_deshash(new_pass, new_lm_hash);
 			E_old_pw_hash(new_nt_hash, lm_pwd->hash, lm_verifier.hash);
 			if (memcmp(lm_verifier.hash, r->in.lm_verifier->hash, 16) != 0) {
@@ -413,7 +417,7 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 	/* Connect to a SAMDB with user privileges for the password change */
 	sam_ctx = samdb_connect(mem_ctx, dce_call->event_ctx,
 				dce_call->conn->dce_ctx->lp_ctx,
-				dce_call->conn->auth_state.session_info);
+				dce_call->conn->auth_state.session_info, 0);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -428,11 +432,11 @@ NTSTATUS dcesrv_samr_ChangePasswordUser3(struct dcesrv_call_state *dce_call,
 	 * from the database since they were already checked against the user-
 	 * provided ones. */
 	status = samdb_set_password(sam_ctx, mem_ctx,
-				    user_dn, NULL, 
+				    user_dn, NULL,
 				    &new_password,
 				    NULL, NULL,
 				    lm_pwd, nt_pwd, /* this is a user password change */
-				    &reason, 
+				    &reason,
 				    &dominfo);
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -466,8 +470,8 @@ failed:
 }
 
 
-/* 
-  samr_ChangePasswordUser2 
+/*
+  samr_ChangePasswordUser2
 
   easy - just a subset of samr_ChangePasswordUser3
 */
@@ -518,11 +522,11 @@ NTSTATUS samr_set_password(struct dcesrv_call_state *dce_call,
 		DEBUG(3,("samr: failed to decode password buffer\n"));
 		return NT_STATUS_WRONG_PASSWORD;
 	}
-		
+
 	/* set the password - samdb needs to know both the domain and user DNs,
 	   so the domain password policy can be used */
 	return samdb_set_password(sam_ctx, mem_ctx,
-				  account_dn, domain_dn, 
+				  account_dn, domain_dn,
 				  &new_password,
 				  NULL, NULL,
 				  NULL, NULL, /* This is a password set, not change */
@@ -560,18 +564,18 @@ NTSTATUS samr_set_password_ex(struct dcesrv_call_state *dce_call,
 	MD5Update(&ctx, &pwbuf->data[516], 16);
 	MD5Update(&ctx, session_key.data, session_key.length);
 	MD5Final(co_session_key.data, &ctx);
-	
+
 	arcfour_crypt_blob(pwbuf->data, 516, &co_session_key);
 
 	if (!extract_pw_from_buffer(mem_ctx, pwbuf->data, &new_password)) {
 		DEBUG(3,("samr: failed to decode password buffer\n"));
 		return NT_STATUS_WRONG_PASSWORD;
 	}
-		
+
 	/* set the password - samdb needs to know both the domain and user DNs,
 	   so the domain password policy can be used */
 	return samdb_set_password(sam_ctx, mem_ctx,
-				  account_dn, domain_dn, 
+				  account_dn, domain_dn,
 				  &new_password,
 				  NULL, NULL,
 				  NULL, NULL, /* This is a password set, not change */

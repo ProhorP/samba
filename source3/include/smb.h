@@ -26,8 +26,10 @@
 #ifndef _SMB_H
 #define _SMB_H
 
+#include "libcli/smb/smb_common.h"
+
 /* logged when starting the various Samba daemons */
-#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2010"
+#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2011"
 
 
 #if defined(LARGE_SMB_OFF_T)
@@ -67,9 +69,6 @@
 
 /* how long to wait for secondary SMB packets (milli-seconds) */
 #define SMB_SECONDARY_WAIT (60*1000)
-
-/* Debugging stuff */
-#include "debug.h"
 
 /* this defines the error codes that receive_smb can put in smb_read_error */
 enum smb_read_errors {
@@ -143,9 +142,6 @@ typedef union unid_t {
 } unid_t;
 
 /* pipe string names */
-#define PIPE_LANMAN   "\\PIPE\\LANMAN"
-
-#define MAX_HOURS_LEN 32
 
 #ifndef MAXSUBAUTHS
 #define MAXSUBAUTHS 15 /* max sub authorities in a SID */
@@ -153,71 +149,7 @@ typedef union unid_t {
 
 #define SID_MAX_SIZE ((size_t)(8+(MAXSUBAUTHS*4)))
 
-#define LOOKUP_NAME_NONE		0x00000000
-#define LOOKUP_NAME_ISOLATED             0x00000001  /* Look up unqualified names */
-#define LOOKUP_NAME_REMOTE               0x00000002  /* Ask others */
-#define LOOKUP_NAME_GROUP                0x00000004  /* (unused) This is a NASTY hack for 
-							valid users = @foo where foo also
-							exists in as user. */
-#define LOOKUP_NAME_NO_NSS		 0x00000008  /* no NSS calls to avoid
-							winbind recursions */
-#define LOOKUP_NAME_BUILTIN		0x00000010 /* builtin names */
-#define LOOKUP_NAME_WKN			0x00000020 /* well known names */
-#define LOOKUP_NAME_DOMAIN		0x00000040 /* only lookup own domain */
-#define LOOKUP_NAME_LOCAL		(LOOKUP_NAME_ISOLATED\
-					|LOOKUP_NAME_BUILTIN\
-					|LOOKUP_NAME_WKN\
-					|LOOKUP_NAME_DOMAIN)
-#define LOOKUP_NAME_ALL			(LOOKUP_NAME_ISOLATED\
-					|LOOKUP_NAME_REMOTE\
-					|LOOKUP_NAME_BUILTIN\
-					|LOOKUP_NAME_WKN\
-					|LOOKUP_NAME_DOMAIN)
-
-#include "librpc/gen_ndr/epmapper.h"
-#include "librpc/gen_ndr/dcerpc.h"
 #include "librpc/gen_ndr/security.h"
-
-struct lsa_dom_info {
-	bool valid;
-	struct dom_sid sid;
-	const char *name;
-	int num_idxs;
-	int *idxs;
-};
-
-struct lsa_name_info {
-	uint32 rid;
-	enum lsa_SidType type;
-	const char *name;
-	int dom_idx;
-};
-
-/* Some well-known SIDs */
-extern const struct dom_sid global_sid_World_Domain;
-extern const struct dom_sid global_sid_World;
-extern const struct dom_sid global_sid_Creator_Owner_Domain;
-extern const struct dom_sid global_sid_NT_Authority;
-extern const struct dom_sid global_sid_System;
-extern const struct dom_sid global_sid_NULL;
-extern const struct dom_sid global_sid_Authenticated_Users;
-extern const struct dom_sid global_sid_Network;
-extern const struct dom_sid global_sid_Creator_Owner;
-extern const struct dom_sid global_sid_Creator_Group;
-extern const struct dom_sid global_sid_Anonymous;
-extern const struct dom_sid global_sid_Builtin;
-extern const struct dom_sid global_sid_Builtin_Administrators;
-extern const struct dom_sid global_sid_Builtin_Users;
-extern const struct dom_sid global_sid_Builtin_Guests;
-extern const struct dom_sid global_sid_Builtin_Power_Users;
-extern const struct dom_sid global_sid_Builtin_Account_Operators;
-extern const struct dom_sid global_sid_Builtin_Server_Operators;
-extern const struct dom_sid global_sid_Builtin_Print_Operators;
-extern const struct dom_sid global_sid_Builtin_Backup_Operators;
-extern const struct dom_sid global_sid_Builtin_Replicator;
-extern const struct dom_sid global_sid_Builtin_PreWin2kAccess;
-extern const struct dom_sid global_sid_Unix_Users;
-extern const struct dom_sid global_sid_Unix_Groups;
 
 /*
  * The complete list of SIDS belonging to this user.
@@ -231,13 +163,6 @@ extern const struct dom_sid global_sid_Unix_Groups;
 
 #define PRIMARY_USER_SID_INDEX 0
 #define PRIMARY_GROUP_SID_INDEX 1
-
-typedef struct unix_user_token {
-	uid_t uid;
-	gid_t gid;
-	size_t ngroups;
-	gid_t *groups;
-} UNIX_USER_TOKEN;
 
 typedef struct write_cache {
 	SMB_OFF_T file_size;
@@ -370,7 +295,9 @@ typedef struct files_struct {
 	bool initial_delete_on_close; /* Only set at NTCreateX if file was created. */
 	bool delete_on_close;
 	bool posix_open;
+	bool is_sparse;
 	struct smb_filename *fsp_name;
+	uint32_t name_hash;		/* Jenkins hash of full pathname. */
 
 	struct vfs_fsp_data *vfs_extension;
 	struct fake_file_handle *fake_file_handle;
@@ -403,7 +330,7 @@ struct client_address {
 };
 
 struct vuid_cache_entry {
-	struct auth_serversupplied_info *server_info;
+	struct auth_serversupplied_info *session_info;
 	uint16_t vuid;
 	bool read_only;
 };
@@ -504,7 +431,7 @@ typedef struct connection_struct {
 	 * This represents the user information on this connection. Depending
 	 * on the vuid using this tid, this might change per SMB request.
 	 */
-	struct auth_serversupplied_info *server_info;
+	struct auth_serversupplied_info *session_info;
 
 	/*
 	 * If the "force group" parameter is set, this is the primary gid that
@@ -548,7 +475,7 @@ typedef struct connection_struct {
 struct current_user {
 	connection_struct *conn;
 	uint16 vuid;
-	UNIX_USER_TOKEN ut;
+	struct security_unix_token ut;
 	struct security_token *nt_user_token;
 };
 
@@ -619,46 +546,6 @@ typedef struct {
 	fstring domain; /* domain that the client specified */
 } userdom_struct;
 
-/* Extra fields above "LPQ_PRINTING" are used to map extra NT status codes. */
-
-enum {
-	LPQ_QUEUED = 0,
-	LPQ_PAUSED,
-	LPQ_SPOOLING,
-	LPQ_PRINTING,
-	LPQ_ERROR,
-	LPQ_DELETING,
-	LPQ_OFFLINE,
-	LPQ_PAPEROUT,
-	LPQ_PRINTED,
-	LPQ_DELETED,
-	LPQ_BLOCKED,
-	LPQ_USER_INTERVENTION,
-
-	/* smbd is dooing the file spooling before passing control to spoolss */
-	PJOB_SMBD_SPOOLING
-};
-
-typedef struct _print_queue_struct {
-	int job;		/* normally the UNIX jobid -- see note in 
-				   printing.c:traverse_fn_delete() */
-	int size;
-	int page_count;
-	int status;
-	int priority;
-	time_t time;
-	fstring fs_user;
-	fstring fs_file;
-} print_queue_struct;
-
-enum {LPSTAT_OK, LPSTAT_STOPPED, LPSTAT_ERROR};
-
-typedef struct {
-	fstring message;
-	int qcount;
-	int status;
-}  print_status_struct;
-
 /* used for server information: client, nameserv and ipc */
 struct server_info_struct {
 	fstring name;
@@ -693,6 +580,8 @@ struct pending_message_list {
 
 #define SHARE_MODE_FLAG_POSIX_OPEN	0x1
 
+#include "librpc/gen_ndr/server_id.h"
+
 /* struct returned by get_share_modes */
 struct share_mode_entry {
 	struct server_id pid;
@@ -709,6 +598,7 @@ struct share_mode_entry {
 	unsigned long share_file_id;
 	uint32 uid;		/* uid of file opener. */
 	uint16 flags;		/* See SHARE_MODE_XX above. */
+	uint32_t name_hash;		/* Jenkins hash of full pathname. */
 };
 
 /* oplock break message definition - linearization of share_mode_entry.
@@ -728,7 +618,8 @@ Offset  Data			length.
 58	unsigned long file_id	4 bytes
 62	uint32 uid		4 bytes
 66	uint16 flags		2 bytes
-68
+68	uint32 name_hash	4 bytes
+72
 
 */
 
@@ -746,13 +637,16 @@ Offset  Data			length.
 #define OP_BREAK_MSG_FILE_ID_OFFSET 58
 #define OP_BREAK_MSG_UID_OFFSET 62
 #define OP_BREAK_MSG_FLAGS_OFFSET 66
+#define OP_BREAK_MSG_NAME_HASH_OFFSET 68
 
-#ifdef CLUSTER_SUPPORT
-#define OP_BREAK_MSG_VNN_OFFSET 68
-#define MSG_SMB_SHARE_MODE_ENTRY_SIZE 72
-#else
-#define MSG_SMB_SHARE_MODE_ENTRY_SIZE 68
-#endif
+#define OP_BREAK_MSG_VNN_OFFSET 72
+#define MSG_SMB_SHARE_MODE_ENTRY_SIZE 76
+
+struct delete_token_list {
+	struct delete_token_list *next, *prev;
+	uint32_t name_hash;
+	struct security_unix_token *delete_token;
+};
 
 struct share_mode_lock {
 	const char *servicepath; /* canonicalized. */
@@ -761,8 +655,7 @@ struct share_mode_lock {
 	struct file_id id;
 	int num_share_modes;
 	struct share_mode_entry *share_modes;
-	UNIX_USER_TOKEN *delete_token;
-	bool delete_on_close;
+	struct delete_token_list *delete_tokens;
 	struct timespec old_write_time;
 	struct timespec changed_write_time;
 	bool fresh;
@@ -779,56 +672,28 @@ struct locking_data {
 	union {
 		struct {
 			int num_share_mode_entries;
-			bool delete_on_close;
 			struct timespec old_write_time;
 			struct timespec changed_write_time;
-			uint32 delete_token_size; /* Only valid if either of
-						     the two previous fields
-						     are True. */
+			uint32 num_delete_token_entries;
 		} s;
 		struct share_mode_entry dummy; /* Needed for alignment. */
 	} u;
 	/* The following four entries are implicit
-	   struct share_mode_entry modes[num_share_mode_entries];
-	   char unix_token[delete_token_size] (divisible by 4).
-	   char share_name[];
-	   char file_name[];
+
+	   (1) struct share_mode_entry modes[num_share_mode_entries];
+
+	   (2) A num_delete_token_entries of structs {
+		uint32_t len_delete_token;
+		char unix_token[len_delete_token] (divisible by 4).
+	   };
+
+	   (3) char share_name[];
+	   (4) char file_name[];
         */
 };
 
-/* Used to store pipe open records for NetFileEnum() */
-
-struct pipe_open_rec {
-	struct server_id pid;
-	uid_t uid;
-	int pnum;
-	fstring name;
-};
-
-
 #define NT_HASH_LEN 16
 #define LM_HASH_LEN 16
-
-/* Password history contants. */
-#define PW_HISTORY_SALT_LEN 16
-#define SALTED_MD5_HASH_LEN 16
-#define PW_HISTORY_ENTRY_LEN (PW_HISTORY_SALT_LEN+SALTED_MD5_HASH_LEN)
-#define MAX_PW_HISTORY_LEN 24
-
-/*
- * Flags for local user manipulation.
- */
-
-#define LOCAL_ADD_USER 0x1
-#define LOCAL_DELETE_USER 0x2
-#define LOCAL_DISABLE_USER 0x4
-#define LOCAL_ENABLE_USER 0x8
-#define LOCAL_TRUST_ACCOUNT 0x10
-#define LOCAL_SET_NO_PASSWORD 0x20
-#define LOCAL_SET_PASSWORD 0x40
-#define LOCAL_SET_LDAP_ADMIN_PW 0x80
-#define LOCAL_INTERDOM_ACCOUNT 0x100
-#define LOCAL_AM_ROOT 0x200  /* Act as root */
 
 /* key and data in the connections database - used in smbstatus and smbd */
 struct connections_key {
@@ -1175,74 +1040,9 @@ struct bitmap {
 #define PIPE_RAW_MODE 0x4
 #define PIPE_START_MESSAGE 0x8
 
-/* File Specific access rights */
-#define FILE_READ_DATA        0x00000001
-#define FILE_WRITE_DATA       0x00000002
-#define FILE_APPEND_DATA      0x00000004
-#define FILE_READ_EA          0x00000008 /* File and directory */
-#define FILE_WRITE_EA         0x00000010 /* File and directory */
-#define FILE_EXECUTE          0x00000020
-#define FILE_DELETE_CHILD     0x00000040
-#define FILE_READ_ATTRIBUTES  0x00000080
-#define FILE_WRITE_ATTRIBUTES 0x00000100
-
-#define FILE_ALL_ACCESS       0x000001FF
-
-/* Directory specific access rights */
-#define FILE_LIST_DIRECTORY   0x00000001
-#define FILE_ADD_FILE         0x00000002
-#define FILE_ADD_SUBDIRECTORY 0x00000004
-#define FILE_TRAVERSE         0x00000020
-#define FILE_DELETE_CHILD     0x00000040
-
 /* the desired access to use when opening a pipe */
 #define DESIRED_ACCESS_PIPE 0x2019f
  
-/* Generic access masks & rights. */
-#define DELETE_ACCESS        0x00010000 /* (1L<<16) */
-#define READ_CONTROL_ACCESS  0x00020000 /* (1L<<17) */
-#define WRITE_DAC_ACCESS     0x00040000 /* (1L<<18) */
-#define WRITE_OWNER_ACCESS   0x00080000 /* (1L<<19) */
-#define SYNCHRONIZE_ACCESS   0x00100000 /* (1L<<20) */
-
-#define SYSTEM_SECURITY_ACCESS 0x01000000 /* (1L<<24) */
-#define MAXIMUM_ALLOWED_ACCESS 0x02000000 /* (1L<<25) */
-#define GENERIC_ALL_ACCESS     0x10000000 /* (1<<28) */
-#define GENERIC_EXECUTE_ACCESS 0x20000000 /* (1<<29) */
-#define GENERIC_WRITE_ACCESS   0x40000000 /* (1<<30) */
-#define GENERIC_READ_ACCESS    ((unsigned)0x80000000) /* (((unsigned)1)<<31) */
-
-/* Mapping of generic access rights for files to specific rights. */
-
-/* This maps to 0x1F01FF */
-#define FILE_GENERIC_ALL (STANDARD_RIGHTS_REQUIRED_ACCESS|\
-			  SYNCHRONIZE_ACCESS|\
-			  FILE_ALL_ACCESS)
-
-/* This maps to 0x120089 */
-#define FILE_GENERIC_READ (STANDARD_RIGHTS_READ_ACCESS|\
-			   FILE_READ_DATA|\
-			   FILE_READ_ATTRIBUTES|\
-			   FILE_READ_EA|\
-			   SYNCHRONIZE_ACCESS)
-
-/* This maps to 0x120116 */
-#define FILE_GENERIC_WRITE (SEC_STD_READ_CONTROL|\
-			    FILE_WRITE_DATA|\
-			    FILE_WRITE_ATTRIBUTES|\
-			    FILE_WRITE_EA|\
-			    FILE_APPEND_DATA|\
-			    SYNCHRONIZE_ACCESS)
-
-#define FILE_GENERIC_EXECUTE (STANDARD_RIGHTS_EXECUTE_ACCESS|\
-			      FILE_READ_ATTRIBUTES|\
-			      FILE_EXECUTE|\
-			      SYNCHRONIZE_ACCESS)
-
-/* Share specific rights. */
-#define SHARE_ALL_ACCESS      FILE_GENERIC_ALL
-#define SHARE_READ_ONLY       (FILE_GENERIC_READ|FILE_EXECUTE)
-
 /* Mapping of access rights to UNIX perms. */
 #define UNIX_ACCESS_RWX		FILE_GENERIC_ALL
 #define UNIX_ACCESS_R 		FILE_GENERIC_READ
@@ -1298,7 +1098,11 @@ struct bitmap {
 #define FILE_ATTRIBUTE_OFFLINE          0x1000L
 #define FILE_ATTRIBUTE_NONINDEXED	0x2000L
 #define FILE_ATTRIBUTE_ENCRYPTED        0x4000L
-#define SAMBA_ATTRIBUTES_MASK		0x7F
+#define SAMBA_ATTRIBUTES_MASK		(FILE_ATTRIBUTE_READONLY|\
+					FILE_ATTRIBUTE_HIDDEN|\
+					FILE_ATTRIBUTE_SYSTEM|\
+					FILE_ATTRIBUTE_DIRECTORY|\
+					FILE_ATTRIBUTE_ARCHIVE)
 
 /* Flags - combined with attributes. */
 #define FILE_FLAG_WRITE_THROUGH    0x80000000L
@@ -1476,21 +1280,6 @@ char *strdup(char *s);
 #define NEGOTIATE_SECURITY_SIGNATURES_ENABLED	0x04
 #define NEGOTIATE_SECURITY_SIGNATURES_REQUIRED	0x08
 
-/* NT Flags2 bits - cifs6.txt section 3.1.2 */
-   
-#define FLAGS2_LONG_PATH_COMPONENTS    0x0001
-#define FLAGS2_EXTENDED_ATTRIBUTES     0x0002
-#define FLAGS2_SMB_SECURITY_SIGNATURES 0x0004
-#define FLAGS2_UNKNOWN_BIT4            0x0010
-#define FLAGS2_IS_LONG_NAME            0x0040
-#define FLAGS2_EXTENDED_SECURITY       0x0800 
-#define FLAGS2_DFS_PATHNAMES           0x1000
-#define FLAGS2_READ_PERMIT_EXECUTE     0x2000
-#define FLAGS2_32_BIT_ERROR_CODES      0x4000 
-#define FLAGS2_UNICODE_STRINGS         0x8000
-
-#define FLAGS2_WIN2K_SIGNATURE         0xC852 /* Hack alert ! For now... JRA. */
-
 /* TCONX Flag (smb_vwv2). */
 #define TCONX_FLAG_EXTENDED_RESPONSE	0x8
 
@@ -1554,9 +1343,6 @@ enum printing_types {PRINT_BSD,PRINT_SYSV,PRINT_AIX,PRINT_HPUX,
 #endif /* DEVELOPER */
 };
 
-/* LDAP schema types */
-enum schema_types {SCHEMA_COMPAT, SCHEMA_AD, SCHEMA_SAMBA};
-
 /* LDAP SSL options */
 enum ldap_ssl_types {LDAP_SSL_OFF, LDAP_SSL_START_TLS};
 
@@ -1578,7 +1364,7 @@ enum ldap_passwd_sync_types {LDAP_PASSWD_SYNC_ON, LDAP_PASSWD_SYNC_OFF, LDAP_PAS
 /* Remote architectures we know about. */
 enum remote_arch_types {RA_UNKNOWN, RA_WFWG, RA_OS2, RA_WIN95, RA_WINNT,
 			RA_WIN2K, RA_WINXP, RA_WIN2K3, RA_VISTA,
-			RA_SAMBA, RA_CIFSFS, RA_WINXP64};
+			RA_SAMBA, RA_CIFSFS, RA_WINXP64, RA_OSX};
 
 /* case handling */
 enum case_handling {CASE_LOWER,CASE_UPPER};
@@ -1773,11 +1559,11 @@ struct nmb_name {
 };
 
 /* A netbios node status array element. */
-typedef struct node_status_ {
+struct node_status {
 	nstring name;
 	unsigned char type;
 	unsigned char flags;
-} NODE_STATUS_STRUCT;
+};
 
 /* The extra info from a NetBIOS node status query */
 struct node_status_extra {
@@ -1793,7 +1579,7 @@ typedef struct user_struct {
 				 TDB key string */
 	int homes_snum;
 
-	struct auth_serversupplied_info *server_info;
+	struct auth_serversupplied_info *session_info;
 
 	struct auth_ntlmssp_state *auth_ntlmssp_state;
 } user_struct;
@@ -1804,14 +1590,6 @@ struct unix_error_map {
 	int dos_code;
 	NTSTATUS nt_error;
 };
-
-/*
- * Size of new password account encoding string.  This is enough space to
- * hold 11 ACB characters, plus the surrounding [] and a terminating null.
- * Do not change unless you are adding new ACB bits!
- */
-
-#define NEW_PW_FORMAT_SPACE_PADDED_LEN 14
 
 /*
    Do you want session setups at user level security with a invalid
@@ -1859,9 +1637,6 @@ struct ip_service {
 	unsigned port;
 };
 
-/* Special name type used to cause a _kerberos DNS lookup. */
-#define KDC_NAME_TYPE 0xDCDC
-
 struct ea_struct {
 	uint8 flags;
 	char *name;
@@ -1881,13 +1656,6 @@ struct ea_list {
 #define SAMBA_XATTR_DOSSTREAM_PREFIX "user.DosStream."
 /* Prefix for xattrs storing streams. */
 #define SAMBA_XATTR_MARKER "user.SAMBA_STREAMS"
-
-#define UUID_SIZE 16
-
-#define UUID_FLAT_SIZE 16
-typedef struct uuid_flat {
-	uint8 info[UUID_FLAT_SIZE];
-} UUID_FLAT;
 
 /* map readonly options */
 enum mapreadonly_options {MAP_READONLY_NO, MAP_READONLY_YES, MAP_READONLY_PERMISSIONS};

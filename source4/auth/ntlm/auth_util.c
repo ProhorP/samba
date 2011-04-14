@@ -25,6 +25,7 @@
 #include "auth/auth.h"
 #include "libcli/auth/libcli_auth.h"
 #include "param/param.h"
+#include "auth/ntlm/auth_proto.h"
 
 /* this default function can be used by mostly all backends
  * which don't want to set a challenge
@@ -230,28 +231,4 @@ NTSTATUS encrypt_user_info(TALLOC_CTX *mem_ctx, struct auth_context *auth_contex
 	}
 
 	return NT_STATUS_OK;
-}
-
-
-/**
- * Squash an NT_STATUS in line with security requirements.
- * In an attempt to avoid giving the whole game away when users
- * are authenticating, NT replaces both NT_STATUS_NO_SUCH_USER and 
- * NT_STATUS_WRONG_PASSWORD with NT_STATUS_LOGON_FAILURE in certain situations 
- * (session setups in particular).
- *
- * @param nt_status NTSTATUS input for squashing.
- * @return the 'squashed' nt_status
- **/
-_PUBLIC_ NTSTATUS auth_nt_status_squash(NTSTATUS nt_status)
-{
-	if NT_STATUS_EQUAL(nt_status, NT_STATUS_NO_SUCH_USER) {
-		/* Match WinXP and don't give the game away */
-		return NT_STATUS_LOGON_FAILURE;
-	} else if NT_STATUS_EQUAL(nt_status, NT_STATUS_WRONG_PASSWORD) {
-		/* Match WinXP and don't give the game away */
-		return NT_STATUS_LOGON_FAILURE;
-	}
-
-	return nt_status;
 }

@@ -19,13 +19,11 @@
 
 #include <Python.h>
 #include "includes.h"
-#include "param/param.h"
 #include "version.h"
-#include "libcli/util/pyerrors.h"
 #include "param/pyparam.h"
 #include "lib/socket/netif.h"
-#include "lib/socket/netif_proto.h"
-#include "lib/talloc/pytalloc.h"
+
+void init_glue(void);
 
 static PyObject *py_generate_random_str(PyObject *self, PyObject *args)
 {
@@ -92,6 +90,10 @@ static PyObject *py_nttime2string(PyObject *self, PyObject *args)
 		return NULL;
 
 	tmp_ctx = talloc_new(NULL);
+	if (tmp_ctx == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 
 	string = nt_time_string(tmp_ctx, nt);
 	ret =  PyString_FromString(string);
@@ -110,7 +112,10 @@ static PyObject *py_set_debug_level(PyObject *self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
-
+static PyObject *py_get_debug_level(PyObject *self)
+{
+	return PyInt_FromLong(DEBUGLEVEL);
+}
 
 /*
   return the list of interface IPs we have configured
@@ -133,10 +138,13 @@ static PyObject *py_interface_ips(PyObject *self, PyObject *args)
 		return NULL;
 
 	tmp_ctx = talloc_new(NULL);
+	if (tmp_ctx == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 
-	lp_ctx = lpcfg_from_py_object(NULL, py_lp_ctx); /* FIXME: leaky */
+	lp_ctx = lpcfg_from_py_object(tmp_ctx, py_lp_ctx);
 	if (lp_ctx == NULL) {
-		PyErr_SetString(PyExc_TypeError, "Expected loadparm object");
 		talloc_free(tmp_ctx);
 		return NULL;
 	}
@@ -165,50 +173,6 @@ static PyObject *py_interface_ips(PyObject *self, PyObject *args)
 	return pylist;
 }
 
-/* print a talloc tree report for a talloc python object */
-static PyObject *py_talloc_report_full(PyObject *self, PyObject *args)
-{
-	PyObject *py_obj;
-	PyTypeObject *type;
-
-	if (!PyArg_ParseTuple(args, "O", &py_obj))
-		return NULL;
-
-	if (py_obj == Py_None) {
-		talloc_report_full(NULL, stdout);
-	} else {
-		type = (PyTypeObject*)PyObject_Type(py_obj);
-		talloc_report_full(py_talloc_get_mem_ctx(py_obj), stdout);
-	}
-	return Py_None;
-}
-
-/* enable null tracking */
-static PyObject *py_talloc_enable_null_tracking(PyObject *self, PyObject *args)
-{
-	talloc_enable_null_tracking();
-	return Py_None;
-}
-
-/* return the number of talloc blocks */
-static PyObject *py_talloc_total_blocks(PyObject *self, PyObject *args)
-{
-	PyObject *py_obj;
-	PyTypeObject *type;
-
-	if (!PyArg_ParseTuple(args, "O", &py_obj))
-		return NULL;
-
-	if (py_obj == Py_None) {
-		return PyLong_FromLong(talloc_total_blocks(NULL));
-	}
-
-	type = (PyTypeObject*)PyObject_Type(py_obj);
-
-	return PyLong_FromLong(talloc_total_blocks(py_talloc_get_mem_ctx(py_obj)));
-}
-
-
 static PyMethodDef py_misc_methods[] = {
 	{ "generate_random_str", (PyCFunction)py_generate_random_str, METH_VARARGS,
 		"generate_random_str(len) -> string\n"
@@ -224,14 +188,10 @@ static PyMethodDef py_misc_methods[] = {
 		"nttime2string(nttime) -> string" },
 	{ "set_debug_level", (PyCFunction)py_set_debug_level, METH_VARARGS,
 		"set debug level" },
+	{ "get_debug_level", (PyCFunction)py_get_debug_level, METH_NOARGS,
+		"get debug level" },
 	{ "interface_ips", (PyCFunction)py_interface_ips, METH_VARARGS,
 		"get interface IP address list"},
-	{ "talloc_report_full", (PyCFunction)py_talloc_report_full, METH_VARARGS,
-		"show a talloc tree for an object"},
-	{ "talloc_enable_null_tracking", (PyCFunction)py_talloc_enable_null_tracking, METH_VARARGS,
-		"enable tracking of the NULL object"},
-	{ "talloc_total_blocks", (PyCFunction)py_talloc_total_blocks, METH_VARARGS,
-		"return talloc block count"},
 	{ NULL }
 };
 

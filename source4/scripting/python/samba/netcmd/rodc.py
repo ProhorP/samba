@@ -77,11 +77,7 @@ class cmd_rodc_preload(Command):
 
         lp = sambaopts.get_loadparm()
 
-        creds = credopts.get_credentials(lp)
-        if not creds.authentication_requested():
-            print "Using machine account"
-            creds.set_machine_account(lp)
-
+        creds = credopts.get_credentials(lp, fallback_machine=True)
 
         # connect to the remote and local SAMs
         samdb = SamDB(url="ldap://%s" % server,
@@ -105,13 +101,9 @@ class cmd_rodc_preload(Command):
         repl = drs_Replicate("ncacn_ip_tcp:%s[seal,print]" % server, lp, creds, local_samdb)
         try:
             repl.replicate(dn, source_dsa_invocation_id, destination_dsa_guid,
-                           exop=drsuapi.DRSUAPI_EXOP_REPL_SECRET)
-        except RuntimeError, (ecode, estring):
-            if estring == 'WERR_DS_DRA_ACCESS_DENIED':
-                local_samdb.transaction_cancel()
-                raise CommandError("Access denied replicating DN %s" % dn)
-            else:
-                raise
+                           exop=drsuapi.DRSUAPI_EXOP_REPL_SECRET, rodc=True)
+        except Exception, e:
+            raise CommandError("Error replicating DN %s" % dn, e)
         local_samdb.transaction_commit()
 
 

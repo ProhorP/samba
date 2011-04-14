@@ -22,28 +22,14 @@
 
 #include "includes.h"
 #include "smbd/service_task.h"
-#include "lib/events/events.h"
-#include "lib/socket/socket.h"
-#include "lib/tsocket/tsocket.h"
-#include "system/network.h"
-#include "../lib/util/dlinklist.h"
-#include "lib/ldb/include/ldb.h"
 #include "auth/gensec/gensec.h"
 #include "auth/credentials/credentials.h"
-#include "auth/credentials/credentials_krb5.h"
 #include "auth/auth.h"
 #include "dsdb/samdb/samdb.h"
 #include "../lib/util/util_ldb.h"
-#include "rpc_server/dcerpc_server.h"
-#include "rpc_server/samr/proto.h"
 #include "libcli/security/security.h"
 #include "param/param.h"
-#include "kdc/kdc.h"
-
-/* TODO: remove all SAMBA4_INTERNAL_HEIMDAL stuff from this file */
-#ifdef SAMBA4_INTERNAL_HEIMDAL
-#include "heimdal_build/kpasswdd-glue.h"
-#endif
+#include "kdc/kdc-glue.h"
 
 /* Return true if there is a valid error packet formed in the error_blob */
 static bool kpasswdd_make_error_reply(struct kdc_server *kdc,
@@ -177,24 +163,13 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 	struct ldb_message **res;
 	int ret;
 
-	/* Connect to a SAMDB with system privileges for fetching the old pw
-	 * hashes. */
-	samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx,
-			      system_session(kdc->task->lp_ctx));
-	if (!samdb) {
-		return kpasswdd_make_error_reply(kdc, mem_ctx,
-						KRB5_KPASSWD_HARDERROR,
-						"Failed to open samdb",
-						reply);
-	}
-
 	/* Fetch the old hashes to get the old password in order to perform
 	 * the password change operation. Naturally it would be much better to
 	 * have a password hash from an authentication around but this doesn't
 	 * seem to be the case here. */
-	ret = gendb_search(samdb, mem_ctx, NULL, &res, attrs,
+	ret = gendb_search(kdc->samdb, mem_ctx, NULL, &res, attrs,
 			   "(&(objectClass=user)(sAMAccountName=%s))",
-			   session_info->server_info->account_name);
+			   session_info->info->account_name);
 	if (ret != 1) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
 						KRB5_KPASSWD_ACCESSDENIED,
@@ -213,7 +188,7 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 
 	/* Start a SAM with user privileges for the password change */
 	samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx,
-			      session_info);
+			      session_info, 0);
 	if (!samdb) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
 						KRB5_KPASSWD_HARDERROR,
@@ -222,8 +197,8 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 	}
 
 	DEBUG(3, ("Changing password of %s\\%s (%s)\n",
-		  session_info->server_info->domain_name,
-		  session_info->server_info->account_name,
+		  session_info->info->domain_name,
+		  session_info->info->account_name,
 		  dom_sid_string(mem_ctx, &session_info->security_token->sids[PRIMARY_USER_SID_INDEX])));
 
 	/* Performs the password change */
@@ -263,11 +238,11 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 	case KRB5_KPASSWD_VERS_CHANGEPW:
 	{
 		DATA_BLOB password;
-		if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(kdc->task->lp_ctx),
+		if (!convert_string_talloc_handle(mem_ctx, lpcfg_iconv_handle(kdc->task->lp_ctx),
 					       CH_UTF8, CH_UTF16,
 					       (const char *)input->data,
 					       input->length,
-					       (void **)&password.data, &pw_len, false)) {
+					       (void **)&password.data, &pw_len)) {
 			return false;
 		}
 		password.length = pw_len;
@@ -303,11 +278,11 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 							reply);
 		}
 
-		if (!convert_string_talloc_convenience(mem_ctx, lpcfg_iconv_convenience(kdc->task->lp_ctx),
+		if (!convert_string_talloc_handle(mem_ctx, lpcfg_iconv_handle(kdc->task->lp_ctx),
 					       CH_UTF8, CH_UTF16,
 					       (const char *)chpw.newpasswd.data,
 					       chpw.newpasswd.length,
-					       (void **)&password.data, &pw_len, false)) {
+					       (void **)&password.data, &pw_len)) {
 			free_ChangePasswdDataMS(&chpw);
 			return false;
 		}
@@ -316,29 +291,32 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 
 		if ((chpw.targname && !chpw.targrealm)
 		    || (!chpw.targname && chpw.targrealm)) {
+			free_ChangePasswdDataMS(&chpw);
 			return kpasswdd_make_error_reply(kdc, mem_ctx,
 							KRB5_KPASSWD_MALFORMED,
 							"Realm and principal must be both present, or neither present",
 							reply);
 		}
 		if (chpw.targname && chpw.targrealm) {
-#ifdef SAMBA4_INTERNAL_HEIMDAL
-			if (_krb5_principalname2krb5_principal(kdc->smb_krb5_context->krb5_context,
-							       &principal, *chpw.targname,
-							       *chpw.targrealm) != 0) {
+			ret = krb5_build_principal_ext(kdc->smb_krb5_context->krb5_context,
+						       &principal,
+						       strlen(*chpw.targrealm),
+						       *chpw.targrealm, 0);
+			if (ret) {
 				free_ChangePasswdDataMS(&chpw);
+				return kpasswdd_make_error_reply(kdc, mem_ctx,
+								KRB5_KPASSWD_MALFORMED,
+								"failed to get principal",
+								reply);
+			}
+			if (copy_PrincipalName(chpw.targname, &principal->name)) {
+				free_ChangePasswdDataMS(&chpw);
+				krb5_free_principal(context, principal);
 				return kpasswdd_make_error_reply(kdc, mem_ctx,
 								KRB5_KPASSWD_MALFORMED,
 								"failed to extract principal to set",
 								reply);
-
 			}
-#else /* SAMBA4_INTERNAL_HEIMDAL */
-				return kpasswdd_make_error_reply(kdc, mem_ctx,
-								KRB5_KPASSWD_BAD_VERSION,
-								"Operation Not Implemented",
-								reply);
-#endif /* SAMBA4_INTERNAL_HEIMDAL */
 		} else {
 			free_ChangePasswdDataMS(&chpw);
 			return kpasswdd_change_password(kdc, mem_ctx, session_info,
@@ -371,8 +349,9 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		}
 		krb5_free_principal(context, principal);
 
-		samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx, session_info);
+		samdb = samdb_connect(mem_ctx, kdc->task->event_ctx, kdc->task->lp_ctx, session_info, 0);
 		if (!samdb) {
+			free(set_password_on_princ);
 			return kpasswdd_make_error_reply(kdc, mem_ctx,
 							 KRB5_KPASSWD_HARDERROR,
 							 "Unable to open database!",
@@ -380,12 +359,13 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 		}
 
 		DEBUG(3, ("%s\\%s (%s) is changing password of %s\n",
-			  session_info->server_info->domain_name,
-			  session_info->server_info->account_name,
+			  session_info->info->domain_name,
+			  session_info->info->account_name,
 			  dom_sid_string(mem_ctx, &session_info->security_token->sids[PRIMARY_USER_SID_INDEX]),
 			  set_password_on_princ));
 		ret = ldb_transaction_start(samdb);
 		if (ret != LDB_SUCCESS) {
+			free(set_password_on_princ);
 			status = NT_STATUS_TRANSACTION_ABORTED;
 			return kpasswd_make_pwchange_reply(kdc, mem_ctx,
 							   status,
@@ -449,13 +429,13 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 	}
 }
 
-bool kpasswdd_process(struct kdc_server *kdc,
-		      TALLOC_CTX *mem_ctx,
-		      DATA_BLOB *input,
-		      DATA_BLOB *reply,
-		      struct tsocket_address *peer_addr,
-		      struct tsocket_address *my_addr,
-		      int datagram_reply)
+enum kdc_process_ret kpasswdd_process(struct kdc_server *kdc,
+				      TALLOC_CTX *mem_ctx,
+				      DATA_BLOB *input,
+				      DATA_BLOB *reply,
+				      struct tsocket_address *peer_addr,
+				      struct tsocket_address *my_addr,
+				      int datagram_reply)
 {
 	bool ret;
 	const uint16_t header_len = 6;
@@ -475,20 +455,25 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	char *keytab_name;
 
 	if (!tmp_ctx) {
-		return false;
+		return KDC_PROCESS_FAILED;
+	}
+
+	if (kdc->am_rodc) {
+		talloc_free(tmp_ctx);
+		return KDC_PROCESS_PROXY;
 	}
 
 	/* Be parinoid.  We need to ensure we don't just let the
 	 * caller lead us into a buffer overflow */
 	if (input->length <= header_len) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	len = RSVAL(input->data, 0);
 	if (input->length != len) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* There are two different versions of this protocol so far,
@@ -498,7 +483,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	ap_req_len = RSVAL(input->data, 4);
 	if ((ap_req_len >= len) || (ap_req_len + header_len) >= len) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	krb_priv_len = len - ap_req_len;
@@ -508,7 +493,8 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	server_credentials = cli_credentials_init(tmp_ctx);
 	if (!server_credentials) {
 		DEBUG(1, ("Failed to init server credentials\n"));
-		return false;
+		talloc_free(tmp_ctx);
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* We want the credentials subsystem to use the krb5 context
@@ -519,13 +505,12 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	keytab_name = talloc_asprintf(server_credentials, "HDB:samba4&%p", kdc->base_ctx);
 
 	cli_credentials_set_username(server_credentials, "kadmin/changepw", CRED_SPECIFIED);
-	ret = cli_credentials_set_keytab_name(server_credentials, kdc->task->event_ctx, kdc->task->lp_ctx, keytab_name, CRED_SPECIFIED);
+	ret = cli_credentials_set_keytab_name(server_credentials, kdc->task->lp_ctx, keytab_name, CRED_SPECIFIED);
 	if (ret != 0) {
 		ret = kpasswdd_make_unauth_error_reply(kdc, mem_ctx,
 						       KRB5_KPASSWD_HARDERROR,
 						       talloc_asprintf(mem_ctx,
-								       "Failed to obtain server credentials for kadmin/changepw: %s\n",
-								       nt_errstr(nt_status)),
+								       "Failed to obtain server credentials for kadmin/changepw!"),
 						       &krb_priv_rep);
 		ap_rep.length = 0;
 		if (ret) {
@@ -547,7 +532,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 					      &gensec_security);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* The kerberos PRIV packets include these addresses.  MIT
@@ -561,14 +546,14 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	nt_status = gensec_set_local_address(gensec_security, peer_addr);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 #endif
 
 	nt_status = gensec_set_local_address(gensec_security, my_addr);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* We want the GENSEC wrap calls to generate PRIV tokens */
@@ -577,7 +562,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 	nt_status = gensec_start_mech_by_name(gensec_security, "krb5");
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		talloc_free(tmp_ctx);
-		return false;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* Accept the AP-REQ and generate teh AP-REP we need for the reply */
@@ -595,7 +580,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 			goto reply;
 		}
 		talloc_free(tmp_ctx);
-		return ret;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* Extract the data from the KRB-PRIV half of the message */
@@ -612,7 +597,7 @@ bool kpasswdd_process(struct kdc_server *kdc,
 			goto reply;
 		}
 		talloc_free(tmp_ctx);
-		return ret;
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* Figure out something to do with it (probably changing a password...) */
@@ -622,7 +607,8 @@ bool kpasswdd_process(struct kdc_server *kdc,
 				      &kpasswd_req, &kpasswd_rep);
 	if (!ret) {
 		/* Argh! */
-		return false;
+		talloc_free(tmp_ctx);
+		return KDC_PROCESS_FAILED;
 	}
 
 	/* And wrap up the reply: This ensures that the error message
@@ -641,13 +627,14 @@ bool kpasswdd_process(struct kdc_server *kdc,
 			goto reply;
 		}
 		talloc_free(tmp_ctx);
-		return ret;
+		return KDC_PROCESS_FAILED;
 	}
 
 reply:
 	*reply = data_blob_talloc(mem_ctx, NULL, krb_priv_rep.length + ap_rep.length + header_len);
 	if (!reply->data) {
-		return false;
+		talloc_free(tmp_ctx);
+		return KDC_PROCESS_FAILED;
 	}
 
 	RSSVAL(reply->data, 0, reply->length);
@@ -661,6 +648,6 @@ reply:
 	       krb_priv_rep.length);
 
 	talloc_free(tmp_ctx);
-	return ret;
+	return KDC_PROCESS_OK;
 }
 

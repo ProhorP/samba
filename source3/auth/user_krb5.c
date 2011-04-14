@@ -18,7 +18,10 @@
 */
 
 #include "includes.h"
+#include "auth.h"
 #include "librpc/gen_ndr/krb5pac.h"
+#include "nsswitch/libwbclient/wbclient.h"
+#include "passdb.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -40,8 +43,8 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 	char *realm = NULL;
 	char *user = NULL;
 	char *p;
-	fstring fuser;
-	fstring unixuser;
+	char *fuser = NULL;
+	char *unixuser = NULL;
 	struct passwd *pw = NULL;
 
 	DEBUG(3, ("Kerberos ticket principal name is [%s]\n", princ_name));
@@ -109,13 +112,25 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 		DEBUG(10, ("Domain is [%s] (using Winbind)\n", domain));
 	}
 
-	/* We have to use fstring for this - map_username requires it. */
-	fstr_sprintf(fuser, "%s%c%s", domain, *lp_winbind_separator(), user);
+	fuser = talloc_asprintf(mem_ctx,
+				"%s%c%s",
+				domain,
+				*lp_winbind_separator(),
+				user);
+	if (!fuser) {
+		return NT_STATUS_NO_MEMORY;
+	}
 
-	*is_mapped = map_username(fuser);
+	*is_mapped = map_username(mem_ctx, fuser, &fuser);
+	if (!fuser) {
+		return NT_STATUS_NO_MEMORY;
+	}
 
-	pw = smb_getpwnam(mem_ctx, fuser, unixuser, true);
+	pw = smb_getpwnam(mem_ctx, fuser, &unixuser, true);
 	if (pw) {
+		if (!unixuser) {
+			return NT_STATUS_NO_MEMORY;
+		}
 		/* if a real user check pam account restrictions */
 		/* only really perfomed if "obey pam restriction" is true */
 		/* do this before an eventual mapping to guest occurs */
@@ -134,8 +149,11 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 
 		if (lp_map_to_guest() == MAP_TO_GUEST_ON_BAD_UID) {
 			*mapped_to_guest = true;
-			fstrcpy(fuser, lp_guestaccount());
-			pw = smb_getpwnam(mem_ctx, fuser, unixuser, true);
+			fuser = talloc_strdup(mem_ctx, lp_guestaccount());
+			if (!fuser) {
+				return NT_STATUS_NO_MEMORY;
+			}
+			pw = smb_getpwnam(mem_ctx, fuser, &unixuser, true);
 		}
 
 		/* extra sanity check that the guest account is valid */
@@ -144,6 +162,10 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 				  fuser));
 			return NT_STATUS_LOGON_FAILURE;
 		}
+	}
+
+	if (!unixuser) {
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	*username = talloc_strdup(mem_ctx, unixuser);
@@ -157,19 +179,21 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 	return NT_STATUS_OK;
 }
 
-NTSTATUS make_server_info_krb5(TALLOC_CTX *mem_ctx,
+NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				char *ntuser,
 				char *ntdomain,
 				char *username,
 				struct passwd *pw,
 				struct PAC_LOGON_INFO *logon_info,
-				bool mapped_to_guest,
-				struct auth_serversupplied_info **server_info)
+				bool mapped_to_guest, bool username_was_mapped,
+				DATA_BLOB *session_key,
+				struct auth_serversupplied_info **session_info)
 {
 	NTSTATUS status;
+	struct auth_serversupplied_info *server_info;
 
 	if (mapped_to_guest) {
-		status = make_server_info_guest(mem_ctx, server_info);
+		status = make_server_info_guest(mem_ctx, &server_info);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1, ("make_server_info_guest failed: %s!\n",
 				  nt_errstr(status)));
@@ -182,7 +206,7 @@ NTSTATUS make_server_info_krb5(TALLOC_CTX *mem_ctx,
 
 		status = make_server_info_info3(mem_ctx,
 						ntuser, ntdomain,
-						server_info,
+						&server_info,
 						&logon_info->info3);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1, ("make_server_info_info3 failed: %s!\n",
@@ -226,18 +250,24 @@ NTSTATUS make_server_info_krb5(TALLOC_CTX *mem_ctx,
 			return status;
                 }
 
-		/* Steal tmp server info into the server_info pointer. */
-		*server_info = talloc_move(mem_ctx, &tmp);
-
 		/* make_server_info_pw does not set the domain. Without this
 		 * we end up with the local netbios name in substitutions for
 		 * %D. */
 
-		if ((*server_info)->info3 != NULL) {
-			(*server_info)->info3->base.domain.string =
-				talloc_strdup((*server_info)->info3, ntdomain);
+		if (server_info->info3 != NULL) {
+			server_info->info3->base.domain.string =
+				talloc_strdup(server_info->info3, ntdomain);
 		}
+	}
 
+	server_info->nss_token |= username_was_mapped;
+
+	status = create_local_token(mem_ctx, server_info, session_key, session_info);
+	talloc_free(server_info);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10,("failed to create local token: %s\n",
+			  nt_errstr(status)));
+		return status;
 	}
 
 	return NT_STATUS_OK;
@@ -258,14 +288,15 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS make_server_info_krb5(TALLOC_CTX *mem_ctx,
+NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				char *ntuser,
 				char *ntdomain,
 				char *username,
 				struct passwd *pw,
 				struct PAC_LOGON_INFO *logon_info,
-				bool mapped_to_guest,
-				struct auth_serversupplied_info **server_info)
+				bool mapped_to_guest, bool username_was_mapped,
+				DATA_BLOB *session_key,
+				struct auth_serversupplied_info **session_info)
 {
 	return NT_STATUS_NOT_IMPLEMENTED;
 }

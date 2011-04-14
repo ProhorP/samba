@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 
 struct winbindd_allocate_uid_state {
 	uint64_t uid;
@@ -65,12 +65,8 @@ static void winbindd_allocate_uid_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_AllocateUid_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 	tevent_req_done(req);

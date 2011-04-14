@@ -26,6 +26,7 @@
 #include "libcli/raw/raw_proto.h"
 
 #include "torture/raw/proto.h"
+#include "torture/basic/proto.h"
 
 static bool check_delete_on_close(struct torture_context *tctx, 
 								  struct smbcli_state *cli, int fnum,
@@ -1422,7 +1423,7 @@ static bool deltest21(struct torture_context *tctx)
 
 	/* On slow build farm machines it might happen that they are not fast
 	 * enogh to delete the file for this test */
-	msleep(200);
+	smb_msleep(200);
 
 	/* File should not be there. */
 	fnum1 = smbcli_nt_create_full(cli1->tree, fname, 0, 
@@ -1586,8 +1587,7 @@ static bool deltest23(struct torture_context *tctx,
 struct torture_suite *torture_test_delete(void)
 {
 	struct torture_suite *suite = torture_suite_create(
-		talloc_autofree_context(),
-		"DELETE");
+		talloc_autofree_context(), "delete");
 
 	torture_suite_add_2smb_test(suite, "deltest1", deltest1);
 	torture_suite_add_2smb_test(suite, "deltest2", deltest2);

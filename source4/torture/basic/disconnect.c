@@ -25,6 +25,7 @@
 #include "libcli/raw/raw_proto.h"
 #include "libcli/libcli.h"
 #include "torture/util.h"
+#include "torture/basic/proto.h"
 
 #define BASEDIR "\\test_disconnect"
 
@@ -162,7 +163,7 @@ bool torture_disconnect(struct torture_context *torture)
 			 * new process comes in. Try to get rid of the random
 			 * failures in the build farm.
 			 */
-			msleep(200);
+			smb_msleep(200);
 		}
 	}
 

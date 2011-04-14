@@ -19,7 +19,9 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "libcli/netlogon.h"
+#include "lib/messaging/messaging.h"
+#include "libcli/libcli.h"
+#include "libcli/netlogon/netlogon.h"
 
 struct finddcs {
 	struct {
@@ -27,6 +29,8 @@ struct finddcs {
 		const char *site_name; /* optional */
 		struct dom_sid *domain_sid; /* optional */
 		uint32_t minimum_dc_flags; /* DS_SERVER_* */
+		const char *server_address; /* optional, bypass name
+					       resolution */
 	} in;
 	struct {
 		const char *address; /* IP address of server */

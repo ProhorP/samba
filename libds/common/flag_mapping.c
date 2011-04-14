@@ -23,6 +23,7 @@
 #include "includes.h"
 #include "librpc/gen_ndr/samr.h"
 #include "../libds/common/flags.h"
+#include "flag_mapping.h"
 
 /*
 translated the ACB_CTRL Flags to UserFlags (userAccountControl)
@@ -50,7 +51,10 @@ static const struct {
 	{ UF_USE_DES_KEY_ONLY, ACB_USE_DES_KEY_ONLY},
 	{ UF_DONT_REQUIRE_PREAUTH, ACB_DONT_REQUIRE_PREAUTH },
 	{ UF_PASSWORD_EXPIRED, ACB_PW_EXPIRED },
-	{ UF_NO_AUTH_DATA_REQUIRED, ACB_NO_AUTH_DATA_REQD }
+	{ UF_NO_AUTH_DATA_REQUIRED, ACB_NO_AUTH_DATA_REQD },
+	{ UF_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION, ACB_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION },
+	{ UF_PARTIAL_SECRETS_ACCOUNT, ACB_PARTIAL_SECRETS_ACCOUNT },
+	{ UF_USE_AES_KEYS, ACB_USE_AES_KEYS }
 };
 
 uint32_t ds_acb2uf(uint32_t acb)
@@ -148,12 +152,14 @@ enum lsa_SidType ds_atype_map(uint32_t atype)
 }
 
 /* get the default primary group RID for a given userAccountControl
- * (informations according to MS-SAMR 3.1.1.8.1) */
+ * (information according to MS-SAMR 3.1.1.8.1) */
 uint32_t ds_uf2prim_group_rid(uint32_t uf)
 {
 	uint32_t prim_group_rid = DOMAIN_RID_USERS;
 
-	if (uf & UF_SERVER_TRUST_ACCOUNT)           prim_group_rid = DOMAIN_RID_DCS;
+	if ((uf & UF_PARTIAL_SECRETS_ACCOUNT)
+	 && (uf & UF_WORKSTATION_TRUST_ACCOUNT))    prim_group_rid = DOMAIN_RID_READONLY_DCS;
+	else if (uf & UF_SERVER_TRUST_ACCOUNT)      prim_group_rid = DOMAIN_RID_DCS;
 	else if (uf & UF_WORKSTATION_TRUST_ACCOUNT) prim_group_rid = DOMAIN_RID_DOMAIN_MEMBERS;
 
 	return prim_group_rid;

@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 
 struct wb_dsgetdcname_state {
 	struct netr_DsRGetDCNameInfo *dcinfo;
@@ -64,7 +64,7 @@ struct tevent_req *wb_dsgetdcname_send(TALLOC_CTX *mem_ctx,
 		child = locator_child();
 	} else {
 		struct winbindd_domain *domain = find_our_domain();
-		child = &domain->child;
+		child = choose_domain_child(domain);
 	}
 
 	if (domain_guid != NULL) {
@@ -93,12 +93,8 @@ static void wb_dsgetdcname_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_DsGetDcName_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 	tevent_req_done(req);

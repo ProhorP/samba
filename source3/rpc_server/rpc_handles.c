@@ -22,6 +22,8 @@
 #include "includes.h"
 #include "../librpc/gen_ndr/ndr_lsa.h"
 #include "../librpc/gen_ndr/ndr_samr.h"
+#include "auth.h"
+#include "ntdomain.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_RPC_SRV
@@ -326,7 +328,7 @@ bool pipe_access_check(struct pipes_struct *p)
 			return True;
 		}
 
-		if (p->server_info->guest) {
+		if (p->session_info->guest) {
 			return False;
 		}
 	}

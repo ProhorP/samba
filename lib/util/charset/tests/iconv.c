@@ -289,7 +289,7 @@ static bool test_codepoint(struct torture_context *tctx, unsigned int codepoint)
 	size_t size, size2;
 	codepoint_t c;
 
-	size = push_codepoint_convenience(lpcfg_iconv_convenience(tctx->lp_ctx), (char *)buf, codepoint);
+	size = push_codepoint_handle(lpcfg_iconv_handle(tctx->lp_ctx), (char *)buf, codepoint);
 	torture_assert(tctx, size != -1 || (codepoint >= 0xd800 && codepoint <= 0x10000), 
 		       "Invalid Codepoint range");
 
@@ -300,7 +300,7 @@ static bool test_codepoint(struct torture_context *tctx, unsigned int codepoint)
 	buf[size+2] = random();
 	buf[size+3] = random();
 
-	c = next_codepoint_convenience(lpcfg_iconv_convenience(tctx->lp_ctx), (char *)buf, &size2);
+	c = next_codepoint_handle(lpcfg_iconv_handle(tctx->lp_ctx), (char *)buf, &size2);
 
 	torture_assert(tctx, c == codepoint, 
 		       talloc_asprintf(tctx, 
@@ -419,7 +419,7 @@ static bool test_string2key(struct torture_context *tctx)
 
 	torture_comment(tctx, "converting random buffer\n");
 
-	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF8, (void *)buf, len*2, (void**)&dest, &ret, false)) {
+	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF8, (void *)buf, len*2, (void**)&dest, &ret)) {
 		torture_fail(tctx, "Failed to convert random buffer\n");
 	}
 
@@ -429,7 +429,7 @@ static bool test_string2key(struct torture_context *tctx)
 
 	torture_comment(tctx, "converting fixed buffer to UTF16\n");
 
-	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF16, (void *)le1, 20, (void**)&munged1, &ret, false)) {
+	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF16, (void *)le1, 20, (void**)&munged1, &ret)) {
 		torture_fail(tctx, "Failed to convert fixed buffer to UTF16_MUNGED\n");
 	}
 
@@ -437,7 +437,7 @@ static bool test_string2key(struct torture_context *tctx)
 
 	torture_comment(tctx, "converting fixed buffer to UTF8\n");
 
-	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF8, (void *)le1, 20, (void**)&out1, &ret, false)) {
+	if (!convert_string_talloc(mem_ctx, CH_UTF16MUNGED, CH_UTF8, (void *)le1, 20, (void**)&out1, &ret)) {
 		torture_fail(tctx, "Failed to convert fixed buffer to UTF8\n");
 	}
 
@@ -451,7 +451,7 @@ static bool test_string2key(struct torture_context *tctx)
 
 struct torture_suite *torture_local_iconv(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "ICONV");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "iconv");
 
 	torture_suite_add_simple_test(suite, "string2key",
 				      test_string2key);

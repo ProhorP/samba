@@ -20,6 +20,7 @@
 #include "includes.h"
 #include "libcli/libcli.h"
 #include "torture/util.h"
+#include "torture/raw/proto.h"
 
 #define CHECK_STATUS(status, correct) do { \
 	if (!NT_STATUS_EQUAL(status, correct)) { \
@@ -717,7 +718,7 @@ extern bool test_nttransrename(struct torture_context *tctx, struct smbcli_state
 */
 struct torture_suite *torture_raw_rename(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "RENAME");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "rename");
 
 	torture_suite_add_1smb_test(suite, "mv", test_mv);
 	/* test_trans2rename and test_nttransrename are actually in torture/raw/oplock.c to

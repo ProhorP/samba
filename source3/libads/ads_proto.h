@@ -130,23 +130,10 @@ ADS_STATUS ads_ranged_search(ADS_STRUCT *ads,
 			     const char *range_attr,
 			     char ***strings,
 			     size_t *num_strings);
-ADS_STATUS ads_ranged_search_internal(ADS_STRUCT *ads,
-				      TALLOC_CTX *mem_ctx,
-				      int scope,
-				      const char *base,
-				      const char *filter,
-				      const char **attrs,
-				      void *args,
-				      const char *range_attr,
-				      char ***strings,
-				      size_t *num_strings,
-				      uint32 *first_usn,
-				      int *num_retries,
-				      bool *more_values);
 
 /* The following definitions come from libads/ndr.c  */
 
-void ndr_print_ads_auth_flags(struct ndr_print *ndr, const char *name, uint32_t r);
+struct ndr_print;
 void ndr_print_ads_struct(struct ndr_print *ndr, const char *name, const struct ads_struct *r);
 
 /* The following definitions come from libads/sasl.c  */
@@ -165,5 +152,3 @@ ADS_STATUS ads_setup_sasl_wrapping(ADS_STRUCT *ads,
 /* The following definitions come from libads/util.c  */
 
 ADS_STATUS ads_change_trust_account_password(ADS_STRUCT *ads, char *host_principal);
-ADS_STATUS ads_guess_service_principal(ADS_STRUCT *ads,
-				       char **returned_principal);

@@ -21,6 +21,9 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef _SAMBA_KDC_H_
+#define _SAMBA_KDC_H_
+
 struct samba_kdc_base_context {
 	struct tevent_context *ev_ctx;
 	struct loadparm_context *lp_ctx;
@@ -33,6 +36,10 @@ struct samba_kdc_db_context {
 	struct loadparm_context *lp_ctx;
 	struct ldb_context *samdb;
 	struct samba_kdc_seq *seq_ctx;
+	bool rodc;
+	unsigned int my_krbtgt_number;
+	struct ldb_dn *krbtgt_dn;
+	struct lsa_DomainInfoKerberos policy;
 };
 
 struct samba_kdc_entry {
@@ -41,3 +48,5 @@ struct samba_kdc_entry {
 	struct ldb_dn *realm_dn;
 	hdb_entry_ex *entry_ex;
 };
+
+#endif /* _SAMBA_KDC_H_ */

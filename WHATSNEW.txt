@@ -1,6 +1,6 @@
                    =================================
                    Release Notes for Samba 3.6.0pre1
-			     July 28, 2010
+                             July 28, 2010
                    =================================
 
 
@@ -13,10 +13,44 @@ system at https://bugzilla.samba.org/.
 Major enhancements in Samba 3.6.0 include:
 
 
+Changed security defaults
+-------------------------
+
+Samba 3.6 has adopted a number of improved security defaults that will
+impact on existing users of Samba.
+
+ client ntlmv2 auth = yes
+ client use spnego principal = no
+ send spnego principal = no
+
+The impact of 'client ntlmv2 auth = yes' is that by default we will not
+use NTLM authentication as a client.  This applies to the Samba client
+tools such as smbclient and winbind, but does not change the separately
+released in-kernel CIFS client.  To re-enable the poorer NTLM encryption
+set '--option=clientusentlmv2auth=no' on your smbclient command line, or
+set 'client ntlmv2 auth = no' in your smb.conf
+
+The impact of 'client use spnego principal = no' is that we may be able
+to use Kerberos to communicate with a server less often in smbclient,
+winbind and other Samba client tools.  We may fall back to NTLMSSP in
+more situations where we would previously rely on the insecure
+indication from the 'NegProt' CIFS packet.  This mostly occursed when
+connecting to a name alias not recorded as a servicePrincipalName for
+the server.  This indication is not available from Windows 2008 or later
+in any case, and is not used by modern Windows clients, so this makes
+Samba's behaviour consistent with other clients and against all servers.
+
+The impact of 'send spnego principal = no' is to match Windows 2008 and
+not to send this principal, making existing clients give more consistent
+behaviour (more likely to fall back to NTLMSSP) between Samba and
+Windows 2008, and between Windows versions that did and no longer use
+this insecure hint.
+
+
 SMB2 support
 ------------
 
-SMB2 support in 3.6.0 is fully functional (with one ommission),
+SMB2 support in 3.6.0 is fully functional (with one omission),
 and can be enabled by setting:
 
 max protocol = SMB2
@@ -80,6 +114,49 @@ need printing functionality in their appliances, reducing the code
 footprint.
 
 
+ID Mapping Changes
+------------------
+
+The id mapping configuration has been a source of much grief in the past.
+For this release, id mapping has ben rewritten yet again with the goal
+of making the configuration more simple and more coherent while keeping
+the needed flexibility and even adding to the flexibility in some respects.
+
+The major change that implies the configuration simplifications is at
+the heart of the id mapping system: The separation of the "idmap alloc
+system" that is responsible for the unix id counters in the tdb, tdb2
+and ldap idmap backends from the id mapping code itself has been removed.
+The sids_to_unixids operation is now atomic and encapsulates (if needed)
+the action of allocating a unix id for a mapping that is to be created.
+Consequently all idmap alloc configuration parameters have vanished and
+it is hence now also not possible any more to specify an idmap alloc
+backend different from the idmap backend. Each idmap backend uses its
+own idmap unixid creation mechanism transparently.
+
+As a consequence of the id mapping changes, the methods that are used
+for storing and deleting id mappings have been removed from the winbindd
+API. The "net idmap dump/restore" commands have been rewritten to
+not speak through winbindd any more but directly act on the databases.
+This is currently available for the tdb and tdb2 backends, the implementation
+for ldap still missing.
+
+The allocate_id functionality is preserved for the unix id creator of the
+default idmap configuration is also used as the source of unix ids
+for the group mapping database and for the posix attributes in a
+ldapsam:editposix setup.
+
+As part of the changes, the default idmap configuration has been
+changed to be more coherent with the per-domain configuration.
+The parameters "idmap uid", "idmap gid" and "idmap range" are now
+deprecated in favour of the systematic "idmap config * : range"
+and "idmap config * : backend" parameters. The reason for this change
+is that the old options only provided an incomplete and hence deceiving
+backwards compatibility, which was a source of many problems with
+updgrades. By introducing this change in configuration, it should be
+brought to the conciousness of the users that even the simple
+id mapping is not working exactly as in Samba 3.0 versions any more.
+
+
 SMB Traffic Analyzer
 --------------------
 
@@ -93,6 +170,15 @@ More information can be found on
 http://holger123.wordpress.com/smb-traffic-analyzer/
 
 
+NFS quota backend on Linux
+--------------------------
+
+A new nfs quota backend for Linux has been added that is based
+on the existing Solaris/FreeBSD implementation. This allows samba
+to communicate correct diskfree information for nfs imports that
+are re-exported as samba shares.
+
+
 ######################################################################
 Changes
 #######
@@ -103,13 +189,21 @@ smb.conf changes
    Parameter Name                      Description     Default
    --------------                      -----------     -------
 
-   log writeable files on exit	       New	       No
-   ctdb locktime warn threshold	       New	       0
-   smb2 max read		       New	       1048576
-   smb2 max write		       New	       1048576
-   smb2 max trans		       New	       1048576
-   username map cache time	       New	       0
    async smb echo handler	       New	       No
+   client ntlmv2 auth		       Changed Default Yes
+   client use spnego principal	       New	       No
+   ctdb locktime warn threshold	       New	       0
+   idmap alloc backend		       Removed
+   log writeable files on exit	       New	       No
+   multicast dns register	       New	       Yes
+   ncalrpc dir			       New
+   send spnego principal	       New	       No
+   smb2 max credits		       New	       128
+   smb2 max read		       New	       1048576
+   smb2 max trans		       New	       1048576
+   smb2 max write		       New	       1048576
+   username map cache time	       New	       0
+   winbind max clients		       New	       200
 
 
 ######################################################################

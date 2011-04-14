@@ -2,9 +2,9 @@
 
 # this runs the file serving tests that are expected to pass with samba3
 
-if [ $# -lt 6 ]; then
+if [ $# -lt 7 ]; then
 cat <<EOF
-Usage: test_smbclient_s3.sh SERVER SERVER_IP USERNAME PASSWORD USERID LOCAL_PATH
+Usage: test_smbclient_s3.sh SERVER SERVER_IP USERNAME PASSWORD USERID LOCAL_PATH PREFIX
 EOF
 exit 1;
 fi
@@ -15,15 +15,14 @@ USERNAME="$3"
 PASSWORD="$4"
 USERID="$5"
 LOCAL_PATH="$6"
-SMBCLIENT="$VALGRIND ${SMBCLIENT:-$BINDIR/smbclient} $CONFIGURATION"
+PREFIX="$7"
+SMBCLIENT="$VALGRIND ${SMBCLIENT:-$BINDIR/smbclient}"
 WBINFO="$VALGRIND ${WBINFO:-$BINDIR/wbinfo}"
-shift 6
+shift 7
 ADDARGS="$*"
 
-test x"$TEST_FUNCTIONS_SH" != x"INCLUDED" && {
-incdir=`dirname $0`
-. $incdir/test_functions.sh
-}
+incdir=`dirname $0`/../../../testprogs/blackbox
+. $incdir/subunit.sh
 
 failed=0
 
@@ -32,7 +31,7 @@ test_noninteractive_no_prompt()
 {
     prompt="smb"
 
-    cmd='echo du | $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS 2>&1'
+    cmd='echo du | $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
 
@@ -58,14 +57,14 @@ test_noninteractive_no_prompt()
 test_interactive_prompt_stdout()
 {
     prompt="smb"
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient_interactive_prompt_commands
 
     cat > $tmpfile <<EOF
 du
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -93,7 +92,7 @@ EOF
 test_bad_symlink()
 {
     prompt="posix_unlink deleted file /newname"
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient_bad_symlinks_commands
 
     cat > $tmpfile <<EOF
 posix
@@ -103,7 +102,7 @@ posix_unlink newname
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -132,7 +131,7 @@ EOF
 # Test creating a good symlink and deleting it by path.
 test_good_symlink()
 {
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient.in.$$
     slink_name="$LOCAL_PATH/slink"
     slink_target="$LOCAL_PATH/slink_target"
 
@@ -143,7 +142,7 @@ del slink
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -182,7 +181,7 @@ EOF
 test_read_only_dir()
 {
     prompt="NT_STATUS_ACCESS_DENIED making remote directory"
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient.in.$$
 
 ##
 ## We can't do this as non-root. We always have rights to
@@ -209,7 +208,7 @@ mkdir a_test_dir
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U% //$SERVER/ro-tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U% //$SERVER/ro-tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -239,7 +238,7 @@ EOF
 test_owner_only_file()
 {
     prompt="NT_STATUS_ACCESS_DENIED opening remote file"
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient.in.$$
 
 ##
 ## We can't do this as non-root. We always have rights to
@@ -266,7 +265,7 @@ get unreadable_file
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U% //$SERVER/ro-tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U% //$SERVER/ro-tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -295,7 +294,7 @@ EOF
 # Test accessing an msdfs path.
 test_msdfs_link()
 {
-    tmpfile=/tmp/smbclient.in.$$
+    tmpfile=$PREFIX/smbclient.in.$$
     prompt="  msdfs-target  "
 
     cat > $tmpfile <<EOF
@@ -305,7 +304,7 @@ ls msdfs-target
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/msdfs-share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/msdfs-share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -334,7 +333,7 @@ ls msdfs-target
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT $CONFIGURATION "$@" -U$USERNAME%$PASSWORD //$SERVER/msdfs-share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/msdfs-share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -365,7 +364,7 @@ EOF
 test_ccache_access()
 {
     $WBINFO --ccache-save="${USERNAME}%${PASSWORD}"
-    $SMBCLIENT $CONFIGURATION //$SERVER_IP/tmp -C -U "${USERNAME}%" \
+    $SMBCLIENT //$SERVER_IP/tmp -C -U "${USERNAME}%" \
 	-c quit 2>&1
     ret=$?
 
@@ -376,11 +375,11 @@ test_ccache_access()
     fi
 
     $WBINFO --ccache-save="${USERNAME}%GarBage"
-    $SMBCLIENT $CONFIGURATION //$SERVER_IP/tmp -C -U "${USERNAME}%" \
+    $SMBCLIENT //$SERVER_IP/tmp -C -U "${USERNAME}%" \
 	-c quit 2>&1
     ret=$?
 
-    if [ $ret == 0 ] ; then
+    if [ $ret -eq 0 ] ; then
 	echo "smbclient succeeded with wrong cached credentials"
 	false
 	return
@@ -389,16 +388,27 @@ test_ccache_access()
     $WBINFO --logoff
 }
 
+LOGDIR_PREFIX=test_smbclient_s3
 
-testit "smbclient -L $SERVER_IP" $SMBCLIENT $CONFIGURATION -L $SERVER_IP -N -p 139 || failed=`expr $failed + 1`
-testit "smbclient -L $SERVER -I $SERVER_IP" $SMBCLIENT $CONFIGURATION -L $SERVER -I $SERVER_IP -N -p 139 || failed=`expr $failed + 1`
+# possibly remove old logdirs:
+
+for OLDDIR in $(find ${PREFIX} -type d -name "${LOGDIR_PREFIX}_*") ;  do
+	echo "removing old directory ${OLDDIR}"
+	rm -rf ${OLDDIR}
+done
+
+LOGDIR=$(mktemp -d ${PREFIX}/${LOGDIR_PREFIX}_XXXX)
+
+
+testit "smbclient -L $SERVER_IP" $SMBCLIENT -L $SERVER_IP -N -p 139 || failed=`expr $failed + 1`
+testit "smbclient -L $SERVER -I $SERVER_IP" $SMBCLIENT -L $SERVER -I $SERVER_IP -N -p 139 -c quit || failed=`expr $failed + 1`
 
 testit "noninteractive smbclient does not prompt" \
     test_noninteractive_no_prompt || \
     failed=`expr $failed + 1`
 
 testit "noninteractive smbclient -l does not prompt" \
-   test_noninteractive_no_prompt -l /tmp || \
+   test_noninteractive_no_prompt -l $LOGDIR || \
     failed=`expr $failed + 1`
 
 testit "interactive smbclient prompts on stdout" \
@@ -406,7 +416,7 @@ testit "interactive smbclient prompts on stdout" \
     failed=`expr $failed + 1`
 
 testit "interactive smbclient -l prompts on stdout" \
-   test_interactive_prompt_stdout -l /tmp || \
+   test_interactive_prompt_stdout -l $LOGDIR || \
     failed=`expr $failed + 1`
 
 testit "creating a bad symlink and deleting it" \
@@ -431,6 +441,10 @@ testit "Accessing an MS-DFS link" \
 
 testit "ccache access works for smbclient" \
     test_ccache_access || \
+    failed=`expr $failed + 1`
+
+testit "rm -rf $LOGDIR" \
+    rm -rf $LOGDIR || \
     failed=`expr $failed + 1`
 
 testok $0 $failed

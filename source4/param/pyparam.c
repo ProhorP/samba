@@ -22,6 +22,9 @@
 #include "param/param.h"
 #include "param/loadparm.h"
 #include "lib/talloc/pytalloc.h"
+#include "dynconfig/dynconfig.h"
+
+void initparam(void);
 
 /* There's no Py_ssize_t in 2.4, apparently */
 #if PY_MAJOR_VERSION == 2 && PY_MINOR_VERSION < 5
@@ -32,10 +35,10 @@ typedef inquiry lenfunc;
 #define PyLoadparmContext_AsLoadparmContext(obj) py_talloc_get_type(obj, struct loadparm_context)
 #define PyLoadparmService_AsLoadparmService(obj) py_talloc_get_type(obj, struct loadparm_service)
 
-PyAPI_DATA(PyTypeObject) PyLoadparmContext;
-PyAPI_DATA(PyTypeObject) PyLoadparmService;
+extern PyTypeObject PyLoadparmContext;
+extern PyTypeObject PyLoadparmService;
 
-PyObject *PyLoadparmService_FromService(struct loadparm_service *service)
+static PyObject *PyLoadparmService_FromService(struct loadparm_service *service)
 {
 	return py_talloc_reference(&PyLoadparmService, service);
 }
@@ -119,6 +122,7 @@ static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const cha
 	    }
 	}
 	return NULL;
+    case P_CMDLIST:
     case P_LIST: 
 	{
 	    int j;
@@ -330,7 +334,11 @@ static PyObject *py_lp_ctx_new(PyTypeObject *type, PyObject *args, PyObject *kwa
 		PyErr_NoMemory();
 		return NULL;
 	}
-	ret->ptr = loadparm_init(ret->talloc_ctx);
+	ret->ptr = loadparm_init_global(false);
+	if (ret->ptr == NULL) {
+		PyErr_NoMemory();
+		return NULL;
+	}
 	return (PyObject *)ret;
 }
 
@@ -362,7 +370,6 @@ static PyMappingMethods py_lp_ctx_mapping = {
 PyTypeObject PyLoadparmContext = {
 	.tp_name = "LoadParm",
 	.tp_basicsize = sizeof(py_talloc_Object),
-	.tp_dealloc = py_talloc_dealloc,
 	.tp_getset = py_lp_ctx_getset,
 	.tp_methods = py_lp_ctx_methods,
 	.tp_new = py_lp_ctx_new,
@@ -409,7 +416,6 @@ static PyMethodDef py_lp_service_methods[] = {
 
 PyTypeObject PyLoadparmService = {
 	.tp_name = "LoadparmService",
-	.tp_dealloc = py_talloc_dealloc,
 	.tp_basicsize = sizeof(py_talloc_Object),
 	.tp_methods = py_lp_service_methods,
 	.tp_flags = Py_TPFLAGS_DEFAULT,
@@ -420,15 +426,28 @@ static PyObject *py_default_path(PyObject *self)
     return PyString_FromString(lp_default_path());
 }
 
+static PyObject *py_setup_dir(PyObject *self)
+{
+    return PyString_FromString(dyn_SETUPDIR);
+}
+
 static PyMethodDef pyparam_methods[] = {
     { "default_path", (PyCFunction)py_default_path, METH_NOARGS, 
         "Returns the default smb.conf path." },
+    { "setup_dir", (PyCFunction)py_setup_dir, METH_NOARGS,
+        "Returns the compiled in location of provision tempates." },
     { NULL }
 };
 
 void initparam(void)
 {
 	PyObject *m;
+	PyTypeObject *talloc_type = PyTalloc_GetObjectType();
+	if (talloc_type == NULL)
+		return;
+
+	PyLoadparmContext.tp_base = talloc_type;
+	PyLoadparmService.tp_base = talloc_type;
 
 	if (PyType_Ready(&PyLoadparmContext) < 0)
 		return;

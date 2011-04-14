@@ -144,24 +144,6 @@
 #define ENCRYPTION_REQUIRED(conn) ((conn) ? ((conn)->encrypt_level == Required) : false)
 #define IS_CONN_ENCRYPTED(conn) ((conn) ? (conn)->encrypted_tid : false)
 
-/*******************************************************************
-find the difference in milliseconds between two struct timeval
-values
-********************************************************************/
-
-#define TvalDiff(tvalold,tvalnew) \
-  (((tvalnew)->tv_sec - (tvalold)->tv_sec)*1000 +  \
-	 ((int)(tvalnew)->tv_usec - (int)(tvalold)->tv_usec)/1000)
-
-/*******************************************************************
-find the difference in milliseconds between two struct timespec
-values
-********************************************************************/
-
-#define TspecDiff(tvalold,tvalnew) \
-  (((tvalnew)->tv_sec - (tvalold)->tv_sec)*1000 +  \
-	 ((int)(tvalnew)->tv_nsec - (int)(tvalold)->tv_nsec)/1000000)
-
 /****************************************************************************
 true if two IPv4 addresses are equal
 ****************************************************************************/
@@ -199,7 +181,6 @@ copy an IP address from one buffer to another
 
 #define IS_DIRECTORY_SEP(c) ((c) == '\\' || (c) == '/')
 #define unix_format(fname) string_replace(fname,'\\','/')
-#define unix_format_w(fname) string_replace_w(fname, UCS2_CHAR('\\'), UCS2_CHAR('/'))
 
 /****************************************************************************
  Make a file into DOS format.

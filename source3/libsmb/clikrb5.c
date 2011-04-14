@@ -23,6 +23,8 @@
 #include "includes.h"
 #include "smb_krb5.h"
 #include "../librpc/gen_ndr/krb5pac.h"
+#include "../lib/util/asn1.h"
+#include "libsmb/nmblib.h"
 
 #ifndef KRB5_AUTHDATA_WIN2K_PAC
 #define KRB5_AUTHDATA_WIN2K_PAC 128
@@ -221,53 +223,6 @@ krb5_error_code smb_krb5_unparse_name(TALLOC_CTX *mem_ctx,
 #error UNKNOWN_ADDRTYPE
 #endif
 
-#if defined(HAVE_KRB5_PRINCIPAL2SALT) && defined(HAVE_KRB5_USE_ENCTYPE) && defined(HAVE_KRB5_STRING_TO_KEY) && defined(HAVE_KRB5_ENCRYPT_BLOCK)
-static int create_kerberos_key_from_string_direct(krb5_context context,
-						  krb5_principal host_princ,
-						  krb5_data *password,
-						  krb5_keyblock *key,
-						  krb5_enctype enctype)
-{
-	int ret = 0;
-	krb5_data salt;
-	krb5_encrypt_block eblock;
-
-	ret = krb5_principal2salt(context, host_princ, &salt);
-	if (ret) {
-		DEBUG(1,("krb5_principal2salt failed (%s)\n", error_message(ret)));
-		return ret;
-	}
-	krb5_use_enctype(context, &eblock, enctype);
-	ret = krb5_string_to_key(context, &eblock, key, password, &salt);
-	SAFE_FREE(salt.data);
-
-	return ret;
-}
-#elif defined(HAVE_KRB5_GET_PW_SALT) && defined(HAVE_KRB5_STRING_TO_KEY_SALT)
-static int create_kerberos_key_from_string_direct(krb5_context context,
-						  krb5_principal host_princ,
-						  krb5_data *password,
-						  krb5_keyblock *key,
-						  krb5_enctype enctype)
-{
-	int ret;
-	krb5_salt salt;
-
-	ret = krb5_get_pw_salt(context, host_princ, &salt);
-	if (ret) {
-		DEBUG(1,("krb5_get_pw_salt failed (%s)\n", error_message(ret)));
-		return ret;
-	}
-
-	ret = krb5_string_to_key_salt(context, enctype, (const char *)password->data, salt, key);
-	krb5_free_salt(context, salt);
-
-	return ret;
-}
-#else
-#error UNKNOWN_CREATE_KEY_FUNCTIONS
-#endif
-
  int create_kerberos_key_from_string(krb5_context context,
 					krb5_principal host_princ,
 					krb5_data *password,
@@ -355,7 +310,7 @@ bool unwrap_edata_ntstatus(TALLOC_CTX *mem_ctx,
 	}
 	
 	asn1_start_tag(data, ASN1_CONTEXT(2));
-	asn1_read_OctetString(data, talloc_autofree_context(), &edata_contents);
+	asn1_read_OctetString(data, talloc_tos(), &edata_contents);
 	asn1_end_tag(data);
 	asn1_end_tag(data);
 	asn1_end_tag(data);
@@ -398,7 +353,7 @@ bool unwrap_pac(TALLOC_CTX *mem_ctx, DATA_BLOB *auth_data, DATA_BLOB *unwrapped_
 	
 	asn1_end_tag(data);
 	asn1_start_tag(data, ASN1_CONTEXT(1));
-	asn1_read_OctetString(data, talloc_autofree_context(), &pac_contents);
+	asn1_read_OctetString(data, talloc_tos(), &pac_contents);
 	asn1_end_tag(data);
 	asn1_end_tag(data);
 	asn1_end_tag(data);
@@ -582,17 +537,6 @@ bool unwrap_pac(TALLOC_CTX *mem_ctx, DATA_BLOB *auth_data, DATA_BLOB *unwrapped_
 }
 #endif
 
- void kerberos_free_data_contents(krb5_context context, krb5_data *pdata)
-{
-#if defined(HAVE_KRB5_FREE_DATA_CONTENTS)
-	if (pdata->data) {
-		krb5_free_data_contents(context, pdata);
-	}
-#else
-	SAFE_FREE(pdata->data);
-#endif
-}
-
  void kerberos_set_creds_enctype(krb5_creds *pcreds, int enctype)
 {
 #if defined(HAVE_KRB5_KEYBLOCK_IN_CREDS)
@@ -704,26 +648,16 @@ static krb5_error_code create_gss_checksum(krb5_data *in_data, /* [inout] */
 	memset(gss_cksum, '\0', base_cksum_size + orig_length);
 	SIVAL(gss_cksum, 0, GSSAPI_BNDLENGTH);
 
-	/* Precalculated MD5sum of NULL channel bindings (20 bytes) */
-	/* Channel bindings are: (all ints encoded as little endian)
-
-		[4 bytes] initiator_addrtype (255 for null bindings)
-		[4 bytes] initiator_address length
-			[n bytes] .. initiator_address data - not present
-				     in null bindings.
-		[4 bytes] acceptor_addrtype (255 for null bindings)
-		[4 bytes] acceptor_address length
-			[n bytes] .. acceptor_address data - not present
-				     in null bindings.
-		[4 bytes] application_data length
-			[n bytes] .. application_ data - not present
-				     in null bindings.
-		MD5 of this is ""\x14\x8f\x0c\xf7\xb1u\xdey*J\x9a%\xdfV\xc5\x18"
-	*/
-
-	memcpy(&gss_cksum[4],
-		"\x14\x8f\x0c\xf7\xb1u\xdey*J\x9a%\xdfV\xc5\x18",
-		GSSAPI_BNDLENGTH);
+	/*
+	 * GSS_C_NO_CHANNEL_BINDINGS means 16 zero bytes.
+	 * This matches the behavior of heimdal and mit.
+	 *
+	 * And it is needed to work against some closed source
+	 * SMB servers.
+	 *
+	 * See bug #7883
+	 */
+	memset(&gss_cksum[4], 0x00, GSSAPI_BNDLENGTH);
 
 	SIVAL(gss_cksum, 20, gss_flags);
 
@@ -1075,22 +1009,6 @@ done:
 	return &kdata;
 }
 #endif
-
- krb5_error_code smb_krb5_kt_free_entry(krb5_context context, krb5_keytab_entry *kt_entry)
-{
-/* Try krb5_free_keytab_entry_contents first, since 
- * MIT Kerberos >= 1.7 has both krb5_free_keytab_entry_contents and 
- * krb5_kt_free_entry but only has a prototype for the first, while the 
- * second is considered private. 
- */
-#if defined(HAVE_KRB5_FREE_KEYTAB_ENTRY_CONTENTS)
-	return krb5_free_keytab_entry_contents(context, kt_entry);
-#elif defined(HAVE_KRB5_KT_FREE_ENTRY)
-	return krb5_kt_free_entry(context, kt_entry);
-#else
-#error UNKNOWN_KT_FREE_FUNCTION
-#endif
-}
 
  void smb_krb5_checksum_from_pac_sig(krb5_checksum *cksum,
 				     struct PAC_SIGNATURE_DATA *sig)

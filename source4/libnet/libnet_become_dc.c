@@ -21,8 +21,8 @@
 #include "libnet/libnet.h"
 #include "libcli/composite/composite.h"
 #include "libcli/cldap/cldap.h"
-#include "lib/ldb/include/ldb.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb.h>
+#include <ldb_errors.h>
 #include "ldb_wrap.h"
 #include "dsdb/samdb/samdb.h"
 #include "../libds/common/flags.h"
@@ -1073,7 +1073,7 @@ static NTSTATUS becomeDC_ldap1_infrastructure_fsmo(struct libnet_BecomeDC_state 
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	s->infrastructure_fsmo.dns_name	= samdb_result_string(r->msgs[0], "dnsHostName", NULL);
+	s->infrastructure_fsmo.dns_name	= ldb_msg_find_attr_as_string(r->msgs[0], "dnsHostName", NULL);
 	if (!s->infrastructure_fsmo.dns_name) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	talloc_steal(s, s->infrastructure_fsmo.dns_name);
 
@@ -1133,7 +1133,7 @@ static NTSTATUS becomeDC_ldap1_rid_manager_fsmo(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	reference_dn_str	= samdb_result_string(r->msgs[0], "rIDManagerReference", NULL);
+	reference_dn_str	= ldb_msg_find_attr_as_string(r->msgs[0], "rIDManagerReference", NULL);
 	if (!reference_dn_str) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 
 	basedn = ldb_dn_new(s, s->ldap1.ldb, reference_dn_str);
@@ -1151,7 +1151,7 @@ static NTSTATUS becomeDC_ldap1_rid_manager_fsmo(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	s->rid_manager_fsmo.ntds_dn_str	= samdb_result_string(r->msgs[0], "fSMORoleOwner", NULL);
+	s->rid_manager_fsmo.ntds_dn_str	= ldb_msg_find_attr_as_string(r->msgs[0], "fSMORoleOwner", NULL);
 	if (!s->rid_manager_fsmo.ntds_dn_str) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	talloc_steal(s, s->rid_manager_fsmo.ntds_dn_str);
 
@@ -1175,7 +1175,7 @@ static NTSTATUS becomeDC_ldap1_rid_manager_fsmo(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	s->rid_manager_fsmo.dns_name	= samdb_result_string(r->msgs[0], "dnsHostName", NULL);
+	s->rid_manager_fsmo.dns_name	= ldb_msg_find_attr_as_string(r->msgs[0], "dnsHostName", NULL);
 	if (!s->rid_manager_fsmo.dns_name) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	talloc_steal(s, s->rid_manager_fsmo.dns_name);
 
@@ -1260,11 +1260,11 @@ static NTSTATUS becomeDC_ldap1_computer_object(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	s->dest_dsa.computer_dn_str	= samdb_result_string(r->msgs[0], "distinguishedName", NULL);
+	s->dest_dsa.computer_dn_str	= ldb_msg_find_attr_as_string(r->msgs[0], "distinguishedName", NULL);
 	if (!s->dest_dsa.computer_dn_str) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	talloc_steal(s, s->dest_dsa.computer_dn_str);
 
-	s->dest_dsa.user_account_control = samdb_result_uint(r->msgs[0], "userAccountControl", 0);
+	s->dest_dsa.user_account_control = ldb_msg_find_attr_as_uint(r->msgs[0], "userAccountControl", 0);
 
 	talloc_free(r);
 	return NT_STATUS_OK;
@@ -1298,7 +1298,7 @@ static NTSTATUS becomeDC_ldap1_server_object_1(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	server_reference_dn_str = samdb_result_string(r->msgs[0], "serverReference", NULL);
+	server_reference_dn_str = ldb_msg_find_attr_as_string(r->msgs[0], "serverReference", NULL);
 	if (server_reference_dn_str) {
 		server_reference_dn	= ldb_dn_new(r, s->ldap1.ldb, server_reference_dn_str);
 		NT_STATUS_HAVE_NO_MEMORY(server_reference_dn);
@@ -1317,7 +1317,7 @@ static NTSTATUS becomeDC_ldap1_server_object_1(struct libnet_BecomeDC_state *s)
 	}
 
 	/* if the server object is already for the dest_dsa, then we don't need to create it */
-	s->dest_dsa.server_dn_str	= samdb_result_string(r->msgs[0], "distinguishedName", NULL);
+	s->dest_dsa.server_dn_str	= ldb_msg_find_attr_as_string(r->msgs[0], "distinguishedName", NULL);
 	if (!s->dest_dsa.server_dn_str) return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	talloc_steal(s, s->dest_dsa.server_dn_str);
 
@@ -1352,7 +1352,7 @@ static NTSTATUS becomeDC_ldap1_server_object_2(struct libnet_BecomeDC_state *s)
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	server_reference_bl_dn_str = samdb_result_string(r->msgs[0], "serverReferenceBL", NULL);
+	server_reference_bl_dn_str = ldb_msg_find_attr_as_string(r->msgs[0], "serverReferenceBL", NULL);
 	if (!server_reference_bl_dn_str) {
 		/* if no back link is present, we're done for this function */
 		talloc_free(r);
@@ -1360,7 +1360,7 @@ static NTSTATUS becomeDC_ldap1_server_object_2(struct libnet_BecomeDC_state *s)
 	}
 
 	/* if the server object is already for the dest_dsa, then we don't need to create it */
-	s->dest_dsa.server_dn_str	= samdb_result_string(r->msgs[0], "serverReferenceBL", NULL);
+	s->dest_dsa.server_dn_str	= ldb_msg_find_attr_as_string(r->msgs[0], "serverReferenceBL", NULL);
 	if (s->dest_dsa.server_dn_str) {
 		/* if a back link is present, we know that the server object is present */
 		talloc_steal(s, s->dest_dsa.server_dn_str);
@@ -1566,6 +1566,10 @@ static void becomeDC_drsuapi_connect_send(struct libnet_BecomeDC_state *s,
 		c->status = dcerpc_parse_binding(s, binding_str, &drsuapi->binding);
 		talloc_free(binding_str);
 		if (!composite_is_ok(c)) return;
+	}
+
+	if (DEBUGLEVEL >= 10) {
+		drsuapi->binding->flags |= DCERPC_DEBUG_PRINT_BOTH;
 	}
 
 	creq = dcerpc_pipe_connect_b_send(s, drsuapi->binding, &ndr_table_drsuapi,
@@ -1837,7 +1841,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_ntSecurityDescriptor;
+		attrs[i].attid			= DRSUAPI_ATTID_ntSecurityDescriptor;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -1863,7 +1867,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_objectClass;
+		attrs[i].attid			= DRSUAPI_ATTID_objectClass;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -1903,7 +1907,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_objectCategory;
+		attrs[i].attid			= DRSUAPI_ATTID_objectCategory;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -1929,7 +1933,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_invocationId;
+		attrs[i].attid			= DRSUAPI_ATTID_invocationId;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -1985,7 +1989,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 		vs[1].blob		= &vd[1];
 		vs[2].blob		= &vd[2];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_hasMasterNCs;
+		attrs[i].attid			= DRSUAPI_ATTID_hasMasterNCs;
 		attrs[i].value_ctr.num_values	= 3;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2041,7 +2045,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 		vs[1].blob		= &vd[1];
 		vs[2].blob		= &vd[2];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_msDS_hasMasterNCs;
+		attrs[i].attid			= DRSUAPI_ATTID_msDS_hasMasterNCs;
 		attrs[i].value_ctr.num_values	= 3;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2073,7 +2077,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_dMDLocation;
+		attrs[i].attid			= DRSUAPI_ATTID_dMDLocation;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2105,7 +2109,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_msDS_HasDomainNCs;
+		attrs[i].attid			= DRSUAPI_ATTID_msDS_HasDomainNCs;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2130,7 +2134,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_msDS_Behavior_Version;
+		attrs[i].attid			= DRSUAPI_ATTID_msDS_Behavior_Version;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2159,7 +2163,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_systemFlags;
+		attrs[i].attid			= DRSUAPI_ATTID_systemFlags;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2191,7 +2195,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_serverReference;
+		attrs[i].attid			= DRSUAPI_ATTID_serverReference;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2216,7 +2220,7 @@ static void becomeDC_drsuapi1_add_entry_send(struct libnet_BecomeDC_state *s)
 
 		vs[0].blob		= &vd[0];
 
-		attrs[i].attid			= DRSUAPI_ATTRIBUTE_options;
+		attrs[i].attid			= DRSUAPI_ATTID_options;
 		attrs[i].value_ctr.num_values	= 1;
 		attrs[i].value_ctr.values	= vs;
 
@@ -2435,6 +2439,10 @@ static void becomeDC_drsuapi1_add_entry_recv(struct tevent_req *subreq)
 	talloc_free(binding_str);
 	if (!composite_is_ok(c)) return;
 
+	if (DEBUGLEVEL >= 10) {
+		s->drsuapi2.binding->flags |= DCERPC_DEBUG_PRINT_BOTH;
+	}
+
 	/* w2k3 uses the same assoc_group_id as on the first connection, so we do */
 	s->drsuapi2.binding->assoc_group_id	= s->drsuapi1.pipe->assoc_group_id;
 
@@ -2500,6 +2508,10 @@ static void becomeDC_drsuapi2_bind_recv(struct tevent_req *subreq)
 	c->status = dcerpc_parse_binding(s, binding_str, &s->drsuapi3.binding);
 	talloc_free(binding_str);
 	if (!composite_is_ok(c)) return;
+
+	if (DEBUGLEVEL >= 10) {
+		s->drsuapi3.binding->flags |= DCERPC_DEBUG_PRINT_BOTH;
+	}
 
 	/* w2k3 uses the same assoc_group_id as on the first connection, so we do */
 	s->drsuapi3.binding->assoc_group_id	= s->drsuapi1.pipe->assoc_group_id;
@@ -3016,8 +3028,9 @@ static NTSTATUS becomeDC_ldap2_modify_computer(struct libnet_BecomeDC_state *s)
 	msg->dn = ldb_dn_new(msg, s->ldap2.ldb, s->dest_dsa.computer_dn_str);
 	NT_STATUS_HAVE_NO_MEMORY(msg->dn);
 
-	ret = ldb_msg_add_fmt(msg, "userAccountControl", "%u", user_account_control);
-	if (ret != 0) {
+	ret = samdb_msg_add_uint(s->ldap2.ldb, msg, msg, "userAccountControl",
+				 user_account_control);
+	if (ret != LDB_SUCCESS) {
 		talloc_free(msg);
 		return NT_STATUS_NO_MEMORY;
 	}

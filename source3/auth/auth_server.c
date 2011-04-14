@@ -19,6 +19,9 @@
 */
 
 #include "includes.h"
+#include "auth.h"
+#include "system/passwd.h"
+#include "smbd/smbd.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -135,11 +138,11 @@ static struct cli_state *server_cryptkey(TALLOC_CTX *mem_ctx)
 	   this one...
 	*/
 
-	if (!NT_STATUS_IS_OK(cli_session_setup(cli, "", "", 0, "", 0,
-					       ""))) {
+	status = cli_session_setup(cli, "", "", 0, "", 0, "");
+	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(mutex);
 		DEBUG(0,("%s rejected the initial session setup (%s)\n",
-			 desthost, cli_errstr(cli)));
+			 desthost, nt_errstr(status)));
 		cli_shutdown(cli);
 		return NULL;
 	}
@@ -399,6 +402,7 @@ use this machine as the password server.\n"));
 			user_info->password.plaintext,
 			strlen(user_info->password.plaintext),
 			NULL, 0, user_info->mapped.domain_name);
+		break;
 
 	/* currently the hash values include a challenge-response as well */
 	case AUTH_PASSWORD_HASH:
@@ -410,6 +414,7 @@ use this machine as the password server.\n"));
 			(char *)user_info->password.response.nt.data,
 			user_info->password.response.nt.length,
 			user_info->mapped.domain_name);
+		break;
 	default:
 		DEBUG(0,("user_info constructed for user '%s' was invalid - password_state=%u invalid.\n",user_info->mapped.account_name, user_info->password_state));
 		nt_status = NT_STATUS_INTERNAL_ERROR;
@@ -429,14 +434,15 @@ use this machine as the password server.\n"));
 	cli_ulogoff(cli);
 
 	if (NT_STATUS_IS_OK(nt_status)) {
-		fstring real_username;
-		struct passwd *pass;
+		char *real_username = NULL;
+		struct passwd *pass = NULL;
 
-		if ( (pass = smb_getpwnam( NULL, user_info->mapped.account_name,
-			real_username, True )) != NULL ) 
+		if ( (pass = smb_getpwnam(talloc_tos(), user_info->mapped.account_name,
+			&real_username, True )) != NULL )
 		{
 			nt_status = make_server_info_pw(server_info, pass->pw_name, pass);
 			TALLOC_FREE(pass);
+			TALLOC_FREE(real_username);
 		}
 		else
 		{

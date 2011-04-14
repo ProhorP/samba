@@ -21,7 +21,9 @@
  */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "lib/eventlog/eventlog.h"
+#include "../libcli/security/security.h"
 
 /* maintain a list of open eventlog tdbs with reference counts */
 
@@ -951,7 +953,7 @@ NTSTATUS evlog_tdb_entry_to_evt_entry(TALLOC_CTX *mem_ctx,
 		size_t len;
 		if (!convert_string_talloc(mem_ctx, CH_UTF16, CH_UNIX,
 					   t->sid.data, t->sid.length,
-					   (void *)&sid_str, &len, false)) {
+					   (void *)&sid_str, &len)) {
 			return NT_STATUS_INVALID_SID;
 		}
 		if (len > 0) {

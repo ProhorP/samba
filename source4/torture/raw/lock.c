@@ -29,6 +29,7 @@
 #include "libcli/smb_composite/smb_composite.h"
 #include "lib/cmdline/popt_common.h"
 #include "param/param.h"
+#include "torture/raw/proto.h"
 
 #define CHECK_STATUS(status, correct) do { \
 	if (!NT_STATUS_EQUAL(status, correct)) { \
@@ -1611,11 +1612,11 @@ static bool test_zerobytelocks(struct torture_context *tctx, struct smbcli_state
 	     i++) {
 		torture_comment(tctx, "  ... {%d, %llu, %llu} + {%d, %llu, %llu} = %s\n",
 		    zero_byte_tests[i].lock1.pid,
-		    zero_byte_tests[i].lock1.offset,
-		    zero_byte_tests[i].lock1.count,
+		    (unsigned long long) zero_byte_tests[i].lock1.offset,
+		    (unsigned long long) zero_byte_tests[i].lock1.count,
 		    zero_byte_tests[i].lock2.pid,
-		    zero_byte_tests[i].lock2.offset,
-		    zero_byte_tests[i].lock2.count,
+		    (unsigned long long) zero_byte_tests[i].lock2.offset,
+		    (unsigned long long) zero_byte_tests[i].lock2.count,
 		    nt_errstr(zero_byte_tests[i].exp_status));
 
 		/* Lock both locks. */
@@ -2273,7 +2274,7 @@ done:
 */
 struct torture_suite *torture_raw_lock(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "LOCK");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "lock");
 
 	torture_suite_add_1smb_test(suite, "lockx", test_lockx);
 	torture_suite_add_1smb_test(suite, "lock", test_lock);
@@ -2286,10 +2287,8 @@ struct torture_suite *torture_raw_lock(TALLOC_CTX *mem_ctx)
 	torture_suite_add_1smb_test(suite, "unlock", test_unlock);
 	torture_suite_add_1smb_test(suite, "multiple_unlock",
 	    test_multiple_unlock);
-	torture_suite_add_1smb_test(suite, "zerobytelocks",
-	    test_zerobytelocks);
-	torture_suite_add_1smb_test(suite, "zerobyteread",
-	    test_zerobyteread);
+	torture_suite_add_1smb_test(suite, "zerobytelocks", test_zerobytelocks);
+	torture_suite_add_1smb_test(suite, "zerobyteread", test_zerobyteread);
 
 	return suite;
 }

@@ -24,6 +24,7 @@ from samba.net import Net
 
 from samba.netcmd import (
     Command,
+    CommandError,
     SuperCommand,
     )
 
@@ -41,8 +42,8 @@ class cmd_user_add(Command):
 
     def run(self, name, password=None, credopts=None, sambaopts=None, versionopts=None):
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp)
-        net = Net(creds, lp)
+        creds = credopts.get_credentials(lp )
+        net = Net(creds, lp, server=credopts.ipaddress)
         net.create_user(name)
         if password is not None:
             net.set_password(name, creds.get_domain(), password, creds)
@@ -62,9 +63,12 @@ class cmd_user_delete(Command):
 
     def run(self, name, credopts=None, sambaopts=None, versionopts=None):
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp)
-        net = Net(creds, lp)
-        net.delete_user(name)
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        net = Net(creds, lp, server=credopts.ipaddress)
+        try:
+            net.delete_user(name)
+        except RuntimeError, msg:
+            raise CommandError("Failed to delete user %s: %s" % (name, msg))
 
 
 class cmd_user(SuperCommand):

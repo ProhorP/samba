@@ -23,6 +23,7 @@
 #include "libcli/raw/raw_proto.h"
 #include "libcli/libcli.h"
 #include "torture/util.h"
+#include "torture/basic/proto.h"
 
 int create_complex_file(struct smbcli_state *cli, TALLOC_CTX *mem_ctx, const char *fname);
 
@@ -383,7 +384,7 @@ static bool setpathinfo_aliases(struct torture_context *tctx,
 /* look for aliased info levels in trans2 calls */
 struct torture_suite *torture_trans2_aliases(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "ALIASES");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "aliases");
 
 	torture_suite_add_1smb_test(suite, "QFILEINFO aliases", qfsinfo_aliases);
 	torture_suite_add_1smb_test(suite, "QFSINFO aliases", qfileinfo_aliases);

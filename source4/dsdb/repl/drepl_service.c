@@ -25,9 +25,8 @@
 #include "auth/auth.h"
 #include "smbd/service.h"
 #include "lib/events/events.h"
-#include "lib/messaging/irpc.h"
 #include "dsdb/repl/drepl_service.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb_errors.h>
 #include "../lib/util/dlinklist.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/gen_ndr/ndr_drsuapi.h"
@@ -65,7 +64,7 @@ static WERROR dreplsrv_connect_samdb(struct dreplsrv_service *service, struct lo
 	const struct GUID *ntds_guid;
 	struct drsuapi_DsBindInfo28 *bind_info28;
 
-	service->samdb = samdb_connect(service, service->task->event_ctx, lp_ctx, service->system_session_info);
+	service->samdb = samdb_connect(service, service->task->event_ctx, lp_ctx, service->system_session_info, 0);
 	if (!service->samdb) {
 		return WERR_DS_UNAVAILABLE;
 	}
@@ -146,7 +145,7 @@ static void _drepl_replica_sync_done_cb(struct dreplsrv_service *service,
 	struct drsuapi_DsReplicaSync *r = data->r;
 
 	/* store last bad result */
-	if (W_ERROR_IS_OK(werr)) {
+	if (!W_ERROR_IS_OK(werr)) {
 		data->werr_last_failure = werr;
 	}
 
@@ -171,6 +170,7 @@ static void _drepl_replica_sync_done_cb(struct dreplsrv_service *service,
 static WERROR _drepl_schedule_replication(struct dreplsrv_service *service,
 					  struct dreplsrv_partition_source_dsa *dsa,
 					  struct drsuapi_DsReplicaObjectIdentifier *nc,
+					  uint32_t rep_options,
 					  struct drepl_replica_sync_cb_data *data,
 					  TALLOC_CTX *mem_ctx)
 {
@@ -182,7 +182,7 @@ static WERROR _drepl_schedule_replication(struct dreplsrv_service *service,
 	}
 
 	/* schedule replication item */
-	werr = dreplsrv_schedule_partition_pull_source(service, dsa,
+	werr = dreplsrv_schedule_partition_pull_source(service, dsa, rep_options,
 	                                               DRSUAPI_EXOP_NONE, 0,
 	                                               fn_callback, data);
 	if (!W_ERROR_IS_OK(werr)) {
@@ -226,7 +226,7 @@ static NTSTATUS drepl_replica_sync(struct irpc_message *msg,
 							   struct dreplsrv_service);
 
 #define REPLICA_SYNC_FAIL(_msg, _werr) do {\
-		if (!W_ERROR_IS_OK(werr)) { \
+		if (!W_ERROR_IS_OK(_werr)) { \
 			DEBUG(0,(__location__ ": Failure - %s. werr = %s\n", \
 				 _msg, win_errstr(_werr))); \
 			NDR_PRINT_IN_DEBUG(drsuapi_DsReplicaSync, r); \
@@ -278,7 +278,8 @@ static NTSTATUS drepl_replica_sync(struct irpc_message *msg,
 	if (req1->options & DRSUAPI_DRS_SYNC_ALL) {
 		for (dsa = p->sources; dsa; dsa = dsa->next) {
 			/* schedule replication item */
-			werr = _drepl_schedule_replication(service, dsa, nc, cb_data, msg);
+			werr = _drepl_schedule_replication(service, dsa, nc,
+							   req1->options, cb_data, msg);
 			if (!W_ERROR_IS_OK(werr)) {
 				REPLICA_SYNC_FAIL("_drepl_schedule_replication() failed",
 				                  werr);
@@ -308,11 +309,12 @@ static NTSTATUS drepl_replica_sync(struct irpc_message *msg,
 		}
 		if (!W_ERROR_IS_OK(werr)) {
 			REPLICA_SYNC_FAIL("Failed to locate source DSA for given NC",
-					  WERR_DS_DRA_NO_REPLICA);
+					  werr);
 		}
 
 		/* schedule replication item */
-		werr = _drepl_schedule_replication(service, dsa, nc, cb_data, msg);
+		werr = _drepl_schedule_replication(service, dsa, nc,
+						   req1->options, cb_data, msg);
 		if (!W_ERROR_IS_OK(werr)) {
 			REPLICA_SYNC_FAIL("_drepl_schedule_replication() failed",
 			                  werr);
@@ -322,8 +324,11 @@ static NTSTATUS drepl_replica_sync(struct irpc_message *msg,
 	/* if we got here, everything is OK */
 	r->out.result = WERR_OK;
 
-	/* force execution of scheduled replications */
-	dreplsrv_run_pending_ops(service);
+	/*
+	 * schedule replication event to force
+	 * replication as soon as possible
+	 */
+	dreplsrv_periodic_schedule(service, 0);
 
 done:
 	return NT_STATUS_OK;
@@ -344,15 +349,6 @@ static NTSTATUS dreplsrv_refresh(struct irpc_message *msg,
 
 	r->out.result = dreplsrv_refresh_partitions(s);
 
-	return NT_STATUS_OK;
-}
-
-static NTSTATUS drepl_take_FSMO_role(struct irpc_message *msg,
-				     struct drepl_takeFSMORole *r)
-{
-	struct dreplsrv_service *service = talloc_get_type(msg->private_data,
-							   struct dreplsrv_service);
-	r->out.result = dreplsrv_fsmo_role_check(service, r->in.role);
 	return NT_STATUS_OK;
 }
 

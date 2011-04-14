@@ -123,7 +123,10 @@ static bool test_create_trust_and_set_info(struct dcerpc_pipe *p,
 	r.in.policy_handle = handle;
 	r.in.info = &trustinfo;
 	r.in.auth_info = authinfo;
-	r.in.access_mask = LSA_TRUSTED_SET_POSIX | LSA_TRUSTED_SET_AUTH;
+	/* LSA_TRUSTED_QUERY_DOMAIN_NAME is needed for for following
+	 * QueryTrustedDomainInfo call, although it seems that Windows does not
+	 * expect this */
+	r.in.access_mask = LSA_TRUSTED_SET_POSIX | LSA_TRUSTED_SET_AUTH | LSA_TRUSTED_QUERY_DOMAIN_NAME;
 	r.out.trustdom_handle = &trustdom_handle;
 
 	torture_assert_ntstatus_ok(tctx,
@@ -153,7 +156,7 @@ static bool test_create_trust_and_set_info(struct dcerpc_pipe *p,
 		} else {
 			if (strcmp(info->info_ex.netbios_name.string, trustinfo.netbios_name.string) != 0) {
 				torture_comment(tctx,
-						"QueryTrustedDomainInfo returned inconsistant short name: %s != %s\n",
+						"QueryTrustedDomainInfo returned inconsistent short name: %s != %s\n",
 						info->info_ex.netbios_name.string,
 						trustinfo.netbios_name.string);
 				ret = false;
@@ -336,7 +339,10 @@ static bool delete_trusted_domain_by_sid(struct dcerpc_pipe *p,
 
 	torture_comment(tctx, "\nDeleting trusted domain.\n");
 
-	if (!test_get_policy_handle(tctx, p, LSA_POLICY_VIEW_LOCAL_INFORMATION,
+	/* Against a windows server it was sufficient to have
+	 * LSA_POLICY_VIEW_LOCAL_INFORMATION although the documentations says
+	 * otherwise. */
+	if (!test_get_policy_handle(tctx, p, LSA_POLICY_TRUST_ADMIN,
 				    &handle)) {
 		return false;
 	}
@@ -430,8 +436,7 @@ static bool get_trust_domain_passwords_auth_blob(TALLOC_CTX *mem_ctx,
 	if (!convert_string_talloc(mem_ctx, CH_UNIX, CH_UTF16, password,
 				  strlen(password),
 				  &auth_info_array[0].AuthInfo.clear.password,
-				  &converted_size,
-				  false)) {
+				  &converted_size)) {
 		return false;
 	}
 
@@ -489,7 +494,8 @@ static bool test_validate_trust(struct torture_context *tctx,
 		return false;
 	}
 
-	cli_credentials_set_username(credentials, trusted_dom_name,
+	char *dummy = talloc_asprintf(tctx, "%s$", trusted_dom_name);
+	cli_credentials_set_username(credentials, dummy,
 				     CRED_SPECIFIED);
 	cli_credentials_set_domain(credentials, trusting_dom_name,
 				   CRED_SPECIFIED);
@@ -827,7 +833,7 @@ struct torture_suite *torture_rpc_lsa_forest_trust(TALLOC_CTX *mem_ctx)
 	struct torture_suite *suite;
 	struct torture_rpc_tcase *tcase;
 
-	suite = torture_suite_create(mem_ctx, "LSA-FOREST-TRUST");
+	suite = torture_suite_create(mem_ctx, "lsa.forest.trust");
 
 	tcase = torture_suite_add_rpc_iface_tcase(suite, "lsa-forest-trust",
 						  &ndr_table_lsarpc);

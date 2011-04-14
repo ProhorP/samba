@@ -18,7 +18,11 @@
 
 
 #include "includes.h"
+#include "system/passwd.h"
+#include "system/filesys.h"
 #include "web/swat_proto.h"
+#include "intl/lang_tdb.h"
+#include "auth.h"
 
 #define MAX_VARIABLES 10000
 
@@ -207,14 +211,14 @@ void cgi_load_variables(void)
 
 		convert_string_talloc(frame, CH_UTF8, CH_UNIX,
 			       variables[i].name, strlen(variables[i].name),
-			       &dest, &dest_len, True);
+			       &dest, &dest_len);
 		SAFE_FREE(variables[i].name);
 		variables[i].name = SMB_STRDUP(dest ? dest : "");
 
 		dest = NULL;
 		convert_string_talloc(frame, CH_UTF8, CH_UNIX,
 			       variables[i].value, strlen(variables[i].value),
-			       &dest, &dest_len, True);
+			       &dest, &dest_len);
 		SAFE_FREE(variables[i].value);
 		variables[i].value = SMB_STRDUP(dest ? dest : "");
 		TALLOC_FREE(frame);
@@ -314,7 +318,7 @@ static void cgi_web_auth(void)
 		exit(0);
 	}
 
-	pwd = getpwnam_alloc(talloc_autofree_context(), user);
+	pwd = Get_Pwnam_alloc(talloc_tos(), user);
 	if (!pwd) {
 		printf("%sCannot find user %s<br>%s\n", head, user, tail);
 		exit(0);
@@ -341,6 +345,7 @@ static bool cgi_handle_authorization(char *line)
 	struct passwd *pass = NULL;
 	const char *rhost;
 	char addr[INET6_ADDRSTRLEN];
+	size_t size = 0;
 
 	if (!strnequal(line,"Basic ", 6)) {
 		goto err;
@@ -357,19 +362,23 @@ static bool cgi_handle_authorization(char *line)
 	}
 	*p = 0;
 
-	convert_string(CH_UTF8, CH_UNIX, 
+	if (!convert_string(CH_UTF8, CH_UNIX,
 		       line, -1, 
-		       user, sizeof(user), True);
+		       user, sizeof(user), &size)) {
+		goto err;
+	}
 
-	convert_string(CH_UTF8, CH_UNIX, 
+	if (!convert_string(CH_UTF8, CH_UNIX,
 		       p+1, -1, 
-		       user_pass, sizeof(user_pass), True);
+		       user_pass, sizeof(user_pass), &size)) {
+		goto err;
+	}
 
 	/*
 	 * Try and get the user from the UNIX password file.
 	 */
 
-	pass = getpwnam_alloc(talloc_autofree_context(), user);
+	pass = Get_Pwnam_alloc(talloc_tos(), user);
 
 	rhost = client_name(1);
 	if (strequal(rhost,"UNKNOWN"))

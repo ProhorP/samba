@@ -48,6 +48,8 @@ static WERROR drepl_create_extended_source_dsa(struct dreplsrv_service *service,
 	struct ldb_context *ldb = service->samdb;
 	int ret;
 	WERROR werr;
+	struct ldb_dn *nc_root;
+	struct dreplsrv_partition *p;
 
 	sdsa = talloc_zero(service, struct dreplsrv_partition_source_dsa);
 	W_ERROR_HAVE_NO_MEMORY(sdsa);
@@ -100,14 +102,49 @@ static WERROR drepl_create_extended_source_dsa(struct dreplsrv_service *service,
 		return WERR_NOMEM;
 	}
 
-	sdsa->repsFrom1->highwatermark.highest_usn = min_usn;
-
 	werr = dreplsrv_out_connection_attach(service, sdsa->repsFrom1, &sdsa->conn);
 	if (!W_ERROR_IS_OK(werr)) {
 		DEBUG(0,(__location__ ": Failed to attach connection to %s\n",
 			 ldb_dn_get_linearized(nc_dn)));
 		talloc_free(sdsa);
 		return werr;
+	}
+
+	ret = dsdb_find_nc_root(service->samdb, sdsa, nc_dn, &nc_root);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(0,(__location__ ": Failed to find nc_root for %s\n",
+			 ldb_dn_get_linearized(nc_dn)));
+		talloc_free(sdsa);
+		return WERR_DS_DRA_INTERNAL_ERROR;
+	}
+
+	/* use the partition uptodateness vector */
+	ret = dsdb_load_udv_v2(service->samdb, nc_root, sdsa->partition,
+			       &sdsa->partition->uptodatevector.cursors,
+			       &sdsa->partition->uptodatevector.count);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(0,(__location__ ": Failed to load UDV for %s\n",
+			 ldb_dn_get_linearized(nc_root)));
+		talloc_free(sdsa);
+		return WERR_DS_DRA_INTERNAL_ERROR;
+	}
+
+	/* find the highwatermark from the partitions list */
+	for (p=service->partitions; p; p=p->next) {
+		if (ldb_dn_compare(p->dn, nc_root) == 0) {
+			struct dreplsrv_partition_source_dsa *s;
+			werr = dreplsrv_partition_source_dsa_by_guid(p,
+								     &sdsa->repsFrom1->source_dsa_obj_guid,
+								     &s);
+			if (W_ERROR_IS_OK(werr)) {
+				sdsa->repsFrom1->highwatermark = s->repsFrom1->highwatermark;
+				sdsa->repsFrom1->replica_flags = s->repsFrom1->replica_flags;
+			}
+		}
+	}
+
+	if (!service->am_rodc) {
+		sdsa->repsFrom1->replica_flags |= DRSUAPI_DRS_WRIT_REP;
 	}
 
 	*_sdsa = sdsa;
@@ -161,7 +198,7 @@ WERROR drepl_request_extended_op(struct dreplsrv_service *service,
 	data->sdsa = sdsa;
 
 	werr = dreplsrv_schedule_partition_pull_source(service, sdsa,
-						       extended_op, fsmo_info,
+						       0, extended_op, fsmo_info,
 						       extended_op_callback, data);
 	if (!W_ERROR_IS_OK(werr)) {
 		talloc_free(sdsa);

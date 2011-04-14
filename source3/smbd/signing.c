@@ -20,6 +20,7 @@
 */
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "smb_signing.h"
 
@@ -98,6 +99,12 @@ struct smbd_shm_signing {
 	size_t len2;
 };
 
+static int smbd_shm_signing_destructor(struct smbd_shm_signing *s)
+{
+	anonymous_shared_free(s->shm_pointer);
+	return 0;
+}
+
 static void *smbd_shm_signing_alloc(TALLOC_CTX *mem_ctx, size_t len)
 {
 	struct smbd_shm_signing *s = talloc_get_type_abort(mem_ctx,
@@ -175,11 +182,12 @@ bool srv_init_signing(struct smbd_server_connection *conn)
 		}
 		s->shm_size = 4096;
 		s->shm_pointer =
-			(uint8_t *)allocate_anonymous_shared(s->shm_size);
+			(uint8_t *)anonymous_shared_allocate(s->shm_size);
 		if (s->shm_pointer == NULL) {
 			talloc_free(s);
 			return false;
 		}
+		talloc_set_destructor(s, smbd_shm_signing_destructor);
 		conn->smb1.signing_state = smb_signing_init_ex(s,
 							allowed, mandatory,
 							smbd_shm_signing_alloc,

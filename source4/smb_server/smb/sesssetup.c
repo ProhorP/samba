@@ -68,24 +68,24 @@ static void sesssetup_old_send(struct tevent_req *subreq)
 	struct smbsrv_request *req = state->req;
 
 	union smb_sesssetup *sess = talloc_get_type(req->io_ptr, union smb_sesssetup);
-	struct auth_serversupplied_info *server_info = NULL;
+	struct auth_user_info_dc *user_info_dc = NULL;
 	struct auth_session_info *session_info;
 	struct smbsrv_session *smb_sess;
 	NTSTATUS status;
 	uint32_t flags;
 
-	status = auth_check_password_recv(subreq, req, &server_info);
+	status = auth_check_password_recv(subreq, req, &user_info_dc);
 	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
 
 	flags = AUTH_SESSION_INFO_DEFAULT_GROUPS;
-	if (server_info->authenticated) {
+	if (user_info_dc->info->authenticated) {
 		flags |= AUTH_SESSION_INFO_AUTHENTICATED;
 	}
-	/* This references server_info into session_info */
+	/* This references user_info_dc into session_info */
 	status = req->smb_conn->negotiate.auth_context->generate_session_info(req,
 									      req->smb_conn->negotiate.auth_context,
-									      server_info, flags, &session_info);
+									      user_info_dc, flags, &session_info);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
 
 	/* allocate a new session */
@@ -106,7 +106,7 @@ static void sesssetup_old_send(struct tevent_req *subreq)
 	sess->old.out.vuid = smb_sess->vuid;
 
 failed:
-	status = auth_nt_status_squash(status);
+	status = nt_status_squash(status);
 	smbsrv_sesssetup_backend_send(req, sess, status);
 }
 
@@ -198,26 +198,25 @@ static void sesssetup_nt1_send(struct tevent_req *subreq)
 	struct sesssetup_context *state = tevent_req_callback_data(subreq, struct sesssetup_context);
 	struct smbsrv_request *req = state->req;
 	union smb_sesssetup *sess = talloc_get_type(req->io_ptr, union smb_sesssetup);
-	struct auth_serversupplied_info *server_info = NULL;
+	struct auth_user_info_dc *user_info_dc = NULL;
 	struct auth_session_info *session_info;
 	struct smbsrv_session *smb_sess;
 
 	uint32_t flags;
 	NTSTATUS status;
 
-	status = auth_check_password_recv(subreq, req, &server_info);
+	status = auth_check_password_recv(subreq, req, &user_info_dc);
 	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
 
 	flags = AUTH_SESSION_INFO_DEFAULT_GROUPS;
-	if (server_info->authenticated) {
+	if (user_info_dc->info->authenticated) {
 		flags |= AUTH_SESSION_INFO_AUTHENTICATED;
 	}
-
-	/* This references server_info into session_info */
+	/* This references user_info_dc into session_info */
 	status = state->auth_context->generate_session_info(req,
 							    state->auth_context,
-							    server_info,
+							    user_info_dc,
 							    flags,
 							    &session_info);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
@@ -247,7 +246,7 @@ static void sesssetup_nt1_send(struct tevent_req *subreq)
 done:
 	status = NT_STATUS_OK;
 failed:
-	status = auth_nt_status_squash(status);
+	status = nt_status_squash(status);
 	smbsrv_sesssetup_backend_send(req, sess, status);
 }
 
@@ -349,7 +348,7 @@ static void sesssetup_nt1(struct smbsrv_request *req, union smb_sesssetup *sess)
 nomem:
 	status = NT_STATUS_NO_MEMORY;
 failed:
-	status = auth_nt_status_squash(status);
+	status = nt_status_squash(status);
 	smbsrv_sesssetup_backend_send(req, sess, status);
 }
 
@@ -398,7 +397,7 @@ static void sesssetup_spnego_send(struct tevent_req *subreq)
 done:
 	sess->spnego.out.vuid = smb_sess->vuid;
 failed:
-	status = auth_nt_status_squash(status);
+	status = nt_status_squash(status);
 	smbsrv_sesssetup_backend_send(req, sess, status);
 	if (!NT_STATUS_IS_OK(status) && 
 	    !NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
@@ -503,7 +502,7 @@ nomem:
 	status = NT_STATUS_NO_MEMORY;
 failed:
 	talloc_free(smb_sess);
-	status = auth_nt_status_squash(status);
+	status = nt_status_squash(status);
 	smbsrv_sesssetup_backend_send(req, sess, status);
 }
 

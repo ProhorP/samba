@@ -18,14 +18,13 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "serverid.h"
 #include "dbwrap.h"
 
 struct serverid_key {
 	pid_t pid;
-#ifdef CLUSTER_SUPPORT
 	uint32_t vnn;
-#endif
 };
 
 struct serverid_data {
@@ -33,7 +32,7 @@ struct serverid_data {
 	uint32_t msg_flags;
 };
 
-bool serverid_parent_init(void)
+bool serverid_parent_init(TALLOC_CTX *mem_ctx)
 {
 	struct tdb_wrap *db;
 
@@ -43,9 +42,8 @@ bool serverid_parent_init(void)
 	 * work.
 	 */
 
-	db = tdb_wrap_open(talloc_autofree_context(),
-			   lock_path("serverid.tdb"),
-			   0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST, O_RDWR|O_CREAT,
+	db = tdb_wrap_open(mem_ctx, lock_path("serverid.tdb"),
+			   0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT,
 			   0644);
 	if (db == NULL) {
 		DEBUG(1, ("could not open serverid.tdb: %s\n",
@@ -62,8 +60,8 @@ static struct db_context *serverid_db(void)
 	if (db != NULL) {
 		return db;
 	}
-	db = db_open(talloc_autofree_context(), lock_path("serverid.tdb"),
-		     0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST, O_RDWR|O_CREAT, 0644);
+	db = db_open(NULL, lock_path("serverid.tdb"), 0,
+		     TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT, 0644);
 	return db;
 }
 
@@ -72,9 +70,7 @@ static void serverid_fill_key(const struct server_id *id,
 {
 	ZERO_STRUCTP(key);
 	key->pid = id->pid;
-#ifdef CLUSTER_SUPPORT
 	key->vnn = id->vnn;
-#endif
 }
 
 bool serverid_register(const struct server_id id, uint32_t msg_flags)
@@ -235,6 +231,10 @@ bool serverid_exists(const struct server_id *id)
 	struct serverid_key key;
 	TDB_DATA tdbkey;
 
+	if (lp_clustering() && !process_exists(*id)) {
+		return false;
+	}
+
 	db = serverid_db();
 	if (db == NULL) {
 		return false;
@@ -273,9 +273,7 @@ static bool serverid_rec_parse(const struct db_record *rec,
 	memcpy(&data, rec->value.dptr, sizeof(data));
 
 	id->pid = key.pid;
-#ifdef CLUSTER_SUPPORT
 	id->vnn = key.vnn;
-#endif
 	id->unique_id = data.unique_id;
 	*msg_flags = data.msg_flags;
 	return true;

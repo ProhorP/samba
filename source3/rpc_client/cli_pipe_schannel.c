@@ -22,8 +22,10 @@
 #include "../librpc/gen_ndr/ndr_netlogon.h"
 #include "../libcli/auth/schannel.h"
 #include "rpc_client/cli_netlogon.h"
+#include "rpc_client/cli_pipe.h"
 #include "librpc/gen_ndr/ndr_dcerpc.h"
 #include "librpc/rpc/dcerpc.h"
+#include "passdb.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_RPC_CLI
@@ -76,7 +78,7 @@ static NTSTATUS get_schannel_session_key_common(struct rpc_pipe_client *netlogon
 		return NT_STATUS_INVALID_NETWORK_RESPONSE;
 	}
 
-	return NT_STATUS_OK;;
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************

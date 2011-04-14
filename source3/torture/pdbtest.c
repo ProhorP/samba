@@ -22,6 +22,7 @@
 
 #include "includes.h"
 #include "popt_common.h"
+#include "passdb.h"
 
 static bool samu_correct(struct samu *s1, struct samu *s2)
 {
@@ -259,7 +260,7 @@ int main(int argc, char **argv)
 
 	/* Load configuration */
 	lp_load(get_dyn_CONFIGFILE(), False, False, True, True);
-	setup_logging("pdbtest", True);
+	setup_logging("pdbtest", DEBUG_STDOUT);
 
 	if (backend == NULL) {
 		backend = lp_passdb_backend();
@@ -278,7 +279,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 	
-	if ((pwd = getpwnam_alloc(ctx, unix_user)) == NULL) {
+	if ((pwd = Get_Pwnam_alloc(ctx, unix_user)) == NULL) {
 		fprintf(stderr, "Error getting user information for %s\n", unix_user);
 		exit(1);
 	}

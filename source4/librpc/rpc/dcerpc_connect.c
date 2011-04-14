@@ -516,7 +516,7 @@ static void continue_map_binding(struct composite_context *ctx)
 	c->status = dcerpc_epm_map_binding_recv(ctx);
 	if (!composite_is_ok(c)) return;
 
-	DEBUG(2,("Mapped to DCERPC endpoint %s\n", s->binding->endpoint));
+	DEBUG(4,("Mapped to DCERPC endpoint %s\n", s->binding->endpoint));
 	
 	continue_connect(c, s);
 }
@@ -539,6 +539,7 @@ static void continue_connect(struct composite_context *c, struct pipe_connect_st
 	/* dcerpc pipe connect input parameters */
 	pc.pipe         = s->pipe;
 	pc.binding      = s->binding;
+	pc.pipe_name    = NULL;
 	pc.interface    = s->table;
 	pc.creds        = s->credentials;
 	pc.resolve_ctx  = lpcfg_resolve_context(s->lp_ctx);

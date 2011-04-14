@@ -27,6 +27,9 @@
 #include "system/network.h"
 #include "lib/util/util_net.h"
 
+_PUBLIC_ const struct socket_ops *socket_ipv4_ops(enum socket_type type);
+_PUBLIC_ const struct socket_ops *socket_ipv6_ops(enum socket_type type);
+
 static NTSTATUS ipv4_init(struct socket_context *sock)
 {
 	int type;
@@ -712,7 +715,7 @@ static NTSTATUS ipv6_listen(struct socket_context *sock,
 
 static NTSTATUS ipv6_tcp_accept(struct socket_context *sock, struct socket_context **new_sock)
 {
-	struct sockaddr_in cli_addr;
+	struct sockaddr_in6 cli_addr;
 	socklen_t cli_addr_len = sizeof(cli_addr);
 	int new_fd;
 	

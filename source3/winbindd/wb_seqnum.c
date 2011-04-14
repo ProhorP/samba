@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 
 struct wb_seqnum_state {
 	uint32_t seqnum;
@@ -39,7 +39,7 @@ struct tevent_req *wb_seqnum_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 	subreq = dcerpc_wbint_QuerySequenceNumber_send(
-		state, ev, domain->child.binding_handle, &state->seqnum);
+		state, ev, dom_child_handle(domain), &state->seqnum);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -57,12 +57,8 @@ static void wb_seqnum_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_QuerySequenceNumber_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 	tevent_req_done(req);

@@ -26,7 +26,9 @@
 
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "libcli/security/security.h"
 
 #define	PIPE		"\\PIPE\\"
 #define	PIPELEN		strlen(PIPE)
@@ -70,7 +72,7 @@ NTSTATUS open_np_file(struct smb_request *smb_req, const char *name,
 			 conn->sconn->local_address,
 			 conn->sconn->remote_address,
 			 &conn->sconn->client_id,
-			 conn->server_info,
+			 conn->session_info,
 			 conn->sconn->msg_ctx,
 			 &fsp->fake_file_handle);
 	if (!NT_STATUS_IS_OK(status)) {

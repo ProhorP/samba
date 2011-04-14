@@ -29,11 +29,13 @@
 */
 
 #include "includes.h"
+#include "intl/lang_tdb.h"
 
  int d_vfprintf(FILE *f, const char *format, va_list ap)
 {
 	char *p = NULL, *p2 = NULL;
 	int ret, maxlen, clen;
+	size_t size = 0;
 	const char *msgstr;
 	va_list ap2;
 
@@ -65,11 +67,11 @@ again:
 		goto out;
 	}
 
-	clen = convert_string(CH_UNIX, CH_DISPLAY, p, ret, p2, maxlen, True);
-	if (clen == -1) {
+	if (!convert_string(CH_UNIX, CH_DISPLAY, p, ret, p2, maxlen, &size)) {
 		ret = -1;
 		goto out;
 	}
+	clen = size;
 
 	if (clen >= maxlen) {
 		/* it didn't fit - try a larger buffer */

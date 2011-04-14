@@ -21,6 +21,7 @@
 #include "includes.h"
 #include "winbindd.h"
 #include "idmap.h"
+#include "../libcli/security/dom_sid.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -34,8 +35,7 @@ struct idmap_rid_context {
   we support multiple domains in the new idmap
  *****************************************************************************/
 
-static NTSTATUS idmap_rid_initialize(struct idmap_domain *dom,
-				     const char *params)
+static NTSTATUS idmap_rid_initialize(struct idmap_domain *dom)
 {
 	NTSTATUS ret;
 	struct idmap_rid_context *ctx;
@@ -181,19 +181,10 @@ static NTSTATUS idmap_rid_sids_to_unixids(struct idmap_domain *dom, struct id_ma
 	return NT_STATUS_OK;
 }
 
-static NTSTATUS idmap_rid_close(struct idmap_domain *dom)
-{
-	if (dom->private_data) {
-		TALLOC_FREE(dom->private_data);
-	}
-	return NT_STATUS_OK;
-}
-
 static struct idmap_methods rid_methods = {
 	.init = idmap_rid_initialize,
 	.unixids_to_sids = idmap_rid_unixids_to_sids,
 	.sids_to_unixids = idmap_rid_sids_to_unixids,
-	.close_fn = idmap_rid_close
 };
 
 NTSTATUS idmap_rid_init(void)

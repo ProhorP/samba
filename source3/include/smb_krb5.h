@@ -4,16 +4,20 @@
 #define KRB5_PRIVATE    1       /* this file uses PRIVATE interfaces! */
 /* this file uses DEPRECATED interfaces! */
 
-#define ADS_IGNORE_PRINCIPAL "not_defined_in_RFC4178@please_ignore"
-
 #if defined(HAVE_KRB5_DEPRECATED_WITH_IDENTIFIER)
 #define KRB5_DEPRECATED 1
 #else
 #define KRB5_DEPRECATED
 #endif
 
-#if HAVE_KRB5_H
-#include <krb5.h>
+#include "libcli/auth/krb5_wrap.h"
+
+#if HAVE_GSSAPI_GSSAPI_H
+#include <gssapi/gssapi.h>
+#elif HAVE_GSSAPI_GSSAPI_GENERIC_H
+#include <gssapi/gssapi_generic.h>
+#elif HAVE_GSSAPI_H
+#include <gssapi.h>
 #endif
 
 #ifndef KRB5_ADDR_NETBIOS

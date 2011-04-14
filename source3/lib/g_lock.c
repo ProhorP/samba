@@ -18,8 +18,12 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "g_lock.h"
-#include "librpc/gen_ndr/messaging.h"
+#include "ctdbd_conn.h"
+#include "../lib/util/select.h"
+#include "system/select.h"
+#include "messages.h"
 
 static NTSTATUS g_lock_force_unlock(struct g_lock_ctx *ctx, const char *name,
 				    struct server_id pid);
@@ -52,7 +56,7 @@ struct g_lock_ctx *g_lock_ctx_init(TALLOC_CTX *mem_ctx,
 	result->msg = msg;
 
 	result->db = db_open(result, lock_path("g_lock.tdb"), 0,
-			     TDB_CLEAR_IF_FIRST, O_RDWR|O_CREAT, 0700);
+			     TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT, 0700);
 	if (result->db == NULL) {
 		DEBUG(1, ("g_lock_init: Could not open g_lock.tdb"));
 		TALLOC_FREE(result);
@@ -333,11 +337,9 @@ NTSTATUS g_lock_lock(struct g_lock_ctx *ctx, const char *name,
 	timeout_end = timeval_sum(&time_now, &timeout);
 
 	while (true) {
-#ifdef CLUSTER_SUPPORT
-		fd_set _r_fds;
-#endif
-		fd_set *r_fds = NULL;
-		int max_fd = 0;
+		struct pollfd *pollfds;
+		int num_pollfds;
+		int saved_errno;
 		int ret;
 		struct timeval timeout_remaining, select_timeout;
 
@@ -385,15 +387,27 @@ NTSTATUS g_lock_lock(struct g_lock_ctx *ctx, const char *name,
 		 * events here but have to handcode a timeout.
 		 */
 
+		/*
+		 * We allocate 2 entries here. One is needed anyway for
+		 * sys_poll and in the clustering case we might have to add
+		 * the ctdb fd. This avoids the realloc then.
+		 */
+		pollfds = TALLOC_ARRAY(talloc_tos(), struct pollfd, 2);
+		if (pollfds == NULL) {
+			status = NT_STATUS_NO_MEMORY;
+			break;
+		}
+		num_pollfds = 0;
+
 #ifdef CLUSTER_SUPPORT
 		if (lp_clustering()) {
 			struct ctdbd_connection *conn;
 			conn = messaging_ctdbd_connection();
 
-			r_fds = &_r_fds;
-			FD_ZERO(r_fds);
-			max_fd = ctdbd_conn_get_fd(conn);
-			FD_SET(max_fd, r_fds);
+			pollfds[0].fd = ctdbd_conn_get_fd(conn);
+			pollfds[0].events = POLLIN|POLLHUP;
+
+			num_pollfds += 1;
 		}
 #endif
 
@@ -404,8 +418,17 @@ NTSTATUS g_lock_lock(struct g_lock_ctx *ctx, const char *name,
 		select_timeout = timeval_min(&select_timeout,
 					     &timeout_remaining);
 
-		ret = sys_select(max_fd + 1, r_fds, NULL, NULL,
-				 &select_timeout);
+		ret = sys_poll(pollfds, num_pollfds,
+			       timeval_to_msec(select_timeout));
+
+		/*
+		 * We're not *really interested in the actual flags. We just
+		 * need to retry this whole thing.
+		 */
+		saved_errno = errno;
+		TALLOC_FREE(pollfds);
+		errno = saved_errno;
+
 		if (ret == -1) {
 			if (errno != EINTR) {
 				DEBUG(1, ("error calling select: %s\n",

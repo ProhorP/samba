@@ -288,8 +288,8 @@ char *ldb_dn_escape_value(TALLOC_CTX *mem_ctx, struct ldb_val value)
 static bool ldb_dn_explode(struct ldb_dn *dn)
 {
 	char *p, *ex_name, *ex_value, *data, *d, *dt, *t;
-	bool trim = false;
-	bool in_extended = false;
+	bool trim = true;
+	bool in_extended = true;
 	bool in_ex_name = false;
 	bool in_ex_value = false;
 	bool in_attr = false;
@@ -352,10 +352,6 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 	}
 
 	p = parse_dn;
-	in_extended = true;
-	in_ex_name = false;
-	in_ex_value = false;
-	trim = true;
 	t = NULL;
 	d = dt = data;
 
@@ -729,8 +725,11 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 	return true;
 
 failed:
+	LDB_FREE(dn->components); /* "data" is implicitly free'd */
 	dn->comp_num = 0;
-	talloc_free(dn->components);
+	LDB_FREE(dn->ext_components);
+	dn->ext_comp_num = 0;
+
 	return false;
 }
 
@@ -884,11 +883,11 @@ char *ldb_dn_get_extended_linearized(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int
 /*
   filter out all but an acceptable list of extended DN components
  */
-void ldb_dn_extended_filter(struct ldb_dn *dn, const char * const *accept)
+void ldb_dn_extended_filter(struct ldb_dn *dn, const char * const *accept_list)
 {
 	unsigned int i;
 	for (i=0; i<dn->ext_comp_num; i++) {
-		if (!ldb_attr_in_list(accept, dn->ext_components[i].name)) {
+		if (!ldb_attr_in_list(accept_list, dn->ext_components[i].name)) {
 			memmove(&dn->ext_components[i],
 				&dn->ext_components[i+1],
 				(dn->ext_comp_num-(i+1))*sizeof(dn->ext_components[0]));
@@ -1029,7 +1028,7 @@ char *ldb_dn_alloc_casefold(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 int ldb_dn_compare_base(struct ldb_dn *base, struct ldb_dn *dn)
 {
 	int ret;
-	long long int n_base, n_dn;
+	unsigned int n_base, n_dn;
 
 	if ( ! base || base->invalid) return 1;
 	if ( ! dn || dn->invalid) return -1;
@@ -1080,7 +1079,7 @@ int ldb_dn_compare_base(struct ldb_dn *base, struct ldb_dn *dn)
 	n_base = base->comp_num - 1;
 	n_dn = dn->comp_num - 1;
 
-	while (n_base >= 0) {
+	while (n_base != (unsigned int) -1) {
 		char *b_name = base->components[n_base].cf_name;
 		char *dn_name = dn->components[n_dn].cf_name;
 
@@ -1486,7 +1485,7 @@ bool ldb_dn_add_child(struct ldb_dn *dn, struct ldb_dn *child)
 
 	if (dn->components) {
 		unsigned int n;
-		long long int i, j;
+		unsigned int i, j;
 
 		if (dn->comp_num == 0) {
 			return false;
@@ -1514,7 +1513,8 @@ bool ldb_dn_add_child(struct ldb_dn *dn, struct ldb_dn *child)
 			return false;
 		}
 
-		for (i = dn->comp_num - 1, j = n - 1; i >= 0; i--, j--) {
+		for (i = dn->comp_num - 1, j = n - 1; i != (unsigned int) -1;
+		     i--, j--) {
 			dn->components[j] = dn->components[i];
 		}
 
@@ -1600,7 +1600,7 @@ bool ldb_dn_add_child_fmt(struct ldb_dn *dn, const char *child_fmt, ...)
 
 bool ldb_dn_remove_base_components(struct ldb_dn *dn, unsigned int num)
 {
-	long long int i;
+	unsigned int i;
 
 	if ( ! ldb_dn_validate(dn)) {
 		return false;
@@ -1611,11 +1611,11 @@ bool ldb_dn_remove_base_components(struct ldb_dn *dn, unsigned int num)
 	}
 
 	/* free components */
-	for (i = num; i > 0; i--) {
-		LDB_FREE(dn->components[dn->comp_num - i].name);
-		LDB_FREE(dn->components[dn->comp_num - i].value.data);
-		LDB_FREE(dn->components[dn->comp_num - i].cf_name);
-		LDB_FREE(dn->components[dn->comp_num - i].cf_value.data);
+	for (i = dn->comp_num - num; i < dn->comp_num; i++) {
+		LDB_FREE(dn->components[i].name);
+		LDB_FREE(dn->components[i].value.data);
+		LDB_FREE(dn->components[i].cf_name);
+		LDB_FREE(dn->components[i].cf_value.data);
 	}
 
 	dn->comp_num -= num;
@@ -1711,7 +1711,7 @@ struct ldb_dn *ldb_dn_get_parent(TALLOC_CTX *mem_ctx, struct ldb_dn *dn)
 
 */
 static char *ldb_dn_canonical(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int ex_format) {
-	long long int i;
+	unsigned int i;
 	TALLOC_CTX *tmpctx;
 	char *cracked = NULL;
 	const char *format = (ex_format ? "\n" : "/" );
@@ -1723,7 +1723,7 @@ static char *ldb_dn_canonical(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int ex_for
 	tmpctx = talloc_new(mem_ctx);
 
 	/* Walk backwards down the DN, grabbing 'dc' components at first */
-	for (i = dn->comp_num - 1; i >= 0; i--) {
+	for (i = dn->comp_num - 1; i != (unsigned int) -1; i--) {
 		if (ldb_attr_cmp(dn->components[i].name, "dc") != 0) {
 			break;
 		}
@@ -1742,7 +1742,7 @@ static char *ldb_dn_canonical(TALLOC_CTX *mem_ctx, struct ldb_dn *dn, int ex_for
 	}
 
 	/* Only domain components?  Finish here */
-	if (i < 0) {
+	if (i == (unsigned int) -1) {
 		cracked = talloc_strdup_append_buffer(cracked, format);
 		talloc_steal(mem_ctx, cracked);
 		goto done;
@@ -1785,6 +1785,14 @@ int ldb_dn_get_comp_num(struct ldb_dn *dn)
 		return -1;
 	}
 	return dn->comp_num;
+}
+
+int ldb_dn_get_extended_comp_num(struct ldb_dn *dn)
+{
+	if ( ! ldb_dn_validate(dn)) {
+		return -1;
+	}
+	return dn->ext_comp_num;
 }
 
 const char *ldb_dn_get_component_name(struct ldb_dn *dn, unsigned int num)
@@ -2036,4 +2044,58 @@ int ldb_dn_update_components(struct ldb_dn *dn, const struct ldb_dn *ref_dn)
 	LDB_FREE(dn->ext_linearized);
 
 	return LDB_SUCCESS;
+}
+
+/*
+  minimise a DN. The caller must pass in a validated DN.
+
+  If the DN has an extended component then only the first extended
+  component is kept, the DN string is stripped.
+
+  The existing dn is modified
+ */
+bool ldb_dn_minimise(struct ldb_dn *dn)
+{
+	unsigned int i;
+
+	if (!ldb_dn_validate(dn)) {
+		return false;
+	}
+	if (dn->ext_comp_num == 0) {
+		return true;
+	}
+
+	/* free components */
+	for (i = 0; i < dn->comp_num; i++) {
+		LDB_FREE(dn->components[i].name);
+		LDB_FREE(dn->components[i].value.data);
+		LDB_FREE(dn->components[i].cf_name);
+		LDB_FREE(dn->components[i].cf_value.data);
+	}
+	dn->comp_num = 0;
+	dn->valid_case = false;
+
+	LDB_FREE(dn->casefold);
+	LDB_FREE(dn->linearized);
+
+	/* note that we don't free dn->components as this there are
+	 * several places in ldb_dn.c that rely on it being non-NULL
+	 * for an exploded DN
+	 */
+
+	for (i = 1; i < dn->ext_comp_num; i++) {
+		LDB_FREE(dn->ext_components[i].name);
+		LDB_FREE(dn->ext_components[i].value.data);
+	}
+	dn->ext_comp_num = 1;
+
+	dn->ext_components = talloc_realloc(dn, dn->ext_components, struct ldb_dn_ext_component, 1);
+	if (dn->ext_components == NULL) {
+		ldb_dn_mark_invalid(dn);
+		return false;
+	}
+
+	LDB_FREE(dn->ext_linearized);
+
+	return true;
 }

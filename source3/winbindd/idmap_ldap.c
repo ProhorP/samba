@@ -28,6 +28,7 @@
 #include "secrets.h"
 #include "idmap.h"
 #include "idmap_rw.h"
+#include "../libcli/security/security.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -37,17 +38,13 @@
 
 #include "smbldap.h"
 
-static char *idmap_fetch_secret(const char *backend, bool alloc,
+static char *idmap_fetch_secret(const char *backend,
 				const char *domain, const char *identity)
 {
 	char *tmp, *ret;
 	int r;
 
-	if (alloc) {
-		r = asprintf(&tmp, "IDMAP_ALLOC_%s", backend);
-	} else {
-		r = asprintf(&tmp, "IDMAP_%s_%s", backend, domain);
-	}
+	r = asprintf(&tmp, "IDMAP_%s_%s", backend, domain);
 
 	if (r < 0)
 		return NULL;
@@ -60,20 +57,12 @@ static char *idmap_fetch_secret(const char *backend, bool alloc,
 	return ret;
 }
 
-struct idmap_ldap_alloc_context {
-	struct smbldap_state *smbldap_state;
-	char *url;
-	char *suffix;
-	char *user_dn;
-};
-
 struct idmap_ldap_context {
 	struct smbldap_state *smbldap_state;
 	char *url;
 	char *suffix;
 	char *user_dn;
 	bool anon;
-	struct idmap_ldap_alloc_context *alloc;
 	struct idmap_rw_ops *rw_ops;
 };
 
@@ -109,12 +98,13 @@ static NTSTATUS get_credentials( TALLOC_CTX *mem_ctx,
 
 	if ( tmp ) {
 		if (!dom) {
-			/* only the alloc backend can pass in a NULL dom */
-			secret = idmap_fetch_secret("ldap", True,
-						    NULL, tmp);
+			DEBUG(0, ("get_credentials: Invalid domain 'NULL' "
+				  "encountered for user DN %s\n",
+				  tmp));
+			ret = NT_STATUS_UNSUCCESSFUL;
+			goto done;
 		} else {
-			secret = idmap_fetch_secret("ldap", False,
-						    dom->name, tmp);
+			secret = idmap_fetch_secret("ldap", dom->name, tmp);
 		}
 
 		if (!secret) {
@@ -167,11 +157,7 @@ static NTSTATUS verify_idpool(struct idmap_domain *dom)
 
 	ctx = talloc_get_type(dom->private_data, struct idmap_ldap_context);
 
-	if (!ctx->alloc) {
-		return NT_STATUS_UNSUCCESSFUL;
-	}
-
-	mem_ctx = talloc_new(ctx->alloc);
+	mem_ctx = talloc_new(ctx);
 	if (mem_ctx == NULL) {
 		DEBUG(0, ("Out of memory!\n"));
 		return NT_STATUS_NO_MEMORY;
@@ -183,8 +169,8 @@ static NTSTATUS verify_idpool(struct idmap_domain *dom)
 	attr_list = get_attr_list(mem_ctx, idpool_attr_list);
 	CHECK_ALLOC_DONE(attr_list);
 
-	rc = smbldap_search(ctx->alloc->smbldap_state,
-				ctx->alloc->suffix,
+	rc = smbldap_search(ctx->smbldap_state,
+				ctx->suffix,
 				LDAP_SCOPE_SUBTREE,
 				filter,
 				attr_list,
@@ -197,14 +183,13 @@ static NTSTATUS verify_idpool(struct idmap_domain *dom)
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	count = ldap_count_entries(ctx->alloc->smbldap_state->ldap_struct,
-				   result);
+	count = ldap_count_entries(ctx->smbldap_state->ldap_struct, result);
 
 	ldap_msgfree(result);
 
 	if ( count > 1 ) {
 		DEBUG(0,("Multiple entries returned from %s (base == %s)\n",
-			filter, ctx->alloc->suffix));
+			filter, ctx->suffix));
 		ret = NT_STATUS_UNSUCCESSFUL;
 		goto done;
 	}
@@ -227,8 +212,8 @@ static NTSTATUS verify_idpool(struct idmap_domain *dom)
 						    LDAP_ATTR_GIDNUMBER),
 				gid_str);
 		if (mods) {
-			rc = smbldap_modify(ctx->alloc->smbldap_state,
-						ctx->alloc->suffix,
+			rc = smbldap_modify(ctx->smbldap_state,
+						ctx->suffix,
 						mods);
 			ldap_mods_free(mods, True);
 		} else {
@@ -240,100 +225,6 @@ static NTSTATUS verify_idpool(struct idmap_domain *dom)
 	ret = (rc == LDAP_SUCCESS)?NT_STATUS_OK:NT_STATUS_UNSUCCESSFUL;
 done:
 	talloc_free(mem_ctx);
-	return ret;
-}
-
-/*****************************************************************************
- Initialise idmap database.
-*****************************************************************************/
-
-static int idmap_ldap_alloc_close_destructor(struct idmap_ldap_alloc_context *ctx)
-{
-	smbldap_free_struct(&ctx->smbldap_state);
-	DEBUG(5,("The connection to the LDAP server was closed\n"));
-	/* maybe free the results here --metze */
-	return 0;
-}
-
-static NTSTATUS idmap_ldap_alloc_init(struct idmap_domain *dom,
-				      const char *params)
-{
-	NTSTATUS ret = NT_STATUS_UNSUCCESSFUL;
-	const char *tmp;
-	struct idmap_ldap_context *ctx;
-
-	/* Only do init if we are online */
-	if (idmap_is_offline())	{
-		return NT_STATUS_FILE_IS_OFFLINE;
-	}
-
-	ctx = talloc_get_type(dom->private_data, struct idmap_ldap_context);
-
-	ctx->alloc = talloc_zero(ctx, struct idmap_ldap_alloc_context);
-        CHECK_ALLOC_DONE(ctx->alloc);
-
-	if (params && *params) {
-		/* assume location is the only parameter */
-		ctx->alloc->url = talloc_strdup(ctx->alloc, params);
-	} else {
-		tmp = lp_parm_const_string(-1, "idmap alloc config",
-					   "ldap_url", NULL);
-
-		if ( ! tmp) {
-			DEBUG(1, ("ERROR: missing idmap ldap url\n"));
-			ret = NT_STATUS_UNSUCCESSFUL;
-			goto done;
-		}
-
-		ctx->alloc->url = talloc_strdup(ctx->alloc, tmp);
-	}
-	CHECK_ALLOC_DONE(ctx->alloc->url);
-
-	trim_char(ctx->alloc->url, '\"', '\"');
-
-	tmp = lp_parm_const_string(-1, "idmap alloc config",
-				   "ldap_base_dn", NULL);
-	if ( ! tmp || ! *tmp) {
-		tmp = lp_ldap_idmap_suffix();
-		if ( ! tmp) {
-			DEBUG(1, ("ERROR: missing idmap ldap suffix\n"));
-			ret = NT_STATUS_UNSUCCESSFUL;
-			goto done;
-		}
-	}
-
-	ctx->alloc->suffix = talloc_strdup(ctx->alloc, tmp);
-	CHECK_ALLOC_DONE(ctx->alloc->suffix);
-
-	ret = smbldap_init(ctx->alloc, winbind_event_context(),
-			   ctx->alloc->url,
-			   &ctx->alloc->smbldap_state);
-	if (!NT_STATUS_IS_OK(ret)) {
-		DEBUG(1, ("ERROR: smbldap_init (%s) failed!\n",
-			  ctx->alloc->url));
-		goto done;
-	}
-
-	talloc_set_destructor(ctx->alloc, idmap_ldap_alloc_close_destructor);
-
-	ret = get_credentials(ctx->alloc,
-			      ctx->alloc->smbldap_state,
-			      "idmap alloc config", NULL,
-			      &ctx->alloc->user_dn);
-	if ( !NT_STATUS_IS_OK(ret) ) {
-		DEBUG(1,("idmap_ldap_alloc_init: Failed to get connection "
-			 "credentials (%s)\n", nt_errstr(ret)));
-		goto done;
-	}
-
-	/* see if the idmap suffix and sub entries exists */
-
-	ret = verify_idpool(dom);
-
- done:
-	if ( !NT_STATUS_IS_OK( ret ) )
-		TALLOC_FREE(ctx->alloc);
-
 	return ret;
 }
 
@@ -366,11 +257,7 @@ static NTSTATUS idmap_ldap_allocate_id(struct idmap_domain *dom,
 
 	ctx = talloc_get_type(dom->private_data, struct idmap_ldap_context);
 
-	if (!ctx->alloc) {
-		return NT_STATUS_UNSUCCESSFUL;
-	}
-
-	mem_ctx = talloc_new(ctx->alloc);
+	mem_ctx = talloc_new(ctx);
 	if (!mem_ctx) {
 		DEBUG(0, ("Out of memory!\n"));
 		return NT_STATUS_NO_MEMORY;
@@ -402,10 +289,10 @@ static NTSTATUS idmap_ldap_allocate_id(struct idmap_domain *dom,
 
 	DEBUG(10, ("Search of the id pool (filter: %s)\n", filter));
 
-	rc = smbldap_search(ctx->alloc->smbldap_state,
-				ctx->alloc->suffix,
-			       LDAP_SCOPE_SUBTREE, filter,
-			       attr_list, 0, &result);
+	rc = smbldap_search(ctx->smbldap_state,
+			   ctx->suffix,
+			   LDAP_SCOPE_SUBTREE, filter,
+			   attr_list, 0, &result);
 
 	if (rc != LDAP_SUCCESS) {
 		DEBUG(0,("%s object not found\n", LDAP_OBJ_IDPOOL));
@@ -414,25 +301,23 @@ static NTSTATUS idmap_ldap_allocate_id(struct idmap_domain *dom,
 
 	talloc_autofree_ldapmsg(mem_ctx, result);
 
-	count = ldap_count_entries(ctx->alloc->smbldap_state->ldap_struct,
-				   result);
+	count = ldap_count_entries(ctx->smbldap_state->ldap_struct, result);
 	if (count != 1) {
 		DEBUG(0,("Single %s object not found\n", LDAP_OBJ_IDPOOL));
 		goto done;
 	}
 
-	entry = ldap_first_entry(ctx->alloc->smbldap_state->ldap_struct,
-				 result);
+	entry = ldap_first_entry(ctx->smbldap_state->ldap_struct, result);
 
 	dn = smbldap_talloc_dn(mem_ctx,
-			       ctx->alloc->smbldap_state->ldap_struct,
+			       ctx->smbldap_state->ldap_struct,
 			       entry);
 	if ( ! dn) {
 		goto done;
 	}
 
 	id_str = smbldap_talloc_single_attribute(
-				ctx->alloc->smbldap_state->ldap_struct,
+				ctx->smbldap_state->ldap_struct,
 				entry, type, mem_ctx);
 	if (id_str == NULL) {
 		DEBUG(0,("%s attribute not found\n", type));
@@ -484,7 +369,7 @@ static NTSTATUS idmap_ldap_allocate_id(struct idmap_domain *dom,
 	DEBUG(10, ("Try to atomically increment the id (%s -> %s)\n",
 		   id_str, new_id_str));
 
-	rc = smbldap_modify(ctx->alloc->smbldap_state, dn, mods);
+	rc = smbldap_modify(ctx->smbldap_state, dn, mods);
 
 	ldap_mods_free(mods, True);
 
@@ -546,8 +431,7 @@ static int idmap_ldap_close_destructor(struct idmap_ldap_context *ctx)
 static NTSTATUS idmap_ldap_set_mapping(struct idmap_domain *dom,
 				       const struct id_map *map);
 
-static NTSTATUS idmap_ldap_db_init(struct idmap_domain *dom,
-				   const char *params)
+static NTSTATUS idmap_ldap_db_init(struct idmap_domain *dom)
 {
 	NTSTATUS ret;
 	struct idmap_ldap_context *ctx = NULL;
@@ -565,32 +449,22 @@ static NTSTATUS idmap_ldap_db_init(struct idmap_domain *dom,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (strequal(dom->name, "*")) {
-		/* more specific configuration can go here */
-	} else {
-		config_option = talloc_asprintf(ctx, "idmap config %s", dom->name);
-		if ( ! config_option) {
-			DEBUG(0, ("Out of memory!\n"));
-			ret = NT_STATUS_NO_MEMORY;
-			goto done;
-		}
+	config_option = talloc_asprintf(ctx, "idmap config %s", dom->name);
+	if (!config_option) {
+		DEBUG(0, ("Out of memory!\n"));
+		ret = NT_STATUS_NO_MEMORY;
+		goto done;
 	}
 
-	if (params != NULL) {
-		/* assume location is the only parameter */
-		ctx->url = talloc_strdup(ctx, params);
-	} else {
-		tmp = lp_parm_const_string(-1, config_option, "ldap_url", NULL);
+	tmp = lp_parm_const_string(-1, config_option, "ldap_url", NULL);
 
-		if ( ! tmp) {
-			DEBUG(1, ("ERROR: missing idmap ldap url\n"));
-			ret = NT_STATUS_UNSUCCESSFUL;
-			goto done;
-		}
-
-		ctx->url = talloc_strdup(ctx, tmp);
+	if ( ! tmp) {
+		DEBUG(1, ("ERROR: missing idmap ldap url\n"));
+		ret = NT_STATUS_UNSUCCESSFUL;
+		goto done;
 	}
-	CHECK_ALLOC_DONE(ctx->url);
+
+	ctx->url = talloc_strdup(ctx, tmp);
 
 	trim_char(ctx->url, '\"', '\"');
 
@@ -628,17 +502,18 @@ static NTSTATUS idmap_ldap_db_init(struct idmap_domain *dom,
 		goto done;
 	}
 
-	/* set the destructor on the context, so that resource are properly
-	   freed if the contexts is released */
-
+	/*
+	 * Set the destructor on the context, so that resources are
+	 * properly freed when the context is released.
+	 */
 	talloc_set_destructor(ctx, idmap_ldap_close_destructor);
 
 	dom->private_data = ctx;
 
-	ret = idmap_ldap_alloc_init(dom, params);
+	ret = verify_idpool(dom);
 	if (!NT_STATUS_IS_OK(ret)) {
-		DEBUG(1, ("idmap_ldap_db_init: Failed to initialize alloc "
-			  "subsystem: %s\n", nt_errstr(ret)));
+		DEBUG(1, ("idmap_ldap_db_init: failed to verify ID pool (%s)\n",
+			 nt_errstr(ret)));
 		goto done;
 	}
 
@@ -1030,7 +905,7 @@ static struct id_map *find_map_by_sid(struct id_map **maps, struct dom_sid *sid)
 		if (maps[i] == NULL) { /* end of the run */
 			return NULL;
 		}
-		if (sid_equal(maps[i]->sid, sid)) {
+		if (dom_sid_equal(maps[i]->sid, sid)) {
 			return maps[i];
 		}
 	}
@@ -1264,28 +1139,12 @@ done:
  Close the idmap ldap instance
 **********************************/
 
-static NTSTATUS idmap_ldap_close(struct idmap_domain *dom)
-{
-	struct idmap_ldap_context *ctx;
-
-	if (dom->private_data) {
-		ctx = talloc_get_type(dom->private_data,
-				      struct idmap_ldap_context);
-
-		talloc_free(ctx);
-		dom->private_data = NULL;
-	}
-
-	return NT_STATUS_OK;
-}
-
 static struct idmap_methods idmap_ldap_methods = {
 
 	.init = idmap_ldap_db_init,
 	.unixids_to_sids = idmap_ldap_unixids_to_sids,
 	.sids_to_unixids = idmap_ldap_sids_to_unixids,
 	.allocate_id = idmap_ldap_get_new_id,
-	.close_fn = idmap_ldap_close
 };
 
 NTSTATUS idmap_ldap_init(void);

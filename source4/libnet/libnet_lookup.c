@@ -22,19 +22,13 @@
 */
 
 #include "includes.h"
-#include "lib/events/events.h"
 #include "libnet/libnet.h"
 #include "libcli/composite/composite.h"
 #include "auth/credentials/credentials.h"
-#include "lib/messaging/messaging.h"
-#include "lib/messaging/irpc.h"
 #include "libcli/resolve/resolve.h"
-#include "libcli/libcli.h"
 #include "libcli/finddc.h"
 #include "libcli/security/security.h"
-#include "librpc/gen_ndr/lsa.h"
 #include "librpc/gen_ndr/ndr_lsa_c.h"
-
 #include "param/param.h"
 
 struct lookup_state {
@@ -195,12 +189,14 @@ struct tevent_req *libnet_LookupDCs_send(struct libnet_context *ctx,
 	struct finddcs finddcs_io;
 
 	ZERO_STRUCT(finddcs_io);
-	finddcs_io.in.domain_name = lpcfg_realm(ctx->lp_ctx);
-	if (strcmp(finddcs_io.in.domain_name, "") == 0) {
-		finddcs_io.in.domain_name = lpcfg_workgroup(ctx->lp_ctx);
+
+	if (strcasecmp_m(io->in.domain_name, lpcfg_workgroup(ctx->lp_ctx)) == 0) {
+		finddcs_io.in.domain_name = lpcfg_dnsdomain(ctx->lp_ctx);
+	} else {
+		finddcs_io.in.domain_name = io->in.domain_name;
 	}
 	finddcs_io.in.minimum_dc_flags = NBT_SERVER_LDAP | NBT_SERVER_DS | NBT_SERVER_WRITABLE;
-
+	finddcs_io.in.server_address = ctx->server_address;
 
 	req = finddcs_cldap_send(mem_ctx, &finddcs_io, ctx->resolve_ctx, ctx->event_ctx);
 	return req;

@@ -32,9 +32,8 @@
  */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "popt_common.h"
-
-extern bool AllowDebugChange;
 
 /*******************************************************************
  Check if a directory exists.
@@ -341,6 +340,7 @@ rameter is ignored when using CUPS libraries.\n",
 		{"section-name", '\0', POPT_ARG_STRING, &section_name, 0, "Limit testparm to a named section" },
 		POPT_COMMON_VERSION
 		POPT_COMMON_DEBUGLEVEL
+		POPT_COMMON_OPTION
 		POPT_TABLEEND
 	};
 
@@ -352,7 +352,7 @@ rameter is ignored when using CUPS libraries.\n",
 	 * Allow it to be overridden by the command line,
 	 * not by smb.conf.
 	 */
-	DEBUGLEVEL_CLASS[DBGC_ALL] = 2;
+	lp_set_cmdline("log level", "2");
 
 	pc = poptGetContext(NULL, argc, argv, long_options, 
 			    POPT_CONTEXT_KEEP_FIRST);
@@ -365,7 +365,7 @@ rameter is ignored when using CUPS libraries.\n",
 		exit(0);
 	}
 
-	setup_logging(poptGetArg(pc), True);
+	setup_logging(poptGetArg(pc), DEBUG_STDERR);
 
 	if (poptPeekArg(pc)) 
 		config_file = poptGetArg(pc);
@@ -380,10 +380,6 @@ rameter is ignored when using CUPS libraries.\n",
 		ret = 1;
 		goto done;
 	}
-
-	dbf = x_stderr;
-	/* Don't let the debuglevel be changed by smb.conf. */
-	AllowDebugChange = False;
 
 	fprintf(stderr,"Load smb config files from %s\n",config_file);
 

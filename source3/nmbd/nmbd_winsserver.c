@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "nmbd/nmbd.h"
 
 #define WINS_LIST "wins.dat"
@@ -604,7 +605,8 @@ bool initialise_wins(void)
 	}
 
 	/* Open the wins.tdb. */
-	wins_tdb = tdb_open_log(state_path("wins.tdb"), 0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST, O_CREAT|O_RDWR, 0600);
+	wins_tdb = tdb_open_log(state_path("wins.tdb"), 0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
+			O_CREAT|O_RDWR, 0600);
 	if (!wins_tdb) {
 		DEBUG(0,("initialise_wins: failed to open wins.tdb. Error was %s\n",
 			strerror(errno) ));
@@ -2137,7 +2139,7 @@ void wins_process_name_release_request(struct subnet_record *subrec,
 	uint16 nb_flags = get_nb_flags(nmb->additional->rdata);
 	struct name_record *namerec = NULL;
 	struct in_addr from_ip;
-	bool releasing_group_name = (nb_flags & NB_GROUP) ? True : False;;
+	bool releasing_group_name = (nb_flags & NB_GROUP) ? True : False;
 
 	putip((char *)&from_ip,&nmb->additional->rdata[2]);
 

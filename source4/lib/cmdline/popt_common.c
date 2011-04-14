@@ -83,17 +83,16 @@ static void popt_samba_callback(poptContext con,
 		pname++;
 
 	if (reason == POPT_CALLBACK_REASON_PRE) {
-		cmdline_lp_ctx = loadparm_init(talloc_autofree_context());
-
 		/* Hook for 'almost the first thing to do in a samba program' here */
 		/* setup for panics */
-		fault_setup(poptGetInvocationName(con));
+		fault_setup();
 
 		/* and logging */
 		setup_logging(pname, DEBUG_STDOUT);
 		talloc_set_log_fn(popt_s4_talloc_log_fn);
 		talloc_set_abort_fn(smb_panic);
 
+		cmdline_lp_ctx = loadparm_init_global(false);
 		return;
 	}
 

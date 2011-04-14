@@ -190,10 +190,6 @@ int ldb_should_b64_encode(struct ldb_context *ldb, const struct ldb_val *val)
 	unsigned int i;
 	uint8_t *p = val->data;
 
-	if (ldb->flags & LDB_FLG_SHOW_BINARY) {
-		return 0;
-	}
-
 	if (val->length == 0) {
 		return 0;
 	}
@@ -333,11 +329,14 @@ int ldb_ldif_write(struct ldb_context *ldb,
 
 		for (j=0;j<msg->elements[i].num_values;j++) {
 			struct ldb_val v;
+			bool use_b64_encode;
 			ret = a->syntax->ldif_write_fn(ldb, mem_ctx, &msg->elements[i].values[j], &v);
 			if (ret != LDB_SUCCESS) {
 				v = msg->elements[i].values[j];
 			}
-			if (ret != LDB_SUCCESS || ldb_should_b64_encode(ldb, &v)) {
+			use_b64_encode = !(ldb->flags & LDB_FLG_SHOW_BINARY)
+					&& ldb_should_b64_encode(ldb, &v);
+			if (ret != LDB_SUCCESS || use_b64_encode) {
 				ret = fprintf_fn(private_data, "%s:: ", 
 						 msg->elements[i].name);
 				CHECK_RET;

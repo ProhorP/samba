@@ -19,8 +19,9 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 #include "../librpc/gen_ndr/ndr_security.h"
+#include "../libcli/security/security.h"
 
 /*
  * We have 3 sets of routines here:
@@ -72,7 +73,7 @@ static struct tevent_req *wb_lookupgroupmem_send(TALLOC_CTX *mem_ctx,
 	}
 
 	subreq = dcerpc_wbint_LookupGroupMembers_send(
-		state, ev, domain->child.binding_handle, &state->sid, type,
+		state, ev, dom_child_handle(domain), &state->sid, type,
 		&state->members);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
@@ -91,12 +92,8 @@ static void wb_lookupgroupmem_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_LookupGroupMembers_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 	tevent_req_done(req);

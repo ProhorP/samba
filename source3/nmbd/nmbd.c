@@ -4,26 +4,27 @@
    Copyright (C) Andrew Tridgell 1994-1998
    Copyright (C) Jeremy Allison 1997-2002
    Copyright (C) Jelmer Vernooij 2002,2003 (Conversion to popt)
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-   
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "popt_common.h"
-#include "librpc/gen_ndr/messaging.h"
 #include "nmbd/nmbd.h"
+#include "serverid.h"
+#include "messages.h"
 
 int ClientNMB       = -1;
 int ClientDGRAM     = -1;
@@ -43,26 +44,17 @@ time_t StartupTime = 0;
 
 struct event_context *nmbd_event_context(void)
 {
-	static struct event_context *ctx;
-
-	if (!ctx && !(ctx = event_context_init(NULL))) {
-		smb_panic("Could not init nmbd event context");
-	}
-	return ctx;
+	return server_event_context();
 }
 
 struct messaging_context *nmbd_messaging_context(void)
 {
-	static struct messaging_context *ctx;
-
-	if (ctx == NULL) {
-		ctx = messaging_init(NULL, procid_self(),
-				     nmbd_event_context());
+	struct messaging_context *msg_ctx = server_messaging_context();
+	if (likely(msg_ctx != NULL)) {
+		return msg_ctx;
 	}
-	if (ctx == NULL) {
-		DEBUG(0, ("Could not init nmbd messaging context.\n"));
-	}
-	return ctx;
+	smb_panic("Could not init nmbd's messaging context.\n");
+	return NULL;
 }
 
 /**************************************************************************** **
@@ -167,15 +159,6 @@ static void nmbd_terminate(struct messaging_context *msg,
 			   DATA_BLOB *data)
 {
 	terminate();
-}
-
-/**************************************************************************** **
- Possibly continue after a fault.
- **************************************************************************** */
-
-static void fault_continue(void)
-{
-	dump_core();
 }
 
 /**************************************************************************** **
@@ -665,12 +648,6 @@ static void process(void)
 		if (lp_enhanced_browsing())
 			sync_all_dmbs(t);
 
-		/*
-		 * clear the unexpected packet queue 
-		 */
-
-		clear_unexpected(t);
-
 		/* check for new network interfaces */
 
 		reload_interfaces(t);
@@ -775,13 +752,19 @@ static bool open_sockets(bool isdaemon, int port)
 	{"foreground", 'F', POPT_ARG_NONE, NULL, OPT_FORK, "Run daemon in foreground (for daemontools & etc)" },
 	{"no-process-group", 0, POPT_ARG_NONE, NULL, OPT_NO_PROCESS_GROUP, "Don't create a new process group" },
 	{"log-stdout", 'S', POPT_ARG_NONE, NULL, OPT_LOG_STDOUT, "Log to stdout" },
-	{"hosts", 'H', POPT_ARG_STRING, &p_lmhosts, 'H', "Load a netbios hosts file"},
-	{"port", 'p', POPT_ARG_INT, &global_nmb_port, NMB_PORT, "Listen on the specified port" },
+	{"hosts", 'H', POPT_ARG_STRING, &p_lmhosts, 0, "Load a netbios hosts file"},
+	{"port", 'p', POPT_ARG_INT, &global_nmb_port, 0, "Listen on the specified port" },
 	POPT_COMMON_SAMBA
 	{ NULL }
 	};
-	TALLOC_CTX *frame = talloc_stackframe(); /* Setup tos. */
+	TALLOC_CTX *frame;
 	NTSTATUS status;
+
+	/*
+	 * Do this before any other talloc operation
+	 */
+	talloc_enable_null_tracking();
+	frame = talloc_stackframe();
 
 	load_case_tables();
 
@@ -829,8 +812,8 @@ static bool open_sockets(bool isdaemon, int port)
 		SAFE_FREE(lfile);
 	}
 	
-	fault_setup((void (*)(void *))fault_continue );
-	dump_core_setup("nmbd");
+	fault_setup();
+	dump_core_setup("nmbd", lp_logfile());
 	
 	/* POSIX demands that signals are inherited. If the invoking process has
 	 * these signals masked, we will have problems, as we won't receive them. */
@@ -857,8 +840,11 @@ static bool open_sockets(bool isdaemon, int port)
 		DEBUG(0,("ERROR: Can't log to stdout (-S) unless daemon is in foreground (-F) or interactive (-i)\n"));
 		exit(1);
 	}
-
-	setup_logging( argv[0], log_stdout );
+	if (log_stdout) {
+		setup_logging( argv[0], DEBUG_STDOUT);
+	} else {
+		setup_logging( argv[0], DEBUG_FILE);
+	}
 
 	reopen_logs();
 
@@ -866,7 +852,7 @@ static bool open_sockets(bool isdaemon, int port)
 	DEBUGADD(0,("%s\n", COPYRIGHT_STARTUP_MESSAGE));
 
 	if (!lp_load_initial_only(get_dyn_CONFIGFILE())) {
-		DEBUG(0, ("error opening config file\n"));
+		DEBUG(0, ("error opening config file '%s'\n", get_dyn_CONFIGFILE()));
 		exit(1);
 	}
 
@@ -1015,11 +1001,14 @@ static bool open_sockets(bool isdaemon, int port)
 		exit(1);
 	}
 
+	if (!nmbd_init_packet_server()) {
+		kill_async_dns_child();
+                exit(1);
+        }
+
 	TALLOC_FREE(frame);
 	process();
 
-	if (dbf)
-		x_fclose(dbf);
 	kill_async_dns_child();
 	return(0);
 }

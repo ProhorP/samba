@@ -23,6 +23,7 @@
 #include "system/filesys.h"
 #include "libcli/libcli.h"
 #include "torture/util.h"
+#include "torture/raw/proto.h"
 
 #define CHECK_STATUS(status, correct) do { \
 	if (!NT_STATUS_EQUAL(status, correct)) { \
@@ -980,14 +981,14 @@ done:
 */
 struct torture_suite *torture_raw_read(TALLOC_CTX *mem_ctx)
 {
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "READ");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "read");
 
 	torture_suite_add_1smb_test(suite, "read", test_read);
 	torture_suite_add_1smb_test(suite, "readx", test_readx);
 	torture_suite_add_1smb_test(suite, "lockread", test_lockread);
 	torture_suite_add_1smb_test(suite, "readbraw", test_readbraw);
 	torture_suite_add_1smb_test(suite, "read for execute", 
-								test_read_for_execute);
+		test_read_for_execute);
 
 	return suite;
 }

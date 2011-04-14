@@ -28,7 +28,7 @@
 #include "lib/events/events.h"
 #include "lib/messaging/irpc.h"
 #include "dsdb/kcc/kcc_service.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb_errors.h>
 #include "../lib/util/dlinklist.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "librpc/gen_ndr/ndr_drsuapi.h"
@@ -55,7 +55,7 @@ static WERROR kccsrv_connect_samdb(struct kccsrv_service *service, struct loadpa
 {
 	const struct GUID *ntds_guid;
 
-	service->samdb = samdb_connect(service, service->task->event_ctx, lp_ctx, service->system_session_info);
+	service->samdb = samdb_connect(service, service->task->event_ctx, lp_ctx, service->system_session_info, 0);
 	if (!service->samdb) {
 		return WERR_DS_UNAVAILABLE;
 	}
@@ -66,6 +66,11 @@ static WERROR kccsrv_connect_samdb(struct kccsrv_service *service, struct loadpa
 	}
 
 	service->ntds_guid = *ntds_guid;
+
+	if (samdb_rodc(service->samdb, &service->am_rodc) != LDB_SUCCESS) {
+		DEBUG(0,(__location__ ": Failed to determine RODC status\n"));
+		return WERR_DS_UNAVAILABLE;
+	}
 
 	return WERR_OK;
 }

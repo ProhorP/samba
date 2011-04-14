@@ -19,15 +19,14 @@
  */
 #include "includes.h"
 #include "param/param.h"
-#include "lib/ldb/include/ldb.h"
+#include <ldb.h>
 #include "lib/ldb-samba/ldb_wrap.h"
 #include "auth/credentials/credentials.h"
 #include "../librpc/gen_ndr/nbt.h"
 #include "libcli/libcli.h"
 #include "libnet/libnet.h"
 #include "../librpc/gen_ndr/ndr_security.h"
-#include "../libcli/security/dom_sid.h"
-#include "libcli/security/security.h"
+#include "../libcli/security/security.h"
 #include "libcli/ldap/ldap_ndr.h"
 #include "../lib/talloc/talloc.h"
 #include "lib/policy/policy.h"
@@ -541,7 +540,7 @@ NTSTATUS gp_list_gpos(struct gp_context *gp_ctx, struct security_token *token, c
 
 			/* If the account does not have read access, this GPO does not apply
 			 * to this account */
-			status = sec_access_check(gpo->security_descriptor,
+			status = se_access_check(gpo->security_descriptor,
 					token,
 					(SEC_STD_READ_CONTROL | SEC_ADS_LIST | SEC_ADS_READ_PROP),
 					&access_granted);
@@ -642,7 +641,7 @@ NTSTATUS gp_set_gplink(struct gp_context *gp_ctx, const char *dn_str, struct gp_
 	msg->dn = dn;
 
 	rv = ldb_msg_add_string(msg, "gPLink", gplink_str);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add string failed: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -650,7 +649,7 @@ NTSTATUS gp_set_gplink(struct gp_context *gp_ctx, const char *dn_str, struct gp_
 	msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_modify(gp_ctx->ldb_ctx, msg);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB modify failed: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -718,14 +717,14 @@ NTSTATUS gp_del_gplink(struct gp_context *gp_ctx, const char *dn_str, const char
 
 	if (strcmp(gplink_str, "") == 0) {
 		rv = ldb_msg_add_empty(msg, "gPLink", LDB_FLAG_MOD_DELETE, NULL);
-		if (rv != 0) {
+		if (rv != LDB_SUCCESS) {
 			DEBUG(0, ("LDB message add empty element failed: %s\n", ldb_strerror(rv)));
 			talloc_free(mem_ctx);
 			return NT_STATUS_UNSUCCESSFUL;
 		}
 	} else {
 		rv = ldb_msg_add_string(msg, "gPLink", gplink_str);
-		if (rv != 0) {
+		if (rv != LDB_SUCCESS) {
 			DEBUG(0, ("LDB message add string failed: %s\n", ldb_strerror(rv)));
 			talloc_free(mem_ctx);
 			return NT_STATUS_UNSUCCESSFUL;
@@ -733,7 +732,7 @@ NTSTATUS gp_del_gplink(struct gp_context *gp_ctx, const char *dn_str, const char
 		msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
 	}
 	rv = ldb_modify(gp_ctx->ldb_ctx, msg);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB modify failed: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -790,7 +789,7 @@ NTSTATUS gp_set_inheritance(struct gp_context *gp_ctx, const char *dn_str, enum 
 	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(inheritance_string, msg);
 
 	rv = ldb_msg_add_string(msg, "gPOptions", inheritance_string);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add string failed: %s\n", ldb_strerror(rv)));
 		talloc_free(msg);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -798,7 +797,7 @@ NTSTATUS gp_set_inheritance(struct gp_context *gp_ctx, const char *dn_str, enum 
 	msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_modify(gp_ctx->ldb_ctx, msg);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB modify failed: %s\n", ldb_strerror(rv)));
 		talloc_free(msg);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -964,7 +963,7 @@ NTSTATUS gp_set_ads_acl (struct gp_context *gp_ctx, const char *dn_str, const st
 	msg->dn = ldb_dn_new(mem_ctx, gp_ctx->ldb_ctx, dn_str);
 
 	rv = ldb_msg_add_value(msg, "nTSecurityDescriptor", &data, NULL);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add element failed for adding nTSecurityDescriptor: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -972,7 +971,7 @@ NTSTATUS gp_set_ads_acl (struct gp_context *gp_ctx, const char *dn_str, const st
 	msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_modify(gp_ctx->ldb_ctx, msg);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB modify failed: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -1004,7 +1003,7 @@ NTSTATUS gp_set_ldap_gpo(struct gp_context *gp_ctx, struct gp_object *gpo)
 	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(msg, mem_ctx);
 
 	rv = ldb_msg_add_string(msg, "flags", flags_str);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add string failed for flags: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -1012,7 +1011,7 @@ NTSTATUS gp_set_ldap_gpo(struct gp_context *gp_ctx, struct gp_object *gpo)
 	msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_msg_add_string(msg, "version", version_str);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add string failed for version: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -1020,7 +1019,7 @@ NTSTATUS gp_set_ldap_gpo(struct gp_context *gp_ctx, struct gp_object *gpo)
 	msg->elements[1].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_msg_add_string(msg, "displayName", gpo->display_name);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB message add string failed for displayName: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -1028,7 +1027,7 @@ NTSTATUS gp_set_ldap_gpo(struct gp_context *gp_ctx, struct gp_object *gpo)
 	msg->elements[2].flags = LDB_FLAG_MOD_REPLACE;
 
 	rv = ldb_modify(gp_ctx->ldb_ctx, msg);
-	if (rv != 0) {
+	if (rv != LDB_SUCCESS) {
 		DEBUG(0, ("LDB modify failed: %s\n", ldb_strerror(rv)));
 		talloc_free(mem_ctx);
 		return NT_STATUS_UNSUCCESSFUL;

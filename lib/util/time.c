@@ -4,6 +4,8 @@
 
    Copyright (C) Andrew Tridgell 		1992-2004
    Copyright (C) Stefan (metze) Metzmacher	2002   
+   Copyright (C) Jeremy Allison			2007
+   Copyright (C) Andrew Bartlett                2011
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -337,6 +339,63 @@ _PUBLIC_ time_t pull_dos_date3(const uint8_t *date_ptr, int zone_offset)
 }
 
 
+/****************************************************************************
+ Return the date and time as a string
+****************************************************************************/
+
+char *timeval_string(TALLOC_CTX *ctx, const struct timeval *tp, bool hires)
+{
+	time_t t;
+	struct tm *tm;
+
+	t = (time_t)tp->tv_sec;
+	tm = localtime(&t);
+	if (!tm) {
+		if (hires) {
+			return talloc_asprintf(ctx,
+					       "%ld.%06ld seconds since the Epoch",
+					       (long)tp->tv_sec,
+					       (long)tp->tv_usec);
+		} else {
+			return talloc_asprintf(ctx,
+					       "%ld seconds since the Epoch",
+					       (long)t);
+		}
+	} else {
+#ifdef HAVE_STRFTIME
+		char TimeBuf[60];
+		if (hires) {
+			strftime(TimeBuf,sizeof(TimeBuf)-1,"%Y/%m/%d %H:%M:%S",tm);
+			return talloc_asprintf(ctx,
+					       "%s.%06ld", TimeBuf,
+					       (long)tp->tv_usec);
+		} else {
+			strftime(TimeBuf,sizeof(TimeBuf)-1,"%Y/%m/%d %H:%M:%S",tm);
+			return talloc_strdup(ctx, TimeBuf);
+		}
+#else
+		if (hires) {
+			const char *asct = asctime(tm);
+			return talloc_asprintf(ctx, "%s.%06ld",
+					asct ? asct : "unknown",
+					(long)tp->tv_usec);
+		} else {
+			const char *asct = asctime(tm);
+			return talloc_asprintf(ctx, asct ? asct : "unknown");
+		}
+#endif
+	}
+}
+
+char *current_timestring(TALLOC_CTX *ctx, bool hires)
+{
+	struct timeval tv;
+
+	GetTimeOfDay(&tv);
+	return timeval_string(ctx, &tv, hires);
+}
+
+
 /**
 return a HTTP/1.0 time string
 **/
@@ -384,11 +443,10 @@ _PUBLIC_ char *timestring(TALLOC_CTX *mem_ctx, time_t t)
 	}
 
 #ifdef HAVE_STRFTIME
-	/* some versions of gcc complain about using %c. This is a bug
-	   in the gcc warning, not a bug in this code. See a recent
-	   strftime() manual page for details.
-	 */
-	strftime(tempTime,sizeof(tempTime)-1,"%c %Z",tm);
+	/* Some versions of gcc complain about using some special format
+	 * specifiers. This is a bug in gcc, not a bug in this code. See a
+	 * recent strftime() manual page for details. */
+	strftime(tempTime,sizeof(tempTime)-1,"%a %b %e %X %Y %Z",tm);
 	TimeBuf = talloc_strdup(mem_ctx, tempTime);
 #else
 	TimeBuf = talloc_strdup(mem_ctx, asctime(tm));

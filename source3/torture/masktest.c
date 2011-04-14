@@ -18,6 +18,9 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
+#include "trans2.h"
+#include "libsmb/nmblib.h"
 
 static fstring password;
 static fstring username;
@@ -34,7 +37,6 @@ static int ignore_dot_errors = 0;
 
 extern char *optarg;
 extern int optind;
-extern bool AllowDebugChange;
 
 /* a test fn for LANMAN mask support */
 static int ms_fnmatch_lanman_core(const char *pattern, const char *string)
@@ -227,11 +229,12 @@ static struct cli_state *connect_one(char *share)
 		}
 	}
 
-	if (!NT_STATUS_IS_OK(cli_session_setup(c, username, 
-					       password, strlen(password),
-					       password, strlen(password),
-					       lp_workgroup()))) {
-		DEBUG(0,("session setup failed: %s\n", cli_errstr(c)));
+	status = cli_session_setup(c, username,
+				   password, strlen(password),
+				   password, strlen(password),
+				   lp_workgroup());
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("session setup failed: %s\n", nt_errstr(status)));
 		return NULL;
 	}
 
@@ -269,7 +272,7 @@ struct rn_state {
 	char *short_name;
 };
 
-static void listfn(const char *mnt, struct file_info *f, const char *s,
+static NTSTATUS listfn(const char *mnt, struct file_info *f, const char *s,
 		   void *private_data)
 {
 	struct rn_state *state = (struct rn_state *)private_data;
@@ -281,17 +284,22 @@ static void listfn(const char *mnt, struct file_info *f, const char *s,
 		resultp[2] = '+';
 	}
 
-	if ((state == NULL) || ISDOT(f->name) || ISDOTDOT(f->name))  {
-		return;
+	if (state == NULL) {
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	if (ISDOT(f->name) || ISDOTDOT(f->name))  {
+		return NT_STATUS_OK;
 	}
 
 	fstrcpy(state->short_name, f->short_name);
 	strlower_m(state->short_name);
 	*state->pp_long_name = SMB_STRDUP(f->name);
 	if (!*state->pp_long_name) {
-		return;
+		return NT_STATUS_NO_MEMORY;
 	}
 	strlower_m(*state->pp_long_name);
+	return NT_STATUS_OK;
 }
 
 static void get_real_name(struct cli_state *cli,
@@ -479,10 +487,7 @@ static void usage(void)
 
 	setlinebuf(stdout);
 
-	dbf = x_stderr;
-
-	DEBUGLEVEL = 0;
-	AllowDebugChange = False;
+	lp_set_cmdline("log level", "0");
 
 	if (argc < 2 || argv[1][0] == '-') {
 		usage();
@@ -493,7 +498,7 @@ static void usage(void)
 
 	all_string_sub(share,"/","\\",0);
 
-	setup_logging(argv[0],True);
+	setup_logging(argv[0], DEBUG_STDERR);
 
 	argc -= 1;
 	argv += 1;
@@ -514,7 +519,7 @@ static void usage(void)
 			NumLoops = atoi(optarg);
 			break;
 		case 'd':
-			DEBUGLEVEL = atoi(optarg);
+			lp_set_cmdline("log level", optarg);
 			break;
 		case 'E':
 			die_on_error = 1;

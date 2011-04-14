@@ -7,17 +7,17 @@
 
    Copyright (C) Jim McDonough <jmcd@us.ibm.com> 2003
    Copyright (C) Simo Sorce 2003
-   
+
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Lesser General Public
    License as published by the Free Software Foundation; either
    version 3 of the License, or (at your option) any later version.
-   
+
    This library is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
    Library General Public License for more details.
-   
+
    You should have received a copy of the GNU Lesser General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -45,7 +45,7 @@ struct idmap_domain {
 struct idmap_methods {
 
 	/* Called when backend is first loaded */
-	NTSTATUS (*init)(struct idmap_domain *dom, const char *params);
+	NTSTATUS (*init)(struct idmap_domain *dom);
 
 	/* Map an array of uids/gids to SIDs.  The caller specifies
 	   the uid/gid and type. Gets back the SID. */
@@ -57,9 +57,6 @@ struct idmap_methods {
 
 	/* Allocate a Unix-ID. */
 	NTSTATUS (*allocate_id)(struct idmap_domain *dom, struct unixid *id);
-
-	/* Called when backend is unloaded */
-	NTSTATUS (*close_fn)(struct idmap_domain *dom);
 };
 
 #include "winbindd/idmap_proto.h"

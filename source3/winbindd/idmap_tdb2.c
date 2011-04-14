@@ -32,10 +32,12 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "winbindd.h"
 #include "idmap.h"
 #include "idmap_rw.h"
 #include "dbwrap.h"
+#include "../libcli/security/dom_sid.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_IDMAP
@@ -56,6 +58,7 @@ struct idmap_tdb2_context {
  */
 static NTSTATUS idmap_tdb2_init_hwm(struct idmap_domain *dom)
 {
+	NTSTATUS status;
 	uint32 low_id;
 	struct idmap_tdb2_context *ctx;
 
@@ -65,22 +68,22 @@ static NTSTATUS idmap_tdb2_init_hwm(struct idmap_domain *dom)
 
 	low_id = dbwrap_fetch_int32(ctx->db, HWM_USER);
 	if ((low_id == -1) || (low_id < dom->low_id)) {
-		if (!NT_STATUS_IS_OK(dbwrap_trans_store_int32(
-					     ctx->db, HWM_USER,
-					     dom->low_id))) {
+		status = dbwrap_trans_store_int32(ctx->db, HWM_USER,
+						  dom->low_id);
+		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Unable to initialise user hwm in idmap "
-				  "database\n"));
+				  "database: %s\n", nt_errstr(status)));
 			return NT_STATUS_INTERNAL_DB_ERROR;
 		}
 	}
 
 	low_id = dbwrap_fetch_int32(ctx->db, HWM_GROUP);
 	if ((low_id == -1) || (low_id < dom->low_id)) {
-		if (!NT_STATUS_IS_OK(dbwrap_trans_store_int32(
-					     ctx->db, HWM_GROUP,
-					     dom->low_id))) {
+		status = dbwrap_trans_store_int32(ctx->db, HWM_GROUP,
+						  dom->low_id);
+		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Unable to initialise group hwm in idmap "
-				  "database\n"));
+				  "database: %s\n", nt_errstr(status)));
 			return NT_STATUS_INTERNAL_DB_ERROR;
 		}
 	}
@@ -271,8 +274,7 @@ static NTSTATUS idmap_tdb2_set_mapping(struct idmap_domain *dom,
 /*
   Initialise idmap database. 
 */
-static NTSTATUS idmap_tdb2_db_init(struct idmap_domain *dom,
-				   const char *params)
+static NTSTATUS idmap_tdb2_db_init(struct idmap_domain *dom)
 {
 	NTSTATUS ret;
 	struct idmap_tdb2_context *ctx;
@@ -871,21 +873,11 @@ static NTSTATUS idmap_tdb2_sids_to_unixids(struct idmap_domain *dom, struct id_m
 }
 
 
-/*
-  Close the idmap tdb instance
-*/
-static NTSTATUS idmap_tdb2_close(struct idmap_domain *dom)
-{
-	/* don't do anything */
-	return NT_STATUS_OK;
-}
-
 static struct idmap_methods db_methods = {
 	.init            = idmap_tdb2_db_init,
 	.unixids_to_sids = idmap_tdb2_unixids_to_sids,
 	.sids_to_unixids = idmap_tdb2_sids_to_unixids,
-	.allocate_id     = idmap_tdb2_get_new_id,
-	.close_fn        = idmap_tdb2_close
+	.allocate_id     = idmap_tdb2_get_new_id
 };
 
 NTSTATUS idmap_tdb2_init(void)

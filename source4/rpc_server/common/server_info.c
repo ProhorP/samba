@@ -20,11 +20,13 @@
 */
 
 #include "includes.h"
-#include "librpc/gen_ndr/ndr_srvsvc.h"
+#include "librpc/gen_ndr/srvsvc.h"
 #include "rpc_server/dcerpc_server.h"
 #include "dsdb/samdb/samdb.h"
 #include "auth/auth.h"
 #include "param/param.h"
+#include "rpc_server/common/common.h"
+#include "rpc_server/common/share.h"
 
 /* 
     Here are common server info functions used by some dcerpc server interfaces
@@ -95,7 +97,7 @@ uint32_t dcesrv_common_get_server_type(TALLOC_CTX *mem_ctx, struct tevent_contex
 				break;
 			}
 			/* open main ldb */
-			samctx = samdb_connect(tmp_ctx, event_ctx, dce_ctx->lp_ctx, anonymous_session(tmp_ctx, dce_ctx->lp_ctx));
+			samctx = samdb_connect(tmp_ctx, event_ctx, dce_ctx->lp_ctx, anonymous_session(tmp_ctx, dce_ctx->lp_ctx), 0);
 			if (samctx == NULL) {
 				DEBUG(2,("Unable to open samdb in determining server announce flags\n"));
 			} else {

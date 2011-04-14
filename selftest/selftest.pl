@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # Bootstrap Samba and run a number of tests against it.
-# Copyright (C) 2005-2009 Jelmer Vernooij <jelmer@samba.org>
+# Copyright (C) 2005-2010 Jelmer Vernooij <jelmer@samba.org>
 # Copyright (C) 2007-2009 Stefan Metzmacher <metze@samba.org>
 
 # This program is free software; you can redistribute it and/or modify
@@ -135,9 +135,10 @@ use SocketWrapper;
 
 eval {
 require Time::HiRes;
+Time::HiRes->import("time");
 };
-unless ($@) {
-	use Time::HiRes qw(time);
+if ($@) {
+	print "You don't have Time::Hires installed !\n";
 }
 
 my $opt_help = 0;
@@ -152,8 +153,8 @@ my @opt_include = ();
 my $opt_verbose = 0;
 my $opt_image = undef;
 my $opt_testenv = 0;
+my $opt_list = 0;
 my $ldap = undef;
-my $opt_analyse_cmd = undef;
 my $opt_resetup_env = undef;
 my $opt_bindir = undef;
 my $opt_load_list = undef;
@@ -166,6 +167,14 @@ my $prefix = "./st";
 
 my @includes = ();
 my @excludes = ();
+
+sub pipe_handler {
+	my $sig = shift @_;
+	print STDERR "Exiting early because of SIGPIPE.\n";
+	exit(1);
+}
+
+$SIG{PIPE} = \&pipe_handler;
 
 sub find_in_list($$)
 {
@@ -238,28 +247,22 @@ sub run_testsuite($$$$$)
 	Subunit::start_testsuite($name);
 	Subunit::progress_push();
 	Subunit::report_time(time());
+	system($cmd);
+	Subunit::report_time(time());
+	Subunit::progress_pop();
 
-	open(RESULTS, "$cmd 2>&1|");
-
-	Subunit::filter_add_prefix("$name\.", *RESULTS);
-
-	my $ret = 0;
-
-	unless (close(RESULTS)) {
-		if ($!) {
-			Subunit::progress_pop();
-			Subunit::end_testsuite($name, "error", "Unable to run $cmd: $!");
-			return 0;
-		} else {
-			$ret = $?;
-		}
-	} 
-
-	if ($ret & 127) {
+	if ($? == -1) {
 		Subunit::progress_pop();
-		Subunit::end_testsuite($name, "error", sprintf("Testsuite died with signal %d, %s coredump", ($ret & 127), ($ret & 128) ? "with": "without"));
-		return 0;
+		Subunit::end_testsuite($name, "error", "Unable to run $cmd: $!");
+		exit(1);
+	} elsif ($? & 127) {
+		Subunit::end_testsuite($name, "error",
+			sprintf("%s died with signal %d, %s coredump\n", $cmd, ($? & 127),  ($? & 128) ? 'with' : 'without'));
+		exit(1);
 	}
+
+	my $exitcode = $? >> 8;
+
 	my $envlog = getlog_env($envname);
 	if ($envlog ne "") {
 		print "envlog: $envlog\n";
@@ -268,10 +271,6 @@ sub run_testsuite($$$$$)
 	print "command: $cmd\n";
 	printf "expanded command: %s\n", expand_environment_strings($cmd);
 
-	my $exitcode = $ret >> 8;
-
-	Subunit::report_time(time());
-	Subunit::progress_pop();
 	if ($exitcode == 0) {
 		Subunit::end_testsuite($name, "success");
 	} else {
@@ -327,7 +326,8 @@ Behaviour:
  --quick                    run quick overall test
  --one                      abort when the first test fails
  --verbose                  be verbose
- --analyse-cmd CMD          command to run after each test
+ --testenv                  run a shell in the requested test environment
+ --list                     list available tests
 ";
 	exit(0);
 }
@@ -348,8 +348,8 @@ my $result = GetOptions (
 		'exeext=s' => \$exeext,
 		'verbose' => \$opt_verbose,
 		'testenv' => \$opt_testenv,
+		'list' => \$opt_list,
 		'ldap:s' => \$ldap,
-		'analyse-cmd=s' => \$opt_analyse_cmd,
 		'resetup-environment' => \$opt_resetup_env,
 		'bindir:s' => \$opt_bindir,
 		'image=s' => \$opt_image,
@@ -360,6 +360,8 @@ my $result = GetOptions (
 exit(1) if (not $result);
 
 ShowHelp() if ($opt_help);
+
+die("--list and --testenv are mutually exclusive") if ($opt_list and $opt_testenv);
 
 # we want unbuffered output
 $| = 1;
@@ -403,6 +405,9 @@ die("using an empty prefix isn't allowed") unless $prefix ne "";
 mkdir($prefix, 0777) unless -d $prefix;
 
 my $prefix_abs = abs_path($prefix);
+my $tmpdir_abs = abs_path("$prefix/tmp");
+mkdir($tmpdir_abs, 0777) unless -d $tmpdir_abs;
+
 my $srcdir_abs = abs_path($srcdir);
 my $builddir_abs = abs_path($builddir);
 
@@ -416,12 +421,12 @@ $ENV{SRCDIR} = $srcdir;
 $ENV{SRCDIR_ABS} = $srcdir_abs;
 $ENV{BUILDDIR} = $builddir;
 $ENV{BUILDDIR_ABS} = $builddir_abs;
+$ENV{BINDIR} = $bindir_abs;
 $ENV{EXEEXT} = $exeext;
 
 my $tls_enabled = not $opt_quick;
 $ENV{TLS_ENABLED} = ($tls_enabled?"yes":"no");
-$ENV{LDB_MODULES_PATH} = "$bindir_abs/modules/ldb";
-$ENV{LD_SAMBA_MODULE_PATH} = "$bindir_abs/modules";
+
 sub prefix_pathvar($$)
 {
 	my ($name, $newpath) = @_;
@@ -460,14 +465,14 @@ my $testenv_default = "none";
 if ($opt_target eq "samba4") {
 	$testenv_default = "all";
 	require target::Samba4;
-	$target = new Samba4($bindir, $ldap, "$srcdir/setup", $exeext);
+	$target = new Samba4($bindir, $ldap, $srcdir, $exeext);
 } elsif ($opt_target eq "samba3") {
 	if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
 		die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
 	}
 	$testenv_default = "member";
 	require target::Samba3;
-	$target = new Samba3($bindir);
+	$target = new Samba3($bindir, $srcdir_abs);
 } elsif ($opt_target eq "win") {
 	die("Windows tests will not run with socket wrapper enabled.") 
 		if ($opt_socket_wrapper);
@@ -541,31 +546,33 @@ my $interfaces = join(',', ("127.0.0.11/8",
 			    "127.0.0.15/8",
 			    "127.0.0.16/8"));
 
-my $conffile = "$prefix_abs/client/client.conf";
+my $clientdir = "$prefix_abs/client";
+
+my $conffile = "$clientdir/client.conf";
 $ENV{SMB_CONF_PATH} = $conffile;
 
-sub write_clientconf($$)
+sub write_clientconf($$$)
 {
-	my ($conffile, $vars) = @_;
+	my ($conffile, $clientdir, $vars) = @_;
 
-	mkdir("$prefix/client", 0777) unless -d "$prefix/client";
+	mkdir("$clientdir", 0777) unless -d "$clientdir";
 
-	if ( -d "$prefix/client/private" ) {
-	        unlink <$prefix/client/private/*>;
+	if ( -d "$clientdir/private" ) {
+	        unlink <$clientdir/private/*>;
 	} else {
-	        mkdir("$prefix/client/private", 0777);
+	        mkdir("$clientdir/private", 0777);
 	}
 
-	if ( -d "$prefix/client/lockdir" ) {
-	        unlink <$prefix/client/lockdir/*>;
+	if ( -d "$clientdir/lockdir" ) {
+	        unlink <$clientdir/lockdir/*>;
 	} else {
-	        mkdir("$prefix/client/lockdir", 0777);
+	        mkdir("$clientdir/lockdir", 0777);
 	}
 
-	if ( -d "$prefix_abs/client/ncalrpcdir" ) {
-	        unlink <$prefix/client/ncalrpcdir/*>;
+	if ( -d "$clientdir/ncalrpcdir" ) {
+	        unlink <$clientdir/ncalrpcdir/*>;
 	} else {
-	        mkdir("$prefix/client/ncalrpcdir", 0777);
+	        mkdir("$clientdir/ncalrpcdir", 0777);
 	}
 
 	open(CF, ">$conffile");
@@ -586,10 +593,10 @@ sub write_clientconf($$)
 		print CF "\tinterfaces = $interfaces\n";
 	}
 	print CF "
-	private dir = $prefix_abs/client/private
-	lock dir = $prefix_abs/client/lockdir
-	ncalrpc dir = $prefix_abs/client/ncalrpcdir
-	name resolve order = bcast file
+	private dir = $clientdir/private
+	lock dir = $clientdir/lockdir
+	ncalrpc dir = $clientdir/ncalrpcdir
+	name resolve order = file bcast
 	panic action = $RealBin/gdb_backtrace \%PID\% \%PROG\%
 	max xmit = 32K
 	notify:inotify = false
@@ -597,19 +604,17 @@ sub write_clientconf($$)
 	system:anonymous = true
 	client lanman auth = Yes
 	log level = 1
-	torture:basedir = $prefix_abs/client
+	torture:basedir = $clientdir
 #We don't want to pass our self-tests if the PAC code is wrong
 	gensec:require_pac = true
-	modules dir = $ENV{LD_SAMBA_MODULE_PATH}
-	setup directory = ./setup
 	resolv:host file = $prefix_abs/dns_host_file
+#We don't want to run 'speed' tests for very long
+        torture:timelimit = 1
 ";
 	close(CF);
 }
 
 my @todo = ();
-
-my $testsdir = "$srcdir/selftest";
 
 sub should_run_test($)
 {
@@ -633,8 +638,9 @@ sub read_testlist($)
 	open(IN, $filename) or die("Unable to open $filename: $!");
 
 	while (<IN>) {
-		if (/-- TEST(-LOADLIST)? --\n/) {
+		if (/-- TEST(-LOADLIST|-IDLIST|) --\n/) {
 			my $supports_loadlist = (defined($1) and $1 eq "-LOADLIST");
+			my $supports_idlist = (defined($1) and $1 eq "-IDLIST");
 			my $name = <IN>;
 			$name =~ s/\n//g;
 			my $env = <IN>;
@@ -642,7 +648,7 @@ sub read_testlist($)
 			my $cmdline = <IN>;
 			$cmdline =~ s/\n//g;
 			if (should_run_test($name) == 1) {
-				push (@ret, [$name, $env, $cmdline, $supports_loadlist]);
+				push (@ret, [$name, $env, $cmdline, $supports_loadlist, $supports_idlist]);
 			}
 		} else {
 			print;
@@ -657,6 +663,8 @@ if ($#testlists == -1) {
 }
 
 $ENV{SELFTEST_PREFIX} = "$prefix_abs";
+$ENV{SELFTEST_TMPDIR} = "$tmpdir_abs";
+$ENV{TEST_DATA_PREFIX} = "$tmpdir_abs";
 if ($opt_socket_wrapper) {
 	$ENV{SELFTEST_INTERFACES} = $interfaces;
 } else {
@@ -697,18 +705,13 @@ if ($opt_load_list) {
 	close(LOAD_LIST);
 }
 
-Subunit::progress($#available+1);
-Subunit::report_time(time());
-
 my $individual_tests = undef;
 $individual_tests = {};
 
 foreach my $testsuite (@available) {
 	my $name = $$testsuite[0];
 	my $skipreason = skip($name);
-	if (defined($skipreason)) {
-		Subunit::skip_testsuite($name, $skipreason);
-	} elsif (defined($restricted)) {
+	if (defined($restricted)) {
 		# Find the testsuite for this test
 		my $match = undef;
 		foreach my $r (@$restricted) {
@@ -716,15 +719,23 @@ foreach my $testsuite (@available) {
 				$individual_tests->{$name} = [];
 				$match = $r;
 				$restricted_used->{$r} = 1;
-			} elsif (substr($r, $name, length($name)+1) eq "$name.") {
-				push(@{$individual_tests->{$name}}, $1);
+			} elsif (substr($r, 0, length($name)+1) eq "$name.") {
+				push(@{$individual_tests->{$name}}, $r);
 				$match = $r;
 				$restricted_used->{$r} = 1;
 			}
 		}
-		push(@todo, $testsuite) if ($match);
+		if ($match) {
+			if (defined($skipreason)) {
+					Subunit::skip_testsuite($name, $skipreason);
+			} else {
+				push(@todo, $testsuite);
+			}
+		}
+	} elsif (defined($skipreason)) {
+		Subunit::skip_testsuite($name, $skipreason);
 	} else {
-		push(@todo, $testsuite); 
+		push(@todo, $testsuite);
 	}
 }
 
@@ -740,6 +751,10 @@ if (defined($restricted)) {
 }
 
 my $suitestotal = $#todo + 1;
+
+Subunit::progress($suitestotal);
+Subunit::report_time(time());
+
 my $i = 0;
 $| = 1;
 
@@ -802,6 +817,7 @@ my @exported_envvars = (
 	"KRB5_CONFIG",
 	"WINBINDD_SOCKET_DIR",
 	"WINBINDD_PRIV_PIPE_DIR",
+	"NMBD_SOCKET_DIR",
 	"LOCAL_PATH"
 );
 
@@ -811,9 +827,9 @@ $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = sub {
 	die("Received signal $signame");
 };
 
-sub setup_env($)
+sub setup_env($$)
 {
-	my ($name) = @_;
+	my ($name, $prefix) = @_;
 
 	my $testenv_vars = undef;
 
@@ -847,7 +863,7 @@ sub setup_env($)
 		$ENV{SMB_CONF_PATH} = $testenv_vars->{SERVERCONFFILE};
 	} elsif ($option eq "client") {
 		SocketWrapper::set_default_iface(11);
-		write_clientconf($conffile, $testenv_vars);
+		write_clientconf($conffile, $clientdir, $testenv_vars);
 		$ENV{SMB_CONF_PATH} = $conffile;
 	} else {
 		die("Unknown option[$option] for envname[$envname]");
@@ -906,16 +922,17 @@ if ($opt_testenv) {
 	my $testenv_name = $ENV{SELFTEST_TESTENV};
 	$testenv_name = $testenv_default unless defined($testenv_name);
 
-	my $testenv_vars = setup_env($testenv_name);
+	my $testenv_vars = setup_env($testenv_name, $prefix);
 
 	die("Unable to setup environment $testenv_name") unless ($testenv_vars);
 
 	$ENV{PIDDIR} = $testenv_vars->{PIDDIR};
+	$ENV{ENVNAME} = $testenv_name;
 
 	my $envvarstr = exported_envvars_str($testenv_vars);
 
-	my $term = ($ENV{TERMINAL} or "xterm");
-	system("$term -e 'echo -e \"
+	my $term = ($ENV{TERMINAL} or "xterm -e");
+	system("$term 'echo -e \"
 Welcome to the Samba4 Test environment '$testenv_name'
 
 This matches the client environment used in make test
@@ -928,37 +945,63 @@ SMB_CONF_PATH=\$SMB_CONF_PATH
 $envvarstr
 \" && LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH} bash'");
 	teardown_env($testenv_name);
+} elsif ($opt_list) {
+	foreach (@todo) {
+		my $cmd = $$_[2];
+		my $name = $$_[0];
+		my $envname = $$_[1];
+
+		unless($cmd =~ /\$LISTOPT/) {
+			warn("Unable to list tests in $name");
+			next;
+		}
+
+		$cmd =~ s/\$LISTOPT/--list/g;
+
+		system($cmd);
+
+		if ($? == -1) {
+			die("Unable to run $cmd: $!");
+		} elsif ($? & 127) {
+			die(snprintf("%s died with signal %d, %s coredump\n", $cmd, ($? & 127),  ($? & 128) ? 'with' : 'without'));
+		}
+
+		my $exitcode = $? >> 8;
+		if ($exitcode != 0) {
+			die("$cmd exited with exit code $exitcode");
+		}
+	}
 } else {
 	foreach (@todo) {
 		$i++;
 		my $cmd = $$_[2];
-		$cmd =~ s/([\(\)])/\\$1/g;
 		my $name = $$_[0];
 		my $envname = $$_[1];
 
-		my $envvars = setup_env($envname);
+		my $envvars = setup_env($envname, $prefix);
 		if (not defined($envvars)) {
 			Subunit::start_testsuite($name);
 			Subunit::end_testsuite($name, "error",
-				"unable to set up environment $envname");
+				"unable to set up environment $envname - exiting");
 			next;
 		}
 
 		# Generate a file with the individual tests to run, if the 
 		# test runner for this test suite supports it.
-		if ($$_[3] and $individual_tests and $individual_tests->{$name}) {
-			my ($fh, $listid_file) = tempfile(UNLINK => 0);
-			foreach (@{$individual_tests->{$name}}) {
-				print $fh "$_\n";
+		if ($individual_tests and $individual_tests->{$name}) {
+			if ($$_[3]) {
+				my ($fh, $listid_file) = tempfile(UNLINK => 0);
+				foreach my $test (@{$individual_tests->{$name}}) {
+					print $fh substr($test, length($name)+1) . "\n";
+				}
+				$cmd =~ s/\$LOADLIST/--load-list=$listid_file/g;
+			} elsif ($$_[4]) {
+				$cmd =~ s/\s+[^\s]+\s*$//;
+				$cmd .= " " . join(' ', @{$individual_tests->{$name}});
 			}
-			$cmd .= " --load-list=$listid_file";
 		}
 
 		run_testsuite($envname, $name, $cmd, $i, $suitestotal);
-
-		if (defined($opt_analyse_cmd)) {
-			system("$opt_analyse_cmd \"$name\"");
-		}
 
 		teardown_env($envname) if ($opt_resetup_env);
 	}

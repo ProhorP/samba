@@ -20,11 +20,18 @@
 */
 
 #include "includes.h"
+#include "system/syslog.h"
+#include "system/filesys.h"
 #include "printing.h"
-#include "librpc/gen_ndr/messaging.h"
 #include "../librpc/gen_ndr/ndr_spoolss.h"
 #include "nt_printing.h"
 #include "../librpc/gen_ndr/netlogon.h"
+#include "printing/notify.h"
+#include "printing/pcap.h"
+#include "serverid.h"
+#include "smbd/smbd.h"
+#include "auth.h"
+#include "messages.h"
 
 extern struct current_user current_user;
 extern userdom_struct current_user_info;
@@ -365,7 +372,7 @@ done:
  unpack a pjob from a tdb buffer
 ***********************************************************************/
 
-int unpack_pjob( uint8 *buf, int buflen, struct printjob *pjob )
+static int unpack_pjob( uint8 *buf, int buflen, struct printjob *pjob )
 {
 	int	len = 0;
 	int	used;
@@ -525,8 +532,8 @@ uint32 sysjob_to_jobid(int unix_jobid)
 ****************************************************************************/
 
 static const struct {
-	uint32 lpq_status;
-	uint32 spoolss_status;
+	uint32_t lpq_status;
+	uint32_t spoolss_status;
 } lpq_to_spoolss_status_map[] = {
 	{ LPQ_QUEUED, JOB_STATUS_QUEUED },
 	{ LPQ_PAUSED, JOB_STATUS_PAUSED },
@@ -539,7 +546,7 @@ static const struct {
 	{ LPQ_DELETED, JOB_STATUS_DELETED },
 	{ LPQ_BLOCKED, JOB_STATUS_BLOCKED_DEVQ },
 	{ LPQ_USER_INTERVENTION, JOB_STATUS_USER_INTERVENTION },
-	{ -1, 0 }
+	{ (uint32_t)-1, 0 }
 };
 
 /* Convert a lpq status value stored in printing.tdb into the
@@ -1306,7 +1313,7 @@ done:
 }
 
 /****************************************************************************
- main work for updating the lpq cahe for a printer queue
+ main work for updating the lpq cache for a printer queue
 ****************************************************************************/
 
 static void print_queue_update_internal( struct tevent_context *ev,
@@ -1557,7 +1564,7 @@ static void print_queue_update_with_lock( struct tevent_context *ev,
 /****************************************************************************
 this is the receive function of the background lpq updater
 ****************************************************************************/
-static void print_queue_receive(struct messaging_context *msg,
+void print_queue_receive(struct messaging_context *msg,
 				void *private_data,
 				uint32_t msg_type,
 				struct server_id server_id,

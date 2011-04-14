@@ -21,10 +21,14 @@
 */
 
 #include "includes.h"
+#include "system/passwd.h"
+#include "passdb.h"
 #include "secrets.h"
 #include "../librpc/gen_ndr/samr.h"
 #include "memcache.h"
 #include "nsswitch/winbind_client.h"
+#include "../libcli/security/security.h"
+#include "../lib/util/util_pw.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_PASSDB
@@ -234,7 +238,7 @@ static bool pdb_try_account_unlock(struct samu *sampass)
 {
 	uint32_t acb_info = pdb_get_acct_ctrl(sampass);
 
-	if (acb_info & (ACB_NORMAL|ACB_AUTOLOCK)) {
+	if ((acb_info & ACB_NORMAL) && (acb_info & ACB_AUTOLOCK)) {
 		uint32_t lockout_duration;
 		time_t bad_password_time;
 		time_t now = time(NULL);
@@ -351,7 +355,8 @@ static bool guest_user_info( struct samu *user )
 	NTSTATUS result;
 	const char *guestname = lp_guestaccount();
 
-	if ( !(pwd = getpwnam_alloc(talloc_autofree_context(), guestname ) ) ) {
+	pwd = Get_Pwnam_alloc(talloc_tos(), guestname);
+	if (pwd == NULL) {
 		DEBUG(0,("guest_user_info: Unable to locate guest account [%s]!\n", 
 			guestname));
 		return False;
@@ -474,6 +479,11 @@ static NTSTATUS pdb_default_create_user(struct pdb_methods *methods,
 		flush_pwnam_cache();
 
 		pwd = Get_Pwnam_alloc(tmp_ctx, name);
+
+		if(pwd == NULL) {
+			DEBUG(3, ("Could not find user %s, add script did not work\n", name));
+			return NT_STATUS_NO_SUCH_USER;
+		}
 	}
 
 	/* we have a valid SID coming out of this call */
@@ -836,7 +846,7 @@ NTSTATUS pdb_enum_group_members(TALLOC_CTX *mem_ctx,
 
 NTSTATUS pdb_enum_group_memberships(TALLOC_CTX *mem_ctx, struct samu *user,
 				    struct dom_sid **pp_sids, gid_t **pp_gids,
-				    size_t *p_num_groups)
+				    uint32_t *p_num_groups)
 {
 	struct pdb_methods *pdb = pdb_get_methods();
 	return pdb->enum_group_memberships(
@@ -881,7 +891,7 @@ static bool pdb_user_in_group(TALLOC_CTX *mem_ctx, struct samu *account,
 {
 	struct dom_sid *sids;
 	gid_t *gids;
-	size_t i, num_groups;
+	uint32_t i, num_groups;
 
 	if (!NT_STATUS_IS_OK(pdb_enum_group_memberships(mem_ctx, account,
 							&sids, &gids,
@@ -890,7 +900,7 @@ static bool pdb_user_in_group(TALLOC_CTX *mem_ctx, struct samu *account,
 	}
 
 	for (i=0; i<num_groups; i++) {
-		if (sid_equal(group_sid, &sids[i])) {
+		if (dom_sid_equal(group_sid, &sids[i])) {
 			return True;
 		}
 	}
@@ -1431,7 +1441,7 @@ static bool pdb_default_sid_to_id(struct pdb_methods *methods,
 	return ret;
 }
 
-static bool get_memberuids(TALLOC_CTX *mem_ctx, gid_t gid, uid_t **pp_uids, size_t *p_num)
+static bool get_memberuids(TALLOC_CTX *mem_ctx, gid_t gid, uid_t **pp_uids, uint32_t *p_num)
 {
 	struct group *grp;
 	char **gr;
@@ -1494,7 +1504,7 @@ static NTSTATUS pdb_default_enum_group_members(struct pdb_methods *methods,
 {
 	gid_t gid;
 	uid_t *uids;
-	size_t i, num_uids;
+	uint32_t i, num_uids;
 
 	*pp_member_rids = NULL;
 	*p_num_members = 0;
@@ -1533,7 +1543,7 @@ static NTSTATUS pdb_default_enum_group_memberships(struct pdb_methods *methods,
 						   struct samu *user,
 						   struct dom_sid **pp_sids,
 						   gid_t **pp_gids,
-						   size_t *p_num_groups)
+						   uint32_t *p_num_groups)
 {
 	size_t i;
 	gid_t gid;
@@ -1544,7 +1554,7 @@ static NTSTATUS pdb_default_enum_group_memberships(struct pdb_methods *methods,
 	/* Ignore the primary group SID.  Honor the real Unix primary group.
 	   The primary group SID is only of real use to Windows clients */
 
-	if ( !(pw = getpwnam_alloc(mem_ctx, username)) ) {
+	if ( !(pw = Get_Pwnam_alloc(mem_ctx, username)) ) {
 		return NT_STATUS_NO_SUCH_USER;
 	}
 
@@ -2091,6 +2101,81 @@ static NTSTATUS pdb_default_enum_trusteddoms(struct pdb_methods *methods,
 	return secrets_trusted_domains(mem_ctx, num_domains, domains);
 }
 
+/*******************************************************************
+ trusted_domain methods
+ *******************************************************************/
+
+NTSTATUS pdb_get_trusted_domain(TALLOC_CTX *mem_ctx, const char *domain,
+				struct pdb_trusted_domain **td)
+{
+	struct pdb_methods *pdb = pdb_get_methods();
+	return pdb->get_trusted_domain(pdb, mem_ctx, domain, td);
+}
+
+NTSTATUS pdb_get_trusted_domain_by_sid(TALLOC_CTX *mem_ctx, struct dom_sid *sid,
+				struct pdb_trusted_domain **td)
+{
+	struct pdb_methods *pdb = pdb_get_methods();
+	return pdb->get_trusted_domain_by_sid(pdb, mem_ctx, sid, td);
+}
+
+NTSTATUS pdb_set_trusted_domain(const char* domain,
+				const struct pdb_trusted_domain *td)
+{
+	struct pdb_methods *pdb = pdb_get_methods();
+	return pdb->set_trusted_domain(pdb, domain, td);
+}
+
+NTSTATUS pdb_del_trusted_domain(const char *domain)
+{
+	struct pdb_methods *pdb = pdb_get_methods();
+	return pdb->del_trusted_domain(pdb, domain);
+}
+
+NTSTATUS pdb_enum_trusted_domains(TALLOC_CTX *mem_ctx, uint32_t *num_domains,
+				  struct pdb_trusted_domain ***domains)
+{
+	struct pdb_methods *pdb = pdb_get_methods();
+	return pdb->enum_trusted_domains(pdb, mem_ctx, num_domains, domains);
+}
+
+static NTSTATUS pdb_default_get_trusted_domain(struct pdb_methods *methods,
+					       TALLOC_CTX *mem_ctx,
+					       const char *domain,
+					       struct pdb_trusted_domain **td)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS pdb_default_get_trusted_domain_by_sid(struct pdb_methods *methods,
+						      TALLOC_CTX *mem_ctx,
+						      struct dom_sid *sid,
+						      struct pdb_trusted_domain **td)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS pdb_default_set_trusted_domain(struct pdb_methods *methods,
+					       const char* domain,
+					       const struct pdb_trusted_domain *td)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS pdb_default_del_trusted_domain(struct pdb_methods *methods,
+					       const char *domain)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS pdb_default_enum_trusted_domains(struct pdb_methods *methods,
+						 TALLOC_CTX *mem_ctx,
+						 uint32_t *num_domains,
+						 struct pdb_trusted_domain ***domains)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
+}
+
 static struct pdb_domain_info *pdb_default_get_domain_info(
 	struct pdb_methods *m, TALLOC_CTX *mem_ctx)
 {
@@ -2108,7 +2193,7 @@ NTSTATUS make_pdb_method( struct pdb_methods **methods )
 {
 	/* allocate memory for the structure as its own talloc CTX */
 
-	*methods = talloc_zero(talloc_autofree_context(), struct pdb_methods);
+	*methods = talloc_zero(NULL, struct pdb_methods);
 	if (*methods == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -2161,6 +2246,12 @@ NTSTATUS make_pdb_method( struct pdb_methods **methods )
 	(*methods)->set_trusteddom_pw = pdb_default_set_trusteddom_pw;
 	(*methods)->del_trusteddom_pw = pdb_default_del_trusteddom_pw;
 	(*methods)->enum_trusteddoms  = pdb_default_enum_trusteddoms;
+
+	(*methods)->get_trusted_domain = pdb_default_get_trusted_domain;
+	(*methods)->get_trusted_domain_by_sid = pdb_default_get_trusted_domain_by_sid;
+	(*methods)->set_trusted_domain = pdb_default_set_trusted_domain;
+	(*methods)->del_trusted_domain = pdb_default_del_trusted_domain;
+	(*methods)->enum_trusted_domains = pdb_default_enum_trusted_domains;
 
 	return NT_STATUS_OK;
 }

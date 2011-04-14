@@ -26,6 +26,7 @@
 #include "librpc/gen_ndr/winreg.h"
 #include "libcli/security/security.h"
 #include "system/filesys.h"
+#include "lib/registry/tests/proto.h"
 
 /**
  * Test obtaining a predefined key.
@@ -579,7 +580,7 @@ static void tcase_add_tests(struct torture_tcase *tcase)
 struct torture_suite *torture_registry_registry(TALLOC_CTX *mem_ctx)
 {
 	struct torture_tcase *tcase;
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "REGISTRY");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "registry");
 
 	tcase = torture_suite_add_tcase(suite, "local");
 	torture_tcase_set_fixture(tcase, setup_local_registry, NULL);

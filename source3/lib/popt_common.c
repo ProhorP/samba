@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "popt_common.h"
 
 /* Handle command line options:
@@ -36,7 +37,6 @@
 
 enum {OPT_OPTION=1};
 
-extern bool AllowDebugChange;
 extern bool override_logfile;
 
 static void set_logfile(poptContext con, const char * arg)
@@ -107,8 +107,7 @@ static void popt_common_callback(poptContext con,
 
 	case 'd':
 		if (arg) {
-			debug_parse_levels(arg);
-			AllowDebugChange = False;
+			lp_set_cmdline("log level", arg);
 		}
 		break;
 
@@ -195,6 +194,11 @@ struct poptOption popt_common_debuglevel[] = {
 	POPT_TABLEEND
 };
 
+struct poptOption popt_common_option[] = {
+	{ NULL, 0, POPT_ARG_CALLBACK|POPT_CBFLAG_POST, (void *)popt_common_callback },
+	{ "option",         0, POPT_ARG_STRING, NULL, OPT_OPTION, "Set smb.conf option from command line", "name=value" },
+	POPT_TABLEEND
+};
 
 /* Handle command line options:
  *		--sbindir

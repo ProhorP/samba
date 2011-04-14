@@ -148,23 +148,6 @@ bool test_lsa_OpenPolicy2(struct dcerpc_binding_handle *b,
 	return test_lsa_OpenPolicy2_ex(b, tctx, handle, NT_STATUS_OK);
 }
 
-static const char *sid_type_lookup(enum lsa_SidType r)
-{
-	switch (r) {
-		case SID_NAME_USE_NONE: return "SID_NAME_USE_NONE"; break;
-		case SID_NAME_USER: return "SID_NAME_USER"; break;
-		case SID_NAME_DOM_GRP: return "SID_NAME_DOM_GRP"; break;
-		case SID_NAME_DOMAIN: return "SID_NAME_DOMAIN"; break;
-		case SID_NAME_ALIAS: return "SID_NAME_ALIAS"; break;
-		case SID_NAME_WKN_GRP: return "SID_NAME_WKN_GRP"; break;
-		case SID_NAME_DELETED: return "SID_NAME_DELETED"; break;
-		case SID_NAME_INVALID: return "SID_NAME_INVALID"; break;
-		case SID_NAME_UNKNOWN: return "SID_NAME_UNKNOWN"; break;
-		case SID_NAME_COMPUTER: return "SID_NAME_COMPUTER"; break;
-	}
-	return "Invalid sid type\n";
-}
-
 static bool test_LookupNames(struct dcerpc_binding_handle *b,
 			     struct torture_context *tctx,
 			     struct policy_handle *handle,
@@ -1435,7 +1418,7 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 		r5.in.new_val->size = enc_key.length;
 
 
-		msleep(200);
+		smb_msleep(200);
 		torture_comment(tctx, "Testing SetSecret (existing value should move to old)\n");
 
 		torture_assert_ntstatus_ok(tctx, dcerpc_lsa_SetSecret_r(b, tctx, &r5),
@@ -2370,7 +2353,7 @@ static bool test_CreateTrustedDomain(struct dcerpc_binding_handle *b,
 				ret = false;
 			} else {
 				if (strcmp(info->info_ex.netbios_name.string, trustinfo.name.string) != 0) {
-					torture_comment(tctx, "QueryTrustedDomainInfo returned inconsistant short name: %s != %s\n",
+					torture_comment(tctx, "QueryTrustedDomainInfo returned inconsistent short name: %s != %s\n",
 					       info->info_ex.netbios_name.string, trustinfo.name.string);
 					ret = false;
 				}
@@ -2526,7 +2509,7 @@ static bool test_CreateTrustedDomainEx2(struct dcerpc_pipe *p,
 				ret = false;
 			} else {
 				if (strcmp(info->info_ex.netbios_name.string, trustinfo.netbios_name.string) != 0) {
-					torture_comment(tctx, "QueryTrustedDomainInfo returned inconsistant short name: %s != %s\n",
+					torture_comment(tctx, "QueryTrustedDomainInfo returned inconsistent short name: %s != %s\n",
 					       info->info_ex.netbios_name.string, trustinfo.netbios_name.string);
 					ret = false;
 				}
@@ -2983,7 +2966,7 @@ struct torture_suite *torture_rpc_lsa_lookup_names(TALLOC_CTX *mem_ctx)
 	struct torture_suite *suite;
 	struct torture_rpc_tcase *tcase;
 
-	suite = torture_suite_create(mem_ctx, "LSA-LOOKUPNAMES");
+	suite = torture_suite_create(mem_ctx, "lsa.lookupnames");
 
 	tcase = torture_suite_add_rpc_iface_tcase(suite, "lsa",
 						  &ndr_table_lsarpc);
@@ -3046,7 +3029,7 @@ struct torture_suite *torture_rpc_lsa_trusted_domains(TALLOC_CTX *mem_ctx)
 
 	state->num_trusts = 12;
 
-	suite = torture_suite_create(mem_ctx, "LSA-TRUSTED-DOMAINS");
+	suite = torture_suite_create(mem_ctx, "lsa.trusted.domains");
 
 	tcase = torture_suite_add_rpc_iface_tcase(suite, "lsa",
 						  &ndr_table_lsarpc);
@@ -3101,7 +3084,7 @@ struct torture_suite *torture_rpc_lsa_privileges(TALLOC_CTX *mem_ctx)
 	struct torture_suite *suite;
 	struct torture_rpc_tcase *tcase;
 
-	suite = torture_suite_create(mem_ctx, "LSA-PRIVILEGES");
+	suite = torture_suite_create(mem_ctx, "lsa.privileges");
 
 	tcase = torture_suite_add_rpc_iface_tcase(suite, "lsa",
 						  &ndr_table_lsarpc);

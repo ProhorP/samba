@@ -112,17 +112,6 @@ _PUBLIC_ char *safe_strcat(char *dest, const char *src, size_t maxlength)
 	return dest;
 }
 
-#ifdef VALGRIND
-size_t valgrind_strlen(const char *s)
-{
-	size_t count;
-	for(count = 0; *s++; count++)
-		;
-	return count;
-}
-#endif
-
-
 /**
   format a string into length-prefixed dotted domain format, as used in NBT
   and in some ADS structures
@@ -156,30 +145,6 @@ _PUBLIC_ const char *str_format_nbt_domain(TALLOC_CTX *mem_ctx, const char *s)
 	talloc_set_name_const(ret, ret);
 
 	return ret;
-}
-
-/**
- * Add a string to an array of strings.
- *
- * num should be a pointer to an integer that holds the current 
- * number of elements in strings. It will be updated by this function.
- */
-_PUBLIC_ bool add_string_to_array(TALLOC_CTX *mem_ctx,
-			 const char *str, const char ***strings, int *num)
-{
-	char *dup_str = talloc_strdup(mem_ctx, str);
-
-	*strings = talloc_realloc(mem_ctx,
-				    *strings,
-				    const char *, ((*num)+1));
-
-	if ((*strings == NULL) || (dup_str == NULL))
-		return false;
-
-	(*strings)[*num] = dup_str;
-	*num += 1;
-
-	return true;
 }
 
 /**
@@ -270,36 +235,6 @@ _PUBLIC_ bool conv_str_u64(const char * str, uint64_t * val)
 }
 
 /**
-Do a case-insensitive, whitespace-ignoring string compare.
-**/
-_PUBLIC_ int strwicmp(const char *psz1, const char *psz2)
-{
-	/* if BOTH strings are NULL, return TRUE, if ONE is NULL return */
-	/* appropriate value. */
-	if (psz1 == psz2)
-		return (0);
-	else if (psz1 == NULL)
-		return (-1);
-	else if (psz2 == NULL)
-		return (1);
-
-	/* sync the strings on first non-whitespace */
-	while (1) {
-		while (isspace((int)*psz1))
-			psz1++;
-		while (isspace((int)*psz2))
-			psz2++;
-		if (toupper((unsigned char)*psz1) != toupper((unsigned char)*psz2) 
-		    || *psz1 == '\0'
-		    || *psz2 == '\0')
-			break;
-		psz1++;
-		psz2++;
-	}
-	return (*psz1 - *psz2);
-}
-
-/**
  * Compare 2 strings.
  *
  * @note The comparison is case-insensitive.
@@ -313,23 +248,4 @@ _PUBLIC_ bool strequal(const char *s1, const char *s2)
   
 	return strcasecmp(s1,s2) == 0;
 }
-
-_PUBLIC_ size_t ucs2_align(const void *base_ptr, const void *p, int flags)
-{
-	if (flags & (STR_NOALIGN|STR_ASCII))
-		return 0;
-	return PTR_DIFF(p, base_ptr) & 1;
-}
-
-/**
- String replace.
-**/
-_PUBLIC_ void string_replace(char *s, char oldc, char newc)
-{
-	while (*s) {
-		if (*s == oldc) *s = newc;
-		s++;
-	}
-}
-
 

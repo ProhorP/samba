@@ -29,6 +29,7 @@
 #include "system/filesys.h"
 #include "libcli/libcli.h"
 #include "torture/util.h"
+#include "torture/basic/proto.h"
 
 #define W2K8R2_TIMEDELAY_SECS 1
 #define W2K3_TIMEDELAY_SECS 2
@@ -111,7 +112,7 @@ static bool test_delayed_write_update(struct torture_context *tctx, struct smbcl
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 	
 	if (finfo1.basic_info.out.write_time == finfo2.basic_info.out.write_time) {
@@ -162,7 +163,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	finfo1.all_info.level = RAW_FILEINFO_ALL_INFO;
 	finfo1.all_info.in.file.fnum = fnum1;
@@ -180,7 +181,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	/* Do a zero length SMBwrite call to truncate. */
 	written = smbcli_smbwrite(cli->tree, fnum1, "x", 1024, 0);
@@ -231,7 +232,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo1.all_info.out.write_time == finfo2.all_info.out.write_time) {
@@ -241,7 +242,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	/* Do a non-zero length SMBwrite and make sure it doesn't update the write time. */
 	written = smbcli_smbwrite(cli->tree, fnum1, "x", 0, 1);
@@ -282,7 +283,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo2.all_info.out.write_time != finfo3.all_info.out.write_time) {
@@ -292,7 +293,7 @@ static bool test_delayed_write_update1(struct torture_context *tctx, struct smbc
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	/* the close should trigger an write time update */
 	smbcli_close(cli->tree, fnum1);
@@ -353,7 +354,7 @@ static bool test_delayed_write_update1a(struct torture_context *tctx, struct smb
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	finfo1.all_info.level = RAW_FILEINFO_ALL_INFO;
 	finfo1.all_info.in.file.fnum = fnum1;
@@ -418,7 +419,7 @@ static bool test_delayed_write_update1a(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo1.all_info.out.write_time == finfo2.all_info.out.write_time) {
@@ -428,7 +429,7 @@ static bool test_delayed_write_update1a(struct torture_context *tctx, struct smb
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	/* Do a non-zero length SMBwrite and make sure it doesn't update the write time. */
 	written = smbcli_smbwrite(cli->tree, fnum1, "x", 0, 1);
@@ -467,7 +468,7 @@ static bool test_delayed_write_update1a(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo2.all_info.out.write_time != finfo3.all_info.out.write_time) {
@@ -535,7 +536,7 @@ static bool test_delayed_write_update1b(struct torture_context *tctx, struct smb
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	finfo1.all_info.level = RAW_FILEINFO_ALL_INFO;
 	finfo1.all_info.in.file.fnum = fnum1;
@@ -596,7 +597,7 @@ static bool test_delayed_write_update1b(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo1.all_info.out.write_time == finfo2.all_info.out.write_time) {
@@ -606,7 +607,7 @@ static bool test_delayed_write_update1b(struct torture_context *tctx, struct smb
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	/* Do a non-zero length SMBwrite and make sure it doesn't update the write time. */
 	written = smbcli_smbwrite(cli->tree, fnum1, "x", 0, 1);
@@ -644,7 +645,7 @@ static bool test_delayed_write_update1b(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo2.all_info.out.write_time != finfo3.all_info.out.write_time) {
@@ -710,7 +711,7 @@ static bool test_delayed_write_update1c(struct torture_context *tctx, struct smb
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	finfo1.all_info.level = RAW_FILEINFO_ALL_INFO;
 	finfo1.all_info.in.file.fnum = fnum1;
@@ -776,7 +777,7 @@ static bool test_delayed_write_update1c(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo1.all_info.out.write_time == finfo2.all_info.out.write_time) {
@@ -786,7 +787,7 @@ static bool test_delayed_write_update1c(struct torture_context *tctx, struct smb
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	/* Do a non-zero length SMBwrite and make sure it doesn't update the write time. */
 	written = smbcli_smbwrite(cli->tree, fnum1, "x", 0, 1);
@@ -822,7 +823,7 @@ static bool test_delayed_write_update1c(struct torture_context *tctx, struct smb
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	if (finfo2.all_info.out.write_time != finfo3.all_info.out.write_time) {
@@ -900,7 +901,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 
 	/* 3 second delay to ensure we get past any 2 second time
 	   granularity (older systems may have that) */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	{
 		/* Try using setfileinfo instead of write to update write time. */
@@ -1007,7 +1008,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 	
 	if (finfo1.basic_info.out.write_time == finfo2.basic_info.out.write_time) {
@@ -1015,7 +1016,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 	}
 
 	fflush(stdout);
-	msleep(2 * msec);
+	smb_msleep(2 * msec);
 
 	fnum2 = smbcli_open(cli->tree, fname, O_RDWR, DENY_NONE);
 	if (fnum2 == -1) {
@@ -1099,7 +1100,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 			break;
 		}
 		fflush(stdout);
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 	
 	if (finfo1.basic_info.out.write_time == finfo2.basic_info.out.write_time) {
@@ -1131,7 +1132,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 	torture_comment(tctx, "Second open initial write time %s\n", 
 	       nt_time_string(tctx, finfo1.basic_info.out.write_time));
 
-	msleep(10 * msec);
+	smb_msleep(10 * msec);
 	torture_comment(tctx, "Doing a 10 byte write to extend the file to see if this changes the last write time.\n");
 
 	written =  smbcli_write(cli->tree, fnum1, 0, "0123456789", 31, 10);
@@ -1187,7 +1188,7 @@ static bool test_delayed_write_update2(struct torture_context *tctx, struct smbc
 			break;
 		}
 		fflush(stdout);
-		msleep(1*msec);
+		smb_msleep(1*msec);
 	}
 	
 	if (finfo1.basic_info.out.write_time == finfo2.basic_info.out.write_time) {
@@ -1258,7 +1259,7 @@ static bool test_finfo_after_write(struct torture_context *tctx, struct smbcli_s
 		goto done;
 	}
 
-	msleep(1 * msec);
+	smb_msleep(1 * msec);
 
 	written =  smbcli_write(cli->tree, fnum1, 0, "x", 0, 1);
 
@@ -1573,7 +1574,7 @@ static bool test_delayed_write_update3(struct torture_context *tctx,
 					diff, sec);
 			break;
 		}
-		msleep(0.5 * msec);
+		smb_msleep(0.5 * msec);
 	}
 
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -1602,7 +1603,7 @@ static bool test_delayed_write_update3(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -1612,7 +1613,7 @@ static bool test_delayed_write_update3(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo3,pinfo3);
 	COMPARE_WRITE_TIME_EQUAL(finfo3, finfo2);
@@ -1699,7 +1700,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 	 * sleep some time, to demonstrate the handling of write times
 	 * doesn't depend on the time since the open
 	 */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	/* get the initial times */
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -1739,20 +1740,20 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 					diff, sec);
 			break;
 		}
-		msleep(0.5 * msec);
+		smb_msleep(0.5 * msec);
 	}
 
 	GET_INFO_BOTH(finfo1,pinfo1);
 	COMPARE_WRITE_TIME_GREATER(pinfo1, pinfo0);
 
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	/*
 	 * demonstrate that a truncate write always
 	 * updates the write time immediately
 	 */
 	for (i=0; i < 3; i++) {
-		msleep(2 * msec);
+		smb_msleep(2 * msec);
 		/* do a write */
 		torture_comment(tctx, "Do a truncate SMBwrite [%d] on the file handle\n", i);
 		written = smbcli_smbwrite(cli->tree, fnum1, "x", 10240, 0);
@@ -1767,7 +1768,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 		finfo1 = finfo2;
 	}
 
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	/* sure any further write doesn't update the write time */
 	start = timeval_current();
@@ -1792,7 +1793,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -1802,7 +1803,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	/* get the initial times */
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -1813,7 +1814,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 	 * updates the write time immediately
 	 */
 	for (i=0; i < 3; i++) {
-		msleep(2 * msec);
+		smb_msleep(2 * msec);
 		/* do a write */
 		torture_comment(tctx, "Do a truncate SMBwrite [%d] on the file handle\n", i);
 		written = smbcli_smbwrite(cli->tree, fnum1, "x", 512, 0);
@@ -1829,7 +1830,7 @@ static bool test_delayed_write_update3a(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 
 	GET_INFO_BOTH(finfo3,pinfo3);
 	COMPARE_WRITE_TIME_EQUAL(finfo3, finfo2);
@@ -1914,7 +1915,7 @@ static bool test_delayed_write_update3b(struct torture_context *tctx,
 	 * sleep some time, to demonstrate the handling of write times
 	 * doesn't depend on the time since the open
 	 */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	/* get the initial times */
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -1954,7 +1955,7 @@ static bool test_delayed_write_update3b(struct torture_context *tctx,
 					diff, sec);
 			break;
 		}
-		msleep(0.5 * msec);
+		smb_msleep(0.5 * msec);
 	}
 
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -1983,7 +1984,7 @@ static bool test_delayed_write_update3b(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -1993,7 +1994,7 @@ static bool test_delayed_write_update3b(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo3,pinfo3);
 	COMPARE_WRITE_TIME_EQUAL(finfo3, finfo2);
@@ -2082,7 +2083,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	 * sleep some time, to demonstrate the handling of write times
 	 * doesn't depend on the time since the open
 	 */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	/* get the initial times */
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -2093,7 +2094,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	 * updates the write time immediately
 	 */
 	for (i=0; i < 3; i++) {
-		msleep(2 * msec);
+		smb_msleep(2 * msec);
 		/* do a write */
 		torture_comment(tctx, "Do a truncate SMBwrite [%d] on the file handle\n", i);
 		written = smbcli_smbwrite(cli->tree, fnum1, "x", 512, 0);
@@ -2130,7 +2131,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -2140,7 +2141,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	/* get the initial times */
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -2151,7 +2152,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	 * updates the write time immediately
 	 */
 	for (i=0; i < 3; i++) {
-		msleep(2 * msec);
+		smb_msleep(2 * msec);
 		/* do a write */
 		torture_comment(tctx, "Do a truncate write [%d] on the file handle\n", i);
 		written = smbcli_smbwrite(cli->tree, fnum1, "x", 512, 0);
@@ -2167,7 +2168,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo2,pinfo2);
 	COMPARE_WRITE_TIME_EQUAL(finfo2, finfo1);
@@ -2195,7 +2196,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -2205,7 +2206,7 @@ static bool test_delayed_write_update3c(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo3,pinfo3);
 	COMPARE_WRITE_TIME_EQUAL(finfo3, finfo2);
@@ -2289,7 +2290,7 @@ static bool test_delayed_write_update4(struct torture_context *tctx,
 	GET_INFO_BOTH(finfo0,pinfo0);
 
 	/* sleep a bit */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	/* do a write */
 	torture_comment(tctx, "Do a write on the file handle\n");
@@ -2329,7 +2330,7 @@ static bool test_delayed_write_update4(struct torture_context *tctx,
 					diff, sec);
 			break;
 		}
-		msleep(0.5 * msec);
+		smb_msleep(0.5 * msec);
 	}
 
 	GET_INFO_BOTH(finfo1,pinfo1);
@@ -2358,7 +2359,7 @@ static bool test_delayed_write_update4(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo2,pinfo2);
@@ -2368,7 +2369,7 @@ static bool test_delayed_write_update4(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo3,pinfo3);
 	COMPARE_WRITE_TIME_EQUAL(finfo3, finfo2);
@@ -2489,7 +2490,7 @@ static bool test_delayed_write_update5(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo3,pinfo3);
@@ -2521,7 +2522,7 @@ static bool test_delayed_write_update5(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo4,pinfo4);
@@ -2531,7 +2532,7 @@ static bool test_delayed_write_update5(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo5,pinfo5);
 	COMPARE_WRITE_TIME_EQUAL(finfo5, finfo4);
@@ -2651,7 +2652,7 @@ static bool test_delayed_write_update5b(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo3,pinfo3);
@@ -2683,7 +2684,7 @@ static bool test_delayed_write_update5b(struct torture_context *tctx,
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo4,pinfo4);
@@ -2693,7 +2694,7 @@ static bool test_delayed_write_update5b(struct torture_context *tctx,
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo5,pinfo5);
 	COMPARE_WRITE_TIME_EQUAL(finfo5, finfo4);
@@ -2830,7 +2831,7 @@ again:
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo3,pinfo3);
@@ -2862,7 +2863,7 @@ again:
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	GET_INFO_BOTH(finfo4,pinfo4);
@@ -2872,7 +2873,7 @@ again:
 	}
 
 	/* sleep */
-	msleep(5 * msec);
+	smb_msleep(5 * msec);
 
 	GET_INFO_BOTH(finfo5,pinfo5);
 	COMPARE_WRITE_TIME_EQUAL(finfo5, finfo4);
@@ -2898,7 +2899,7 @@ again:
 	COMPARE_WRITE_TIME_EQUAL(finfo5, pinfo6);
 
 	/* See if we have lost the sticky write time on handle2 */
-	msleep(3 * msec);
+	smb_msleep(3 * msec);
 	torture_comment(tctx, "Have we lost the sticky write time ?\n");
 
 	/* Make sure any further normal write doesn't update the write time */
@@ -2925,7 +2926,7 @@ again:
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 	/* What about a truncate write ? */
@@ -2952,7 +2953,7 @@ again:
 			ret = false;
 			break;
 		}
-		msleep(1 * msec);
+		smb_msleep(1 * msec);
 	}
 
 
@@ -3102,7 +3103,7 @@ static bool test_delayed_write_update7(struct torture_context *tctx, struct smbc
 */
 struct torture_suite *torture_delay_write(void)
 {
-	struct torture_suite *suite = torture_suite_create(talloc_autofree_context(), "DELAYWRITE");
+	struct torture_suite *suite = torture_suite_create(talloc_autofree_context(), "delaywrite");
 
 	torture_suite_add_2smb_test(suite, "finfo update on close", test_finfo_after_write);
 	torture_suite_add_1smb_test(suite, "delayed update of write time", test_delayed_write_update);

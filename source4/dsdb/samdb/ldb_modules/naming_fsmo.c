@@ -67,7 +67,7 @@ static int naming_fsmo_init(struct ldb_module *module)
 	ret = dsdb_module_search_dn(module, mem_ctx, &naming_res,
 				    naming_dn,
 				    naming_attrs,
-				    DSDB_FLAG_NEXT_MODULE);
+				    DSDB_FLAG_NEXT_MODULE, NULL);
 	if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		ldb_debug(ldb, LDB_DEBUG_TRACE,
 			  "naming_fsmo_init: no partitions dn present: (skip loading of naming contexts details)");
@@ -96,7 +96,13 @@ static int naming_fsmo_init(struct ldb_module *module)
 	return ldb_next_init(module);
 }
 
-_PUBLIC_ const struct ldb_module_ops ldb_naming_fsmo_module_ops = {
+static const struct ldb_module_ops ldb_naming_fsmo_module_ops = {
 	.name		= "naming_fsmo",
 	.init_context	= naming_fsmo_init
 };
+
+int ldb_naming_fsmo_module_init(const char *version)
+{
+	LDB_MODULE_CHECK_VERSION(version);
+	return ldb_register_module(&ldb_naming_fsmo_module_ops);
+}

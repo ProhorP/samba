@@ -77,6 +77,7 @@ const char **lpcfg_interfaces(struct loadparm_context *);
 const char *lpcfg_realm(struct loadparm_context *);
 const char *lpcfg_netbios_name(struct loadparm_context *);
 const char *lpcfg_private_dir(struct loadparm_context *);
+int lpcfg_server_role(struct loadparm_context *);
 
 void reload_charcnv(struct loadparm_context *lp_ctx);
 
@@ -175,6 +176,7 @@ void lpcfg_killunused(struct loadparm_context *lp_ctx,
  * Initialise the global parameter structure.
  */
 struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx);
+struct loadparm_context *loadparm_init_global(bool load_default);
 const char *lpcfg_configfile(struct loadparm_context *lp_ctx);
 bool lpcfg_load_default(struct loadparm_context *lp_ctx);
 const char *lp_default_path(void);
@@ -220,7 +222,7 @@ const char *lpcfg_printername(struct loadparm_service *service, struct loadparm_
  * Return the max print jobs per queue.
  */
 int lpcfg_maxprintjobs(struct loadparm_service *service, struct loadparm_service *sDefault);
-struct smb_iconv_convenience *lpcfg_iconv_convenience(struct loadparm_context *lp_ctx);
+struct smb_iconv_handle *lpcfg_iconv_handle(struct loadparm_context *lp_ctx);
 void lpcfg_smbcli_options(struct loadparm_context *lp_ctx,
 			 struct smbcli_options *options);
 void lpcfg_smbcli_session_options(struct loadparm_context *lp_ctx,
@@ -332,9 +334,9 @@ bool run_init_functions(init_module_fn *fns);
 init_module_fn *load_samba_modules(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_ctx, const char *subsystem);
 const char *lpcfg_messaging_path(TALLOC_CTX *mem_ctx,
 				       struct loadparm_context *lp_ctx);
-struct smb_iconv_convenience *smb_iconv_convenience_reinit_lp(TALLOC_CTX *mem_ctx,
+struct smb_iconv_handle *smb_iconv_handle_reinit_lp(TALLOC_CTX *mem_ctx,
 							      struct loadparm_context *lp_ctx,
-							      struct smb_iconv_convenience *old_ic);
+							      struct smb_iconv_handle *old_ic);
 
 const char *lpcfg_sam_name(struct loadparm_context *lp_ctx);
 

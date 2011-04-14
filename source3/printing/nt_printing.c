@@ -20,7 +20,6 @@
  */
 
 #include "includes.h"
-#include "librpc/gen_ndr/messaging.h"
 #include "printing/pcap.h"
 #include "printing/nt_printing_tdb.h"
 #include "printing/nt_printing_migrate.h"
@@ -28,10 +27,16 @@
 #include "registry/reg_objects.h"
 #include "../librpc/gen_ndr/ndr_security.h"
 #include "../librpc/gen_ndr/ndr_spoolss.h"
-#include "rpc_server/srv_spoolss_util.h"
+#include "rpc_server/spoolss/srv_spoolss_util.h"
 #include "nt_printing.h"
 #include "secrets.h"
 #include "../librpc/gen_ndr/netlogon.h"
+#include "../libcli/security/security.h"
+#include "passdb/machine_sid.h"
+#include "smbd/smbd.h"
+#include "auth.h"
+#include "messages.h"
+#include "ntdomain.h"
 
 /* Map generic permissions to printer object specific permissions */
 
@@ -143,7 +148,7 @@ const char *get_short_archi(const char *long_archi)
 {
         int i=-1;
 
-        DEBUG(107,("Getting architecture dependant directory\n"));
+        DEBUG(107,("Getting architecture dependent directory\n"));
         do {
                 i++;
         } while ( (archi_table[i].long_archi!=NULL ) &&
@@ -578,15 +583,14 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 				   const char *driverpath_in,
 				   WERROR *perr)
 {
-	int               cversion;
+	int cversion = -1;
 	NTSTATUS          nt_status;
 	struct smb_filename *smb_fname = NULL;
 	char *driverpath = NULL;
 	files_struct      *fsp = NULL;
 	connection_struct *conn = NULL;
-	NTSTATUS status;
 	char *oldcwd;
-	fstring printdollar;
+	char *printdollar = NULL;
 	int printdollar_snum;
 
 	*perr = WERR_INVALID_PARAM;
@@ -605,9 +609,11 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 		return 3;
 	}
 
-	fstrcpy(printdollar, "print$");
-
-	printdollar_snum = find_service(printdollar);
+	printdollar_snum = find_service(talloc_tos(), "print$", &printdollar);
+	if (!printdollar) {
+		*perr = WERR_NOMEM;
+		return -1;
+	}
 	if (printdollar_snum == -1) {
 		*perr = WERR_NO_SUCH_SHARE;
 		return -1;
@@ -615,12 +621,25 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 
 	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
 				       lp_pathname(printdollar_snum),
-				       p->server_info, &oldcwd);
+				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("get_correct_cversion: create_conn_struct "
 			 "returned %s\n", nt_errstr(nt_status)));
 		*perr = ntstatus_to_werror(nt_status);
 		return -1;
+	}
+
+	nt_status = set_conn_force_user_group(conn, printdollar_snum);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(0, ("failed set force user / group\n"));
+		*perr = ntstatus_to_werror(nt_status);
+		goto error_free_conn;
+	}
+
+	if (!become_user_by_session(conn, p->session_info)) {
+		DEBUG(0, ("failed to become user\n"));
+		*perr = WERR_ACCESS_DENIED;
+		goto error_free_conn;
 	}
 
 	/* Open the driver file (Portable Executable format) and determine the
@@ -647,7 +666,7 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	status = SMB_VFS_CREATE_FILE(
+	nt_status = SMB_VFS_CREATE_FILE(
 		conn,					/* conn */
 		NULL,					/* req */
 		0,					/* root_dir_fid */
@@ -665,7 +684,7 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 		&fsp,					/* result */
 		NULL);					/* pinfo */
 
-	if (!NT_STATUS_IS_OK(status)) {
+	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(3,("get_correct_cversion: Can't open file [%s], errno = "
 			 "%d\n", smb_fname_str_dbg(smb_fname), errno));
 		*perr = WERR_ACCESS_DENIED;
@@ -676,12 +695,14 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 		int    ret;
 
 		ret = get_file_version(fsp, smb_fname->base_name, &major, &minor);
-		if (ret == -1) goto error_exit;
-
-		if (!ret) {
+		if (ret == -1) {
+			*perr = WERR_INVALID_PARAM;
+			goto error_exit;
+		} else if (!ret) {
 			DEBUG(6,("get_correct_cversion: Version info not "
 				 "found [%s]\n",
 				 smb_fname_str_dbg(smb_fname)));
+			*perr = WERR_INVALID_PARAM;
 			goto error_exit;
 		}
 
@@ -713,23 +734,24 @@ static uint32 get_correct_cversion(struct pipes_struct *p,
 
 	DEBUG(10,("get_correct_cversion: Driver file [%s] cversion = %d\n",
 		  smb_fname_str_dbg(smb_fname), cversion));
-
-	goto done;
+	*perr = WERR_OK;
 
  error_exit:
-	cversion = -1;
- done:
+	unbecome_user();
+ error_free_conn:
 	TALLOC_FREE(smb_fname);
 	if (fsp != NULL) {
 		close_file(NULL, fsp, NORMAL_CLOSE);
 	}
 	if (conn != NULL) {
 		vfs_ChDir(conn, oldcwd);
+		SMB_VFS_DISCONNECT(conn);
 		conn_free(conn);
 	}
-	if (cversion != -1) {
-		*perr = WERR_OK;
+	if (!NT_STATUS_IS_OK(*perr)) {
+		cversion = -1;
 	}
+
 	return cversion;
 }
 
@@ -751,14 +773,18 @@ static WERROR clean_up_driver_struct_level(TALLOC_CTX *mem_ctx,
 					   const char **config_file,
 					   const char **help_file,
 					   struct spoolss_StringArray *dependent_files,
-					   uint32_t *version)
+					   enum spoolss_DriverOSVersion *version)
 {
 	const char *short_architecture;
 	int i;
 	WERROR err;
 	char *_p;
 
-	if (!*driver_path || !*data_file || !*config_file) {
+	if (!*driver_path || !*data_file) {
+		return WERR_INVALID_PARAM;
+	}
+
+	if (!strequal(architecture, SPOOLSS_ARCHITECTURE_4_0) && !*config_file) {
 		return WERR_INVALID_PARAM;
 	}
 
@@ -770,7 +796,9 @@ static WERROR clean_up_driver_struct_level(TALLOC_CTX *mem_ctx,
 
 	strip_driver_path(mem_ctx, *driver_path);
 	strip_driver_path(mem_ctx, *data_file);
-	strip_driver_path(mem_ctx, *config_file);
+	if (*config_file) {
+		strip_driver_path(mem_ctx, *config_file);
+	}
 	if (help_file) {
 		strip_driver_path(mem_ctx, *help_file);
 	}
@@ -931,8 +959,7 @@ static WERROR move_driver_file_to_download_area(TALLOC_CTX *mem_ctx,
 }
 
 WERROR move_driver_to_download_area(struct pipes_struct *p,
-				    struct spoolss_AddDriverInfoCtr *r,
-				    WERROR *perr)
+				    struct spoolss_AddDriverInfoCtr *r)
 {
 	struct spoolss_AddDriverInfo3 *driver;
 	struct spoolss_AddDriverInfo3 converted_driver;
@@ -945,10 +972,9 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 	TALLOC_CTX *ctx = talloc_tos();
 	int ver = 0;
 	char *oldcwd;
-	fstring printdollar;
+	char *printdollar = NULL;
 	int printdollar_snum;
-
-	*perr = WERR_OK;
+	WERROR err = WERR_OK;
 
 	switch (r->level) {
 	case 3:
@@ -968,22 +994,35 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 		return WERR_UNKNOWN_PRINTER_DRIVER;
 	}
 
-	fstrcpy(printdollar, "print$");
-
-	printdollar_snum = find_service(printdollar);
+	printdollar_snum = find_service(ctx, "print$", &printdollar);
+	if (!printdollar) {
+		return WERR_NOMEM;
+	}
 	if (printdollar_snum == -1) {
-		*perr = WERR_NO_SUCH_SHARE;
 		return WERR_NO_SUCH_SHARE;
 	}
 
 	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
 				       lp_pathname(printdollar_snum),
-				       p->server_info, &oldcwd);
+				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("move_driver_to_download_area: create_conn_struct "
 			 "returned %s\n", nt_errstr(nt_status)));
-		*perr = ntstatus_to_werror(nt_status);
-		return *perr;
+		err = ntstatus_to_werror(nt_status);
+		return err;
+	}
+
+	nt_status = set_conn_force_user_group(conn, printdollar_snum);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(0, ("failed set force user / group\n"));
+		err = ntstatus_to_werror(nt_status);
+		goto err_free_conn;
+	}
+
+	if (!become_user_by_session(conn, p->session_info)) {
+		DEBUG(0, ("failed to become user\n"));
+		err = WERR_ACCESS_DENIED;
+		goto err_free_conn;
 	}
 
 	new_dir = talloc_asprintf(ctx,
@@ -991,18 +1030,25 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 				short_architecture,
 				driver->version);
 	if (!new_dir) {
-		*perr = WERR_NOMEM;
+		err = WERR_NOMEM;
 		goto err_exit;
 	}
 	nt_status = driver_unix_convert(conn, new_dir, &smb_dname);
 	if (!NT_STATUS_IS_OK(nt_status)) {
-		*perr = WERR_NOMEM;
+		err = WERR_NOMEM;
 		goto err_exit;
 	}
 
 	DEBUG(5,("Creating first directory: %s\n", smb_dname->base_name));
 
-	create_directory(conn, NULL, smb_dname);
+	nt_status = create_directory(conn, NULL, smb_dname);
+	if (!NT_STATUS_IS_OK(nt_status)
+	 && !NT_STATUS_EQUAL(nt_status, NT_STATUS_OBJECT_NAME_COLLISION)) {
+		DEBUG(0, ("failed to create driver destination directory: %s\n",
+			  nt_errstr(nt_status)));
+		err = ntstatus_to_werror(nt_status);
+		goto err_exit;
+	}
 
 	/* For each driver file, archi\filexxx.yyy, if there is a duplicate file
 	 * listed for this driver which has already been moved, skip it (note:
@@ -1025,16 +1071,13 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 
 	if (driver->driver_path && strlen(driver->driver_path)) {
 
-		*perr = move_driver_file_to_download_area(ctx,
-							  conn,
-							  driver->driver_path,
-							  short_architecture,
-							  driver->version,
-							  ver);
-		if (!W_ERROR_IS_OK(*perr)) {
-			if (W_ERROR_EQUAL(*perr, WERR_ACCESS_DENIED)) {
-				ver = -1;
-			}
+		err = move_driver_file_to_download_area(ctx,
+							conn,
+							driver->driver_path,
+							short_architecture,
+							driver->version,
+							ver);
+		if (!W_ERROR_IS_OK(err)) {
 			goto err_exit;
 		}
 	}
@@ -1042,16 +1085,13 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 	if (driver->data_file && strlen(driver->data_file)) {
 		if (!strequal(driver->data_file, driver->driver_path)) {
 
-			*perr = move_driver_file_to_download_area(ctx,
-								  conn,
-								  driver->data_file,
-								  short_architecture,
-								  driver->version,
-								  ver);
-			if (!W_ERROR_IS_OK(*perr)) {
-				if (W_ERROR_EQUAL(*perr, WERR_ACCESS_DENIED)) {
-					ver = -1;
-				}
+			err = move_driver_file_to_download_area(ctx,
+								conn,
+								driver->data_file,
+								short_architecture,
+								driver->version,
+								ver);
+			if (!W_ERROR_IS_OK(err)) {
 				goto err_exit;
 			}
 		}
@@ -1061,16 +1101,13 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 		if (!strequal(driver->config_file, driver->driver_path) &&
 		    !strequal(driver->config_file, driver->data_file)) {
 
-			*perr = move_driver_file_to_download_area(ctx,
-								  conn,
-								  driver->config_file,
-								  short_architecture,
-								  driver->version,
-								  ver);
-			if (!W_ERROR_IS_OK(*perr)) {
-				if (W_ERROR_EQUAL(*perr, WERR_ACCESS_DENIED)) {
-					ver = -1;
-				}
+			err = move_driver_file_to_download_area(ctx,
+								conn,
+								driver->config_file,
+								short_architecture,
+								driver->version,
+								ver);
+			if (!W_ERROR_IS_OK(err)) {
 				goto err_exit;
 			}
 		}
@@ -1081,16 +1118,13 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 		    !strequal(driver->help_file, driver->data_file) &&
 		    !strequal(driver->help_file, driver->config_file)) {
 
-			*perr = move_driver_file_to_download_area(ctx,
-								  conn,
-								  driver->help_file,
-								  short_architecture,
-								  driver->version,
-								  ver);
-			if (!W_ERROR_IS_OK(*perr)) {
-				if (W_ERROR_EQUAL(*perr, WERR_ACCESS_DENIED)) {
-					ver = -1;
-				}
+			err = move_driver_file_to_download_area(ctx,
+								conn,
+								driver->help_file,
+								short_architecture,
+								driver->version,
+								ver);
+			if (!W_ERROR_IS_OK(err)) {
 				goto err_exit;
 			}
 		}
@@ -1109,16 +1143,13 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 					}
 				}
 
-				*perr = move_driver_file_to_download_area(ctx,
-									  conn,
-									  driver->dependent_files->string[i],
-									  short_architecture,
-									  driver->version,
-									  ver);
-				if (!W_ERROR_IS_OK(*perr)) {
-					if (W_ERROR_EQUAL(*perr, WERR_ACCESS_DENIED)) {
-						ver = -1;
-					}
+				err = move_driver_file_to_download_area(ctx,
+									conn,
+									driver->dependent_files->string[i],
+									short_architecture,
+									driver->version,
+									ver);
+				if (!W_ERROR_IS_OK(err)) {
 					goto err_exit;
 				}
 			}
@@ -1126,21 +1157,19 @@ WERROR move_driver_to_download_area(struct pipes_struct *p,
 		}
 	}
 
-  err_exit:
+	err = WERR_OK;
+ err_exit:
+	unbecome_user();
+ err_free_conn:
 	TALLOC_FREE(smb_dname);
 
 	if (conn != NULL) {
 		vfs_ChDir(conn, oldcwd);
+		SMB_VFS_DISCONNECT(conn);
 		conn_free(conn);
 	}
 
-	if (W_ERROR_EQUAL(*perr, WERR_OK)) {
-		return WERR_OK;
-	}
-	if (ver == -1) {
-		return WERR_UNKNOWN_PRINTER_DRIVER;
-	}
-	return (*perr);
+	return err;
 }
 
 /****************************************************************************
@@ -1553,7 +1582,7 @@ bool driver_info_ctr_to_info8(struct spoolss_AddDriverInfoCtr *r,
 ****************************************************************************/
 
 bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
-			   const struct auth_serversupplied_info *server_info,
+			   const struct auth_serversupplied_info *session_info,
 			   struct messaging_context *msg_ctx,
                            const struct spoolss_DriverInfo8 *r)
 {
@@ -1576,8 +1605,8 @@ bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
 			continue;
 		}
 
-		result = winreg_get_printer(mem_ctx, server_info, msg_ctx,
-					    NULL, lp_servicename(snum),
+		result = winreg_get_printer(mem_ctx, session_info, msg_ctx,
+					    lp_servicename(snum),
 					    &pinfo2);
 		if (!W_ERROR_IS_OK(result)) {
 			continue; /* skip */
@@ -1602,18 +1631,18 @@ bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
 		   "Windows NT x86" version 2 or 3 left */
 
 		if (!strequal("Windows NT x86", r->architecture)) {
-			werr = winreg_get_driver(mem_ctx, server_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
 						 "Windows NT x86",
 						 r->driver_name,
 						 DRIVER_ANY_VERSION,
 						 &driver);
 		} else if (r->version == 2) {
-			werr = winreg_get_driver(mem_ctx, server_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
 						 "Windows NT x86",
 						 r->driver_name,
 						 3, &driver);
 		} else if (r->version == 3) {
-			werr = winreg_get_driver(mem_ctx, server_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
 						 "Windows NT x86",
 						 r->driver_name,
 						 2, &driver);
@@ -1781,7 +1810,7 @@ static bool trim_overlap_drv_files(TALLOC_CTX *mem_ctx,
 ****************************************************************************/
 
 bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
-				 const struct auth_serversupplied_info *server_info,
+				 const struct auth_serversupplied_info *session_info,
 				 struct messaging_context *msg_ctx,
 				 struct spoolss_DriverInfo8 *info)
 {
@@ -1804,7 +1833,7 @@ bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
 
 	/* get the list of drivers */
 
-	result = winreg_get_driver_list(mem_ctx, server_info, msg_ctx,
+	result = winreg_get_driver_list(mem_ctx, session_info, msg_ctx,
 					info->architecture, version,
 					&num_drivers, &drivers);
 	if (!W_ERROR_IS_OK(result)) {
@@ -1821,7 +1850,7 @@ bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
 
 		driver = NULL;
 
-		result = winreg_get_driver(mem_ctx, server_info, msg_ctx,
+		result = winreg_get_driver(mem_ctx, session_info, msg_ctx,
 					   info->architecture, drivers[i],
 					   version, &driver);
 		if (!W_ERROR_IS_OK(result)) {
@@ -1875,7 +1904,7 @@ static NTSTATUS driver_unlink_internals(connection_struct *conn,
   this.
 ****************************************************************************/
 
-bool delete_driver_files(const struct auth_serversupplied_info *server_info,
+bool delete_driver_files(const struct auth_serversupplied_info *session_info,
 			 const struct spoolss_DriverInfo8 *r)
 {
 	int i = 0;
@@ -1884,7 +1913,7 @@ bool delete_driver_files(const struct auth_serversupplied_info *server_info,
 	connection_struct *conn;
 	NTSTATUS nt_status;
 	char *oldcwd;
-	fstring printdollar;
+	char *printdollar = NULL;
 	int printdollar_snum;
 	bool ret = false;
 
@@ -1895,25 +1924,40 @@ bool delete_driver_files(const struct auth_serversupplied_info *server_info,
 	DEBUG(6,("delete_driver_files: deleting driver [%s] - version [%d]\n",
 		r->driver_name, r->version));
 
-	fstrcpy(printdollar, "print$");
-
-	printdollar_snum = find_service(printdollar);
+	printdollar_snum = find_service(talloc_tos(), "print$", &printdollar);
+	if (!printdollar) {
+		return false;
+	}
 	if (printdollar_snum == -1) {
 		return false;
 	}
 
 	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
 				       lp_pathname(printdollar_snum),
-				       server_info, &oldcwd);
+				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("delete_driver_files: create_conn_struct "
 			 "returned %s\n", nt_errstr(nt_status)));
 		return false;
 	}
 
+	nt_status = set_conn_force_user_group(conn, printdollar_snum);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(0, ("failed set force user / group\n"));
+		ret = false;
+		goto err_free_conn;
+	}
+
+	if (!become_user_by_session(conn, session_info)) {
+		DEBUG(0, ("failed to become user\n"));
+		ret = false;
+		goto err_free_conn;
+	}
+
 	if ( !CAN_WRITE(conn) ) {
 		DEBUG(3,("delete_driver_files: Cannot delete print driver when [print$] is read-only\n"));
-		goto fail;
+		ret = false;
+		goto err_out;
 	}
 
 	/* now delete the files; must strip the '\print$' string from
@@ -1969,12 +2013,13 @@ bool delete_driver_files(const struct auth_serversupplied_info *server_info,
 		}
 	}
 
-	goto done;
- fail:
-	ret = false;
- done:
+	ret = true;
+ err_out:
+	unbecome_user();
+ err_free_conn:
 	if (conn != NULL) {
 		vfs_ChDir(conn, oldcwd);
+		SMB_VFS_DISCONNECT(conn);
 		conn_free(conn);
 	}
 	return ret;
@@ -2064,7 +2109,7 @@ void map_job_permissions(struct security_descriptor *sd)
     3)  "printer admins" (may result in numerous calls to winbind)
 
  ****************************************************************************/
-bool print_access_check(const struct auth_serversupplied_info *server_info,
+bool print_access_check(const struct auth_serversupplied_info *session_info,
 			struct messaging_context *msg_ctx, int snum,
 			int access_type)
 {
@@ -2080,8 +2125,8 @@ bool print_access_check(const struct auth_serversupplied_info *server_info,
 
 	/* Always allow root or SE_PRINT_OPERATROR to do anything */
 
-	if (server_info->utok.uid == sec_initial_uid()
-	    || security_token_has_privilege(server_info->ptok, SEC_PRIV_PRINT_OPERATOR)) {
+	if (session_info->utok.uid == sec_initial_uid()
+	    || security_token_has_privilege(session_info->security_token, SEC_PRIV_PRINT_OPERATOR)) {
 		return True;
 	}
 
@@ -2102,7 +2147,7 @@ bool print_access_check(const struct auth_serversupplied_info *server_info,
 	}
 
 	result = winreg_get_printer_secdesc(mem_ctx,
-					    server_info,
+					    get_session_info_system(),
 					    msg_ctx,
 					    pname,
 					    &secdesc);
@@ -2137,7 +2182,7 @@ bool print_access_check(const struct auth_serversupplied_info *server_info,
 	}
 
 	/* Check access */
-	status = se_access_check(secdesc, server_info->ptok, access_type,
+	status = se_access_check(secdesc, session_info->security_token, access_type,
 				 &access_granted);
 
 	DEBUG(4, ("access check was %s\n", NT_STATUS_IS_OK(status) ? "SUCCESS" : "FAILURE"));
@@ -2145,9 +2190,9 @@ bool print_access_check(const struct auth_serversupplied_info *server_info,
         /* see if we need to try the printer admin list */
 
         if (!NT_STATUS_IS_OK(status) &&
-	    (token_contains_name_in_list(uidtoname(server_info->utok.uid),
-					 server_info->info3->base.domain.string,
-					 NULL, server_info->ptok,
+	    (token_contains_name_in_list(uidtoname(session_info->utok.uid),
+					 session_info->info3->base.domain.string,
+					 NULL, session_info->security_token,
 					 lp_printer_admin(snum)))) {
 		talloc_destroy(mem_ctx);
 		return True;
@@ -2166,7 +2211,7 @@ bool print_access_check(const struct auth_serversupplied_info *server_info,
  Check the time parameters allow a print operation.
 *****************************************************************************/
 
-bool print_time_access_check(const struct auth_serversupplied_info *server_info,
+bool print_time_access_check(const struct auth_serversupplied_info *session_info,
 			     struct messaging_context *msg_ctx,
 			     const char *servicename)
 {
@@ -2177,8 +2222,8 @@ bool print_time_access_check(const struct auth_serversupplied_info *server_info,
 	struct tm *t;
 	uint32 mins;
 
-	result = winreg_get_printer(NULL, server_info, msg_ctx,
-				    NULL, servicename, &pinfo2);
+	result = winreg_get_printer(NULL, session_info, msg_ctx,
+				    servicename, &pinfo2);
 	if (!W_ERROR_IS_OK(result)) {
 		return False;
 	}
@@ -2204,13 +2249,13 @@ bool print_time_access_check(const struct auth_serversupplied_info *server_info,
 }
 
 void nt_printer_remove(TALLOC_CTX *mem_ctx,
-			const struct auth_serversupplied_info *server_info,
+			const struct auth_serversupplied_info *session_info,
 			struct messaging_context *msg_ctx,
 			const char *printer)
 {
 	WERROR result;
 
-	result = winreg_delete_printer_key(mem_ctx, server_info, msg_ctx,
+	result = winreg_delete_printer_key(mem_ctx, session_info, msg_ctx,
 					   printer, "");
 	if (!W_ERROR_IS_OK(result)) {
 		DEBUG(0, ("nt_printer_remove: failed to remove rpinter %s",

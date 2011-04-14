@@ -34,6 +34,7 @@
 #include "param/param.h"
 #include "libcli/security/security.h"
 #include "libcli/util/clilsa.h"
+#include "torture/util.h"
 
 
 /**
@@ -699,7 +700,7 @@ double torture_create_procs(struct torture_context *tctx,
 					printf("pid %d failed to start\n", (int)getpid());
 					_exit(1);
 				}
-				msleep(100);	
+				smb_msleep(100);	
 			}
 
 			child_status[i] = getpid();
@@ -723,7 +724,7 @@ double torture_create_procs(struct torture_context *tctx,
 			if (child_status[i]) synccount++;
 		}
 		if (synccount == torture_nprocs) break;
-		msleep(100);
+		smb_msleep(100);
 	} while (timeval_elapsed(&tv) < start_time_limit);
 
 	if (synccount != torture_nprocs) {

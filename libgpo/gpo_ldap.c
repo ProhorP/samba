@@ -19,10 +19,12 @@
 
 #include "includes.h"
 #include "libgpo/gpo.h"
+#include "auth.h"
 #if _SAMBA_BUILD_ == 4
 #include "libgpo/gpo_s4.h"
 #include "source4/libgpo/ads_convenience.h"
 #endif
+#include "../libcli/security/security.h"
 
 /****************************************************************
  parse the raw extension string into a GP_EXT structure
@@ -670,7 +672,7 @@ ADS_STATUS ads_get_sid_token(ADS_STRUCT *ads,
 
 	*token = new_token;
 
-	debug_nt_user_token(DBGC_CLASS, 5, *token);
+	security_token_debug(DBGC_CLASS, 5, *token);
 
 	return ADS_ERROR_LDAP(LDAP_SUCCESS);
 }

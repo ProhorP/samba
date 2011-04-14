@@ -132,6 +132,7 @@ static int subtree_rename_next_request(struct subtree_rename_context *ac)
 				   ac->req->controls,
 				   ac, subtree_rename_callback,
 				   ac->req);
+	LDB_REQ_SET_LOCATION(req);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -146,17 +147,23 @@ static int check_constraints(struct ldb_message *msg,
 			     struct ldb_dn *olddn, struct ldb_dn *newdn)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
-	struct ldb_dn *dn1, *dn2;
+	struct ldb_dn *dn1, *dn2, *nc_root;
 	int32_t systemFlags;
 	bool move_op = false;
 	bool rename_op = false;
+	int ret;
 
-	/* Skip the checks if old and new DN are the same or if we relax */
+	/* Skip the checks if old and new DN are the same, or if we have the
+	 * relax control specified or if the returned objects is already
+	 * deleted and needs only to be moved for consistency. */
 
 	if (ldb_dn_compare(olddn, newdn) == 0) {
 		return LDB_SUCCESS;
 	}
 	if (ldb_request_get_control(ac->req, LDB_CONTROL_RELAX_OID) != NULL) {
+		return LDB_SUCCESS;
+	}
+	if (ldb_msg_find_attr_as_bool(msg, "isDeleted", false)) {
 		return LDB_SUCCESS;
 	}
 
@@ -209,9 +216,28 @@ static int check_constraints(struct ldb_message *msg,
 
 	systemFlags = ldb_msg_find_attr_as_int(msg, "systemFlags", 0);
 
-	/* the config system flags don't apply for the schema partition */
-	if ((ldb_dn_compare_base(ldb_get_config_basedn(ldb), olddn) == 0) &&
-	    (ldb_dn_compare_base(ldb_get_schema_basedn(ldb), olddn) != 0)) {
+	/* Fetch name context */
+
+	ret = dsdb_find_nc_root(ldb, ac, olddn, &nc_root);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
+	if (ldb_dn_compare(nc_root, ldb_get_schema_basedn(ldb)) == 0) {
+		if (move_op) {
+			ldb_asprintf_errstring(ldb,
+					       "subtree_rename: Cannot move %s within schema partition",
+					       ldb_dn_get_linearized(olddn));
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+		if (rename_op &&
+		    (systemFlags & SYSTEM_FLAG_SCHEMA_BASE_OBJECT) != 0) {
+			ldb_asprintf_errstring(ldb,
+					       "subtree_rename: Cannot rename %s within schema partition",
+					       ldb_dn_get_linearized(olddn));
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+	} else if (ldb_dn_compare(nc_root, ldb_get_config_basedn(ldb)) == 0) {
 		if (move_op &&
 		    (systemFlags & SYSTEM_FLAG_CONFIG_ALLOW_MOVE) == 0) {
 			/* Here we have to do more: control the
@@ -238,51 +264,36 @@ static int check_constraints(struct ldb_message *msg,
 
 			if (!limited_move) {
 				ldb_asprintf_errstring(ldb,
-						       "subtree_rename: Cannot move %s, it isn't permitted!",
-						       ldb_dn_get_linearized(olddn));
+						       "subtree_rename: Cannot move %s to %s in config partition",
+						       ldb_dn_get_linearized(olddn), ldb_dn_get_linearized(newdn));
 				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 		}
 		if (rename_op &&
 		    (systemFlags & SYSTEM_FLAG_CONFIG_ALLOW_RENAME) == 0) {
 			ldb_asprintf_errstring(ldb,
-					       "subtree_rename: Cannot rename %s, it isn't permitted!",
-					       ldb_dn_get_linearized(olddn));
+					       "subtree_rename: Cannot rename %s to %s within config partition",
+					       ldb_dn_get_linearized(olddn), ldb_dn_get_linearized(newdn));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
-	}
-	if (ldb_dn_compare_base(ldb_get_schema_basedn(ldb), olddn) == 0) {
-		if (move_op) {
-			ldb_asprintf_errstring(ldb,
-					       "subtree_rename: Cannot move %s, it isn't permitted!",
-					       ldb_dn_get_linearized(olddn));
-			return LDB_ERR_UNWILLING_TO_PERFORM;
-		}
-		if (rename_op &&
-		    (systemFlags & SYSTEM_FLAG_SCHEMA_BASE_OBJECT) != 0) {
-			ldb_asprintf_errstring(ldb,
-					       "subtree_rename: Cannot rename %s, it isn't permitted!",
-					       ldb_dn_get_linearized(olddn));
-			return LDB_ERR_UNWILLING_TO_PERFORM;
-		}
-	}
-	if (ldb_dn_compare_base(ldb_get_default_basedn(ldb),
-				ac->current->olddn) == 0) {
+	} else if (ldb_dn_compare(nc_root, ldb_get_default_basedn(ldb)) == 0) {
 		if (move_op &&
 		    (systemFlags & SYSTEM_FLAG_DOMAIN_DISALLOW_MOVE) != 0) {
 			ldb_asprintf_errstring(ldb,
-					       "subtree_rename: Cannot move %s, it isn't permitted!",
-					       ldb_dn_get_linearized(olddn));
+					       "subtree_rename: Cannot move %s to %s - DISALLOW_MOVE set",
+					       ldb_dn_get_linearized(olddn), ldb_dn_get_linearized(newdn));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
 		if (rename_op &&
 		    (systemFlags & SYSTEM_FLAG_DOMAIN_DISALLOW_RENAME) != 0) {
 			ldb_asprintf_errstring(ldb,
-						       "subtree_rename: Cannot rename %s, it isn't permitted!",
-					       ldb_dn_get_linearized(olddn));
+						       "subtree_rename: Cannot rename %s to %s - DISALLOW_RENAME set",
+					       ldb_dn_get_linearized(olddn), ldb_dn_get_linearized(newdn));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
 	}
+
+	talloc_free(nc_root);
 
 	return LDB_SUCCESS;
 }
@@ -381,7 +392,7 @@ static int subtree_rename(struct ldb_module *module, struct ldb_request *req)
 {
 	struct ldb_context *ldb;
 	static const char * const attrs[] = { "objectClass", "systemFlags",
-					      NULL };
+					      "isDeleted", NULL };
 	struct ldb_request *search_req;
 	struct subtree_rename_context *ac;
 	int ret;
@@ -424,6 +435,13 @@ static int subtree_rename(struct ldb_module *module, struct ldb_request *req)
 				   ac, 
 				   subtree_rename_search_callback,
 				   req);
+	LDB_REQ_SET_LOCATION(search_req);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
+	ret = ldb_request_add_control(search_req, LDB_CONTROL_SHOW_RECYCLED_OID,
+				      true, NULL);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -431,7 +449,13 @@ static int subtree_rename(struct ldb_module *module, struct ldb_request *req)
 	return ldb_next_request(module, search_req);
 }
 
-_PUBLIC_ const struct ldb_module_ops ldb_subtree_rename_module_ops = {
+static const struct ldb_module_ops ldb_subtree_rename_module_ops = {
 	.name		   = "subtree_rename",
 	.rename            = subtree_rename
 };
+
+int ldb_subtree_rename_module_init(const char *version)
+{
+	LDB_MODULE_CHECK_VERSION(version);
+	return ldb_register_module(&ldb_subtree_rename_module_ops);
+}

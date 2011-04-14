@@ -66,7 +66,7 @@ static int pdc_fsmo_init(struct ldb_module *module)
 	ret = dsdb_module_search_dn(module, mem_ctx, &pdc_res,
 				    pdc_dn, 
 				    pdc_attrs,
-				    DSDB_FLAG_NEXT_MODULE);
+				    DSDB_FLAG_NEXT_MODULE, NULL);
 	if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		ldb_debug(ldb, LDB_DEBUG_TRACE,
 			  "pdc_fsmo_init: no domain object present: (skip loading of domain details)");
@@ -101,7 +101,13 @@ static int pdc_fsmo_init(struct ldb_module *module)
 	return ldb_next_init(module);
 }
 
-_PUBLIC_ const struct ldb_module_ops ldb_pdc_fsmo_module_ops = {
+static const struct ldb_module_ops ldb_pdc_fsmo_module_ops = {
 	.name		= "pdc_fsmo",
 	.init_context	= pdc_fsmo_init
 };
+
+int ldb_pdc_fsmo_module_init(const char *version)
+{
+	LDB_MODULE_CHECK_VERSION(version);
+	return ldb_register_module(&ldb_pdc_fsmo_module_ops);
+}

@@ -26,6 +26,7 @@
 
 #include "system/filesys.h"
 #include "system/shmem.h"
+#include "torture/raw/proto.h"
 
 #define TIME_LIMIT_SECS 30
 #define usec_to_sec(s) ((s) / 1000000)
@@ -123,21 +124,23 @@ done:
 
 static bool children_remain(void)
 {
+	bool res;
+
 	/* Reap as many children as possible. */
 	for (;;) {
 		pid_t ret = waitpid(-1, NULL, WNOHANG);
 		if (ret == 0) {
 			/* no children ready */
-			return true;
+			res = true;
+			break;
 		}
 		if (ret == -1) {
 			/* no children left. maybe */
-			return errno == ECHILD ? false : true;
+			res = errno != ECHILD;
+			break;
 		}
 	}
-
-	/* notreached */
-	return false;
+	return res;
 }
 
 static double rate_convert_secs(unsigned count,

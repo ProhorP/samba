@@ -27,7 +27,7 @@
 #include "system/filesys.h"
 #include "tdb_wrap.h"
 #include "lib/ldb-samba/ldb_wrap.h"
-#include "lib/ldb/include/ldb.h"
+#include <ldb.h>
 #include "../lib/util/util_tdb.h"
 #include "librpc/gen_ndr/ndr_security.h"
 #include "dsdb/samdb/samdb.h"
@@ -86,10 +86,9 @@ struct tdb_wrap *secrets_init(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_c
   connect to the secrets ldb
 */
 struct ldb_context *secrets_db_connect(TALLOC_CTX *mem_ctx,
-					struct tevent_context *ev_ctx,
 					struct loadparm_context *lp_ctx)
 {
-	return ldb_wrap_connect(mem_ctx, ev_ctx, lp_ctx, lpcfg_secrets_url(lp_ctx),
+	return ldb_wrap_connect(mem_ctx, NULL, lp_ctx, lpcfg_secrets_url(lp_ctx),
 			       NULL, NULL, 0);
 }
 
@@ -98,7 +97,6 @@ struct ldb_context *secrets_db_connect(TALLOC_CTX *mem_ctx,
  * @return pointer to a SID object if the SID could be obtained, NULL otherwise
  */
 struct dom_sid *secrets_get_domain_sid(TALLOC_CTX *mem_ctx,
-				       struct tevent_context *ev_ctx,
 				       struct loadparm_context *lp_ctx,
 				       const char *domain,
 				       enum netr_SchannelType *sec_channel_type,
@@ -114,7 +112,7 @@ struct dom_sid *secrets_get_domain_sid(TALLOC_CTX *mem_ctx,
 
 	*errstring = NULL;
 
-	ldb = secrets_db_connect(mem_ctx, ev_ctx, lp_ctx);
+	ldb = secrets_db_connect(mem_ctx, lp_ctx);
 	if (ldb == NULL) {
 		DEBUG(5, ("secrets_db_connect failed\n"));
 		return NULL;
@@ -167,3 +165,28 @@ struct dom_sid *secrets_get_domain_sid(TALLOC_CTX *mem_ctx,
 
 	return result;
 }
+
+char *keytab_name_from_msg(TALLOC_CTX *mem_ctx, struct ldb_context *ldb, struct ldb_message *msg) 
+{
+	const char *krb5keytab = ldb_msg_find_attr_as_string(msg, "krb5Keytab", NULL);
+	if (krb5keytab) {
+		return talloc_strdup(mem_ctx, krb5keytab);
+	} else {
+		char *file_keytab;
+		char *relative_path;
+		const char *privateKeytab = ldb_msg_find_attr_as_string(msg, "privateKeytab", NULL);
+		if (!privateKeytab) {
+			return NULL;
+		}
+
+		relative_path = ldb_relative_path(ldb, mem_ctx, privateKeytab);
+		if (!relative_path) {
+			return NULL;
+		}
+		file_keytab = talloc_asprintf(mem_ctx, "FILE:%s", relative_path);
+		talloc_free(relative_path);
+		return file_keytab;
+	}
+	return NULL;
+}
+

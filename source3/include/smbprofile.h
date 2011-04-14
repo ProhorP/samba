@@ -43,6 +43,10 @@ enum profile_stats_values
 #define syscall_opendir_count __profile_stats_value(PR_VALUE_SYSCALL_OPENDIR, count)
 #define syscall_opendir_time __profile_stats_value(PR_VALUE_SYSCALL_OPENDIR, time)
 
+	PR_VALUE_SYSCALL_FDOPENDIR,
+#define syscall_fdopendir_count __profile_stats_value(PR_VALUE_SYSCALL_FDOPENDIR, count)
+#define syscall_fdopendir_time __profile_stats_value(PR_VALUE_SYSCALL_FDOPENDIR, time)
+
 	PR_VALUE_SYSCALL_READDIR,
 #define syscall_readdir_count __profile_stats_value(PR_VALUE_SYSCALL_READDIR, count)
 #define syscall_readdir_time __profile_stats_value(PR_VALUE_SYSCALL_READDIR, time)
@@ -178,6 +182,10 @@ enum profile_stats_values
 	PR_VALUE_SYSCALL_FTRUNCATE,
 #define syscall_ftruncate_count __profile_stats_value(PR_VALUE_SYSCALL_FTRUNCATE, count)
 #define syscall_ftruncate_time __profile_stats_value(PR_VALUE_SYSCALL_FTRUNCATE, time)
+
+	PR_VALUE_SYSCALL_FALLOCATE,
+#define syscall_fallocate_count __profile_stats_value(PR_VALUE_SYSCALL_FALLOCATE, count)
+#define syscall_fallocate_time __profile_stats_value(PR_VALUE_SYSCALL_FALLOCATE, time)
 
 	PR_VALUE_SYSCALL_FCNTL_LOCK,
 #define syscall_fcntl_lock_count __profile_stats_value(PR_VALUE_SYSCALL_FCNTL_LOCK, count)
@@ -957,5 +965,10 @@ static inline uint64_t profile_timestamp(void)
 #define START_PROFILE_BYTES(x,n)
 #define END_PROFILE(x)
 #endif /* WITH_PROFILE */
+
+/* The following definitions come from profile/profile.c  */
+
+void set_profile_level(int level, struct server_id src);
+bool profile_setup(struct messaging_context *msg_ctx, bool rdonly);
 
 #endif

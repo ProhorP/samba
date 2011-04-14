@@ -1,7 +1,9 @@
 #!/bin/sh
 
 FILTER_XFAIL="${PYTHON} -u ${SELFTESTDIR}/filter-subunit --expected-failures=${SOURCEDIR}/selftest/knownfail"
-SUBUNIT_FORMATTER="${PYTHON} -u ${SELFTESTDIR}/format-subunit --prefix=${SELFTESTPREFIX} --immediate"
+if [ "x${SUBUNIT_FORMATTER}" = x"" ]; then
+	SUBUNIT_FORMATTER="${PYTHON} -u ${SELFTESTDIR}/format-subunit --prefix=${SELFTESTPREFIX} --immediate"
+fi
 
 cleanup_and_exit() {
 	if test "$1" = 0 -o -z "$1"; then
@@ -18,9 +20,10 @@ st_test_done() {
 if [ "x${RUN_FROM_BUILD_FARM}" = "xyes" ]; then
 	( rm -f ${SELFTESTPREFIX}/st_done && \
 		${PERL} ${SELFTESTDIR}/selftest.pl \
-			--prefix=${SELFTESTPREFIX} --target=samba3 \
-			--testlist="${SOURCEDIR}/selftest/tests.sh|" \
+			--builddir=. --prefix=${SELFTESTPREFIX} --target=samba3 \
+			--testlist="${PYTHON} ${SOURCEDIR}/selftest/tests.py|" \
 			--exclude=${SOURCEDIR}/selftest/skip \
+	                --srcdir="${SOURCEDIR}/.." \
 			--socket-wrapper ${TESTS} \
 	&& touch ${SELFTESTPREFIX}/st_done ) | \
 		${FILTER_XFAIL} --strip-passed-output
@@ -30,9 +33,10 @@ if [ "x${RUN_FROM_BUILD_FARM}" = "xyes" ]; then
 else
 	( rm -f ${SELFTESTPREFIX}/st_done && \
 		${PERL} ${SELFTESTDIR}/selftest.pl \
-			--prefix=${SELFTESTPREFIX} --target=samba3 \
-			--testlist="${SOURCEDIR}/selftest/tests.sh|" \
+			--builddir=. --prefix=${SELFTESTPREFIX} --target=samba3 \
+			--testlist="${PYTHON} ${SOURCEDIR}/selftest/tests.py|" \
 			--exclude=${SOURCEDIR}/selftest/skip \
+	                --srcdir="${SOURCEDIR}/.." \
 			--socket-wrapper ${TESTS} \
 	&& touch ${SELFTESTPREFIX}/st_done ) | \
 		${FILTER_XFAIL} | ${SUBUNIT_FORMATTER}

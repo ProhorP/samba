@@ -21,6 +21,7 @@
 
 #include "includes.h"
 #include "printing.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "../libcli/smb/smb_common.h"
 #include "../librpc/gen_ndr/ndr_security.h"
@@ -212,7 +213,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 				   in_name_buffer.data,
 				   in_name_buffer.length,
 				   &in_name_string,
-				   &in_name_string_size, false);
+				   &in_name_string_size);
 	if (!ok) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_ILLEGAL_CHARACTER);
 	}
@@ -797,7 +798,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 	/* Deal with other possible opens having a modified
 	   write time. JRA. */
 	ZERO_STRUCT(write_time_ts);
-	get_file_infos(result->file_id, NULL, &write_time_ts);
+	get_file_infos(result->file_id, 0, NULL, &write_time_ts);
 	if (!null_timespec(write_time_ts)) {
 		update_stat_ex_mtime(&result->fsp_name->st, write_time_ts);
 	}

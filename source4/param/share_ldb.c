@@ -20,12 +20,14 @@
 */
 
 #include "includes.h"
-#include "ldb/include/ldb.h"
-#include "ldb/include/ldb_errors.h"
+#include <ldb.h>
+#include <ldb_errors.h>
 #include "auth/auth.h"
 #include "ldb_wrap.h"
 #include "param/share.h"
 #include "param/param.h"
+
+NTSTATUS share_ldb_init(void);
 
 static NTSTATUS sldb_init(TALLOC_CTX *mem_ctx, const struct share_ops *ops, 
 			  struct tevent_context *ev_ctx,

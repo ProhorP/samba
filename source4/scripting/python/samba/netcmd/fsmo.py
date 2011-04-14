@@ -43,7 +43,7 @@ class cmd_fsmo(Command):
         }
 
     takes_options = [
-        Option("--host", help="LDB URL for database or target server", type=str),
+        Option("--url", help="LDB URL for database or target server", type=str),
         Option("--force", help="Force seizing of the role without attempting to transfer first.", action="store_true"),
         Option("--role", type="choice", choices=["rid", "pdc", "infrastructure","schema","naming","all"],
                help="""The FSMO role to seize or transfer.\n
@@ -88,7 +88,12 @@ all=all of the above"""),
                 "becomeSchemaMaster")
         else:
             raise CommandError("Invalid FSMO role.")
-        samdb.modify(m)
+        try:
+            samdb.modify(m)
+        except LdbError, (num, msg):
+            raise CommandError("Failed to initiate transfer of '%s' role: %s" % (role, msg))
+        print("FSMO transfer of '%s' role successful" % role)
+
 
     def seize_role(self, role, samdb, force):
         res = samdb.search("",
@@ -116,26 +121,28 @@ all=all of the above"""),
                 self.transfer_role(role, samdb)
             except LdbError, (num, _):
             #transfer failed, use the big axe...
-                self.message("Transfer unsuccessfull, seizing...")
+                self.message("Transfer unsuccessful, seizing...")
                 m["fSMORoleOwner"]= ldb.MessageElement(
                     serviceName, ldb.FLAG_MOD_REPLACE,
                     "fSMORoleOwner")
-                samdb.modify(m)
-            else:
-                self.message("Transfer succeeded.")
         else:
             self.message("Will not attempt transfer, seizing...")
             m["fSMORoleOwner"]= ldb.MessageElement(
                 serviceName, ldb.FLAG_MOD_REPLACE,
                 "fSMORoleOwner")
+        try:
             samdb.modify(m)
+        except LdbError, (num, msg):
+            raise CommandError("Failed to initiate role seize of '%s' role: %s" % (role, msg))
+        print("FSMO transfer of '%s' role successful" % role)
 
-    def run(self, subcommand, force=None, host=None, role=None,
+
+    def run(self, subcommand, force=None, url=None, role=None,
             credopts=None, sambaopts=None, versionopts=None):
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp)
+        creds = credopts.get_credentials(lp, fallback_machine=True)
 
-        samdb = SamDB(url=host, session_info=system_session(),
+        samdb = SamDB(url=url, session_info=system_session(),
             credentials=creds, lp=lp)
 
         domain_dn = samdb.domain_dn()

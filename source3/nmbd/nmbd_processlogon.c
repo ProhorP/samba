@@ -24,10 +24,10 @@
 */
 
 #include "includes.h"
-#include "../libcli/netlogon.h"
+#include "../libcli/netlogon/netlogon.h"
 #include "../libcli/cldap/cldap.h"
 #include "../lib/tsocket/tsocket.h"
-#include "../libcli/security/dom_sid.h"
+#include "../libcli/security/security.h"
 #include "secrets.h"
 #include "nmbd/nmbd.h"
 

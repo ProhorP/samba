@@ -21,8 +21,8 @@
 
 #include "includes.h"
 #include "lib/events/events.h"
-#include "lib/ldb/include/ldb.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb.h>
+#include <ldb_errors.h>
 #include "lib/ldb-samba/ldif_handlers.h"
 #include "ldb_wrap.h"
 #include "dsdb/samdb/samdb.h"
@@ -238,7 +238,7 @@ struct torture_suite *torture_dsdb_syntax(TALLOC_CTX *mem_ctx)
 	typedef bool (*pfn_run)(struct torture_context *, void *);
 
 	struct torture_tcase *tc;
-	struct torture_suite *suite = torture_suite_create(mem_ctx, "DSDB-SYNTAX");
+	struct torture_suite *suite = torture_suite_create(mem_ctx, "dsdb.syntax");
 
 	if (suite == NULL) {
 		return NULL;

@@ -18,12 +18,15 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef _AUTH_KERBEROS_H_
+#define _AUTH_KERBEROS_H_
+
 #if defined(HAVE_KRB5)
 
 #include "auth/kerberos/krb5_init_context.h"
 #include "librpc/gen_ndr/krb5pac.h"
 
-struct auth_serversupplied_info;
+struct auth_user_info_dc;
 struct cli_credentials;
 
 struct ccache_container {
@@ -134,7 +137,7 @@ NTSTATUS kerberos_decode_pac(TALLOC_CTX *mem_ctx,
 				    const krb5_keyblock *service_keyblock,
 				    DATA_BLOB *pac);
  krb5_error_code kerberos_create_pac(TALLOC_CTX *mem_ctx,
-				     struct auth_serversupplied_info *server_info,
+				     struct auth_user_info_dc *user_info_dc,
 				     krb5_context context,
 				     const krb5_keyblock *krbtgt_keyblock,
 				     const krb5_keyblock *service_keyblock,
@@ -142,10 +145,20 @@ NTSTATUS kerberos_decode_pac(TALLOC_CTX *mem_ctx,
 				     time_t tgs_authtime,
 				     DATA_BLOB *pac);
 struct loadparm_context;
+struct ldb_message;
+struct ldb_context;
 uint32_t kerberos_enctype_to_bitmap(krb5_enctype enc_type_enum);
 /* Translate between the Microsoft msDS-SupportedEncryptionTypes values and the IETF encryption type values */
 krb5_enctype kerberos_enctype_bitmap_to_enctype(uint32_t enctype_bitmap);
+krb5_error_code smb_krb5_update_keytab(TALLOC_CTX *parent_ctx,
+				       struct smb_krb5_context *smb_krb5_context,
+				       struct ldb_context *ldb, 
+				       struct ldb_message *msg,
+				       bool delete_all_kvno,
+				       const char **error_string);
 
 #include "auth/kerberos/proto.h"
 
 #endif /* HAVE_KRB5 */
+
+#endif /* _AUTH_KERBEROS_H_ */

@@ -42,6 +42,8 @@ static int none_setproctitle(const char *fmt, ...)
 }
 #endif
 
+NTSTATUS process_model_standard_init(void);
+
 /* we hold a pipe open in the parent, and the any child
    processes wait for EOF on that pipe. This ensures that
    children die when the parent dies */
@@ -50,7 +52,7 @@ static int child_pipe[2];
 /*
   called when the process model is selected
 */
-static void standard_model_init(struct tevent_context *ev)
+static void standard_model_init(void)
 {
 	pipe(child_pipe);
 	signal(SIGCHLD, SIG_IGN);
@@ -133,7 +135,7 @@ static void standard_accept_connection(struct tevent_context *ev,
 	s = socket_get_my_addr(sock2, ev);
 	if (s && c) {
 		setproctitle("conn c[%s:%u] s[%s:%u] server_id[%d]",
-			     c->addr, c->port, s->addr, s->port, pid);
+			     c->addr, c->port, s->addr, s->port, (int)pid);
 	}
 	talloc_free(c);
 	talloc_free(s);
@@ -186,7 +188,7 @@ static void standard_new_task(struct tevent_context *ev,
 	/* Ensure that the forked children do not expose identical random streams */
 	set_need_random_reseed();
 
-	setproctitle("task %s server_id[%d]", service_name, pid);
+	setproctitle("task %s server_id[%d]", service_name, (int)pid);
 
 	/* setup this new task.  Cluster ID is PID based for this process modal */
 	new_task(ev, lp_ctx, cluster_id(pid, 0), private_data);

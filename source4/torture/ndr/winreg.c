@@ -23,6 +23,7 @@
 #include "librpc/gen_ndr/ndr_winreg.h"
 #include "librpc/gen_ndr/ndr_security.h"
 #include "libcli/security/security.h"
+#include "torture/ndr/proto.h"
 
 static const uint8_t closekey_in_data[] = { 
         0x00, 0x00, 0x00, 0x00, 0x1d, 0xd8, 0xd7, 0xaa, 0x8d, 0x6c, 0x3f, 0x48, 
@@ -247,7 +248,7 @@ static bool querymultiplevalues_in_check(struct torture_context *tctx,
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuename->length, 18, "name len");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuename->size, 18, "name size");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuelen, 0, "length");
-	torture_assert(tctx, (r->in.values_in[0].ve_valueptr == NULL), "ve_valueptr");
+	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valueptr, 0, "ve_valueptr");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_type, 0, "type");
 	torture_assert_int_equal(tctx, *r->in.buffer_size, 32, "buffer size");
 
@@ -303,7 +304,7 @@ static bool querymultiplevalues2_in_check(struct torture_context *tctx,
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuename->length, 10, "name len");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuename->size, 10, "name size");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valuelen, 0, "length");
-	torture_assert(tctx, (r->in.values_in[0].ve_valueptr == NULL), "ve_valueptr");
+	torture_assert_int_equal(tctx, r->in.values_in[0].ve_valueptr, 0,  "ve_valueptr");
 	torture_assert_int_equal(tctx, r->in.values_in[0].ve_type, 0, "type");
 	torture_assert_int_equal(tctx, *r->in.offered, 0, "buffer size");
 

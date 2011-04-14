@@ -20,6 +20,7 @@
 */
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "../libcli/smb/smb_common.h"
 #include "../libcli/auth/spnego.h"
@@ -27,6 +28,8 @@
 #include "ntlmssp_wrap.h"
 #include "../librpc/gen_ndr/krb5pac.h"
 #include "libads/kerberos_proto.h"
+#include "../lib/util/asn1.h"
+#include "auth.h"
 
 static NTSTATUS smbd_smb2_session_setup(struct smbd_smb2_request *smb2req,
 					uint64_t in_session_id,
@@ -146,20 +149,20 @@ static int smbd_smb2_session_destructor(struct smbd_smb2_session *session)
 	return 0;
 }
 
-static NTSTATUS setup_ntlmssp_server_info(struct smbd_smb2_session *session,
+static NTSTATUS setup_ntlmssp_session_info(struct smbd_smb2_session *session,
 				NTSTATUS status)
 {
 	if (NT_STATUS_IS_OK(status)) {
-		status = auth_ntlmssp_steal_server_info(session,
+		status = auth_ntlmssp_steal_session_info(session,
 				session->auth_ntlmssp_state,
-				&session->server_info);
+				&session->session_info);
 	} else {
-		/* Note that this server_info won't have a session
+		/* Note that this session_info won't have a session
 		 * key.  But for map to guest, that's exactly the right
 		 * thing - we can't reasonably guess the key the
 		 * client wants, as the password was wrong */
 		status = do_map_to_guest(status,
-			&session->server_info,
+			&session->session_info,
 			auth_ntlmssp_get_username(session->auth_ntlmssp_state),
 			auth_ntlmssp_get_domain(session->auth_ntlmssp_state));
 	}
@@ -233,28 +236,15 @@ static NTSTATUS smbd_smb2_session_setup_krb5(struct smbd_smb2_session *session,
 	/* reload services so that the new %U is taken into account */
 	reload_services(smb2req->sconn->msg_ctx, smb2req->sconn->sock, true);
 
-	status = make_server_info_krb5(session,
+	status = make_session_info_krb5(session,
 					user, domain, real_username, pw,
 					logon_info, map_domainuser_to_guest,
-					&session->server_info);
+					username_was_mapped,
+					&session_key,
+					&session->session_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("smb2: make_server_info_krb5 failed\n"));
 		goto fail;
-	}
-
-
-	session->server_info->nss_token |= username_was_mapped;
-
-	/* we need to build the token for the user. make_server_info_guest()
-	   already does this */
-
-	if (!session->server_info->ptok ) {
-		status = create_local_token(session->server_info);
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(10,("smb2: failed to create local token: %s\n",
-				nt_errstr(status)));
-			goto fail;
-		}
 	}
 
 	if ((in_security_mode & SMB2_NEGOTIATE_SIGNING_REQUIRED) ||
@@ -262,7 +252,7 @@ static NTSTATUS smbd_smb2_session_setup_krb5(struct smbd_smb2_session *session,
 		session->do_signing = true;
 	}
 
-	if (session->server_info->guest) {
+	if (session->session_info->guest) {
 		/* we map anonymous to guest internally */
 		*out_session_flags |= SMB2_SESSION_FLAG_IS_GUEST;
 		*out_session_flags |= SMB2_SESSION_FLAG_IS_NULL;
@@ -270,19 +260,7 @@ static NTSTATUS smbd_smb2_session_setup_krb5(struct smbd_smb2_session *session,
 		session->do_signing = false;
 	}
 
-	data_blob_free(&session->server_info->user_session_key);
-	session->server_info->user_session_key =
-			data_blob_talloc(
-				session->server_info,
-				session_key.data,
-				session_key.length);
-        if (session_key.length > 0) {
-		if (session->server_info->user_session_key.data == NULL) {
-			status = NT_STATUS_NO_MEMORY;
-			goto fail;
-		}
-	}
-	session->session_key = session->server_info->user_session_key;
+	session->session_key = session->session_info->session_key;
 
 	session->compat_vuser = talloc_zero(session, user_struct);
 	if (session->compat_vuser == NULL) {
@@ -291,19 +269,19 @@ static NTSTATUS smbd_smb2_session_setup_krb5(struct smbd_smb2_session *session,
 	}
 	session->compat_vuser->auth_ntlmssp_state = NULL;
 	session->compat_vuser->homes_snum = -1;
-	session->compat_vuser->server_info = session->server_info;
+	session->compat_vuser->session_info = session->session_info;
 	session->compat_vuser->session_keystr = NULL;
 	session->compat_vuser->vuid = session->vuid;
 	DLIST_ADD(session->sconn->smb1.sessions.validated_users, session->compat_vuser);
 
 	/* This is a potentially untrusted username */
 	alpha_strcpy(tmp, user, ". _-$", sizeof(tmp));
-	session->server_info->sanitized_username =
-				talloc_strdup(session->server_info, tmp);
+	session->session_info->sanitized_username =
+				talloc_strdup(session->session_info, tmp);
 
-	if (!session->server_info->guest) {
+	if (!session->session_info->guest) {
 		session->compat_vuser->homes_snum =
-			register_homes_share(session->server_info->unix_name);
+			register_homes_share(session->session_info->unix_name);
 	}
 
 	if (!session_claim(session->sconn, session->compat_vuser)) {
@@ -480,7 +458,7 @@ static NTSTATUS smbd_smb2_common_ntlmssp_auth_return(struct smbd_smb2_session *s
 		session->do_signing = true;
 	}
 
-	if (session->server_info->guest) {
+	if (session->session_info->guest) {
 		/* we map anonymous to guest internally */
 		*out_session_flags |= SMB2_SESSION_FLAG_IS_GUEST;
 		*out_session_flags |= SMB2_SESSION_FLAG_IS_NULL;
@@ -488,7 +466,7 @@ static NTSTATUS smbd_smb2_common_ntlmssp_auth_return(struct smbd_smb2_session *s
 		session->do_signing = false;
 	}
 
-	session->session_key = session->server_info->user_session_key;
+	session->session_key = session->session_info->session_key;
 
 	session->compat_vuser = talloc_zero(session, user_struct);
 	if (session->compat_vuser == NULL) {
@@ -498,7 +476,7 @@ static NTSTATUS smbd_smb2_common_ntlmssp_auth_return(struct smbd_smb2_session *s
 	}
 	session->compat_vuser->auth_ntlmssp_state = session->auth_ntlmssp_state;
 	session->compat_vuser->homes_snum = -1;
-	session->compat_vuser->server_info = session->server_info;
+	session->compat_vuser->session_info = session->session_info;
 	session->compat_vuser->session_keystr = NULL;
 	session->compat_vuser->vuid = session->vuid;
 	DLIST_ADD(session->sconn->smb1.sessions.validated_users, session->compat_vuser);
@@ -508,12 +486,12 @@ static NTSTATUS smbd_smb2_common_ntlmssp_auth_return(struct smbd_smb2_session *s
 		     auth_ntlmssp_get_username(session->auth_ntlmssp_state),
 		     ". _-$",
 		     sizeof(tmp));
-	session->server_info->sanitized_username = talloc_strdup(
-		session->server_info, tmp);
+	session->session_info->sanitized_username = talloc_strdup(
+		session->session_info, tmp);
 
-	if (!session->compat_vuser->server_info->guest) {
+	if (!session->compat_vuser->session_info->guest) {
 		session->compat_vuser->homes_snum =
-			register_homes_share(session->server_info->unix_name);
+			register_homes_share(session->session_info->unix_name);
 	}
 
 	if (!session_claim(session->sconn, session->compat_vuser)) {
@@ -624,11 +602,11 @@ static NTSTATUS smbd_smb2_spnego_auth(struct smbd_smb2_session *session,
 	status = auth_ntlmssp_update(session->auth_ntlmssp_state,
 				     auth,
 				     &auth_out);
-	/* We need to call setup_ntlmssp_server_info() if status==NT_STATUS_OK,
+	/* We need to call setup_ntlmssp_session_info() if status==NT_STATUS_OK,
 	   or if status is anything except NT_STATUS_MORE_PROCESSING_REQUIRED,
 	   as this can trigger map to guest. */
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
-		status = setup_ntlmssp_server_info(session, status);
+		status = setup_ntlmssp_session_info(session, status);
 	}
 
 	if (!NT_STATUS_IS_OK(status) &&
@@ -706,7 +684,7 @@ static NTSTATUS smbd_smb2_raw_ntlmssp_auth(struct smbd_smb2_session *session,
 		return status;
 	}
 
-	status = setup_ntlmssp_server_info(session, status);
+	status = setup_ntlmssp_session_info(session, status);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(session->auth_ntlmssp_state);
@@ -857,9 +835,9 @@ NTSTATUS smbd_smb2_request_check_session(struct smbd_smb2_request *req)
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	set_current_user_info(session->server_info->sanitized_username,
-			      session->server_info->unix_name,
-			      session->server_info->info3->base.domain.string);
+	set_current_user_info(session->session_info->sanitized_username,
+			      session->session_info->unix_name,
+			      session->session_info->info3->base.domain.string);
 
 	req->session = session;
 

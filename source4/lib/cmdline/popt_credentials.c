@@ -31,15 +31,16 @@
  *		-k,--use-kerberos
  *		-N,--no-pass
  *		-S,--signing
- *              -P --machine-pass
- *                 --simple-bind-dn
- *                 --password
+ *		-P,--machine-pass
+ *		--simple-bind-dn
+ *		--password
+ *		--krb5-ccache
  */
 
-
 static bool dont_ask;
+static bool machine_account_pending;
 
-enum opt { OPT_SIMPLE_BIND_DN, OPT_PASSWORD, OPT_KERBEROS, OPT_SIGN, OPT_ENCRYPT };
+enum opt { OPT_SIMPLE_BIND_DN, OPT_PASSWORD, OPT_KERBEROS, OPT_SIGN, OPT_ENCRYPT, OPT_KRB5_CCACHE };
 
 /*
   disable asking for a password
@@ -65,6 +66,11 @@ static void popt_common_credentials_callback(poptContext con,
 		if (!dont_ask) {
 			cli_credentials_set_cmdline_callbacks(cmdline_credentials);
 		}
+
+		if (machine_account_pending) {
+			cli_credentials_set_machine_account(cmdline_credentials, cmdline_lp_ctx);
+		}
+
 		return;
 
 	}
@@ -97,7 +103,7 @@ static void popt_common_credentials_callback(poptContext con,
 
 	case 'P':
 		/* Later, after this is all over, get the machine account details from the secrets.ldb */
-		cli_credentials_set_machine_account_pending(cmdline_credentials, cmdline_lp_ctx);
+		machine_account_pending = true;
 		break;
 
 	case OPT_KERBEROS:
@@ -123,6 +129,16 @@ static void popt_common_credentials_callback(poptContext con,
 	case OPT_SIMPLE_BIND_DN:
 	{
 		cli_credentials_set_bind_dn(cmdline_credentials, arg);
+		break;
+	}
+	case OPT_KRB5_CCACHE:
+	{
+		const char *error_string;
+		if (cli_credentials_set_ccache(cmdline_credentials, cmdline_lp_ctx, arg, CRED_SPECIFIED,
+					       &error_string) != 0) {
+			fprintf(stderr, "Error reading krb5 credentials cache: '%s' %s", arg, error_string);
+			exit(1);
+		}
 		break;
 	}
 	case OPT_SIGN:
@@ -161,6 +177,7 @@ struct poptOption popt_common_credentials[] = {
 	{ "machine-pass", 'P', POPT_ARG_NONE, NULL, 'P', "Use stored machine account password (implies -k)" },
 	{ "simple-bind-dn", 0, POPT_ARG_STRING, NULL, OPT_SIMPLE_BIND_DN, "DN to use for a simple bind" },
 	{ "kerberos", 'k', POPT_ARG_STRING, NULL, OPT_KERBEROS, "Use Kerberos, -k [yes|no]" },
+	{ "krb5-ccache", 0, POPT_ARG_STRING, NULL, OPT_KRB5_CCACHE, "Credentials cache location for Kerberos" },
 	{ "sign", 'S', POPT_ARG_NONE, NULL, OPT_SIGN, "Sign connection to prevent modification in transit" },
 	{ "encrypt", 'e', POPT_ARG_NONE, NULL, OPT_ENCRYPT, "Encrypt connection for privacy" },
 	{ NULL }

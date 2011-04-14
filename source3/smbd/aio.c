@@ -19,6 +19,7 @@
 */
 
 #include "includes.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 
 #if defined(WITH_AIO)
@@ -385,7 +386,8 @@ NTSTATUS schedule_aio_write_and_X(connection_struct *conn,
 NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
 				struct smb_request *smbreq,
 				files_struct *fsp,
-				char *inbuf,
+				TALLOC_CTX *ctx,
+				DATA_BLOB *preadbuf,
 				SMB_OFF_T startpos,
 				size_t smb_maxcnt)
 {
@@ -427,6 +429,12 @@ NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
 		return NT_STATUS_RETRY;
 	}
 
+	/* Create the out buffer. */
+	*preadbuf = data_blob_talloc(ctx, NULL, smb_maxcnt);
+	if (preadbuf->data == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
 	if (!(aio_ex = create_aio_extra(smbreq->smb2req, fsp, 0))) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -447,7 +455,7 @@ NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
 	/* Now set up the aio record for the read call. */
 
 	a->aio_fildes = fsp->fh->fd;
-	a->aio_buf = inbuf;
+	a->aio_buf = preadbuf->data;
 	a->aio_nbytes = smb_maxcnt;
 	a->aio_offset = startpos;
 	a->aio_sigevent.sigev_notify = SIGEV_SIGNAL;
@@ -1031,7 +1039,8 @@ NTSTATUS schedule_aio_write_and_X(connection_struct *conn,
 NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
                                 struct smb_request *smbreq,
                                 files_struct *fsp,
-                                char *inbuf,
+				TALLOC_CTX *ctx,
+				DATA_BLOB *preadbuf,
                                 SMB_OFF_T startpos,
                                 size_t smb_maxcnt)
 {

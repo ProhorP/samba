@@ -23,6 +23,9 @@
 #include "includes.h"
 #include "winbindd.h"
 #include "secrets.h"
+#include "../libcli/security/security.h"
+#include "../libcli/auth/pam_errors.h"
+#include "passdb/machine_sid.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -30,7 +33,7 @@
 extern struct winbindd_methods cache_methods;
 
 /**
- * @file winbindd_util.c
+ * @file winbindd_util.cq
  *
  * Winbind daemon for NT domain authentication nss module.
  **/
@@ -135,7 +138,7 @@ static struct winbindd_domain *add_trusted_domain(const char *domain_name, const
 				continue;
 			}
 
-			if (sid_equal(sid, &domain->sid)) {
+			if (dom_sid_equal(sid, &domain->sid)) {
 				break;
 			}
 		}
@@ -146,7 +149,7 @@ static struct winbindd_domain *add_trusted_domain(const char *domain_name, const
 		 * We found a match. Possibly update the SID
 		 */
 		if ((sid != NULL)
-		    && sid_equal(&domain->sid, &global_sid_NULL)) {
+		    && dom_sid_equal(&domain->sid, &global_sid_NULL)) {
 			sid_copy( &domain->sid, sid );
 		}
 		return domain;
@@ -160,6 +163,16 @@ static struct winbindd_domain *add_trusted_domain(const char *domain_name, const
 	/* Fill in fields */
 
 	ZERO_STRUCTP(domain);
+
+	domain->children = SMB_MALLOC_ARRAY(
+		struct winbindd_child, lp_winbind_max_domain_connections());
+	if (domain->children == NULL) {
+		SAFE_FREE(domain);
+		return NULL;
+	}
+	memset(domain->children, 0,
+	       sizeof(struct winbindd_child)
+	       * lp_winbind_max_domain_connections());
 
 	fstrcpy(domain->name, domain_name);
 	if (alternative_name) {
@@ -642,49 +655,6 @@ bool init_domain_list(void)
 	return True;
 }
 
-void check_domain_trusted( const char *name, const struct dom_sid *user_sid )
-{
-	struct winbindd_domain *domain;
-	struct dom_sid dom_sid;
-	uint32 rid;
-
-	/* Check if we even care */
-
-	if (!lp_allow_trusted_domains())
-		return;
-
-	domain = find_domain_from_name_noinit( name );
-	if ( domain )
-		return;
-
-	sid_copy( &dom_sid, user_sid );
-	if ( !sid_split_rid( &dom_sid, &rid ) )
-		return;
-
-	/* add the newly discovered trusted domain */
-
-	domain = add_trusted_domain( name, NULL, &cache_methods,
-				     &dom_sid);
-
-	if ( !domain )
-		return;
-
-	/* assume this is a trust from a one-way transitive
-	   forest trust */
-
-	domain->active_directory = True;
-	domain->domain_flags = NETR_TRUST_FLAG_OUTBOUND;
-	domain->domain_type  = NETR_TRUST_TYPE_UPLEVEL;
-	domain->internal = False;
-	domain->online = True;
-
-	setup_domain_child(domain);
-
-	wcache_tdc_add_domain( domain );
-
-	return;
-}
-
 /**
  * Given a domain name, return the struct winbindd domain info for it
  *
@@ -740,7 +710,7 @@ struct winbindd_domain *find_domain_from_sid_noinit(const struct dom_sid *sid)
 	/* Search through list */
 
 	for (domain = domain_list(); domain != NULL; domain = domain->next) {
-		if (sid_compare_domain(sid, &domain->sid) == 0)
+		if (dom_sid_compare_domain(sid, &domain->sid) == 0)
 			return domain;
 	}
 
@@ -1399,4 +1369,40 @@ bool is_domain_offline(const struct winbindd_domain *domain)
 		return true;
 	}
 	return !domain->online;
+}
+
+bool is_domain_online(const struct winbindd_domain *domain)
+{
+	return !is_domain_offline(domain);
+}
+
+bool parse_sidlist(TALLOC_CTX *mem_ctx, const char *sidstr,
+		   struct dom_sid **sids, uint32_t *num_sids)
+{
+	const char *p;
+
+	p = sidstr;
+	if (p == NULL)
+		return False;
+
+	while (p[0] != '\0') {
+		struct dom_sid sid;
+		const char *q = NULL;
+
+		if (!dom_sid_parse_endp(p, &sid, &q)) {
+			DEBUG(1, ("Could not parse sid %s\n", p));
+			return false;
+		}
+		if ((q == NULL) || (q[0] != '\n')) {
+			DEBUG(1, ("Got invalid sidstr: %s\n", p));
+			return false;
+		}
+		if (!NT_STATUS_IS_OK(add_sid_to_array(mem_ctx, &sid, sids,
+						      num_sids)))
+		{
+			return False;
+		}
+		p = q+1;
+	}
+	return True;
 }

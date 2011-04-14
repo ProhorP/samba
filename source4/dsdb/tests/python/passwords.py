@@ -11,31 +11,33 @@
 import optparse
 import sys
 import base64
+import time
 import os
 
-sys.path.append("bin/python")
+sys.path.insert(0, "bin/python")
 import samba
-samba.ensure_external_module("subunit", "subunit/python")
 samba.ensure_external_module("testtools", "testtools")
+samba.ensure_external_module("subunit", "subunit/python")
 
 import samba.getopt as options
 
 from samba.auth import system_session
 from samba.credentials import Credentials
 from ldb import SCOPE_BASE, LdbError
-from ldb import ERR_NO_SUCH_OBJECT, ERR_ATTRIBUTE_OR_VALUE_EXISTS
+from ldb import ERR_ATTRIBUTE_OR_VALUE_EXISTS
 from ldb import ERR_UNWILLING_TO_PERFORM, ERR_INSUFFICIENT_ACCESS_RIGHTS
 from ldb import ERR_NO_SUCH_ATTRIBUTE
 from ldb import ERR_CONSTRAINT_VIOLATION
 from ldb import Message, MessageElement, Dn
-from ldb import FLAG_MOD_REPLACE, FLAG_MOD_DELETE
+from ldb import FLAG_MOD_ADD, FLAG_MOD_REPLACE, FLAG_MOD_DELETE
 from samba import gensec
 from samba.samdb import SamDB
 import samba.tests
+from samba.tests import delete_force
 from subunit.run import SubunitTestRunner
 import unittest
 
-parser = optparse.OptionParser("passwords [options] <host>")
+parser = optparse.OptionParser("passwords.py [options] <host>")
 sambaopts = options.SambaOptions(parser)
 parser.add_option_group(sambaopts)
 parser.add_option_group(options.VersionOptions(parser))
@@ -62,28 +64,16 @@ creds.set_gensec_features(creds.get_gensec_features() | gensec.FEATURE_SEAL)
 
 class PasswordTests(samba.tests.TestCase):
 
-    def delete_force(self, ldb, dn):
-        try:
-            ldb.delete(dn)
-        except LdbError, (num, _):
-            self.assertEquals(num, ERR_NO_SUCH_OBJECT)
-
-    def find_basedn(self, ldb):
-        res = ldb.search(base="", expression="", scope=SCOPE_BASE,
-                         attrs=["defaultNamingContext"])
-        self.assertEquals(len(res), 1)
-        return res[0]["defaultNamingContext"][0]
-
     def setUp(self):
         super(PasswordTests, self).setUp()
         self.ldb = ldb
-        self.base_dn = self.find_basedn(ldb)
+        self.base_dn = ldb.domain_dn()
 
         # (Re)adds the test user "testuser" with no password atm
-        self.delete_force(self.ldb, "cn=testuser,cn=users," + self.base_dn)
+        delete_force(self.ldb, "cn=testuser,cn=users," + self.base_dn)
         self.ldb.add({
              "dn": "cn=testuser,cn=users," + self.base_dn,
-             "objectclass": ["user", "person"],
+             "objectclass": "user",
              "sAMAccountName": "testuser"})
 
         # Tests a password change when we don't have any password yet with a
@@ -402,6 +392,27 @@ userPassword: thatsAcomplPASS1
 dn: cn=testuser,cn=users,""" + self.base_dn + """
 changetype: modify
 delete: userPassword
+userPassword: thatsAcomplPASS1
+""")
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        try:
+            ldb.modify_ldif("""
+dn: cn=testuser,cn=users,""" + self.base_dn + """
+changetype: modify
+delete: userPassword
+""")
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        try:
+            self.ldb2.modify_ldif("""
+dn: cn=testuser,cn=users,""" + self.base_dn + """
+changetype: modify
+delete: userPassword
 """)
             self.fail()
         except LdbError, (num, _):
@@ -634,23 +645,271 @@ userPassword: thatsAcomplPASS4
 """)
 
         # This surprisingly should work
-        self.delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
+        delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
         self.ldb.add({
              "dn": "cn=testuser2,cn=users," + self.base_dn,
-             "objectclass": ["user", "person"],
+             "objectclass": "user",
              "userPassword": ["thatsAcomplPASS1", "thatsAcomplPASS2"] })
 
         # This surprisingly should work
-        self.delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
+        delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
         self.ldb.add({
              "dn": "cn=testuser2,cn=users," + self.base_dn,
-             "objectclass": ["user", "person"],
+             "objectclass": "user",
              "userPassword": ["thatsAcomplPASS1", "thatsAcomplPASS1"] })
+
+    def test_empty_passwords(self):
+        print "Performs some empty passwords testing"
+
+        try:
+            self.ldb.add({
+                 "dn": "cn=testuser2,cn=users," + self.base_dn,
+                 "objectclass": "user",
+                 "unicodePwd": [] })
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        try:
+            self.ldb.add({
+                 "dn": "cn=testuser2,cn=users," + self.base_dn,
+                 "objectclass": "user",
+                 "dBCSPwd": [] })
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        try:
+            self.ldb.add({
+                 "dn": "cn=testuser2,cn=users," + self.base_dn,
+                 "objectclass": "user",
+                 "userPassword": [] })
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        try:
+            self.ldb.add({
+                 "dn": "cn=testuser2,cn=users," + self.base_dn,
+                 "objectclass": "user",
+                 "clearTextPassword": [] })
+            self.fail()
+        except LdbError, (num, _):
+            self.assertTrue(num == ERR_CONSTRAINT_VIOLATION or
+                            num == ERR_NO_SUCH_ATTRIBUTE) # for Windows
+
+        delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["unicodePwd"] = MessageElement([], FLAG_MOD_ADD, "unicodePwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["dBCSPwd"] = MessageElement([], FLAG_MOD_ADD, "dBCSPwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement([], FLAG_MOD_ADD, "userPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["clearTextPassword"] = MessageElement([], FLAG_MOD_ADD, "clearTextPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertTrue(num == ERR_CONSTRAINT_VIOLATION or
+                            num == ERR_NO_SUCH_ATTRIBUTE) # for Windows
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["unicodePwd"] = MessageElement([], FLAG_MOD_REPLACE, "unicodePwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["dBCSPwd"] = MessageElement([], FLAG_MOD_REPLACE, "dBCSPwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement([], FLAG_MOD_REPLACE, "userPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["clearTextPassword"] = MessageElement([], FLAG_MOD_REPLACE, "clearTextPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertTrue(num == ERR_UNWILLING_TO_PERFORM or
+                            num == ERR_NO_SUCH_ATTRIBUTE) # for Windows
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["unicodePwd"] = MessageElement([], FLAG_MOD_DELETE, "unicodePwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["dBCSPwd"] = MessageElement([], FLAG_MOD_DELETE, "dBCSPwd")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement([], FLAG_MOD_DELETE, "userPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["clearTextPassword"] = MessageElement([], FLAG_MOD_DELETE, "clearTextPassword")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertTrue(num == ERR_CONSTRAINT_VIOLATION or
+                            num == ERR_NO_SUCH_ATTRIBUTE) # for Windows
+
+    def test_plain_userPassword(self):
+        print "Performs testing about the standard 'userPassword' behaviour"
+
+        # Delete the "dSHeuristics"
+        ldb.set_dsheuristics(None)
+
+        time.sleep(1) # This switching time is strictly needed!
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement("myPassword", FLAG_MOD_ADD,
+          "userPassword")
+        ldb.modify(m)
+
+        res = ldb.search("cn=testuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["userPassword"])
+        self.assertTrue(len(res) == 1)
+        self.assertTrue("userPassword" in res[0])
+        self.assertEquals(res[0]["userPassword"][0], "myPassword")
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement("myPassword2", FLAG_MOD_REPLACE,
+          "userPassword")
+        ldb.modify(m)
+
+        res = ldb.search("cn=testuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["userPassword"])
+        self.assertTrue(len(res) == 1)
+        self.assertTrue("userPassword" in res[0])
+        self.assertEquals(res[0]["userPassword"][0], "myPassword2")
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement([], FLAG_MOD_DELETE,
+          "userPassword")
+        ldb.modify(m)
+
+        res = ldb.search("cn=testuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["userPassword"])
+        self.assertTrue(len(res) == 1)
+        self.assertFalse("userPassword" in res[0])
+
+        # Set the test "dSHeuristics" to deactivate "userPassword" pwd changes
+        ldb.set_dsheuristics("000000000")
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement("myPassword3", FLAG_MOD_REPLACE,
+          "userPassword")
+        ldb.modify(m)
+
+        res = ldb.search("cn=testuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["userPassword"])
+        self.assertTrue(len(res) == 1)
+        self.assertTrue("userPassword" in res[0])
+        self.assertEquals(res[0]["userPassword"][0], "myPassword3")
+
+        # Set the test "dSHeuristics" to deactivate "userPassword" pwd changes
+        ldb.set_dsheuristics("000000002")
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=testuser,cn=users," + self.base_dn)
+        m["userPassword"] = MessageElement("myPassword4", FLAG_MOD_REPLACE,
+          "userPassword")
+        ldb.modify(m)
+
+        res = ldb.search("cn=testuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["userPassword"])
+        self.assertTrue(len(res) == 1)
+        self.assertTrue("userPassword" in res[0])
+        self.assertEquals(res[0]["userPassword"][0], "myPassword4")
+
+        # Reset the test "dSHeuristics" (reactivate "userPassword" pwd changes)
+        ldb.set_dsheuristics("000000001")
+
+    def test_zero_length(self):
+        # Get the old "minPwdLength"
+        minPwdLength = ldb.get_minPwdLength()
+        # Set it temporarely to "0"
+        ldb.set_minPwdLength("0")
+
+        # Get the old "pwdProperties"
+        pwdProperties = ldb.get_pwdProperties()
+        # Set them temporarely to "0" (to deactivate eventually the complexity)
+        ldb.set_pwdProperties("0")
+
+        ldb.setpassword("(sAMAccountName=testuser)", "")
+
+        # Reset the "pwdProperties" as they were before
+        ldb.set_pwdProperties(pwdProperties)
+
+        # Reset the "minPwdLength" as it was before
+        ldb.set_minPwdLength(minPwdLength)
 
     def tearDown(self):
         super(PasswordTests, self).tearDown()
-        self.delete_force(self.ldb, "cn=testuser,cn=users," + self.base_dn)
-        self.delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
+        delete_force(self.ldb, "cn=testuser,cn=users," + self.base_dn)
+        delete_force(self.ldb, "cn=testuser2,cn=users," + self.base_dn)
         # Close the second LDB connection (with the user credentials)
         self.ldb2 = None
 
@@ -660,43 +919,25 @@ if not "://" in host:
     else:
         host = "ldap://%s" % host
 
-ldb = SamDB(url=host, session_info=system_session(), credentials=creds, lp=lp)
-
-# Gets back the configuration basedn
-res = ldb.search(base="", expression="", scope=SCOPE_BASE,
-                 attrs=["configurationNamingContext"])
-configuration_dn = res[0]["configurationNamingContext"][0]
+ldb = SamDB(url=host, session_info=system_session(lp), credentials=creds, lp=lp)
 
 # Gets back the basedn
-res = ldb.search(base="", expression="", scope=SCOPE_BASE,
-                 attrs=["defaultNamingContext"])
-base_dn = res[0]["defaultNamingContext"][0]
+base_dn = ldb.domain_dn()
+
+# Gets back the configuration basedn
+configuration_dn = ldb.get_config_basedn().get_linearized()
 
 # Get the old "dSHeuristics" if it was set
-res = ldb.search("CN=Directory Service, CN=Windows NT, CN=Services, "
-                 + configuration_dn, scope=SCOPE_BASE, attrs=["dSHeuristics"])
-if "dSHeuristics" in res[0]:
-  dsheuristics = res[0]["dSHeuristics"][0]
-else:
-  dsheuristics = None
+dsheuristics = ldb.get_dsheuristics()
 
-# Set the "dSHeuristics" to have the tests run against Windows Server
-m = Message()
-m.dn = Dn(ldb, "CN=Directory Service, CN=Windows NT, CN=Services, "
-  + configuration_dn)
-m["dSHeuristics"] = MessageElement("000000001", FLAG_MOD_REPLACE,
-  "dSHeuristics")
-ldb.modify(m)
+# Set the "dSHeuristics" to activate the correct "userPassword" behaviour
+ldb.set_dsheuristics("000000001")
 
 # Get the old "minPwdAge"
-res = ldb.search(base_dn, scope=SCOPE_BASE, attrs=["minPwdAge"])
-minPwdAge = res[0]["minPwdAge"][0]
+minPwdAge = ldb.get_minPwdAge()
 
 # Set it temporarely to "0"
-m = Message()
-m.dn = Dn(ldb, base_dn)
-m["minPwdAge"] = MessageElement("0", FLAG_MOD_REPLACE, "minPwdAge")
-ldb.modify(m)
+ldb.set_minPwdAge("0")
 
 runner = SubunitTestRunner()
 rc = 0
@@ -704,20 +945,9 @@ if not runner.run(unittest.makeSuite(PasswordTests)).wasSuccessful():
     rc = 1
 
 # Reset the "dSHeuristics" as they were before
-m = Message()
-m.dn = Dn(ldb, "CN=Directory Service, CN=Windows NT, CN=Services, "
-  + configuration_dn)
-if dsheuristics is not None:
-    m["dSHeuristics"] = MessageElement(dsheuristics, FLAG_MOD_REPLACE,
-      "dSHeuristics")
-else:
-    m["dSHeuristics"] = MessageElement([], FLAG_MOD_DELETE, "dsHeuristics")
-ldb.modify(m)
+ldb.set_dsheuristics(dsheuristics)
 
 # Reset the "minPwdAge" as it was before
-m = Message()
-m.dn = Dn(ldb, base_dn)
-m["minPwdAge"] = MessageElement(minPwdAge, FLAG_MOD_REPLACE, "minPwdAge")
-ldb.modify(m)
+ldb.set_minPwdAge(minPwdAge)
 
 sys.exit(rc)

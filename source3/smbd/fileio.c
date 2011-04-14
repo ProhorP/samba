@@ -21,7 +21,9 @@
 
 #include "includes.h"
 #include "printing.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "smbprofile.h"
 
 static bool setup_write_cache(files_struct *, SMB_OFF_T);
 
@@ -128,7 +130,8 @@ static ssize_t real_write_file(struct smb_request *req,
                 ret = vfs_write_data(req, fsp, data, n);
         } else {
 		fsp->fh->pos = pos;
-		if (pos && lp_strict_allocate(SNUM(fsp->conn))) {
+		if (pos && lp_strict_allocate(SNUM(fsp->conn) &&
+				!fsp->is_sparse)) {
 			if (vfs_fill_sparse(fsp, pos) == -1) {
 				return -1;
 			}
@@ -312,14 +315,15 @@ ssize_t write_file(struct smb_request *req,
 		fsp->modified = True;
 
 		if (SMB_VFS_FSTAT(fsp, &fsp->fsp_name->st) == 0) {
-			int dosmode;
 			trigger_write_time_update(fsp);
-			dosmode = dos_mode(fsp->conn, fsp->fsp_name);
-			if ((lp_store_dos_attributes(SNUM(fsp->conn)) ||
-					MAP_ARCHIVE(fsp->conn)) &&
-					!IS_DOS_ARCHIVE(dosmode)) {
-				file_set_dosmode(fsp->conn, fsp->fsp_name,
+			if (!fsp->posix_open &&
+					(lp_store_dos_attributes(SNUM(fsp->conn)) ||
+					MAP_ARCHIVE(fsp->conn))) {
+				int dosmode = dos_mode(fsp->conn, fsp->fsp_name);
+				if (!IS_DOS_ARCHIVE(dosmode)) {
+					file_set_dosmode(fsp->conn, fsp->fsp_name,
 						 dosmode | aARCH, NULL, false);
+				}
 			}
 
 			/*

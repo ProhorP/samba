@@ -21,8 +21,8 @@
 */
 
 #include "includes.h"
-#include "lib/ldb/include/ldb.h"
-#include "lib/ldb/include/ldb_errors.h"
+#include <ldb.h>
+#include <ldb_errors.h>
 #include "lib/events/events.h"
 #include "smbd/service_task.h"
 #include "cldap_server/cldap_server.h"
@@ -36,6 +36,7 @@
 #include "lib/socket/netif.h"
 #include "param/param.h"
 #include "../lib/tsocket/tsocket.h"
+#include "libds/common/flag_mapping.h"
 
 /*
   fill in the cldap netlogon union for a given version
@@ -188,7 +189,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 	}
 
         if (dom_res == NULL) {
-		DEBUG(2,(__location__ ": Unable to get domain informations with no inputs\n"));
+		DEBUG(2,(__location__ ": Unable to get domain information with no inputs\n"));
 		return NT_STATUS_NO_SUCH_DOMAIN;
 	}
 

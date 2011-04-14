@@ -23,6 +23,8 @@
 #ifndef _NT_DOMAIN_H /* _NT_DOMAIN_H */
 #define _NT_DOMAIN_H 
 
+#include "librpc/rpc/dcerpc.h"
+
 /*
  * A bunch of stuff that was put into smb.h
  * in the NTDOM branch - it didn't belong there.
@@ -93,35 +95,23 @@ typedef struct pipe_rpc_fns {
  * Can't keep in sync with wire values as spnego wraps different auth methods.
  */
 
-enum pipe_auth_type_spnego {
-	PIPE_AUTH_TYPE_SPNEGO_NONE = 0,
-	PIPE_AUTH_TYPE_SPNEGO_NTLMSSP,
-	PIPE_AUTH_TYPE_SPNEGO_KRB5
-};
-
 struct gse_context;
 
 /* auth state for all bind types. */
 
 struct pipe_auth_data {
 	enum dcerpc_AuthType auth_type;
-	enum pipe_auth_type_spnego spnego_type; /* used by server only */
 	enum dcerpc_AuthLevel auth_level;
 
-	union {
-		struct schannel_state *schannel_auth;
-		struct auth_ntlmssp_state *auth_ntlmssp_state;
-		struct gse_context *gssapi_state;
-		struct spnego_context *spnego_state;
-	} a_u;
+	void *auth_ctx;
 
 	/* Only the client code uses these 3 for now */
 	char *domain;
 	char *user_name;
 	DATA_BLOB user_session_key;
-
-	void (*auth_data_free_func)(struct pipe_auth_data *);
 };
+
+struct dcesrv_ep_entry_list;
 
 /*
  * DCE/RPC-specific samba-internal-specific handling of data on
@@ -132,11 +122,15 @@ struct pipes_struct {
 	struct pipes_struct *next, *prev;
 
 	struct client_address *client_id;
+	struct client_address *server_id;
 
-	struct auth_serversupplied_info *server_info;
+	enum dcerpc_transport_t transport;
+
+	struct auth_serversupplied_info *session_info;
 	struct messaging_context *msg_ctx;
 
 	struct ndr_syntax_id syntax;
+	struct dcesrv_ep_entry_list *ep_entries;
 
 	/* linked list of rpc dispatch tables associated 
 	   with the open rpc contexts */
@@ -144,6 +138,8 @@ struct pipes_struct {
 	PIPE_RPC_FNS *contexts;
 
 	struct pipe_auth_data auth;
+
+	bool ncalrpc_as_system;
 
 	/*
 	 * Set to true when an RPC bind has been done on this pipe.

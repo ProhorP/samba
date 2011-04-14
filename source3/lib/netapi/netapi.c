@@ -23,8 +23,6 @@
 #include "secrets.h"
 #include "krb5_env.h"
 
-extern bool AllowDebugChange;
-
 struct libnetapi_ctx *stat_ctx = NULL;
 TALLOC_CTX *frame = NULL;
 static bool libnetapi_initialized = false;
@@ -51,14 +49,14 @@ static NET_API_STATUS libnetapi_init_private_context(struct libnetapi_ctx *ctx)
 }
 
 /****************************************************************
+Create a libnetapi context, for use in non-Samba applications.  This
+loads the smb.conf file and sets the debug level to 0, so that
+applications are not flooded with debug logs at level 10, when they
+were not expecting it.
 ****************************************************************/
 
 NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
 {
-	NET_API_STATUS status;
-	struct libnetapi_ctx *ctx = NULL;
-	char *krb5_cc_env = NULL;
-
 	if (stat_ctx && libnetapi_initialized) {
 		*context = stat_ctx;
 		return NET_API_STATUS_SUCCESS;
@@ -69,25 +67,14 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
 #endif
 	frame = talloc_stackframe();
 
-	ctx = talloc_zero(frame, struct libnetapi_ctx);
-	if (!ctx) {
-		TALLOC_FREE(frame);
-		return W_ERROR_V(WERR_NOMEM);
-	}
+	/* Case tables must be loaded before any string comparisons occour */
+	load_case_tables_library();
 
-	if (!DEBUGLEVEL) {
-		DEBUGLEVEL = 0;
-	}
-
-	/* prevent setup_logging() from closing x_stderr... */
-	dbf = 0;
-	setup_logging("libnetapi", true);
-
-	dbf = x_stderr;
-	x_setbuf(x_stderr, NULL);
-	AllowDebugChange = false;
-
-	load_case_tables();
+	/* When libnetapi is invoked from an application, it does not
+	 * want to be swamped with level 10 debug messages, even if
+	 * this has been set for the server in smb.conf */
+	lp_set_cmdline("log level", "0");
+	setup_logging("libnetapi", DEBUG_STDERR);
 
 	if (!lp_load(get_dyn_CONFIGFILE(), true, false, false, false)) {
 		TALLOC_FREE(frame);
@@ -95,11 +82,36 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
 		return W_ERROR_V(WERR_GENERAL_FAILURE);
 	}
 
-	AllowDebugChange = true;
-
 	init_names();
 	load_interfaces();
 	reopen_logs();
+
+	BlockSignals(True, SIGPIPE);
+
+	return libnetapi_net_init(context);
+}
+
+/****************************************************************
+Create a libnetapi context, for use inside the 'net' binary.
+
+As we know net has already loaded the smb.conf file, and set the debug
+level etc, this avoids doing so again (which causes trouble with -d on
+the command line).
+****************************************************************/
+
+NET_API_STATUS libnetapi_net_init(struct libnetapi_ctx **context)
+{
+	NET_API_STATUS status;
+	struct libnetapi_ctx *ctx = NULL;
+	char *krb5_cc_env = NULL;
+
+	frame = talloc_stackframe();
+
+	ctx = talloc_zero(frame, struct libnetapi_ctx);
+	if (!ctx) {
+		TALLOC_FREE(frame);
+		return W_ERROR_V(WERR_NOMEM);
+	}
 
 	BlockSignals(True, SIGPIPE);
 
@@ -134,6 +146,7 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
 }
 
 /****************************************************************
+ Return the static libnetapi context
 ****************************************************************/
 
 NET_API_STATUS libnetapi_getctx(struct libnetapi_ctx **ctx)
@@ -147,6 +160,7 @@ NET_API_STATUS libnetapi_getctx(struct libnetapi_ctx **ctx)
 }
 
 /****************************************************************
+ Free the static libnetapi context
 ****************************************************************/
 
 NET_API_STATUS libnetapi_free(struct libnetapi_ctx *ctx)
@@ -168,7 +182,6 @@ NET_API_STATUS libnetapi_free(struct libnetapi_ctx *ctx)
 
 	gfree_names();
 	gfree_loadparm();
-	gfree_case_tables();
 	gfree_charcnv();
 	gfree_interfaces();
 
@@ -183,14 +196,14 @@ NET_API_STATUS libnetapi_free(struct libnetapi_ctx *ctx)
 }
 
 /****************************************************************
+ Override the current log level for libnetapi
 ****************************************************************/
 
 NET_API_STATUS libnetapi_set_debuglevel(struct libnetapi_ctx *ctx,
 					const char *debuglevel)
 {
-	AllowDebugChange = true;
 	ctx->debuglevel = talloc_strdup(ctx, debuglevel);
-	if (!debug_parse_levels(debuglevel)) {
+	if (!lp_set_cmdline("log level", debuglevel)) {
 		return W_ERROR_V(WERR_GENERAL_FAILURE);
 	}
 	return NET_API_STATUS_SUCCESS;

@@ -27,6 +27,8 @@
 #include "librpc/rpc/pyrpc_util.h"
 #include "auth/credentials/pycredentials.h"
 
+void initbase(void);
+
 staticforward PyTypeObject dcerpc_InterfaceType;
 
 static bool PyString_AsGUID(PyObject *object, struct GUID *uuid)
@@ -144,10 +146,12 @@ static PyObject *py_iface_request(PyObject *self, PyObject *args, PyObject *kwar
 	PyObject *object = NULL;
 	struct GUID object_guid;
 	TALLOC_CTX *mem_ctx = talloc_new(NULL);
+	uint32_t out_flags = 0;
 	const char *kwnames[] = { "opnum", "data", "object", NULL };
 
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "is#|O:request", 
 		discard_const_p(char *, kwnames), &opnum, &in_data, &in_length, &object)) {
+		talloc_free(mem_ctx);
 		return NULL;
 	}
 
@@ -157,12 +161,20 @@ static PyObject *py_iface_request(PyObject *self, PyObject *args, PyObject *kwar
 	ZERO_STRUCT(data_out);
 
 	if (object != NULL && !PyString_AsGUID(object, &object_guid)) {
+		talloc_free(mem_ctx);
 		return NULL;
 	}
 
-	status = dcerpc_request(iface->pipe, object?&object_guid:NULL,
-				opnum, mem_ctx, &data_in, &data_out);
-
+	status = dcerpc_binding_handle_raw_call(iface->binding_handle,
+						object?&object_guid:NULL,
+						opnum,
+						0, /* in_flags */
+						data_in.data,
+						data_in.length,
+						mem_ctx,
+						&data_out.data,
+						&data_out.length,
+						&out_flags);
 	if (!NT_STATUS_IS_OK(status)) {
 		PyErr_SetDCERPCStatus(iface->pipe, status);
 		talloc_free(mem_ctx);
@@ -217,12 +229,11 @@ static PyMethodDef dcerpc_interface_methods[] = {
 	{ NULL, NULL, 0, NULL },
 };
 
-
 static void dcerpc_interface_dealloc(PyObject* self)
 {
 	dcerpc_InterfaceObject *interface = (dcerpc_InterfaceObject *)self;
 	talloc_free(interface->mem_ctx);
-	PyObject_Del(self);
+	self->ob_type->tp_free(self);
 }
 
 static PyObject *dcerpc_interface_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)

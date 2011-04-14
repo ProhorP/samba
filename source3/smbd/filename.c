@@ -25,7 +25,9 @@
  */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "fake_file.h"
+#include "smbd/smbd.h"
 
 static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 				  connection_struct *conn,
@@ -112,7 +114,7 @@ static NTSTATUS check_for_dot_component(const struct smb_filename *smb_fname)
 static NTSTATUS check_parent_exists(TALLOC_CTX *ctx,
 				connection_struct *conn,
 				bool posix_pathnames,
-				struct smb_filename *smb_fname,
+				const struct smb_filename *smb_fname,
 				char **pp_dirpath,
 				char **pp_start)
 {
@@ -370,7 +372,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 	start = smb_fname->base_name;
 
 	/*
-	 * If we're providing case insentive semantics or
+	 * If we're providing case insensitive semantics or
 	 * the underlying filesystem is case insensitive,
 	 * then a case-normalized hit in the stat-cache is
 	 * authoratitive. JRA.
@@ -388,7 +390,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 
 	/*
 	 * Make sure "dirpath" is an allocated string, we use this for
-	 * building the directories with asprintf and free it.
+	 * building the directories with talloc_asprintf and free it.
 	 */
 
 	if ((dirpath == NULL) && (!(dirpath = talloc_strdup(ctx,"")))) {
@@ -438,6 +440,9 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 			goto done;
 		}
 
+		/* Stat failed - ensure we don't use it. */
+		SET_STAT_INVALID(smb_fname->st);
+
 		if (errno == ENOENT) {
 			/* Optimization when creating a new file - only
 			   the last component doesn't exist. */
@@ -454,7 +459,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 
 		/*
 		 * A special case - if we don't have any wildcards or mangling chars and are case
-		 * sensitive or the underlying filesystem is case insentive then searching
+		 * sensitive or the underlying filesystem is case insensitive then searching
 		 * won't help.
 		 */
 
@@ -857,8 +862,18 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		 */
 		if (VALID_STAT(smb_fname->st)) {
 			bool delete_pending;
+			uint32_t name_hash;
+
+			status = file_name_hash(conn,
+					smb_fname_str_dbg(smb_fname),
+					&name_hash);
+			if (!NT_STATUS_IS_OK(status)) {
+				goto fail;
+			}
+
 			get_file_infos(vfs_file_id_from_sbuf(conn,
 							     &smb_fname->st),
+				       name_hash,
 				       &delete_pending, NULL);
 			if (delete_pending) {
 				status = NT_STATUS_DELETE_PENDING;

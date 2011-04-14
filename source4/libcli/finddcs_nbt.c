@@ -24,12 +24,11 @@
 #include <tevent.h>
 #include "lib/messaging/irpc.h"
 #include "librpc/gen_ndr/ndr_irpc_c.h"
-#include "librpc/gen_ndr/samr.h"
 #include "libcli/composite/composite.h"
 #include "libcli/libcli.h"
 #include "libcli/resolve/resolve.h"
-#include "libcli/finddc.h"
 #include "lib/util/tevent_ntstatus.h"
+#include "libcli/finddc.h"
 
 struct finddcs_nbt_state {
 	struct tevent_context *ev;

@@ -15,12 +15,11 @@ URL: http://www.samba.org/
 Source: samba-%{version}.tar.bz2
 
 # Don't depend on Net::LDAP
-Source997: docs-3.6.tar.bz2
 Source998: filter-requires-samba.sh
 Source999: setup.tar.bz2
 
-Prereq: /sbin/chkconfig /bin/mktemp /usr/bin/killall
-Prereq: fileutils sed /etc/init.d
+Requires: /sbin/chkconfig /bin/mktemp /usr/bin/killall
+Requires: fileutils sed /etc/init.d
 
 Requires: pam >= 0.64 %{auth} 
 Requires: samba-common = %{version}-%{release}
@@ -28,7 +27,10 @@ Provides: samba = %{version}
 
 Prefix: /usr
 BuildRoot: %{_tmppath}/%{name}-%{version}-root
-BuildRequires: pam-devel, readline-devel, fileutils, libacl-devel, openldap-devel, krb5-devel, cups-devel, ctdb, e2fsprogs-devel
+BuildRequires: pam-devel, readline-devel, fileutils, libacl-devel, openldap-devel, krb5-devel, cups-devel, e2fsprogs-devel
+# requirements for building the man pages:
+BuildRequires: libxslt, docbook-utils, docbook-style-xsl
+BuildRequires: ctdb-devel >= 1.2.25
 
 # Working around perl dependency problem from docs
 %define __perl_requires %{SOURCE998}
@@ -108,7 +110,7 @@ Compatibility package for 32 bit apps on 64 bit architecures
 Summary:      Samba Documentation
 Group:        Documentation/Other
 Provides:     samba-doc = %{version}-%{release}
-Prereq:       /usr/bin/find /bin/rm /usr/bin/xargs
+Requires:       /usr/bin/find /bin/rm /usr/bin/xargs
 
 %description doc
 The samba-doc package includes the HTML versions of the Samba manpages
@@ -123,7 +125,6 @@ utilized by SWAT as well as the HTML and PDF version of "Using Samba",
 
 # setup the vendor files (init scripts, etc...)
 %setup -T -D -a 999 -n samba-%{version} -q
-%setup -T -D -a 997 -n samba-%{version} -q
 
 %build
 
@@ -245,7 +246,7 @@ CFLAGS="$RPM_OPT_FLAGS $EXTRA -D_GNU_SOURCE" ./configure \
         --without-smbwrapper \
 	--with-pam \
 	--with-quotas \
-	--with-shared-modules=idmap_rid,idmap_ad,idmap_tdb2,vfs_gpfs \
+	--with-shared-modules=idmap_rid,idmap_ad,idmap_tdb2,vfs_gpfs,vfs_tsmsm \
 	--with-syslog \
 	--with-utmp \
 	--with-cluster-support \
@@ -281,8 +282,11 @@ do
 	fi
 done
 
-# Remove some permission bits to avoid to many dependencies
+# try and build the manpages
 cd ..
+./release-scripts/build-manpages-nogit
+
+# Remove some permission bits to avoid to many dependencies
 find examples docs -type f | xargs -r chmod -x
 
 %install
@@ -368,10 +372,6 @@ ln -s ../..%{initdir}/winbind  $RPM_BUILD_ROOT%{_sbindir}/winbind
 # Remove "*.old" files
 find $RPM_BUILD_ROOT -name "*.old" -exec rm -f {} \;
 
-## don't duplicate the docs.  These are installed by/with SWAT
-rm -rf docs/htmldocs
-rm -rf docs/manpages
-( cd docs; ln -s %{_prefix}/share/swat/help htmldocs )
 
 ##
 ## Clean out man pages for tools not installed here
@@ -463,6 +463,7 @@ exit 0
 %{_bindir}/tdbbackup
 %{_bindir}/tdbtool
 %{_bindir}/tdbdump
+%{_bindir}/tdbrestore
 %{_bindir}/eventlogadm
 
 %{_libarchdir}/samba/auth/script.so
@@ -494,6 +495,7 @@ exit 0
 %{_libarchdir}/samba/vfs/streams_depot.so
 %{_libarchdir}/samba/vfs/streams_xattr.so
 %{_libarchdir}/samba/vfs/syncops.so
+%{_libarchdir}/samba/vfs/time_audit.so
 %{_libarchdir}/samba/vfs/tsmsm.so
 %{_libarchdir}/samba/vfs/xattr_tdb.so
 
@@ -502,6 +504,7 @@ exit 0
 %{_mandir}/man1/smbstatus.1*
 %{_mandir}/man1/vfstest.1*
 %{_mandir}/man5/smbpasswd.5*
+%{_mandir}/man5/pam_winbind.conf.5*
 %{_mandir}/man7/samba.7*
 %{_mandir}/man8/nmbd.8*
 %{_mandir}/man8/pdbedit.8*
@@ -511,16 +514,26 @@ exit 0
 %{_mandir}/man8/tdbtool.8*
 %{_mandir}/man8/eventlogadm.8*
 %{_mandir}/man8/vfs_*.8*
+%{_mandir}/man8/smbta-util.8*
 
 
 ##########
 
 %files doc
 %defattr(-,root,root)
-%doc README COPYING Manifest 
-%doc WHATSNEW.txt Roadmap
-%doc docs
-%doc examples/autofs examples/LDAP examples/libsmbclient examples/misc examples/printer-accounting
+%doc README
+%doc COPYING
+%doc Manifest 
+%doc WHATSNEW.txt
+%doc Roadmap
+%doc docs-xml/archives/THANKS
+%doc docs-xml/archives/history
+%doc docs-xml/registry
+%doc examples/autofs
+%doc examples/LDAP
+%doc examples/libsmbclient
+%doc examples/misc
+%doc examples/printer-accounting
 %doc examples/printing
 
 ##########
@@ -587,6 +600,7 @@ exit 0
 %{_libarchdir}/samba/idmap/ad.so
 %{_libarchdir}/samba/idmap/rid.so
 %{_libarchdir}/samba/idmap/tdb2.so
+%{_libarchdir}/samba/idmap/autorid.so
 %{_libarchdir}/samba/lowcase.dat
 %{_libarchdir}/samba/nss_info/rfc2307.so
 %{_libarchdir}/samba/nss_info/sfu.so

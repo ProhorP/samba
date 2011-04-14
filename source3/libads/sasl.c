@@ -644,6 +644,75 @@ static void ads_free_service_principal(struct ads_service_principal *p)
 	ZERO_STRUCTP(p);
 }
 
+
+static ADS_STATUS ads_guess_service_principal(ADS_STRUCT *ads,
+					      char **returned_principal)
+{
+	char *princ = NULL;
+
+	if (ads->server.realm && ads->server.ldap_server) {
+		char *server, *server_realm;
+
+		server = SMB_STRDUP(ads->server.ldap_server);
+		server_realm = SMB_STRDUP(ads->server.realm);
+
+		if (!server || !server_realm) {
+			SAFE_FREE(server);
+			SAFE_FREE(server_realm);
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+
+		strlower_m(server);
+		strupper_m(server_realm);
+		if (asprintf(&princ, "ldap/%s@%s", server, server_realm) == -1) {
+			SAFE_FREE(server);
+			SAFE_FREE(server_realm);
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+
+		SAFE_FREE(server);
+		SAFE_FREE(server_realm);
+
+		if (!princ) {
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+	} else if (ads->config.realm && ads->config.ldap_server_name) {
+		char *server, *server_realm;
+
+		server = SMB_STRDUP(ads->config.ldap_server_name);
+		server_realm = SMB_STRDUP(ads->config.realm);
+
+		if (!server || !server_realm) {
+			SAFE_FREE(server);
+			SAFE_FREE(server_realm);
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+
+		strlower_m(server);
+		strupper_m(server_realm);
+		if (asprintf(&princ, "ldap/%s@%s", server, server_realm) == -1) {
+			SAFE_FREE(server);
+			SAFE_FREE(server_realm);
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+
+		SAFE_FREE(server);
+		SAFE_FREE(server_realm);
+
+		if (!princ) {
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+	}
+
+	if (!princ) {
+		return ADS_ERROR(LDAP_PARAM_ERROR);
+	}
+
+	*returned_principal = princ;
+
+	return ADS_SUCCESS;
+}
+
 static ADS_STATUS ads_generate_service_principal(ADS_STRUCT *ads,
 						 const char *given_principal,
 						 struct ads_service_principal *p)
@@ -664,10 +733,12 @@ static ADS_STATUS ads_generate_service_principal(ADS_STRUCT *ads,
 	   the principal name back in the first round of
 	   the SASL bind reply.  So we guess based on server
 	   name and realm.  --jerry  */
-	/* Also try best guess when we get the w2k8 ignore
-	   principal back - gd */
+	/* Also try best guess when we get the w2k8 ignore principal
+	   back, or when we are configured to ignore it - gd,
+	   abartlet */
 
-	if (!given_principal ||
+	if (!lp_client_use_spnego_principal() ||
+	    !given_principal ||
 	    strequal(given_principal, ADS_IGNORE_PRINCIPAL)) {
 
 		status = ads_guess_service_principal(ads, &p->string);
@@ -785,7 +856,8 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 
 	/* the server sent us the first part of the SPNEGO exchange in the negprot 
 	   reply */
-	if (!spnego_parse_negTokenInit(talloc_tos(), blob, OIDs, &given_principal, NULL)) {
+	if (!spnego_parse_negTokenInit(talloc_tos(), blob, OIDs, &given_principal, NULL) ||
+			OIDs[0] == NULL) {
 		data_blob_free(&blob);
 		status = ADS_ERROR(LDAP_OPERATIONS_ERROR);
 		goto failed;

@@ -30,6 +30,8 @@
 #include "../lib/crypto/crypto.h"
 #include "lib/util/tsort.h"
 #include "dsdb/common/util.h"
+#include "libcli/security/session.h"
+#include "kdc/kdc-policy.h"
 
 /*
   this type allows us to distinguish handle types
@@ -390,7 +392,7 @@ static WERROR dcesrv_dssetup_DsRoleGetPrimaryDomainInformation(struct dcesrv_cal
 {
 	union dssetup_DsRoleInfo *info;
 
-	info = talloc(mem_ctx, union dssetup_DsRoleInfo);
+	info = talloc_zero(mem_ctx, union dssetup_DsRoleInfo);
 	W_ERROR_HAVE_NO_MEMORY(info);
 
 	switch (r->in.level) {
@@ -813,8 +815,8 @@ static NTSTATUS add_trust_user(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	ret = ldb_msg_add_fmt(msg, "userAccountControl", "%u",
-			      UF_INTERDOMAIN_TRUST_ACCOUNT);
+	ret = samdb_msg_add_uint(sam_ldb, msg, msg, "userAccountControl",
+				 UF_INTERDOMAIN_TRUST_ACCOUNT);
 	if (ret != LDB_SUCCESS) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -1015,7 +1017,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	samdb_msg_add_string(sam_ldb, mem_ctx, msg, "flatname", netbios_name);
+	ldb_msg_add_string(msg, "flatname", netbios_name);
 
 	if (r->in.info->sid) {
 		ret = samdb_msg_add_dom_sid(sam_ldb, mem_ctx, msg, "securityIdentifier", r->in.info->sid);
@@ -1025,7 +1027,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 		}
 	}
 
-	samdb_msg_add_string(sam_ldb, mem_ctx, msg, "objectClass", "trustedDomain");
+	ldb_msg_add_string(msg, "objectClass", "trustedDomain");
 
 	samdb_msg_add_int(sam_ldb, mem_ctx, msg, "trustType", r->in.info->trust_type);
 
@@ -1034,7 +1036,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 	samdb_msg_add_int(sam_ldb, mem_ctx, msg, "trustDirection", r->in.info->trust_direction);
 
 	if (dns_name) {
-		samdb_msg_add_string(sam_ldb, mem_ctx, msg, "trustPartner", dns_name);
+		ldb_msg_add_string(msg, "trustPartner", dns_name);
 	}
 
 	if (trustAuthIncoming.data) {
@@ -1055,7 +1057,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 	trusted_domain_state->trusted_domain_dn = talloc_reference(trusted_domain_state, msg->dn);
 
 	/* create the trusted_domain */
-	ret = dsdb_add(sam_ldb, msg, DSDB_MODIFY_RELAX);
+	ret = ldb_add(sam_ldb, msg);
 	switch (ret) {
 	case  LDB_SUCCESS:
 		break;
@@ -1230,7 +1232,7 @@ static NTSTATUS dcesrv_lsa_OpenTrustedDomain(struct dcesrv_call_state *dce_call,
 		/* search for the trusted_domain record */
 		ret = gendb_search(trusted_domain_state->policy->sam_ldb,
 				   mem_ctx, policy_state->domain_dn, &msgs, attrs,
-				   "(&(samaccountname=%s$)(objectclass=user)(userAccountControl:1.2.840.113556.1.4.803:=%d))", 
+				   "(&(samaccountname=%s$)(objectclass=user)(userAccountControl:1.2.840.113556.1.4.803:=%u))",
 				   flatname, UF_INTERDOMAIN_TRUST_ACCOUNT);
 		if (ret == 1) {
 			trusted_domain_state->trusted_domain_user_dn = talloc_steal(trusted_domain_state, msgs[0]->dn);
@@ -1418,6 +1420,7 @@ static NTSTATUS get_tdo(struct ldb_context *sam, TALLOC_CTX *mem_ctx,
 }
 
 static NTSTATUS update_uint32_t_value(TALLOC_CTX *mem_ctx,
+				      struct ldb_context *sam_ldb,
 				      struct ldb_message *orig,
 				      struct ldb_message *dest,
 				      const char *attribute,
@@ -1426,7 +1429,6 @@ static NTSTATUS update_uint32_t_value(TALLOC_CTX *mem_ctx,
 {
 	const struct ldb_val *orig_val;
 	uint32_t orig_uint = 0;
-	char *str_val;
 	int flags = 0;
 	int ret;
 
@@ -1454,11 +1456,7 @@ static NTSTATUS update_uint32_t_value(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	str_val = talloc_asprintf(mem_ctx, "%u", value);
-	if (!str_val) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	ret = ldb_msg_add_steal_string(dest, attribute, str_val);
+	ret = samdb_msg_add_uint(sam_ldb, dest, dest, attribute, value);
 	if (ret != LDB_SUCCESS) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -1720,7 +1718,8 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	msg->dn = dom_msg->dn;
 
 	if (posix_offset) {
-		nt_status = update_uint32_t_value(mem_ctx, dom_msg, msg,
+		nt_status = update_uint32_t_value(mem_ctx, p_state->sam_ldb,
+						  dom_msg, msg,
 						  "trustPosixOffset",
 						  *posix_offset, NULL);
 		if (!NT_STATUS_IS_OK(nt_status)) {
@@ -1734,7 +1733,8 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 		uint32_t tmp;
 		int origtype;
 
-		nt_status = update_uint32_t_value(mem_ctx, dom_msg, msg,
+		nt_status = update_uint32_t_value(mem_ctx, p_state->sam_ldb,
+						  dom_msg, msg,
 						  "trustDirection",
 						  info_ex->trust_direction,
 						  &origdir);
@@ -1765,7 +1765,8 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 			return NT_STATUS_INVALID_PARAMETER;
 		}
 
-		nt_status = update_uint32_t_value(mem_ctx, dom_msg, msg,
+		nt_status = update_uint32_t_value(mem_ctx, p_state->sam_ldb,
+						  dom_msg, msg,
 						  "trustAttributes",
 						  info_ex->trust_attributes,
 						  &origattrs);
@@ -1784,7 +1785,8 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	}
 
 	if (enc_types) {
-		nt_status = update_uint32_t_value(mem_ctx, dom_msg, msg,
+		nt_status = update_uint32_t_value(mem_ctx, p_state->sam_ldb,
+						  dom_msg, msg,
 						  "msDS-SupportedEncryptionTypes",
 						  *enc_types, NULL);
 		if (!NT_STATUS_IS_OK(nt_status)) {
@@ -2007,11 +2009,11 @@ static NTSTATUS dcesrv_lsa_QueryTrustedDomainInfo(struct dcesrv_call_state *dce_
 	switch (r->in.level) {
 	case LSA_TRUSTED_DOMAIN_INFO_NAME:
 		info->name.netbios_name.string
-			= samdb_result_string(msg, "flatname", NULL);					   
+			= ldb_msg_find_attr_as_string(msg, "flatname", NULL);
 		break;
 	case LSA_TRUSTED_DOMAIN_INFO_POSIX_OFFSET:
 		info->posix_offset.posix_offset
-			= samdb_result_uint(msg, "posixOffset", 0);					   
+			= ldb_msg_find_attr_as_uint(msg, "posixOffset", 0);
 		break;
 #if 0  /* Win2k3 doesn't implement this */
 	case LSA_TRUSTED_DOMAIN_INFO_BASIC:
@@ -2027,16 +2029,15 @@ static NTSTATUS dcesrv_lsa_QueryTrustedDomainInfo(struct dcesrv_call_state *dce_
 	case LSA_TRUSTED_DOMAIN_INFO_FULL_INFO:
 		ZERO_STRUCT(info->full_info);
 		return fill_trust_domain_ex(mem_ctx, msg, &info->full_info.info_ex);
-
 	case LSA_TRUSTED_DOMAIN_INFO_FULL_INFO_2_INTERNAL:
 		ZERO_STRUCT(info->full_info2_internal);
 		info->full_info2_internal.posix_offset.posix_offset
-			= samdb_result_uint(msg, "posixOffset", 0);					   
+			= ldb_msg_find_attr_as_uint(msg, "posixOffset", 0);
 		return fill_trust_domain_ex(mem_ctx, msg, &info->full_info2_internal.info.info_ex);
 		
 	case LSA_TRUSTED_DOMAIN_SUPPORTED_ENCRYPTION_TYPES:
 		info->enc_types.enc_types
-			= samdb_result_uint(msg, "msDs-supportedEncryptionTypes", KERB_ENCTYPE_RC4_HMAC_MD5);
+			= ldb_msg_find_attr_as_uint(msg, "msDs-supportedEncryptionTypes", KERB_ENCTYPE_RC4_HMAC_MD5);
 		break;
 
 	case LSA_TRUSTED_DOMAIN_INFO_CONTROLLERS:
@@ -2231,7 +2232,7 @@ static NTSTATUS dcesrv_lsa_EnumTrustDom(struct dcesrv_call_state *dce_call, TALL
 	}
 	for (i=0;i<count;i++) {
 		entries[i].sid = samdb_result_dom_sid(mem_ctx, domains[i], "securityIdentifier");
-		entries[i].name.string = samdb_result_string(domains[i], "flatname", NULL);
+		entries[i].name.string = ldb_msg_find_attr_as_string(domains[i], "flatname", NULL);
 	}
 
 	/* sort the results by name */
@@ -2629,7 +2630,7 @@ static NTSTATUS dcesrv_lsa_AddRemoveAccountRights(struct dcesrv_call_state *dce_
 			talloc_free(msg);
 			return NT_STATUS_NO_MEMORY;
 		}
-		samdb_msg_add_string(state->pdb, msg, msg, "comment", "added via LSA");
+		ldb_msg_add_string(msg, "comment", "added via LSA");
 		ret = ldb_add(state->pdb, msg);		
 	}
 	if (ret != LDB_SUCCESS) {
@@ -2869,9 +2870,7 @@ static NTSTATUS dcesrv_lsa_CreateSecret(struct dcesrv_call_state *dce_call, TALL
 	}
 	
 	secret_state = talloc(mem_ctx, struct lsa_secret_state);
-	if (!secret_state) {
-		return NT_STATUS_NO_MEMORY;
-	}
+	NT_STATUS_HAVE_NO_MEMORY(secret_state);
 	secret_state->policy = policy_state;
 
 	msg = ldb_msg_new(mem_ctx);
@@ -2881,17 +2880,25 @@ static NTSTATUS dcesrv_lsa_CreateSecret(struct dcesrv_call_state *dce_call, TALL
 
 	if (strncmp("G$", r->in.name.string, 2) == 0) {
 		const char *name2;
-		name = &r->in.name.string[2];
-			/* We need to connect to the database as system, as this is one of the rare RPC calls that must read the secrets (and this is denied otherwise) */
-		secret_state->sam_ldb = talloc_reference(secret_state, 
-							 samdb_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx, system_session(dce_call->conn->dce_ctx->lp_ctx)));
+
 		secret_state->global = true;
 
-		if (strlen(name) < 1) {
+		name = &r->in.name.string[2];
+		if (strlen(name) == 0) {
 			return NT_STATUS_INVALID_PARAMETER;
 		}
 
-		name2 = talloc_asprintf(mem_ctx, "%s Secret", ldb_binary_encode_string(mem_ctx, name));
+		name2 = talloc_asprintf(mem_ctx, "%s Secret",
+					ldb_binary_encode_string(mem_ctx, name));
+		NT_STATUS_HAVE_NO_MEMORY(name2);
+
+		/* We need to connect to the database as system, as this is one
+		 * of the rare RPC calls that must read the secrets (and this
+		 * is denied otherwise) */
+		secret_state->sam_ldb = talloc_reference(secret_state,
+							 samdb_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx, system_session(dce_call->conn->dce_ctx->lp_ctx), 0));
+		NT_STATUS_HAVE_NO_MEMORY(secret_state->sam_ldb);
+
 		/* search for the secret record */
 		ret = gendb_search(secret_state->sam_ldb,
 				   mem_ctx, policy_state->system_dn, &msgs, attrs,
@@ -2908,22 +2915,25 @@ static NTSTATUS dcesrv_lsa_CreateSecret(struct dcesrv_call_state *dce_call, TALL
 		}
 
 		msg->dn = ldb_dn_copy(mem_ctx, policy_state->system_dn);
-		if (!name2 || ! ldb_dn_add_child_fmt(msg->dn, "cn=%s", name2)) {
+		NT_STATUS_HAVE_NO_MEMORY(msg->dn);
+		if (!ldb_dn_add_child_fmt(msg->dn, "cn=%s", name2)) {
 			return NT_STATUS_NO_MEMORY;
 		}
-		
-		samdb_msg_add_string(secret_state->sam_ldb, mem_ctx, msg, "cn", name2);
-	
+
+		ret = ldb_msg_add_string(msg, "cn", name2);
+		if (ret != LDB_SUCCESS) return NT_STATUS_NO_MEMORY;
 	} else {
 		secret_state->global = false;
 
 		name = r->in.name.string;
-		if (strlen(name) < 1) {
+		if (strlen(name) == 0) {
 			return NT_STATUS_INVALID_PARAMETER;
 		}
 
 		secret_state->sam_ldb = talloc_reference(secret_state, 
-							 secrets_db_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx));
+							 secrets_db_connect(mem_ctx, dce_call->conn->dce_ctx->lp_ctx));
+		NT_STATUS_HAVE_NO_MEMORY(secret_state->sam_ldb);
+
 		/* search for the secret record */
 		ret = gendb_search(secret_state->sam_ldb, mem_ctx,
 				   ldb_dn_new(mem_ctx, secret_state->sam_ldb, "cn=LSA Secrets"),
@@ -2940,16 +2950,21 @@ static NTSTATUS dcesrv_lsa_CreateSecret(struct dcesrv_call_state *dce_call, TALL
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 
-		msg->dn = ldb_dn_new_fmt(mem_ctx, secret_state->sam_ldb, "cn=%s,cn=LSA Secrets", name);
-		samdb_msg_add_string(secret_state->sam_ldb, mem_ctx, msg, "cn", name);
+		msg->dn = ldb_dn_new_fmt(mem_ctx, secret_state->sam_ldb,
+					 "cn=%s,cn=LSA Secrets", name);
+		NT_STATUS_HAVE_NO_MEMORY(msg->dn);
+		ret = ldb_msg_add_string(msg, "cn", name);
+		if (ret != LDB_SUCCESS) return NT_STATUS_NO_MEMORY;
 	} 
 
-	samdb_msg_add_string(secret_state->sam_ldb, mem_ctx, msg, "objectClass", "secret");
+	ret = ldb_msg_add_string(msg, "objectClass", "secret");
+	if (ret != LDB_SUCCESS) return NT_STATUS_NO_MEMORY;
 	
 	secret_state->secret_dn = talloc_reference(secret_state, msg->dn);
+	NT_STATUS_HAVE_NO_MEMORY(secret_state->secret_dn);
 
 	/* create the secret */
-	ret = dsdb_add(secret_state->sam_ldb, msg, DSDB_MODIFY_RELAX);
+	ret = ldb_add(secret_state->sam_ldb, msg);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0,("Failed to create secret record %s: %s\n",
 			 ldb_dn_get_linearized(msg->dn), 
@@ -2958,14 +2973,13 @@ static NTSTATUS dcesrv_lsa_CreateSecret(struct dcesrv_call_state *dce_call, TALL
 	}
 
 	handle = dcesrv_handle_new(dce_call->context, LSA_HANDLE_SECRET);
-	if (!handle) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	
+	NT_STATUS_HAVE_NO_MEMORY(handle);
+
 	handle->data = talloc_steal(handle, secret_state);
 	
 	secret_state->access_mask = r->in.access_mask;
 	secret_state->policy = talloc_reference(secret_state, policy_state);
+	NT_STATUS_HAVE_NO_MEMORY(secret_state->policy);
 	
 	*r->out.sec_handle = handle->wire_handle;
 	
@@ -3021,7 +3035,7 @@ static NTSTATUS dcesrv_lsa_OpenSecret(struct dcesrv_call_state *dce_call, TALLOC
 		name = &r->in.name.string[2];
 		/* We need to connect to the database as system, as this is one of the rare RPC calls that must read the secrets (and this is denied otherwise) */
 		secret_state->sam_ldb = talloc_reference(secret_state, 
-							 samdb_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx, system_session(dce_call->conn->dce_ctx->lp_ctx)));
+							 samdb_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx, system_session(dce_call->conn->dce_ctx->lp_ctx), 0));
 		secret_state->global = true;
 
 		if (strlen(name) < 1) {
@@ -3046,7 +3060,7 @@ static NTSTATUS dcesrv_lsa_OpenSecret(struct dcesrv_call_state *dce_call, TALLOC
 	} else {
 		secret_state->global = false;
 		secret_state->sam_ldb = talloc_reference(secret_state, 
-				 secrets_db_connect(mem_ctx, dce_call->event_ctx, dce_call->conn->dce_ctx->lp_ctx));
+							 secrets_db_connect(mem_ctx, dce_call->conn->dce_ctx->lp_ctx));
 
 		name = r->in.name.string;
 		if (strlen(name) < 1) {
@@ -3139,8 +3153,7 @@ static NTSTATUS dcesrv_lsa_SetSecret(struct dcesrv_call_state *dce_call, TALLOC_
 		val.length = secret.length;
 		
 		/* set value */
-		if (samdb_msg_add_value(secret_state->sam_ldb, 
-					mem_ctx, msg, "priorValue", &val) != LDB_SUCCESS) {
+		if (ldb_msg_add_value(msg, "priorValue", &val, NULL) != LDB_SUCCESS) {
 			return NT_STATUS_NO_MEMORY; 
 		}
 		
@@ -3180,14 +3193,13 @@ static NTSTATUS dcesrv_lsa_SetSecret(struct dcesrv_call_state *dce_call, TALLOC_
 		
 		if (old_val) {
 			/* set old value */
-			if (samdb_msg_add_value(secret_state->sam_ldb, 
-						mem_ctx, msg, "priorValue", 
-						old_val) != 0) {
+			if (ldb_msg_add_value(msg, "priorValue",
+					      old_val, NULL) != LDB_SUCCESS) {
 				return NT_STATUS_NO_MEMORY; 
 			}
 		} else {
 			if (samdb_msg_add_delete(secret_state->sam_ldb, 
-						 mem_ctx, msg, "priorValue")) {
+						 mem_ctx, msg, "priorValue") != LDB_SUCCESS) {
 				return NT_STATUS_NO_MEMORY;
 			}
 			
@@ -3221,8 +3233,7 @@ static NTSTATUS dcesrv_lsa_SetSecret(struct dcesrv_call_state *dce_call, TALLOC_
 		val.length = secret.length;
 		
 		/* set value */
-		if (samdb_msg_add_value(secret_state->sam_ldb, 
-					mem_ctx, msg, "currentValue", &val) != LDB_SUCCESS) {
+		if (ldb_msg_add_value(msg, "currentValue", &val, NULL) != LDB_SUCCESS) {
 			return NT_STATUS_NO_MEMORY; 
 		}
 		
@@ -3247,8 +3258,7 @@ static NTSTATUS dcesrv_lsa_SetSecret(struct dcesrv_call_state *dce_call, TALLOC_
 	/* modify the samdb record */
 	ret = dsdb_replace(secret_state->sam_ldb, msg, 0);
 	if (ret != LDB_SUCCESS) {
-		/* we really need samdb.c to return NTSTATUS */
-		return NT_STATUS_UNSUCCESSFUL;
+		return dsdb_ldb_err_to_ntstatus(ret);
 	}
 
 	return NT_STATUS_OK;
@@ -3625,8 +3635,8 @@ static NTSTATUS dcesrv_lsa_GetUserName(struct dcesrv_call_state *dce_call, TALLO
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	account_name = talloc_reference(mem_ctx, dce_call->conn->auth_state.session_info->server_info->account_name);
-	authority_name = talloc_reference(mem_ctx, dce_call->conn->auth_state.session_info->server_info->domain_name);
+	account_name = talloc_reference(mem_ctx, dce_call->conn->auth_state.session_info->info->account_name);
+	authority_name = talloc_reference(mem_ctx, dce_call->conn->auth_state.session_info->info->domain_name);
 
 	_account_name = talloc(mem_ctx, struct lsa_String);
 	NT_STATUS_HAVE_NO_MEMORY(_account_name);
@@ -3666,7 +3676,7 @@ static NTSTATUS dcesrv_lsa_QueryDomainInformationPolicy(struct dcesrv_call_state
 {
 	union lsa_DomainInformationPolicy *info;
 
-	info = talloc(r->out.info, union lsa_DomainInformationPolicy);
+	info = talloc_zero(r->out.info, union lsa_DomainInformationPolicy);
 	if (!info) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -3689,11 +3699,9 @@ static NTSTATUS dcesrv_lsa_QueryDomainInformationPolicy(struct dcesrv_call_state
 			*r->out.info = NULL;
 			return NT_STATUS_INTERNAL_ERROR;
 		}
-		k->enforce_restrictions = 0; /* FIXME, details missing from MS-LSAD 2.2.53 */
-		k->service_tkt_lifetime = 0; /* Need to find somewhere to store this, and query in KDC too */
-		k->user_tkt_lifetime = 0;    /* Need to find somewhere to store this, and query in KDC too */
-		k->user_tkt_renewaltime = 0; /* Need to find somewhere to store this, and query in KDC too */
-		k->clock_skew = krb5_get_max_time_skew(smb_krb5_context->krb5_context);
+		kdc_get_policy(dce_call->conn->dce_ctx->lp_ctx,
+			       smb_krb5_context,
+			       k);
 		talloc_free(smb_krb5_context);
 		*r->out.info = info;
 		return NT_STATUS_OK;
@@ -4039,7 +4047,7 @@ static NTSTATUS make_ft_info(TALLOC_CTX *mem_ctx,
 }
 
 static NTSTATUS add_collision(struct lsa_ForestTrustCollisionInfo *c_info,
-			      uint32_t index, uint32_t collision_type,
+			      uint32_t idx, uint32_t collision_type,
 			      uint32_t conflict_type, const char *tdo_name);
 
 static NTSTATUS check_ft_info(TALLOC_CTX *mem_ctx,
@@ -4285,8 +4293,8 @@ static NTSTATUS dcesrv_lsa_lsaRSetForestTrustInformation(struct dcesrv_call_stat
 
 	tdo_dn = dom_res[i]->dn;
 
-	trust_attributes = samdb_result_uint(dom_res[i],
-					     "trustAttributes", 0);
+	trust_attributes = ldb_msg_find_attr_as_uint(dom_res[i],
+						     "trustAttributes", 0);
 	if (!(trust_attributes & NETR_TRUST_ATTRIBUTE_FOREST_TRANSITIVE)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}

@@ -30,15 +30,15 @@ struct loadparm_context;
 struct tevent_context;
 
 #include "librpc/gen_ndr/security.h"
-#include "lib/ldb/include/ldb.h"
+#include <ldb.h>
 #include "lib/ldb-samba/ldif_handlers.h"
 #include "librpc/gen_ndr/samr.h"
 #include "librpc/gen_ndr/drsuapi.h"
 #include "librpc/gen_ndr/drsblobs.h"
 #include "dsdb/schema/schema.h"
 #include "dsdb/samdb/samdb_proto.h"
-#include "dsdb/common/proto.h"
 #include "dsdb/common/dsdb_dn.h"
+#include "dsdb/common/proto.h"
 #include "../libds/common/flags.h"
 
 #define DSDB_CONTROL_CURRENT_PARTITION_OID "1.3.6.1.4.1.7165.4.3.2"

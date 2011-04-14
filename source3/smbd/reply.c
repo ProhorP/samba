@@ -25,13 +25,20 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "printing.h"
+#include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "fake_file.h"
-#include "../librpc/gen_ndr/cli_spoolss.h"
+#include "rpc_client/rpc_client.h"
+#include "../librpc/gen_ndr/ndr_spoolss_c.h"
 #include "rpc_client/cli_spoolss.h"
 #include "rpc_client/init_spoolss.h"
 #include "rpc_server/rpc_ncacn_np.h"
+#include "libcli/security/security.h"
+#include "libsmb/nmblib.h"
+#include "auth.h"
+#include "smbprofile.h"
 
 /****************************************************************************
  Ensure we check the path in *exactly* the same way as W2K for a findfirst/findnext
@@ -483,16 +490,13 @@ static bool netbios_session_retarget(struct smbd_server_connection *sconn,
 }
 
 /****************************************************************************
- Reply to a (netbios-level) special message.
+ Reply to a (netbios-level) special message. 
 ****************************************************************************/
 
-void reply_special(struct smbd_server_connection *sconn, char *inbuf)
+void reply_special(struct smbd_server_connection *sconn, char *inbuf, size_t inbuf_size)
 {
 	int msg_type = CVAL(inbuf,0);
 	int msg_flags = CVAL(inbuf,1);
-	fstring name1,name2;
-	char name_type1, name_type2;
-
 	/*
 	 * We only really use 4 bytes of the outbuf, but for the smb_setlen
 	 * calculation & friends (srv_send_smb uses that) we need the full smb
@@ -500,14 +504,19 @@ void reply_special(struct smbd_server_connection *sconn, char *inbuf)
 	 */
 	char outbuf[smb_size];
 
-	*name1 = *name2 = 0;
-
 	memset(outbuf, '\0', sizeof(outbuf));
 
 	smb_setlen(outbuf,0);
 
 	switch (msg_type) {
 	case 0x81: /* session request */
+	{
+		/* inbuf_size is guarenteed to be at least 4. */
+		fstring name1,name2;
+		int name_type1, name_type2;
+		int name_len1, name_len2;
+
+		*name1 = *name2 = 0;
 
 		if (sconn->nbt.got_session) {
 			exit_server_cleanly("multiple session request not permitted");
@@ -515,13 +524,29 @@ void reply_special(struct smbd_server_connection *sconn, char *inbuf)
 
 		SCVAL(outbuf,0,0x82);
 		SCVAL(outbuf,3,0);
-		if (name_len(inbuf+4) > 50 || 
-		    name_len(inbuf+4 + name_len(inbuf + 4)) > 50) {
+
+		/* inbuf_size is guaranteed to be at least 4. */
+		name_len1 = name_len((unsigned char *)(inbuf+4),inbuf_size - 4);
+		if (name_len1 <= 0 || name_len1 > inbuf_size - 4) {
 			DEBUG(0,("Invalid name length in session request\n"));
-			return;
+			break;
 		}
-		name_type1 = name_extract(inbuf,4,name1);
-		name_type2 = name_extract(inbuf,4 + name_len(inbuf + 4),name2);
+		name_len2 = name_len((unsigned char *)(inbuf+4+name_len1),inbuf_size - 4 - name_len1);
+		if (name_len2 <= 0 || name_len2 > inbuf_size - 4 - name_len1) {
+			DEBUG(0,("Invalid name length in session request\n"));
+			break;
+		}
+
+		name_type1 = name_extract((unsigned char *)inbuf,
+				inbuf_size,(unsigned int)4,name1);
+		name_type2 = name_extract((unsigned char *)inbuf,
+				inbuf_size,(unsigned int)(4 + name_len1),name2);
+
+		if (name_type1 == -1 || name_type2 == -1) {
+			DEBUG(0,("Invalid name type in session request\n"));
+			break;
+		}
+
 		DEBUG(2,("netbios connect: name1=%s0x%x name2=%s0x%x\n",
 			 name1, name_type1, name2, name_type2));
 
@@ -564,6 +589,7 @@ void reply_special(struct smbd_server_connection *sconn, char *inbuf)
 
 		sconn->nbt.got_session = true;
 		break;
+	}
 
 	case 0x89: /* session keepalive request 
 		      (some old clients produce this?) */
@@ -1121,7 +1147,7 @@ void reply_getatr(struct smb_request *req)
 
 			ZERO_STRUCT(write_time_ts);
 			fileid = vfs_file_id_from_sbuf(conn, &smb_fname->st);
-			get_file_infos(fileid, NULL, &write_time_ts);
+			get_file_infos(fileid, 0, NULL, &write_time_ts);
 			if (!null_timespec(write_time_ts)) {
 				update_stat_ex_mtime(&smb_fname->st, write_time_ts);
 			}
@@ -1440,6 +1466,7 @@ void reply_search(struct smb_request *req)
 		SCVAL(status,0,(dirtype & 0x1F));
 
 		nt_status = dptr_create(conn,
+					NULL, /* fsp */
 					directory,
 					True,
 					expect_close,
@@ -1783,7 +1810,7 @@ void reply_open(struct smb_request *req)
 		struct timespec write_time_ts;
 
 		ZERO_STRUCT(write_time_ts);
-		get_file_infos(fsp->file_id, NULL, &write_time_ts);
+		get_file_infos(fsp->file_id, 0, NULL, &write_time_ts);
 		if (!null_timespec(write_time_ts)) {
 			update_stat_ex_mtime(&smb_fname->st, write_time_ts);
 		}
@@ -1965,12 +1992,16 @@ void reply_open_and_X(struct smb_request *req)
 			reply_nterror(req, NT_STATUS_DISK_FULL);
 			goto out;
 		}
-		smb_fname->st.st_ex_size =
-		    SMB_VFS_GET_ALLOC_SIZE(conn, fsp, &smb_fname->st);
+		status = vfs_stat_fsp(fsp);
+		if (!NT_STATUS_IS_OK(status)) {
+			close_file(req, fsp, ERROR_CLOSE);
+			reply_nterror(req, status);
+			goto out;
+		}
 	}
 
-	fattr = dos_mode(conn, smb_fname);
-	mtime = convert_timespec_to_time_t(smb_fname->st.st_ex_mtime);
+	fattr = dos_mode(conn, fsp->fsp_name);
+	mtime = convert_timespec_to_time_t(fsp->fsp_name->st.st_ex_mtime);
 	if (fattr & aDIR) {
 		close_file(req, fsp, ERROR_CLOSE);
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
@@ -2018,7 +2049,7 @@ void reply_open_and_X(struct smb_request *req)
 	} else {
 		srv_put_dos_date3((char *)req->outbuf,smb_vwv4,mtime);
 	}
-	SIVAL(req->outbuf,smb_vwv6,(uint32)smb_fname->st.st_ex_size);
+	SIVAL(req->outbuf,smb_vwv6,(uint32)fsp->fsp_name->st.st_ex_size);
 	SSVAL(req->outbuf,smb_vwv8,GET_OPENX_MODE(deny_mode));
 	SSVAL(req->outbuf,smb_vwv11,smb_action);
 
@@ -2054,7 +2085,7 @@ void reply_ulogoffX(struct smb_request *req)
 	/* in user level security we are supposed to close any files
 		open by this user */
 	if ((vuser != NULL) && (lp_security() != SEC_SHARE)) {
-		file_close_user(req->vuid);
+		file_close_user(sconn, req->vuid);
 	}
 
 	invalidate_vuid(sconn, req->vuid);
@@ -2506,7 +2537,7 @@ static NTSTATUS do_unlink(connection_struct *conn,
 	}
 
 	/* The set is across all open files on this dev/inode pair. */
-	if (!set_delete_on_close(fsp, True, &conn->server_info->utok)) {
+	if (!set_delete_on_close(fsp, True, &conn->session_info->utok)) {
 		close_file(req, fsp, NORMAL_CLOSE);
 		return NT_STATUS_ACCESS_DENIED;
 	}
@@ -2563,10 +2594,17 @@ NTSTATUS unlink_internals(connection_struct *conn, struct smb_request *req,
 		 * onto the directory.
 		 */
 		TALLOC_FREE(smb_fname->base_name);
-		smb_fname->base_name = talloc_asprintf(smb_fname,
-						       "%s/%s",
-						       fname_dir,
-						       fname_mask);
+		if (ISDOT(fname_dir)) {
+			/* Ensure we use canonical names on open. */
+			smb_fname->base_name = talloc_asprintf(smb_fname,
+							"%s",
+							fname_mask);
+		} else {
+			smb_fname->base_name = talloc_asprintf(smb_fname,
+							"%s/%s",
+							fname_dir,
+							fname_mask);
+		}
 		if (!smb_fname->base_name) {
 			status = NT_STATUS_NO_MEMORY;
 			goto out;
@@ -2651,9 +2689,16 @@ NTSTATUS unlink_internals(connection_struct *conn, struct smb_request *req,
 			}
 
 			TALLOC_FREE(smb_fname->base_name);
-			smb_fname->base_name =
-			    talloc_asprintf(smb_fname, "%s/%s",
-					    fname_dir, dname);
+			if (ISDOT(fname_dir)) {
+				/* Ensure we use canonical names on open. */
+				smb_fname->base_name =
+					talloc_asprintf(smb_fname, "%s",
+						dname);
+			} else {
+				smb_fname->base_name =
+					talloc_asprintf(smb_fname, "%s/%s",
+						fname_dir, dname);
+			}
 
 			if (!smb_fname->base_name) {
 				TALLOC_FREE(dir_hnd);
@@ -2784,8 +2829,7 @@ static void fail_readraw(void)
  Fake (read/write) sendfile. Returns -1 on read or write fail.
 ****************************************************************************/
 
-static ssize_t fake_sendfile(files_struct *fsp, SMB_OFF_T startpos,
-			     size_t nread)
+ssize_t fake_sendfile(files_struct *fsp, SMB_OFF_T startpos, size_t nread)
 {
 	size_t bufsize;
 	size_t tosend = nread;
@@ -2844,13 +2888,12 @@ static ssize_t fake_sendfile(files_struct *fsp, SMB_OFF_T startpos,
 	return (ssize_t)nread;
 }
 
-#if defined(WITH_SENDFILE)
 /****************************************************************************
  Deal with the case of sendfile reading less bytes from the file than
  requested. Fill with zeros (all we can do).
 ****************************************************************************/
 
-static void sendfile_short_send(files_struct *fsp,
+void sendfile_short_send(files_struct *fsp,
 				ssize_t nread,
 				size_t headersize,
 				size_t smb_maxcnt)
@@ -2914,7 +2957,6 @@ static void sendfile_short_send(files_struct *fsp,
 		SAFE_FREE(buf);
 	}
 }
-#endif /* defined WITH_SENDFILE */
 
 /****************************************************************************
  Return a readbraw error (4 bytes of zero).
@@ -2958,7 +3000,6 @@ static void send_file_readbraw(connection_struct *conn,
 	char *outbuf = NULL;
 	ssize_t ret=0;
 
-#if defined(WITH_SENDFILE)
 	/*
 	 * We can only use sendfile on a non-chained packet 
 	 * but we can use on a non-oplocked file. tridge proved this
@@ -3033,7 +3074,6 @@ static void send_file_readbraw(connection_struct *conn,
 	}
 
 normal_readbraw:
-#endif
 
 	outbuf = TALLOC_ARRAY(NULL, char, nread+4);
 	if (!outbuf) {
@@ -3508,7 +3548,6 @@ static void send_file_readX(connection_struct *conn, struct smb_request *req,
 		goto nosendfile_read;
 	}
 
-#if defined(WITH_SENDFILE)
 	/*
 	 * We can only use sendfile on a non-chained packet
 	 * but we can use on a non-oplocked file. tridge proved this
@@ -3600,8 +3639,6 @@ static void send_file_readX(connection_struct *conn, struct smb_request *req,
 	}
 
 normal_read:
-
-#endif
 
 	if ((smb_maxcnt & 0xFF0000) > 0x10000) {
 		uint8 headerbuf[smb_size + 2*12];
@@ -4754,7 +4791,7 @@ void reply_exit(struct smb_request *req)
 {
 	START_PROFILE(SMBexit);
 
-	file_close_pid(req->smbpid, req->vuid);
+	file_close_pid(req->sconn, req->smbpid, req->vuid);
 
 	reply_outbuf(req, 0, 0);
 
@@ -4787,7 +4824,7 @@ void reply_close(struct smb_request *req)
 	 * We can only use check_fsp if we know it's not a directory.
 	 */
 
-	if(!fsp || (fsp->conn != conn) || (fsp->vuid != req->vuid)) {
+	if (!check_fsp_open(conn, req, fsp)) {
 		reply_nterror(req, NT_STATUS_INVALID_HANDLE);
 		END_PROFILE(SMBclose);
 		return;
@@ -5285,6 +5322,7 @@ void reply_printqueue(struct smb_request *req)
 		WERROR werr;
 		const char *sharename = lp_servicename(SNUM(conn));
 		struct rpc_pipe_client *cli = NULL;
+		struct dcerpc_binding_handle *b = NULL;
 		struct policy_handle handle;
 		struct spoolss_DevmodeContainer devmode_ctr;
 		union spoolss_JobInfo *info;
@@ -5297,7 +5335,7 @@ void reply_printqueue(struct smb_request *req)
 
 		status = rpc_pipe_open_interface(conn,
 						 &ndr_table_spoolss.syntax_id,
-						 conn->server_info,
+						 conn->session_info,
 						 &conn->sconn->client_id,
 						 conn->sconn->msg_ctx,
 						 &cli);
@@ -5308,10 +5346,11 @@ void reply_printqueue(struct smb_request *req)
 			reply_nterror(req, status);
 			goto out;
 		}
+		b = cli->binding_handle;
 
 		ZERO_STRUCT(devmode_ctr);
 
-		status = rpccli_spoolss_OpenPrinter(cli, mem_ctx,
+		status = dcerpc_spoolss_OpenPrinter(b, mem_ctx,
 						sharename,
 						NULL, devmode_ctr,
 						SEC_FLAG_MAXIMUM_ALLOWED,
@@ -5395,8 +5434,8 @@ void reply_printqueue(struct smb_request *req)
 			  (unsigned)count));
 
 out:
-		if (cli && is_valid_policy_hnd(&handle)) {
-			rpccli_spoolss_ClosePrinter(cli, mem_ctx, &handle, NULL);
+		if (b && is_valid_policy_hnd(&handle)) {
+			dcerpc_spoolss_ClosePrinter(b, mem_ctx, &handle, &werr);
 		}
 
 	}
@@ -5612,7 +5651,7 @@ void reply_rmdir(struct smb_request *req)
 		goto out;
 	}
 
-	if (!set_delete_on_close(fsp, true, &conn->server_info->utok)) {
+	if (!set_delete_on_close(fsp, true, &conn->session_info->utok)) {
 		close_file(req, fsp, ERROR_CLOSE);
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		goto out;
@@ -5768,19 +5807,24 @@ static bool resolve_wildcards(TALLOC_CTX *ctx,
 
 static void rename_open_files(connection_struct *conn,
 			      struct share_mode_lock *lck,
+			      uint32_t orig_name_hash,
 			      const struct smb_filename *smb_fname_dst)
 {
 	files_struct *fsp;
 	bool did_rename = False;
 	NTSTATUS status;
+	uint32_t new_name_hash;
 
-	for(fsp = file_find_di_first(lck->id); fsp;
+	for(fsp = file_find_di_first(conn->sconn, lck->id); fsp;
 	    fsp = file_find_di_next(fsp)) {
 		/* fsp_name is a relative path under the fsp. To change this for other
 		   sharepaths we need to manipulate relative paths. */
 		/* TODO - create the absolute path and manipulate the newname
 		   relative to the sharepath. */
 		if (!strequal(fsp->conn->connectpath, conn->connectpath)) {
+			continue;
+		}
+		if (fsp->name_hash != orig_name_hash) {
 			continue;
 		}
 		DEBUG(10, ("rename_open_files: renaming file fnum %d "
@@ -5791,6 +5835,7 @@ static void rename_open_files(connection_struct *conn,
 		status = fsp_set_smb_fname(fsp, smb_fname_dst);
 		if (NT_STATUS_IS_OK(status)) {
 			did_rename = True;
+			new_name_hash = fsp->name_hash;
 		}
 	}
 
@@ -5802,6 +5847,7 @@ static void rename_open_files(connection_struct *conn,
 
 	/* Send messages to all smbd's (not ourself) that the name has changed. */
 	rename_share_filename(conn->sconn->msg_ctx, lck, conn->connectpath,
+			      orig_name_hash, new_name_hash,
 			      smb_fname_dst);
 
 }
@@ -5913,19 +5959,6 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 		goto out;
 	}
 
-	/* Ensure the dst smb_fname contains a '/' */
-	if(strrchr_m(smb_fname_dst->base_name,'/') == 0) {
-		char * tmp;
-		tmp = talloc_asprintf(smb_fname_dst, "./%s",
-				      smb_fname_dst->base_name);
-		if (!tmp) {
-			status = NT_STATUS_NO_MEMORY;
-			goto out;
-		}
-		TALLOC_FREE(smb_fname_dst->base_name);
-		smb_fname_dst->base_name = tmp;
-	}
-
 	/*
 	 * Check for special case with case preserving and not
 	 * case sensitive. If the old last component differs from the original
@@ -5941,12 +5974,14 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 		struct smb_filename *smb_fname_orig_lcomp = NULL;
 
 		/*
-		 * Get the last component of the destination name.  Note that
-		 * we guarantee that destination name contains a '/' character
-		 * above.
+		 * Get the last component of the destination name.
 		 */
 		last_slash = strrchr_m(smb_fname_dst->base_name, '/');
-		fname_dst_lcomp_base_mod = talloc_strdup(ctx, last_slash + 1);
+		if (last_slash) {
+			fname_dst_lcomp_base_mod = talloc_strdup(ctx, last_slash + 1);
+		} else {
+			fname_dst_lcomp_base_mod = talloc_strdup(ctx, smb_fname_dst->base_name);
+		}
 		if (!fname_dst_lcomp_base_mod) {
 			status = NT_STATUS_NO_MEMORY;
 			goto out;
@@ -5972,11 +6007,17 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 			 * Replace the modified last component with the
 			 * original.
 			 */
-			*last_slash = '\0'; /* Truncate at the '/' */
-			tmp = talloc_asprintf(smb_fname_dst,
+			if (last_slash) {
+				*last_slash = '\0'; /* Truncate at the '/' */
+				tmp = talloc_asprintf(smb_fname_dst,
 					"%s/%s",
 					smb_fname_dst->base_name,
 					smb_fname_orig_lcomp->base_name);
+			} else {
+				tmp = talloc_asprintf(smb_fname_dst,
+					"%s",
+					smb_fname_orig_lcomp->base_name);
+			}
 			if (tmp == NULL) {
 				status = NT_STATUS_NO_MEMORY;
 				TALLOC_FREE(fname_dst_lcomp_base_mod);
@@ -6049,7 +6090,8 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 	if (dst_exists) {
 		struct file_id fileid = vfs_file_id_from_sbuf(conn,
 		    &smb_fname_dst->st);
-		files_struct *dst_fsp = file_find_di_first(fileid);
+		files_struct *dst_fsp = file_find_di_first(conn->sconn,
+							   fileid);
 		/* The file can be open when renaming a stream */
 		if (dst_fsp && !new_is_stream) {
 			DEBUG(3, ("rename_internals_fsp: Target file open\n"));
@@ -6096,8 +6138,9 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 			  "%s -> %s\n", smb_fname_str_dbg(fsp->fsp_name),
 			  smb_fname_str_dbg(smb_fname_dst)));
 
-		if (lp_map_archive(SNUM(conn)) ||
-		    lp_store_dos_attributes(SNUM(conn))) {
+		if (!lp_posix_pathnames() &&
+		    (lp_map_archive(SNUM(conn)) ||
+		    lp_store_dos_attributes(SNUM(conn)))) {
 			/* We must set the archive bit on the newly
 			   renamed file. */
 			if (SMB_VFS_STAT(conn, smb_fname_dst) == 0) {
@@ -6114,7 +6157,7 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 		notify_rename(conn, fsp->is_directory, fsp->fsp_name,
 			      smb_fname_dst);
 
-		rename_open_files(conn, lck, smb_fname_dst);
+		rename_open_files(conn, lck, fsp->name_hash, smb_fname_dst);
 
 		/*
 		 * A rename acts as a new file create w.r.t. allowing an initial delete
@@ -6229,26 +6272,20 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 		 * onto the directory.
 		 */
 		TALLOC_FREE(smb_fname_src->base_name);
-		smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
-							   "%s/%s",
-							   fname_src_dir,
-							   fname_src_mask);
+		if (ISDOT(fname_src_dir)) {
+			/* Ensure we use canonical names on open. */
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s",
+							fname_src_mask);
+		} else {
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s/%s",
+							fname_src_dir,
+							fname_src_mask);
+		}
 		if (!smb_fname_src->base_name) {
 			status = NT_STATUS_NO_MEMORY;
 			goto out;
-		}
-
-		/* Ensure dst fname contains a '/' also */
-		if(strrchr_m(smb_fname_dst->base_name, '/') == 0) {
-			char *tmp;
-			tmp = talloc_asprintf(smb_fname_dst, "./%s",
-					      smb_fname_dst->base_name);
-			if (!tmp) {
-				status = NT_STATUS_NO_MEMORY;
-				goto out;
-			}
-			TALLOC_FREE(smb_fname_dst->base_name);
-			smb_fname_dst->base_name = tmp;
 		}
 
 		DEBUG(3, ("rename_internals: case_sensitive = %d, "
@@ -6391,10 +6428,17 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 		}
 
 		TALLOC_FREE(smb_fname_src->base_name);
-		smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
-							   "%s/%s",
-							   fname_src_dir,
-							   dname);
+		if (ISDOT(fname_src_dir)) {
+			/* Ensure we use canonical names on open. */
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s",
+							dname);
+		} else {
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s/%s",
+							fname_src_dir,
+							dname);
+		}
 		if (!smb_fname_src->base_name) {
 			status = NT_STATUS_NO_MEMORY;
 			goto out;
@@ -6514,6 +6558,7 @@ void reply_mv(struct smb_request *req)
 	TALLOC_CTX *ctx = talloc_tos();
 	struct smb_filename *smb_fname_src = NULL;
 	struct smb_filename *smb_fname_dst = NULL;
+	bool stream_rename = false;
 
 	START_PROFILE(SMBmv);
 
@@ -6538,6 +6583,18 @@ void reply_mv(struct smb_request *req)
 		reply_nterror(req, status);
 		goto out;
 	}
+
+	if (!lp_posix_pathnames()) {
+		/* The newname must begin with a ':' if the
+		   name contains a ':'. */
+		if (strchr_m(name, ':')) {
+			if (newname[0] != ':') {
+				reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				goto out;
+			}
+			stream_rename = true;
+		}
+        }
 
 	status = filename_convert(ctx,
 				  conn,
@@ -6573,6 +6630,18 @@ void reply_mv(struct smb_request *req)
 		}
 		reply_nterror(req, status);
 		goto out;
+	}
+
+	if (stream_rename) {
+		/* smb_fname_dst->base_name must be the same as
+		   smb_fname_src->base_name. */
+		TALLOC_FREE(smb_fname_dst->base_name);
+		smb_fname_dst->base_name = talloc_strdup(smb_fname_dst,
+						smb_fname_src->base_name);
+		if (!smb_fname_dst->base_name) {
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			goto out;
+		}
 	}
 
 	DEBUG(3,("reply_mv : %s -> %s\n", smb_fname_str_dbg(smb_fname_src),
@@ -6723,20 +6792,23 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 		goto out;
 	}
 
-	if ((ofun&3) == 1) {
-		if(SMB_VFS_LSEEK(fsp2,0,SEEK_END) == -1) {
-			DEBUG(0,("copy_file: error - vfs lseek returned error %s\n", strerror(errno) ));
-			/*
-			 * Stop the copy from occurring.
-			 */
-			ret = -1;
-			smb_fname_src->st.st_ex_size = 0;
+	if (ofun & OPENX_FILE_EXISTS_OPEN) {
+		ret = SMB_VFS_LSEEK(fsp2, 0, SEEK_END);
+		if (ret == -1) {
+			DEBUG(0, ("error - vfs lseek returned error %s\n",
+				strerror(errno)));
+			status = map_nt_error_from_unix(errno);
+			close_file(NULL, fsp1, ERROR_CLOSE);
+			close_file(NULL, fsp2, ERROR_CLOSE);
+			goto out;
 		}
 	}
 
 	/* Do the actual copy. */
 	if (smb_fname_src->st.st_ex_size) {
 		ret = vfs_transfer_file(fsp1, fsp2, smb_fname_src->st.st_ex_size);
+	} else {
+		ret = 0;
 	}
 
 	close_file(NULL, fsp1, NORMAL_CLOSE);
@@ -6914,10 +6986,17 @@ void reply_copy(struct smb_request *req)
 		 * the directory.
 		 */
 		TALLOC_FREE(smb_fname_src->base_name);
-		smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
-							   "%s/%s",
-							   fname_src_dir,
-							   fname_src_mask);
+		if (ISDOT(fname_src_dir)) {
+			/* Ensure we use canonical names on open. */
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s",
+							fname_src_mask);
+		} else {
+			smb_fname_src->base_name = talloc_asprintf(smb_fname_src,
+							"%s/%s",
+							fname_src_dir,
+							fname_src_mask);
+		}
 		if (!smb_fname_src->base_name) {
 			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			goto out;
@@ -7025,9 +7104,16 @@ void reply_copy(struct smb_request *req)
 
 			/* Get the src smb_fname struct setup. */
 			TALLOC_FREE(smb_fname_src->base_name);
-			smb_fname_src->base_name =
-			    talloc_asprintf(smb_fname_src, "%s/%s",
-					    fname_src_dir, dname);
+			if (ISDOT(fname_src_dir)) {
+				/* Ensure we use canonical names on open. */
+				smb_fname_src->base_name =
+					talloc_asprintf(smb_fname_src, "%s",
+						dname);
+			} else {
+				smb_fname_src->base_name =
+					talloc_asprintf(smb_fname_src, "%s/%s",
+						fname_src_dir, dname);
+			}
 
 			if (!smb_fname_src->base_name) {
 				TALLOC_FREE(dir_hnd);

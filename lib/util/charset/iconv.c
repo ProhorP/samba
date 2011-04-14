@@ -23,6 +23,13 @@
 #include "system/iconv.h"
 #include "system/filesys.h"
 
+#ifdef strcasecmp
+#undef strcasecmp
+#endif
+
+#ifdef static_decl_charset
+static_decl_charset;
+#endif
 
 /**
  * @file
@@ -49,6 +56,8 @@
 
 static size_t ascii_pull  (void *,const char **, size_t *, char **, size_t *);
 static size_t ascii_push  (void *,const char **, size_t *, char **, size_t *);
+static size_t latin1_pull(void *,const char **, size_t *, char **, size_t *);
+static size_t latin1_push(void *,const char **, size_t *, char **, size_t *);
 static size_t utf8_pull   (void *,const char **, size_t *, char **, size_t *);
 static size_t utf8_push   (void *,const char **, size_t *, char **, size_t *);
 static size_t utf16_munged_pull(void *,const char **, size_t *, char **, size_t *);
@@ -72,27 +81,62 @@ static const struct charset_functions builtin_functions[] = {
 	{"UTF16_MUNGED",   utf16_munged_pull,  iconv_copy},
 
 	{"ASCII", ascii_pull, ascii_push},
+	{"646", ascii_pull, ascii_push},
+	{"ISO-8859-1", latin1_pull, latin1_push},
 	{"UCS2-HEX", ucs2hex_pull, ucs2hex_push}
 };
 
 static struct charset_functions *charsets = NULL;
 
-bool charset_register_backend(const void *_funcs) 
+static struct charset_functions *find_charset_functions(const char *name)
 {
-	struct charset_functions *funcs = (struct charset_functions *)memdup(_funcs,sizeof(struct charset_functions));
 	struct charset_functions *c;
 
 	/* Check whether we already have this charset... */
 	for (c = charsets; c != NULL; c = c->next) {
-		if(!strcasecmp(c->name, funcs->name)) { 
-			DEBUG(2, ("Duplicate charset %s, not registering\n", funcs->name));
-			return false;
+		if(strcasecmp(c->name, name) == 0) { 
+			return c;
 		}
+		c = c->next;
 	}
 
+	return NULL;
+}
+
+bool smb_register_charset(const struct charset_functions *funcs_in)
+{
+	struct charset_functions *funcs;
+
+	DEBUG(5, ("Attempting to register new charset %s\n", funcs_in->name));
+	/* Check whether we already have this charset... */
+	if (find_charset_functions(funcs_in->name)) {
+		DEBUG(0, ("Duplicate charset %s, not registering\n", funcs_in->name));
+		return false;
+	}
+
+	funcs = talloc(NULL, struct charset_functions);
+	if (!funcs) {
+		DEBUG(0, ("Out of memory duplicating charset %s\n", funcs_in->name));
+		return false;
+	}
+	*funcs = *funcs_in;
+
 	funcs->next = funcs->prev = NULL;
+	DEBUG(5, ("Registered charset %s\n", funcs->name));
 	DLIST_ADD(charsets, funcs);
 	return true;
+}
+
+static void lazy_initialize_iconv(void)
+{
+#ifdef static_init_charset
+	static bool initialized = false;
+
+	if (!initialized) {
+		static_init_charset;
+		initialized = true;
+	}
+#endif
 }
 
 #ifdef HAVE_NATIVE_ICONV
@@ -121,32 +165,60 @@ _PUBLIC_ size_t smb_iconv(smb_iconv_t cd,
 		 const char **inbuf, size_t *inbytesleft,
 		 char **outbuf, size_t *outbytesleft)
 {
-	char cvtbuf[2048];
-	size_t bufsize;
-
 	/* in many cases we can go direct */
 	if (cd->direct) {
 		return cd->direct(cd->cd_direct, 
 				  inbuf, inbytesleft, outbuf, outbytesleft);
 	}
 
-
 	/* otherwise we have to do it chunks at a time */
-	while (*inbytesleft > 0) {
-		char *bufp1 = cvtbuf;
-		const char *bufp2 = cvtbuf;
+	{
+#ifndef SMB_ICONV_BUFSIZE
+#define SMB_ICONV_BUFSIZE 2048
+#endif
+		TALLOC_CTX *mem_ctx;
+		size_t bufsize;
+		char *cvtbuf;
 
-		bufsize = sizeof(cvtbuf);
-		
-		if (cd->pull(cd->cd_pull, 
-			     inbuf, inbytesleft, &bufp1, &bufsize) == -1
-		    && errno != E2BIG) return -1;
+#if _SAMBA_BUILD_ == 3
+		mem_ctx = talloc_tos();
+#else
+		mem_ctx = cd;
+#endif
+		cvtbuf = talloc_array(mem_ctx, char, SMB_ICONV_BUFSIZE);
 
-		bufsize = sizeof(cvtbuf) - bufsize;
+		if (!cvtbuf) {
+			return (size_t)-1;
+		}
 
-		if (cd->push(cd->cd_push, 
-			     &bufp2, &bufsize, 
-			     outbuf, outbytesleft) == -1) return -1;
+		while (*inbytesleft > 0) {
+			char *bufp1 = cvtbuf;
+			const char *bufp2 = cvtbuf;
+			int saved_errno = errno;
+			bool pull_failed = false;
+			bufsize = SMB_ICONV_BUFSIZE;
+
+			if (cd->pull(cd->cd_pull,
+				     inbuf, inbytesleft, &bufp1, &bufsize) == -1
+			    && errno != E2BIG) {
+				saved_errno = errno;
+				pull_failed = true;
+			}
+
+			bufsize = SMB_ICONV_BUFSIZE - bufsize;
+
+			if (cd->push(cd->cd_push,
+				     &bufp2, &bufsize,
+				     outbuf, outbytesleft) == -1) {
+				talloc_free(cvtbuf);
+				return -1;
+			} else if (pull_failed) {
+				/* We want the pull errno if possible */
+				errno = saved_errno;
+				return -1;
+			}
+		}
+		talloc_free(cvtbuf);
 	}
 
 	return 0;
@@ -158,8 +230,8 @@ static bool is_utf16(const char *name)
 		strcasecmp(name, "UTF-16LE") == 0;
 }
 
-int smb_iconv_t_destructor(smb_iconv_t hwd)
-{ 
+static int smb_iconv_t_destructor(smb_iconv_t hwd)
+{
 #ifdef HAVE_NATIVE_ICONV
 	if (hwd->cd_pull != NULL && hwd->cd_pull != (iconv_t)-1)
 		iconv_close(hwd->cd_pull);
@@ -178,6 +250,8 @@ _PUBLIC_ smb_iconv_t smb_iconv_open_ex(TALLOC_CTX *mem_ctx, const char *tocode,
 	smb_iconv_t ret;
 	const struct charset_functions *from=NULL, *to=NULL;
 	int i;
+
+	lazy_initialize_iconv();
 
 	ret = (smb_iconv_t)talloc_named(mem_ctx,
 					sizeof(*ret), 
@@ -260,9 +334,6 @@ _PUBLIC_ smb_iconv_t smb_iconv_open_ex(TALLOC_CTX *mem_ctx, const char *tocode,
 	}
 	if (is_utf16(tocode)) {
 		ret->direct = sys_iconv;
-		/* could be set just above - so we need to close iconv */
-		if (ret->cd_direct != NULL && ret->cd_direct != (iconv_t)-1)
-			iconv_close(ret->cd_direct);
 		ret->cd_direct = ret->cd_pull;
 		ret->cd_pull = NULL;
 		return ret;
@@ -285,7 +356,7 @@ failed:
  */
 _PUBLIC_ smb_iconv_t smb_iconv_open(const char *tocode, const char *fromcode)
 {
-	return smb_iconv_open_ex(talloc_autofree_context(), tocode, fromcode, true);
+	return smb_iconv_open_ex(NULL, tocode, fromcode, true);
 }
 
 /*
@@ -303,10 +374,24 @@ _PUBLIC_ int smb_iconv_close(smb_iconv_t cd)
  and also the "test" character sets that are designed to test
  multi-byte character set support for english users
 ***********************************************************************/
+
+/*
+  this takes an ASCII sequence and produces a UTF16 sequence
+
+  The first 127 codepoints of latin1 matches the first 127 codepoints
+  of unicode, and so can be put into the first byte of UTF16LE
+
+ */
+
 static size_t ascii_pull(void *cd, const char **inbuf, size_t *inbytesleft,
 			 char **outbuf, size_t *outbytesleft)
 {
 	while (*inbytesleft >= 1 && *outbytesleft >= 2) {
+		if (((*inbuf)[0] & 0x7F) != (*inbuf)[0]) {
+			/* If this is multi-byte, then it isn't legal ASCII */
+			errno = EILSEQ;
+			return -1;
+		}
 		(*outbuf)[0] = (*inbuf)[0];
 		(*outbuf)[1] = 0;
 		(*inbytesleft)  -= 1;
@@ -323,14 +408,26 @@ static size_t ascii_pull(void *cd, const char **inbuf, size_t *inbytesleft,
 	return 0;
 }
 
+/*
+  this takes a UTF16 sequence and produces an ASCII sequence
+
+  The first 127 codepoints of ASCII matches the first 127 codepoints
+  of unicode, and so can be read directly from the first byte of UTF16LE
+
+ */
 static size_t ascii_push(void *cd, const char **inbuf, size_t *inbytesleft,
 			 char **outbuf, size_t *outbytesleft)
 {
 	int ir_count=0;
 
 	while (*inbytesleft >= 2 && *outbytesleft >= 1) {
-		(*outbuf)[0] = (*inbuf)[0] & 0x7F;
-		if ((*inbuf)[1]) ir_count++;
+		if (((*inbuf)[0] & 0x7F) != (*inbuf)[0] ||
+			(*inbuf)[1] != 0) {
+			/* If this is multi-byte, then it isn't legal ASCII */
+			errno = EILSEQ;
+			return -1;
+		}
+		(*outbuf)[0] = (*inbuf)[0];
 		(*inbytesleft)  -= 2;
 		(*outbytesleft) -= 1;
 		(*inbuf)  += 2;
@@ -350,6 +447,70 @@ static size_t ascii_push(void *cd, const char **inbuf, size_t *inbytesleft,
 	return ir_count;
 }
 
+/*
+  this takes a latin1/ISO-8859-1 sequence and produces a UTF16 sequence
+
+  The first 256 codepoints of latin1 matches the first 256 codepoints
+  of unicode, and so can be put into the first byte of UTF16LE
+
+ */
+static size_t latin1_pull(void *cd, const char **inbuf, size_t *inbytesleft,
+			  char **outbuf, size_t *outbytesleft)
+{
+	while (*inbytesleft >= 1 && *outbytesleft >= 2) {
+		(*outbuf)[0] = (*inbuf)[0];
+		(*outbuf)[1] = 0;
+		(*inbytesleft)  -= 1;
+		(*outbytesleft) -= 2;
+		(*inbuf)  += 1;
+		(*outbuf) += 2;
+	}
+
+	if (*inbytesleft > 0) {
+		errno = E2BIG;
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+  this takes a UTF16 sequence and produces a latin1/ISO-8859-1 sequence
+
+  The first 256 codepoints of latin1 matches the first 256 codepoints
+  of unicode, and so can be read directly from the first byte of UTF16LE
+
+ */
+static size_t latin1_push(void *cd, const char **inbuf, size_t *inbytesleft,
+			 char **outbuf, size_t *outbytesleft)
+{
+	int ir_count=0;
+
+	while (*inbytesleft >= 2 && *outbytesleft >= 1) {
+		(*outbuf)[0] = (*inbuf)[0];
+		if ((*inbuf)[1] != 0) {
+			/* If this is multi-byte, then it isn't legal latin1 */
+			errno = EILSEQ;
+			return -1;
+		}
+		(*inbytesleft)  -= 2;
+		(*outbytesleft) -= 1;
+		(*inbuf)  += 2;
+		(*outbuf) += 1;
+	}
+
+	if (*inbytesleft == 1) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (*inbytesleft > 1) {
+		errno = E2BIG;
+		return -1;
+	}
+
+	return ir_count;
+}
 
 static size_t ucs2hex_pull(void *cd, const char **inbuf, size_t *inbytesleft,
 			 char **outbuf, size_t *outbytesleft)

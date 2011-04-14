@@ -30,11 +30,11 @@ struct auth_serversupplied_info {
 	bool guest;
 	bool system;
 
-	struct unix_user_token utok;
+	struct security_unix_token utok;
 
 	/* NT group information taken from the info3 structure */
 
-	struct security_token *ptok;
+	struct security_token *security_token;
 
 	/* This is the final session key, as used by SMB signing, and
 	 * (truncated to 16 bytes) encryption on the SAMR and LSA pipes
@@ -46,7 +46,7 @@ struct auth_serversupplied_info {
 	 * Bottom line, it is not the same as the session keys in info3.
 	 */
 
-	DATA_BLOB user_session_key;
+	DATA_BLOB session_key;
 	DATA_BLOB lm_session_key;
 
 	struct netr_SamInfo3 *info3;
@@ -57,8 +57,6 @@ struct auth_serversupplied_info {
 	 * This is checked only when info3.rid and/or info3.primary_gid are set
 	 * to the special invalid value of 0xFFFFFFFF */
 	struct extra_auth_info extra;
-
-	void *pam_handle;
 
 	/*
 	 * This is a token from /etc/passwd and /etc/group
@@ -137,5 +135,7 @@ struct auth_ntlmssp_state;
 /* Changed from 1 -> 2 to add the logon_parameters field. */
 /* Changed from 2 -> 3 when we reworked many auth structures to use IDL or be in common with Samba4 */
 #define AUTH_INTERFACE_VERSION 3
+
+#include "auth/proto.h"
 
 #endif /* _SMBAUTH_H_ */

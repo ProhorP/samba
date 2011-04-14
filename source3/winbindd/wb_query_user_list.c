@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/cli_wbint.h"
+#include "librpc/gen_ndr/ndr_wbint_c.h"
 
 struct wb_query_user_list_state {
 	struct wbint_userinfos users;
@@ -41,7 +41,7 @@ struct tevent_req *wb_query_user_list_send(TALLOC_CTX *mem_ctx,
 	}
 
 	subreq = dcerpc_wbint_QueryUserList_send(state, ev,
-						 domain->child.binding_handle,
+						 dom_child_handle(domain),
 						 &state->users);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
@@ -60,12 +60,8 @@ static void wb_query_user_list_done(struct tevent_req *subreq)
 
 	status = dcerpc_wbint_QueryUserList_recv(subreq, state, &result);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (any_nt_status_not_ok(status, result, &status)) {
 		tevent_req_nterror(req, status);
-		return;
-	}
-	if (!NT_STATUS_IS_OK(result)) {
-		tevent_req_nterror(req, result);
 		return;
 	}
 
