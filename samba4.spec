@@ -209,6 +209,7 @@ rm -f %buildroot%_libdir/winbind_krb5_locator.so
 rm -f %buildroot%_mandir/man1/ntlm_auth.*
 rm -f %buildroot%_includedir/samba-4.0/wbclient.h
 %endif
+rm -f %buildroot%_libdir/libdcerpc-atsvc.so*
 
 # libs {
 mkdir -p %buildroot%_libdir %buildroot%_includedir
