@@ -424,7 +424,7 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libndr-standard.so
 %_libdir/libsamba-hostconfig.so
 %_libdir/libsamba-util.so
-%_libdir/libdcerpc-atsvc.so
+#%_libdir/libdcerpc-atsvc.so
 %_libdir/libdcerpc-server.so
 %_libdir/libgensec.so
 %_libdir/libndr-krb5pac.so
