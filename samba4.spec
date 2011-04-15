@@ -247,11 +247,10 @@ rm -rf %buildroot%perl_vendor_privlib/Parse/Yapp
 rm -f %buildroot%_sbindir/provision
 rm -f %buildroot%_sbindir/samba
 rm -f %buildroot%_sbindir/upgradeprovision
-rm -r %buildroot%_datadir/samba/setup
-rm -rf %buildroot%_libdir/samba/ldb
 rm -f %buildroot%_sbindir/samba_dnsupdate
 rm -f %buildroot%_sbindir/samba_spnupdate
 rm -f %buildroot%_bindir/samba-tool
+rm -rf %buildroot%_datadir/samba/setup
 rm -f %buildroot%_libdir/mit_samba.so
 rm -f %buildroot%_mandir/man8/samba.*
 %endif
