@@ -1,6 +1,7 @@
 %define samba4_version 4.0.0
 %define pre_release alpha15
 %define main_release 34
+%define _localstatedir /var
 
 # Most of these subpackages are disabled because they are not
 # needed by OpenChange, and to avoid file conflicts with Samba3.
