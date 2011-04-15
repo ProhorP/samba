@@ -46,6 +46,8 @@ BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
 BuildRequires: libxslt xsltproc
 BuildRequires: docbook-style-xsl
+BuildRequires: libpopt-devel
+BuildRequires: zlib-devel
 
 BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
 BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
@@ -146,7 +148,7 @@ domains and to use Windows user and group accounts on Linux.
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
-(cd ../pidl && perl Makefile.PL INSTALLDIRS=vendor )
+(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
 
 # Builds using PIDL the IDL and many other things.
 #make proto
@@ -164,7 +166,7 @@ rm -rf %buildroot%_libdir/perl5
 rm -rf %buildroot%_datadir/perl5
 
 # Install PIDL.
-( cd ../pidl && make install PERL_INSTALL_ROOT=%buildroot )
+( cd pidl && make install PERL_INSTALL_ROOT=%buildroot )
 
 # Clean out crap left behind by the PIDL install.
 find %buildroot -type f -name .packlist -exec rm -f {} \;
@@ -203,6 +205,7 @@ rm -f %buildroot%_libdir/libnss_winbind.so.2
 rm -f %buildroot%_libdir/pam_winbind.so
 rm -f %buildroot%_libdir/libwbclient.so
 rm -f %buildroot%_libdir/libwbclient.so.*
+rm -f %buildroot%_libdir/winbind_krb5_locator.so
 rm -f %buildroot%_mandir/man1/ntlm_auth.*
 rm -f %buildroot%_includedir/samba-4.0/wbclient.h
 %endif
@@ -359,7 +362,7 @@ find source4/heimdal -type f | xargs chmod -x
 %dir %_datadir/samba
 %_datadir/samba/*.dat
 
-%_libdir/libdcerpc-atsvc.so.*
+#%_libdir/libdcerpc-atsvc.so.*
 %_libdir/libdcerpc-samr.so.*
 %_libdir/libdcerpc-server.so.*
 %_libdir/libdcerpc.so.*
@@ -400,6 +403,7 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libwbclient.so.0
 %_libdir/libnss_winbind.so.2
 %_libdir/libnss-winbind.inst.so.2
+%_libdir/winbind_krb5_locator.so
 %_libdir/pam_winbind.so
 %dir /var/run/winbindd
 %attr(750,root,wbpriv) %dir /var/lib/%name/winbindd_privileged
