@@ -25,7 +25,7 @@ import subprocess
 
 samba4srcdir = source4dir()
 samba4bindir = bindir()
-smb4torture = binpath("smbtorture")
+smb4torture = binpath("smbtorture4")
 smb4torture_testsuite_list = subprocess.Popen([smb4torture, "--list-suites"], stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate("")[0].splitlines()
 validate = os.getenv("VALIDATE", "")
 if validate:
@@ -251,7 +251,6 @@ plansmbtorturetestsuite("drs.unit", "none", "ncalrpc:")
 for f in sorted(os.listdir(os.path.join(samba4srcdir, "../pidl/tests"))):
     if f.endswith(".pl"):
         planperltestsuite("pidl.%s" % f[:-3], os.path.normpath(os.path.join(samba4srcdir, "../pidl/tests", f)))
-planperltestsuite("selftest.samba4", os.path.normpath(os.path.join(samba4srcdir, "../selftest/test_samba4.pl")))
 
 # Blackbox Tests:
 # tests that interact directly with the command-line tools rather than using

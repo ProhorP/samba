@@ -22,16 +22,26 @@ import os
 import subprocess
 
 def srcdir():
-    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    return os.path.normpath(os.getenv("SRCDIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 def source4dir():
-    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../source4"))
+    return os.path.normpath(os.path.join(srcdir(), "source4"))
 
 def bindir():
-    return os.path.normpath(os.path.join(os.getenv("BUILDDIR", "."), "bin"))
+    return os.path.normpath(os.getenv("BINDIR", "./bin"))
+
+binary_mapping = {}
 
 def binpath(name):
+    if name in binary_mapping:
+        name = binary_mapping[name]
     return os.path.join(bindir(), "%s%s" % (name, os.getenv("EXEEXT", "")))
+
+binary_mapping_string = os.getenv("BINARY_MAPPING", None)
+if binary_mapping_string is not None:
+    for binmapping_entry in binary_mapping_string.split(','):
+        binmapping = binmapping_entry.split(':')
+        binary_mapping[binmapping[0]] = binmapping[1]
 
 perl = os.getenv("PERL", "perl")
 perl = perl.split()

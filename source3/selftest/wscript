@@ -103,7 +103,12 @@ def cmd_testonly(opt):
         if o[0:1] != '_':
             os.environ['TESTENV_%s' % o.upper()] = str(getattr(Options.options, o, ''))
 
-    env.OPTIONS = ''
+    binary_mappings = ('smbtorture3:smbtorture,' +
+                       'nmblookup3:nmblookup,' +
+                       'smbclient3:smbclient,' +
+                       'ntlm_auth3:ntlm_auth')
+
+    env.OPTIONS = '--binary-mapping=' + binary_mappings
     if not Options.options.SLOWTEST:
         env.OPTIONS += ' --exclude=${srcdir}/source3/selftest/slow'
     if Options.options.QUICKTEST:
@@ -166,7 +171,7 @@ def cmd_testonly(opt):
         os.makedirs(env.SELFTEST_PREFIX, int('755', 8))
 
     # We use the full path rather than relative path because it cause problems on some plateforms (ie. solaris 8).
-    cmd = '(${PERL} ${srcdir}/selftest/selftest.pl --target=samba3 --prefix=${SELFTEST_PREFIX} --builddir=. --srcdir=${srcdir} --exclude=${srcdir}/source3/selftest/skip --testlist="${srcdir}/source3/selftest/tests.py|" ${OPTIONS} --socket-wrapper ${TESTS} && touch ${SELFTEST_PREFIX}/st_done) | ${FILTER_OPTIONS} | tee ${SELFTEST_PREFIX}/subunit'
+    cmd = '(${PERL} ${srcdir}/selftest/selftest.pl --target=samba3 --prefix=${SELFTEST_PREFIX} --srcdir=${srcdir} --exclude=${srcdir}/source3/selftest/skip --testlist="${srcdir}/source3/selftest/tests.py|" ${OPTIONS} --socket-wrapper ${TESTS} && touch ${SELFTEST_PREFIX}/st_done) | ${FILTER_OPTIONS} | tee ${SELFTEST_PREFIX}/subunit'
     if os.environ.get('RUN_FROM_BUILD_FARM') is None and not Options.options.FILTERED_SUBUNIT:
         cmd += ' | ${FORMAT_TEST_OUTPUT}'
     else:
