@@ -349,7 +349,7 @@ find source4/heimdal -type f | xargs chmod -x
 %_bindir/samba-tool
 %_datadir/samba/setup
 %_libdir/mit_samba.so
-%_mandir/man8/samba.*
+#%_mandir/man8/samba.*
 %dir /var/lib/%name/sysvol
 %config(noreplace) %_sysconfdir/logrotate.d/%name
 %config(noreplace) %_sysconfdir/sysconfig/%name
@@ -449,10 +449,8 @@ find source4/heimdal -type f | xargs chmod -x
 %_pkgconfigdir/torture.pc
 
 %files pidl
-%perl_vendor_privlib/*
-%_man1dir/pidl*
-%_man3dir/Parse*
 %attr(755,root,root) %_bindir/pidl
+%perl_vendor_privlib/*
 
 %if_enabled client
 %files client
