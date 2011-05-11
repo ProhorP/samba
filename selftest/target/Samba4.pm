@@ -12,7 +12,7 @@ use POSIX;
 use SocketWrapper;
 
 sub new($$$$$) {
-	my ($classname, $bindir, $binary_mapping, $bindir_path, $ldap, $srcdir, $exeext) = @_;
+	my ($classname, $bindir, $binary_mapping, $bindir_path, $ldap, $srcdir, $exeext, $server_maxtime) = @_;
 	$exeext = "" unless defined($exeext);
 
 	my $self = {
@@ -22,7 +22,8 @@ sub new($$$$$) {
 		binary_mapping => $binary_mapping,
 		bindir_path => $bindir_path,
 		srcdir => $srcdir,
-		exeext => $exeext
+		exeext => $exeext,
+		server_maxtime => $server_maxtime
 	};
 	bless $self;
 	return $self;
@@ -82,9 +83,9 @@ sub slapd_stop($$)
 	return 1;
 }
 
-sub check_or_start($$$)
+sub check_or_start($$)
 {
-	my ($self, $env_vars, $max_time) = @_;
+	my ($self, $env_vars) = @_;
 	return 0 if ( -p $env_vars->{SAMBA_TEST_FIFO});
 
 	unlink($env_vars->{SAMBA_TEST_FIFO});
@@ -126,9 +127,7 @@ sub check_or_start($$$)
 		}
 
 		my $optarg = "";
-		if (defined($max_time)) {
-			$optarg = "--maximum-runtime=$max_time ";
-		}
+		$optarg = "--maximum-runtime=$self->{server_maxtime}";
 		if (defined($ENV{SAMBA_OPTIONS})) {
 			$optarg.= " $ENV{SAMBA_OPTIONS}";
 		}
@@ -185,14 +184,14 @@ sub wait_for_start($$)
 	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{SERVER}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSNAME}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSNAME}");
-	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSALIAS}");
-	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSALIAS}");
+	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSNAME}");
+	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSNAME}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{SERVER}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{SERVER}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSNAME}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSNAME}");
-	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSALIAS}");
-	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSALIAS}");
+	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSNAME}");
+	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSNAME}");
 
 	print $self->getlog_env($testenv_vars);
 }
@@ -505,7 +504,7 @@ sub mk_krb5_conf($$)
 
 sub provision_raw_prepare($$$$$$$$$$)
 {
-	my ($self, $prefix, $server_role, $netbiosname, $netbiosalias,
+	my ($self, $prefix, $server_role, $netbiosname, 
 	    $domain, $realm, $functional_level,
 	    $swiface, $password, $kdc_ipv4) = @_;
 	my $ctx;
@@ -530,7 +529,6 @@ sub provision_raw_prepare($$$$$$$$$$)
 
 	$ctx->{server_role} = $server_role;
 	$ctx->{netbiosname} = $netbiosname;
-	$ctx->{netbiosalias} = $netbiosalias;
 	$ctx->{swiface} = $swiface;
 	$ctx->{password} = $password;
 	$ctx->{kdc_ipv4} = $kdc_ipv4;
@@ -632,7 +630,6 @@ sub provision_raw_step1($$)
 	print CONFFILE "
 [global]
 	netbios name = $ctx->{netbiosname}
-	netbios aliases = $ctx->{netbiosalias}
 	posix:eadb = $ctx->{lockdir}/eadb.tdb
 	workgroup = $ctx->{domain}
 	realm = $ctx->{realm}
@@ -679,6 +676,11 @@ sub provision_raw_step1($$)
 
 	$self->mk_keyblobs($ctx->{tlsdir});
 
+        #Default the KDC IP to the server's IP
+	if (not defined($ctx->{kdc_ipv4})) {
+             $ctx->{kdc_ipv4} = $ctx->{ipv4};
+        }
+
 	$self->mk_krb5_conf($ctx);
 
 	open(PWD, ">$ctx->{nsswrap_passwd}");
@@ -719,7 +721,6 @@ nogroup:x:65534:nobody
 		SERVER => $ctx->{netbiosname},
 		SERVER_IP => $ctx->{ipv4},
 		NETBIOSNAME => $ctx->{netbiosname},
-		NETBIOSALIAS => $ctx->{netbiosalias},
 		DOMAIN => $ctx->{domain},
 		USERNAME => $ctx->{username},
 		REALM => $ctx->{realm},
@@ -760,12 +761,12 @@ sub provision_raw_step2($$$)
 
 sub provision($$$$$$$$$)
 {
-	my ($self, $prefix, $server_role, $netbiosname, $netbiosalias,
+	my ($self, $prefix, $server_role, $netbiosname, 
 	    $domain, $realm, $functional_level,
 	    $swiface, $password, $kdc_ipv4, $extra_smbconf_options) = @_;
 
 	my $ctx = $self->provision_raw_prepare($prefix, $server_role,
-					       $netbiosname, $netbiosalias,
+					       $netbiosname, 
 					       $domain, $realm, $functional_level,
 					       $swiface, $password, $kdc_ipv4);
 
@@ -876,12 +877,11 @@ sub provision_member($$$)
 
 	my $ret = $self->provision($prefix,
 				   "member server",
-				   "localmember",
-				   "member3",
+				   "s4member",
 				   "SAMBADOMAIN",
 				   "samba.example.com",
 				   "2008",
-				   3,
+				   23,
 				   "locMEMpass3",
 				   $dcvars->{SERVER_IP},
 				   "");
@@ -904,14 +904,12 @@ sub provision_member($$$)
 	$ret->{MEMBER_SERVER} = $ret->{SERVER};
 	$ret->{MEMBER_SERVER_IP} = $ret->{SERVER_IP};
 	$ret->{MEMBER_NETBIOSNAME} = $ret->{NETBIOSNAME};
-	$ret->{MEMBER_NETBIOSALIAS} = $ret->{NETBIOSALIAS};
 	$ret->{MEMBER_USERNAME} = $ret->{USERNAME};
 	$ret->{MEMBER_PASSWORD} = $ret->{PASSWORD};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
-	$ret->{DC_NETBIOSALIAS} = $dcvars->{DC_NETBIOSALIAS};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
 
@@ -931,11 +929,10 @@ sub provision_rpc_proxy($$$)
 	my $ret = $self->provision($prefix,
 				   "member server",
 				   "localrpcproxy",
-				   "rpcproxy4",
 				   "SAMBADOMAIN",
 				   "samba.example.com",
 				   "2008",
-				   4,
+				   24,
 				   "locRPCproxypass4",
 				   $dcvars->{SERVER_IP},
 				   $extra_smbconf_options);
@@ -959,14 +956,12 @@ sub provision_rpc_proxy($$$)
 	$ret->{RPC_PROXY_SERVER} = $ret->{SERVER};
 	$ret->{RPC_PROXY_SERVER_IP} = $ret->{SERVER_IP};
 	$ret->{RPC_PROXY_NETBIOSNAME} = $ret->{NETBIOSNAME};
-	$ret->{RPC_PROXY_NETBIOSALIAS} = $ret->{NETBIOSALIAS};
 	$ret->{RPC_PROXY_USERNAME} = $ret->{USERNAME};
 	$ret->{RPC_PROXY_PASSWORD} = $ret->{PASSWORD};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
-	$ret->{DC_NETBIOSALIAS} = $dcvars->{DC_NETBIOSALIAS};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
 
@@ -981,11 +976,10 @@ sub provision_vampire_dc($$$)
 	# We do this so that we don't run the provision.  That's the job of 'net vampire'.
 	my $ctx = $self->provision_raw_prepare($prefix, "domain controller",
 					       "localvampiredc",
-					       "dc2",
 					       "SAMBADOMAIN",
 					       "samba.example.com",
 					       "2008",
-					       2, $dcvars->{PASSWORD},
+					       22, $dcvars->{PASSWORD},
 					       $dcvars->{SERVER_IP});
 
 	$ctx->{smb_conf_extra_options} = "
@@ -1022,12 +1016,10 @@ sub provision_vampire_dc($$$)
 	$ret->{VAMPIRE_DC_SERVER} = $ret->{SERVER};
 	$ret->{VAMPIRE_DC_SERVER_IP} = $ret->{SERVER_IP};
 	$ret->{VAMPIRE_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
-	$ret->{VAMPIRE_DC_NETBIOSALIAS} = $ret->{NETBIOSALIAS};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
-	$ret->{DC_NETBIOSALIAS} = $dcvars->{DC_NETBIOSALIAS};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
 
@@ -1042,13 +1034,12 @@ sub provision_dc($$)
 	my $ret = $self->provision($prefix,
 				   "domain controller",
 				   "localdc",
-				   "dc1",
 				   "SAMBADOMAIN",
 				   "samba.example.com",
 				   "2008",
-				   1,
+				   21,
 				   "locDCpass1",
-				   "127.0.0.1", "");
+				   undef, "netbios aliases = DC1");
 
 	return undef unless(defined $ret);
 	unless($self->add_wins_config("$prefix/private")) {
@@ -1056,10 +1047,10 @@ sub provision_dc($$)
 		return undef;
 	}
 
+	$ret->{NETBIOSALIAS} = "DC1";
 	$ret->{DC_SERVER} = $ret->{SERVER};
 	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
 	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
-	$ret->{DC_NETBIOSALIAS} = $ret->{NETBIOSALIAS};
 	$ret->{DC_USERNAME} = $ret->{USERNAME};
 	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
 
@@ -1074,13 +1065,12 @@ sub provision_fl2000dc($$)
 	my $ret = $self->provision($prefix,
 				   "domain controller",
 				   "dc5",
-				   "localfl2000dc",
 				   "SAMBA2000",
 				   "samba2000.example.com",
 				   "2000",
-				   5,
+				   25,
 				   "locDCpass5",
-				   "127.0.0.5", "");
+				   undef, "");
 
 	unless($self->add_wins_config("$prefix/private")) {
 		warn("Unable to add wins configuration");
@@ -1098,13 +1088,12 @@ sub provision_fl2003dc($$)
 	my $ret = $self->provision($prefix,
 				   "domain controller",
 				   "dc6",
-				   "localfl2003dc",
 				   "SAMBA2003",
 				   "samba2003.example.com",
 				   "2003",
-				   6,
+				   26,
 				   "locDCpass6",
-				   "127.0.0.6", "");
+				   undef, "");
 
 	unless($self->add_wins_config("$prefix/private")) {
 		warn("Unable to add wins configuration");
@@ -1122,13 +1111,12 @@ sub provision_fl2008r2dc($$)
 	my $ret = $self->provision($prefix,
 				   "domain controller",
 				   "dc7",
-				   "localfl2000r2dc",
 				   "SAMBA2008R2",
 				   "samba2008R2.example.com",
 				   "2008_R2",
-				   7,
+				   27,
 				   "locDCpass7",
-				   "127.0.0.7", "");
+				   undef, "");
 
 	unless ($self->add_wins_config("$prefix/private")) {
 		warn("Unable to add wins configuration");
@@ -1147,11 +1135,10 @@ sub provision_rodc($$$)
 	# We do this so that we don't run the provision.  That's the job of 'net join RODC'.
 	my $ctx = $self->provision_raw_prepare($prefix, "domain controller",
 					       "rodc",
-					       "dc8",
 					       "SAMBADOMAIN",
 					       "samba.example.com",
 					       "2008",
-					       8, $dcvars->{PASSWORD},
+					       28, $dcvars->{PASSWORD},
 					       $dcvars->{SERVER_IP});
 	unless ($ctx) {
 		return undef;
@@ -1208,12 +1195,10 @@ sub provision_rodc($$$)
 	$ret->{RODC_DC_SERVER} = $ret->{SERVER};
 	$ret->{RODC_DC_SERVER_IP} = $ret->{SERVER_IP};
 	$ret->{RODC_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
-	$ret->{RODC_DC_NETBIOSALIAS} = $ret->{NETBIOSALIAS};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
-	$ret->{DC_NETBIOSALIAS} = $dcvars->{DC_NETBIOSALIAS};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
 
@@ -1308,11 +1293,11 @@ sub setup_env($$$)
 			$self->setup_dc("$path/dc");
 		}
 		return $self->setup_vampire_dc("$path/vampire_dc", $self->{vars}->{dc});
-	} elsif ($envname eq "member") {
+	} elsif ($envname eq "s4member") {
 		if (not defined($self->{vars}->{dc})) {
 			$self->setup_dc("$path/dc");
 		}
-		return $self->setup_member("$path/member", $self->{vars}->{dc});
+		return $self->setup_member("$path/s4member", $self->{vars}->{dc});
 	} elsif ($envname eq "rodc") {
 		if (not defined($self->{vars}->{dc})) {
 			$self->setup_dc("$path/dc");
@@ -1323,7 +1308,7 @@ sub setup_env($$$)
 			$ENV{ENVNAME} = "dc";
 			$self->setup_dc("$path/dc");
 		}
-		my $ret = $self->setup_member("$path/member", $self->{vars}->{dc});
+		my $ret = $self->setup_member("$path/s4member", $self->{vars}->{dc});
 		if (not defined($self->{vars}->{rpc_proxy})) {
 			$ENV{ENVNAME} = "rpc_proxy";
 			my $rpc_proxy_ret = $self->setup_rpc_proxy("$path/rpc_proxy", $self->{vars}->{dc});
@@ -1331,7 +1316,6 @@ sub setup_env($$$)
 			$ret->{RPC_PROXY_SERVER} = $rpc_proxy_ret->{SERVER};
 			$ret->{RPC_PROXY_SERVER_IP} = $rpc_proxy_ret->{SERVER_IP};
 			$ret->{RPC_PROXY_NETBIOSNAME} = $rpc_proxy_ret->{NETBIOSNAME};
-			$ret->{RPC_PROXY_NETBIOSALIAS} = $rpc_proxy_ret->{NETBIOSALIAS};
 			$ret->{RPC_PROXY_USERNAME} = $rpc_proxy_ret->{USERNAME};
 			$ret->{RPC_PROXY_PASSWORD} = $rpc_proxy_ret->{PASSWORD};
 		}
@@ -1342,7 +1326,6 @@ sub setup_env($$$)
 			$ret->{FL2000DC_SERVER} = $fl2000dc_ret->{SERVER};
 			$ret->{FL2000DC_SERVER_IP} = $fl2000dc_ret->{SERVER_IP};
 			$ret->{FL2000DC_NETBIOSNAME} = $fl2000dc_ret->{NETBIOSNAME};
-			$ret->{FL2000DC_NETBIOSALIAS} = $fl2000dc_ret->{NETBIOSALIAS};
 			$ret->{FL2000DC_USERNAME} = $fl2000dc_ret->{USERNAME};
 			$ret->{FL2000DC_PASSWORD} = $fl2000dc_ret->{PASSWORD};
 		}
@@ -1353,7 +1336,6 @@ sub setup_env($$$)
 			$ret->{FL2003DC_SERVER} = $fl2003dc_ret->{SERVER};
 			$ret->{FL2003DC_SERVER_IP} = $fl2003dc_ret->{SERVER_IP};
 			$ret->{FL2003DC_NETBIOSNAME} = $fl2003dc_ret->{NETBIOSNAME};
-			$ret->{FL2003DC_NETBIOSALIAS} = $fl2003dc_ret->{NETBIOSALIAS};
 			$ret->{FL2003DC_USERNAME} = $fl2003dc_ret->{USERNAME};
 			$ret->{FL2003DC_PASSWORD} = $fl2003dc_ret->{PASSWORD};
 		}
@@ -1364,13 +1346,11 @@ sub setup_env($$$)
 			$ret->{FL2008R2DC_SERVER} = $fl2008r2dc_ret->{SERVER};
 			$ret->{FL2008R2DC_SERVER_IP} = $fl2008r2dc_ret->{SERVER_IP};
 			$ret->{FL2008R2DC_NETBIOSNAME} = $fl2008r2dc_ret->{NETBIOSNAME};
-			$ret->{FL2008R2DC_NETBIOSALIAS} = $fl2008r2dc_ret->{NETBIOSALIAS};
 			$ret->{FL2008R2DC_USERNAME} = $fl2008r2dc_ret->{USERNAME};
 			$ret->{FL2008R2DC_PASSWORD} = $fl2008r2dc_ret->{PASSWORD};
 		}
 		return $ret;
 	} else {
-		warn("Samba4 can't provide environment '$envname'");
 		return undef;
 	}
 }
@@ -1382,7 +1362,7 @@ sub setup_member($$$)
 	my $env = $self->provision_member($path, $dc_vars);
 
 	if (defined $env) {
-		$self->check_or_start($env, ($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1399,7 +1379,7 @@ sub setup_rpc_proxy($$$)
 	my $env = $self->provision_rpc_proxy($path, $dc_vars);
 
 	if (defined $env) {
-	        $self->check_or_start($env, ($ENV{SMBD_MAXTIME} or 7500));
+	        $self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1414,8 +1394,7 @@ sub setup_dc($$)
 
 	my $env = $self->provision_dc($path);
 	if (defined $env) {
-		$self->check_or_start($env,
-			($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1430,8 +1409,7 @@ sub setup_fl2000dc($$)
 
 	my $env = $self->provision_fl2000dc($path);
 	if (defined $env) {
-		$self->check_or_start($env,
-			($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1448,8 +1426,7 @@ sub setup_fl2003dc($$)
 	my $env = $self->provision_fl2003dc($path);
 
 	if (defined $env) {
-		$self->check_or_start($env,
-			($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1465,8 +1442,7 @@ sub setup_fl2008r2dc($$)
 	my $env = $self->provision_fl2008r2dc($path);
 
 	if (defined $env) {
-		$self->check_or_start($env,
-			($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1483,8 +1459,7 @@ sub setup_vampire_dc($$$)
 	my $env = $self->provision_vampire_dc($path, $dc_vars);
 
 	if (defined $env) {
-		$self->check_or_start($env,
-			($ENV{SMBD_MAXTIME} or 7500));
+		$self->check_or_start($env);
 
 		$self->wait_for_start($env);
 
@@ -1537,8 +1512,7 @@ sub setup_rodc($$$)
 		return undef;
 	}
 
-	$self->check_or_start($env,
-		($ENV{SMBD_MAXTIME} or 7500));
+	$self->check_or_start($env);
 
 	$self->wait_for_start($env);
 

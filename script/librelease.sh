@@ -2,6 +2,7 @@
 # make a release of a Samba library
 
 GPG_USER='Samba Library Distribution Key <samba-bugs@samba.org>'
+GPG_KEYID='13084025'
 
 if [ ! -d ".git" ]; then
 	echo "Run this script from the top-level directory in the"
@@ -14,6 +15,7 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 
+umask 0022
 
 release_lib() {
     lib="$1"
@@ -39,11 +41,15 @@ release_lib() {
 
     tagname=$(basename $tarname .tar | sed s/[\.]/-/g)
     echo "tagging as $tagname"
-    git tag -s "$tagname" -m "$lib: tag release $tagname"
+    git tag -u $GPG_KEYID -s "$tagname" -m "$lib: tag release $tagname" || {
+	exit 1
+    }
 
     echo "signing"
     rm -f "$tarname.asc"
-    gpg -u "$GPG_USER" --detach-sign --armor $tarname || exit 1
+    gpg -u "$GPG_USER" --detach-sign --armor $tarname || {
+	exit 1
+    }
     [ -f "$tarname.asc" ] || {
 	echo "Failed to create signature $tarname.asc"
 	exit 1
@@ -56,7 +62,10 @@ release_lib() {
     }
 
     echo "Transferring"
-    rsync -Pav $tarname.asc $tgzname master.samba.org:~ftp/pub/$lib/
+    rsync -Pav $tarname.asc $tgzname master.samba.org:~ftp/pub/$lib/ || {
+	exit 1
+    }
+    rsync master.samba.org:~ftp/pub/$lib/$tarname.*
 
     popd
 }

@@ -481,17 +481,33 @@ sub bindir_path($$) {
 	return $path;
 }
 
-if ($opt_target eq "samba4") {
+# After this many seconds, the server will self-terminate.  All tests
+# must terminate in this time, and testenv will only stay alive this
+# long
+
+my $server_maxtime = 7500;
+if (defined($ENV{SMBD_MAXTIME}) and $ENV{SMBD_MAXTIME} ne "") {
+    $server_maxtime = $ENV{SMBD_MAXTIME};
+}
+
+if ($opt_target eq "samba") {
+	if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
+		die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
+	}
+	$testenv_default = "all";
+	require target::Samba;
+	$target = new Samba($bindir, \%binary_mapping, \&bindir_path, $ldap, $srcdir, $exeext, $server_maxtime);
+} elsif ($opt_target eq "samba4") {
 	$testenv_default = "all";
 	require target::Samba4;
-	$target = new Samba4($bindir, \%binary_mapping, \&bindir_path, $ldap, $srcdir, $exeext);
+	$target = new Samba4($bindir, \%binary_mapping, \&bindir_path, $ldap, $srcdir, $exeext, $server_maxtime);
 } elsif ($opt_target eq "samba3") {
 	if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
 		die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
 	}
 	$testenv_default = "member";
 	require target::Samba3;
-	$target = new Samba3($bindir, \%binary_mapping, \&bindir_path, $srcdir_abs, $exeext);
+	$target = new Samba3($bindir, \%binary_mapping, \&bindir_path, $srcdir_abs, $exeext, $server_maxtime);
 } elsif ($opt_target eq "win") {
 	die("Windows tests will not run with socket wrapper enabled.") 
 		if ($opt_socket_wrapper);
@@ -699,7 +715,6 @@ if ($opt_quick) {
 } else {
 	$ENV{SELFTEST_QUICK} = "";
 }
-$ENV{SELFTEST_TARGET} = $opt_target;
 $ENV{SELFTEST_MAXTIME} = $torture_maxtime;
 
 my @available = ();
@@ -865,14 +880,21 @@ sub setup_env($$)
 		$testenv_vars = {};
 	} elsif (defined(get_running_env($envname))) {
 		$testenv_vars = get_running_env($envname);
-		if (not $target->check_env($testenv_vars)) {
-			print $target->getlog_env($testenv_vars);
+		if (not $testenv_vars->{target}->check_env($testenv_vars)) {
+			print $testenv_vars->{target}->getlog_env($testenv_vars);
 			$testenv_vars = undef;
 		}
 	} else {
 		$testenv_vars = $target->setup_env($envname, $prefix);
+		if (defined($testenv_vars) && not defined($testenv_vars->{target})) {
+		        $testenv_vars->{target} = $target;
+		}
+		if (not defined($testenv_vars)) {
+		        warn("$opt_target can't provide environment '$envname'");
+		}
 	}
 
+	
 	return undef unless defined($testenv_vars);
 
 	$running_envs{$envname} = $testenv_vars;
@@ -916,21 +938,24 @@ sub getlog_env($)
 {
 	my ($envname) = @_;
 	return "" if ($envname eq "none");
-	return $target->getlog_env(get_running_env($envname));
+	my $env = get_running_env($envname);
+	return $env->{target}->getlog_env($env);
 }
 
 sub check_env($)
 {
 	my ($envname) = @_;
 	return 1 if ($envname eq "none");
-	return $target->check_env(get_running_env($envname));
+	my $env = get_running_env($envname);
+	return $env->{target}->check_env($env);
 }
 
 sub teardown_env($)
 {
 	my ($envname) = @_;
 	return if ($envname eq "none");
-	$target->teardown_env(get_running_env($envname));
+	my $env = get_running_env($envname);
+	$env->{target}->teardown_env($env);
 	delete $running_envs{$envname};
 }
 

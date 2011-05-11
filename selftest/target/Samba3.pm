@@ -11,14 +11,15 @@ use FindBin qw($RealBin);
 use POSIX;
 
 sub new($$) {
-	my ($classname, $bindir, $binary_mapping, $bindir_path, $srcdir, $exeext) = @_;
+	my ($classname, $bindir, $binary_mapping, $bindir_path, $srcdir, $exeext, $server_maxtime) = @_;
 	$exeext = "" unless defined($exeext);
 	my $self = { vars => {},
 		     bindir => $bindir,
 		     binary_mapping => $binary_mapping,
 		     bindir_path => $bindir_path,
 		     srcdir => $srcdir,
-		     exeext => $exeext
+		     exeext => $exeext,
+		     server_maxtime => $server_maxtime
 	};
 	bless $self;
 	return $self;
@@ -90,53 +91,52 @@ sub setup_env($$$)
 {
 	my ($self, $envname, $path) = @_;
 	
-	if ($envname eq "dc") {
-		return $self->setup_dc("$path/dc");
+	if ($envname eq "s3dc") {
+		return $self->setup_s3dc("$path/s3dc");
 	} elsif ($envname eq "secshare") {
 		return $self->setup_secshare("$path/secshare");
 	} elsif ($envname eq "ktest") {
 		return $self->setup_ktest("$path/ktest");
 	} elsif ($envname eq "secserver") {
-		if (not defined($self->{vars}->{dc})) {
-			if (not defined($self->setup_dc("$path/dc"))) {
+		if (not defined($self->{vars}->{s3dc})) {
+			if (not defined($self->setup_s3dc("$path/s3dc"))) {
 			        return undef;
 			}
 		}
-		return $self->setup_secserver("$path/secserver", $self->{vars}->{dc});
+		return $self->setup_secserver("$path/secserver", $self->{vars}->{s3dc});
 	} elsif ($envname eq "member") {
-		if (not defined($self->{vars}->{dc})) {
-			if (not defined($self->setup_dc("$path/dc"))) {
+		if (not defined($self->{vars}->{s3dc})) {
+			if (not defined($self->setup_s3dc("$path/s3dc"))) {
 			        return undef;
 			}
 		}
-		return $self->setup_member("$path/member", $self->{vars}->{dc});
+		return $self->setup_member("$path/member", $self->{vars}->{s3dc});
 	} else {
 		return undef;
 	}
 }
 
-sub setup_dc($$)
+sub setup_s3dc($$)
 {
 	my ($self, $path) = @_;
 
-	print "PROVISIONING DC...";
+	print "PROVISIONING S3DC...";
 
-	my $dc_options = "
+	my $s3dc_options = "
 	domain master = yes
 	domain logons = yes
 	lanman auth = yes
 ";
 
 	my $vars = $self->provision($path,
-				    "LOCALDC2",
+				    "LOCALS3DC2",
 				    2,
-				    "localdc2pass",
-				    $dc_options);
+				    "locals3dc2pass",
+				    $s3dc_options);
 
 	$vars or return undef;
 
 	$self->check_or_start($vars,
-			      ($ENV{SMBD_MAXTIME} or 2700),
 			       "yes", "yes", "yes");
 
 	if (not $self->wait_for_start($vars)) {
@@ -149,14 +149,14 @@ sub setup_dc($$)
 	$vars->{DC_USERNAME} = $vars->{USERNAME};
 	$vars->{DC_PASSWORD} = $vars->{PASSWORD};
 
-	$self->{vars}->{dc} = $vars;
+	$self->{vars}->{s3dc} = $vars;
 
 	return $vars;
 }
 
 sub setup_member($$$)
 {
-	my ($self, $prefix, $dcvars) = @_;
+	my ($self, $prefix, $s3dcvars) = @_;
 
 	print "PROVISIONING MEMBER...";
 
@@ -175,24 +175,22 @@ sub setup_member($$$)
 	my $net = $self->{bindir_path}->($self, "net");
 	my $cmd = "";
 	$cmd .= "SOCKET_WRAPPER_DEFAULT_IFACE=\"$ret->{SOCKET_WRAPPER_DEFAULT_IFACE}\" ";
-	$cmd .= "$net join $ret->{CONFIGURATION} $dcvars->{DOMAIN} member";
-	$cmd .= " -U$dcvars->{USERNAME}\%$dcvars->{PASSWORD}";
+	$cmd .= "$net join $ret->{CONFIGURATION} $s3dcvars->{DOMAIN} member";
+	$cmd .= " -U$s3dcvars->{USERNAME}\%$s3dcvars->{PASSWORD}";
 
 	system($cmd) == 0 or die("Join failed\n$cmd");
 
-	$self->check_or_start($ret,
-			      ($ENV{SMBD_MAXTIME} or 2700),
-			       "yes", "yes", "yes");
+	$self->check_or_start($ret, "yes", "yes", "yes");
 
 	if (not $self->wait_for_start($ret)) {
 	       return undef;
 	}
 
-	$ret->{DC_SERVER} = $dcvars->{SERVER};
-	$ret->{DC_SERVER_IP} = $dcvars->{SERVER_IP};
-	$ret->{DC_NETBIOSNAME} = $dcvars->{NETBIOSNAME};
-	$ret->{DC_USERNAME} = $dcvars->{USERNAME};
-	$ret->{DC_PASSWORD} = $dcvars->{PASSWORD};
+	$ret->{DC_SERVER} = $s3dcvars->{SERVER};
+	$ret->{DC_SERVER_IP} = $s3dcvars->{SERVER_IP};
+	$ret->{DC_NETBIOSNAME} = $s3dcvars->{NETBIOSNAME};
+	$ret->{DC_USERNAME} = $s3dcvars->{USERNAME};
+	$ret->{DC_PASSWORD} = $s3dcvars->{PASSWORD};
 
 	return $ret;
 }
@@ -216,9 +214,7 @@ sub setup_secshare($$)
 
 	$vars or return undef;
 
-	$self->check_or_start($vars,
-			      ($ENV{SMBD_MAXTIME} or 2700),
-			       "yes", "no", "yes");
+	$self->check_or_start($vars, "yes", "no", "yes");
 
 	if (not $self->wait_for_start($vars)) {
 	       return undef;
@@ -231,13 +227,13 @@ sub setup_secshare($$)
 
 sub setup_secserver($$$)
 {
-	my ($self, $prefix, $dcvars) = @_;
+	my ($self, $prefix, $s3dcvars) = @_;
 
 	print "PROVISIONING server with security=server...";
 
 	my $secserver_options = "
 	security = server
-        password server = $dcvars->{SERVER_IP}
+        password server = $s3dcvars->{SERVER_IP}
 ";
 
 	my $ret = $self->provision($prefix,
@@ -248,26 +244,24 @@ sub setup_secserver($$$)
 
 	$ret or return undef;
 
-	$self->check_or_start($ret,
-			      ($ENV{SMBD_MAXTIME} or 2700),
-			       "yes", "no", "yes");
+	$self->check_or_start($ret, "yes", "no", "yes");
 
 	if (not $self->wait_for_start($ret)) {
 	       return undef;
 	}
 
-	$ret->{DC_SERVER} = $dcvars->{SERVER};
-	$ret->{DC_SERVER_IP} = $dcvars->{SERVER_IP};
-	$ret->{DC_NETBIOSNAME} = $dcvars->{NETBIOSNAME};
-	$ret->{DC_USERNAME} = $dcvars->{USERNAME};
-	$ret->{DC_PASSWORD} = $dcvars->{PASSWORD};
+	$ret->{DC_SERVER} = $s3dcvars->{SERVER};
+	$ret->{DC_SERVER_IP} = $s3dcvars->{SERVER_IP};
+	$ret->{DC_NETBIOSNAME} = $s3dcvars->{NETBIOSNAME};
+	$ret->{DC_USERNAME} = $s3dcvars->{USERNAME};
+	$ret->{DC_PASSWORD} = $s3dcvars->{PASSWORD};
 
 	return $ret;
 }
 
 sub setup_ktest($$$)
 {
-	my ($self, $prefix, $dcvars) = @_;
+	my ($self, $prefix, $s3dcvars) = @_;
 
 	print "PROVISIONING server with security=ads...";
 
@@ -280,7 +274,7 @@ sub setup_ktest($$$)
 
 	my $ret = $self->provision($prefix,
 				   "LOCALKTEST6",
-				   5,
+				   6,
 				   "localktest6pass",
 				   $ktest_options);
 
@@ -330,9 +324,7 @@ $ret->{USERNAME} = KTEST\\Administrator
 	system("cp $self->{srcdir}/source3/selftest/ktest-krb5_ccache-3 $prefix/krb5_ccache-3");
 	chmod 0600, "$prefix/krb5_ccache-3";
 
-	$self->check_or_start($ret,
-			      ($ENV{SMBD_MAXTIME} or 2700),
-			       "yes", "no", "yes");
+	$self->check_or_start($ret, "yes", "no", "yes");
 
 	if (not $self->wait_for_start($ret)) {
 	       return undef;
@@ -369,8 +361,8 @@ sub read_pid($$)
 	return $pid;
 }
 
-sub check_or_start($$$$$) {
-	my ($self, $env_vars, $maxtime, $nmbd, $winbindd, $smbd) = @_;
+sub check_or_start($$$$) {
+	my ($self, $env_vars, $nmbd, $winbindd, $smbd) = @_;
 
 	unlink($env_vars->{NMBD_TEST_LOG});
 	print "STARTING NMBD...";
@@ -394,7 +386,7 @@ sub check_or_start($$$$$) {
 				print("Skip nmbd received signal $signame");
 				exit 0;
 			};
-			sleep($maxtime);
+			sleep($self->{server_maxtime});
 			exit 0;
 		}
 
@@ -405,7 +397,7 @@ sub check_or_start($$$$$) {
 
 		$ENV{MAKE_TEST_BINARY} = $self->{bindir_path}->($self, "nmbd");
 
-		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $maxtime);
+		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $self->{server_maxtime});
 		if(defined($ENV{NMBD_VALGRIND})) { 
 			@preargs = split(/ /, $ENV{NMBD_VALGRIND});
 		}
@@ -437,7 +429,7 @@ sub check_or_start($$$$$) {
 				print("Skip winbindd received signal $signame");
 				exit 0;
 			};
-			sleep($maxtime);
+			sleep($self->{server_maxtime});
 			exit 0;
 		}
 
@@ -448,7 +440,7 @@ sub check_or_start($$$$$) {
 
 		$ENV{MAKE_TEST_BINARY} = $self->{bindir_path}->($self, "winbindd");
 
-		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $maxtime);
+		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $self->{server_maxtime});
 		if(defined($ENV{WINBINDD_VALGRIND})) {
 			@preargs = split(/ /, $ENV{WINBINDD_VALGRIND});
 		}
@@ -480,7 +472,7 @@ sub check_or_start($$$$$) {
 				print("Skip smbd received signal $signame");
 				exit 0;
 			};
-			sleep($maxtime);
+			sleep($self->{server_maxtime});
 			exit 0;
 		}
 
@@ -489,7 +481,7 @@ sub check_or_start($$$$$) {
 		if (defined($ENV{SMBD_OPTIONS})) {
 			@optargs = split(/ /, $ENV{SMBD_OPTIONS});
 		}
-		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $maxtime);
+		my @preargs = ($self->{bindir_path}->($self, "timelimit"), $self->{server_maxtime});
 		if(defined($ENV{SMBD_VALGRIND})) {
 			@preargs = split(/ /,$ENV{SMBD_VALGRIND});
 		}
@@ -850,6 +842,9 @@ domusers:X:$gid_domusers:
 	$ret{NSS_WRAPPER_PASSWD} = $nss_wrapper_passwd;
 	$ret{NSS_WRAPPER_GROUP} = $nss_wrapper_group;
 	$ret{NSS_WRAPPER_WINBIND_SO_PATH} = $ENV{NSS_WRAPPER_WINBIND_SO_PATH};
+        if (not defined($ret{NSS_WRAPPER_WINBIND_SO_PATH})) {
+	        $ret{NSS_WRAPPER_WINBIND_SO_PATH} = $self->{bindir_path}->($self, "default/nsswitch/libnss-winbind.so");
+        }
 	$ret{LOCAL_PATH} = "$shrdir";
 
 	return \%ret;
