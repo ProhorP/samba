@@ -60,6 +60,7 @@ Group: Networking/Other
 PreReq: samba-client-control >= 0:1.2
 Requires: samba-common = %version-%release
 Provides: samba-client-cups = %version-%release
+Obsoletes: samba-client-cups < %version-%release
 
 %description client
 The samba-client package provides some SMB/CIFS clients to complement
