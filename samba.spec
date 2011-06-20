@@ -2,8 +2,8 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.5.8
-Release: alt3
+Version: 3.5.9
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -630,6 +630,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Mon Jun 20 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.9-alt1
+- 3.5.9
+
 * Tue Mar 22 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.8-alt3
 - move cifs.upcall to /sbin
 
