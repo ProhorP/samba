@@ -268,14 +268,6 @@ make release
 popd
 
 %install
-cp -a docs-xml/output/manpages-3/* docs/manpages/
-cp -a docs-xml/output/htmldocs/index.html docs/htmldocs/
-cp -a docs-xml/output/htmldocs/samba.css docs/htmldocs/
-cp -a docs-xml/output/htmldocs/manpages-3/* docs/htmldocs/manpages/
-cp -a docs-xml/output/htmldocs/Samba3-ByExample docs/htmldocs/
-cp -a docs-xml/output/htmldocs/Samba3-Developers-Guide docs/htmldocs/
-cp -a docs-xml/output/htmldocs/Samba3-HOWTO docs/htmldocs/
-
 mkdir -p %buildroot/sbin
 mkdir -p %buildroot/usr/{sbin,bin}
 mkdir -p %buildroot%_initdir
@@ -366,6 +358,15 @@ mkdir -p %buildroot%_pixmapsdir/%name
 install -m 644 %samba_source/lib/netapi/examples/netdomjoin-gui/samba.ico %buildroot%_pixmapsdir/%name/samba.ico
 install -m 644 %samba_source/lib/netapi/examples/netdomjoin-gui/logo.png %buildroot%_pixmapsdir/%name/logo.png
 install -m 644 %samba_source/lib/netapi/examples/netdomjoin-gui/logo-small.png %buildroot%_pixmapsdir/%name/logo-small.png
+
+mkdir -p %buildroot%_man1dir
+mkdir -p %buildroot%_man5dir
+mkdir -p %buildroot%_man7dir
+mkdir -p %buildroot%_man8dir
+install -m 644 docs-xml/output/manpages-3/*.1 %buildroot%_man1dir
+install -m 644 docs-xml/output/manpages-3/*.5 %buildroot%_man5dir
+install -m 644 docs-xml/output/manpages-3/*.7 %buildroot%_man7dir
+install -m 644 docs-xml/output/manpages-3/*.8 %buildroot%_man8dir
 
 rm -f %buildroot%_man1dir/editreg.1*
 rm -f %buildroot%_man1dir/log2pcap.1*
@@ -605,9 +606,7 @@ true
 %_pkgconfigdir/wbclient.pc
 
 %files doc
-%doc docs/Samba3-Developers-Guide.pdf docs/Samba3-ByExample.pdf
-%doc docs/Samba3-HOWTO.pdf
-%doc docs/htmldocs
+%doc docs-xml/output/htmldocs
 
 %files -n libsmbclient
 %attr(755,root,root) %_libdir/libsmbclient.so.*
