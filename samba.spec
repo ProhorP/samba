@@ -2,8 +2,8 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.5.9
-Release: alt2
+Version: 3.5.10
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -638,6 +638,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu Jul 28 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.10-alt1
+- 3.5.10 (CVE-2011-2522, CVE-2011-2694)
+
 * Tue Jul 26 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.9-alt2
 - add docfiles location links to swat package (ALT #25909)
 
