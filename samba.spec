@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.5.9
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -121,7 +121,9 @@ The samba-winbind package provides developer tools for the wbclient library.
 %package swat
 Summary: The Samba SMB server Web configuration program
 Group: Security/Networking
-Requires: samba = %version-%release, xinetd
+Requires: samba = %version-%release
+Requires: samba-doc = %version-%release
+Requires: xinetd
 
 %description swat
 The samba-swat package includes the new SWAT (Samba Web Administration
@@ -419,6 +421,13 @@ rm -f %buildroot%_man8dir/tdbtool.8*
 mkdir -p %buildroot%{cups_serverbin}/backend
 ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 
+pushd %buildroot/%_datadir/swat/help
+ln -sf ../../doc/samba-doc-%version/htmldocs/manpages-3/ ./manpages
+ln -sf ../../doc/samba-doc-%version/htmldocs/Samba3-HOWTO/
+ln -sf ../../doc/samba-doc-%version/htmldocs/Samba3-ByExample/
+ln -sf ../../doc/samba-doc-%version/htmldocs/Samba3-Developers-Guide/
+popd
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -629,6 +638,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Tue Jul 26 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.9-alt2
+- add docfiles location links to swat package (ALT #25909)
+
 * Mon Jun 20 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.9-alt1
 - 3.5.9
 
