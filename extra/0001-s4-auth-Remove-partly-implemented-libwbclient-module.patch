@@ -1,14 +1,14 @@
 diff -ur samba4-4.0.0/source4/auth/ntlm/auth_winbind.c samba4-4.0.0.new/source4/auth/ntlm/auth_winbind.c
---- samba4-4.0.0/source4/auth/ntlm/auth_winbind.c	2011-04-14 21:33:19.000000000 +0400
-+++ samba4-4.0.0.new/source4/auth/ntlm/auth_winbind.c	2011-04-14 21:38:58.604177943 +0400
-@@ -28,87 +28,10 @@
+--- samba4-4.0.0/source4/auth/ntlm/auth_winbind.c	2011-07-12 21:18:12.000000000 +0400
++++ samba4-4.0.0.new/source4/auth/ntlm/auth_winbind.c	2011-07-28 20:34:28.120134000 +0400
+@@ -28,88 +28,10 @@
  #include "librpc/gen_ndr/ndr_winbind_c.h"
  #include "lib/messaging/irpc.h"
  #include "param/param.h"
 -#include "nsswitch/libwbclient/wbclient.h"
  #include "libcli/security/security.h"
  
- _PUBLIC_ NTSTATUS auth_winbind_init(void);
+ _PUBLIC_ NTSTATUS auth4_winbind_init(void);
  
 -static NTSTATUS get_info3_from_wbcAuthUserInfo(TALLOC_CTX *mem_ctx,
 -					       struct wbcAuthUserInfo *info,
@@ -86,10 +86,11 @@ diff -ur samba4-4.0.0/source4/auth/ntlm/auth_winbind.c samba4-4.0.0.new/source4/
 -	return NT_STATUS_OK;
 -}
 -
- 
+-
  static NTSTATUS winbind_want_check(struct auth_method_context *ctx,
  				   TALLOC_CTX *mem_ctx,
-@@ -226,89 +149,6 @@
+ 				   const struct auth_usersupplied_info *user_info)
+@@ -226,90 +148,6 @@
  	return NT_STATUS_OK;
  }
  
@@ -176,10 +177,11 @@ diff -ur samba4-4.0.0/source4/auth/ntlm/auth_winbind.c samba4-4.0.0.new/source4/
 -	return nt_status;
 -
 -}
- 
+-
  static const struct auth_operations winbind_ops = {
  	.name		= "winbind",
-@@ -317,12 +157,6 @@
+ 	.get_challenge	= auth_get_challenge_not_implemented,
+@@ -317,13 +155,6 @@
  	.check_password	= winbind_check_password
  };
  
@@ -189,10 +191,11 @@ diff -ur samba4-4.0.0/source4/auth/ntlm/auth_winbind.c samba4-4.0.0.new/source4/
 -	.want_check	= winbind_want_check,
 -	.check_password	= winbind_check_password_wbclient
 -};
- 
- _PUBLIC_ NTSTATUS auth_winbind_init(void)
+-
+ _PUBLIC_ NTSTATUS auth4_winbind_init(void)
  {
-@@ -334,11 +168,5 @@
+ 	NTSTATUS ret;
+@@ -334,11 +165,5 @@
  		return ret;
  	}
  
@@ -205,12 +208,12 @@ diff -ur samba4-4.0.0/source4/auth/ntlm/auth_winbind.c samba4-4.0.0.new/source4/
  	return NT_STATUS_OK;
  }
 diff -ur samba4-4.0.0/source4/auth/ntlm/wscript_build samba4-4.0.0.new/source4/auth/ntlm/wscript_build
---- samba4-4.0.0/source4/auth/ntlm/wscript_build	2011-04-14 21:33:19.000000000 +0400
-+++ samba4-4.0.0.new/source4/auth/ntlm/wscript_build	2011-04-14 21:36:26.144177872 +0400
+--- samba4-4.0.0/source4/auth/ntlm/wscript_build	2011-07-12 21:18:12.000000000 +0400
++++ samba4-4.0.0.new/source4/auth/ntlm/wscript_build	2011-07-28 20:34:45.304134009 +0400
 @@ -28,7 +28,7 @@
  	source='auth_winbind.c',
  	subsystem='auth4',
- 	init_function='auth_winbind_init',
+ 	init_function='auth4_winbind_init',
 -	deps='RPC_NDR_WINBIND MESSAGING wbclient'
 +	deps='RPC_NDR_WINBIND MESSAGING'
  	)
