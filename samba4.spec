@@ -52,6 +52,7 @@ BuildRequires: zlib-devel
 
 BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
 BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
+BuildRequires: libsmbclient-devel samba-winbind-clients
 
 %description
 Samba 4 is the ambitious next version of the Samba suite that is being
@@ -342,6 +343,7 @@ rm -f %buildroot%_libdir/samba/vfs/streams_xattr.so
 rm -f %buildroot%_libdir/samba/vfs/syncops.so
 rm -f %buildroot%_libdir/samba/vfs/time_audit.so
 rm -f %buildroot%_libdir/samba/vfs/xattr_tdb.so
+rm -f %buildroot%_libdir/libsmb/libsmbclient.so*
 rm -f %buildroot%_libdir/libnss_wins.so.2
 rm -f %buildroot%_sbindir/nmbd
 rm -f %buildroot%_sbindir/smbd
