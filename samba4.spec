@@ -1,6 +1,6 @@
 %define samba4_version 4.0.0
-%define pre_release alpha15
-%define main_release 34
+%define pre_release alpha16
+%define main_release 35
 %define _localstatedir /var
 
 # Most of these subpackages are disabled because they are not
@@ -27,7 +27,7 @@ Source1: %name.log
 Source4: %name.sysconfig
 Source5: %name.init
 
-Patch01: 0001-s4-auth-Remove-partly-implemented-libwbclient-module.patch
+Patch01: samba-4.0.0alpha16.buildfix.patch
 
 %if_enabled common
 Requires(pre): %name-common = %version-%release
@@ -129,23 +129,22 @@ domains and to use Windows user and group accounts on Linux.
 
 %prep
 %setup -q
-
-# copy Red Hat specific scripts
-%patch01 -p1 -b .rm-libwbclient-dep
+%patch01 -p1 -b .buildfix
 
 %build
 %undefine _configure_gettext
 %configure \
-	--enable-fhs \
+	--with-modulesdir=%_libdir/samba \
 	--with-lockdir=/var/lib/%name \
 	--with-piddir=/var/run \
 	--with-privatedir=/var/lib/%name/private \
+	--with-sockets-dir=/var/run \
 	--sysconfdir=%_sysconfdir/%name \
-	--with-winbindd-socket-dir=/var/run/winbind \
-	--with-ntp-signd-socket-dir=/var/run/ntp_signd \
+	--datadir=%_datadir/samba \
 	--disable-gnutls \
 	--disable-rpath-install \
-	--bundled-libraries=heimdal
+	--bundled-libraries=heimdal,!talloc,!tdb,!tevent,!ldb,!zlib
+
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
@@ -250,9 +249,10 @@ rm -f %buildroot%_sbindir/upgradeprovision
 rm -f %buildroot%_sbindir/samba_dnsupdate
 rm -f %buildroot%_sbindir/samba_spnupdate
 rm -f %buildroot%_bindir/samba-tool
-rm -rf %buildroot%_datadir/samba/setup
 rm -f %buildroot%_libdir/mit_samba.so
 rm -f %buildroot%_mandir/man8/samba.*
+rm -rf %buildroot%_datadir/samba/setup
+rm -rf %buildroot%_datadir/samba/swat
 %endif
 
 %if_enabled client
@@ -309,6 +309,134 @@ rm -fr %buildroot%python_libdir/lib
 rm -f %buildroot%_man1dir/oLschema2ldif.1
 #rm -f %buildroot%_datadir/swig/*/talloc.i
 
+rm -f %buildroot%_libdir/pam_smbpass.so
+
+# Remove Files conflicting with regular samba 3.x packages
+rm -f %buildroot%_libdir/samba/CHARSET/charset_CP437.so
+rm -f %buildroot%_libdir/samba/CHARSET/charset_CP850.so
+rm -f %buildroot%_libdir/samba/auth/script.so
+rm -f %buildroot%_libdir/samba/idmap/autorid.so
+rm -f %buildroot%_libdir/samba/ldb/dirsync.so
+rm -f %buildroot%_libdir/samba/libCHARSET3.so
+rm -f %buildroot%_libdir/samba/libLIBCLI_CLDAP.so
+rm -f %buildroot%_libdir/samba/libLIBCLI_LSA3.so
+rm -f %buildroot%_libdir/samba/libLIBCLI_RAW.so
+rm -f %buildroot%_libdir/samba/libLIBCLI_SMB_COMMON.so
+rm -f %buildroot%_libdir/samba/libLIBSMB.so
+rm -f %buildroot%_libdir/samba/libPOPT_SAMBA3.so
+rm -f %buildroot%_libdir/samba/libUTIL_CMDLINE.so
+rm -f %buildroot%_libdir/samba/libUTIL_TDB.so
+rm -f %buildroot%_libdir/samba/libaddns.so
+rm -f %buildroot%_libdir/samba/libads.so
+rm -f %buildroot%_libdir/samba/libadt_tree.so
+rm -f %buildroot%_libdir/samba/libasn1util.so
+rm -f %buildroot%_libdir/samba/libauth_sam_reply.so
+rm -f %buildroot%_libdir/samba/libbitmap.so
+rm -f %buildroot%_libdir/samba/libccan.so.0
+rm -f %buildroot%_libdir/samba/libccan.so.0.1-init-1161-g661d41f
+rm -f %buildroot%_libdir/samba/libcli-ldap-common.so
+rm -f %buildroot%_libdir/samba/libdbwrap_util.so
+rm -f %buildroot%_libdir/samba/libflag_mapping.so
+rm -f %buildroot%_libdir/samba/libinterfaces.so
+rm -f %buildroot%_libdir/samba/libmemcache.so
+rm -f %buildroot%_libdir/samba/libmsrpc3.so
+rm -f %buildroot%_libdir/samba/libnamearray.so
+rm -f %buildroot%_libdir/samba/libnpa_tstream.so
+rm -f %buildroot%_libdir/samba/libpassdb.so
+rm -f %buildroot%_libdir/samba/libsmbd_base.so
+rm -f %buildroot%_libdir/samba/libsmbd_conn.so
+rm -f %buildroot%_libdir/samba/libsmbd_shim.so
+rm -f %buildroot%_libdir/samba/libsmbregistry.so
+rm -f %buildroot%_libdir/samba/libstring_init.so
+rm -f %buildroot%_libdir/samba/libtdb_compat.so
+rm -f %buildroot%_libdir/samba/libutil_malloc.so
+rm -f %buildroot%_libdir/samba/libutil_reg.so
+rm -f %buildroot%_libdir/samba/libutil_sec.so
+rm -f %buildroot%_libdir/samba/libutil_str.so
+rm -f %buildroot%_libdir/samba/vfs/acl_tdb.so
+rm -f %buildroot%_libdir/samba/vfs/acl_xattr.so
+rm -f %buildroot%_libdir/samba/vfs/aio_fork.so
+rm -f %buildroot%_libdir/samba/vfs/audit.so
+rm -f %buildroot%_libdir/samba/vfs/cap.so
+rm -f %buildroot%_libdir/samba/vfs/catia.so
+rm -f %buildroot%_libdir/samba/vfs/crossrename.so
+rm -f %buildroot%_libdir/samba/vfs/default_quota.so
+rm -f %buildroot%_libdir/samba/vfs/dirsort.so
+rm -f %buildroot%_libdir/samba/vfs/expand_msdfs.so
+rm -f %buildroot%_libdir/samba/vfs/extd_audit.so
+rm -f %buildroot%_libdir/samba/vfs/fake_perms.so
+rm -f %buildroot%_libdir/samba/vfs/fileid.so
+rm -f %buildroot%_libdir/samba/vfs/full_audit.so
+rm -f %buildroot%_libdir/samba/vfs/linux_xfs_sgid.so
+rm -f %buildroot%_libdir/samba/vfs/netatalk.so
+rm -f %buildroot%_libdir/samba/vfs/preopen.so
+rm -f %buildroot%_libdir/samba/vfs/readahead.so
+rm -f %buildroot%_libdir/samba/vfs/readonly.so
+rm -f %buildroot%_libdir/samba/vfs/recycle.so
+rm -f %buildroot%_libdir/samba/vfs/scannedonly.so
+rm -f %buildroot%_libdir/samba/vfs/shadow_copy.so
+rm -f %buildroot%_libdir/samba/vfs/shadow_copy2.so
+rm -f %buildroot%_libdir/samba/vfs/smb_traffic_analyzer.so
+rm -f %buildroot%_libdir/samba/vfs/streams_depot.so
+rm -f %buildroot%_libdir/samba/vfs/streams_xattr.so
+rm -f %buildroot%_libdir/samba/vfs/syncops.so
+rm -f %buildroot%_libdir/samba/vfs/time_audit.so
+rm -f %buildroot%_libdir/samba/vfs/xattr_tdb.so
+rm -f %buildroot%_libdir/winbind_krb5_locator.so
+rm -f %buildroot%_libdir/libsmb/libsmbclient.so*
+rm -f %buildroot%_libdir/libsmbconf.so*
+rm -f %buildroot%_libdir/libsmbsharemodes.so*
+rm -f %buildroot%_libdir/libnetapi.so*
+rm -f %buildroot%_libdir/libnss_wins.so.2
+rm -f %buildroot%_includedir/samba-4.0/libsmbclient.h
+rm -f %buildroot%_includedir/samba-4.0/netapi.h
+rm -f %buildroot%_includedir/samba-4.0/smb_share_modes.h
+rm -f %buildroot%_includedir/samba-4.0/smbconf.h
+rm -f %buildroot%_sbindir/nmbd
+rm -f %buildroot%_sbindir/smbd
+rm -f %buildroot%_sbindir/swat
+rm -f %buildroot%_sbindir/winbindd
+rm -f %buildroot%_bindir/dbwrap_tool
+rm -f %buildroot%_bindir/dbwrap_torture
+rm -f %buildroot%_bindir/debug2html
+rm -f %buildroot%_bindir/eventlogadm
+rm -f %buildroot%_bindir/locktest2
+rm -f %buildroot%_bindir/locktest3
+rm -f %buildroot%_bindir/log2pcap
+rm -f %buildroot%_bindir/masktest3
+rm -f %buildroot%_bindir/msgtest
+rm -f %buildroot%_bindir/net
+rm -f %buildroot%_bindir/nmblookup3
+rm -f %buildroot%_bindir/ntlm_auth3
+rm -f %buildroot%_bindir/pdbedit
+rm -f %buildroot%_bindir/pdbtest
+rm -f %buildroot%_bindir/profiles
+rm -f %buildroot%_bindir/pthreadpooltest
+rm -f %buildroot%_bindir/rpc_open_tcp
+rm -f %buildroot%_bindir/rpcclient
+rm -f %buildroot%_bindir/sharesec
+rm -f %buildroot%_bindir/smbcacls
+rm -f %buildroot%_bindir/smbclient3
+rm -f %buildroot%_bindir/smbconftort
+rm -f %buildroot%_bindir/smbcontrol
+rm -f %buildroot%_bindir/smbcquotas
+rm -f %buildroot%_bindir/smbfilter
+rm -f %buildroot%_bindir/smbget
+rm -f %buildroot%_bindir/smbiconv
+rm -f %buildroot%_bindir/smbpasswd
+rm -f %buildroot%_bindir/smbspool
+rm -f %buildroot%_bindir/smbstatus
+rm -f %buildroot%_bindir/smbta-util
+rm -f %buildroot%_bindir/smbtorture3
+rm -f %buildroot%_bindir/smbtree
+rm -f %buildroot%_bindir/split_tokens
+rm -f %buildroot%_bindir/test_lp_load
+rm -f %buildroot%_bindir/timelimit
+rm -f %buildroot%_bindir/versiontest
+rm -f %buildroot%_bindir/vfstest
+rm -f %buildroot%_bindir/vlp
+rm -f %buildroot%_bindir/wbinfo3
+
 # This makes the right links, as rpmlint requires that
 # the ldconfig-created links be recorded in the RPM.
 #   /sbin/ldconfig -N -n %buildroot%_libdir
@@ -339,7 +467,7 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %files
-%doc COPYING WHATSNEW4.txt
+%doc COPYING
 %if_enabled samba4
 %_sbindir/provision
 %_sbindir/samba
@@ -347,7 +475,6 @@ find source4/heimdal -type f | xargs chmod -x
 %_sbindir/samba_dnsupdate
 %_sbindir/samba_spnupdate
 %_bindir/samba-tool
-%_datadir/samba/setup
 %_libdir/mit_samba.so
 #%_mandir/man8/samba.*
 %dir /var/lib/%name/sysvol
@@ -361,7 +488,7 @@ find source4/heimdal -type f | xargs chmod -x
 %files libs
 %doc PFIF.txt
 %dir %_datadir/samba
-%_datadir/samba/*.dat
+%_datadir/samba/codepages/*.dat
 
 #%_libdir/libdcerpc-atsvc.so.*
 %_libdir/libdcerpc-samr.so.*
@@ -482,6 +609,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Mon Aug 08 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha16
+- alpha16
+
 * Wed May 11 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha15
 - alpha15
 
