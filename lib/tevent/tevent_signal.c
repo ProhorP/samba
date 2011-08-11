@@ -210,7 +210,7 @@ struct tevent_signal *tevent_common_add_signal(struct tevent_context *ev,
 	/* the sig_state needs to be on a global context as it can last across
 	   multiple event contexts */
 	if (sig_state == NULL) {
-		sig_state = talloc_zero(talloc_autofree_context(), struct tevent_sig_state);
+		sig_state = talloc_zero(NULL, struct tevent_sig_state);
 		if (sig_state == NULL) {
 			return NULL;
 		}
@@ -355,16 +355,20 @@ int tevent_common_check_signal(struct tevent_context *ev)
 						    (void*)&sig_state->sig_info[i][ofs], 
 						    se->private_data);
 				}
+#ifdef SA_RESETHAND
 				if (se->sa_flags & SA_RESETHAND) {
 					talloc_free(se);
 				}
+#endif
 				continue;
 			}
 #endif
 			se->handler(ev, se, i, count, NULL, se->private_data);
+#ifdef SA_RESETHAND
 			if (se->sa_flags & SA_RESETHAND) {
 				talloc_free(se);
 			}
+#endif
 		}
 
 #ifdef SA_SIGINFO

@@ -36,16 +36,8 @@
 #define SIGCLD SIGCHLD
 #endif
 
-#ifndef SIGNAL_CAST
-#define SIGNAL_CAST (RETSIGTYPE (*)(int))
-#endif
-
 #ifdef HAVE_SETJMP_H
 #include <setjmp.h>
-#endif
-
-#ifndef SA_RESETHAND
-#define SA_RESETHAND SA_ONESHOT
 #endif
 
 #if !defined(HAVE_SIG_ATOMIC_T_TYPE)

@@ -23,6 +23,7 @@
 */
 
 #include "includes.h"
+#include "nmbd/nmbd.h"
 
 extern int global_nmb_port;
 
@@ -55,13 +56,21 @@ yet and it may be in use by a response record
 
 void close_subnet(struct subnet_record *subrec)
 {
+	if (subrec->nmb_sock != -1) {
+		close(subrec->nmb_sock);
+		subrec->nmb_sock = -1;
+	}
+	if (subrec->nmb_bcast != -1) {
+		close(subrec->nmb_bcast);
+		subrec->nmb_bcast = -1;
+	}
 	if (subrec->dgram_sock != -1) {
 		close(subrec->dgram_sock);
 		subrec->dgram_sock = -1;
 	}
-	if (subrec->nmb_sock != -1) {
-		close(subrec->nmb_sock);
-		subrec->nmb_sock = -1;
+	if (subrec->dgram_bcast != -1) {
+		close(subrec->dgram_bcast);
+		subrec->dgram_bcast = -1;
 	}
 
 	DLIST_REMOVE(subnetlist, subrec);
@@ -251,7 +260,7 @@ bool create_subnets(void)
 		 * cause us to exit.
 		 */
 
-		saved_handler = CatchSignal( SIGTERM, SIGNAL_CAST SIG_DFL );
+		saved_handler = CatchSignal(SIGTERM, SIG_DFL);
 
 		sleep(5);
 		load_interfaces();
@@ -260,7 +269,7 @@ bool create_subnets(void)
 		 * We got an interface, restore our normal term handler.
 		 */
 
-		CatchSignal( SIGTERM, SIGNAL_CAST saved_handler );
+		CatchSignal(SIGTERM, saved_handler);
 	}
 
 	/*
@@ -312,12 +321,12 @@ bool create_subnets(void)
 				"given interfaces. Is your interface line in "
 				"smb.conf correct ?\n"));
 
-		saved_handler = CatchSignal( SIGTERM, SIGNAL_CAST SIG_DFL );
+		saved_handler = CatchSignal(SIGTERM, SIG_DFL);
 
 		sleep(5);
 		load_interfaces();
 
-		CatchSignal( SIGTERM, SIGNAL_CAST saved_handler );
+		CatchSignal(SIGTERM, saved_handler);
 		goto try_interfaces_again;
 	}
 
