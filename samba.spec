@@ -2,8 +2,8 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.5.10
-Release: alt2
+Version: 3.6.0
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -184,7 +184,7 @@ cp %SOURCE11 packaging/Fedora/
 #(none)
 # generic patches
 %patch102 -p1 -b .pipedir
-%patch104 -p1 -b .nmbd-netbiosname
+#%patch104 -p1 -b .nmbd-netbiosname
 %patch107 -p1 -b .grouppwd
 %patch200 -p0 -b .inotify
 
@@ -260,7 +260,7 @@ make  LD_LIBRARY_PATH=$RPM_BUILD_DIR/%name-%version/%samba_source/bin \
 %{?_smp_mflags} \
     -C lib/netapi/examples
 
-make  debug2html smbfilter bin/cifs.upcall
+make  debug2html smbfilter
 popd
 
 pushd docs-xml
@@ -352,8 +352,6 @@ install -m644 %SOURCE2 %buildroot%_sysconfdir/xinetd.d/swat
 
 mkdir -p %buildroot%_sysconfdir/sysconfig
 install -m644 %SOURCE4 %buildroot%_sysconfdir/sysconfig/samba
-install -m755 %buildroot%_sbindir/mount.cifs %buildroot/sbin/mount.cifs
-install -m755 %buildroot%_sbindir/umount.cifs %buildroot/sbin/umount.cifs
 
 install -m 755 %samba_source/lib/netapi/examples/bin/netdomjoin-gui %buildroot%_sbindir/netdomjoin-gui
 mkdir -p %buildroot%_pixmapsdir/%name
@@ -380,25 +378,6 @@ rm -f %buildroot%_man1dir/testprns.1*
 rm -f %buildroot%_man8dir/smbmount.8*
 rm -f %buildroot%_man8dir/smbmnt.8*
 rm -f %buildroot%_man8dir/smbumount.8*
-
-# why are these getting installed in the wrong place?
-rm -f %buildroot%_sbindir/{u,}mount.cifs
-
-#Rename ldb tools, as samba3 has an old copy of ldb.
-mv -f %buildroot%_bindir/ldbadd %buildroot%_bindir/ldb3add
-mv -f %buildroot%_bindir/ldbdel %buildroot%_bindir/ldb3del
-mv -f %buildroot%_bindir/ldbmodify %buildroot%_bindir/ldb3modify
-mv -f %buildroot%_bindir/ldbsearch %buildroot%_bindir/ldb3search
-mv -f %buildroot%_bindir/ldbrename %buildroot%_bindir/ldb3rename
-mv -f %buildroot%_bindir/ldbedit %buildroot%_bindir/ldb3edit
-mv -f %buildroot%_man1dir/ldbadd.1 %buildroot%_man1dir/ldb3add.1
-mv -f %buildroot%_man1dir/ldbdel.1 %buildroot%_man1dir/ldb3del.1
-mv -f %buildroot%_man1dir/ldbedit.1 %buildroot%_man1dir/ldb3edit.1
-mv -f %buildroot%_man1dir/ldbmodify.1 %buildroot%_man1dir/ldb3modify.1
-mv -f %buildroot%_man1dir/ldbsearch.1 %buildroot%_man1dir/ldb3search.1
-mv -f %buildroot%_man1dir/ldbrename.1 %buildroot%_man1dir/ldb3rename.1
-
-mv -f %buildroot%_sbindir/cifs.upcall %buildroot/sbin/
 
 #rm -f %buildroot%_libdir/libtalloc.so.*
 #rm -f %buildroot%_includedir/talloc.h
@@ -447,12 +426,6 @@ grep 'use kerberos keytab' /etc/samba/smb.conf | \
     /etc/samba/smb.conf
 true
 
-%pre client
-%pre_control cifsmount cifsumount
-
-%post client
-%post_control -s wheelonly cifsmount cifsumount
-
 %pre winbind
 %_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
 
@@ -496,9 +469,6 @@ true
 %attr(755,root,root) %_libdir/samba/*.msg
 
 %files client
-/sbin/mount.cifs
-/sbin/umount.cifs
-/sbin/cifs.upcall
 %_bindir/rpcclient
 %_bindir/smbcacls
 %_bindir/findsmb
@@ -510,6 +480,7 @@ true
 %_bindir/smbtar
 %_bindir/smbtree
 %_bindir/sharesec
+%_bindir/smbta-util
 %{cups_serverbin}/backend/smb
 %_man1dir/findsmb.1*
 %_man1dir/nmblookup.1*
@@ -521,9 +492,7 @@ true
 %_man1dir/smbget.1*
 %_man1dir/sharesec.1*
 %_man8dir/smbspool.8*
-%_man8dir/mount.cifs.8*
-%_man8dir/umount.cifs.8*
-%_man8dir/cifs.upcall.8*
+%_man8dir/smbta-util.8*
 
 %files common -f net.lang
 %attr(755,root,root) /%_lib/security/pam_smbpass.so
@@ -538,12 +507,6 @@ true
 %_bindir/profiles
 %_bindir/smbcquotas
 %_bindir/smbcontrol
-%_bindir/ldb3add
-%_bindir/ldb3del
-%_bindir/ldb3edit
-%_bindir/ldb3modify
-%_bindir/ldb3search
-%_bindir/ldb3rename
 %dir /var/lib/samba
 %attr(700,root,root) %dir /var/lib/samba/private
 %dir /var/lib/samba/scripts
@@ -553,12 +516,6 @@ true
 %dir %_sysconfdir/samba
 %attr(0700,root,root) %dir /var/log/samba
 %attr(0700,root,root) %dir /var/log/samba/old
-%_man1dir/ldb3add.1.gz
-%_man1dir/ldb3del.1.gz
-%_man1dir/ldb3edit.1.gz
-%_man1dir/ldb3modify.1.gz
-%_man1dir/ldb3search.1.gz
-%_man1dir/ldb3rename.1.gz
 %_man1dir/profiles.1*
 %_man1dir/smbcquotas.1*
 %_man1dir/smbcontrol.1*
@@ -610,7 +567,6 @@ true
 
 %files winbind-devel
 %_includedir/wbclient.h
-%_includedir/wbc_async.h
 %_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
 
@@ -638,6 +594,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu Aug 11 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.0-alt1
+- 3.6.0
+
 * Mon Aug 01 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.10-alt2
 - CVE-2011-2724
 

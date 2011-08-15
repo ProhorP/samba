@@ -1,6 +1,6 @@
 diff -ur samba-3.0.0rc3/source/lib/popt_common.c samba-3.0.0rc3-lhh/source/lib/popt_common.c
---- samba-3.0.0rc3/source3/lib/popt_common.c	2003-09-10 13:57:00.000000000 -0400
-+++ samba-3.0.0rc3-lhh/source3/lib/popt_common.c	2003-09-11 13:49:24.000000000 -0400
+--- samba-3.0.0rc3/source/lib/popt_common.c	2003-09-10 13:57:00.000000000 -0400
++++ samba-3.0.0rc3-lhh/source/lib/popt_common.c	2003-09-11 13:49:24.000000000 -0400
 @@ -87,7 +87,7 @@
  
  	case 'n':
@@ -11,8 +11,8 @@ diff -ur samba-3.0.0rc3/source/lib/popt_common.c samba-3.0.0rc3-lhh/source/lib/p
  		break;
  
 diff -ur samba-3.0.0rc3/source/lib/util.c samba-3.0.0rc3-lhh/source/lib/util.c
---- samba-3.0.0rc3/source3/lib/util.c	2003-09-08 12:04:35.000000000 -0400
-+++ samba-3.0.0rc3-lhh/source3/lib/util.c	2003-09-11 13:47:18.000000000 -0400
+--- samba-3.0.0rc3/source/lib/util.c	2003-09-08 12:04:35.000000000 -0400
++++ samba-3.0.0rc3-lhh/source/lib/util.c	2003-09-11 13:47:18.000000000 -0400
 @@ -84,6 +84,7 @@
  ***********************************************************************/
  
@@ -30,7 +30,7 @@ diff -ur samba-3.0.0rc3/source/lib/util.c samba-3.0.0rc3-lhh/source/lib/util.c
 + Allocate and set override for myname. Ensure upper case.
 +***********************************************************************/
 +
-+bool set_global_myname_override(const char *myname)
++BOOL set_global_myname_override(const char *myname)
 +{
 +	SAFE_FREE(smb_myname_override);
 +	smb_myname_override = strdup(myname);
@@ -49,22 +49,24 @@ diff -ur samba-3.0.0rc3/source/lib/util.c samba-3.0.0rc3-lhh/source/lib/util.c
  /***********************************************************************
   Allocate and set myworkgroup. Ensure upper case.
  ***********************************************************************/
---- samba-3.4.2/source3/nmbd/nmbd.c.nmbd-netbiosname	2009-09-30 14:17:40.000000000 +0200
-+++ samba-3.4.2/source3/nmbd/nmbd.c	2010-01-08 17:14:33.000000000 +0100
-@@ -768,6 +768,7 @@
- 	{"hosts", 'H', POPT_ARG_STRING, &p_lmhosts, 'H', "Load a netbios hosts file"},
+diff -ur samba-3.0.0rc3/source/nmbd/nmbd.c samba-3.0.0rc3-lhh/source/nmbd/nmbd.c
+--- samba-3.0.0rc3/source/nmbd/nmbd.c	2003-09-10 13:57:00.000000000 -0400
++++ samba-3.0.0rc3-lhh/source/nmbd/nmbd.c	2003-09-11 14:05:21.000000000 -0400
+@@ -608,6 +608,7 @@
+ 	{"hosts", 'H', POPT_ARG_STRING, dyn_LMHOSTSFILE, 'H', "Load a netbios hosts file"},
  	{"port", 'p', POPT_ARG_INT, &global_nmb_port, NMB_PORT, "Listen on the specified port" },
  	POPT_COMMON_SAMBA
 +	POPT_COMMON_CONNECTION
  	{ NULL }
  	};
- 	TALLOC_CTX *frame = talloc_stackframe(); /* Setup tos. */
---- samba-3.4.2/source3/param/loadparm.c.nmbd-netbiosname	2009-09-30 14:17:40.000000000 +0200
-+++ samba-3.4.2/source3/param/loadparm.c	2010-01-08 17:32:38.000000000 +0100
-@@ -4851,7 +4851,10 @@
+ 
+diff -ur samba-3.0.0rc3/source/param/loadparm.c samba-3.0.0rc3-lhh/source/param/loadparm.c
+--- samba-3.0.0rc3/source/param/loadparm.c	2003-09-08 12:04:35.000000000 -0400
++++ samba-3.0.0rc3-lhh/source/param/loadparm.c	2003-09-11 14:00:51.000000000 -0400
+@@ -1327,7 +1327,10 @@
  	 */
  	string_set(&Globals.szPasswdChat, DEFAULT_PASSWD_CHAT);
- 
+ 	
 -	set_global_myname(myhostname());
 +	if (!global_myname_override())
 +		set_global_myname(myhostname());
@@ -73,9 +75,9 @@ diff -ur samba-3.0.0rc3/source/lib/util.c samba-3.0.0rc3-lhh/source/lib/util.c
  	string_set(&Globals.szNetbiosName,global_myname());
  
  	set_global_myworkgroup(WORKGROUP);
-@@ -7057,6 +7060,12 @@
- 					current_user_info.domain,
- 					pszParmValue);
+@@ -2698,6 +2701,12 @@
+ 	BOOL ret;
+ 	pstring netbios_name;
  
 +	if (global_myname_override()) {
 +		DEBUG(4, ("handle_netbios_name: ignoring netbios name "
@@ -83,17 +85,6 @@ diff -ur samba-3.0.0rc3/source/lib/util.c samba-3.0.0rc3-lhh/source/lib/util.c
 +		return True;
 +	}
 +
- 	ret = set_global_myname(netbios_name);
- 	SAFE_FREE(netbios_name);
- 	string_set(&Globals.szNetbiosName,global_myname());
---- samba-3.4.2/source3/include/proto.h.nmbd-netbiosname	2010-01-08 17:38:16.000000000 +0100
-+++ samba-3.4.2/source3/include/proto.h		2010-01-08 17:37:53.000000000 +0100
-@@ -1133,6 +1133,8 @@
- 			ssize_t *array_size);
- char *get_myname(TALLOC_CTX *ctx);
- char *get_mydnsdomname(TALLOC_CTX *ctx);
-+bool set_global_myname_override(const char *myname);
-+const char *global_myname_override(void);
- int interpret_protocol(const char *str,int def);
- char *automount_lookup(TALLOC_CTX *ctx, const char *user_name);
- char *automount_lookup(TALLOC_CTX *ctx, const char *user_name);
+ 	pstrcpy(netbios_name, pszParmValue);
+ 
+ 	standard_sub_basic(current_user_info.smb_name, netbios_name,sizeof(netbios_name));
