@@ -52,7 +52,6 @@ BuildRequires: zlib-devel
 
 BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
 BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
-BuildRequires: libsmbclient-devel samba-winbind-clients
 
 %description
 Samba 4 is the ambitious next version of the Samba suite that is being
@@ -144,6 +143,7 @@ domains and to use Windows user and group accounts on Linux.
 	--datadir=%_datadir/samba \
 	--disable-gnutls \
 	--disable-rpath-install \
+	--builtin-libraries=ccan,wbclient \
 	--bundled-libraries=heimdal,!talloc,!tdb,!tevent,!ldb,!zlib
 
 
@@ -204,8 +204,8 @@ rm -f %buildroot%_bindir/ntlm_auth
 rm -f %buildroot%_bindir/wbinfo
 rm -f %buildroot%_libdir/libnss_winbind.so.2
 rm -f %buildroot%_libdir/pam_winbind.so
-rm -f %buildroot%_libdir/libwbclient.so
-rm -f %buildroot%_libdir/libwbclient.so.*
+#rm -f %buildroot%_libdir/libwbclient.so
+#rm -f %buildroot%_libdir/libwbclient.so.*
 rm -f %buildroot%_libdir/winbind_krb5_locator.so
 rm -f %buildroot%_mandir/man1/ntlm_auth.*
 rm -f %buildroot%_includedir/samba-4.0/wbclient.h
