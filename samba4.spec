@@ -441,6 +441,7 @@ find source4/heimdal -type f | xargs chmod -x
 %files libs
 %doc PFIF.txt
 %dir %_datadir/samba
+%dir %_datadir/samba/codepages
 %_datadir/samba/codepages/*.dat
 
 #%_libdir/libdcerpc-atsvc.so.*
