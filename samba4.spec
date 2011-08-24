@@ -458,6 +458,7 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libsamba-util.so.*
 %_libdir/libsamdb.so.*
 %_libdir/libtorture.so.*
+%_libdir/libsmbconf.so.*
 
 # internal ldb modules
 %_libdir/samba/ldb/*.so
@@ -513,6 +514,7 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libregistry.so
 %_libdir/libsamdb.so
 %_libdir/libtorture.so
+%_libdir/libsmbconf.so
 
 %_pkgconfigdir/dcerpc.pc
 %_pkgconfigdir/dcerpc_samr.pc
