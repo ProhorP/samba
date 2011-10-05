@@ -57,7 +57,6 @@ need the NetBEUI (Microsoft Raw NetBIOS frame) protocol.
 %package client
 Summary: Samba client programs
 Group: Networking/Other
-PreReq: samba-client-control >= 0:1.2
 Requires: samba-common = %version-%release
 Provides: samba-client-cups = %version-%release
 Obsoletes: samba-client-cups < %version-%release
