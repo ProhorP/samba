@@ -13,7 +13,7 @@
 
 Name: samba4
 Version: %samba4_version
-Release: alt1.%pre_release
+Release: alt1.%pre_release.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -565,6 +565,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Sat Oct 22 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 4.0.0-alt1.alpha16.1
+- Rebuild with Python-2.7
+
 * Mon Aug 08 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha16
 - alpha16
 
