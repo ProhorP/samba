@@ -53,6 +53,8 @@ BuildRequires: zlib-devel
 BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
 BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
 
+BuildRequires: perl-Perl4-CoreLibs
+
 %description
 Samba 4 is the ambitious next version of the Samba suite that is being
 developed in parallel to the stable 3.0 series. The main emphasis in
