@@ -1,0 +1,247 @@
+From 9df126d324618ae44ec32da4ebcd5b2c566cf72c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Fri, 19 Nov 2010 13:34:18 +0100
+Subject: [PATCH] libaddns: add dns_errstr().
+
+Guenther
+---
+ source3/Makefile.in            |    2 +-
+ source3/libaddns/dns.h         |    1 +
+ source3/libaddns/error.c       |   59 ++++++++++++++++++++++++++++++++++++++++
+ source3/libaddns/wscript_build |    2 +-
+ 4 files changed, 62 insertions(+), 2 deletions(-)
+ create mode 100644 source3/libaddns/error.c
+
+diff --git a/source3/Makefile.in b/source3/Makefile.in
+index 60361e7..faeb3e7 100644
+--- a/source3/Makefile.in
++++ b/source3/Makefile.in
+@@ -497,7 +497,7 @@ PARAM_OBJ = $(PARAM_WITHOUT_REG_OBJ) $(PARAM_REG_ADD_OBJ)
+ KRBCLIENT_OBJ = libads/kerberos.o libads/ads_status.o
+ 
+ LIBADDNS_OBJ0 = libaddns/dnsrecord.o libaddns/dnsutils.o  libaddns/dnssock.o \
+-	       libaddns/dnsgss.o libaddns/dnsmarshall.o
++	       libaddns/dnsgss.o libaddns/dnsmarshall.o libaddns/error.o
+ LIBADDNS_OBJ = $(LIBADDNS_OBJ0) $(SOCKET_WRAPPER_OBJ)
+ 
+ GPEXT_OBJ = ../libgpo/gpext/gpext.o @GPEXT_STATIC@
+diff --git a/source3/libaddns/dns.h b/source3/libaddns/dns.h
+index 72cba07..29f1ed3 100644
+--- a/source3/libaddns/dns.h
++++ b/source3/libaddns/dns.h
+@@ -517,6 +517,7 @@ DNS_ERROR dns_unmarshall_update_request(TALLOC_CTX *mem_ctx,
+ struct dns_request *dns_update2request(struct dns_update_request *update);
+ struct dns_update_request *dns_request2update(struct dns_request *request);
+ uint16 dns_response_code(uint16 flags);
++const char *dns_errstr(DNS_ERROR err);
+ 
+ /* from dnsgss.c */
+ 
+diff --git a/source3/libaddns/error.c b/source3/libaddns/error.c
+new file mode 100644
+index 0000000..361388c
+--- /dev/null
++++ b/source3/libaddns/error.c
+@@ -0,0 +1,59 @@
++/*
++  Linux DNS client library implementation
++  Copyright (C) 2010 Guenther Deschner
++
++     ** NOTE! The following LGPL license applies to the libaddns
++     ** library. This does NOT imply that all of Samba is released
++     ** under the LGPL
++
++  This library is free software; you can redistribute it and/or
++  modify it under the terms of the GNU Lesser General Public
++  License as published by the Free Software Foundation; either
++  version 2.1 of the License, or (at your option) any later version.
++
++  This library is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++  Lesser General Public License for more details.
++
++  You should have received a copy of the GNU Lesser General Public
++  License along with this library; if not, see <http://www.gnu.org/licenses/>.
++*/
++
++#include "dns.h"
++#include "dnserr.h"
++
++typedef struct {
++	const char *dns_errstr;
++	DNS_ERROR dns_errcode;
++} dns_err_code_struct;
++
++static const dns_err_code_struct dns_errs[] =
++{
++	{ "ERROR_DNS_SUCCESS", ERROR_DNS_SUCCESS },
++	{ "ERROR_DNS_RECORD_NOT_FOUND", ERROR_DNS_RECORD_NOT_FOUND },
++	{ "ERROR_DNS_BAD_RESPONSE", ERROR_DNS_BAD_RESPONSE },
++	{ "ERROR_DNS_INVALID_PARAMETER", ERROR_DNS_INVALID_PARAMETER },
++	{ "ERROR_DNS_NO_MEMORY", ERROR_DNS_NO_MEMORY },
++	{ "ERROR_DNS_INVALID_NAME_SERVER", ERROR_DNS_INVALID_NAME_SERVER },
++	{ "ERROR_DNS_CONNECTION_FAILED", ERROR_DNS_CONNECTION_FAILED },
++	{ "ERROR_DNS_GSS_ERROR", ERROR_DNS_GSS_ERROR },
++	{ "ERROR_DNS_INVALID_NAME", ERROR_DNS_INVALID_NAME },
++	{ "ERROR_DNS_INVALID_MESSAGE", ERROR_DNS_INVALID_MESSAGE },
++	{ "ERROR_DNS_SOCKET_ERROR", ERROR_DNS_SOCKET_ERROR },
++	{ "ERROR_DNS_UPDATE_FAILED", ERROR_DNS_UPDATE_FAILED },
++	{ NULL, ERROR_DNS_SUCCESS },
++};
++
++const char *dns_errstr(DNS_ERROR err)
++{
++	int i;
++
++	for (i=0; dns_errs[i].dns_errstr != NULL; i++) {
++		if (ERR_DNS_EQUAL(err, dns_errs[i].dns_errcode)) {
++			return dns_errs[i].dns_errstr;
++		}
++	}
++
++	return NULL;
++}
+-- 
+1.7.4
+
+From f01360efadceeb693aefdf34c78c4ba40c033d53 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Fri, 19 Nov 2010 13:36:22 +0100
+Subject: [PATCH] s3-net: use dns_errstr() when dns commands fail.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Guenther
+
+Autobuild-User: Günther Deschner <gd@samba.org>
+Autobuild-Date: Mon Nov 22 12:31:33 CET 2010 on sn-devel-104
+---
+ source3/utils/net_ads.c |    5 ++++-
+ 1 files changed, 4 insertions(+), 1 deletions(-)
+
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index bc83a3d..1d617c0 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -1198,6 +1198,8 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
+ 
+ 	dns_err = DoDNSUpdate(dns_server, dnsdomain, machine_name, addrs, num_addrs);
+ 	if (!ERR_DNS_IS_OK(dns_err)) {
++		d_printf(_("DNS Update for %s failed: %s\n"),
++			machine_name, dns_errstr(dns_err));
+ 		status = NT_STATUS_UNSUCCESSFUL;
+ 	}
+ 
+@@ -1511,7 +1513,8 @@ static int net_ads_dns_gethostbyname(struct net_context *c, int argc, const char
+ 
+ 	err = do_gethostbyname(argv[0], argv[1]);
+ 
+-	d_printf(_("do_gethostbyname returned %d\n"), ERROR_DNS_V(err));
++	d_printf(_("do_gethostbyname returned %s (%d)\n"),
++		dns_errstr(err), ERROR_DNS_V(err));
+ #endif
+ 	return 0;
+ }
+-- 
+1.7.4
+
+From fa1fd85eea549d2944974ddbc67e21ef9231c49b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Thu, 6 Jan 2011 16:23:54 +0100
+Subject: [PATCH] s3-net: Fix bug #7690: retry DNS updates when connection to one nameserver has failed.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Initial patch from Patrik Martinsson <patrik.martinsson@smhi.se>.
+
+Guenther
+
+Autobuild-User: Günther Deschner <gd@samba.org>
+Autobuild-Date: Thu Jan  6 17:29:11 CET 2011 on sn-devel-104
+---
+ source3/utils/net_ads.c |   27 +++++++++++++++++++++------
+ 1 files changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index 48df564..ac14184 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -1132,7 +1132,7 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
+ 					int num_addrs)
+ {
+ 	struct dns_rr_ns *nameservers = NULL;
+-	int ns_count = 0;
++	int ns_count = 0, i;
+ 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
+ 	DNS_ERROR dns_err;
+ 	fstring dns_server;
+@@ -1197,16 +1197,31 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
+ 
+ 	}
+ 
+-	/* Now perform the dns update - we'll try non-secure and if we fail,
+-	   we'll follow it up with a secure update */
++	for (i=0; i < ns_count; i++) {
+ 
+-	fstrcpy( dns_server, nameservers[0].hostname );
++		/* Now perform the dns update - we'll try non-secure and if we fail,
++		   we'll follow it up with a secure update */
++
++		fstrcpy( dns_server, nameservers[i].hostname );
++
++		dns_err = DoDNSUpdate(dns_server, dnsdomain, machine_name, addrs, num_addrs);
++		if (ERR_DNS_IS_OK(dns_err)) {
++			status = NT_STATUS_OK;
++			goto done;
++		}
++
++		if (ERR_DNS_EQUAL(dns_err, ERROR_DNS_INVALID_NAME_SERVER) ||
++		    ERR_DNS_EQUAL(dns_err, ERROR_DNS_CONNECTION_FAILED) ||
++		    ERR_DNS_EQUAL(dns_err, ERROR_DNS_SOCKET_ERROR)) {
++			DEBUG(1,("retrying DNS update with next nameserver after receiving %s\n",
++				dns_errstr(dns_err)));
++			continue;
++		}
+ 
+-	dns_err = DoDNSUpdate(dns_server, dnsdomain, machine_name, addrs, num_addrs);
+-	if (!ERR_DNS_IS_OK(dns_err)) {
+ 		d_printf(_("DNS Update for %s failed: %s\n"),
+ 			machine_name, dns_errstr(dns_err));
+ 		status = NT_STATUS_UNSUCCESSFUL;
++		goto done;
+ 	}
+ 
+ done:
+-- 
+1.7.4
+
+From 587144f5280f4f7a26fbe0e396b5c9c300bcffb9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Mon, 10 Oct 2011 13:06:51 +0200
+Subject: [PATCH] s3-net: when all DNS servers fail to operate, the overal DNS
+ registration result must be a failure.
+
+Guenther
+---
+ source3/utils/net_ads.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/source3/utils/net_ads.c b/source3/utils/net_ads.c
+index bb78ecb..c17367a 100644
+--- a/source3/utils/net_ads.c
++++ b/source3/utils/net_ads.c
+@@ -1200,6 +1200,8 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
+ 
+ 	for (i=0; i < ns_count; i++) {
+ 
++		status = NT_STATUS_UNSUCCESSFUL;
++
+ 		/* Now perform the dns update - we'll try non-secure and if we fail,
+ 		   we'll follow it up with a secure update */
+ 
+-- 
+1.7.6.4
+

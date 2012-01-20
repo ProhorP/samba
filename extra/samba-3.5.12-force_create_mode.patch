@@ -1,0 +1,47 @@
+From 8476295dd4bbe5c4406c57887d732bbe95c7e61e Mon Sep 17 00:00:00 2001
+From: Jeremy Allison <jra@samba.org>
+Date: Tue, 4 Oct 2011 14:46:00 -0700
+Subject: [PATCH] Fix bug #8507 - smbd doesn't correctly honor the "force
+ create mode" bits from a cifsfs create.
+
+Don't manipulate the new_dos_attributes bits until we know it's not a POSIX open.
+
+Autobuild-User: Jeremy Allison <jra@samba.org>
+Autobuild-Date: Wed Oct  5 01:19:17 CEST 2011 on sn-devel-104
+---
+ source3/smbd/open.c |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+index 9048d6b..70e6b4f 100644
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -1344,12 +1344,6 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
+ 
+ 	ZERO_STRUCT(id);
+ 
+-	/* Windows allows a new file to be created and
+-	   silently removes a FILE_ATTRIBUTE_DIRECTORY
+-	   sent by the client. Do the same. */
+-
+-	new_dos_attributes &= ~FILE_ATTRIBUTE_DIRECTORY;
+-
+ 	if (conn->printer) {
+ 		/*
+ 		 * Printers are handled completely differently.
+@@ -1383,6 +1377,12 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
+ 		unx_mode = (mode_t)(new_dos_attributes & ~FILE_FLAG_POSIX_SEMANTICS);
+ 		new_dos_attributes = 0;
+ 	} else {
++		/* Windows allows a new file to be created and
++		   silently removes a FILE_ATTRIBUTE_DIRECTORY
++		   sent by the client. Do the same. */
++
++		new_dos_attributes &= ~FILE_ATTRIBUTE_DIRECTORY;
++
+ 		/* We add aARCH to this as this mode is only used if the file is
+ 		 * created new. */
+ 		unx_mode = unix_mode(conn, new_dos_attributes | aARCH,
+-- 
+1.7.6.4
+

@@ -1,0 +1,31 @@
+--- aaa/source3/winbindd/idmap.c	2011-09-07 16:11:45.472632536 +0100
++++ aaa/source3/winbindd/idmap.c	2011-09-07 16:13:05.157909830 +0100
+@@ -145,7 +145,7 @@ NTSTATUS smb_register_idmap(int version,
+ 
+ 	for (entry = backends; entry != NULL; entry = entry->next) {
+ 		if (strequal(entry->name, name)) {
+-			DEBUG(0,("Idmap module %s already registered!\n",
++			DEBUG(5,("Idmap module %s already registered!\n",
+ 				 name));
+ 			return NT_STATUS_OBJECT_NAME_COLLISION;
+ 		}
+@@ -198,7 +198,7 @@ NTSTATUS smb_register_idmap_alloc(int ve
+ 
+ 	test = get_alloc_methods(name);
+ 	if (test) {
+-		DEBUG(0,("idmap_alloc module %s already registered!\n", name));
++		DEBUG(5,("idmap_alloc module %s already registered!\n", name));
+ 		return NT_STATUS_OBJECT_NAME_COLLISION;
+ 	}
+ 
+--- aaa/source3/winbindd/nss_info.c	2011-09-07 16:11:45.474632544 +0100
++++ aaa/source3/winbindd/nss_info.c	2011-09-07 16:13:27.581987252 +0100
+@@ -65,7 +65,7 @@ static struct nss_function_entry *nss_ge
+ 	}
+ 
+ 	if ( nss_get_backend(name) ) {
+-		DEBUG(0,("smb_register_idmap_nss: idmap module %s "
++		DEBUG(5,("smb_register_idmap_nss: idmap module %s "
+ 			 "already registered!\n", name));
+ 		return NT_STATUS_OBJECT_NAME_COLLISION;
+ 	}

@@ -1,0 +1,243 @@
+From 0b7e78bedf1bb779b6e3f21cb2d269df3be2cba1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Wed, 21 Sep 2011 17:28:58 +0200
+Subject: [PATCH 1/2] s3-libnet: allow to use default krb5 ccache in
+ libnet_Join/libnet_Unjoin.
+
+We force using a MEMORY ccache though in the wkssvc server.
+
+Guenther
+---
+ source3/libnet/libnet_join.c       |   30 ------------------------------
+ source3/rpc_server/srv_wkssvc_nt.c |    4 ++++
+ 2 files changed, 4 insertions(+), 30 deletions(-)
+
+diff --git a/source3/libnet/libnet_join.c b/source3/libnet/libnet_join.c
+index f14bffd..8522c17 100644
+--- a/source3/libnet/libnet_join.c
++++ b/source3/libnet/libnet_join.c
+@@ -1620,17 +1620,10 @@ static WERROR libnet_join_post_processing(TALLOC_CTX *mem_ctx,
+ 
+ static int libnet_destroy_JoinCtx(struct libnet_JoinCtx *r)
+ {
+-	const char *krb5_cc_env = NULL;
+-
+ 	if (r->in.ads) {
+ 		ads_destroy(&r->in.ads);
+ 	}
+ 
+-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
+-	if (krb5_cc_env && StrCaseCmp(krb5_cc_env, "MEMORY:libnetjoin")) {
+-		unsetenv(KRB5_ENV_CCNAME);
+-	}
+-
+ 	return 0;
+ }
+ 
+@@ -1639,17 +1632,10 @@ static int libnet_destroy_JoinCtx(struct libnet_JoinCtx *r)
+ 
+ static int libnet_destroy_UnjoinCtx(struct libnet_UnjoinCtx *r)
+ {
+-	const char *krb5_cc_env = NULL;
+-
+ 	if (r->in.ads) {
+ 		ads_destroy(&r->in.ads);
+ 	}
+ 
+-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
+-	if (krb5_cc_env && StrCaseCmp(krb5_cc_env, "MEMORY:libnetjoin")) {
+-		unsetenv(KRB5_ENV_CCNAME);
+-	}
+-
+ 	return 0;
+ }
+ 
+@@ -1660,7 +1646,6 @@ WERROR libnet_init_JoinCtx(TALLOC_CTX *mem_ctx,
+ 			   struct libnet_JoinCtx **r)
+ {
+ 	struct libnet_JoinCtx *ctx;
+-	const char *krb5_cc_env = NULL;
+ 
+ 	ctx = talloc_zero(mem_ctx, struct libnet_JoinCtx);
+ 	if (!ctx) {
+@@ -1672,13 +1657,6 @@ WERROR libnet_init_JoinCtx(TALLOC_CTX *mem_ctx,
+ 	ctx->in.machine_name = talloc_strdup(mem_ctx, global_myname());
+ 	W_ERROR_HAVE_NO_MEMORY(ctx->in.machine_name);
+ 
+-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
+-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
+-		krb5_cc_env = talloc_strdup(mem_ctx, "MEMORY:libnetjoin");
+-		W_ERROR_HAVE_NO_MEMORY(krb5_cc_env);
+-		setenv(KRB5_ENV_CCNAME, krb5_cc_env, 1);
+-	}
+-
+ 	ctx->in.secure_channel_type = SEC_CHAN_WKSTA;
+ 
+ 	*r = ctx;
+@@ -1693,7 +1671,6 @@ WERROR libnet_init_UnjoinCtx(TALLOC_CTX *mem_ctx,
+ 			     struct libnet_UnjoinCtx **r)
+ {
+ 	struct libnet_UnjoinCtx *ctx;
+-	const char *krb5_cc_env = NULL;
+ 
+ 	ctx = talloc_zero(mem_ctx, struct libnet_UnjoinCtx);
+ 	if (!ctx) {
+@@ -1705,13 +1682,6 @@ WERROR libnet_init_UnjoinCtx(TALLOC_CTX *mem_ctx,
+ 	ctx->in.machine_name = talloc_strdup(mem_ctx, global_myname());
+ 	W_ERROR_HAVE_NO_MEMORY(ctx->in.machine_name);
+ 
+-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
+-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
+-		krb5_cc_env = talloc_strdup(mem_ctx, "MEMORY:libnetjoin");
+-		W_ERROR_HAVE_NO_MEMORY(krb5_cc_env);
+-		setenv(KRB5_ENV_CCNAME, krb5_cc_env, 1);
+-	}
+-
+ 	*r = ctx;
+ 
+ 	return WERR_OK;
+diff --git a/source3/rpc_server/srv_wkssvc_nt.c b/source3/rpc_server/srv_wkssvc_nt.c
+index d7f3f82..2367f55 100644
+--- a/source3/rpc_server/srv_wkssvc_nt.c
++++ b/source3/rpc_server/srv_wkssvc_nt.c
+@@ -845,7 +845,9 @@ WERROR _wkssvc_NetrJoinDomain2(pipes_struct *p,
+ 	j->in.msg_ctx		= smbd_messaging_context();
+ 
+ 	become_root();
++	setenv(KRB5_ENV_CCNAME, "MEMORY:_wkssvc_NetrJoinDomain2", 1);
+ 	werr = libnet_Join(p->mem_ctx, j);
++	unsetenv(KRB5_ENV_CCNAME);
+ 	unbecome_root();
+ 
+ 	if (!W_ERROR_IS_OK(werr)) {
+@@ -911,7 +913,9 @@ WERROR _wkssvc_NetrUnjoinDomain2(pipes_struct *p,
+ 	u->in.msg_ctx		= smbd_messaging_context();
+ 
+ 	become_root();
++	setenv(KRB5_ENV_CCNAME, "MEMORY:_wkssvc_NetrUnjoinDomain2", 1);
+ 	werr = libnet_Unjoin(p->mem_ctx, u);
++	unsetenv(KRB5_ENV_CCNAME);
+ 	unbecome_root();
+ 
+ 	if (!W_ERROR_IS_OK(werr)) {
+-- 
+1.7.6.2
+
+
+From 5fef02b183150134a11e7bacc0a4f1db176dfe3f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Wed, 21 Sep 2011 17:47:27 +0200
+Subject: [PATCH 2/2] s3-netapi: allow to use default krb5 credential cache
+ for libnetapi users.
+
+Guenther
+---
+ source3/lib/netapi/netapi.c |   24 +++++++++++++++++-------
+ source3/lib/netapi/netapi.h |    6 ++++++
+ 2 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/source3/lib/netapi/netapi.c b/source3/lib/netapi/netapi.c
+index bde6fd8..34a88a9 100644
+--- a/source3/lib/netapi/netapi.c
++++ b/source3/lib/netapi/netapi.c
+@@ -55,7 +55,6 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
+ {
+ 	NET_API_STATUS status;
+ 	struct libnetapi_ctx *ctx = NULL;
+-	char *krb5_cc_env = NULL;
+ 
+ 	if (stat_ctx && libnetapi_initialized) {
+ 		*context = stat_ctx;
+@@ -101,12 +100,6 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
+ 
+ 	BlockSignals(True, SIGPIPE);
+ 
+-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
+-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
+-		ctx->krb5_cc_env = talloc_strdup(frame, "MEMORY:libnetapi");
+-		setenv(KRB5_ENV_CCNAME, ctx->krb5_cc_env, 1);
+-	}
+-
+ 	if (getenv("USER")) {
+ 		ctx->username = talloc_strdup(frame, getenv("USER"));
+ 	} else {
+-- 
+1.7.6.2
+
+From 4360c5bf276aa958864254ee22b3a3d4a4560381 Mon Sep 17 00:00:00 2001
+From: Jeremy Allison <jra@samba.org>
+Date: Fri, 20 May 2011 14:43:50 -0700
+Subject: [PATCH] Patch for bug #8156 - net ads join fails to use the user's
+ kerberos ticket.
+
+If kerberos_get_realm_from_hostname() or kerberos_get_default_realm_from_ccache() fails due to
+ a misconfigured krb5.conf, try the "realm =" from smb.conf as a fallcback before going back to
+ NTLMSSP (which we'll do anyway).
+
+Autobuild-User: Jeremy Allison <jra@samba.org>
+Autobuild-Date: Sat May 21 00:58:09 CEST 2011 on sn-devel-104
+---
+ source3/libsmb/cliconnect.c |   37 +++++++++++++++++++++++++++----------
+ 1 files changed, 27 insertions(+), 10 deletions(-)
+
+diff --git a/source3/libsmb/cliconnect.c b/source3/libsmb/cliconnect.c
+index fca6c3a..69d5ce6 100644
+--- a/source3/libsmb/cliconnect.c
++++ b/source3/libsmb/cliconnect.c
+@@ -1871,6 +1871,9 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
+ 			host = strchr_m(cli->desthost, '.');
+ 			if (dest_realm) {
+ 				realm = SMB_STRDUP(dest_realm);
++				if (!realm) {
++					return ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
++				}
+ 				strupper_m(realm);
+ 			} else {
+ 				if (host) {
+@@ -1882,19 +1885,33 @@ ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
+ 				}
+ 			}
+ 
+-			if (realm && *realm) {
+-				principal = talloc_asprintf(talloc_tos(),
+-							    "cifs/%s@%s",
+-							    cli->desthost,
+-							    realm);
+-				if (!principal) {
+-					SAFE_FREE(realm);
++			if (realm == NULL || *realm == '\0') {
++				realm = SMB_STRDUP(lp_realm());
++				if (!realm) {
+ 					return ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
+ 				}
+-				DEBUG(3,("cli_session_setup_spnego: guessed "
+-					"server principal=%s\n",
+-					principal ? principal : "<null>"));
++				strupper_m(realm);
++				DEBUG(3,("cli_session_setup_spnego: cannot "
++					"get realm from dest_realm %s, "
++					"desthost %s. Using default "
++					"smb.conf realm %s\n",
++					dest_realm ? dest_realm : "<null>",
++					cli->desthost,
++					realm));
+ 			}
++
++			principal = talloc_asprintf(talloc_tos(),
++						    "cifs/%s@%s",
++						    cli->desthost,
++						    realm);
++			if (!principal) {
++				SAFE_FREE(realm);
++				return ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
++			}
++			DEBUG(3,("cli_session_setup_spnego: guessed "
++				"server principal=%s\n",
++				principal ? principal : "<null>"));
++
+ 			SAFE_FREE(realm);
+ 		}
+ 
+-- 
+1.7.6.2
+

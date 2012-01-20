@@ -1,0 +1,65 @@
+From 15c33ada6b897ac46141aaae0f0333816b94448b Mon Sep 17 00:00:00 2001
+From: Stefan Metzmacher <metze@samba.org>
+Date: Thu, 2 Dec 2010 00:40:01 +0100
+Subject: [PATCH] libcli/auth: let spnego_write_mech_types() check the
+ asn1_load() return
+
+metze
+
+Autobuild-User: Stefan Metzmacher <metze@samba.org>
+Autobuild-Date: Tue Dec  7 18:23:41 CET 2010 on sn-devel-104
+---
+ libcli/auth/spnego_parse.c |    4 ++++
+ 1 files changed, 4 insertions(+), 0 deletions(-)
+
+diff --git a/libcli/auth/spnego_parse.c b/libcli/auth/spnego_parse.c
+index 86b083d..27ede1b 100644
+--- a/libcli/auth/spnego_parse.c
++++ b/libcli/auth/spnego_parse.c
+@@ -380,6 +380,10 @@ bool spnego_write_mech_types(TALLOC_CTX *mem_ctx,
+ {
+ 	struct asn1_data *asn1 = asn1_init(mem_ctx);
+ 
++	if (asn1 == NULL) {
++		return false;
++	}
++
+ 	/* Write mechTypes */
+ 	if (mech_types && *mech_types) {
+ 		int i;
+-- 
+1.7.6
+
+From c74e7205c8887b2b507e72c2c6a012314c61d29d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Thu, 4 Aug 2011 17:28:05 +0200
+Subject: [PATCH] s3-nmbd: fix memleak in create_listen_fdset().
+
+Guenther
+---
+ source3/nmbd/nmbd_packets.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/source3/nmbd/nmbd_packets.c b/source3/nmbd/nmbd_packets.c
+index e53eebb..51c9acc 100644
+--- a/source3/nmbd/nmbd_packets.c
++++ b/source3/nmbd/nmbd_packets.c
+@@ -1715,6 +1715,7 @@ only use %d.\n", count, FD_SETSIZE));
+ 	if (ClientNMB < 0 || ClientNMB >= FD_SETSIZE) {
+ 		errno = EBADF;
+ 		SAFE_FREE(pset);
++		SAFE_FREE(sock_array);
+ 		return True;
+ 	}
+ 
+@@ -1752,6 +1753,7 @@ only use %d.\n", count, FD_SETSIZE));
+ 	if (ClientDGRAM < 0 || ClientDGRAM >= FD_SETSIZE) {
+ 		errno = EBADF;
+ 		SAFE_FREE(pset);
++		SAFE_FREE(sock_array);
+ 		return True;
+ 	}
+ 	FD_SET(ClientDGRAM,pset);
+-- 
+1.7.6
+

@@ -1,0 +1,53 @@
+From 1ed1b19b2eeda3217d03d66d4220abd871b03cb4 Mon Sep 17 00:00:00 2001
+From: Jeremy Allison <jra@samba.org>
+Date: Fri, 30 Sep 2011 13:35:59 -0700
+Subject: [PATCH] Fix bug #8493 - DFS breaks zip file extracting unless
+ "follow symlinks = no" set
+
+If a client sends a mangled name as part of a DFS path, use the
+post-mangled name for the pathname walk, not the mangled name.
+
+Autobuild-User: Jeremy Allison <jra@samba.org>
+Autobuild-Date: Sat Oct  1 00:45:59 CEST 2011 on sn-devel-104
+(cherry picked from commit 149875f887287dbbf016d2252962b023b0bae967)
+---
+ source3/smbd/msdfs.c |   13 ++-----------
+ 1 files changed, 2 insertions(+), 11 deletions(-)
+
+diff --git a/source3/smbd/msdfs.c b/source3/smbd/msdfs.c
+index 6a2f756..0480b58 100644
+--- a/source3/smbd/msdfs.c
++++ b/source3/smbd/msdfs.c
+@@ -525,15 +525,10 @@ static NTSTATUS dfs_path_lookup(TALLOC_CTX *ctx,
+ 		conn->connectpath, pdp->reqpath));
+ 
+ 	/*
+- 	 * Note the unix path conversion here we're doing we can
++	 * Note the unix path conversion here we're doing we
+ 	 * throw away. We're looking for a symlink for a dfs
+ 	 * resolution, if we don't find it we'll do another
+ 	 * unix_convert later in the codepath.
+-	 * If we needed to remember what we'd resolved in
+-	 * dp->reqpath (as the original code did) we'd
+-	 * copy (localhost, dp->reqpath) on any code
+-	 * path below that returns True - but I don't
+-	 * think this is needed. JRA.
+ 	 */
+ 
+ 	status = unix_convert(ctx, conn, pdp->reqpath, &smb_fname,
+@@ -544,11 +539,7 @@ static NTSTATUS dfs_path_lookup(TALLOC_CTX *ctx,
+ 				     NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+ 			return status;
+ 		}
+-
+-		/* Create an smb_fname to use below. */
+-		status = create_synthetic_smb_fname(ctx, pdp->reqpath, NULL,
+-						    NULL, &smb_fname);
+-		if (!NT_STATUS_IS_OK(status)) {
++		if (smb_fname == NULL || smb_fname->base_name == NULL) {
+ 			return status;
+ 		}
+ 	}
+-- 
+1.7.6.4
+

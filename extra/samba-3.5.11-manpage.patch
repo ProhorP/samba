@@ -1,0 +1,39 @@
+From 6fd1873e96d1c10bc2569b895c2a36fba9e45e55 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Tue, 20 Sep 2011 14:13:36 +0200
+Subject: [PATCH] s3-docs: document -k switch in net manpage.
+
+Guenther
+---
+ docs-xml/manpages-3/net.8.xml |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/docs-xml/manpages-3/net.8.xml b/docs-xml/manpages-3/net.8.xml
+index 6e6b7e3..754fd43 100644
+--- a/docs-xml/manpages-3/net.8.xml
++++ b/docs-xml/manpages-3/net.8.xml
+@@ -61,6 +61,7 @@
+ 
+ 	<variablelist>
+ 		&stdarg.help;
++		&stdarg.kerberos;
+ 		
+ 		<varlistentry>
+ 		<term>-w target-workgroup</term>
+-- 
+1.7.6.2
+
+--- a/docs/manpages/net.8	2011-06-14 10:09:11.000000000 +0200
++++ b/docs/manpages/net.8	2011-09-20 16:01:39.252198933 +0200
+@@ -37,6 +46,11 @@
+ Print a summary of command line options\&.
+ .RE
+ .PP
++\-k|\-\-kerberos
++.RS 4
++Try to authenticate with kerberos\&. Only useful in an Active Directory environment\&.
++.RE
++.PP
+ \-w target\-workgroup
+ .RS 4
+ Sets target workgroup or domain\&. You have to specify either this option or the IP address or the name of a server\&.

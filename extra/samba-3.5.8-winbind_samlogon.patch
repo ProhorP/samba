@@ -1,0 +1,91 @@
+From bfc497b6e098d3a993731d084d1b64a64814666e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Wed, 28 Sep 2011 18:12:49 +0200
+Subject: [PATCH] s3-winbind: Fix bug 7888 -- deal with buggy 3.0 based PDCs.
+
+Guenther
+---
+ source3/winbindd/winbindd_pam.c |   50 ++++++++++++++++++++++++++++-----------
+ 1 files changed, 36 insertions(+), 14 deletions(-)
+
+diff --git a/source3/winbindd/winbindd_pam.c b/source3/winbindd/winbindd_pam.c
+index df83dc6..5c56b87 100644
+--- a/source3/winbindd/winbindd_pam.c
++++ b/source3/winbindd/winbindd_pam.c
+@@ -1382,18 +1382,29 @@ static NTSTATUS winbindd_dual_pam_auth_samlogon(struct winbindd_domain *domain,
+ 				  nt_resp,
+ 				  &my_info3);
+ 
+-		if ((NT_STATUS_V(result) == DCERPC_FAULT_OP_RNG_ERROR)
+-		    && contact_domain->can_do_samlogon_ex) {
+-			DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
+-				  "retrying with NetSamLogon\n"));
+-			contact_domain->can_do_samlogon_ex = false;
++		if (NT_STATUS_V(result) == DCERPC_FAULT_OP_RNG_ERROR) {
++
+ 			/*
+ 			 * It's likely that the server also does not support
+ 			 * validation level 6
+ 			 */
+ 			domain->can_do_validation6 = false;
+-			retry = true;
+-			continue;
++
++			if (contact_domain->can_do_samlogon_ex) {
++				DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
++					  "retrying with NetSamLogon\n"));
++				contact_domain->can_do_samlogon_ex = false;
++				retry = true;
++				continue;
++			}
++
++			/* Got DCERPC_FAULT_OP_RNG_ERROR for SamLogon
++			 * (no Ex). This happens against old Samba
++			 * DCs. Drop the connection.
++			 */
++			invalidate_cm_connection(&contact_domain->conn);
++			result = NT_STATUS_LOGON_FAILURE;
++			break;
+ 		}
+ 
+ 		if (domain->can_do_validation6 &&
+@@ -1996,18 +2007,29 @@ enum winbindd_result winbindd_dual_pam_auth_crap(struct winbindd_domain *domain,
+ 				  nt_resp,
+ 				  &info3);
+ 
+-		if ((NT_STATUS_V(result) == DCERPC_FAULT_OP_RNG_ERROR)
+-		    && contact_domain->can_do_samlogon_ex) {
+-			DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
+-				  "retrying with NetSamLogon\n"));
+-			contact_domain->can_do_samlogon_ex = false;
++		if (NT_STATUS_V(result) == DCERPC_FAULT_OP_RNG_ERROR) {
++
+ 			/*
+ 			 * It's likely that the server also does not support
+ 			 * validation level 6
+ 			 */
+ 			domain->can_do_validation6 = false;
+-			retry = true;
+-			continue;
++
++			if (contact_domain->can_do_samlogon_ex) {
++				DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
++					  "retrying with NetSamLogon\n"));
++				contact_domain->can_do_samlogon_ex = false;
++				retry = true;
++				continue;
++			}
++
++			/* Got DCERPC_FAULT_OP_RNG_ERROR for SamLogon
++			 * (no Ex). This happens against old Samba
++			 * DCs. Drop the connection.
++			 */
++			invalidate_cm_connection(&contact_domain->conn);
++			result = NT_STATUS_LOGON_FAILURE;
++			break;
+ 		}
+ 
+ 		if (domain->can_do_validation6 &&
+-- 
+1.7.6.2
+

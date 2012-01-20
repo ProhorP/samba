@@ -1,0 +1,39 @@
+From 36e736871e28665ffcbbc4d0c87e1a2b60fcf0e0 Mon Sep 17 00:00:00 2001
+From: Volker Lendecke <vl@samba.org>
+Date: Mon, 10 May 2010 11:53:03 +0200
+Subject: [PATCH] s3: Test for "__attribute__((destructor))"
+
+---
+ source3/configure.in |   16 ++++++++++++++++
+ 1 files changed, 16 insertions(+), 0 deletions(-)
+
+diff --git a/source3/configure.in b/source3/configure.in
+index 2e677d7b649a7c294642547ea269014294db168c..046df41320be44c6c10b4d4f7ddf0d2563f9c03f 100644
+--- a/source3/configure.in
++++ b/source3/configure.in
+@@ -1366,6 +1366,22 @@ if test x"$samba_cv_stat_dos_flags" = x"yes" ; then
+     AC_DEFINE(HAVE_STAT_DOS_FLAGS, 1, [whether there is DOS flags support in the stat struct])
+ fi
+ 
++AC_CACHE_CHECK([whether we can compile with __attribute__((destructor))],
++	       samba_cv_function_attribute_destructor,
++	       [
++	         AC_COMPILE_IFELSE(
++			[
++				__attribute__((destructor))
++				static void cleanup(void) { }
++			],
++			samba_cv_function_attribute_destructor=yes)
++		])
++
++if test x"$samba_cv_function_attribute_destructor" = xyes ; then
++   AC_DEFINE(HAVE_FUNCTION_ATTRIBUTE_DESTRUCTOR, 1,
++	     [whether we can compile with __attribute__((destructor))])
++fi
++
+ #####################################
+ # needed for SRV lookups
+ AC_CHECK_LIB(resolv, dn_expand)
+-- 
+1.7.6
+

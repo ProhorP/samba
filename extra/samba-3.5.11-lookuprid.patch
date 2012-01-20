@@ -1,0 +1,235 @@
+From 1a8155d347e2a8de3432ce0fe99d598c25c2bafb Mon Sep 17 00:00:00 2001
+From: Volker Lendecke <vl@samba.org>
+Date: Mon, 27 Jun 2011 14:34:39 +0200
+Subject: [PATCH] s3: explicitly pass domain_sid to wbint_LookupRids() (bug
+ #7841)
+
+---
+ source3/librpc/idl/wbint.idl           |    1 +
+ source3/winbindd/winbindd_dual_srv.c   |    5 +++--
+ source3/winbindd/winbindd_lookuprids.c |   12 ++++++------
+ 3 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/source3/librpc/idl/wbint.idl b/source3/librpc/idl/wbint.idl
+index d12fae8..3258a32 100644
+--- a/source3/librpc/idl/wbint.idl
++++ b/source3/librpc/idl/wbint.idl
+@@ -140,6 +140,7 @@ interface wbint
+ 	);
+ 
+     NTSTATUS wbint_LookupRids(
++	[in] dom_sid *domain_sid,
+ 	[in] wbint_RidArray *rids,
+ 	[out,string,charset(UTF8)] char **domain_name,
+ 	[out] wbint_Principals *names
+diff --git a/source3/winbindd/winbindd_dual_srv.c b/source3/winbindd/winbindd_dual_srv.c
+index b4232a9..b95e08e 100644
+--- a/source3/winbindd/winbindd_dual_srv.c
++++ b/source3/winbindd/winbindd_dual_srv.c
+@@ -373,7 +373,7 @@ NTSTATUS _wbint_LookupRids(pipes_struct *p, struct wbint_LookupRids *r)
+ 	}
+ 
+ 	status = domain->methods->rids_to_names(
+-		domain, talloc_tos(), &domain->sid, r->in.rids->rids,
++		domain, talloc_tos(), r->in.domain_sid, r->in.rids->rids,
+ 		r->in.rids->num_rids, &domain_name, &names, &types);
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+@@ -388,7 +388,8 @@ NTSTATUS _wbint_LookupRids(pipes_struct *p, struct wbint_LookupRids *r)
+ 	}
+ 
+ 	for (i=0; i<r->in.rids->num_rids; i++) {
+-		sid_compose(&result[i].sid, &domain->sid, r->in.rids->rids[i]);
++		sid_compose(&result[i].sid, r->in.domain_sid,
++			    r->in.rids->rids[i]);
+ 		result[i].type = types[i];
+ 		result[i].name = talloc_move(result, &names[i]);
+ 	}
+diff --git a/source3/winbindd/winbindd_lookuprids.c b/source3/winbindd/winbindd_lookuprids.c
+index e1ac26c..b5e9f03 100644
+--- a/source3/winbindd/winbindd_lookuprids.c
++++ b/source3/winbindd/winbindd_lookuprids.c
+@@ -23,6 +23,7 @@
+ 
+ struct winbindd_lookuprids_state {
+ 	struct tevent_context *ev;
++	struct dom_sid domain_sid;
+ 	const char *domain_name;
+ 	struct wbint_RidArray rids;
+ 	struct wbint_Principals names;
+@@ -41,7 +42,6 @@ struct tevent_req *winbindd_lookuprids_send(TALLOC_CTX *mem_ctx,
+ 	struct tevent_req *req, *subreq;
+ 	struct winbindd_lookuprids_state *state;
+ 	struct winbindd_domain *domain;
+-	struct dom_sid sid;
+ 
+ 	req = tevent_req_create(mem_ctx, &state,
+ 				struct winbindd_lookuprids_state);
+@@ -55,16 +55,16 @@ struct tevent_req *winbindd_lookuprids_send(TALLOC_CTX *mem_ctx,
+ 
+ 	DEBUG(3, ("lookuprids (%s)\n", request->data.sid));
+ 
+-	if (!string_to_sid(&sid, request->data.sid)) {
++	if (!string_to_sid(&state->domain_sid, request->data.sid)) {
+ 		DEBUG(5, ("%s not a SID\n", request->data.sid));
+ 		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
+-	domain = find_lookup_domain_from_sid(&sid);
++	domain = find_lookup_domain_from_sid(&state->domain_sid);
+ 	if (domain == NULL) {
+ 		DEBUG(5, ("Domain for sid %s not found\n",
+-			  sid_string_dbg(&sid)));
++			  sid_string_dbg(&state->domain_sid)));
+ 		tevent_req_nterror(req, NT_STATUS_NO_SUCH_DOMAIN);
+ 		return tevent_req_post(req, ev);
+ 	}
+@@ -83,8 +83,8 @@ struct tevent_req *winbindd_lookuprids_send(TALLOC_CTX *mem_ctx,
+ 	}
+ 
+ 	subreq = rpccli_wbint_LookupRids_send(
+-		state, ev, domain->child.rpccli, &state->rids,
+-		&state->domain_name, &state->names);
++		state, ev, domain->child.rpccli, &state->domain_sid,
++		&state->rids, &state->domain_name, &state->names);
+ 	if (tevent_req_nomem(subreq, req)) {
+ 		return tevent_req_post(req, ev);
+ 	}
+-- 
+1.7.6.2
+
+From 12a4b5633d5c3488f48f3e7a5084402f6eeeb9c5 Mon Sep 17 00:00:00 2001
+From: Stefan Metzmacher <metze@samba.org>
+Date: Mon, 4 Jul 2011 11:47:24 +0200
+Subject: [PATCH] s3:librpc/gen_ndr: regen after wbint.idl changes
+
+metze
+
+Part of a fix for bug #7841 (WINBINDD_LOOKUPRIDS asks the wrong domain).
+---
+ source3/librpc/gen_ndr/cli_wbint.c |    4 ++++
+ source3/librpc/gen_ndr/cli_wbint.h |    2 ++
+ source3/librpc/gen_ndr/ndr_wbint.c |   16 ++++++++++++++++
+ source3/librpc/gen_ndr/wbint.h     |    1 +
+ 4 files changed, 23 insertions(+), 0 deletions(-)
+
+diff --git a/source3/librpc/gen_ndr/cli_wbint.c b/source3/librpc/gen_ndr/cli_wbint.c
+index 7200d2a..bf6b04b 100644
+--- a/source3/librpc/gen_ndr/cli_wbint.c
++++ b/source3/librpc/gen_ndr/cli_wbint.c
+@@ -2508,6 +2508,7 @@ static void rpccli_wbint_LookupRids_done(struct tevent_req *subreq);
+ struct tevent_req *rpccli_wbint_LookupRids_send(TALLOC_CTX *mem_ctx,
+ 						struct tevent_context *ev,
+ 						struct rpc_pipe_client *cli,
++						struct dom_sid *_domain_sid /* [in] [ref] */,
+ 						struct wbint_RidArray *_rids /* [in] [ref] */,
+ 						const char **_domain_name /* [out] [ref,charset(UTF8)] */,
+ 						struct wbint_Principals *_names /* [out] [ref] */)
+@@ -2525,6 +2526,7 @@ struct tevent_req *rpccli_wbint_LookupRids_send(TALLOC_CTX *mem_ctx,
+ 	state->dispatch_recv = cli->dispatch_recv;
+ 
+ 	/* In parameters */
++	state->orig.in.domain_sid = _domain_sid;
+ 	state->orig.in.rids = _rids;
+ 
+ 	/* Out parameters */
+@@ -2614,6 +2616,7 @@ NTSTATUS rpccli_wbint_LookupRids_recv(struct tevent_req *req,
+ 
+ NTSTATUS rpccli_wbint_LookupRids(struct rpc_pipe_client *cli,
+ 				 TALLOC_CTX *mem_ctx,
++				 struct dom_sid *domain_sid /* [in] [ref] */,
+ 				 struct wbint_RidArray *rids /* [in] [ref] */,
+ 				 const char **domain_name /* [out] [ref,charset(UTF8)] */,
+ 				 struct wbint_Principals *names /* [out] [ref] */)
+@@ -2622,6 +2625,7 @@ NTSTATUS rpccli_wbint_LookupRids(struct rpc_pipe_client *cli,
+ 	NTSTATUS status;
+ 
+ 	/* In parameters */
++	r.in.domain_sid = domain_sid;
+ 	r.in.rids = rids;
+ 
+ 	status = cli->dispatch(cli,
+diff --git a/source3/librpc/gen_ndr/cli_wbint.h b/source3/librpc/gen_ndr/cli_wbint.h
+index c4f9a81..6470816 100644
+--- a/source3/librpc/gen_ndr/cli_wbint.h
++++ b/source3/librpc/gen_ndr/cli_wbint.h
+@@ -223,6 +223,7 @@ NTSTATUS rpccli_wbint_DsGetDcName(struct rpc_pipe_client *cli,
+ struct tevent_req *rpccli_wbint_LookupRids_send(TALLOC_CTX *mem_ctx,
+ 						struct tevent_context *ev,
+ 						struct rpc_pipe_client *cli,
++						struct dom_sid *_domain_sid /* [in] [ref] */,
+ 						struct wbint_RidArray *_rids /* [in] [ref] */,
+ 						const char **_domain_name /* [out] [ref,charset(UTF8)] */,
+ 						struct wbint_Principals *_names /* [out] [ref] */);
+@@ -231,6 +232,7 @@ NTSTATUS rpccli_wbint_LookupRids_recv(struct tevent_req *req,
+ 				      NTSTATUS *result);
+ NTSTATUS rpccli_wbint_LookupRids(struct rpc_pipe_client *cli,
+ 				 TALLOC_CTX *mem_ctx,
++				 struct dom_sid *domain_sid /* [in] [ref] */,
+ 				 struct wbint_RidArray *rids /* [in] [ref] */,
+ 				 const char **domain_name /* [out] [ref,charset(UTF8)] */,
+ 				 struct wbint_Principals *names /* [out] [ref] */);
+diff --git a/source3/librpc/gen_ndr/ndr_wbint.c b/source3/librpc/gen_ndr/ndr_wbint.c
+index 5bb6832..27c668e 100644
+--- a/source3/librpc/gen_ndr/ndr_wbint.c
++++ b/source3/librpc/gen_ndr/ndr_wbint.c
+@@ -2076,6 +2076,10 @@ _PUBLIC_ void ndr_print_wbint_DsGetDcName(struct ndr_print *ndr, const char *nam
+ static enum ndr_err_code ndr_push_wbint_LookupRids(struct ndr_push *ndr, int flags, const struct wbint_LookupRids *r)
+ {
+ 	if (flags & NDR_IN) {
++		if (r->in.domain_sid == NULL) {
++			return ndr_push_error(ndr, NDR_ERR_INVALID_POINTER, "NULL [ref] pointer");
++		}
++		NDR_CHECK(ndr_push_dom_sid(ndr, NDR_SCALARS, r->in.domain_sid));
+ 		if (r->in.rids == NULL) {
+ 			return ndr_push_error(ndr, NDR_ERR_INVALID_POINTER, "NULL [ref] pointer");
+ 		}
+@@ -2104,6 +2108,7 @@ static enum ndr_err_code ndr_push_wbint_LookupRids(struct ndr_push *ndr, int fla
+ static enum ndr_err_code ndr_pull_wbint_LookupRids(struct ndr_pull *ndr, int flags, struct wbint_LookupRids *r)
+ {
+ 	uint32_t _ptr_domain_name;
++	TALLOC_CTX *_mem_save_domain_sid_0;
+ 	TALLOC_CTX *_mem_save_rids_0;
+ 	TALLOC_CTX *_mem_save_domain_name_0;
+ 	TALLOC_CTX *_mem_save_domain_name_1;
+@@ -2112,6 +2117,13 @@ static enum ndr_err_code ndr_pull_wbint_LookupRids(struct ndr_pull *ndr, int fla
+ 		ZERO_STRUCT(r->out);
+ 
+ 		if (ndr->flags & LIBNDR_FLAG_REF_ALLOC) {
++			NDR_PULL_ALLOC(ndr, r->in.domain_sid);
++		}
++		_mem_save_domain_sid_0 = NDR_PULL_GET_MEM_CTX(ndr);
++		NDR_PULL_SET_MEM_CTX(ndr, r->in.domain_sid, LIBNDR_FLAG_REF_ALLOC);
++		NDR_CHECK(ndr_pull_dom_sid(ndr, NDR_SCALARS, r->in.domain_sid));
++		NDR_PULL_SET_MEM_CTX(ndr, _mem_save_domain_sid_0, LIBNDR_FLAG_REF_ALLOC);
++		if (ndr->flags & LIBNDR_FLAG_REF_ALLOC) {
+ 			NDR_PULL_ALLOC(ndr, r->in.rids);
+ 		}
+ 		_mem_save_rids_0 = NDR_PULL_GET_MEM_CTX(ndr);
+@@ -2170,6 +2182,10 @@ _PUBLIC_ void ndr_print_wbint_LookupRids(struct ndr_print *ndr, const char *name
+ 	if (flags & NDR_IN) {
+ 		ndr_print_struct(ndr, "in", "wbint_LookupRids");
+ 		ndr->depth++;
++		ndr_print_ptr(ndr, "domain_sid", r->in.domain_sid);
++		ndr->depth++;
++		ndr_print_dom_sid(ndr, "domain_sid", r->in.domain_sid);
++		ndr->depth--;
+ 		ndr_print_ptr(ndr, "rids", r->in.rids);
+ 		ndr->depth++;
+ 		ndr_print_wbint_RidArray(ndr, "rids", r->in.rids);
+diff --git a/source3/librpc/gen_ndr/wbint.h b/source3/librpc/gen_ndr/wbint.h
+index 2add7fc..4ba45ad 100644
+--- a/source3/librpc/gen_ndr/wbint.h
++++ b/source3/librpc/gen_ndr/wbint.h
+@@ -276,6 +276,7 @@ struct wbint_DsGetDcName {
+ 
+ struct wbint_LookupRids {
+ 	struct {
++		struct dom_sid *domain_sid;/* [ref] */
+ 		struct wbint_RidArray *rids;/* [ref] */
+ 	} in;
+ 
+-- 
+1.7.6.2
+
