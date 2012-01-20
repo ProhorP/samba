@@ -40,27 +40,3 @@ index df44e44..71829fb 100644
  
 -- 
 1.7.6.4
-
---- a/docs/manpages/winbindd.8	2011-06-14 10:11:20.000000000 +0200
-+++ b/docs/manpages/winbindd.8	2011-10-24 19:31:28.478041788 +0200
-@@ -22,7 +22,7 @@
- winbindd \- Name Service Switch daemon for resolving names from NT servers
- .SH "SYNOPSIS"
- .HP \w'\ 'u
--winbindd [\-D] [\-F] [\-S] [\-i] [\-Y] [\-d\ <debug\ level>] [\-s\ <smb\ config\ file>] [\-n]
-+winbindd [\-D] [\-F] [\-S] [\-i] [\-d\ <debug\ level>] [\-s\ <smb\ config\ file>] [\-n]
- .SH "DESCRIPTION"
- .PP
- This program is part of the
-@@ -222,11 +222,6 @@
- .RS 4
- Disable caching\&. This means winbindd will always have to wait for a response from the domain controller before it can respond to a client and this thus makes things slower\&. The results will however be more accurate, since results from the cache might not be up\-to\-date\&. This might also temporarily hang winbindd if the DC doesn\'t respond\&.
- .RE
--.PP
--\-Y
--.RS 4
--Single daemon mode\&. This means winbindd will run as a single process (the mode of operation in Samba 2\&.2)\&. Winbindd\'s default behavior is to launch a child process that is responsible for updating expired cache entries\&.
--.RE
- .SH "NAME AND ID RESOLUTION"
- .PP
- Users and groups on a Windows NT server are assigned a security id (SID) which is globally unique when the user or group is created\&. To convert the Windows NT user or group into a unix user or group, a mapping between SIDs and unix user and group ids is required\&. This is one of the jobs that

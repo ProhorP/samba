@@ -32,39 +32,3 @@ index 5df579e..7423fc4 100644
  		</para></listitem>
  		</varlistentry> 
  	
---- a/docs/manpages/smb.conf.5	2011-05-30 22:24:07.070457411 +0200
-+++ b/docs/manpages/smb.conf.5	2011-05-30 22:25:10.972209333 +0200
-@@ -547,25 +556,25 @@
- .PP
- case sensitive = yes/no/auto
- .RS 4
--controls whether filenames are case sensitive\&. If they aren\'t, Samba must do a filename search and match on passed names\&. The default setting of auto allows clients that support case sensitive filenames (Linux CIFSVFS and smbclient 3\&.0\&.5 and above currently) to tell the Samba server on a per\-packet basis that they wish to access the file system in a case\-sensitive manner (to support UNIX case sensitive semantics)\&. No Windows or DOS system supports case\-sensitive filename so setting this option to auto is that same as setting it to no for them\&. Default
-+controls whether filenames are case sensitive\&. If they aren\*(Aqt, Samba must do a filename search and match on passed names\&. The default setting of auto allows clients that support case sensitive filenames (Linux CIFSVFS and smbclient 3\&.0\&.5 and above currently) to tell the Samba server on a per\-packet basis that they wish to access the file system in a case\-sensitive manner (to support UNIX case sensitive semantics)\&. No Windows or DOS system supports case\-sensitive filename so setting this option to auto is that same as setting it to no for them\&. Default
- \fIauto\fR\&.
- .RE
- .PP
- default case = upper/lower
- .RS 4
--controls what the default case is for new filenames (ie\&. files that don\'t currently exist in the filesystem)\&. Default
--\fIlower\fR\&. IMPORTANT NOTE: This option will be used to modify the case of
--\fIall\fR
--incoming client filenames, not just new filenames if the options
-+controls what the default case is for new filenames (ie\&. files that don\*(Aqt currently exist in the filesystem)\&. Default
-+\fIlower\fR\&. IMPORTANT NOTE: As part of the optimizations for directories containing large numbers of files, the following special case applies\&. If the options
- \m[blue]\fBcase sensitive = yes\fR\m[],
--\m[blue]\fBpreserve case = No\fR\m[],
-+\m[blue]\fBpreserve case = No\fR\m[], and
- \m[blue]\fBshort preserve case = No\fR\m[]
--are set\&. This change is needed as part of the optimisations for directories containing large numbers of files\&.
-+are set, then the case of
-+\fIall\fR
-+incoming client filenames, not just new filenames, will be modified\&. See additional notes below\&.
- .RE
- .PP
- preserve case = yes/no
- .RS 4
--controls whether new files (ie\&. files that don\'t currently exist in the filesystem) are created with the case that the client passes, or if they are forced to be the
-+controls whether new files (ie\&. files that don\*(Aqt currently exist in the filesystem) are created with the case that the client passes, or if they are forced to be the
- default
- case\&. Default
- \fIyes\fR\&.

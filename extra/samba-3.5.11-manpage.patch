@@ -22,18 +22,3 @@ index 6e6b7e3..754fd43 100644
  		<term>-w target-workgroup</term>
 -- 
 1.7.6.2
-
---- a/docs/manpages/net.8	2011-06-14 10:09:11.000000000 +0200
-+++ b/docs/manpages/net.8	2011-09-20 16:01:39.252198933 +0200
-@@ -37,6 +46,11 @@
- Print a summary of command line options\&.
- .RE
- .PP
-+\-k|\-\-kerberos
-+.RS 4
-+Try to authenticate with kerberos\&. Only useful in an Active Directory environment\&.
-+.RE
-+.PP
- \-w target\-workgroup
- .RS 4
- Sets target workgroup or domain\&. You have to specify either this option or the IP address or the name of a server\&.
