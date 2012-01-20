@@ -304,6 +304,8 @@ popd
 
 pushd docs-xml
 %configure  --with-samba-sources=../source3
+export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
+cat $(pwd)/build/catalog.xml.in | sed -e "s|@BUILDDIR@|$(pwd)|g" > $(pwd)/build/catalog.xml
 make smbdotconf/parameters.all.xml
 make release
 popd
