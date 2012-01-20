@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.5.10
-Release: alt2
+Release: alt3.M60P.1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -35,6 +35,26 @@ Patch104: samba-3.0.0rc3-nmbd-netbiosname.patch
 # The passwd part has been applied, but not the group part
 Patch107: samba-3.2.0pre1-grouppwd.patch
 Patch200: samba-3.2.5-inotify.patch
+Patch203: samba-3.5.2-pidfile_fdleak.patch
+Patch210: samba-3.5.4-winbind_max_clients.patch
+Patch213: samba-3.3.13-manpage.patch
+Patch219: samba-3.5.6-net_ads_dns.patch
+Patch223: samba-3.5.9-libwbclient-file-leaks.patch
+Patch224: samba-3.5.11-coverity.patch
+Patch225: samba-3.5.11-KB2536276.patch
+Patch226: samba-3.5.11-docs.patch
+Patch227: samba-3.5.11-perl.patch
+Patch228: samba-3.5.11-manpage.patch
+Patch229: samba-3.5.11-idmapdebug.patch
+Patch230: samba-3.5.11-joinkrb5.patch
+Patch231: samba-3.5.8-winbind_samlogon.patch
+Patch232: samba-3.5.12-force_create_mode.patch
+Patch233: samba-3.5.11-lookuprid.patch
+Patch234: samba-3.5.11-IE9.patch
+Patch235: samba-3.5.11-nss_info_doc.patch
+Patch236: samba-3.5.11-dfs_symlink.patch
+Patch237: samba-3.5.11-winbindd_manpage.patch
+
 
 Requires(pre): samba-common = %version-%release
 
@@ -187,6 +207,25 @@ cp %SOURCE11 packaging/Fedora/
 %patch104 -p1 -b .nmbd-netbiosname
 %patch107 -p1 -b .grouppwd
 %patch200 -p0 -b .inotify
+%patch203 -p1 -b .pidfile_fdleak
+%patch210 -p1 -b .winbind_max_clients
+%patch213 -p1 -b .manpage
+%patch219 -p1 -b .net_ads_dns
+%patch223 -p1 -b .libwbcliet_file_leaks
+%patch224 -p1 -b .coverity
+%patch225 -p1 -b .KB2536276
+%patch226 -p1 -b .docs
+%patch227 -p1 -b .perl
+%patch228 -p1 -b .manpage
+%patch229 -p1 -b .idmapdebug
+%patch230 -p1 -b .joinkrb5
+%patch231 -p1 -b .winbind_samlogon
+%patch232 -p1 -b .force_create_mode
+%patch233 -p1 -b .lookuprid
+%patch234 -p1 -b .IE9
+%patch235 -p1 -b .nss_info_doc
+%patch236 -p1 -b .dfs_symlink
+%patch237 -p1 -b .winbindd_manpage
 
 sed -i 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&\"%release\"/' %samba_source/VERSION
 cd %samba_source
@@ -638,6 +677,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Fri Jan 20 2012 Alexey Shabalin <shaba@altlinux.ru> 3.5.10-alt3.M60P.1
+- sync patches with samba-3.5.10-114.el6
+
 * Mon Aug 01 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.10-alt2
 - CVE-2011-2724
 
