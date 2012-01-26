@@ -1913,7 +1913,7 @@ static int do_put(const char *rname, const char *lname, bool reput)
 
 	if (f == x_stdin) {
 		cli_shutdown(cli);
-		exit(0);
+		exit(rc);
 	}
 
 	return rc;
@@ -2528,8 +2528,8 @@ static int cmd_posix_open(void)
 	}
 
 	if (!NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDWR, mode, &fnum))) {
-		if (!NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDONLY, mode, &fnum))) {
-			d_printf("posix_open file %s: for read/write fnum %d\n", targetname, fnum);
+		if (NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDONLY, mode, &fnum))) {
+			d_printf("posix_open file %s: for readonly fnum %d\n", targetname, fnum);
 		} else {
 			d_printf("Failed to open file %s. %s\n", targetname, cli_errstr(cli));
 		}

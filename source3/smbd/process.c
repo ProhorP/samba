@@ -451,9 +451,10 @@ static NTSTATUS receive_smb_talloc(TALLOC_CTX *mem_ctx,
 	status = receive_smb_raw_talloc(mem_ctx, sconn, sock, buffer, timeout,
 					p_unread, &len);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("read_smb_length_return_keepalive failed for "
-			  "client %s read error = %s.\n",
-			  sconn->client_id.addr, nt_errstr(status)));
+		DEBUG(NT_STATUS_EQUAL(status, NT_STATUS_END_OF_FILE)?5:1,
+		      ("receive_smb_raw_talloc failed for client %s "
+		       "read error = %s.\n",
+		       sconn->client_id.addr, nt_errstr(status)));
 		return status;
 	}
 
@@ -1441,8 +1442,8 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 
 	/* Make sure this is an SMB packet. smb_size contains NetBIOS header
 	 * so subtract 4 from it. */
-	if (!valid_smb_header(req->inbuf)
-	    || (size < (smb_size - 4))) {
+	if ((size < (smb_size - 4)) ||
+	    !valid_smb_header(req->inbuf)) {
 		DEBUG(2,("Non-SMB packet of length %d. Terminating server\n",
 			 smb_len(req->inbuf)));
 		exit_server_cleanly("Non-SMB packet");
@@ -2088,15 +2089,24 @@ void chain_reply(struct smb_request *req)
 	SMB_PERFCOUNT_SET_MSGLEN_IN(&req->pcd, smblen);
 
 	/*
-	 * Check if the client tries to fool us. The request so far uses the
-	 * space to the end of the byte buffer in the request just
-	 * processed. The chain_offset can't point into that area. If that was
-	 * the case, we could end up with an endless processing of the chain,
-	 * we would always handle the same request.
+	 * Check if the client tries to fool us. The chain offset
+	 * needs to point beyond the current request in the chain, it
+	 * needs to strictly grow. Otherwise we might be tricked into
+	 * an endless loop always processing the same request over and
+	 * over again. We used to assume that vwv and the byte buffer
+	 * array in a chain are always attached, but OS/2 the
+	 * Write&X/Read&X chain puts the Read&X vwv array right behind
+	 * the Write&X vwv chain. The Write&X bcc array is put behind
+	 * the Read&X vwv array. So now we check whether the chain
+	 * offset points strictly behind the previous vwv
+	 * array. req->buf points right after the vwv array of the
+	 * previous request. See
+	 * https://bugzilla.samba.org/show_bug.cgi?id=8360 for more
+	 * information.
 	 */
 
-	already_used = PTR_DIFF(req->buf+req->buflen, smb_base(req->inbuf));
-	if (chain_offset < already_used) {
+	already_used = PTR_DIFF(req->buf, smb_base(req->inbuf));
+	if (chain_offset <= already_used) {
 		goto error;
 	}
 
@@ -2797,7 +2807,7 @@ static void smbd_echo_loop(struct smbd_server_connection *sconn,
 /*
  * Handle SMBecho requests in a forked child process
  */
-static bool fork_echo_handler(struct smbd_server_connection *sconn)
+bool fork_echo_handler(struct smbd_server_connection *sconn)
 {
 	int listener_pipe[2];
 	int res;
@@ -2911,8 +2921,7 @@ void smbd_process(struct smbd_server_connection *sconn)
 	const char *remaddr = NULL;
 	int ret;
 
-	if (lp_maxprotocol() == PROTOCOL_SMB2 &&
-	    !lp_async_smb_echo_handler()) {
+	if (lp_maxprotocol() == PROTOCOL_SMB2) {
 		/*
 		 * We're not making the decision here,
 		 * we're just allowing the client
@@ -3031,10 +3040,6 @@ void smbd_process(struct smbd_server_connection *sconn)
 
 	if (!srv_init_signing(sconn)) {
 		exit_server("Failed to init smb_signing");
-	}
-
-	if (lp_async_smb_echo_handler() && !fork_echo_handler(sconn)) {
-		exit_server("Failed to fork echo handler");
 	}
 
 	/* Setup oplocks */

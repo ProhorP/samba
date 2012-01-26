@@ -336,6 +336,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		      const char *orig_path,
 		      struct smb_filename **smb_fname,
 		      uint32_t ucf_flags);
+NTSTATUS check_veto_path(connection_struct *conn, const char *name);
 NTSTATUS check_name(connection_struct *conn, const char *name);
 int get_real_filename(connection_struct *conn, const char *path,
 		      const char *name, TALLOC_CTX *mem_ctx,
@@ -586,7 +587,6 @@ NTSTATUS change_dir_owner_to_parent(connection_struct *conn,
 				    const char *inherit_from_dir,
 				    const char *fname,
 				    SMB_STRUCT_STAT *psbuf);
-bool is_executable(const char *fname);
 bool is_stat_open(uint32 access_mask);
 bool request_timed_out(struct timeval request_time,
 		       struct timeval timeout);
@@ -606,13 +606,6 @@ NTSTATUS fcb_or_dos_open(struct smb_request *req,
 			 uint32 access_mask,
 			 uint32 share_access,
 			 uint32 create_options);
-bool map_open_params_to_ntcreate(const struct smb_filename *smb_fname,
-				 int deny_mode, int open_func,
-				 uint32 *paccess_mask,
-				 uint32 *pshare_mode,
-				 uint32 *pcreate_disposition,
-				 uint32 *pcreate_options,
-				 uint32_t *pprivate_flags);
 void remove_deferred_open_entry(struct file_id id, uint64_t mid,
 				struct server_id pid);
 NTSTATUS open_file_fchmod(connection_struct *conn,
@@ -801,6 +794,7 @@ size_t req_wct_ofs(struct smb_request *req);
 void chain_reply(struct smb_request *req);
 bool req_is_in_chain(struct smb_request *req);
 void smbd_process(struct smbd_server_connection *sconn);
+bool fork_echo_handler(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/quotas.c  */
 
@@ -987,8 +981,10 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir);
 void load_registry_shares(void);
 int add_home_service(const char *service, const char *username, const char *homedir);
 int find_service(TALLOC_CTX *ctx, const char *service, char **p_service_out);
-connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
-					int snum, user_struct *vuser,
+struct smbd_smb2_tcon;
+connection_struct *make_connection_smb2(struct smbd_server_connection *sconn,
+					struct smbd_smb2_tcon *tcon,
+					user_struct *vuser,
 					DATA_BLOB password,
 					const char *pdev,
 					NTSTATUS *pstatus);
@@ -1044,6 +1040,7 @@ void stat_cache_add( const char *full_orig_name,
 		char *translated_path,
 		bool case_sensitive);
 bool stat_cache_lookup(connection_struct *conn,
+			bool posix_paths,
 			char **pp_name,
 			char **pp_dirpath,
 			char **pp_start,
@@ -1174,6 +1171,12 @@ int vfs_lstat_smb_fname(struct connection_struct *conn, const char *fname,
 			SMB_STRUCT_STAT *psbuf);
 NTSTATUS vfs_stat_fsp(files_struct *fsp);
 NTSTATUS vfs_chown_fsp(files_struct *fsp, uid_t uid, gid_t gid);
+NTSTATUS vfs_streaminfo(connection_struct *conn,
+			struct files_struct *fsp,
+			const char *fname,
+			TALLOC_CTX *mem_ctx,
+			unsigned int *num_streams,
+			struct stream_struct **streams);
 
 /* The following definitions come from smbd/avahi_register.c */
 

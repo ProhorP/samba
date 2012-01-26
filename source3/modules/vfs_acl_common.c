@@ -252,7 +252,7 @@ static NTSTATUS get_nt_acl_internal(vfs_handle_struct *handle,
 			        uint32_t security_info,
 				struct security_descriptor **ppdesc)
 {
-	DATA_BLOB blob;
+	DATA_BLOB blob = data_blob_null;
 	NTSTATUS status;
 	uint16_t hash_type = XATTR_SD_HASH_TYPE_NONE;
 	uint8_t hash[XATTR_SD_HASH_SIZE];
@@ -378,7 +378,7 @@ static NTSTATUS get_nt_acl_internal(vfs_handle_struct *handle,
 				return map_nt_error_from_unix(errno);
 			}
 		}
-		is_directory = S_ISDIR(sbuf.st_ex_mode);
+		is_directory = S_ISDIR(psbuf->st_ex_mode);
 
 		if (ignore_file_system_acl) {
 			TALLOC_FREE(pdesc_next);
@@ -413,9 +413,11 @@ static NTSTATUS get_nt_acl_internal(vfs_handle_struct *handle,
 		psd->group_sid = NULL;
 	}
 	if (!(security_info & SECINFO_DACL)) {
+		psd->type &= ~SEC_DESC_DACL_PRESENT;
 		psd->dacl = NULL;
 	}
 	if (!(security_info & SECINFO_SACL)) {
+		psd->type &= ~SEC_DESC_SACL_PRESENT;
 		psd->sacl = NULL;
 	}
 
@@ -537,7 +539,8 @@ static NTSTATUS get_parent_acl_common(vfs_handle_struct *handle,
 					parent_name,
 					(SECINFO_OWNER |
 					 SECINFO_GROUP |
-					 SECINFO_DACL),
+					 SECINFO_DACL  |
+					 SECINFO_SACL),
 					pp_parent_desc);
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -620,7 +623,8 @@ static int open_acl_common(vfs_handle_struct *handle,
 				fname,
 				(SECINFO_OWNER |
 				 SECINFO_GROUP |
-				 SECINFO_DACL),
+				 SECINFO_DACL  |
+				 SECINFO_SACL),
 				&pdesc);
         if (NT_STATUS_IS_OK(status)) {
 		/* See if we can access it. */
@@ -631,8 +635,11 @@ static int open_acl_common(vfs_handle_struct *handle,
 					&access_granted);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(10,("open_acl_xattr: %s open "
+				"for access 0x%x (0x%x) "
 				"refused with error %s\n",
 				fsp_str_dbg(fsp),
+				(unsigned int)fsp->access_mask,
+				(unsigned int)access_granted,
 				nt_errstr(status) ));
 			goto err;
 		}
@@ -830,6 +837,13 @@ static int acl_common_remove_object(vfs_handle_struct *handle,
 	const char *final_component = NULL;
 	struct smb_filename local_fname;
 	int saved_errno = 0;
+	char *saved_dir = NULL;
+
+	saved_dir = vfs_GetWd(talloc_tos(),conn);
+	if (!saved_dir) {
+		saved_errno = errno;
+		goto out;
+	}
 
 	if (!parent_dirname(talloc_tos(), path,
 			&parent_dir, &final_component)) {
@@ -842,7 +856,7 @@ static int acl_common_remove_object(vfs_handle_struct *handle,
 		parent_dir, final_component ));
 
  	/* cd into the parent dir to pin it. */
-	ret = SMB_VFS_CHDIR(conn, parent_dir);
+	ret = vfs_ChDir(conn, parent_dir);
 	if (ret == -1) {
 		saved_errno = errno;
 		goto out;
@@ -861,7 +875,7 @@ static int acl_common_remove_object(vfs_handle_struct *handle,
 	/* Ensure we have this file open with DELETE access. */
 	id = vfs_file_id_from_sbuf(conn, &local_fname.st);
 	for (fsp = file_find_di_first(conn->sconn, id); fsp;
-	     file_find_di_next(fsp)) {
+		     fsp = file_find_di_next(fsp)) {
 		if (fsp->access_mask & DELETE_ACCESS &&
 				fsp->delete_on_close) {
 			/* We did open this for delete,
@@ -896,7 +910,9 @@ static int acl_common_remove_object(vfs_handle_struct *handle,
 
 	TALLOC_FREE(parent_dir);
 
-	vfs_ChDir(conn, conn->connectpath);
+	if (saved_dir) {
+		vfs_ChDir(conn, saved_dir);
+	}
 	if (saved_errno) {
 		errno = saved_errno;
 	}
@@ -908,17 +924,23 @@ static int rmdir_acl_common(struct vfs_handle_struct *handle,
 {
 	int ret;
 
+	/* Try the normal rmdir first. */
 	ret = SMB_VFS_NEXT_RMDIR(handle, path);
-	if (!(ret == -1 && (errno == EACCES || errno == EPERM))) {
-		DEBUG(10,("rmdir_acl_common: unlink of %s failed %s\n",
-			path,
-			strerror(errno) ));
-		return ret;
+	if (ret == 0) {
+		return 0;
+	}
+	if (errno == EACCES || errno == EPERM) {
+		/* Failed due to access denied,
+		   see if we need to root override. */
+		return acl_common_remove_object(handle,
+						path,
+						true);
 	}
 
-	return acl_common_remove_object(handle,
-					path,
-					true);
+	DEBUG(10,("rmdir_acl_common: unlink of %s failed %s\n",
+		path,
+		strerror(errno) ));
+	return -1;
 }
 
 static NTSTATUS create_file_acl_common(struct vfs_handle_struct *handle,
@@ -1038,21 +1060,28 @@ static int unlink_acl_common(struct vfs_handle_struct *handle,
 {
 	int ret;
 
+	/* Try the normal unlink first. */
 	ret = SMB_VFS_NEXT_UNLINK(handle, smb_fname);
-	if (!(ret == -1 && (errno == EACCES || errno == EPERM))) {
-		DEBUG(10,("unlink_acl_common: unlink of %s failed %s\n",
-			smb_fname->base_name,
-			strerror(errno) ));
-		return ret;
+	if (ret == 0) {
+		return 0;
 	}
-	/* Don't do anything fancy for streams. */
-	if (smb_fname->stream_name) {
-		return ret;
-	}
+	if (errno == EACCES || errno == EPERM) {
+		/* Failed due to access denied,
+		   see if we need to root override. */
 
-	return acl_common_remove_object(handle,
+		/* Don't do anything fancy for streams. */
+		if (smb_fname->stream_name) {
+			return -1;
+		}
+		return acl_common_remove_object(handle,
 					smb_fname->base_name,
 					false);
+	}
+
+	DEBUG(10,("unlink_acl_common: unlink of %s failed %s\n",
+		smb_fname->base_name,
+		strerror(errno) ));
+	return -1;
 }
 
 static int chmod_acl_module_common(struct vfs_handle_struct *handle,

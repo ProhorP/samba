@@ -95,6 +95,16 @@ NTSTATUS smbd_check_open_rights(struct connection_struct *conn,
 		return NT_STATUS_OK;
 	}
 
+	if (access_mask == DELETE_ACCESS &&
+			VALID_STAT(smb_fname->st) &&
+			S_ISLNK(smb_fname->st.st_ex_mode)) {
+		/* We can always delete a symlink. */
+		DEBUG(10,("smbd_check_open_rights: not checking ACL "
+			"on DELETE_ACCESS on symlink %s.\n",
+			smb_fname_str_dbg(smb_fname) ));
+		return NT_STATUS_OK;
+	}
+
 	status = SMB_VFS_GET_NT_ACL(conn, smb_fname->base_name,
 			(SECINFO_OWNER |
 			SECINFO_GROUP |
@@ -695,23 +705,6 @@ static NTSTATUS open_file(files_struct *fsp,
 
 	errno = 0;
 	return NT_STATUS_OK;
-}
-
-/*******************************************************************
- Return True if the filename is one of the special executable types.
-********************************************************************/
-
-bool is_executable(const char *fname)
-{
-	if ((fname = strrchr_m(fname,'.'))) {
-		if (strequal(fname,".com") ||
-		    strequal(fname,".dll") ||
-		    strequal(fname,".exe") ||
-		    strequal(fname,".sym")) {
-			return True;
-		}
-	}
-	return False;
 }
 
 /****************************************************************************
@@ -1334,153 +1327,6 @@ NTSTATUS fcb_or_dos_open(struct smb_request *req,
 			    create_options, fsp_to_dup_into);
 }
 
-/****************************************************************************
- Open a file with a share mode - old openX method - map into NTCreate.
-****************************************************************************/
-
-bool map_open_params_to_ntcreate(const struct smb_filename *smb_fname,
-				 int deny_mode, int open_func,
-				 uint32 *paccess_mask,
-				 uint32 *pshare_mode,
-				 uint32 *pcreate_disposition,
-				 uint32 *pcreate_options,
-				 uint32_t *pprivate_flags)
-{
-	uint32 access_mask;
-	uint32 share_mode;
-	uint32 create_disposition;
-	uint32 create_options = FILE_NON_DIRECTORY_FILE;
-	uint32_t private_flags = 0;
-
-	DEBUG(10,("map_open_params_to_ntcreate: fname = %s, deny_mode = 0x%x, "
-		  "open_func = 0x%x\n",
-		  smb_fname_str_dbg(smb_fname), (unsigned int)deny_mode,
-		  (unsigned int)open_func ));
-
-	/* Create the NT compatible access_mask. */
-	switch (GET_OPENX_MODE(deny_mode)) {
-		case DOS_OPEN_EXEC: /* Implies read-only - used to be FILE_READ_DATA */
-		case DOS_OPEN_RDONLY:
-			access_mask = FILE_GENERIC_READ;
-			break;
-		case DOS_OPEN_WRONLY:
-			access_mask = FILE_GENERIC_WRITE;
-			break;
-		case DOS_OPEN_RDWR:
-		case DOS_OPEN_FCB:
-			access_mask = FILE_GENERIC_READ|FILE_GENERIC_WRITE;
-			break;
-		default:
-			DEBUG(10,("map_open_params_to_ntcreate: bad open mode = 0x%x\n",
-				  (unsigned int)GET_OPENX_MODE(deny_mode)));
-			return False;
-	}
-
-	/* Create the NT compatible create_disposition. */
-	switch (open_func) {
-		case OPENX_FILE_EXISTS_FAIL|OPENX_FILE_CREATE_IF_NOT_EXIST:
-			create_disposition = FILE_CREATE;
-			break;
-
-		case OPENX_FILE_EXISTS_OPEN:
-			create_disposition = FILE_OPEN;
-			break;
-
-		case OPENX_FILE_EXISTS_OPEN|OPENX_FILE_CREATE_IF_NOT_EXIST:
-			create_disposition = FILE_OPEN_IF;
-			break;
-
-		case OPENX_FILE_EXISTS_TRUNCATE:
-			create_disposition = FILE_OVERWRITE;
-			break;
-
-		case OPENX_FILE_EXISTS_TRUNCATE|OPENX_FILE_CREATE_IF_NOT_EXIST:
-			create_disposition = FILE_OVERWRITE_IF;
-			break;
-
-		default:
-			/* From samba4 - to be confirmed. */
-			if (GET_OPENX_MODE(deny_mode) == DOS_OPEN_EXEC) {
-				create_disposition = FILE_CREATE;
-				break;
-			}
-			DEBUG(10,("map_open_params_to_ntcreate: bad "
-				  "open_func 0x%x\n", (unsigned int)open_func));
-			return False;
-	}
-
-	/* Create the NT compatible share modes. */
-	switch (GET_DENY_MODE(deny_mode)) {
-		case DENY_ALL:
-			share_mode = FILE_SHARE_NONE;
-			break;
-
-		case DENY_WRITE:
-			share_mode = FILE_SHARE_READ;
-			break;
-
-		case DENY_READ:
-			share_mode = FILE_SHARE_WRITE;
-			break;
-
-		case DENY_NONE:
-			share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
-			break;
-
-		case DENY_DOS:
-			private_flags |= NTCREATEX_OPTIONS_PRIVATE_DENY_DOS;
-	                if (is_executable(smb_fname->base_name)) {
-				share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
-			} else {
-				if (GET_OPENX_MODE(deny_mode) == DOS_OPEN_RDONLY) {
-					share_mode = FILE_SHARE_READ;
-				} else {
-					share_mode = FILE_SHARE_NONE;
-				}
-			}
-			break;
-
-		case DENY_FCB:
-			private_flags |= NTCREATEX_OPTIONS_PRIVATE_DENY_FCB;
-			share_mode = FILE_SHARE_NONE;
-			break;
-
-		default:
-			DEBUG(10,("map_open_params_to_ntcreate: bad deny_mode 0x%x\n",
-				(unsigned int)GET_DENY_MODE(deny_mode) ));
-			return False;
-	}
-
-	DEBUG(10,("map_open_params_to_ntcreate: file %s, access_mask = 0x%x, "
-		  "share_mode = 0x%x, create_disposition = 0x%x, "
-		  "create_options = 0x%x private_flags = 0x%x\n",
-		  smb_fname_str_dbg(smb_fname),
-		  (unsigned int)access_mask,
-		  (unsigned int)share_mode,
-		  (unsigned int)create_disposition,
-		  (unsigned int)create_options,
-		  (unsigned int)private_flags));
-
-	if (paccess_mask) {
-		*paccess_mask = access_mask;
-	}
-	if (pshare_mode) {
-		*pshare_mode = share_mode;
-	}
-	if (pcreate_disposition) {
-		*pcreate_disposition = create_disposition;
-	}
-	if (pcreate_options) {
-		*pcreate_options = create_options;
-	}
-	if (pprivate_flags) {
-		*pprivate_flags = private_flags;
-	}
-
-	return True;
-
-}
-
 static void schedule_defer_open(struct share_mode_lock *lck,
 				struct timeval request_time,
 				struct smb_request *req)
@@ -1704,12 +1550,6 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 
 	ZERO_STRUCT(id);
 
-	/* Windows allows a new file to be created and
-	   silently removes a FILE_ATTRIBUTE_DIRECTORY
-	   sent by the client. Do the same. */
-
-	new_dos_attributes &= ~FILE_ATTRIBUTE_DIRECTORY;
-
 	if (conn->printer) {
 		/*
 		 * Printers are handled completely differently.
@@ -1743,6 +1583,12 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 		unx_mode = (mode_t)(new_dos_attributes & ~FILE_FLAG_POSIX_SEMANTICS);
 		new_dos_attributes = 0;
 	} else {
+		/* Windows allows a new file to be created and
+		   silently removes a FILE_ATTRIBUTE_DIRECTORY
+		   sent by the client. Do the same. */
+
+		new_dos_attributes &= ~FILE_ATTRIBUTE_DIRECTORY;
+
 		/* We add FILE_ATTRIBUTE_ARCHIVE to this as this mode is only used if the file is
 		 * created new. */
 		unx_mode = unix_mode(conn, new_dos_attributes | FILE_ATTRIBUTE_ARCHIVE,
@@ -1786,11 +1632,6 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 			/* Ensure we don't reprocess this message. */
 			remove_deferred_open_message_smb(req->mid);
 		}
-	}
-
-	status = check_name(conn, smb_fname->base_name);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
 	}
 
 	if (!posix_open) {
@@ -2899,10 +2740,6 @@ static NTSTATUS open_directory(connection_struct *conn,
 
 	fsp->share_access = share_access;
 	fsp->fh->private_options = 0;
-	/*
-	 * According to Samba4, SEC_FILE_READ_ATTRIBUTE is always granted,
-	 */
-	fsp->access_mask = access_mask | FILE_READ_ATTRIBUTES;
 	fsp->print_file = NULL;
 	fsp->modified = False;
 	fsp->oplock_type = NO_OPLOCK;
@@ -2917,6 +2754,8 @@ static NTSTATUS open_directory(connection_struct *conn,
 
 	mtimespec = smb_dname->st.st_ex_mtime;
 
+	/* Temporary access mask used to open the directory fd. */
+	fsp->access_mask = FILE_READ_DATA | FILE_READ_ATTRIBUTES;
 #ifdef O_DIRECTORY
 	status = fd_open(conn, fsp, O_RDONLY|O_DIRECTORY, 0);
 #else
@@ -2931,6 +2770,12 @@ static NTSTATUS open_directory(connection_struct *conn,
 		file_free(req, fsp);
 		return status;
 	}
+
+	/*
+	 * According to Samba4, SEC_FILE_READ_ATTRIBUTE is always granted,
+	 * Set the real access mask for later access (possibly delete).
+	 */
+	fsp->access_mask = access_mask | FILE_READ_ATTRIBUTES;
 
 	status = vfs_stat_fsp(fsp);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3131,15 +2976,15 @@ void msg_file_was_renamed(struct messaging_context *msg,
 NTSTATUS open_streams_for_delete(connection_struct *conn,
 					const char *fname)
 {
-	struct stream_struct *stream_info;
-	files_struct **streams;
+	struct stream_struct *stream_info = NULL;
+	files_struct **streams = NULL;
 	int i;
-	unsigned int num_streams;
+	unsigned int num_streams = 0;
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS status;
 
-	status = SMB_VFS_STREAMINFO(conn, NULL, fname, talloc_tos(),
-				    &num_streams, &stream_info);
+	status = vfs_streaminfo(conn, NULL, fname, talloc_tos(),
+				&num_streams, &stream_info);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_IMPLEMENTED)
 	    || NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
@@ -3149,7 +2994,7 @@ NTSTATUS open_streams_for_delete(connection_struct *conn,
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(10, ("SMB_VFS_STREAMINFO failed: %s\n",
+		DEBUG(10, ("vfs_streaminfo failed: %s\n",
 			   nt_errstr(status)));
 		goto fail;
 	}
@@ -3811,13 +3656,6 @@ NTSTATUS create_file_default(connection_struct *conn,
 			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
 			goto fail;
 		}
-	}
-
-	/* All file access must go through check_name() */
-
-	status = check_name(conn, smb_fname->base_name);
-	if (!NT_STATUS_IS_OK(status)) {
-		goto fail;
 	}
 
 	if (stream_name && is_ntfs_default_stream_smb_fname(smb_fname)) {

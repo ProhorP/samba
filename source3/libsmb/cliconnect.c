@@ -361,9 +361,6 @@ static NTSTATUS cli_session_setup_lanman2(struct cli_state *cli, const char *use
 	status = cli_session_setup_lanman2_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -598,9 +595,6 @@ static NTSTATUS cli_session_setup_guest(struct cli_state *cli)
 	status = cli_session_setup_guest_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -802,9 +796,6 @@ static NTSTATUS cli_session_setup_plain(struct cli_state *cli,
 	status = cli_session_setup_plain_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -1170,9 +1161,6 @@ static NTSTATUS cli_session_setup_nt1(struct cli_state *cli, const char *user,
 	status = cli_session_setup_nt1_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -1788,9 +1776,6 @@ static NTSTATUS cli_session_setup_ntlmssp(struct cli_state *cli,
 	status = cli_session_setup_ntlmssp_recv(req);
 fail:
 	TALLOC_FREE(ev);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -2012,6 +1997,19 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 	}
 
 	if (cli->protocol < PROTOCOL_LANMAN1) {
+		/*
+		 * Ensure cli->server_domain,
+		 * cli->server_os and cli->server_type
+		 * are valid pointers.
+		 */
+		cli->server_domain = talloc_strdup(cli, "");
+		cli->server_os = talloc_strdup(cli, "");
+		cli->server_type = talloc_strdup(cli, "");
+		if (cli->server_domain == NULL ||
+				cli->server_os == NULL ||
+				cli->server_type == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
 		return NT_STATUS_OK;
 	}
 
@@ -2175,9 +2173,6 @@ NTSTATUS cli_ulogoff(struct cli_state *cli)
 	status = cli_ulogoff_recv(req);
 fail:
 	TALLOC_FREE(ev);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -2471,9 +2466,6 @@ NTSTATUS cli_tcon_andx(struct cli_state *cli, const char *share,
 	status = cli_tcon_andx_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -2554,9 +2546,6 @@ NTSTATUS cli_tdis(struct cli_state *cli)
 	status = cli_tdis_recv(req);
 fail:
 	TALLOC_FREE(ev);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 
@@ -2666,6 +2655,12 @@ static void cli_negprot_done(struct tevent_req *subreq)
 	if (cli->protocol >= PROTOCOL_NT1) {    
 		struct timespec ts;
 		bool negotiated_smb_signing = false;
+		DATA_BLOB blob = data_blob_null;
+
+		if (wct != 0x11) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
+		}
 
 		/* NT protocol */
 		cli->sec_mode = CVAL(vwv + 1, 0);
@@ -2686,12 +2681,28 @@ static void cli_negprot_done(struct tevent_req *subreq)
 		/* work out if they sent us a workgroup */
 		if (!(cli->capabilities & CAP_EXTENDED_SECURITY) &&
 		    smb_buflen(inbuf) > 8) {
+			blob = data_blob_const(bytes + 8, num_bytes - 8);
+		}
+
+		if (blob.length > 0) {
 			ssize_t ret;
-			status = smb_bytes_talloc_string(
-				cli, (char *)inbuf, &cli->server_domain,
-				bytes + 8, num_bytes - 8, &ret);
-			if (tevent_req_nterror(req, status)) {
+			char *server_domain = NULL;
+
+			ret = clistr_pull_talloc(cli,
+						 (const char *)inbuf,
+						 SVAL(inbuf, smb_flg2),
+						 &server_domain,
+						 (char *)blob.data,
+						 blob.length,
+						 STR_TERMINATE|
+						 STR_UNICODE|
+						 STR_NOALIGN);
+			if (ret == -1) {
+				tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
 				return;
+			}
+			if (server_domain) {
+				cli->server_domain = server_domain;
 			}
 		}
 
@@ -2740,6 +2751,11 @@ static void cli_negprot_done(struct tevent_req *subreq)
 		}
 
 	} else if (cli->protocol >= PROTOCOL_LANMAN1) {
+		if (wct != 0x0D) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
+		}
+
 		cli->use_spnego = False;
 		cli->sec_mode = SVAL(vwv + 1, 0);
 		cli->max_xmit = SVAL(vwv + 2, 0);
@@ -2809,9 +2825,6 @@ NTSTATUS cli_negprot(struct cli_state *cli)
 	status = cli_negprot_recv(req);
  fail:
 	TALLOC_FREE(frame);
-	if (!NT_STATUS_IS_OK(status)) {
-		cli_set_error(cli, status);
-	}
 	return status;
 }
 

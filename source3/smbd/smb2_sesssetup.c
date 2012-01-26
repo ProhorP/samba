@@ -47,8 +47,6 @@ NTSTATUS smbd_smb2_request_process_sesssetup(struct smbd_smb2_request *smb2req)
 	uint8_t *outhdr;
 	DATA_BLOB outbody;
 	DATA_BLOB outdyn;
-	size_t expected_body_size = 0x19;
-	size_t body_size;
 	uint64_t in_session_id;
 	uint8_t in_security_mode;
 	uint16_t in_security_offset;
@@ -57,26 +55,20 @@ NTSTATUS smbd_smb2_request_process_sesssetup(struct smbd_smb2_request *smb2req)
 	uint16_t out_session_flags;
 	uint64_t out_session_id;
 	uint16_t out_security_offset;
-	DATA_BLOB out_security_buffer;
+	DATA_BLOB out_security_buffer = data_blob_null;
 	NTSTATUS status;
 
+	status = smbd_smb2_request_verify_sizes(smb2req, 0x19);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(smb2req, status);
+	}
 	inhdr = (const uint8_t *)smb2req->in.vector[i+0].iov_base;
-
-	if (smb2req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
-	}
-
 	inbody = (const uint8_t *)smb2req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_security_offset = SVAL(inbody, 0x0C);
 	in_security_length = SVAL(inbody, 0x0E);
 
-	if (in_security_offset != (SMB2_HDR_BODY + (body_size & 0xFFFFFFFE))) {
+	if (in_security_offset != (SMB2_HDR_BODY + smb2req->in.vector[i+1].iov_len)) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -679,6 +671,8 @@ static NTSTATUS smbd_smb2_raw_ntlmssp_auth(struct smbd_smb2_session *session,
 	NTSTATUS status;
 	DATA_BLOB secblob_out = data_blob_null;
 
+	*out_security_buffer = data_blob_null;
+
 	if (session->auth_ntlmssp_state == NULL) {
 		status = auth_ntlmssp_start(&session->auth_ntlmssp_state);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -819,34 +813,22 @@ static NTSTATUS smbd_smb2_session_setup(struct smbd_smb2_request *smb2req,
 NTSTATUS smbd_smb2_request_check_session(struct smbd_smb2_request *req)
 {
 	const uint8_t *inhdr;
-	const uint8_t *outhdr;
 	int i = req->current_idx;
+	uint32_t in_flags;
 	uint64_t in_session_id;
 	void *p;
 	struct smbd_smb2_session *session;
-	bool chained_fixup = false;
+
+	req->session = NULL;
+	req->tcon = NULL;
 
 	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
 
+	in_flags = IVAL(inhdr, SMB2_HDR_FLAGS);
 	in_session_id = BVAL(inhdr, SMB2_HDR_SESSION_ID);
 
-	if (in_session_id == (0xFFFFFFFFFFFFFFFFLL)) {
-		if (req->async) {
-			/*
-			 * async request - fill in session_id from
-			 * already setup request out.vector[].iov_base.
-			 */
-			outhdr = (const uint8_t *)req->out.vector[i].iov_base;
-			in_session_id = BVAL(outhdr, SMB2_HDR_SESSION_ID);
-		} else if (i > 2) {
-			/*
-			 * Chained request - fill in session_id from
-			 * the previous request out.vector[].iov_base.
-			 */
-			outhdr = (const uint8_t *)req->out.vector[i-3].iov_base;
-			in_session_id = BVAL(outhdr, SMB2_HDR_SESSION_ID);
-			chained_fixup = true;
-		}
+	if (in_flags & SMB2_HDR_FLAG_CHAINED) {
+		in_session_id = req->last_session_id;
 	}
 
 	/* lookup an existing session */
@@ -865,32 +847,19 @@ NTSTATUS smbd_smb2_request_check_session(struct smbd_smb2_request *req)
 			      session->session_info->info3->base.domain.string);
 
 	req->session = session;
+	req->last_session_id = in_session_id;
 
-	if (chained_fixup) {
-		/* Fix up our own outhdr. */
-		outhdr = (const uint8_t *)req->out.vector[i].iov_base;
-		SBVAL(outhdr, SMB2_HDR_SESSION_ID, in_session_id);
-	}
 	return NT_STATUS_OK;
 }
 
 NTSTATUS smbd_smb2_request_process_logoff(struct smbd_smb2_request *req)
 {
-	const uint8_t *inbody;
-	int i = req->current_idx;
+	NTSTATUS status;
 	DATA_BLOB outbody;
-	size_t expected_body_size = 0x04;
-	size_t body_size;
 
-	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
-
-	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
+	status = smbd_smb2_request_verify_sizes(req, 0x04);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(req, status);
 	}
 
 	/*
