@@ -838,6 +838,7 @@ static inline int _talloc_free_internal(void *ptr, const char *location)
 	} else {
 		if (tc->prev) tc->prev->next = tc->next;
 		if (tc->next) tc->next->prev = tc->prev;
+		tc->prev = tc->next = NULL;
 	}
 
 	tc->flags |= TALLOC_FLAG_LOOP;
@@ -925,6 +926,7 @@ static void *_talloc_steal_internal(const void *new_ctx, const void *ptr)
 	} else {
 		if (tc->prev) tc->prev->next = tc->next;
 		if (tc->next) tc->next->prev = tc->prev;
+		tc->prev = tc->next = NULL;
 	}
 
 	tc->parent = new_tc;
@@ -1037,11 +1039,11 @@ static inline int talloc_unreference(const void *context, const void *ptr)
 
 /*
   remove a specific parent context from a pointer. This is a more
-  controlled varient of talloc_free()
+  controlled variant of talloc_free()
 */
 _PUBLIC_ int talloc_unlink(const void *context, void *ptr)
 {
-	struct talloc_chunk *tc_p, *new_p;
+	struct talloc_chunk *tc_p, *new_p, *tc_c;
 	void *new_parent;
 
 	if (ptr == NULL) {
@@ -1056,14 +1058,13 @@ _PUBLIC_ int talloc_unlink(const void *context, void *ptr)
 		return 0;
 	}
 
-	if (context == NULL) {
-		if (talloc_parent_chunk(ptr) != NULL) {
-			return -1;
-		}
+	if (context != NULL) {
+		tc_c = talloc_chunk_from_ptr(context);
 	} else {
-		if (talloc_chunk_from_ptr(context) != talloc_parent_chunk(ptr)) {
-			return -1;
-		}
+		tc_c = NULL;
+	}
+	if (tc_c != talloc_parent_chunk(ptr)) {
+		return -1;
 	}
 	
 	tc_p = talloc_chunk_from_ptr(ptr);
@@ -1174,7 +1175,7 @@ _PUBLIC_ void *talloc_check_name(const void *ptr, const char *name)
 	return NULL;
 }
 
-static void talloc_abort_type_missmatch(const char *location,
+static void talloc_abort_type_mismatch(const char *location,
 					const char *name,
 					const char *expected)
 {
@@ -1197,7 +1198,7 @@ _PUBLIC_ void *_talloc_get_type_abort(const void *ptr, const char *name, const c
 	const char *pname;
 
 	if (unlikely(ptr == NULL)) {
-		talloc_abort_type_missmatch(location, NULL, name);
+		talloc_abort_type_mismatch(location, NULL, name);
 		return NULL;
 	}
 
@@ -1206,7 +1207,7 @@ _PUBLIC_ void *_talloc_get_type_abort(const void *ptr, const char *name, const c
 		return discard_const_p(void, ptr);
 	}
 
-	talloc_abort_type_missmatch(location, pname, name);
+	talloc_abort_type_mismatch(location, pname, name);
 	return NULL;
 }
 
@@ -1246,28 +1247,13 @@ static inline void _talloc_free_children_internal(struct talloc_chunk *tc,
 		   final choice is the null context. */
 		void *child = TC_PTR_FROM_CHUNK(tc->child);
 		const void *new_parent = null_context;
-		struct talloc_chunk *old_parent = NULL;
 		if (unlikely(tc->child->refs)) {
 			struct talloc_chunk *p = talloc_parent_chunk(tc->child->refs);
 			if (p) new_parent = TC_PTR_FROM_CHUNK(p);
 		}
-		/* finding the parent here is potentially quite
-		   expensive, but the alternative, which is to change
-		   talloc to always have a valid tc->parent pointer,
-		   makes realloc more expensive where there are a
-		   large number of children.
-
-		   The reason we need the parent pointer here is that
-		   if _talloc_free_internal() fails due to references
-		   or a failing destructor we need to re-parent, but
-		   the free call can invalidate the prev pointer.
-		*/
-		if (new_parent == null_context && (tc->child->refs || tc->child->destructor)) {
-			old_parent = talloc_parent_chunk(ptr);
-		}
 		if (unlikely(_talloc_free_internal(child, location) == -1)) {
 			if (new_parent == null_context) {
-				struct talloc_chunk *p = old_parent;
+				struct talloc_chunk *p = talloc_parent_chunk(ptr);
 				if (p) new_parent = TC_PTR_FROM_CHUNK(p);
 			}
 			_talloc_steal_internal(new_parent, child);
@@ -1282,6 +1268,7 @@ static inline void _talloc_free_children_internal(struct talloc_chunk *tc,
 */
 _PUBLIC_ void talloc_free_children(void *ptr)
 {
+	struct talloc_chunk *tc_name = NULL;
 	struct talloc_chunk *tc;
 
 	if (unlikely(ptr == NULL)) {
@@ -1290,7 +1277,29 @@ _PUBLIC_ void talloc_free_children(void *ptr)
 
 	tc = talloc_chunk_from_ptr(ptr);
 
+	/* we do not want to free the context name if it is a child .. */
+	if (likely(tc->child)) {
+		for (tc_name = tc->child; tc_name; tc_name = tc_name->next) {
+			if (tc->name == TC_PTR_FROM_CHUNK(tc_name)) break;
+		}
+		if (tc_name) {
+			_TLIST_REMOVE(tc->child, tc_name);
+			if (tc->child) {
+				tc->child->parent = tc;
+			}
+		}
+	}
+
 	_talloc_free_children_internal(tc, ptr, __location__);
+
+	/* .. so we put it back after all other children have been freed */
+	if (tc_name) {
+		if (tc->child) {
+			tc->child->parent = NULL;
+		}
+		tc_name->parent = tc;
+		_TLIST_ADD(tc->child, tc_name);
+	}
 }
 
 /* 

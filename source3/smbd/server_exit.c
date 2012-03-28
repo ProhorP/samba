@@ -43,6 +43,7 @@
 #include "printing/notify.h"
 #include "printing.h"
 #include "serverid.h"
+#include "messages.h"
 
 static struct files_struct *log_writeable_file_fn(
 	struct files_struct *fsp, void *private_data)
@@ -113,7 +114,7 @@ static void exit_server_common(enum server_exit_reason how,
 		/*
 		 * For children the parent takes care of cleaning up
 		 */
-		serverid_deregister(sconn_server_id(sconn));
+		serverid_deregister(messaging_server_id(sconn->msg_ctx));
 	}
 
 #ifdef WITH_DFS
@@ -152,9 +153,6 @@ static void exit_server_common(enum server_exit_reason how,
 		rpc_lsarpc_shutdown();
 	}
 
-	locking_end();
-	printing_end();
-
 	/*
 	 * we need to force the order of freeing the following,
 	 * because smbd_msg_ctx is not a talloc child of smbd_server_conn.
@@ -164,6 +162,9 @@ static void exit_server_common(enum server_exit_reason how,
 	server_messaging_context_free();
 	server_event_context_free();
 	TALLOC_FREE(smbd_memcache_ctx);
+
+	locking_end();
+	printing_end();
 
 	if (how != SERVER_EXIT_NORMAL) {
 		DEBUGSEP(0);

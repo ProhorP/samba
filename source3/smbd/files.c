@@ -23,6 +23,7 @@
 #include "libcli/security/security.h"
 #include "util_tdb.h"
 #include <ccan/hash/hash.h>
+#include "lib/util/bitmap.h"
 
 #define VALID_FNUM(fnum)   (((fnum) >= 0) && ((fnum) < real_max_open_files))
 
@@ -564,7 +565,6 @@ NTSTATUS dup_file_fsp(struct smb_request *req, files_struct *from,
 
 	to->file_id = from->file_id;
 	to->initial_allocation_size = from->initial_allocation_size;
-	to->mode = from->mode;
 	to->file_pid = from->file_pid;
 	to->vuid = from->vuid;
 	to->open_time = from->open_time;

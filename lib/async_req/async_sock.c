@@ -30,7 +30,7 @@
 
 /* Note: lib/util/ is currently GPL */
 #include "lib/util/tevent_unix.h"
-#include "lib/util/util.h"
+#include "lib/util/samba_util.h"
 
 #ifndef TALLOC_FREE
 #define TALLOC_FREE(ctx) do { talloc_free(ctx); ctx=NULL; } while(0)
@@ -326,36 +326,24 @@ static void async_connect_connected(struct tevent_context *ev,
 		priv, struct tevent_req);
 	struct async_connect_state *state =
 		tevent_req_data(req, struct async_connect_state);
+	int ret;
 
-	/*
-	 * Stevens, Network Programming says that if there's a
-	 * successful connect, the socket is only writable. Upon an
-	 * error, it's both readable and writable.
-	 */
-	if ((flags & (TEVENT_FD_READ|TEVENT_FD_WRITE))
-	    == (TEVENT_FD_READ|TEVENT_FD_WRITE)) {
-		int ret;
-
-		ret = connect(state->fd,
-			      (struct sockaddr *)(void *)&state->address,
-			      state->address_len);
-		if (ret == 0) {
-			TALLOC_FREE(fde);
-			tevent_req_done(req);
-			return;
-		}
-
-		if (errno == EINPROGRESS) {
-			/* Try again later, leave the fde around */
-			return;
-		}
+	ret = connect(state->fd, (struct sockaddr *)(void *)&state->address,
+		      state->address_len);
+	if (ret == 0) {
+		state->sys_errno = 0;
 		TALLOC_FREE(fde);
-		tevent_req_error(req, errno);
+		tevent_req_done(req);
 		return;
 	}
-
-	state->sys_errno = 0;
-	tevent_req_done(req);
+	if (errno == EINPROGRESS) {
+		/* Try again later, leave the fde around */
+		return;
+	}
+	state->sys_errno = errno;
+	TALLOC_FREE(fde);
+	tevent_req_error(req, errno);
+	return;
 }
 
 int async_connect_recv(struct tevent_req *req, int *perrno)
@@ -666,4 +654,59 @@ ssize_t read_packet_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 	}
 	*pbuf = talloc_move(mem_ctx, &state->buf);
 	return talloc_get_size(*pbuf);
+}
+
+struct wait_for_read_state {
+	struct tevent_req *req;
+	struct tevent_fd *fde;
+};
+
+static void wait_for_read_done(struct tevent_context *ev,
+			       struct tevent_fd *fde,
+			       uint16_t flags,
+			       void *private_data);
+
+struct tevent_req *wait_for_read_send(TALLOC_CTX *mem_ctx,
+				      struct tevent_context *ev,
+				      int fd)
+{
+	struct tevent_req *req;
+	struct wait_for_read_state *state;
+
+	req = tevent_req_create(mem_ctx, &state, struct wait_for_read_state);
+	if (req == NULL) {
+		return NULL;
+	}
+	state->req = req;
+	state->fde = tevent_add_fd(ev, state, fd, TEVENT_FD_READ,
+				   wait_for_read_done, state);
+	if (tevent_req_nomem(state->fde, req)) {
+		return tevent_req_post(req, ev);
+	}
+	return req;
+}
+
+static void wait_for_read_done(struct tevent_context *ev,
+			       struct tevent_fd *fde,
+			       uint16_t flags,
+			       void *private_data)
+{
+	struct wait_for_read_state *state = talloc_get_type_abort(
+		private_data, struct wait_for_read_state);
+
+	if (flags & TEVENT_FD_READ) {
+		TALLOC_FREE(state->fde);
+		tevent_req_done(state->req);
+	}
+}
+
+bool wait_for_read_recv(struct tevent_req *req, int *perr)
+{
+	int err;
+
+	if (tevent_req_is_unix_error(req, &err)) {
+		*perr = err;
+		return false;
+	}
+	return true;
 }

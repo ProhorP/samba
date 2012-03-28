@@ -23,8 +23,12 @@
 #include "libcli/security/dom_sid.h"
 #include "../librpc/ndr/libndr.h"
 #include "librpc/gen_ndr/samr.h"
+#include "secrets.h"
 
 #include "smbldap.h"
+#include "passdb/pdb_ldap.h"
+#include "passdb/pdb_ipa.h"
+#include "passdb/pdb_ldap_schema.h"
 
 #define IPA_KEYTAB_SET_OID "2.16.840.1.113730.3.8.3.1"
 #define IPA_MAGIC_ID_STR "999"
@@ -34,6 +38,8 @@
 #define LDAP_ATTRIBUTE_TRUST_TYPE "sambaTrustType"
 #define LDAP_ATTRIBUTE_TRUST_ATTRIBUTES "sambaTrustAttributes"
 #define LDAP_ATTRIBUTE_TRUST_DIRECTION "sambaTrustDirection"
+#define LDAP_ATTRIBUTE_TRUST_POSIX_OFFSET "sambaTrustPosixOffset"
+#define LDAP_ATTRIBUTE_SUPPORTED_ENC_TYPE "sambaSupportedEncryptionTypes"
 #define LDAP_ATTRIBUTE_TRUST_PARTNER "sambaTrustPartner"
 #define LDAP_ATTRIBUTE_FLAT_NAME "sambaFlatName"
 #define LDAP_ATTRIBUTE_TRUST_AUTH_OUTGOING "sambaTrustAuthOutgoing"
@@ -363,6 +369,29 @@ static bool fill_pdb_trusted_domain(TALLOC_CTX *mem_ctx,
 		return false;
 	}
 
+	td->trust_posix_offset = talloc(td, uint32_t);
+	if (td->trust_posix_offset == NULL) {
+		return false;
+	}
+	res = get_uint32_t_from_ldap_msg(ldap_state, entry,
+					 LDAP_ATTRIBUTE_TRUST_POSIX_OFFSET,
+					 td->trust_posix_offset);
+	if (!res) {
+		return false;
+	}
+
+	td->supported_enc_type = talloc(td, uint32_t);
+	if (td->supported_enc_type == NULL) {
+		return false;
+	}
+	res = get_uint32_t_from_ldap_msg(ldap_state, entry,
+					 LDAP_ATTRIBUTE_SUPPORTED_ENC_TYPE,
+					 td->supported_enc_type);
+	if (!res) {
+		return false;
+	}
+
+
 	get_data_blob_from_ldap_msg(td, ldap_state, entry,
 				    LDAP_ATTRIBUTE_TRUST_FOREST_TRUST_INFO,
 				    &td->trust_forest_trust_info);
@@ -514,6 +543,26 @@ static NTSTATUS ipasam_set_trusted_domain(struct pdb_methods *methods,
 						&mods,
 						LDAP_ATTRIBUTE_TRUST_DIRECTION,
 						td->trust_direction);
+		if (!res) {
+			return NT_STATUS_UNSUCCESSFUL;
+		}
+	}
+
+	if (td->trust_posix_offset != NULL) {
+		res = smbldap_make_mod_uint32_t(priv2ld(ldap_state), entry,
+						&mods,
+						LDAP_ATTRIBUTE_TRUST_POSIX_OFFSET,
+						*td->trust_posix_offset);
+		if (!res) {
+			return NT_STATUS_UNSUCCESSFUL;
+		}
+	}
+
+	if (td->supported_enc_type != NULL) {
+		res = smbldap_make_mod_uint32_t(priv2ld(ldap_state), entry,
+						&mods,
+						LDAP_ATTRIBUTE_SUPPORTED_ENC_TYPE,
+						*td->supported_enc_type);
 		if (!res) {
 			return NT_STATUS_UNSUCCESSFUL;
 		}
@@ -717,9 +766,11 @@ static struct pdb_domain_info *pdb_ipasam_get_domain_info(struct pdb_methods *pd
 							  TALLOC_CTX *mem_ctx)
 {
 	struct pdb_domain_info *info;
-	NTSTATUS status;
 	struct ldapsam_privates *ldap_state =
 			(struct ldapsam_privates *)pdb_methods->private_data;
+	char sid_buf[24];
+	DATA_BLOB sid_blob;
+	NTSTATUS status;
 
 	info = talloc(mem_ctx, struct pdb_domain_info);
 	if (info == NULL) {
@@ -738,9 +789,27 @@ static struct pdb_domain_info *pdb_ipasam_get_domain_info(struct pdb_methods *pd
 	}
 	strlower_m(info->dns_domain);
 	info->dns_forest = talloc_strdup(info, info->dns_domain);
+
+	/* we expect a domain SID to have 4 sub IDs */
+	if (ldap_state->domain_sid.num_auths != 4) {
+		goto fail;
+	}
+
 	sid_copy(&info->sid, &ldap_state->domain_sid);
 
-	status = GUID_from_string("testguid", &info->guid);
+	if (!sid_linearize(sid_buf, sizeof(sid_buf), &info->sid)) {
+		goto fail;
+	}
+
+	/* the first 8 bytes of the linearized SID are not random,
+	 * so we skip them */
+	sid_blob.data = (uint8_t *) sid_buf + 8 ;
+	sid_blob.length = 16;
+
+	status = GUID_from_ndr_blob(&sid_blob, &info->guid);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto fail;
+	}
 
 	return info;
 
@@ -1338,6 +1407,42 @@ static NTSTATUS ipasam_create_user(struct pdb_methods *pdb_methods,
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS pdb_ipa_init_secrets(struct pdb_methods *m)
+{
+#if _SAMBA_BUILD_ == 4
+	struct pdb_domain_info *dom_info;
+	bool ret;
+
+	dom_info = pdb_ipasam_get_domain_info(m, m);
+	if (!dom_info) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+
+	secrets_clear_domain_protection(dom_info->name);
+	ret = secrets_store_domain_sid(dom_info->name,
+				       &dom_info->sid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_store_domain_guid(dom_info->name,
+				        &dom_info->guid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_mark_domain_protected(dom_info->name);
+	if (!ret) {
+		goto done;
+	}
+
+done:
+	TALLOC_FREE(dom_info);
+	if (!ret) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+#endif
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS pdb_init_IPA_ldapsam(struct pdb_methods **pdb_method, const char *location)
 {
 	struct ldapsam_privates *ldap_state;
@@ -1388,6 +1493,12 @@ static NTSTATUS pdb_init_IPA_ldapsam(struct pdb_methods **pdb_method, const char
 	(*pdb_method)->set_trusted_domain = ipasam_set_trusted_domain;
 	(*pdb_method)->del_trusted_domain = ipasam_del_trusted_domain;
 	(*pdb_method)->enum_trusted_domains = ipasam_enum_trusted_domains;
+
+	status = pdb_ipa_init_secrets(*pdb_method);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("pdb_ipa_init_secrets failed!\n"));
+		return status;
+	}
 
 	return NT_STATUS_OK;
 }

@@ -103,7 +103,7 @@ static const struct smb_message_struct
 /* 0x0d */ { "SMBunlock",	smbsrv_reply_unlock,		NEED_SESS|NEED_TCON },
 /* 0x0e */ { "SMBctemp",	smbsrv_reply_ctemp,		NEED_SESS|NEED_TCON },
 /* 0x0f */ { "SMBmknew",	smbsrv_reply_mknew,		NEED_SESS|NEED_TCON }, 
-/* 0x10 */ { "SMBchkpth",	smbsrv_reply_chkpth,		NEED_SESS|NEED_TCON },
+/* 0x10 */ { "SMBcheckpath",	smbsrv_reply_chkpth,		NEED_SESS|NEED_TCON },
 /* 0x11 */ { "SMBexit",		smbsrv_reply_exit,		NEED_SESS },
 /* 0x12 */ { "SMBlseek",	smbsrv_reply_lseek,		NEED_SESS|NEED_TCON },
 /* 0x13 */ { "SMBlockread",	smbsrv_reply_lockread,		NEED_SESS|NEED_TCON },
@@ -492,14 +492,7 @@ static void switch_message(int type, struct smbsrv_request *req)
 		   hasn't already been initialised (to cope with SMB
 		   chaining) */
 
-		/* In share mode security we must ignore the vuid. */
-		if (smb_conn->config.security == SEC_SHARE) {
-			if (req->tcon) {
-				req->session = req->tcon->sec_share.session;
-			}
- 		} else {
-			req->session = smbsrv_session_find(req->smb_conn, SVAL(req->in.hdr,HDR_UID), req->request_time);
-		}
+		req->session = smbsrv_session_find(req->smb_conn, SVAL(req->in.hdr,HDR_UID), req->request_time);
 	}
 
 	task_id = server_id_str(NULL, &req->smb_conn->connection->server_id);
@@ -670,7 +663,6 @@ NTSTATUS smbsrv_init_smb_connection(struct smbsrv_connection *smb_conn, struct l
 
 	smb_conn->negotiate.zone_offset = get_time_zone(time(NULL));
 
-	smb_conn->config.security = lpcfg_security(lp_ctx);
 	smb_conn->config.nt_status_support = lpcfg_nt_status_support(lp_ctx);
 
 	status = smbsrv_init_sessions(smb_conn, UINT16_MAX);

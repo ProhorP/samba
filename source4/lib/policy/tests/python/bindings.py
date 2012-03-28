@@ -21,10 +21,11 @@
 
 """
 
-import unittest
+from samba.tests import TestCase
 from samba import policy
 
-class PolicyTests(unittest.TestCase):
+
+class PolicyTests(TestCase):
 
     def test_get_gpo_flags(self):
         self.assertEquals(["GPO_FLAG_USER_DISABLE"],

@@ -25,7 +25,8 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "winbindd.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "idmap.h"
 #include "../libcli/security/dom_sid.h"
 #include "util_tdb.h"
@@ -34,6 +35,9 @@
 #define DBGC_CLASS DBGC_IDMAP
 
 #define HWM "NEXT RANGE"
+#define ALLOC_HWM_UID "NEXT ALLOC UID"
+#define ALLOC_HWM_GID "NEXT ALLOC GID"
+#define ALLOC_RANGE "ALLOC"
 #define CONFIGKEY "CONFIG"
 
 struct autorid_global_config {
@@ -43,7 +47,7 @@ struct autorid_global_config {
 };
 
 struct autorid_domain_config {
-	struct dom_sid sid;
+	fstring sid;
 	uint32_t domainnum;
 	struct autorid_global_config *globalcfg;
 };
@@ -51,79 +55,103 @@ struct autorid_domain_config {
 /* handle to the tdb storing domain <-> range assignments */
 static struct db_context *autorid_db;
 
-static NTSTATUS idmap_autorid_get_domainrange(struct db_context *db,
+static NTSTATUS idmap_autorid_get_domainrange_action(struct db_context *db,
 					      void *private_data)
 {
 	NTSTATUS ret;
 	uint32_t domainnum, hwm;
-	fstring sidstr;
 	char *numstr;
 	struct autorid_domain_config *cfg;
 
 	cfg = (struct autorid_domain_config *)private_data;
-	dom_sid_string_buf(&(cfg->sid), sidstr, sizeof(sidstr));
 
-	if (!dbwrap_fetch_uint32(db, sidstr, &domainnum)) {
-		DEBUG(10, ("Acquiring new range for domain %s\n", sidstr));
+	ret = dbwrap_fetch_uint32(db, cfg->sid, &(cfg->domainnum));
 
-		/* fetch the current HWM */
-		if (!dbwrap_fetch_uint32(db, HWM, &hwm)) {
-			DEBUG(1, ("Fatal error while fetching current "
-				  "HWM value!\n"));
-			ret = NT_STATUS_INTERNAL_ERROR;
-			goto error;
-		}
-
-		/* do we have a range left? */
-		if (hwm >= cfg->globalcfg->maxranges) {
-			DEBUG(1, ("No more domain ranges available!\n"));
-			ret = NT_STATUS_NO_MEMORY;
-			goto error;
-		}
-
-		/* increase the HWM */
-		ret = dbwrap_change_uint32_atomic(db, HWM, &domainnum, 1);
-		if (!NT_STATUS_IS_OK(ret)) {
-			DEBUG(1, ("Fatal error while fetching a new "
-				  "domain range value!\n"));
-			goto error;
-		}
-
-		/* store away the new mapping in both directions */
-		ret = dbwrap_trans_store_uint32(db, sidstr, domainnum);
-		if (!NT_STATUS_IS_OK(ret)) {
-			DEBUG(1, ("Fatal error while storing new "
-				  "domain->range assignment!\n"));
-			goto error;
-		}
-
-		numstr = talloc_asprintf(db, "%u", domainnum);
-		if (!numstr) {
-			ret = NT_STATUS_NO_MEMORY;
-			goto error;
-		}
-
-		ret = dbwrap_trans_store_bystring(db, numstr,
-						  string_term_tdb_data(sidstr),
-						  TDB_INSERT);
-		talloc_free(numstr);
-		if (!NT_STATUS_IS_OK(ret)) {
-			DEBUG(1, ("Fatal error while storing "
-				  "new domain->range assignment!\n"));
-			goto error;
-		}
-		DEBUG(5, ("Acquired new range #%d for domain %s\n",
-			  domainnum, sidstr));
+	if (NT_STATUS_IS_OK(ret)) {
+		/* entry is already present*/
+		return ret;
 	}
 
-	DEBUG(10, ("Using range #%d for domain %s\n", domainnum, sidstr));
+	DEBUG(10, ("Acquiring new range for domain %s\n", cfg->sid));
+
+	/* fetch the current HWM */
+	ret = dbwrap_fetch_uint32(db, HWM, &hwm);
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Fatal error while fetching current "
+			  "HWM value: %s\n", nt_errstr(ret)));
+		ret = NT_STATUS_INTERNAL_ERROR;
+		goto error;
+	}
+
+	/* do we have a range left? */
+	if (hwm >= cfg->globalcfg->maxranges) {
+		DEBUG(1, ("No more domain ranges available!\n"));
+		ret = NT_STATUS_NO_MEMORY;
+		goto error;
+	}
+
+	/* increase the HWM */
+	ret = dbwrap_change_uint32_atomic(db, HWM, &domainnum, 1);
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Fatal error while fetching a new "
+			  "domain range value!\n"));
+		goto error;
+	}
+
+	/* store away the new mapping in both directions */
+	ret = dbwrap_store_uint32(db, cfg->sid, domainnum);
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Fatal error while storing new "
+			  "domain->range assignment!\n"));
+		goto error;
+	}
+
+	numstr = talloc_asprintf(db, "%u", domainnum);
+	if (!numstr) {
+		ret = NT_STATUS_NO_MEMORY;
+		goto error;
+	}
+
+	ret = dbwrap_store_bystring(db, numstr,
+			string_term_tdb_data(cfg->sid), TDB_INSERT);
+
+	talloc_free(numstr);
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Fatal error while storing "
+			  "new domain->range assignment!\n"));
+		goto error;
+	}
+	DEBUG(5, ("Acquired new range #%d for domain %s\n",
+		  domainnum, cfg->sid));
+
 	cfg->domainnum = domainnum;
 
 	return NT_STATUS_OK;
 
-      error:
+error:
 	return ret;
 
+}
+
+static NTSTATUS idmap_autorid_get_domainrange(struct autorid_domain_config *dom)
+{
+	NTSTATUS ret;
+
+	/*
+	 * try to find mapping without locking the database,
+	 * if it is not found create a mapping in a transaction
+	 */
+	ret = dbwrap_fetch_uint32(autorid_db, dom->sid, &(dom->domainnum));
+
+	if (!NT_STATUS_IS_OK(ret)) {;
+		ret = dbwrap_trans_do(autorid_db,
+			      idmap_autorid_get_domainrange_action, dom);
+	}
+
+	DEBUG(10, ("Using range #%d for domain %s\n", dom->domainnum,
+		   dom->sid));
+
+	return ret;
 }
 
 static NTSTATUS idmap_autorid_id_to_sid(struct autorid_global_config *cfg,
@@ -133,6 +161,7 @@ static NTSTATUS idmap_autorid_id_to_sid(struct autorid_global_config *cfg,
 	TDB_DATA data;
 	char *keystr;
 	struct dom_sid sid;
+	NTSTATUS status;
 
 	/* can this be one of our ids? */
 	if (map->xid.id < cfg->minvalue) {
@@ -157,13 +186,25 @@ static NTSTATUS idmap_autorid_id_to_sid(struct autorid_global_config *cfg,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	data = dbwrap_fetch_bystring(autorid_db, talloc_tos(), keystr);
+	status = dbwrap_fetch_bystring(autorid_db, talloc_tos(), keystr, &data);
 	TALLOC_FREE(keystr);
 
-	if (!data.dptr) {
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(4, ("id %d belongs to range %d which does not have "
 			  "domain mapping, ignoring mapping request\n",
 			  map->xid.id, range));
+		TALLOC_FREE(data.dptr);
+		map->status = ID_UNKNOWN;
+		return NT_STATUS_OK;
+	}
+
+	if (strncmp((const char *)data.dptr,
+		    ALLOC_RANGE,
+		    strlen(ALLOC_RANGE)) == 0) {
+		/* this is from the alloc range, there is no mapping back */
+		DEBUG(5, ("id %d belongs to alloc range, cannot map back\n",
+			  map->xid.id));
+		TALLOC_FREE(data.dptr);
 		map->status = ID_UNKNOWN;
 		return NT_STATUS_OK;
 	}
@@ -274,11 +315,12 @@ static NTSTATUS idmap_autorid_sids_to_unixids(struct idmap_domain *dom,
 		struct winbindd_tdc_domain *domain;
 		struct autorid_domain_config domaincfg;
 		uint32_t rid;
+		struct dom_sid domainsid;
 
 		ZERO_STRUCT(domaincfg);
 
-		sid_copy(&domaincfg.sid, ids[i]->sid);
-		if (!sid_split_rid(&domaincfg.sid, &rid)) {
+		sid_copy(&domainsid, ids[i]->sid);
+		if (!sid_split_rid(&domainsid, &rid)) {
 			DEBUG(4, ("Could not determine domain SID from %s, "
 				  "ignoring mapping request\n",
 				  sid_string_dbg(ids[i]->sid)));
@@ -289,19 +331,18 @@ static NTSTATUS idmap_autorid_sids_to_unixids(struct idmap_domain *dom,
 		 * Check if the domain is around
 		 */
 		domain = wcache_tdc_fetch_domainbysid(talloc_tos(),
-						      &domaincfg.sid);
+						      &domainsid);
 		if (domain == NULL) {
 			DEBUG(10, ("Ignoring unknown domain sid %s\n",
-				   sid_string_dbg(&domaincfg.sid)));
+				   sid_string_dbg(&domainsid)));
 			continue;
 		}
 		TALLOC_FREE(domain);
 
 		domaincfg.globalcfg = global;
+		sid_to_fstring(domaincfg.sid, &domainsid);
 
-		ret = dbwrap_trans_do(autorid_db,
-				      idmap_autorid_get_domainrange,
-				      &domaincfg);
+		ret = idmap_autorid_get_domainrange(&domaincfg);
 
 		if (!NT_STATUS_IS_OK(ret)) {
 			DEBUG(3, ("Could not determine range for domain, "
@@ -326,12 +367,36 @@ static NTSTATUS idmap_autorid_sids_to_unixids(struct idmap_domain *dom,
 
 }
 
+/* initialize the given HWM to 0 if it does not exist yet */
+static NTSTATUS idmap_autorid_init_hwm(const char *hwm) {
+
+	NTSTATUS status;
+	uint32_t hwmval;
+
+	status = dbwrap_fetch_uint32(autorid_db, hwm, &hwmval);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND))  {
+		status = dbwrap_trans_store_int32(autorid_db, hwm, 0);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0,
+			      ("Unable to initialise HWM (%s) in autorid "
+			       "database: %s\n", hwm, nt_errstr(status)));
+			return NT_STATUS_INTERNAL_DB_ERROR;
+		}
+	} else if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("unable to fetch HWM (%s) from autorid "
+			  "database: %s\n", hwm,  nt_errstr(status)));
+		return status;
+	}
+
+	return NT_STATUS_OK;
+}
+
 /*
  * open and initialize the database which stores the ranges for the domains
  */
 static NTSTATUS idmap_autorid_db_init(void)
 {
-	int32_t hwm;
+	NTSTATUS status;
 
 	if (autorid_db) {
 		/* its already open */
@@ -340,7 +405,8 @@ static NTSTATUS idmap_autorid_db_init(void)
 
 	/* Open idmap repository */
 	autorid_db = db_open(NULL, state_path("autorid.tdb"), 0,
-			     TDB_DEFAULT, O_RDWR | O_CREAT, 0644);
+			     TDB_DEFAULT, O_RDWR | O_CREAT, 0644,
+			     DBWRAP_LOCK_ORDER_1);
 
 	if (!autorid_db) {
 		DEBUG(0, ("Unable to open idmap_autorid database '%s'\n",
@@ -349,18 +415,16 @@ static NTSTATUS idmap_autorid_db_init(void)
 	}
 
 	/* Initialize high water mark for the currently used range to 0 */
-	hwm = dbwrap_fetch_int32(autorid_db, HWM);
-	if ((hwm < 0)) {
-		if (!NT_STATUS_IS_OK
-		    (dbwrap_trans_store_int32(autorid_db, HWM, 0))) {
-			DEBUG(0,
-			      ("Unable to initialise HWM in autorid "
-			       "database\n"));
-			return NT_STATUS_INTERNAL_DB_ERROR;
-		}
-	}
 
-	return NT_STATUS_OK;
+	status = idmap_autorid_init_hwm(HWM);
+	NT_STATUS_NOT_OK_RETURN(status);
+
+	status = idmap_autorid_init_hwm(ALLOC_HWM_UID);
+	NT_STATUS_NOT_OK_RETURN(status);
+
+	status = idmap_autorid_init_hwm(ALLOC_HWM_GID);
+
+	return status;
 }
 
 static struct autorid_global_config *idmap_autorid_loadconfig(TALLOC_CTX * ctx)
@@ -369,10 +433,11 @@ static struct autorid_global_config *idmap_autorid_loadconfig(TALLOC_CTX * ctx)
 	TDB_DATA data;
 	struct autorid_global_config *cfg;
 	unsigned long minvalue, rangesize, maxranges;
+	NTSTATUS status;
 
-	data = dbwrap_fetch_bystring(autorid_db, ctx, CONFIGKEY);
+	status = dbwrap_fetch_bystring(autorid_db, ctx, CONFIGKEY, &data);
 
-	if (!data.dptr) {
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("No saved config found\n"));
 		return NULL;
 	}
@@ -489,9 +554,10 @@ static NTSTATUS idmap_autorid_initialize(struct idmap_domain *dom)
 	/* read previously stored config and current HWM */
 	storedconfig = idmap_autorid_loadconfig(talloc_tos());
 
-	if (!dbwrap_fetch_uint32(autorid_db, HWM, &hwm)) {
+	status = dbwrap_fetch_uint32(autorid_db, HWM, &hwm);
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("Fatal error while fetching current "
-			  "HWM value!\n"));
+			  "HWM value: %s\n", nt_errstr(status)));
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto error;
 	}
@@ -541,6 +607,79 @@ done:
 	return status;
 }
 
+static NTSTATUS idmap_autorid_allocate_id(struct idmap_domain *dom,
+					  struct unixid *xid) {
+
+	NTSTATUS ret;
+	struct autorid_global_config *globalcfg;
+	struct autorid_domain_config domaincfg;
+	uint32_t hwm;
+	const char *hwmkey;
+
+	if (!strequal(dom->name, "*")) {
+		DEBUG(3, ("idmap_autorid_allocate_id: "
+			  "Refusing creation of mapping for domain'%s'. "
+			  "Currently only supported for the default "
+			  "domain \"*\".\n",
+			   dom->name));
+		return NT_STATUS_NOT_IMPLEMENTED;
+	}
+
+	if ((xid->type != ID_TYPE_UID) && (xid->type != ID_TYPE_GID)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+
+	globalcfg = talloc_get_type(dom->private_data,
+				    struct autorid_global_config);
+
+	/* fetch the range for the allocation pool */
+
+	ZERO_STRUCT(domaincfg);
+
+	domaincfg.globalcfg = globalcfg;
+	fstrcpy(domaincfg.sid, ALLOC_RANGE);
+
+	ret = idmap_autorid_get_domainrange(&domaincfg);
+
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(3, ("Could not determine range for allocation pool, "
+			  "check previous messages for reason\n"));
+		return ret;
+	}
+
+	/* fetch the current HWM */
+	hwmkey = (xid->type==ID_TYPE_UID)?ALLOC_HWM_UID:ALLOC_HWM_GID;
+
+	ret = dbwrap_fetch_uint32(autorid_db, hwmkey, &hwm);
+
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Failed to fetch current allocation HWM value: %s\n",
+			  nt_errstr(ret)));
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	if (hwm >= globalcfg->rangesize) {
+		DEBUG(1, ("allocation range is depleted!\n"));
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	ret = dbwrap_change_uint32_atomic(autorid_db, hwmkey, &(xid->id), 1);
+	if (!NT_STATUS_IS_OK(ret)) {
+		DEBUG(1, ("Fatal error while allocating new ID!\n"));
+		return ret;
+	}
+
+	xid->id = globalcfg->minvalue +
+		  globalcfg->rangesize * domaincfg.domainnum +
+		  xid->id;
+
+	DEBUG(10, ("Returned new %s %d from allocation range\n",
+		   (xid->type==ID_TYPE_UID)?"uid":"gid", xid->id));
+
+	return ret;
+}
+
 /*
   Close the idmap tdb instance
 */
@@ -548,9 +687,10 @@ static struct idmap_methods autorid_methods = {
 	.init = idmap_autorid_initialize,
 	.unixids_to_sids = idmap_autorid_unixids_to_sids,
 	.sids_to_unixids = idmap_autorid_sids_to_unixids,
+	.allocate_id	 = idmap_autorid_allocate_id
 };
 
-NTSTATUS idmap_autorid_init(void)
+NTSTATUS samba_init_module(void)
 {
 	return smb_register_idmap(SMB_IDMAP_INTERFACE_VERSION,
 				  "autorid", &autorid_methods);

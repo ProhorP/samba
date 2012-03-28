@@ -169,12 +169,8 @@ static int map_ldb_error(TALLOC_CTX *mem_ctx, int ldb_err,
 	}
 
 	*errstring = talloc_asprintf(mem_ctx, "%08X: %s", W_ERROR_V(err),
-		ldb_strerror(ldb_err));
-	if (add_err_string != NULL) {
-		*errstring = talloc_asprintf(mem_ctx, "%s - %s", *errstring,
-					     add_err_string);
-	}
-	
+		add_err_string != NULL ? add_err_string : ldb_strerror(ldb_err));
+
 	/* result is 1:1 for now */
 	return ldb_err;
 }
@@ -305,6 +301,11 @@ static int ldapsrv_add_with_controls(struct ldapsrv_call *call,
 
 	if (ret != LDB_SUCCESS) return ret;
 
+	if (call->conn->global_catalog) {
+		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "modify forbidden on global catalog port");
+	}
+	ldb_request_add_control(req, DSDB_CONTROL_NO_GLOBAL_CATALOG, false, NULL);
+
 	ret = ldb_transaction_start(ldb);
 	if (ret != LDB_SUCCESS) {
 		return ret;
@@ -358,6 +359,11 @@ static int ldapsrv_mod_with_controls(struct ldapsrv_call *call,
 		return ret;
 	}
 
+	if (call->conn->global_catalog) {
+		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "modify forbidden on global catalog port");
+	}
+	ldb_request_add_control(req, DSDB_CONTROL_NO_GLOBAL_CATALOG, false, NULL);
+
 	ret = ldb_transaction_start(ldb);
 	if (ret != LDB_SUCCESS) {
 		return ret;
@@ -403,6 +409,11 @@ static int ldapsrv_del_with_controls(struct ldapsrv_call *call,
 					NULL);
 
 	if (ret != LDB_SUCCESS) return ret;
+
+	if (call->conn->global_catalog) {
+		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "modify forbidden on global catalog port");
+	}
+	ldb_request_add_control(req, DSDB_CONTROL_NO_GLOBAL_CATALOG, false, NULL);
 
 	ret = ldb_transaction_start(ldb);
 	if (ret != LDB_SUCCESS) {
@@ -450,6 +461,11 @@ static int ldapsrv_rename_with_controls(struct ldapsrv_call *call,
 					NULL);
 
 	if (ret != LDB_SUCCESS) return ret;
+
+	if (call->conn->global_catalog) {
+		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "modify forbidden on global catalog port");
+	}
+	ldb_request_add_control(req, DSDB_CONTROL_NO_GLOBAL_CATALOG, false, NULL);
 
 	ret = ldb_transaction_start(ldb);
 	if (ret != LDB_SUCCESS) {
@@ -582,6 +598,8 @@ static NTSTATUS ldapsrv_SearchRequest(struct ldapsrv_call *call)
 			search_options->search_options = LDB_SEARCH_OPTION_PHANTOM_ROOT;
 			ldb_request_add_control(lreq, LDB_CONTROL_SEARCH_OPTIONS_OID, false, search_options);
 		}
+	} else {
+		ldb_request_add_control(lreq, DSDB_CONTROL_NO_GLOBAL_CATALOG, false, NULL);
 	}
 
 	extended_dn_control = ldb_request_get_control(lreq, LDB_CONTROL_EXTENDED_DN_OID);

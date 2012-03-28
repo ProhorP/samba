@@ -26,6 +26,7 @@
 #include "../libcli/smb/smb_common.h"
 #include "../librpc/gen_ndr/ndr_security.h"
 #include "../lib/util/tevent_ntstatus.h"
+#include "messages.h"
 
 int map_smb2_oplock_levels_to_samba(uint8_t in_oplock_level)
 {
@@ -100,8 +101,6 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 {
 	const uint8_t *inbody;
 	int i = smb2req->current_idx;
-	size_t expected_body_size = 0x39;
-	size_t body_size;
 	uint8_t in_oplock_level;
 	uint32_t in_impersonation_level;
 	uint32_t in_desired_access;
@@ -127,16 +126,11 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	bool ok;
 	struct tevent_req *tsubreq;
 
-	if (smb2req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
+	status = smbd_smb2_request_verify_sizes(smb2req, 0x39);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(smb2req, status);
 	}
-
 	inbody = (const uint8_t *)smb2req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_oplock_level		= CVAL(inbody, 0x03);
 	in_impersonation_level	= IVAL(inbody, 0x04);
@@ -158,7 +152,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	 *       overlap
 	 */
 
-	dyn_offset = SMB2_HDR_BODY + (body_size & 0xFFFFFFFE);
+	dyn_offset = SMB2_HDR_BODY + smb2req->in.vector[i+1].iov_len;
 
 	if (in_name_offset == 0 && in_name_length == 0) {
 		/* This is ok */
@@ -219,6 +213,14 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 		return smbd_smb2_request_error(smb2req, NT_STATUS_ILLEGAL_CHARACTER);
 	}
 
+	if (in_name_buffer.length == 0) {
+		in_name_string_size = 0;
+	}
+
+	if (strlen(in_name_string) != in_name_string_size) {
+		return smbd_smb2_request_error(smb2req, NT_STATUS_OBJECT_NAME_INVALID);
+	}
+
 	ZERO_STRUCT(in_context_blobs);
 	status = smb2_create_blob_parse(smb2req, in_context_buffer, &in_context_blobs);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -226,7 +228,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	}
 
 	tsubreq = smbd_smb2_create_send(smb2req,
-				       smb2req->sconn->smb2.event_ctx,
+				       smb2req->sconn->ev_ctx,
 				       smb2req,
 				       in_oplock_level,
 				       in_impersonation_level,
@@ -243,7 +245,13 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	}
 	tevent_req_set_callback(tsubreq, smbd_smb2_request_create_done, smb2req);
 
-	return smbd_smb2_request_pending_queue(smb2req, tsubreq);
+	/*
+	 * For now we keep the logic that we do not send STATUS_PENDING
+	 * for sharing violations, so we just wait 2 seconds.
+	 *
+	 * TODO: we need more tests for this.
+	 */
+	return smbd_smb2_request_pending_queue(smb2req, tsubreq, 2000000);
 }
 
 static uint64_t get_mid_from_smb2req(struct smbd_smb2_request *smb2req)
@@ -256,8 +264,6 @@ static void smbd_smb2_request_create_done(struct tevent_req *tsubreq)
 {
 	struct smbd_smb2_request *smb2req = tevent_req_callback_data(tsubreq,
 					struct smbd_smb2_request);
-	int i = smb2req->current_idx;
-	uint8_t *outhdr;
 	DATA_BLOB outbody;
 	DATA_BLOB outdyn;
 	uint8_t out_oplock_level = 0;
@@ -328,8 +334,6 @@ static void smbd_smb2_request_create_done(struct tevent_req *tsubreq)
 	if (out_context_buffer.length > 0) {
 		out_context_buffer_offset = SMB2_HDR_BODY + 0x58;
 	}
-
-	outhdr = (uint8_t *)smb2req->out.vector[i].iov_base;
 
 	outbody = data_blob_talloc(smb2req->out.vector, NULL, 0x58);
 	if (outbody.data == NULL) {
@@ -436,7 +440,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 	}
 
 
-	if (!smb2req->async) {
+	if (smb2req->subreq == NULL) {
 		/* New create call. */
 		req = tevent_req_create(mem_ctx, &state,
 				struct smbd_smb2_create_state);
@@ -444,13 +448,13 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			return NULL;
 		}
 		state->smb2req = smb2req;
-		smb2req->subreq = req; /* So we can find this when going async. */
 
 		smb1req = smbd_smb2_fake_smb_request(smb2req);
 		if (tevent_req_nomem(smb1req, req)) {
 			return tevent_req_post(req, ev);
 		}
 		state->smb1req = smb1req;
+		smb2req->subreq = req;
 		DEBUG(10,("smbd_smb2_create: name[%s]\n",
 			in_name));
 	} else {
@@ -537,7 +541,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 		if (exta) {
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req,NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -552,7 +556,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 		if (mxac) {
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -570,7 +574,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			enum ndr_err_code ndr_err;
 
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -592,7 +596,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 		if (dhnq) {
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -618,7 +622,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 		if (alsi) {
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -635,7 +639,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			struct tm *tm;
 
 			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 				return tevent_req_post(req, ev);
 			}
 
@@ -719,7 +723,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 					     &result,
 					     &info);
 		if (!NT_STATUS_IS_OK(status)) {
-			if (open_was_deferred(smb1req->mid)) {
+			if (open_was_deferred(smb1req->sconn, smb1req->mid)) {
 				return req;
 			}
 			tevent_req_nterror(req, status);
@@ -736,7 +740,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 				uint32_t max_access_granted;
 				DATA_BLOB blob = data_blob_const(p, sizeof(p));
 
-				status = smbd_check_open_rights(smb1req->conn,
+				status = smbd_calculate_access_mask(smb1req->conn,
 							result->fsp_name,
 							SEC_FLAG_MAXIMUM_ALLOWED,
 							&max_access_granted);
@@ -815,8 +819,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			get_change_timespec(smb1req->conn, result,
 					result->fsp_name));
 	state->out_allocation_size =
-			result->fsp_name->st.st_ex_blksize *
-			result->fsp_name->st.st_ex_blocks;
+			SMB_VFS_GET_ALLOC_SIZE(smb1req->conn, result,
+					       &(result->fsp_name->st));
 	state->out_end_of_file = result->fsp_name->st.st_ex_size;
 	if (state->out_file_attributes == 0) {
 		state->out_file_attributes = FILE_ATTRIBUTE_NORMAL;
@@ -886,7 +890,7 @@ bool get_deferred_open_message_state_smb2(struct smbd_smb2_request *smb2req,
 	if (!smb2req) {
 		return false;
 	}
-	if (!smb2req->async) {
+	if (smb2req->async_te == NULL) {
 		return false;
 	}
 	req = smb2req->subreq;
@@ -1076,6 +1080,7 @@ void schedule_deferred_open_message_smb2(
 	if (!state->im) {
 		smbd_server_connection_terminate(smb2req->sconn,
 			nt_errstr(NT_STATUS_NO_MEMORY));
+		return;
 	}
 
 	DEBUG(10,("schedule_deferred_open_message_smb2: "
@@ -1083,7 +1088,7 @@ void schedule_deferred_open_message_smb2(
 		(unsigned long long)mid ));
 
 	tevent_schedule_immediate(state->im,
-			smb2req->sconn->smb2.event_ctx,
+			smb2req->sconn->ev_ctx,
 			smbd_smb2_create_request_dispatch_immediate,
 			smb2req);
 }
@@ -1156,7 +1161,7 @@ static bool smbd_smb2_create_cancel(struct tevent_req *req)
 	mid = get_mid_from_smb2req(smb2req);
 
 	remove_deferred_open_entry(state->id, mid,
-				   sconn_server_id(smb2req->sconn));
+				   messaging_server_id(smb2req->sconn->msg_ctx));
 	remove_deferred_open_message_smb2_internal(smb2req, mid);
 	smb2req->cancelled = true;
 
@@ -1194,35 +1199,6 @@ bool push_deferred_open_message_smb2(struct smbd_smb2_request *smb2req,
 		return false;
 	}
 
-#if 1
-	/* Boo - turns out this isn't what W2K8R2
-	   does. It actually sends the STATUS_PENDING
-	   message followed by the STATUS_SHARING_VIOLATION
-	   message. Surely this means that all open
-	   calls (even on directories) will potentially
-	   fail in a chain.... ? And I've seen directory
-	   opens as the start of a chain. JRA.
-
-	   Update: 19th May 2010. Talking with Microsoft
-	   engineers at the plugfest this is a bug in
-	   Windows. Re-enable this code.
-	*/
-	/*
-	 * More subtlety. To match W2K8R2 don't
-	 * send a "gone async" message if it's simply
-	 * a STATUS_SHARING_VIOLATION (short) wait, not
-	 * an oplock break wait. We do this by prematurely
-	 * setting smb2req->async flag.
-	 */
-	if (timeout.tv_sec < 2) {
-		DEBUG(10,("push_deferred_open_message_smb2: "
-			"short timer wait (usec = %u). "
-			"Don't send async message.\n",
-			(unsigned int)timeout.tv_usec ));
-		smb2req->async = true;
-	}
-#endif
-
 	/* Re-schedule us to retry on timer expiry. */
 	end_time = timeval_sum(&request_time, &timeout);
 
@@ -1232,7 +1208,7 @@ bool push_deferred_open_message_smb2(struct smbd_smb2_request *smb2req,
 				&end_time,
 				true) ));
 
-	state->te = event_add_timed(smb2req->sconn->smb2.event_ctx,
+	state->te = tevent_add_timer(smb2req->sconn->ev_ctx,
 				state,
 				end_time,
 				smb2_deferred_open_timer,

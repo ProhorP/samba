@@ -31,11 +31,12 @@ static bool append(tdb_off_t **arr, size_t *num, tdb_off_t off)
 }
 
 static enum TDB_ERROR check_header(struct tdb_context *tdb, tdb_off_t *recovery,
-				   uint64_t *features)
+				   uint64_t *features, size_t *num_capabilities)
 {
 	uint64_t hash_test;
 	struct tdb_header hdr;
 	enum TDB_ERROR ecode;
+	tdb_off_t off, next;
 
 	ecode = tdb_read_convert(tdb, 0, &hdr, sizeof(hdr));
 	if (ecode != TDB_SUCCESS) {
@@ -79,6 +80,24 @@ static enum TDB_ERROR check_header(struct tdb_context *tdb, tdb_off_t *recovery,
 					  " invalid recovery offset %zu",
 					  (size_t)*recovery);
 		}
+	}
+
+	for (off = hdr.capabilities; off && ecode == TDB_SUCCESS; off = next) {
+		const struct tdb_capability *cap;
+		enum TDB_ERROR err;
+
+		cap = tdb_access_read(tdb, off, sizeof(*cap), true);
+		if (TDB_PTR_IS_ERR(cap)) {
+			return TDB_PTR_ERR(cap);
+		}
+
+		/* All capabilities are unknown. */
+		err = unknown_capability(tdb, "tdb_check", cap->type);
+		next = cap->next;
+		tdb_access_release(tdb, cap);
+		if (err)
+			return err;
+		(*num_capabilities)++;
 	}
 
 	/* Don't check reserved: they *can* be used later. */
@@ -148,7 +167,7 @@ static enum TDB_ERROR check_hash_chain(struct tdb_context *tdb,
 
 	off = tdb_read_off(tdb, off + offsetof(struct tdb_chain, next));
 	if (TDB_OFF_IS_ERR(off)) {
-		return off;
+		return TDB_OFF_TO_ERR(off);
 	}
 	if (off == 0)
 		return TDB_SUCCESS;
@@ -435,12 +454,12 @@ fail:
 
 static enum TDB_ERROR check_hash(struct tdb_context *tdb,
 				 tdb_off_t used[],
-				 size_t num_used, size_t num_ftables,
-				 int (*check)(TDB_DATA, TDB_DATA, void *),
+				 size_t num_used, size_t num_other_used,
+				 enum TDB_ERROR (*check)(TDB_DATA, TDB_DATA, void *),
 				 void *data)
 {
-	/* Free tables also show up as used. */
-	size_t num_found = num_ftables;
+	/* Free tables and capabilities also show up as used. */
+	size_t num_found = num_other_used;
 	enum TDB_ERROR ecode;
 
 	ecode = check_hash_tree(tdb, offsetof(struct tdb_header, hashtable),
@@ -478,8 +497,8 @@ static enum TDB_ERROR check_free(struct tdb_context *tdb,
 
 	}
 
-	ecode = tdb->methods->oob(tdb, off
-				  + frec_len(frec)
+	ecode = tdb->tdb2.io->oob(tdb, off,
+				  frec_len(frec)
 				  + sizeof(struct tdb_used_record),
 				  false);
 	if (ecode != TDB_SUCCESS) {
@@ -534,7 +553,7 @@ static enum TDB_ERROR check_free_table(struct tdb_context *tdb,
 		h = bucket_off(ftable_off, i);
 		for (off = tdb_read_off(tdb, h); off; off = f.next) {
 			if (TDB_OFF_IS_ERR(off)) {
-				return off;
+				return TDB_OFF_TO_ERR(off);
 			}
 			if (!first) {
 				off &= TDB_OFF_MASK;
@@ -587,9 +606,9 @@ tdb_off_t dead_space(struct tdb_context *tdb, tdb_off_t off)
 
 	for (len = 0; off + len < tdb->file->map_size; len++) {
 		char c;
-		ecode = tdb->methods->tread(tdb, off, &c, 1);
+		ecode = tdb->tdb2.io->tread(tdb, off, &c, 1);
 		if (ecode != TDB_SUCCESS) {
-			return ecode;
+			return TDB_ERR_TO_OFF(ecode);
 		}
 		if (c != 0 && c != 0x43)
 			break;
@@ -634,7 +653,7 @@ static enum TDB_ERROR check_linear(struct tdb_context *tdb,
 			} else {
 				len = dead_space(tdb, off);
 				if (TDB_OFF_IS_ERR(len)) {
-					return len;
+					return TDB_OFF_TO_ERR(len);
 				}
 				if (len < sizeof(rec.r)) {
 					return tdb_logerr(tdb, TDB_ERR_CORRUPT,
@@ -698,7 +717,8 @@ static enum TDB_ERROR check_linear(struct tdb_context *tdb,
 		} else if (rec_magic(&rec.u) == TDB_USED_MAGIC
 			   || rec_magic(&rec.u) == TDB_CHAIN_MAGIC
 			   || rec_magic(&rec.u) == TDB_HTABLE_MAGIC
-			   || rec_magic(&rec.u) == TDB_FTABLE_MAGIC) {
+			   || rec_magic(&rec.u) == TDB_FTABLE_MAGIC
+			   || rec_magic(&rec.u) == TDB_CAP_MAGIC) {
 			uint64_t klen, dlen, extra;
 
 			/* This record is used! */
@@ -734,7 +754,8 @@ static enum TDB_ERROR check_linear(struct tdb_context *tdb,
 
 			/* Check that records have correct 0 at end (but may
 			 * not in future). */
-			if (extra && !features) {
+			if (extra && !features
+			    && rec_magic(&rec.u) != TDB_CAP_MAGIC) {
 				const char *p;
 				char c;
 				p = tdb_access_read(tdb, off + sizeof(rec.u)
@@ -773,14 +794,27 @@ static enum TDB_ERROR check_linear(struct tdb_context *tdb,
 	return TDB_SUCCESS;
 }
 
-enum TDB_ERROR tdb_check_(struct tdb_context *tdb,
+_PUBLIC_ enum TDB_ERROR tdb_check_(struct tdb_context *tdb,
 			  enum TDB_ERROR (*check)(TDB_DATA, TDB_DATA, void *),
 			  void *data)
 {
 	tdb_off_t *fr = NULL, *used = NULL, ft, recovery;
-	size_t num_free = 0, num_used = 0, num_found = 0, num_ftables = 0;
+	size_t num_free = 0, num_used = 0, num_found = 0, num_ftables = 0,
+		num_capabilities = 0;
 	uint64_t features;
 	enum TDB_ERROR ecode;
+
+	if (tdb->flags & TDB_CANT_CHECK) {
+		return tdb_logerr(tdb, TDB_SUCCESS, TDB_LOG_WARNING,
+				  "tdb_check: database has unknown capability,"
+				  " cannot check.");
+	}
+
+	if (tdb->flags & TDB_VERSION1) {
+		if (tdb1_check(tdb, check, data) == -1)
+			return tdb->last_error;
+		return TDB_SUCCESS;
+	}
 
 	ecode = tdb_allrecord_lock(tdb, F_RDLCK, TDB_LOCK_WAIT, false);
 	if (ecode != TDB_SUCCESS) {
@@ -793,7 +827,7 @@ enum TDB_ERROR tdb_check_(struct tdb_context *tdb,
 		return tdb->last_error = ecode;
 	}
 
-	ecode = check_header(tdb, &recovery, &features);
+	ecode = check_header(tdb, &recovery, &features, &num_capabilities);
 	if (ecode != TDB_SUCCESS)
 		goto out;
 
@@ -805,7 +839,7 @@ enum TDB_ERROR tdb_check_(struct tdb_context *tdb,
 
 	for (ft = first_ftable(tdb); ft; ft = next_ftable(tdb, ft)) {
 		if (TDB_OFF_IS_ERR(ft)) {
-			ecode = ft;
+			ecode = TDB_OFF_TO_ERR(ft);
 			goto out;
 		}
 		ecode = check_free_table(tdb, ft, num_ftables, fr, num_free,
@@ -816,7 +850,8 @@ enum TDB_ERROR tdb_check_(struct tdb_context *tdb,
 	}
 
 	/* FIXME: Check key uniqueness? */
-	ecode = check_hash(tdb, used, num_used, num_ftables, check, data);
+	ecode = check_hash(tdb, used, num_used, num_ftables + num_capabilities,
+			   check, data);
 	if (ecode != TDB_SUCCESS)
 		goto out;
 

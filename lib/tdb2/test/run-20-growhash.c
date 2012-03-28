@@ -1,11 +1,4 @@
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/transaction.c>
-#include <ccan/tdb2/check.c>
+#include "tdb2-source.h"
 #include <ccan/tap/tap.h>
 #include "logging.h"
 
@@ -63,7 +56,7 @@ int main(int argc, char *argv[])
 	for (i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
 		struct hash_info h;
 
-		tdb = tdb_open("run-04-basichash.tdb", flags[i],
+		tdb = tdb_open("run-20-growhash.tdb", flags[i],
 			       O_RDWR|O_CREAT|O_TRUNC, 0600, &hattr);
 		ok1(tdb);
 		if (!tdb)

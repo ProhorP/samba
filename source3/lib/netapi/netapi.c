@@ -77,7 +77,7 @@ NET_API_STATUS libnetapi_init(struct libnetapi_ctx **context)
 	lp_set_cmdline("log level", "0");
 	setup_logging("libnetapi", DEBUG_STDERR);
 
-	if (!lp_load(get_dyn_CONFIGFILE(), true, false, false, true)) {
+	if (!lp_load_global(get_dyn_CONFIGFILE())) {
 		TALLOC_FREE(frame);
 		fprintf(stderr, "error loading %s\n", get_dyn_CONFIGFILE() );
 		return W_ERROR_V(WERR_GENERAL_FAILURE);
@@ -106,8 +106,6 @@ NET_API_STATUS libnetapi_net_init(struct libnetapi_ctx **context)
 {
 	NET_API_STATUS status;
 	struct libnetapi_ctx *ctx = NULL;
-	char *krb5_cc_env = NULL;
-
 	TALLOC_CTX *frame = talloc_stackframe();
 
 	ctx = talloc_zero(frame, struct libnetapi_ctx);
@@ -117,12 +115,6 @@ NET_API_STATUS libnetapi_net_init(struct libnetapi_ctx **context)
 	}
 
 	BlockSignals(True, SIGPIPE);
-
-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
-		ctx->krb5_cc_env = talloc_strdup(ctx, "MEMORY:libnetapi");
-		setenv(KRB5_ENV_CCNAME, ctx->krb5_cc_env, 1);
-	}
 
 	if (getenv("USER")) {
 		ctx->username = talloc_strdup(ctx, getenv("USER"));
@@ -275,6 +267,9 @@ NET_API_STATUS libnetapi_set_use_kerberos(struct libnetapi_ctx *ctx)
 	ctx->use_kerberos = true;
 	return NET_API_STATUS_SUCCESS;
 }
+
+/****************************************************************
+****************************************************************/
 
 NET_API_STATUS libnetapi_set_use_ccache(struct libnetapi_ctx *ctx)
 {

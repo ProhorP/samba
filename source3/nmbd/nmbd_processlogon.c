@@ -120,8 +120,7 @@ bool initialize_nmbd_proxy_logon(void)
 	}
 
 	/* we create a connected udp socket */
-	status = cldap_socket_init(ctx, nmbd_event_context(), NULL,
-				   server_addr, &ctx->cldap_sock);
+	status = cldap_socket_init(ctx, NULL, server_addr, &ctx->cldap_sock);
 	TALLOC_FREE(server_addr);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(ctx);
@@ -249,7 +248,7 @@ static void nmbd_proxy_logon(struct nmbd_proxy_logon_context *ctx,
 	state->io.in.version		= nt_version;
 	state->io.in.map_response	= false;
 
-	subreq = cldap_netlogon_send(state,
+	subreq = cldap_netlogon_send(state, nmbd_event_context(),
 				     ctx->cldap_sock,
 				     &state->io);
 	if (!subreq) {
@@ -330,7 +329,7 @@ void process_logon_packet(struct packet_struct *p, const char *buf,int len,
 	}
 	ip = ((const struct sockaddr_in *)pss)->sin_addr;
 
-	if (!lp_domain_logons()) {
+	if (!IS_DC) {
 		DEBUG(5,("process_logon_packet: Logon packet received from IP %s and domain \
 logons are not enabled.\n", inet_ntoa(p->ip) ));
 		return;
@@ -456,6 +455,7 @@ logons are not enabled.\n", inet_ntoa(p->ip) ));
 		bool user_unknown = false;
 
 		struct netlogon_samlogon_response samlogon;
+		struct NETLOGON_SAM_LOGON_RESPONSE_NT40 nt4;
 
 		if (global_nmbd_proxy_logon) {
 			nmbd_proxy_logon(global_nmbd_proxy_logon,
@@ -483,99 +483,21 @@ logons are not enabled.\n", inet_ntoa(p->ip) ));
 			user_unknown = true;
 		}
 
-		/* we want the simple version unless we are an ADS PDC..which means  */
-		/* never, at least for now */
-
-		if ((request.req.logon.nt_version < (NETLOGON_NT_VERSION_1 | NETLOGON_NT_VERSION_5 | NETLOGON_NT_VERSION_5EX_WITH_IP)) ||
-		    (SEC_ADS != lp_security()) || (ROLE_DOMAIN_PDC != lp_server_role())) {
-
-			struct NETLOGON_SAM_LOGON_RESPONSE_NT40 nt4;
-
-			nt4.command		= user_unknown ? LOGON_SAM_LOGON_USER_UNKNOWN :
-								 LOGON_SAM_LOGON_RESPONSE;
-			nt4.pdc_name		= pdc_name;
-			nt4.user_name		= request.req.logon.user_name;
-			nt4.domain_name		= lp_workgroup();
-			nt4.nt_version		= NETLOGON_NT_VERSION_1;
-			nt4.lmnt_token		= 0xffff;
-			nt4.lm20_token		= 0xffff;
-
-			samlogon.ntver = NETLOGON_NT_VERSION_1;
-			samlogon.data.nt4 = nt4;
-
-			if (DEBUGLEVEL >= 10) {
-				NDR_PRINT_DEBUG(NETLOGON_SAM_LOGON_RESPONSE_NT40, &nt4);
-			}
+		nt4.command		= user_unknown ? LOGON_SAM_LOGON_USER_UNKNOWN :
+			LOGON_SAM_LOGON_RESPONSE;
+		nt4.pdc_name		= pdc_name;
+		nt4.user_name		= request.req.logon.user_name;
+		nt4.domain_name		= lp_workgroup();
+		nt4.nt_version		= NETLOGON_NT_VERSION_1;
+		nt4.lmnt_token		= 0xffff;
+		nt4.lm20_token		= 0xffff;
+		
+		samlogon.ntver = NETLOGON_NT_VERSION_1;
+		samlogon.data.nt4 = nt4;
+		
+		if (DEBUGLEVEL >= 10) {
+			NDR_PRINT_DEBUG(NETLOGON_SAM_LOGON_RESPONSE_NT40, &nt4);
 		}
-#ifdef HAVE_ADS
-		else {
-
-			struct NETLOGON_SAM_LOGON_RESPONSE_EX nt5_ex;
-			struct GUID domain_guid;
-			struct nbt_sockaddr saddr;
-			char *domain;
-			const char *hostname;
-
-			saddr.sockaddr_family	= 2; /* AF_INET */
-			saddr.pdc_ip		= inet_ntoa(ip);
-			saddr.remaining		= data_blob_talloc_zero(talloc_tos(), 8); /* ??? */
-
-			domain = get_mydnsdomname(talloc_tos());
-			if (!domain) {
-				DEBUG(2,("get_mydnsdomname failed.\n"));
-				return;
-			}
-
-			hostname = get_mydnsfullname();
-			if (!hostname) {
-				DEBUG(2,("get_mydnsfullname failed.\n"));
-				return;
-			}
-
-			if (!secrets_fetch_domain_guid(domain, &domain_guid)) {
-				DEBUG(2,("Could not fetch DomainGUID for %s\n", domain));
-				return;
-			}
-
-			nt5_ex.command		= user_unknown ? LOGON_SAM_LOGON_USER_UNKNOWN_EX :
-								 LOGON_SAM_LOGON_RESPONSE_EX;
-			nt5_ex.sbz		= 0;
-			nt5_ex.server_type	= NBT_SERVER_PDC |
-						  NBT_SERVER_GC |
-						  NBT_SERVER_LDAP |
-						  NBT_SERVER_DS |
-						  NBT_SERVER_KDC |
-						  NBT_SERVER_TIMESERV |
-						  NBT_SERVER_CLOSEST |
-						  NBT_SERVER_WRITABLE;
-			nt5_ex.domain_uuid	= domain_guid;
-			nt5_ex.forest		= domain;
-			nt5_ex.dns_domain	= domain;
-			nt5_ex.pdc_dns_name	= hostname;
-			nt5_ex.domain_name	= lp_workgroup();
-			nt5_ex.pdc_name		= lp_netbios_name();
-			nt5_ex.user_name	= request.req.logon.user_name;
-			nt5_ex.server_site	= "Default-First-Site-Name";
-			nt5_ex.client_site	= "Default-First-Site-Name";
-			nt5_ex.sockaddr_size	= 0x10; /* the w32 winsock addr size */
-			nt5_ex.sockaddr		= saddr;
-			nt5_ex.next_closest_site= NULL;
-			nt5_ex.nt_version	= NETLOGON_NT_VERSION_1 |
-						  NETLOGON_NT_VERSION_5EX |
-						  NETLOGON_NT_VERSION_5EX_WITH_IP;
-			nt5_ex.lmnt_token	= 0xffff;
-			nt5_ex.lm20_token	= 0xffff;
-
-			samlogon.ntver = NETLOGON_NT_VERSION_1 |
-					 NETLOGON_NT_VERSION_5EX |
-					 NETLOGON_NT_VERSION_5EX_WITH_IP;
-			samlogon.data.nt5_ex = nt5_ex;
-
-			if (DEBUGLEVEL >= 10) {
-				NDR_PRINT_DEBUG(NETLOGON_SAM_LOGON_RESPONSE_EX, &nt5_ex);
-			}
-		}
-#endif /* HAVE_ADS */
 
 		response.response_type = NETLOGON_SAMLOGON;
 		response.data.samlogon = samlogon;

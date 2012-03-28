@@ -209,8 +209,13 @@ static void wb_groups_members_done(struct tevent_req *subreq)
 	 * and just continue if an error occured.
 	 */
 
-	if (tevent_req_nterror(req, status)) {
-		return;
+	if (!NT_STATUS_IS_OK(status)) {
+		if (!NT_STATUS_EQUAL(
+			    status, NT_STATUS_TRUSTED_DOMAIN_FAILURE)) {
+			tevent_req_nterror(req, status);
+			return;
+		}
+		num_members = 0;
 	}
 
 	num_all_members = talloc_array_length(state->all_members);
@@ -350,7 +355,7 @@ static void wb_group_members_done(struct tevent_req *subreq)
 		subreq, struct tevent_req);
 	struct wb_group_members_state *state = tevent_req_data(
 		req, struct wb_group_members_state);
-	int i, num_groups, new_users, new_groups;
+	int i, num_groups, new_groups;
 	int num_members = 0;
 	struct wbint_Principal *members = NULL;
 	NTSTATUS status;
@@ -361,7 +366,7 @@ static void wb_group_members_done(struct tevent_req *subreq)
 		return;
 	}
 
-	new_users = new_groups = 0;
+	new_groups = 0;
 	for (i=0; i<num_members; i++) {
 		switch (members[i].type) {
 		case SID_NAME_DOM_GRP:

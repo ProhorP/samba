@@ -84,8 +84,7 @@ __docformat__ = "restructuredText"
 # This also apply to imported object from reference provision
 replAttrNotCopied = [   "dn", "whenCreated", "whenChanged", "objectGUID",
                         "parentGUID", "objectCategory", "distinguishedName",
-                        "nTMixedDomain", "showInAdvancedViewOnly",
-                        "instanceType", "msDS-Behavior-Version", "cn",
+                        "instanceType", "cn",
                         "lmPwdHistory", "pwdLastSet", "ntPwdHistory",
                         "unicodePwd", "dBCSPwd", "supplementalCredentials",
                         "gPCUserExtensionNames", "gPCMachineExtensionNames",
@@ -342,11 +341,11 @@ def handle_special_case(att, delta, new, old, useReplMetadata, basedn, aldb):
     :return: True to indicate that the attribute should be kept, False for
              discarding it"""
 
-    flag = delta.get(att).flags()
     # We do most of the special case handle if we do not have the
     # highest usn as otherwise the replPropertyMetaData will guide us more
     # correctly
     if not useReplMetadata:
+        flag = delta.get(att).flags()
         if (att == "sPNMappings" and flag == FLAG_MOD_REPLACE and
             ldb.Dn(aldb, "CN=Directory Service,CN=Windows NT,"
                         "CN=Services,CN=Configuration,%s" % basedn)
@@ -419,7 +418,7 @@ def handle_special_case(att, delta, new, old, useReplMetadata, basedn, aldb):
     # This is a bit of special animal as we might have added
     # already SPN entries to the list that has to be modified
     # So we go in detail to try to find out what has to be added ...
-    if (att == "servicePrincipalName" and flag == FLAG_MOD_REPLACE):
+    if (att == "servicePrincipalName" and delta.get(att).flags() == FLAG_MOD_REPLACE):
         hash = {}
         newval = []
         changeDelta = 0
@@ -764,8 +763,7 @@ def handle_links(samdb, att, basedn, dn, value, ref_value, delta):
     :param delta: The MessageElement object that will be applied for
                    transforming the current provision"""
 
-    res = samdb.search(expression="dn=%s" % dn, base=basedn,
-                        controls=["search_options:1:2", "reveal:1"],
+    res = samdb.search(base=dn, controls=["search_options:1:2", "reveal:1"],
                         attrs=[att])
 
     blacklist = {}
@@ -773,7 +771,8 @@ def handle_links(samdb, att, basedn, dn, value, ref_value, delta):
     newlinklist = []
     changed = False
 
-    newlinklist.extend(value)
+    for v in value:
+        newlinklist.append(str(v))
 
     for e in value:
         hash[e] = 1
@@ -797,6 +796,8 @@ def handle_links(samdb, att, basedn, dn, value, ref_value, delta):
         delta[att] = MessageElement(newlinklist, FLAG_MOD_REPLACE, att)
     else:
         delta.remove(att)
+
+    return delta
 
 
 msg_elt_flag_strs = {
@@ -896,11 +897,12 @@ def checkKeepAttributeWithMetadata(delta, att, message, reference, current,
         if att in forwardlinked:
             curval = current[0].get(att, ())
             refval = reference[0].get(att, ())
-            handle_links(samdb, att, basedn, current[0]["dn"],
+            delta = handle_links(samdb, att, basedn, current[0]["dn"],
                             curval, refval, delta)
             continue
 
-        if isFirst and len(delta.items())>1:
+
+        if isFirst and len(list(delta)) > 1:
             isFirst = False
             txt = "%s\n" % (str(dn))
 
@@ -1049,10 +1051,12 @@ def update_present(ref_samdb, samdb, basedn, listPresent, usns):
 
         delta.remove("name")
 
-        if len(delta.items()) == 1:
+        nb_items = len(list(delta))
+
+        if nb_items == 1:
             continue
 
-        if len(delta.items()) > 1 and usns is not None:
+        if nb_items > 1 and usns is not None:
             # Fetch the replPropertyMetaData
             res = samdb.search(expression="dn=%s" % (str(dn)), base=basedn,
                                 scope=SCOPE_SUBTREE, controls=controls,
@@ -1078,7 +1082,9 @@ def update_present(ref_samdb, samdb, basedn, listPresent, usns):
             delta =  checkKeepAttributeOldMtd(delta, att, reference, current, basedn, samdb)
 
         delta.dn = dn
-        if len(delta.items()) >1:
+
+
+        if len(delta) >1:
             # Skip dn as the value is not really changed ...
             attributes=", ".join(delta.keys()[1:])
             modcontrols = []
@@ -1102,7 +1108,8 @@ def reload_full_schema(samdb, names):
     :param names: List of key provision parameters
     """
 
-    current = samdb.search(expression="objectClass=*", base=str(names.schemadn),
+    schemadn = str(names.schemadn)
+    current = samdb.search(expression="objectClass=*", base=schemadn,
                                 scope=SCOPE_SUBTREE)
     schema_ldif = ""
     prefixmap_data = ""
@@ -1114,9 +1121,9 @@ def reload_full_schema(samdb, names):
     prefixmap_data = b64encode(prefixmap_data)
 
     # We don't actually add this ldif, just parse it
-    prefixmap_ldif = "dn: cn=schema\nprefixMap:: %s\n\n" % prefixmap_data
+    prefixmap_ldif = "dn: %s\nprefixMap:: %s\n\n" % (schemadn, prefixmap_data)
 
-    dsdb._dsdb_set_schema_from_ldif(samdb, prefixmap_ldif, schema_ldif)
+    dsdb._dsdb_set_schema_from_ldif(samdb, prefixmap_ldif, schema_ldif, schemadn)
 
 
 def update_partition(ref_samdb, samdb, basedn, names, schema, provisionUSNs, prereloadfunc):
@@ -1347,10 +1354,20 @@ def rebuild_sd(samdb, names):
             message(ERROR, "On %s bad stuff %s" % (str(delta.dn),badsd.as_sddl(names.domainsid)))
             return
 
+def hasATProvision(samdb):
+        entry = samdb.search(expression="dn=@PROVISION", base = "",
+                                scope=SCOPE_BASE,
+                                attrs=["dn"])
+
+        if entry != None and len(entry) == 1:
+            return True
+        else:
+            return False
+
 def removeProvisionUSN(samdb):
         attrs = [samba.provision.LAST_PROVISION_USN_ATTRIBUTE, "dn"]
         entry = samdb.search(expression="dn=@PROVISION", base = "",
-                                scope=SCOPE_SUBTREE,
+                                scope=SCOPE_BASE,
                                 attrs=attrs)
         empty = Message()
         empty.dn = entry[0].dn
@@ -1471,14 +1488,14 @@ def copyxattrs(dir, refdir):
                     samba.xattr_native.wrap_setxattr(tgt,
                                                  xattr.XATTR_NTACL_NAME,
                                                  attribute)
-                except:
+                except Exception:
                     noxattr = 1
                 attribute = samba.xattr_native.wrap_getxattr(ref,
                                                  "system.posix_acl_access")
                 samba.xattr_native.wrap_setxattr(tgt,
                                                  "system.posix_acl_access",
                                                   attribute)
-            except:
+            except Exception:
                 continue
         for name in dirs:
             subdir=root[len(dir):]
@@ -1494,7 +1511,7 @@ def copyxattrs(dir, refdir):
                     samba.xattr_native.wrap_setxattr(tgt,
                                                  xattr.XATTR_NTACL_NAME,
                                                  attribute)
-                except:
+                except Exception:
                     noxattr = 1
                 attribute = samba.xattr_native.wrap_getxattr(ref,
                                                  "system.posix_acl_access")
@@ -1502,7 +1519,7 @@ def copyxattrs(dir, refdir):
                                                  "system.posix_acl_access",
                                                   attribute)
 
-            except:
+            except Exception:
                 continue
 
 
@@ -1794,7 +1811,8 @@ if __name__ == '__main__':
             new_ldbs.groupedCommit()
             deltaattr = None
         # 11)
-            if re.match(".*alpha((9)|(\d\d+)).*", str(oem)):
+            message(GUESS, oem)
+            if oem is None or hasATProvision(ldbs.sam) or re.match(".*alpha((9)|(\d\d+)).*", str(oem)):
                 # 11) A
                 # Starting from alpha9 we can consider that the structure is quite ok
                 # and that we should do only dela

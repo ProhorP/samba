@@ -116,7 +116,7 @@ void attempt_machine_password_change(void)
 static NTSTATUS connect_to_domain_password_server(struct cli_state **cli,
 						const char *domain,
 						const char *dc_name,
-						struct sockaddr_storage *dc_ss, 
+						const struct sockaddr_storage *dc_ss,
 						struct rpc_pipe_client **pipe_ret)
 {
         NTSTATUS result;
@@ -147,7 +147,7 @@ static NTSTATUS connect_to_domain_password_server(struct cli_state **cli,
 
 	/* Attempt connection */
 	result = cli_full_connection(cli, lp_netbios_name(), dc_name, dc_ss, 0,
-		"IPC$", "IPC", "", "", "", 0, Undefined);
+		"IPC$", "IPC", "", "", "", 0, SMB_SIGNING_DEFAULT);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		/* map to something more useful */
@@ -234,8 +234,9 @@ machine %s. Error was : %s.\n", dc_name, nt_errstr(result)));
 	}
 
 	if(!netlogon_pipe) {
-		DEBUG(0,("connect_to_domain_password_server: unable to open the domain client session to \
-machine %s. Error was : %s.\n", dc_name, cli_errstr(*cli)));
+		DEBUG(0, ("connect_to_domain_password_server: unable to open "
+			  "the domain client session to machine %s. Error "
+			  "was : %s.\n", dc_name, nt_errstr(result)));
 		cli_shutdown(*cli);
 		*cli = NULL;
 		TALLOC_FREE(mutex);
@@ -261,7 +262,7 @@ static NTSTATUS domain_client_validate(TALLOC_CTX *mem_ctx,
 					uchar chal[8],
 					struct auth_serversupplied_info **server_info,
 					const char *dc_name,
-					struct sockaddr_storage *dc_ss)
+					const struct sockaddr_storage *dc_ss)
 
 {
 	struct netr_SamInfo3 *info3 = NULL;
@@ -298,7 +299,7 @@ static NTSTATUS domain_client_validate(TALLOC_CTX *mem_ctx,
 
 	/* store a successful connection */
 
-	saf_store( domain, cli->desthost );
+	saf_store(domain, dc_name);
 
         /*
          * If this call succeeds, we now have lots of info about the user

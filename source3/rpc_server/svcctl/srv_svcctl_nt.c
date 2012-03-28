@@ -23,6 +23,7 @@
  */
 
 #include "includes.h"
+#include "system/passwd.h" /* uid_wrapper */
 #include "ntdomain.h"
 #include "../librpc/gen_ndr/srv_svcctl.h"
 #include "../libcli/security/security.h"
@@ -409,7 +410,7 @@ WERROR _svcctl_QueryServiceStatus(struct pipes_struct *p,
 
 static int enumerate_status(TALLOC_CTX *ctx,
 			    struct messaging_context *msg_ctx,
-			    struct auth_serversupplied_info *session_info,
+			    struct auth_session_info *session_info,
 			    struct ENUM_SERVICE_STATUSW **status)
 {
 	int num_services = 0;
@@ -670,7 +671,7 @@ WERROR _svcctl_QueryServiceStatusEx(struct pipes_struct *p,
 
 static WERROR fill_svc_config(TALLOC_CTX *mem_ctx,
 			      struct messaging_context *msg_ctx,
-			      struct auth_serversupplied_info *session_info,
+			      struct auth_session_info *session_info,
 			      const char *name,
 			      struct QUERY_SERVICE_CONFIG *config)
 {
@@ -716,7 +717,7 @@ static WERROR fill_svc_config(TALLOC_CTX *mem_ctx,
 
 	if ( strequal( name, "NETLOGON" ) && ( lp_servicenumber(name) == -1 ) )
 		config->start_type = SVCCTL_DISABLED;
-	else if ( strequal( name, "WINS" ) && ( !lp_wins_support() ))
+	else if ( strequal( name, "WINS" ) && ( !lp_we_are_a_wins_server() ))
 		config->start_type = SVCCTL_DISABLED;
 	else
 		config->start_type = SVCCTL_DEMAND_START;

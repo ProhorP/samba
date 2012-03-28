@@ -56,7 +56,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 	*err_str = NULL;
 
 	result = cli_connect_nb(remote_machine, NULL, 0, 0x20, NULL,
-				Undefined, &cli);
+				SMB_SIGNING_DEFAULT, 0, &cli);
 	if (!NT_STATUS_IS_OK(result)) {
 		if (asprintf(err_str, "Unable to connect to SMB server on "
 			 "machine %s. Error was : %s.\n",
@@ -66,9 +66,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		return result;
 	}
 
-	cli->protocol = PROTOCOL_NT1;
-
-	result = cli_negprot(cli);
+	result = cli_negprot(cli, PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		if (asprintf(err_str, "machine %s rejected the negotiate "
@@ -76,7 +74,6 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 			 remote_machine, nt_errstr(result)) == -1) {
 			*err_str = NULL;
 		}
-		result = cli_nt_error(cli);
 		cli_shutdown(cli);
 		return result;
 	}
@@ -137,7 +134,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		}
 	}
 
-	result = cli_tcon_andx(cli, "IPC$", "IPC", "", 1);
+	result = cli_tree_connect(cli, "IPC$", "IPC", "", 1);
 	if (!NT_STATUS_IS_OK(result)) {
 		if (asprintf(err_str, "machine %s rejected the tconX on the "
 			     "IPC$ share. Error was : %s.\n",
@@ -151,13 +148,15 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 	/* Try not to give the password away too easily */
 
 	if (!pass_must_change) {
-		result = cli_rpc_pipe_open_ntlmssp(cli,
-						   &ndr_table_samr.syntax_id,
-						   NCACN_NP,
-						   DCERPC_AUTH_LEVEL_PRIVACY,
-						   domain, user,
-						   old_passwd,
-						   &pipe_hnd);
+		result = cli_rpc_pipe_open_generic_auth(cli,
+							&ndr_table_samr,
+							NCACN_NP,
+							DCERPC_AUTH_TYPE_NTLMSSP,
+							DCERPC_AUTH_LEVEL_PRIVACY,
+							remote_machine,
+							domain, user,
+							old_passwd,
+							&pipe_hnd);
 	} else {
 		/*
 		 * If the user password must be changed the ntlmssp bind will
@@ -191,7 +190,6 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 				 remote_machine, nt_errstr(result)) == -1) {
 				*err_str = NULL;
 			}
-			result = cli_nt_error(cli);
 			cli_shutdown(cli);
 			return result;
 		}

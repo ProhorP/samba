@@ -18,15 +18,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+"""Utility methods for security descriptor manipulation."""
+
 import samba
 from ldb import Message, MessageElement, Dn
 from ldb import FLAG_MOD_REPLACE, SCOPE_BASE
 from samba.ndr import ndr_pack, ndr_unpack
 from samba.dcerpc import security
 
-class SDUtils:
-    '''Some utilities for manipulation of security descriptors
-    on objects'''
+
+class SDUtils(object):
+    """Some utilities for manipulation of security descriptors
+    on objects"""
 
     def __init__(self, samdb):
         self.ldb = samdb
@@ -67,7 +70,8 @@ class SDUtils:
         if ace in desc_sddl:
             return
         if desc_sddl.find("(") >= 0:
-            desc_sddl = desc_sddl[:desc_sddl.index("(")] + ace + desc_sddl[desc_sddl.index("("):]
+            desc_sddl = (desc_sddl[:desc_sddl.index("(")] + ace +
+                         desc_sddl[desc_sddl.index("("):])
         else:
             desc_sddl = desc_sddl + ace
         self.modify_sd_on_dn(object_dn, desc_sddl)

@@ -95,6 +95,7 @@ struct ph_context {
 	bool change_status;
 	bool hash_values;
 	bool userPassword;
+	bool pwd_last_set_bypass;
 };
 
 
@@ -298,6 +299,22 @@ static int password_hash_bypass(struct ldb_module *module, struct ldb_request *r
 			}
 
 			data_blob_free(&subblob);
+		}
+
+		if (scpp == NULL) {
+			return ldb_error(ldb,
+					 LDB_ERR_CONSTRAINT_VIOLATION,
+					 "Primary:Packages missing");
+		}
+
+		if (scpk == NULL) {
+			/*
+			 * If Primary:Kerberos is missing w2k8r2 reboots
+			 * when a password is changed.
+			 */
+			return ldb_error(ldb,
+					 LDB_ERR_CONSTRAINT_VIOLATION,
+					 "Primary:Kerberos missing");
 		}
 
 		if (scpp) {
@@ -1663,6 +1680,36 @@ static int setup_supplemental_field(struct setup_password_fields_io *io)
 
 static int setup_last_set_field(struct setup_password_fields_io *io)
 {
+	const struct ldb_message *msg = NULL;
+
+	switch (io->ac->req->operation) {
+	case LDB_ADD:
+		msg = io->ac->req->op.add.message;
+		break;
+	case LDB_MODIFY:
+		msg = io->ac->req->op.mod.message;
+		break;
+	default:
+		return LDB_ERR_OPERATIONS_ERROR;
+		break;
+	}
+
+	if (io->ac->pwd_last_set_bypass) {
+		struct ldb_message_element *el;
+
+		if (msg == NULL) {
+			return LDB_ERR_CONSTRAINT_VIOLATION;
+		}
+
+		el = ldb_msg_find_element(msg, "pwdLastSet");
+		if (el == NULL) {
+			return LDB_ERR_CONSTRAINT_VIOLATION;
+		}
+
+		io->g.last_set = samdb_result_nttime(msg, "pwdLastSet", 0);
+		return LDB_SUCCESS;
+	}
+
 	/* set it as now */
 	unix_to_nt_time(&io->g.last_set, time(NULL));
 
@@ -2195,7 +2242,8 @@ static int setup_io(struct ph_context *ac,
 	}
 
 	/* Checks and converts the actual "unicodePwd" attribute */
-	if (quoted_utf16 &&
+	if (!ac->hash_values &&
+	    quoted_utf16 &&
 	    quoted_utf16->length >= 4 &&
 	    quoted_utf16->data[0] == '"' &&
 	    quoted_utf16->data[1] == 0 &&
@@ -2251,7 +2299,8 @@ static int setup_io(struct ph_context *ac,
 	}
 
 	/* Checks and converts the previous "unicodePwd" attribute */
-	if (old_quoted_utf16 &&
+	if (!ac->hash_values &&
+	    old_quoted_utf16 &&
 	    old_quoted_utf16->length >= 4 &&
 	    old_quoted_utf16->data[0] == '"' &&
 	    old_quoted_utf16->data[1] == 0 &&
@@ -2480,6 +2529,16 @@ static void ph_apply_controls(struct ph_context *ac)
 		ac->change = (struct dsdb_control_password_change *) ctrl->data;
 
 		/* Mark the "change" control as uncritical (done) */
+		ctrl->critical = false;
+	}
+
+	ac->pwd_last_set_bypass = false;
+	ctrl = ldb_request_get_control(ac->req,
+				DSDB_CONTROL_PASSWORD_BYPASS_LAST_SET_OID);
+	if (ctrl != NULL) {
+		ac->pwd_last_set_bypass = true;
+
+		/* Mark the "bypass pwdLastSet" control as uncritical (done) */
 		ctrl->critical = false;
 	}
 }

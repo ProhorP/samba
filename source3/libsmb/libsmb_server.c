@@ -44,11 +44,11 @@ int
 SMBC_check_server(SMBCCTX * context,
                   SMBCSRV * server) 
 {
-        socklen_t size;
-        struct sockaddr addr;
+	if (!cli_state_is_connected(server->cli)) {
+		return 1;
+	}
 
-        size = sizeof(addr);
-        return (getpeername(server->cli->fd, &addr, &size) == -1);
+	return 0;
 }
 
 /* 
@@ -253,6 +253,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
         const char *username_used;
  	NTSTATUS status;
 	char *newserver, *newshare;
+	int flags = 0;
 
 	ZERO_STRUCT(c);
 	*in_cache = false;
@@ -289,10 +290,10 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 		 * i.e., a normal share or a referred share from
 		 * 'msdfs proxy' share.
 		 */
-                if (srv->cli->cnum == (uint16) -1) {
+                if (!cli_state_has_tcon(srv->cli)) {
                         /* Ensure we have accurate auth info */
 			SMBC_call_auth_fn(ctx, context,
-					  srv->cli->desthost,
+					  cli_state_remote_name(srv->cli),
 					  srv->cli->share,
                                           pp_workgroup,
                                           pp_username,
@@ -313,9 +314,11 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 			 * tid.
 			 */
 
-			status = cli_tcon_andx(srv->cli, srv->cli->share, "?????",
-					       *pp_password,
-					       strlen(*pp_password)+1);
+			status = cli_tree_connect(srv->cli,
+						  srv->cli->share,
+						  "?????",
+						  *pp_password,
+						  strlen(*pp_password)+1);
 			if (!NT_STATUS_IS_OK(status)) {
                                 errno = map_errno_from_nt_status(status);
                                 cli_shutdown(srv->cli);
@@ -329,10 +332,15 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                         if (is_ipc) {
                                 DEBUG(4,
                                       ("IPC$ so ignore case sensitivity\n"));
-                        } else if (!NT_STATUS_IS_OK(cli_get_fs_attr_info(c, &fs_attrs))) {
+                                status = NT_STATUS_OK;
+                        } else {
+                                status = cli_get_fs_attr_info(c, &fs_attrs);
+                        }
+
+                        if (!NT_STATUS_IS_OK(status)) {
                                 DEBUG(4, ("Could not retrieve "
                                           "case sensitivity flag: %s.\n",
-                                          cli_errstr(c)));
+                                          nt_errstr(status)));
 
                                 /*
                                  * We can't determine the case sensitivity of
@@ -344,7 +352,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                                 } else {
                                         cli_set_case_sensitive(c, False);
                                 }
-                        } else {
+                        } else if (!is_ipc) {
                                 DEBUG(4,
                                       ("Case sensitive: %s\n",
                                        (fs_attrs & FILE_CASE_SENSITIVE_SEARCH
@@ -362,7 +370,10 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                          * server and share
                          */
                         if (srv) {
-                                srv->dev = (dev_t)(str_checksum(srv->cli->desthost) ^
+				const char *remote_name =
+					cli_state_remote_name(srv->cli);
+
+				srv->dev = (dev_t)(str_checksum(remote_name) ^
                                                    str_checksum(srv->cli->share));
                         }
                 }
@@ -393,13 +404,25 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 
 	status = NT_STATUS_UNSUCCESSFUL;
 
+	if (smbc_getOptionUseKerberos(context)) {
+		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+	}
+
+	if (smbc_getOptionFallbackAfterKerberos(context)) {
+		flags |= CLI_FULL_CONNECTION_FALLBACK_AFTER_KERBEROS;
+	}
+
+	if (smbc_getOptionUseCCache(context)) {
+		flags |= CLI_FULL_CONNECTION_USE_CCACHE;
+	}
+
         if (share == NULL || *share == '\0' || is_ipc) {
 		/*
 		 * Try 139 first for IPC$
 		 */
-		status = cli_connect_nb(server_n, NULL, 139, 0x20,
+		status = cli_connect_nb(server_n, NULL, NBT_SMB_PORT, 0x20,
 					smbc_getNetbiosName(context),
-					Undefined, &c);
+					SMB_SIGNING_DEFAULT, flags, &c);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -408,7 +431,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 		 */
 		status = cli_connect_nb(server_n, NULL, 0, 0x20,
 					smbc_getNetbiosName(context),
-					Undefined, &c);
+					SMB_SIGNING_DEFAULT, flags, &c);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -416,21 +439,9 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 		return NULL;
 	}
 
-        if (smbc_getOptionUseKerberos(context)) {
-		c->use_kerberos = True;
-	}
+	cli_set_timeout(c, smbc_getTimeout(context));
 
-        if (smbc_getOptionFallbackAfterKerberos(context)) {
-		c->fallback_after_kerberos = True;
-	}
-
-        if (smbc_getOptionUseCCache(context)) {
-		c->use_ccache = True;
-	}
-
-	c->timeout = smbc_getTimeout(context);
-
-	status = cli_negprot(c);
+	status = cli_negprot(c, PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		cli_shutdown(c);
@@ -477,7 +488,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	   here before trying to connect to the original share.
 	   cli_check_msdfs_proxy() will fail if it is a normal share. */
 
-	if ((c->capabilities & CAP_DFS) &&
+	if ((cli_state_capabilities(c) & CAP_DFS) &&
 			cli_check_msdfs_proxy(ctx, c, share,
 				&newserver, &newshare,
 				/* FIXME: cli_check_msdfs_proxy() does
@@ -498,8 +509,8 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 
 	/* must be a normal share */
 
-	status = cli_tcon_andx(c, share, "?????", *pp_password,
-			       strlen(*pp_password)+1);
+	status = cli_tree_connect(c, share, "?????", *pp_password,
+				  strlen(*pp_password)+1);
 	if (!NT_STATUS_IS_OK(status)) {
 		errno = map_errno_from_nt_status(status);
 		cli_shutdown(c);
@@ -511,9 +522,14 @@ SMBC_server_internal(TALLOC_CTX *ctx,
         /* Determine if this share supports case sensitivity */
 	if (is_ipc) {
                 DEBUG(4, ("IPC$ so ignore case sensitivity\n"));
-        } else if (!NT_STATUS_IS_OK(cli_get_fs_attr_info(c, &fs_attrs))) {
+                status = NT_STATUS_OK;
+        } else {
+                status = cli_get_fs_attr_info(c, &fs_attrs);
+        }
+
+        if (!NT_STATUS_IS_OK(status)) {
                 DEBUG(4, ("Could not retrieve case sensitivity flag: %s.\n",
-                          cli_errstr(c)));
+                          nt_errstr(status)));
 
                 /*
                  * We can't determine the case sensitivity of the share. We
@@ -525,7 +541,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                 } else {
                         cli_set_case_sensitive(c, False);
                 }
-	} else {
+	} else if (!is_ipc) {
                 DEBUG(4, ("Case sensitive: %s\n",
                           (fs_attrs & FILE_CASE_SENSITIVE_SEARCH
                            ? "True"
@@ -664,7 +680,6 @@ SMBC_attr_server(TALLOC_CTX *ctx,
                  char **pp_password)
 {
         int flags;
-        struct sockaddr_storage ss;
 	struct cli_state *ipc_cli = NULL;
 	struct rpc_pipe_client *pipe_hnd = NULL;
         NTSTATUS nt_status;
@@ -682,7 +697,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
 	if (!srv) {
 		return NULL;
 	}
-	server = srv->cli->desthost;
+	server = cli_state_remote_name(srv->cli);
 	share = srv->cli->share;
 
         /*
@@ -715,15 +730,14 @@ SMBC_attr_server(TALLOC_CTX *ctx,
                         flags |= CLI_FULL_CONNECTION_USE_CCACHE;
                 }
 
-                zero_sockaddr(&ss);
                 nt_status = cli_full_connection(&ipc_cli,
 						lp_netbios_name(), server,
-						&ss, 0, "IPC$", "?????",
+						NULL, 0, "IPC$", "?????",
 						*pp_username,
 						*pp_workgroup,
 						*pp_password,
 						flags,
-						Undefined);
+						SMB_SIGNING_DEFAULT);
                 if (! NT_STATUS_IS_OK(nt_status)) {
                         DEBUG(1,("cli_full_connection failed! (%s)\n",
                                  nt_errstr(nt_status)));

@@ -26,11 +26,13 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "librpc/gen_ndr/ndr_notify.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "smbd/smbd.h"
 #include "messages.h"
 #include "lib/util/tdb_wrap.h"
 #include "util_tdb.h"
+#include "lib/param/param.h"
 
 struct notify_context {
 	struct db_context *db_recursive;
@@ -100,7 +102,8 @@ struct notify_context *notify_init(TALLOC_CTX *mem_ctx, struct server_id server,
 
 	notify->db_recursive = db_open(notify, lock_path("notify.tdb"),
 				       0, TDB_SEQNUM|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
-				       O_RDWR|O_CREAT, 0644);
+				       O_RDWR|O_CREAT, 0644,
+				       DBWRAP_LOCK_ORDER_2);
 	if (notify->db_recursive == NULL) {
 		talloc_free(notify);
 		return NULL;
@@ -108,7 +111,8 @@ struct notify_context *notify_init(TALLOC_CTX *mem_ctx, struct server_id server,
 
 	notify->db_onelevel = db_open(notify, lock_path("notify_onelevel.tdb"),
 				      0, TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
-				      O_RDWR|O_CREAT, 0644);
+				      O_RDWR|O_CREAT, 0644,
+				      DBWRAP_LOCK_ORDER_2);
 	if (notify->db_onelevel == NULL) {
 		talloc_free(notify);
 		return NULL;
@@ -118,8 +122,7 @@ struct notify_context *notify_init(TALLOC_CTX *mem_ctx, struct server_id server,
 	notify->messaging_ctx = messaging_ctx;
 	notify->list = NULL;
 	notify->array = NULL;
-	notify->seqnum = notify->db_recursive->get_seqnum(
-		notify->db_recursive);
+	notify->seqnum = dbwrap_get_seqnum(notify->db_recursive);
 	notify->key = string_term_tdb_data(NOTIFY_KEY);
 
 	talloc_set_destructor(notify, notify_destructor);
@@ -137,11 +140,17 @@ struct notify_context *notify_init(TALLOC_CTX *mem_ctx, struct server_id server,
 bool notify_internal_parent_init(TALLOC_CTX *mem_ctx)
 {
 	struct tdb_wrap *db1, *db2;
+	struct loadparm_context *lp_ctx;
 
 	if (lp_clustering()) {
 		return true;
 	}
 
+	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_context());
+	if (lp_ctx == NULL) {
+		DEBUG(0, ("loadparm_init_s3 failed\n"));
+		return false;
+	}
 	/*
 	 * Open the tdbs in the parent process (smbd) so that our
 	 * CLEAR_IF_FIRST optimization in tdb_reopen_all can properly
@@ -150,13 +159,15 @@ bool notify_internal_parent_init(TALLOC_CTX *mem_ctx)
 
 	db1 = tdb_wrap_open(mem_ctx, lock_path("notify.tdb"),
 			    0, TDB_SEQNUM|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
-			   O_RDWR|O_CREAT, 0644);
+			    O_RDWR|O_CREAT, 0644, lp_ctx);
 	if (db1 == NULL) {
+		talloc_unlink(mem_ctx, lp_ctx);
 		DEBUG(1, ("could not open notify.tdb: %s\n", strerror(errno)));
 		return false;
 	}
 	db2 = tdb_wrap_open(mem_ctx, lock_path("notify_onelevel.tdb"),
-			    0, TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT, 0644);
+			    0, TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT, 0644, lp_ctx);
+	talloc_unlink(mem_ctx, lp_ctx);
 	if (db2 == NULL) {
 		DEBUG(1, ("could not open notify_onelevel.tdb: %s\n",
 			  strerror(errno)));
@@ -171,8 +182,7 @@ bool notify_internal_parent_init(TALLOC_CTX *mem_ctx)
 */
 static NTSTATUS notify_fetch_locked(struct notify_context *notify, struct db_record **rec)
 {
-	*rec = notify->db_recursive->fetch_locked(notify->db_recursive,
-						  notify, notify->key);
+	*rec = dbwrap_fetch_locked(notify->db_recursive, notify, notify->key);
 	if (*rec == NULL) {
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
@@ -189,7 +199,7 @@ static NTSTATUS notify_load(struct notify_context *notify, struct db_record *rec
 	NTSTATUS status;
 	int seqnum;
 
-	seqnum = notify->db_recursive->get_seqnum(notify->db_recursive);
+	seqnum = dbwrap_get_seqnum(notify->db_recursive);
 
 	if (seqnum == notify->seqnum && notify->array != NULL) {
 		return NT_STATUS_OK;
@@ -202,12 +212,13 @@ static NTSTATUS notify_load(struct notify_context *notify, struct db_record *rec
 	NT_STATUS_HAVE_NO_MEMORY(notify->array);
 
 	if (!rec) {
-		if (notify->db_recursive->fetch(notify->db_recursive, notify,
-						notify->key, &dbuf) != 0) {
+		status = dbwrap_fetch(notify->db_recursive, notify,
+				      notify->key, &dbuf);
+		if (!NT_STATUS_IS_OK(status)) {
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 	} else {
-		dbuf = rec->value;
+		dbuf = dbwrap_record_get_value(rec);
 	}
 
 	blob.data = (uint8 *)dbuf.dptr;
@@ -227,7 +238,7 @@ static NTSTATUS notify_load(struct notify_context *notify, struct db_record *rec
 
 			ZERO_STRUCTP(notify->array);
 			if (rec != NULL) {
-				rec->delete_rec(rec);
+				dbwrap_record_delete(rec);
 			}
 
 		} else {
@@ -273,7 +284,7 @@ static NTSTATUS notify_save(struct notify_context *notify, struct db_record *rec
 
 	/* we might just be able to delete the record */
 	if (notify->array->num_depths == 0) {
-		return rec->delete_rec(rec);
+		return dbwrap_record_delete(rec);
 	}
 
 	tmp_ctx = talloc_new(notify);
@@ -294,7 +305,7 @@ static NTSTATUS notify_save(struct notify_context *notify, struct db_record *rec
 	dbuf.dptr = blob.data;
 	dbuf.dsize = blob.length;
 
-	status = rec->store(rec, dbuf, TDB_REPLACE);
+	status = dbwrap_record_store(rec, dbuf, TDB_REPLACE);
 	talloc_free(tmp_ctx);
 
 	return status;
@@ -411,6 +422,7 @@ static void notify_add_onelevel(struct notify_context *notify,
 	struct db_record *rec;
 	DATA_BLOB blob;
 	TDB_DATA dbuf;
+	TDB_DATA value;
 	enum ndr_err_code ndr_err;
 	NTSTATUS status;
 
@@ -419,9 +431,9 @@ static void notify_add_onelevel(struct notify_context *notify,
 		return;
 	}
 
-	rec = notify->db_onelevel->fetch_locked(
-		notify->db_onelevel, talloc_tos(),
-		make_tdb_data((uint8_t *)&e->dir_id, sizeof(e->dir_id)));
+	rec = dbwrap_fetch_locked(notify->db_onelevel, talloc_tos(),
+				  make_tdb_data((uint8_t *)&e->dir_id,
+				   sizeof(e->dir_id)));
 	if (rec == NULL) {
 		DEBUG(10, ("notify_add_onelevel: fetch_locked for %s failed"
 			   "\n", file_id_string_tos(&e->dir_id)));
@@ -429,8 +441,9 @@ static void notify_add_onelevel(struct notify_context *notify,
 		return;
 	}
 
-	blob.data = (uint8_t *)rec->value.dptr;
-	blob.length = rec->value.dsize;
+	value = dbwrap_record_get_value(rec);
+	blob.data = (uint8_t *)value.dptr;
+	blob.length = value.dsize;
 
 	if (blob.length > 0) {
 		ndr_err = ndr_pull_struct_blob(&blob, array, array,
@@ -476,7 +489,7 @@ static void notify_add_onelevel(struct notify_context *notify,
 	dbuf.dptr = blob.data;
 	dbuf.dsize = blob.length;
 
-	status = rec->store(rec, dbuf, TDB_REPLACE);
+	status = dbwrap_record_store(rec, dbuf, TDB_REPLACE);
 	TALLOC_FREE(array);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("notify_add_onelevel: store failed: %s\n",
@@ -584,6 +597,7 @@ NTSTATUS notify_remove_onelevel(struct notify_context *notify,
 	struct db_record *rec;
 	DATA_BLOB blob;
 	TDB_DATA dbuf;
+	TDB_DATA value;
 	enum ndr_err_code ndr_err;
 	NTSTATUS status;
 	int i;
@@ -597,7 +611,7 @@ NTSTATUS notify_remove_onelevel(struct notify_context *notify,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rec = notify->db_onelevel->fetch_locked(
+	rec = dbwrap_fetch_locked(
 		notify->db_onelevel, array,
 		make_tdb_data((const uint8_t *)fid, sizeof(*fid)));
 	if (rec == NULL) {
@@ -607,8 +621,9 @@ NTSTATUS notify_remove_onelevel(struct notify_context *notify,
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
 
-	blob.data = (uint8_t *)rec->value.dptr;
-	blob.length = rec->value.dsize;
+	value = dbwrap_record_get_value(rec);
+	blob.data = (uint8_t *)value.dptr;
+	blob.length = value.dsize;
 
 	if (blob.length > 0) {
 		ndr_err = ndr_pull_struct_blob(&blob, array, array,
@@ -642,7 +657,7 @@ NTSTATUS notify_remove_onelevel(struct notify_context *notify,
 	array->num_entries -= 1;
 
 	if (array->num_entries == 0) {
-		rec->delete_rec(rec);
+		dbwrap_record_delete(rec);
 		TALLOC_FREE(array);
 		return NT_STATUS_OK;
 	}
@@ -664,7 +679,7 @@ NTSTATUS notify_remove_onelevel(struct notify_context *notify,
 	dbuf.dptr = blob.data;
 	dbuf.dsize = blob.length;
 
-	status = rec->store(rec, dbuf, TDB_REPLACE);
+	status = dbwrap_record_store(rec, dbuf, TDB_REPLACE);
 	TALLOC_FREE(array);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("notify_add_onelevel: store failed: %s\n",
@@ -830,6 +845,7 @@ void notify_onelevel(struct notify_context *notify, uint32_t action,
 	DATA_BLOB blob;
 	bool have_dead_entries = false;
 	int i;
+	NTSTATUS status;
 
 	if (notify == NULL) {
 		return;
@@ -840,10 +856,10 @@ void notify_onelevel(struct notify_context *notify, uint32_t action,
 		return;
 	}
 
-	if (notify->db_onelevel->fetch(
-		    notify->db_onelevel, array,
-		    make_tdb_data((uint8_t *)&fid, sizeof(fid)),
-		    &dbuf) != 0) {
+	status = dbwrap_fetch(notify->db_onelevel, array,
+			      make_tdb_data((uint8_t *)&fid, sizeof(fid)),
+			      &dbuf);
+	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(array);
 		return;
 	}
@@ -871,8 +887,6 @@ void notify_onelevel(struct notify_context *notify, uint32_t action,
 		struct notify_entry *e = &array->entries[i];
 
 		if ((e->filter & filter) != 0) {
-			NTSTATUS status;
-
 			status = notify_send(notify, e, name, action);
 			if (NT_STATUS_EQUAL(
 				    status, NT_STATUS_INVALID_HANDLE)) {

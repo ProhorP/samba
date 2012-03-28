@@ -42,6 +42,77 @@
 #define TEST_MACHINE_NAME_S2U4SELF_BDC "tests2u4selfbdc"
 #define TEST_MACHINE_NAME_S2U4SELF_WKSTA "tests2u4selfwk"
 
+struct pac_data {
+	struct PAC_SIGNATURE_DATA *pac_srv_sig;
+	struct PAC_SIGNATURE_DATA *pac_kdc_sig;
+};
+
+/* A helper function which avoids touching the local databases to
+ * generate the session info, as we just want to verify the PAC
+ * details, not the full local token */
+static NTSTATUS test_generate_session_info_pac(struct auth4_context *auth_ctx,
+					       TALLOC_CTX *mem_ctx,
+					       struct smb_krb5_context *smb_krb5_context,
+					       DATA_BLOB *pac_blob,
+					       const char *principal_name,
+					       const struct tsocket_address *remote_address,
+					       uint32_t session_info_flags,
+					       struct auth_session_info **session_info)
+{
+	NTSTATUS nt_status;
+	struct auth_user_info_dc *user_info_dc;
+	TALLOC_CTX *tmp_ctx;
+	struct pac_data *pac_data;
+
+	tmp_ctx = talloc_named(mem_ctx, 0, "gensec_gssapi_session_info context");
+	NT_STATUS_HAVE_NO_MEMORY(tmp_ctx);
+
+	auth_ctx->private_data = pac_data = talloc_zero(auth_ctx, struct pac_data); 
+
+	pac_data->pac_srv_sig = talloc(tmp_ctx, struct PAC_SIGNATURE_DATA);
+	if (!pac_data->pac_srv_sig) {
+		talloc_free(tmp_ctx);
+		return NT_STATUS_NO_MEMORY;
+	}
+	pac_data->pac_kdc_sig = talloc(tmp_ctx, struct PAC_SIGNATURE_DATA);
+	if (!pac_data->pac_kdc_sig) {
+		talloc_free(tmp_ctx);
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	nt_status = kerberos_pac_blob_to_user_info_dc(tmp_ctx,
+						      *pac_blob,
+						      smb_krb5_context->krb5_context,
+						      &user_info_dc,
+						      pac_data->pac_srv_sig,
+						      pac_data->pac_kdc_sig);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		talloc_free(tmp_ctx);
+		return nt_status;
+	}
+
+	talloc_steal(pac_data, pac_data->pac_srv_sig);
+	talloc_steal(pac_data, pac_data->pac_kdc_sig);
+
+	if (user_info_dc->info->authenticated) {
+		session_info_flags |= AUTH_SESSION_INFO_AUTHENTICATED;
+	}
+
+	session_info_flags |= AUTH_SESSION_INFO_SIMPLE_PRIVILEGES;
+	nt_status = auth_generate_session_info(mem_ctx,
+					       NULL,
+					       NULL,
+					       user_info_dc, session_info_flags,
+					       session_info);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		talloc_free(tmp_ctx);
+		return nt_status;
+	}
+
+	talloc_free(tmp_ctx);
+	return nt_status;
+}
+
 /* Check to see if we can pass the PAC across to the NETLOGON server for validation */
 
 /* Also happens to be a really good one-step verfication of our Kerberos stack */
@@ -73,7 +144,9 @@ static bool test_PACVerify(struct torture_context *tctx,
 	
 	enum ndr_err_code ndr_err;
 
+	struct auth4_context *auth_context;
 	struct auth_session_info *session_info;
+	struct pac_data *pac_data;
 
 	struct dcerpc_binding_handle *b = p->binding_handle;
 	TALLOC_CTX *tmp_ctx = talloc_new(tctx);
@@ -85,7 +158,12 @@ static bool test_PACVerify(struct torture_context *tctx,
 		return false;
 	}
 
-	status = gensec_client_start(tctx, &gensec_client_context, tctx->ev, 
+	auth_context = talloc_zero(tmp_ctx, struct auth4_context);
+	torture_assert(tctx, auth_context != NULL, "talloc_new() failed");
+
+	auth_context->generate_session_info_pac = test_generate_session_info_pac;
+
+	status = gensec_client_start(tctx, &gensec_client_context,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx));
 	torture_assert_ntstatus_ok(tctx, status, "gensec_client_start (client) failed");
 
@@ -97,9 +175,9 @@ static bool test_PACVerify(struct torture_context *tctx,
 	status = gensec_start_mech_by_sasl_name(gensec_client_context, "GSSAPI");
 	torture_assert_ntstatus_ok(tctx, status, "gensec_start_mech_by_sasl_name (client) failed");
 
-	status = gensec_server_start(tctx, tctx->ev, 
+	status = gensec_server_start(tctx,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx),
-				     NULL, &gensec_server_context);
+				     auth_context, &gensec_server_context);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_server_start (server) failed");
 
 	status = gensec_set_credentials(gensec_server_context, credentials);
@@ -112,12 +190,12 @@ static bool test_PACVerify(struct torture_context *tctx,
 	
 	do {
 		/* Do a client-server update dance */
-		status = gensec_update(gensec_client_context, tmp_ctx, server_to_client, &client_to_server);
+		status = gensec_update(gensec_client_context, tmp_ctx, tctx->ev, server_to_client, &client_to_server);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (client) failed");
 		}
 
-		status = gensec_update(gensec_server_context, tmp_ctx, client_to_server, &server_to_client);
+		status = gensec_update(gensec_server_context, tmp_ctx, tctx->ev, client_to_server, &server_to_client);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (server) failed");
 		}
@@ -129,24 +207,27 @@ static bool test_PACVerify(struct torture_context *tctx,
 
 	/* Extract the PAC using Samba's code */
 
-	status = gensec_session_info(gensec_server_context, &session_info);
+	status = gensec_session_info(gensec_server_context, gensec_server_context, &session_info);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_session_info failed");
-	torture_assert(tctx, session_info->torture != NULL, "gensec_session_info failed to fill in torture sub struct");
-	torture_assert(tctx, session_info->torture->pac_srv_sig != NULL, "pac_srv_sig not present");
-	torture_assert(tctx, session_info->torture->pac_kdc_sig != NULL, "pac_kdc_sig not present");
 
-	pac_wrapped_struct.ChecksumLength = session_info->torture->pac_srv_sig->signature.length;
-	pac_wrapped_struct.SignatureType = session_info->torture->pac_kdc_sig->type;
-	pac_wrapped_struct.SignatureLength = session_info->torture->pac_kdc_sig->signature.length;
+	pac_data = talloc_get_type(auth_context->private_data, struct pac_data);
+
+	torture_assert(tctx, pac_data != NULL, "gensec_update failed to fill in pac_data in auth_context");
+	torture_assert(tctx, pac_data->pac_srv_sig != NULL, "pac_srv_sig not present");
+	torture_assert(tctx, pac_data->pac_kdc_sig != NULL, "pac_kdc_sig not present");
+
+	pac_wrapped_struct.ChecksumLength = pac_data->pac_srv_sig->signature.length;
+	pac_wrapped_struct.SignatureType = pac_data->pac_kdc_sig->type;
+	pac_wrapped_struct.SignatureLength = pac_data->pac_kdc_sig->signature.length;
 	pac_wrapped_struct.ChecksumAndSignature = payload
 		= data_blob_talloc(tmp_ctx, NULL, 
 				   pac_wrapped_struct.ChecksumLength
 				   + pac_wrapped_struct.SignatureLength);
 	memcpy(&payload.data[0], 
-	       session_info->torture->pac_srv_sig->signature.data,
+	       pac_data->pac_srv_sig->signature.data,
 	       pac_wrapped_struct.ChecksumLength);
 	memcpy(&payload.data[pac_wrapped_struct.ChecksumLength], 
-	       session_info->torture->pac_kdc_sig->signature.data,
+	       pac_data->pac_kdc_sig->signature.data,
 	       pac_wrapped_struct.SignatureLength);
 
 	ndr_err = ndr_push_struct_blob(&pac_wrapped, tmp_ctx, &pac_wrapped_struct,
@@ -237,22 +318,22 @@ static bool test_PACVerify(struct torture_context *tctx,
 							 &r.out.return_authenticator->cred), 
 		       "Credential chaining failed");
 
-	pac_wrapped_struct.ChecksumLength = session_info->torture->pac_srv_sig->signature.length;
-	pac_wrapped_struct.SignatureType = session_info->torture->pac_kdc_sig->type;
+	pac_wrapped_struct.ChecksumLength = pac_data->pac_srv_sig->signature.length;
+	pac_wrapped_struct.SignatureType = pac_data->pac_kdc_sig->type;
 	
 	/* Break the SignatureType */
 	pac_wrapped_struct.SignatureType++;
 
-	pac_wrapped_struct.SignatureLength = session_info->torture->pac_kdc_sig->signature.length;
+	pac_wrapped_struct.SignatureLength = pac_data->pac_kdc_sig->signature.length;
 	pac_wrapped_struct.ChecksumAndSignature = payload
 		= data_blob_talloc(tmp_ctx, NULL, 
 				   pac_wrapped_struct.ChecksumLength
 				   + pac_wrapped_struct.SignatureLength);
 	memcpy(&payload.data[0], 
-	       session_info->torture->pac_srv_sig->signature.data,
+	       pac_data->pac_srv_sig->signature.data,
 	       pac_wrapped_struct.ChecksumLength);
 	memcpy(&payload.data[pac_wrapped_struct.ChecksumLength], 
-	       session_info->torture->pac_kdc_sig->signature.data,
+	       pac_data->pac_kdc_sig->signature.data,
 	       pac_wrapped_struct.SignatureLength);
 	
 	ndr_err = ndr_push_struct_blob(&pac_wrapped, tmp_ctx, &pac_wrapped_struct,
@@ -285,19 +366,19 @@ static bool test_PACVerify(struct torture_context *tctx,
 	torture_assert(tctx, netlogon_creds_client_check(creds, &r.out.return_authenticator->cred), 
 		       "Credential chaining failed");
 
-	pac_wrapped_struct.ChecksumLength = session_info->torture->pac_srv_sig->signature.length;
-	pac_wrapped_struct.SignatureType = session_info->torture->pac_kdc_sig->type;
-	pac_wrapped_struct.SignatureLength = session_info->torture->pac_kdc_sig->signature.length;
+	pac_wrapped_struct.ChecksumLength = pac_data->pac_srv_sig->signature.length;
+	pac_wrapped_struct.SignatureType = pac_data->pac_kdc_sig->type;
+	pac_wrapped_struct.SignatureLength = pac_data->pac_kdc_sig->signature.length;
 
 	pac_wrapped_struct.ChecksumAndSignature = payload
 		= data_blob_talloc(tmp_ctx, NULL, 
 				   pac_wrapped_struct.ChecksumLength
 				   + pac_wrapped_struct.SignatureLength);
 	memcpy(&payload.data[0], 
-	       session_info->torture->pac_srv_sig->signature.data,
+	       pac_data->pac_srv_sig->signature.data,
 	       pac_wrapped_struct.ChecksumLength);
 	memcpy(&payload.data[pac_wrapped_struct.ChecksumLength], 
-	       session_info->torture->pac_kdc_sig->signature.data,
+	       pac_data->pac_kdc_sig->signature.data,
 	       pac_wrapped_struct.SignatureLength);
 	
 	/* Break the signature length */
@@ -407,6 +488,7 @@ static bool test_S2U4Self(struct torture_context *tctx,
 	struct gensec_security *gensec_client_context;
 	struct gensec_security *gensec_server_context;
 
+	struct auth4_context *auth_context;
 	struct auth_session_info *kinit_session_info;
 	struct auth_session_info *s2u4self_session_info;
 	struct auth_user_info_dc *netlogon_user_info_dc;
@@ -422,9 +504,14 @@ static bool test_S2U4Self(struct torture_context *tctx,
 
 	torture_assert(tctx, tmp_ctx != NULL, "talloc_new() failed");
 
+	auth_context = talloc_zero(tmp_ctx, struct auth4_context);
+	torture_assert(tctx, auth_context != NULL, "talloc_new() failed");
+
+	auth_context->generate_session_info_pac = test_generate_session_info_pac;
+
 	/* First, do a normal Kerberos connection */
 
-	status = gensec_client_start(tctx, &gensec_client_context, tctx->ev,
+	status = gensec_client_start(tctx, &gensec_client_context,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx));
 	torture_assert_ntstatus_ok(tctx, status, "gensec_client_start (client) failed");
 
@@ -436,9 +523,9 @@ static bool test_S2U4Self(struct torture_context *tctx,
 	status = gensec_start_mech_by_sasl_name(gensec_client_context, "GSSAPI");
 	torture_assert_ntstatus_ok(tctx, status, "gensec_start_mech_by_sasl_name (client) failed");
 
-	status = gensec_server_start(tctx, tctx->ev,
+	status = gensec_server_start(tctx,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx),
-				     NULL, &gensec_server_context);
+				     auth_context, &gensec_server_context);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_server_start (server) failed");
 
 	status = gensec_set_credentials(gensec_server_context, credentials);
@@ -451,12 +538,12 @@ static bool test_S2U4Self(struct torture_context *tctx,
 
 	do {
 		/* Do a client-server update dance */
-		status = gensec_update(gensec_client_context, tmp_ctx, server_to_client, &client_to_server);
+		status = gensec_update(gensec_client_context, tmp_ctx, tctx->ev, server_to_client, &client_to_server);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (client) failed");
 		}
 
-		status = gensec_update(gensec_server_context, tmp_ctx, client_to_server, &server_to_client);
+		status = gensec_update(gensec_server_context, tmp_ctx, tctx->ev, client_to_server, &server_to_client);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (server) failed");
 		}
@@ -468,7 +555,7 @@ static bool test_S2U4Self(struct torture_context *tctx,
 
 	/* Extract the PAC using Samba's code */
 
-	status = gensec_session_info(gensec_server_context, &kinit_session_info);
+	status = gensec_session_info(gensec_server_context, gensec_server_context, &kinit_session_info);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_session_info failed");
 
 
@@ -480,7 +567,7 @@ static bool test_S2U4Self(struct torture_context *tctx,
 			cli_credentials_get_principal(cmdline_credentials, tmp_ctx),
 			talloc_asprintf(tmp_ctx, "host/%s", test_machine_name));
 
-	status = gensec_client_start(tctx, &gensec_client_context, tctx->ev,
+	status = gensec_client_start(tctx, &gensec_client_context,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx));
 	torture_assert_ntstatus_ok(tctx, status, "gensec_client_start (client) failed");
 
@@ -493,9 +580,9 @@ static bool test_S2U4Self(struct torture_context *tctx,
 	status = gensec_start_mech_by_sasl_name(gensec_client_context, "GSSAPI");
 	torture_assert_ntstatus_ok(tctx, status, "gensec_start_mech_by_sasl_name (client) failed");
 
-	status = gensec_server_start(tctx, tctx->ev,
+	status = gensec_server_start(tctx,
 				     lpcfg_gensec_settings(tctx, tctx->lp_ctx),
-				     NULL, &gensec_server_context);
+				     auth_context, &gensec_server_context);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_server_start (server) failed");
 
 	status = gensec_set_credentials(gensec_server_context, credentials);
@@ -508,12 +595,12 @@ static bool test_S2U4Self(struct torture_context *tctx,
 
 	do {
 		/* Do a client-server update dance */
-		status = gensec_update(gensec_client_context, tmp_ctx, server_to_client, &client_to_server);
+		status = gensec_update(gensec_client_context, tmp_ctx, tctx->ev, server_to_client, &client_to_server);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (client) failed");
 		}
 
-		status = gensec_update(gensec_server_context, tmp_ctx, client_to_server, &server_to_client);
+		status = gensec_update(gensec_server_context, tmp_ctx, tctx->ev, client_to_server, &server_to_client);
 		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {;
 			torture_assert_ntstatus_ok(tctx, status, "gensec_update (server) failed");
 		}
@@ -530,7 +617,7 @@ static bool test_S2U4Self(struct torture_context *tctx,
 
 	/* Extract the PAC using Samba's code */
 
-	status = gensec_session_info(gensec_server_context, &s2u4self_session_info);
+	status = gensec_session_info(gensec_server_context, gensec_server_context, &s2u4self_session_info);
 	torture_assert_ntstatus_ok(tctx, status, "gensec_session_info failed");
 
 	cli_credentials_get_ntlm_username_domain(cmdline_credentials, tctx,
@@ -598,6 +685,7 @@ static bool test_S2U4Self(struct torture_context *tctx,
 						      ninfo.identity_info.account_name.string,
 						      r.in.validation_level,
 						      r.out.validation,
+							  true, /* This user was authenticated */
 						      &netlogon_user_info_dc);
 
 	torture_assert_ntstatus_ok(tctx, status, "make_user_info_dc_netlogon_validation failed");

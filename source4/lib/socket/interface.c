@@ -87,7 +87,8 @@ static void add_interface(TALLOC_CTX *mem_ctx, const struct iface_struct *ifs, s
 		return;
 	}
 
-	if (!(ifs->flags & (IFF_BROADCAST|IFF_LOOPBACK))) {
+	if (ifs->ip.ss_family == AF_INET &&
+		!(ifs->flags & (IFF_BROADCAST|IFF_LOOPBACK))) {
 		DEBUG(3,("not adding non-broadcast interface %s\n",
 					ifs->name ));
 		return;
@@ -293,7 +294,7 @@ void load_interface_list(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_ctx, s
 {
 	const char **ptr = lpcfg_interfaces(lp_ctx);
 	int i;
-	struct iface_struct *ifaces;
+	struct iface_struct *ifaces = NULL;
 	int total_probed;
 	bool enable_ipv6 = lpcfg_parm_bool(lp_ctx, NULL, "ipv6", "enable", true);
 
@@ -520,7 +521,19 @@ const char **iface_list_wildcard(TALLOC_CTX *mem_ctx, struct loadparm_context *l
 
 #ifdef HAVE_IPV6
 	if (lpcfg_parm_bool(lp_ctx, NULL, "ipv6", "enable", true)) {
-		return str_list_add(ret, "::");
+		struct interface *local_interfaces = NULL;
+
+		load_interface_list(ret, lp_ctx, &local_interfaces);
+
+		if (iface_list_first_v6(local_interfaces)) {
+			TALLOC_FREE(local_interfaces);
+			/*
+			 * only add "::" if we have at least
+			 * one ipv6 interface
+			 */
+			return str_list_add(ret, "::");
+		}
+		TALLOC_FREE(local_interfaces);
 	}
 #endif
 

@@ -28,27 +28,42 @@
 ****************************************************************************/
 static size_t cli_read_max_bufsize(struct cli_state *cli)
 {
-	size_t data_offset = smb_size - 4;
-	size_t wct = 12;
+	uint8_t wct = 12;
+	uint32_t min_space;
+	uint32_t data_offset;
+	uint32_t useable_space = 0;
 
-	size_t useable_space;
-
-	if (!client_is_signing_on(cli) && !cli_encryption_on(cli)
-	    && (cli->server_posix_capabilities & CIFS_UNIX_LARGE_READ_CAP)) {
-		return CLI_SAMBA_MAX_POSIX_LARGE_READX_SIZE;
-	}
-	if (cli->capabilities & CAP_LARGE_READX) {
-		return cli->is_samba
-			? CLI_SAMBA_MAX_LARGE_READX_SIZE
-			: CLI_WINDOWS_MAX_LARGE_READX_SIZE;
-	}
-
+	data_offset = HDR_VWV;
 	data_offset += wct * sizeof(uint16_t);
+	data_offset += sizeof(uint16_t); /* byte count */
 	data_offset += 1; /* pad */
 
-	useable_space = cli->max_xmit - data_offset;
+	min_space = cli_state_available_size(cli, data_offset);
 
-	return useable_space;
+	if (cli->server_posix_capabilities & CIFS_UNIX_LARGE_READ_CAP) {
+		useable_space = 0xFFFFFF - data_offset;
+
+		if (client_is_signing_on(cli)) {
+			return min_space;
+		}
+
+		if (cli_state_encryption_on(cli)) {
+			return min_space;
+		}
+
+		return useable_space;
+	} else if (cli_state_capabilities(cli) & CAP_LARGE_READX) {
+		/*
+		 * Note: CAP_LARGE_READX also works with signing
+		 */
+		useable_space = 0x1FFFF - data_offset;
+
+		useable_space = MIN(useable_space, UINT16_MAX);
+
+		return useable_space;
+	}
+
+	return min_space;
 }
 
 /****************************************************************************
@@ -58,35 +73,42 @@ static size_t cli_write_max_bufsize(struct cli_state *cli,
 				    uint16_t write_mode,
 				    uint8_t wct)
 {
-        if (write_mode == 0 &&
-	    !client_is_signing_on(cli) &&
-	    !cli_encryption_on(cli) &&
-	    (cli->server_posix_capabilities & CIFS_UNIX_LARGE_WRITE_CAP) &&
-	    (cli->capabilities & CAP_LARGE_FILES)) {
-		/* Only do massive writes if we can do them direct
-		 * with no signing or encrypting - not on a pipe. */
-		return CLI_SAMBA_MAX_POSIX_LARGE_WRITEX_SIZE;
+	uint32_t min_space;
+	uint32_t data_offset;
+	uint32_t useable_space = 0;
+
+	data_offset = HDR_VWV;
+	data_offset += wct * sizeof(uint16_t);
+	data_offset += sizeof(uint16_t); /* byte count */
+	data_offset += 1; /* pad */
+
+	min_space = cli_state_available_size(cli, data_offset);
+
+	if (cli->server_posix_capabilities & CIFS_UNIX_LARGE_WRITE_CAP) {
+		useable_space = 0xFFFFFF - data_offset;
+	} else if (cli_state_capabilities(cli) & CAP_LARGE_WRITEX) {
+		useable_space = 0x1FFFF - data_offset;
+	} else {
+		return min_space;
 	}
 
-	if (cli->is_samba) {
-		return CLI_SAMBA_MAX_LARGE_WRITEX_SIZE;
+	if (write_mode != 0) {
+		return min_space;
 	}
 
-	if (((cli->capabilities & CAP_LARGE_WRITEX) == 0)
-	    || client_is_signing_on(cli)
-	    || strequal(cli->dev, "LPT1:")) {
-		size_t data_offset = smb_size - 4;
-		size_t useable_space;
-
-		data_offset += wct * sizeof(uint16_t);
-		data_offset += 1; /* pad */
-
-		useable_space = cli->max_xmit - data_offset;
-
-		return useable_space;
+	if (client_is_signing_on(cli)) {
+		return min_space;
 	}
 
-	return CLI_WINDOWS_MAX_LARGE_WRITEX_SIZE;
+	if (cli_state_encryption_on(cli)) {
+		return min_space;
+	}
+
+	if (strequal(cli->dev, "LPT1:")) {
+		return min_space;
+	}
+
+	return useable_space;
 }
 
 struct cli_read_andx_state {
@@ -133,10 +155,17 @@ struct tevent_req *cli_read_andx_create(TALLOC_CTX *mem_ctx,
 	SSVAL(state->vwv + 8, 0, 0);
 	SSVAL(state->vwv + 9, 0, 0);
 
-	if ((uint64_t)offset >> 32) {
+	if (cli_state_capabilities(cli) & CAP_LARGE_FILES) {
 		SIVAL(state->vwv + 10, 0,
 		      (((uint64_t)offset)>>32) & 0xffffffff);
-		wct += 2;
+		wct = 12;
+	} else {
+		if ((((uint64_t)offset) & 0xffffffff00000000LL) != 0) {
+			DEBUG(10, ("cli_read_andx_send got large offset where "
+				   "the server does not support it\n"));
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
 	}
 
 	subreq = cli_smb_req_create(state, ev, cli, SMBreadX, 0, wct,
@@ -215,7 +244,7 @@ static void cli_read_andx_done(struct tevent_req *subreq)
 
 	state->buf = discard_const_p(uint8_t, smb_base(inbuf)) + SVAL(vwv+6, 0);
 
-	if (trans_oob(smb_len(inbuf), SVAL(vwv+6, 0), state->received)
+	if (trans_oob(smb_len_tcp(inbuf), SVAL(vwv+6, 0), state->received)
 	    || ((state->received != 0) && (state->buf < bytes))) {
 		DEBUG(5, ("server returned invalid read&x data offset\n"));
 		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
@@ -396,6 +425,7 @@ struct cli_pull_state {
 	/*
 	 * Outstanding requests
 	 */
+	uint16_t max_reqs;
 	int num_reqs;
 	struct cli_pull_subreq *reqs;
 
@@ -453,6 +483,7 @@ struct tevent_req *cli_pull_send(TALLOC_CTX *mem_ctx,
 	struct tevent_req *req;
 	struct cli_pull_state *state;
 	int i;
+	size_t page_size = 1024;
 
 	req = tevent_req_create(mem_ctx, &state, struct cli_pull_state);
 	if (req == NULL) {
@@ -478,9 +509,14 @@ struct tevent_req *cli_pull_send(TALLOC_CTX *mem_ctx,
 	}
 
 	state->chunk_size = cli_read_max_bufsize(cli);
+	if (state->chunk_size > page_size) {
+		state->chunk_size &= ~(page_size - 1);
+	}
+
+	state->max_reqs = cli_state_max_requests(cli);
 
 	state->num_reqs = MAX(window_size/state->chunk_size, 1);
-	state->num_reqs = MIN(state->num_reqs, cli->max_mux);
+	state->num_reqs = MIN(state->num_reqs, state->max_reqs);
 
 	state->reqs = talloc_zero_array(state, struct cli_pull_subreq,
 					state->num_reqs);
@@ -691,8 +727,9 @@ static NTSTATUS cli_read_sink(char *buf, size_t n, void *priv)
 	return NT_STATUS_OK;
 }
 
-ssize_t cli_read(struct cli_state *cli, uint16_t fnum, char *buf,
-		 off_t offset, size_t size)
+NTSTATUS cli_read(struct cli_state *cli, uint16_t fnum,
+		 char *buf, off_t offset, size_t size,
+		 size_t *nread)
 {
 	NTSTATUS status;
 	SMB_OFF_T ret;
@@ -700,9 +737,14 @@ ssize_t cli_read(struct cli_state *cli, uint16_t fnum, char *buf,
 	status = cli_pull(cli, fnum, offset, size, size,
 			  cli_read_sink, &buf, &ret);
 	if (!NT_STATUS_IS_OK(status)) {
-		return -1;
+		return status;
 	}
-	return ret;
+
+	if (nread) {
+		*nread = ret;
+	}
+
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
@@ -726,7 +768,8 @@ NTSTATUS cli_smbwrite(struct cli_state *cli, uint16_t fnum, char *buf,
 	bytes[0] = 1;
 
 	do {
-		size_t size = MIN(size1, cli->max_xmit - 48);
+		uint32_t usable_space = cli_state_available_size(cli, 48);
+		size_t size = MIN(size1, usable_space);
 		struct tevent_req *req;
 		uint16_t vwv[5];
 		uint16_t *ret_vwv;
@@ -797,7 +840,7 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 {
 	struct tevent_req *req, *subreq;
 	struct cli_write_andx_state *state;
-	bool bigoffset = ((cli->capabilities & CAP_LARGE_FILES) != 0);
+	bool bigoffset = ((cli_state_capabilities(cli) & CAP_LARGE_FILES) != 0);
 	uint8_t wct = bigoffset ? 14 : 12;
 	size_t max_write = cli_write_max_bufsize(cli, mode, wct);
 	uint16_t *vwv;
@@ -807,7 +850,7 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	size = MIN(size, max_write);
+	state->size = MIN(size, max_write);
 
 	vwv = state->vwv;
 
@@ -819,8 +862,8 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 	SIVAL(vwv+5, 0, 0);
 	SSVAL(vwv+7, 0, mode);
 	SSVAL(vwv+8, 0, 0);
-	SSVAL(vwv+9, 0, (size>>16));
-	SSVAL(vwv+10, 0, size);
+	SSVAL(vwv+9, 0, (state->size>>16));
+	SSVAL(vwv+10, 0, state->size);
 
 	SSVAL(vwv+11, 0,
 	      cli_smb_wct_ofs(reqs_before, num_reqs_before)
@@ -837,7 +880,7 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 	state->iov[0].iov_base = (void *)&state->pad;
 	state->iov[0].iov_len = 1;
 	state->iov[1].iov_base = discard_const_p(void, buf);
-	state->iov[1].iov_len = size;
+	state->iov[1].iov_len = state->size;
 
 	subreq = cli_smb_req_create(state, ev, cli, SMBwriteX, 0, wct, vwv,
 				    2, state->iov);
@@ -890,7 +933,18 @@ static void cli_write_andx_done(struct tevent_req *subreq)
 		return;
 	}
 	state->written = SVAL(vwv+2, 0);
-	state->written |= SVAL(vwv+4, 0)<<16;
+	if (state->size > UINT16_MAX) {
+		/*
+		 * It is important that we only set the
+		 * high bits only if we asked for a large write.
+		 *
+		 * OS/2 print shares get this wrong and may send
+		 * invalid values.
+		 *
+		 * See bug #5326.
+		 */
+		state->written |= SVAL(vwv+4, 0)<<16;
+	}
 	tevent_req_done(req);
 }
 
@@ -903,7 +957,9 @@ NTSTATUS cli_write_andx_recv(struct tevent_req *req, size_t *pwritten)
 	if (tevent_req_is_nterror(req, &status)) {
 		return status;
 	}
-	*pwritten = state->written;
+	if (pwritten != 0) {
+		*pwritten = state->written;
+	}
 	return NT_STATUS_OK;
 }
 
@@ -1071,6 +1127,7 @@ struct cli_push_state {
 	 * Outstanding requests
 	 */
 	uint32_t pending;
+	uint16_t max_reqs;
 	uint32_t num_reqs;
 	struct cli_push_write_state **reqs;
 };
@@ -1136,6 +1193,7 @@ struct tevent_req *cli_push_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
 	struct tevent_req *req;
 	struct cli_push_state *state;
 	uint32_t i;
+	size_t page_size = 1024;
 
 	req = tevent_req_create(mem_ctx, &state, struct cli_push_state);
 	if (req == NULL) {
@@ -1153,15 +1211,20 @@ struct tevent_req *cli_push_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
 	state->next_offset = start_offset;
 
 	state->chunk_size = cli_write_max_bufsize(cli, mode, 14);
+	if (state->chunk_size > page_size) {
+		state->chunk_size &= ~(page_size - 1);
+	}
+
+	state->max_reqs = cli_state_max_requests(cli);
 
 	if (window_size == 0) {
-		window_size = cli->max_mux * state->chunk_size;
+		window_size = state->max_reqs * state->chunk_size;
 	}
 	state->num_reqs = window_size/state->chunk_size;
 	if ((window_size % state->chunk_size) > 0) {
 		state->num_reqs += 1;
 	}
-	state->num_reqs = MIN(state->num_reqs, cli->max_mux);
+	state->num_reqs = MIN(state->num_reqs, state->max_reqs);
 	state->num_reqs = MAX(state->num_reqs, 1);
 
 	state->reqs = talloc_zero_array(state, struct cli_push_write_state *,

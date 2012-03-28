@@ -11,14 +11,29 @@ use FindBin qw($RealBin);
 use POSIX;
 use target::Samba;
 
+sub have_ads($) {
+        my ($self) = @_;
+	my $found_ads = 0;
+        my $smbd_build_options = Samba::bindir_path($self, "smbd") . " -b|";
+        open(IN, $smbd_build_options) or die("Unable to run $smbd_build_options: $!");
+
+        while (<IN>) {
+                if (/WITH_ADS/) {
+                       $found_ads = 1;
+                }
+        }
+	close IN;
+
+	# If we were not built with ADS support, pretend we were never even available
+	return $found_ads;
+}
+
 sub new($$) {
-	my ($classname, $bindir, $binary_mapping, $srcdir, $exeext, $server_maxtime) = @_;
-	$exeext = "" unless defined($exeext);
+	my ($classname, $bindir, $binary_mapping, $srcdir, $server_maxtime) = @_;
 	my $self = { vars => {},
 		     bindir => $bindir,
 		     binary_mapping => $binary_mapping,
 		     srcdir => $srcdir,
-		     exeext => $exeext,
 		     server_maxtime => $server_maxtime
 	};
 	bless $self;
@@ -91,10 +106,16 @@ sub setup_env($$$)
 {
 	my ($self, $envname, $path) = @_;
 	
+	if (defined($self->{vars}->{$envname})) {
+	        return $self->{vars}->{$envname};
+	}
+
 	if ($envname eq "s3dc") {
 		return $self->setup_s3dc("$path/s3dc");
 	} elsif ($envname eq "secshare") {
 		return $self->setup_secshare("$path/secshare");
+	} elsif ($envname eq "maptoguest") {
+		return $self->setup_maptoguest("$path/maptoguest");
 	} elsif ($envname eq "ktest") {
 		return $self->setup_ktest("$path/ktest");
 	} elsif ($envname eq "secserver") {
@@ -112,7 +133,7 @@ sub setup_env($$$)
 		}
 		return $self->setup_member("$path/member", $self->{vars}->{s3dc});
 	} else {
-		return undef;
+		return "UNKNOWN";
 	}
 }
 
@@ -202,6 +223,11 @@ sub setup_admember($$$$)
 {
 	my ($self, $prefix, $dcvars, $iface) = @_;
 
+	# If we didn't build with ADS, pretend this env was never available
+	if (not $self->have_ads()) {
+	        return "UNKNOWN";
+	}
+
 	print "PROVISIONING S3 AD MEMBER$iface...";
 
 	my $member_options = "
@@ -231,7 +257,7 @@ sub setup_admember($$$$)
 	$ctx->{realm} = $dcvars->{REALM};
 	$ctx->{dnsname} = lc($dcvars->{REALM});
 	$ctx->{kdc_ipv4} = $dcvars->{SERVER_IP};
-	Samba::mk_krb5_conf($ctx);
+	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
 
@@ -278,14 +304,39 @@ sub setup_plugin_s4_dc($$$$)
 	my $plugin_s4_dc_options = "
         workgroup = $dcvars->{DOMAIN}
         realm = $dcvars->{REALM}
-        security=ads
+
+        security = ads
+        domain logons = yes
         passdb backend = samba4
         auth methods = guest samba4
-        domain logons = yes
+        server signing = on
+
+        rpc_server:epmapper = disabled
+        rpc_server:rpcecho = disabled
+        rpc_server:dssetup = disabled
+        rpc_server:svctl = disabled
+        rpc_server:ntsvcs = disabled
+        rpc_server:eventlog = disabled
+        rpc_server:initshutdown = disabled
+
+        rpc_server:winreg = embedded
+        rpc_server:srvsvc = embedded
+        rpc_server:netdfs = embedded
+        rpc_server:wkssvc = embedded
+        rpc_server:spoolss = embedded
+
         rpc_server:lsarpc = external
         rpc_server:netlogon = external
         rpc_server:samr = external
-	server signing = on
+
+        rpc_daemon:epmd = disabled
+        rpc_daemon:lsasd = disabled
+        rpc_daemon:spoolssd = disabled
+
+        rpc_server:tcpip = no
+
+[IPC\$]
+	vfs objects = dfs_samba4
 ";
 
 	my $ret = $self->provision($prefix,
@@ -307,7 +358,7 @@ sub setup_plugin_s4_dc($$$$)
 	chmod 0777, "$prefix/share";
 
 	$self->check_or_start($ret,
-			      "no", "yes", "yes");
+			      "no", "no", "yes");
 
 	$self->wait_for_start($ret);
 
@@ -385,6 +436,11 @@ sub setup_ktest($$$)
 {
 	my ($self, $prefix) = @_;
 
+	# If we didn't build with ADS, pretend this env was never available
+	if (not $self->have_ads()) {
+	        return "UNKNOWN";
+	}
+
 	print "PROVISIONING server with security=ads...";
 
 	my $ktest_options = "
@@ -392,6 +448,7 @@ sub setup_ktest($$$)
         realm = ktest.samba.example.com
 	security = ads
         username map = $prefix/lib/username.map
+        server signing = required
 ";
 
 	my $ret = $self->provision($prefix,
@@ -410,7 +467,7 @@ sub setup_ktest($$$)
 	$ctx->{realm} = "KTEST.SAMBA.EXAMPLE.COM";
 	$ctx->{dnsname} = lc($ctx->{realm});
 	$ctx->{kdc_ipv4} = "0.0.0.0";
-	Samba::mk_krb5_conf($ctx);
+	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
 
@@ -424,11 +481,7 @@ $ret->{USERNAME} = KTEST\\Administrator
 #Samba4 DC with the same parameters as are being used here.  The
 #domain SID is S-1-5-21-1071277805-689288055-3486227160
 
-	if (defined($ENV{BUILD_TDB2})) {
-	    system("cp $self->{srcdir}/source3/selftest/ktest-secrets.tdb2 $prefix/private/secrets.tdb");
-	} else {
-	    system("cp $self->{srcdir}/source3/selftest/ktest-secrets.tdb $prefix/private/secrets.tdb");
-	}
+	system("cp $self->{srcdir}/source3/selftest/ktest-secrets.tdb $prefix/private/secrets.tdb");
 	chmod 0600, "$prefix/private/secrets.tdb";
 
 #This uses a pre-calculated krb5 credentials cache, obtained by running Samba4 with:
@@ -462,12 +515,47 @@ $ret->{USERNAME} = KTEST\\Administrator
 	system("cp $self->{srcdir}/source3/selftest/ktest-krb5_ccache-3 $prefix/krb5_ccache-3");
 	chmod 0600, "$prefix/krb5_ccache-3";
 
+	# We need world access to this share, as otherwise the domain
+	# administrator from the AD domain provided by ktest can't
+	# access the share for tests.
+	chmod 0777, "$prefix/share";
+
 	$self->check_or_start($ret, "yes", "no", "yes");
 
 	if (not $self->wait_for_start($ret)) {
 	       return undef;
 	}
 	return $ret;
+}
+
+sub setup_maptoguest($$)
+{
+	my ($self, $path) = @_;
+
+	print "PROVISIONING maptoguest...";
+
+	my $options = "
+map to guest = bad user
+";
+
+	my $vars = $self->provision($path,
+				    "maptoguest",
+				    7,
+				    "maptoguestpass",
+				    $options);
+
+	$vars or return undef;
+
+	$self->check_or_start($vars,
+			       "yes", "no", "yes");
+
+	if (not $self->wait_for_start($vars)) {
+	       return undef;
+	}
+
+	$self->{vars}->{s3maptoguest} = $vars;
+
+	return $vars;
 }
 
 sub stop_sig_term($$) {
@@ -499,7 +587,7 @@ sub read_pid($$)
 	return $pid;
 }
 
-sub check_or_start($$$$) {
+sub check_or_start($$$$$) {
 	my ($self, $env_vars, $nmbd, $winbindd, $smbd) = @_;
 
 	unlink($env_vars->{NMBD_TEST_LOG});
@@ -518,6 +606,8 @@ sub check_or_start($$$$) {
 		$ENV{NSS_WRAPPER_PASSWD} = $env_vars->{NSS_WRAPPER_PASSWD};
 		$ENV{NSS_WRAPPER_GROUP} = $env_vars->{NSS_WRAPPER_GROUP};
 		$ENV{NSS_WRAPPER_WINBIND_SO_PATH} = $env_vars->{NSS_WRAPPER_WINBIND_SO_PATH};
+
+		$ENV{UID_WRAPPER} = "1";
 
 		if ($nmbd ne "yes") {
 			$SIG{USR1} = $SIG{ALRM} = $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = sub {
@@ -563,6 +653,8 @@ sub check_or_start($$$$) {
 		$ENV{NSS_WRAPPER_GROUP} = $env_vars->{NSS_WRAPPER_GROUP};
 		$ENV{NSS_WRAPPER_WINBIND_SO_PATH} = $env_vars->{NSS_WRAPPER_WINBIND_SO_PATH};
 
+		$ENV{UID_WRAPPER} = "1";
+
 		if ($winbindd ne "yes") {
 			$SIG{USR1} = $SIG{ALRM} = $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = sub {
 				my $signame = shift;
@@ -585,7 +677,7 @@ sub check_or_start($$$$) {
 			@preargs = split(/ /, $ENV{WINBINDD_VALGRIND});
 		}
 
-		print "Starting winbindd with config $env_vars->{SERVERCONFFILE})\n";
+		print "Starting winbindd with config $env_vars->{SERVERCONFFILE}\n";
 
 		exec(@preargs, Samba::bindir_path($self, "winbindd"), "-F", "--no-process-group", "--stdout", "-s", $env_vars->{SERVERCONFFILE}, @optargs) or die("Unable to start winbindd: $!");
 	}
@@ -608,6 +700,8 @@ sub check_or_start($$$$) {
 		$ENV{NSS_WRAPPER_PASSWD} = $env_vars->{NSS_WRAPPER_PASSWD};
 		$ENV{NSS_WRAPPER_GROUP} = $env_vars->{NSS_WRAPPER_GROUP};
 		$ENV{NSS_WRAPPER_WINBIND_SO_PATH} = $env_vars->{NSS_WRAPPER_WINBIND_SO_PATH};
+
+		$ENV{UID_WRAPPER} = "1";
 
 		if ($smbd ne "yes") {
 			$SIG{USR1} = $SIG{ALRM} = $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = sub {
@@ -853,6 +947,7 @@ sub provision($$$$$$$)
 	map readonly = no
 	store dos attributes = yes
 	create mask = 755
+	dos filemode = yes
 	vfs objects = $vfs_modulesdir_abs/xattr_tdb.so $vfs_modulesdir_abs/streams_depot.so
 
 	printing = vlp
@@ -866,10 +961,21 @@ sub provision($$$$$$$)
 	lpq cache time = 0
 
 	ncalrpc dir = $prefix_abs/ncalrpc
-	rpc_server:epmapper = embedded
+	rpc_server:epmapper = external
+	rpc_server:spoolss = external
+	rpc_server:lsarpc = external
+	rpc_server:samr = external
+	rpc_server:netlogon = external
+	rpc_server:tcpip = yes
+
+	rpc_daemon:epmd = fork
+	rpc_daemon:spoolssd = fork
+	rpc_daemon:lsasd = fork
 
         resolv:host file = $dns_host_file
 
+        # The samba3.blackbox.smbclient_s3 test uses this to test that
+        # sending messages works, and that the %m sub works.
         message command = mv %s $shrdir/message.%m
 
 	# Begin extra options
@@ -886,6 +992,7 @@ sub provision($$$$$$$)
 	print CONF "
 [tmp]
 	path = $shrdir
+        comment = smb username is [%U]
 [tmpguest]
 	path = $shrdir
         guest ok = yes
@@ -927,6 +1034,11 @@ sub provision($$$$$$$)
 	copy = print1
 [lp]
 	copy = print1
+[xcopy_share]
+	path = $shrdir
+	comment = smb username is [%U]
+	create mask = 777
+	force create mode = 777
 [print\$]
 	copy = tmp
 	";

@@ -113,20 +113,20 @@ static enum drsuapi_DsNameStatus LDB_lookup_spn_alias(krb5_context context, stru
 			 directory_attrs, "(objectClass=nTDSService)");
 
 	if (ret != LDB_SUCCESS && ret != LDB_ERR_NO_SUCH_OBJECT) {
-		DEBUG(1, ("ldb_search: dn: %s not found: %s", service_dn_str, ldb_errstring(ldb_ctx)));
+		DEBUG(1, ("ldb_search: dn: %s not found: %s\n", service_dn_str, ldb_errstring(ldb_ctx)));
 		return DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 	} else if (ret == LDB_ERR_NO_SUCH_OBJECT) {
-		DEBUG(1, ("ldb_search: dn: %s not found", service_dn_str));
+		DEBUG(1, ("ldb_search: dn: %s not found\n", service_dn_str));
 		return DRSUAPI_DS_NAME_STATUS_NOT_FOUND;
 	} else if (res->count != 1) {
 		talloc_free(res);
-		DEBUG(1, ("ldb_search: dn: %s not found", service_dn_str));
+		DEBUG(1, ("ldb_search: dn: %s not found\n", service_dn_str));
 		return DRSUAPI_DS_NAME_STATUS_NOT_FOUND;
 	}
 
 	spnmappings = ldb_msg_find_element(res->msgs[0], "sPNMappings");
 	if (!spnmappings || spnmappings->num_values == 0) {
-		DEBUG(1, ("ldb_search: dn: %s no sPNMappings attribute", service_dn_str));
+		DEBUG(1, ("ldb_search: dn: %s no sPNMappings attribute\n", service_dn_str));
 		talloc_free(tmp_ctx);
 		return DRSUAPI_DS_NAME_STATUS_NOT_FOUND;
 	}
@@ -195,7 +195,7 @@ static WERROR DsCrackNameSPNAlias(struct ldb_context *sam_ctx, TALLOC_CTX *mem_c
 	ret = krb5_parse_name_flags(smb_krb5_context->krb5_context, 
 				    name, KRB5_PRINCIPAL_PARSE_NO_REALM, &principal);
 	if (ret) {
-		DEBUG(2, ("Could not parse principal: %s: %s",
+		DEBUG(2, ("Could not parse principal: %s: %s\n",
 			  name, smb_get_krb5_error_message(smb_krb5_context->krb5_context, 
 							   ret, mem_ctx)));
 		return WERR_NOMEM;
@@ -299,15 +299,17 @@ static WERROR DsCrackNameUPN(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 					 principal);
 
 	ldb_ret = ldb_search(sam_ctx, mem_ctx, &domain_res,
-				     samdb_partitions_dn(sam_ctx, mem_ctx), 
-				     LDB_SCOPE_ONELEVEL,
-				     domain_attrs,
-				     "(&(&(|(&(dnsRoot=%s)(nETBIOSName=*))(nETBIOSName=%s))(objectclass=crossRef))(ncName=*))",
-				     ldb_binary_encode_string(mem_ctx, realm), 
-				     ldb_binary_encode_string(mem_ctx, realm));
+			     samdb_partitions_dn(sam_ctx, mem_ctx),
+			     LDB_SCOPE_ONELEVEL,
+			     domain_attrs,
+			     "(&(objectClass=crossRef)(|(dnsRoot=%s)(netbiosName=%s))(systemFlags:%s:=%u))",
+			     ldb_binary_encode_string(mem_ctx, realm),
+			     ldb_binary_encode_string(mem_ctx, realm),
+			     LDB_OID_COMPARATOR_AND,
+			     SYSTEM_FLAG_CR_NTDS_DOMAIN);
 
 	if (ldb_ret != LDB_SUCCESS) {
-		DEBUG(2, ("DsCrackNameUPN domain ref search failed: %s", ldb_errstring(sam_ctx)));
+		DEBUG(2, ("DsCrackNameUPN domain ref search failed: %s\n", ldb_errstring(sam_ctx)));
 		info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 		krb5_free_principal(smb_krb5_context->krb5_context, principal);
 		return WERR_OK;
@@ -440,8 +442,10 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 		s[0] = '\0';
 		s++;
 
-		domain_filter = talloc_asprintf(mem_ctx, "(&(objectClass=crossRef)(ncName=%s))", 
-						ldb_dn_get_linearized(samdb_dns_domain_to_dn(sam_ctx, mem_ctx, str)));
+		domain_filter = talloc_asprintf(mem_ctx, "(&(objectClass=crossRef)(dnsRoot=%s)(systemFlags:%s:=%u))",
+						ldb_binary_encode_string(mem_ctx, str),
+						LDB_OID_COMPARATOR_AND,
+						SYSTEM_FLAG_CR_NTDS_DOMAIN);
 		W_ERROR_HAVE_NO_MEMORY(domain_filter);
 
 		/* There may not be anything after the domain component (search for the domain itself) */
@@ -464,7 +468,6 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	case DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT: {
 		char *p;
 		char *domain;
-		struct ldb_dn *dn_domain;
 		const char *account = NULL;
 
 		domain = talloc_strdup(mem_ctx, name);
@@ -482,14 +485,12 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 			account = &p[1];
 		}
 
-		/* it could be in DNS domain form */
-		dn_domain = samdb_dns_domain_to_dn(sam_ctx, mem_ctx, domain);
-		W_ERROR_HAVE_NO_MEMORY(dn_domain);
-
 		domain_filter = talloc_asprintf(mem_ctx, 
-						"(&(&(|(nETBIOSName=%s)(nCName=%s))(objectclass=crossRef))(ncName=*))",
+						"(&(objectClass=crossRef)(|(dnsRoot=%s)(netbiosName=%s))(systemFlags:%s:=%u))",
 						ldb_binary_encode_string(mem_ctx, domain),
-						ldb_dn_get_linearized(dn_domain));
+						ldb_binary_encode_string(mem_ctx, domain),
+						LDB_OID_COMPARATOR_AND,
+						SYSTEM_FLAG_CR_NTDS_DOMAIN);
 		W_ERROR_HAVE_NO_MEMORY(domain_filter);
 		if (account) {
 			result_filter = talloc_asprintf(mem_ctx, "(sAMAccountName=%s)",
@@ -802,7 +803,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 					     "%s", domain_filter);
 
 		if (ldb_ret != LDB_SUCCESS) {
-			DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s", ldb_errstring(sam_ctx)));
+			DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s\n", ldb_errstring(sam_ctx)));
 			info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 			return WERR_OK;
 		}
@@ -837,7 +838,10 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 			search_dn = samdb_result_dn(sam_ctx, mem_ctx, domain_res->msgs[0], "ncName", NULL);
 		} else {
 			dsdb_flags = DSDB_SEARCH_SEARCH_ALL_PARTITIONS;
-			search_dn = ldb_get_root_basedn(sam_ctx);
+			search_dn = NULL;
+		}
+		if (format_desired == DRSUAPI_DS_NAME_FORMAT_GUID){
+			 dsdb_flags = dsdb_flags| DSDB_SEARCH_SHOW_DELETED;
 		}
 
 		/* search with the 'phantom root' flag */
@@ -845,10 +849,10 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 				  search_dn,
 				  LDB_SCOPE_SUBTREE,
 				  result_attrs,
-				  DSDB_SEARCH_SEARCH_ALL_PARTITIONS,
+				  dsdb_flags,
 				  "%s", result_filter);
 		if (ret != LDB_SUCCESS) {
-			DEBUG(2, ("DsCrackNameOneFilter phantom root search failed: %s",
+			DEBUG(2, ("DsCrackNameOneFilter phantom root search failed: %s\n",
 				  ldb_errstring(sam_ctx)));
 			info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 			return WERR_OK;
@@ -865,7 +869,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 					  result_attrs);
 	} else {
 		/* Can't happen */
-		DEBUG(0, ("LOGIC ERROR: DsCrackNameOneFilter domain ref search not available: This can't happen..."));
+		DEBUG(0, ("LOGIC ERROR: DsCrackNameOneFilter domain ref search not available: This can't happen...\n"));
 		info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 		return WERR_OK;
 	}
@@ -892,7 +896,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 		info1->status = DRSUAPI_DS_NAME_STATUS_NOT_FOUND;
 		return WERR_OK;
 	case -1:
-		DEBUG(2, ("DsCrackNameOneFilter result search failed: %s", ldb_errstring(sam_ctx)));
+		DEBUG(2, ("DsCrackNameOneFilter result search failed: %s\n", ldb_errstring(sam_ctx)));
 		info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 		return WERR_OK;
 	default:
@@ -971,7 +975,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 						     "(ncName=%s)", ldb_dn_get_linearized(result->dn));
 
 			if (ldb_ret != LDB_SUCCESS) {
-				DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s", ldb_errstring(sam_ctx)));
+				DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s\n", ldb_errstring(sam_ctx)));
 				info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 				return WERR_OK;
 			}
@@ -1012,7 +1016,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 							     ldap_encode_ndr_dom_sid(mem_ctx, dom_sid));
 
 				if (ldb_ret != LDB_SUCCESS) {
-					DEBUG(2, ("DsCrackNameOneFilter domain search failed: %s", ldb_errstring(sam_ctx)));
+					DEBUG(2, ("DsCrackNameOneFilter domain search failed: %s\n", ldb_errstring(sam_ctx)));
 					info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 					return WERR_OK;
 				}
@@ -1035,7 +1039,7 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 							     "(ncName=%s)", ldb_dn_get_linearized(domain_res->msgs[0]->dn));
 
 				if (ldb_ret != LDB_SUCCESS) {
-					DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s", ldb_errstring(sam_ctx)));
+					DEBUG(2, ("DsCrackNameOneFilter domain ref search failed: %s\n", ldb_errstring(sam_ctx)));
 					info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 					return WERR_OK;
 				}
@@ -1345,7 +1349,7 @@ WERROR dcesrv_drsuapi_ListRoles(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx
 		names[i].dns_domain_name = samdb_dn_to_dnshostname(sam_ctx, mem_ctx,
 								   server_dn);
 		if(!names[i].dns_domain_name) {
-			DEBUG(4, ("list_roles: Failed to find dNSHostName for server %s",
+			DEBUG(4, ("list_roles: Failed to find dNSHostName for server %s\n",
 				  ldb_dn_get_linearized(server_dn)));
 		}
 		names[i].result_name = talloc_strdup(mem_ctx, ldb_dn_get_linearized(role_owner_dn));

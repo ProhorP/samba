@@ -38,17 +38,37 @@ enum TDB_ERROR tdb_transaction_start_nonblock(struct tdb_context *tdb)
 	return ecode;
 }
 
+/* For TDB1 tdbs, read traverse vs normal matters: write traverse
+   locks the entire thing! */
+int64_t tdb_traverse_read_(struct tdb_context *tdb,
+			   int (*fn)(struct tdb_context *,
+						       TDB_DATA, TDB_DATA,
+						       void *),
+			   void *p)
+{
+	int64_t ret;
+
+	if (tdb_get_flags(tdb) & TDB_RDONLY) {
+		return tdb_traverse(tdb, fn, p);
+	}
+
+	tdb_add_flag(tdb, TDB_RDONLY);
+	ret = tdb_traverse(tdb, fn, p);
+	tdb_remove_flag(tdb, TDB_RDONLY);
+	return ret;
+}
+
 /*
  * This handles TDB_CLEAR_IF_FIRST.
  */
 static enum TDB_ERROR clear_if_first(int fd, void *unused)
 {
-	/* We hold a lock offset 63 always, so we can tell if anyone else is. */
+	/* We hold a lock offset 4 always, so we can tell if anyone else is. */
 	struct flock fl;
 
 	fl.l_type = F_WRLCK;
 	fl.l_whence = SEEK_SET;
-	fl.l_start = 63;
+	fl.l_start = 4; /* ACTIVE_LOCK */
 	fl.l_len = 1;
 
 	if (fcntl(fd, F_SETLK, &fl) == 0) {
@@ -65,15 +85,20 @@ static enum TDB_ERROR clear_if_first(int fd, void *unused)
 }
 
 struct tdb_context *
-tdb_open_compat_(const char *name, int hash_size_unused,
+tdb_open_compat_(const char *name, int hash_size,
 		 int tdb_flags, int open_flags, mode_t mode,
 		 void (*log_fn)(struct tdb_context *,
 				enum tdb_log_level,
+				enum TDB_ERROR,
 				const char *message,
 				void *data),
 		 void *log_data)
 {
-	union tdb_attribute cif, log, *attr = NULL;
+	union tdb_attribute cif, log, hash, max_dead, hsize, *attr = NULL;
+
+	if (!getenv("TDB_COMPAT_USE_TDB2")) {
+		tdb_flags |= TDB_VERSION1;
+	}
 
 	if (log_fn) {
 		log.log.base.attr = TDB_ATTRIBUTE_LOG;
@@ -91,6 +116,33 @@ tdb_open_compat_(const char *name, int hash_size_unused,
 		tdb_flags &= ~TDB_CLEAR_IF_FIRST;
 	}
 
+	if (tdb_flags & TDB_INCOMPATIBLE_HASH) {
+		if (tdb_flags & TDB_VERSION1) {
+			hash.hash.base.attr = TDB_ATTRIBUTE_HASH;
+			hash.hash.base.next = attr;
+			hash.hash.fn = tdb1_incompatible_hash;
+			attr = &hash;
+		}
+		tdb_flags &= ~TDB_INCOMPATIBLE_HASH;
+	}
+
+	if (tdb_flags & TDB_VOLATILE) {
+		if (tdb_flags & TDB_VERSION1) {
+			max_dead.base.attr = TDB_ATTRIBUTE_TDB1_MAX_DEAD;
+			max_dead.base.next = attr;
+			max_dead.tdb1_max_dead.max_dead = 5;
+			attr = &max_dead;
+		}
+		tdb_flags &= ~TDB_VOLATILE;
+	}
+
+	if (hash_size && (tdb_flags & TDB_VERSION1) && (open_flags & O_CREAT)) {
+		hsize.base.attr = TDB_ATTRIBUTE_TDB1_HASHSIZE;
+		hsize.base.next = attr;
+		hsize.tdb1_hashsize.hsize = hash_size;
+		attr = &hsize;
+	}
+
 	/* Testsuite uses this to speed things up. */
 	if (getenv("TDB_NO_FSYNC")) {
 		tdb_flags |= TDB_NOSYNC;
@@ -98,5 +150,51 @@ tdb_open_compat_(const char *name, int hash_size_unused,
 
 	return tdb_open(name, tdb_flags|TDB_ALLOW_NESTING, open_flags, mode,
 			attr);
+}
+
+/* We only need these for the CLEAR_IF_FIRST lock. */
+static int reacquire_cif_lock(struct tdb_context *tdb, bool *fail)
+{
+	struct flock fl;
+	union tdb_attribute cif;
+
+	cif.openhook.base.attr = TDB_ATTRIBUTE_OPENHOOK;
+	cif.openhook.base.next = NULL;
+
+	if (tdb_get_attribute(tdb, &cif) != TDB_SUCCESS
+	    || cif.openhook.fn != clear_if_first) {
+		return 0;
+	}
+
+	/* We hold a lock offset 4 always, so we can tell if anyone else is. */
+	fl.l_type = F_RDLCK;
+	fl.l_whence = SEEK_SET;
+	fl.l_start = 4; /* ACTIVE_LOCK */
+	fl.l_len = 1;
+	if (fcntl(tdb_fd(tdb), F_SETLKW, &fl) != 0) {
+		*fail = true;
+		return -1;
+	}
+	return 0;
+}
+
+int tdb_reopen(struct tdb_context *tdb)
+{
+	bool unused;
+	return reacquire_cif_lock(tdb, &unused);
+}
+
+int tdb_reopen_all(int parent_longlived)
+{
+	bool fail = false;
+
+	if (parent_longlived) {
+		return 0;
+	}
+
+	tdb_foreach(reacquire_cif_lock, &fail);
+	if (fail)
+		return -1;
+	return 0;
 }
 #endif

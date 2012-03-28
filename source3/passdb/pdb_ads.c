@@ -798,16 +798,14 @@ static NTSTATUS pdb_ads_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 	if (str == NULL) {
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
-	fstrcpy(map->nt_name, str);
-	TALLOC_FREE(str);
+	map->nt_name = talloc_move(map, &str);
 
 	str = tldap_talloc_single_attribute(group[0], "description",
 					    talloc_tos());
 	if (str != NULL) {
-		fstrcpy(map->comment, str);
-		TALLOC_FREE(str);
+		map->comment = talloc_move(map, &str);
 	} else {
-		map->comment[0] = '\0';
+		map->comment = talloc_strdup(map, "");
 	}
 
 	if (pmsg != NULL) {
@@ -1017,7 +1015,7 @@ static NTSTATUS pdb_ads_update_group_mapping_entry(struct pdb_methods *m,
 	char *filter;
 	struct tldap_message *existing;
 	char *dn;
-	GROUP_MAP existing_map;
+	GROUP_MAP *existing_map;
 	int rc, num_mods = 0;
 	bool ret;
 	NTSTATUS status;
@@ -1033,8 +1031,15 @@ static NTSTATUS pdb_ads_update_group_mapping_entry(struct pdb_methods *m,
 	if (filter == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
-	status = pdb_ads_getgrfilter(m, &existing_map, filter,
+
+	existing_map = talloc_zero(talloc_tos(), GROUP_MAP);
+	if (!existing_map) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	status = pdb_ads_getgrfilter(m, existing_map, filter,
 				     talloc_tos(), &existing);
+	TALLOC_FREE(existing_map);
 	TALLOC_FREE(filter);
 
 	if (!tldap_entry_dn(existing, &dn)) {
@@ -1079,7 +1084,7 @@ static NTSTATUS pdb_ads_delete_group_mapping_entry(struct pdb_methods *m,
 static NTSTATUS pdb_ads_enum_group_mapping(struct pdb_methods *m,
 					   const struct dom_sid *sid,
 					   enum lsa_SidType sid_name_use,
-					   GROUP_MAP **pp_rmap,
+					   GROUP_MAP ***pp_rmap,
 					   size_t *p_num_entries,
 					   bool unix_only)
 {
@@ -2199,7 +2204,7 @@ static bool pdb_ads_gid_to_sid(struct pdb_methods *m, gid_t gid,
 }
 
 static bool pdb_ads_sid_to_id(struct pdb_methods *m, const struct dom_sid *sid,
-			      union unid_t *id, enum lsa_SidType *type)
+			      uid_t *uid, gid_t *gid, enum lsa_SidType *type)
 {
 	struct pdb_ads_state *state = talloc_get_type_abort(
 		m->private_data, struct pdb_ads_state);
@@ -2210,6 +2215,9 @@ static bool pdb_ads_sid_to_id(struct pdb_methods *m, const struct dom_sid *sid,
 	uint32_t atype;
 	int rc;
 	bool ret = false;
+
+	*uid = -1;
+	*gid = -1;
 
 	sidstr = sid_binstring_hex(sid);
 	if (sidstr == NULL) {
@@ -2239,21 +2247,17 @@ static bool pdb_ads_sid_to_id(struct pdb_methods *m, const struct dom_sid *sid,
 		goto fail;
 	}
 	if (atype == ATYPE_ACCOUNT) {
-		uint32_t uid;
 		*type = SID_NAME_USER;
-		if (!tldap_pull_uint32(msg[0], "uidNumber", &uid)) {
+		if (!tldap_pull_uint32(msg[0], "uidNumber", uid)) {
 			DEBUG(10, ("Did not find uidNumber\n"));
 			goto fail;
 		}
-		id->uid = uid;
 	} else {
-		uint32_t gid;
 		*type = SID_NAME_DOM_GRP;
-		if (!tldap_pull_uint32(msg[0], "gidNumber", &gid)) {
+		if (!tldap_pull_uint32(msg[0], "gidNumber", gid)) {
 			DEBUG(10, ("Did not find gidNumber\n"));
 			goto fail;
 		}
-		id->gid = gid;
 	}
 	ret = true;
 fail:
@@ -2590,6 +2594,42 @@ done:
 	return status;
 }
 
+static NTSTATUS pdb_ads_init_secrets(struct pdb_methods *m)
+{
+#if _SAMBA_BUILD_ == 4
+	struct pdb_domain_info *dom_info;
+	bool ret;
+
+	dom_info = pdb_ads_get_domain_info(m, m);
+	if (!dom_info) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+
+	secrets_clear_domain_protection(dom_info->name);
+	ret = secrets_store_domain_sid(dom_info->name,
+				       &dom_info->sid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_store_domain_guid(dom_info->name,
+				        &dom_info->guid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_mark_domain_protected(dom_info->name);
+	if (!ret) {
+		goto done;
+	}
+
+done:
+	TALLOC_FREE(dom_info);
+	if (!ret) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+#endif
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS pdb_init_ads(struct pdb_methods **pdb_method,
 			     const char *location)
 {
@@ -2622,6 +2662,12 @@ static NTSTATUS pdb_init_ads(struct pdb_methods **pdb_method,
 	status = pdb_ads_connect(state, location);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("pdb_ads_connect failed: %s\n", nt_errstr(status)));
+		goto fail;
+	}
+
+	status = pdb_ads_init_secrets(m);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("pdb_ads_init_secrets failed!\n"));
 		goto fail;
 	}
 

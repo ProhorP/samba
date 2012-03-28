@@ -79,7 +79,7 @@ static bool reload_services_file(const char *lfile)
 	}
 
 	reopen_logs();
-	ret = lp_load(get_dyn_CONFIGFILE(),False,False,True,True);
+	ret = lp_load_global(get_dyn_CONFIGFILE());
 
 	reopen_logs();
 	load_interfaces();
@@ -957,6 +957,7 @@ static bool winbindd_setup_listeners(void)
 	struct winbindd_listen_state *pub_state = NULL;
 	struct winbindd_listen_state *priv_state = NULL;
 	struct tevent_fd *fde;
+	int rc;
 
 	pub_state = talloc(winbind_event_context(),
 			   struct winbindd_listen_state);
@@ -968,6 +969,10 @@ static bool winbindd_setup_listeners(void)
 	pub_state->fd = create_pipe_sock(
 		get_winbind_pipe_dir(), WINBINDD_SOCKET_NAME, 0755);
 	if (pub_state->fd == -1) {
+		goto failed;
+	}
+	rc = listen(pub_state->fd, 5);
+	if (rc < 0) {
 		goto failed;
 	}
 
@@ -990,6 +995,10 @@ static bool winbindd_setup_listeners(void)
 	priv_state->fd = create_pipe_sock(
 		get_winbind_priv_pipe_dir(), WINBINDD_SOCKET_NAME, 0750);
 	if (priv_state->fd == -1) {
+		goto failed;
+	}
+	rc = listen(priv_state->fd, 5);
+	if (rc < 0) {
 		goto failed;
 	}
 
@@ -1045,7 +1054,9 @@ void winbindd_register_handlers(void)
 	/* get broadcast messages */
 
 	if (!serverid_register(procid_self(),
-			       FLAG_MSG_GENERAL|FLAG_MSG_DBWRAP)) {
+			       FLAG_MSG_GENERAL |
+			       FLAG_MSG_WINBIND |
+			       FLAG_MSG_DBWRAP)) {
 		DEBUG(1, ("Could not register myself in serverid.tdb\n"));
 		exit(1);
 	}
@@ -1232,6 +1243,8 @@ int main(int argc, char **argv, char **envp)
 	talloc_enable_null_tracking();
 	frame = talloc_stackframe();
 
+	setup_logging("winbindd", DEBUG_DEFAULT_STDOUT);
+
 	/* glibc (?) likes to print "User defined signal 1" and exit if a
 	   SIGUSR[12] is received before a handler is installed */
 
@@ -1316,6 +1329,7 @@ int main(int argc, char **argv, char **envp)
 			SAFE_FREE(lfile);
 		}
 	}
+
 	if (log_stdout) {
 		setup_logging("winbindd", DEBUG_STDOUT);
 	} else {
@@ -1393,7 +1407,7 @@ int main(int argc, char **argv, char **envp)
 
 	status = reinit_after_fork(winbind_messaging_context(),
 				   winbind_event_context(),
-				   procid_self(), false);
+				   false);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		exit(1);

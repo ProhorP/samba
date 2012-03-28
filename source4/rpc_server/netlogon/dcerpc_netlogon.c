@@ -270,7 +270,7 @@ static NTSTATUS dcesrv_netr_ServerAuthenticate3(struct dcesrv_call_state *dce_ca
 	creds->sid = samdb_result_dom_sid(creds, msgs[0], "objectSid");
 
 	nt_status = schannel_save_creds_state(mem_ctx,
-					      lpcfg_private_dir(dce_call->conn->dce_ctx->lp_ctx),
+					      dce_call->conn->dce_ctx->lp_ctx,
 					      creds);
 
 	return nt_status;
@@ -382,7 +382,7 @@ static NTSTATUS dcesrv_netr_creds_server_step_check(struct dcesrv_call_state *dc
 	}
 
 	nt_status = schannel_check_creds_state(mem_ctx,
-					       lpcfg_private_dir(dce_call->conn->dce_ctx->lp_ctx),
+					       dce_call->conn->dce_ctx->lp_ctx,
 					       computer_name,
 					       received_authenticator,
 					       return_authenticator,
@@ -839,7 +839,7 @@ static NTSTATUS dcesrv_netr_LogonSamLogonEx(struct dcesrv_call_state *dce_call, 
 	}
 
 	nt_status = schannel_get_creds_state(mem_ctx,
-					     lpcfg_private_dir(dce_call->conn->dce_ctx->lp_ctx),
+					     dce_call->conn->dce_ctx->lp_ctx,
 					     r->in.computer_name, &creds);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		return nt_status;
@@ -1056,7 +1056,7 @@ static WERROR dcesrv_netr_GetDcName(struct dcesrv_call_state *dce_call, TALLOC_C
 	domain_dn = samdb_domain_to_dn(sam_ctx, mem_ctx,
 				       r->in.domainname);
 	if (domain_dn == NULL) {
-		return WERR_DS_UNAVAILABLE;
+		return WERR_NO_SUCH_DOMAIN;
 	}
 
 	ret = gendb_search_dn(sam_ctx, mem_ctx,
@@ -1296,6 +1296,11 @@ static WERROR dcesrv_netr_DsRGetSiteName(struct dcesrv_call_state *dce_call, TAL
 		return WERR_DS_UNAVAILABLE;
 	}
 
+	/*
+	 * We assume to be a DC when we get called over NETLOGON. Hence we
+	 * get our site name always by using "samdb_server_site_name()"
+	 * and not "samdb_client_site_name()".
+	 */
 	*r->out.site = samdb_server_site_name(sam_ctx, mem_ctx);
 	W_ERROR_HAVE_NO_MEMORY(*r->out.site);
 
@@ -1791,9 +1796,23 @@ static WERROR dcesrv_netr_DsRGetDCNameEx2(struct dcesrv_call_state *dce_call,
 		return ntstatus_to_werror(status);
 	}
 
+	/*
+	 * According to MS-NRPC 2.2.1.2.1 we should set the "DS_DNS_FOREST_ROOT"
+	 * (O) flag when the returned forest name is in DNS format. This is here
+	 * always the case (see below).
+	 */
+	response.data.nt5_ex.server_type |= DS_DNS_FOREST_ROOT;
+
 	if (r->in.flags & DS_RETURN_DNS_NAME) {
 		dc_name = response.data.nt5_ex.pdc_dns_name;
 		domain_name = response.data.nt5_ex.dns_domain;
+		/*
+		 * According to MS-NRPC 2.2.1.2.1 we should set the
+		 * "DS_DNS_CONTROLLER" (M) and "DS_DNS_DOMAIN" (N) flags when
+		 * the returned information is in DNS form.
+		 */
+		response.data.nt5_ex.server_type |=
+			DS_DNS_CONTROLLER | DS_DNS_DOMAIN;
 	} else if (r->in.flags & DS_RETURN_FLAT_NAME) {
 		dc_name = response.data.nt5_ex.pdc_name;
 		domain_name = response.data.nt5_ex.domain_name;

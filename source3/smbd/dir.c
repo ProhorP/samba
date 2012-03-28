@@ -23,6 +23,7 @@
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "libcli/security/security.h"
+#include "lib/util/bitmap.h"
 
 /*
    This module implements directory related functions for Samba.
@@ -200,7 +201,7 @@ static struct dptr_struct *dptr_get(struct smbd_server_connection *sconn,
 					      dptr->wcard, dptr->attr))) {
 					DEBUG(4,("dptr_get: Failed to open %s (%s)\n",dptr->path,
 						strerror(errno)));
-					return False;
+					return NULL;
 				}
 			}
 			DLIST_PROMOTE(sconn->searches.dirptrs,dptr);
@@ -260,6 +261,10 @@ static void dptr_close_internal(struct dptr_struct *dptr)
 		goto done;
 	}
 
+	if (sconn->using_smb2) {
+		goto done;
+	}
+
 	DLIST_REMOVE(sconn->searches.dirptrs, dptr);
 
 	/*
@@ -279,7 +284,7 @@ done:
 
 	/* Lanman 2 specific code */
 	SAFE_FREE(dptr->wcard);
-	string_set(&dptr->path,"");
+	SAFE_FREE(dptr->path);
 	SAFE_FREE(dptr);
 }
 
@@ -426,7 +431,6 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 	struct smbd_server_connection *sconn = conn->sconn;
 	struct dptr_struct *dptr = NULL;
 	struct smb_Dir *dir_hnd;
-	NTSTATUS status;
 
 	if (fsp && fsp->is_directory && fsp->fh->fd != -1) {
 		path = fsp->fsp_name->base_name;
@@ -444,9 +448,38 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 	}
 
 	if (fsp) {
+		if (!(fsp->access_mask & SEC_DIR_LIST)) {
+			DEBUG(5,("dptr_create: directory %s "
+				"not open for LIST access\n",
+				path));
+			return NT_STATUS_ACCESS_DENIED;
+		}
 		dir_hnd = OpenDir_fsp(NULL, conn, fsp, wcard, attr);
 	} else {
-		status = check_name(conn,path);
+		int ret;
+		struct smb_filename *smb_dname = NULL;
+		NTSTATUS status = create_synthetic_smb_fname(talloc_tos(),
+						path,
+						NULL,
+						NULL,
+						&smb_dname);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+		if (lp_posix_pathnames()) {
+			ret = SMB_VFS_LSTAT(conn, smb_dname);
+		} else {
+			ret = SMB_VFS_STAT(conn, smb_dname);
+		}
+		if (ret == -1) {
+			return map_nt_error_from_unix(errno);
+		}
+		if (!S_ISDIR(smb_dname->st.st_ex_mode)) {
+			return NT_STATUS_NOT_A_DIRECTORY;
+		}
+		status = smbd_check_access_rights(conn,
+						smb_dname,
+						SEC_DIR_LIST);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
 		}
@@ -469,6 +502,35 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 	}
 
 	ZERO_STRUCTP(dptr);
+
+	dptr->path = SMB_STRDUP(path);
+	if (!dptr->path) {
+		SAFE_FREE(dptr);
+		TALLOC_FREE(dir_hnd);
+		return NT_STATUS_NO_MEMORY;
+	}
+	dptr->conn = conn;
+	dptr->dir_hnd = dir_hnd;
+	dptr->spid = spid;
+	dptr->expect_close = expect_close;
+	dptr->wcard = SMB_STRDUP(wcard);
+	if (!dptr->wcard) {
+		SAFE_FREE(dptr->path);
+		SAFE_FREE(dptr);
+		TALLOC_FREE(dir_hnd);
+		return NT_STATUS_NO_MEMORY;
+	}
+	if (lp_posix_pathnames() || (wcard[0] == '.' && wcard[1] == 0)) {
+		dptr->has_wild = True;
+	} else {
+		dptr->has_wild = wcard_has_wild;
+	}
+
+	dptr->attr = attr;
+
+	if (sconn->using_smb2) {
+		goto done;
+	}
 
 	if(old_handle) {
 
@@ -493,6 +555,8 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 			dptr->dnum = bitmap_find(sconn->searches.dptr_bmap, 0);
 			if(dptr->dnum == -1 || dptr->dnum > 254) {
 				DEBUG(0,("dptr_create: returned %d: Error - all old dirptrs in use ?\n", dptr->dnum));
+				SAFE_FREE(dptr->path);
+				SAFE_FREE(dptr->wcard);
 				SAFE_FREE(dptr);
 				TALLOC_FREE(dir_hnd);
 				return NT_STATUS_TOO_MANY_OPENED_FILES;
@@ -523,6 +587,8 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 
 			if(dptr->dnum == -1 || dptr->dnum < 255) {
 				DEBUG(0,("dptr_create: returned %d: Error - all new dirptrs in use ?\n", dptr->dnum));
+				SAFE_FREE(dptr->path);
+				SAFE_FREE(dptr->wcard);
 				SAFE_FREE(dptr);
 				TALLOC_FREE(dir_hnd);
 				return NT_STATUS_TOO_MANY_OPENED_FILES;
@@ -534,28 +600,9 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 
 	dptr->dnum += 1; /* Always bias the dnum by one - no zero dnums allowed. */
 
-	string_set(&dptr->path,path);
-	dptr->conn = conn;
-	dptr->dir_hnd = dir_hnd;
-	dptr->spid = spid;
-	dptr->expect_close = expect_close;
-	dptr->wcard = SMB_STRDUP(wcard);
-	if (!dptr->wcard) {
-		bitmap_clear(sconn->searches.dptr_bmap, dptr->dnum - 1);
-		SAFE_FREE(dptr);
-		TALLOC_FREE(dir_hnd);
-		return NT_STATUS_NO_MEMORY;
-	}
-	if (lp_posix_pathnames() || (wcard[0] == '.' && wcard[1] == 0)) {
-		dptr->has_wild = True;
-	} else {
-		dptr->has_wild = wcard_has_wild;
-	}
-
-	dptr->attr = attr;
-
 	DLIST_ADD(sconn->searches.dirptrs, dptr);
 
+done:
 	DEBUG(3,("creating new dirptr %d for path %s, expect_close = %d\n",
 		dptr->dnum,path,expect_close));  
 
@@ -1165,7 +1212,9 @@ static bool user_can_read_file(connection_struct *conn,
 		return True;
 	}
 
-	return can_access_file_acl(conn, smb_fname, FILE_READ_DATA);
+	return NT_STATUS_IS_OK(smbd_check_access_rights(conn,
+				smb_fname,
+				FILE_READ_DATA));
 }
 
 /*******************************************************************
@@ -1327,7 +1376,7 @@ static int smb_Dir_destructor(struct smb_Dir *dirp)
 #endif
 		SMB_VFS_CLOSEDIR(dirp->conn,dirp->dir);
 	}
-	if (dirp->conn->sconn) {
+	if (dirp->conn->sconn && !dirp->conn->sconn->using_smb2) {
 		dirp->conn->sconn->searches.dirhandles_open--;
 	}
 	return 0;
@@ -1358,7 +1407,7 @@ struct smb_Dir *OpenDir(TALLOC_CTX *mem_ctx, connection_struct *conn,
 		goto fail;
 	}
 
-	if (sconn) {
+	if (sconn && !sconn->using_smb2) {
 		sconn->searches.dirhandles_open++;
 	}
 	talloc_set_destructor(dirp, smb_Dir_destructor);
@@ -1402,7 +1451,7 @@ static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
 		goto fail;
 	}
 
-	if (sconn) {
+	if (sconn && !sconn->using_smb2) {
 		sconn->searches.dirhandles_open++;
 	}
 	talloc_set_destructor(dirp, smb_Dir_destructor);
@@ -1625,8 +1674,8 @@ bool SearchDir(struct smb_Dir *dirp, const char *name, long *poffset)
  Is this directory empty ?
 *****************************************************************/
 
-NTSTATUS smbd_can_delete_directory(struct connection_struct *conn,
-				   const char *dirname)
+NTSTATUS can_delete_directory(struct connection_struct *conn,
+			      const char *dirname)
 {
 	NTSTATUS status = NT_STATUS_OK;
 	long dirpos = 0;

@@ -19,15 +19,15 @@
 */
 
 #include "config.h"
-#if HAVE_FILE_OFFSET_BITS
-#define _FILE_OFFSET_BITS 64
+#ifndef HAVE_CCAN
+#error You need ccan to build tdb2!
 #endif
-#include <ccan/likely/likely.h>
-#include <ccan/compiler/compiler.h>
-#include <ccan/endian/endian.h>
 #include "tdb2.h"
+#include <ccan/compiler/compiler.h>
+#include <ccan/likely/likely.h>
+#include <ccan/endian/endian.h>
 
-#ifdef _SAMBA_BUILD_
+#ifdef HAVE_LIBREPLACE
 #include "replace.h"
 #include "system/filesys.h"
 #include "system/time.h"
@@ -43,7 +43,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <string.h>
 #include <errno.h>
 #include <stdio.h>
 #include <utime.h>
@@ -73,16 +72,26 @@ typedef uint64_t tdb_off_t;
 
 #define TDB_MAGIC_FOOD "TDB file\n"
 #define TDB_VERSION ((uint64_t)(0x26011967 + 7))
+#define TDB1_VERSION (0x26011967 + 6)
 #define TDB_USED_MAGIC ((uint64_t)0x1999)
 #define TDB_HTABLE_MAGIC ((uint64_t)0x1888)
 #define TDB_CHAIN_MAGIC ((uint64_t)0x1777)
 #define TDB_FTABLE_MAGIC ((uint64_t)0x1666)
+#define TDB_CAP_MAGIC ((uint64_t)0x1555)
 #define TDB_FREE_MAGIC ((uint64_t)0xFE)
 #define TDB_HASH_MAGIC (0xA1ABE11A01092008ULL)
 #define TDB_RECOVERY_MAGIC (0xf53bc0e7ad124589ULL)
 #define TDB_RECOVERY_INVALID_MAGIC (0x0ULL)
 
-#define TDB_OFF_IS_ERR(off) unlikely(off >= (tdb_off_t)TDB_ERR_LAST)
+/* Capability bits. */
+#define TDB_CAP_TYPE_MASK	0x1FFFFFFFFFFFFFFFULL
+#define TDB_CAP_NOCHECK		0x8000000000000000ULL
+#define TDB_CAP_NOWRITE		0x4000000000000000ULL
+#define TDB_CAP_NOOPEN		0x2000000000000000ULL
+
+#define TDB_OFF_IS_ERR(off) unlikely(off >= (tdb_off_t)(long)TDB_ERR_LAST)
+#define TDB_OFF_TO_ERR(off) ((enum TDB_ERROR)(long)(off))
+#define TDB_ERR_TO_OFF(ecode) ((tdb_off_t)(long)(ecode))
 
 /* Packing errors into pointers and v.v. */
 #define TDB_PTR_IS_ERR(ptr) \
@@ -95,10 +104,10 @@ typedef int tdb_bool_err;
 
 /* Prevent others from opening the file. */
 #define TDB_OPEN_LOCK 0
-/* Doing a transaction. */
-#define TDB_TRANSACTION_LOCK 1
 /* Expanding file. */
 #define TDB_EXPANSION_LOCK 2
+/* Doing a transaction. */
+#define TDB_TRANSACTION_LOCK 8
 /* Hash chain locks. */
 #define TDB_HASH_LOCK_START 64
 
@@ -245,7 +254,8 @@ struct tdb_header {
 
 	uint64_t seqnum; /* Sequence number for TDB_SEQNUM */
 
-	tdb_off_t reserved[23];
+	tdb_off_t capabilities; /* Optional linked list of capabilities. */
+	tdb_off_t reserved[22];
 
 	/* Top level hash table. */
 	tdb_off_t hashtable[1ULL << TDB_TOPLEVEL_HASH_BITS];
@@ -255,6 +265,13 @@ struct tdb_freetable {
 	struct tdb_used_record hdr;
 	tdb_off_t next;
 	tdb_off_t buckets[TDB_FREE_BUCKETS];
+};
+
+struct tdb_capability {
+	struct tdb_used_record hdr;
+	tdb_off_t type;
+	tdb_off_t next;
+	/* ... */
 };
 
 /* Information about a particular (locked) hash entry. */
@@ -289,6 +306,9 @@ struct traverse_info {
 	tdb_off_t prev;
 };
 
+typedef uint32_t tdb1_len_t;
+typedef uint32_t tdb1_off_t;
+
 enum tdb_lock_flags {
 	/* WAIT == F_SETLKW, NOWAIT == F_SETLK */
 	TDB_LOCK_NOWAIT = 0,
@@ -301,7 +321,7 @@ enum tdb_lock_flags {
 
 struct tdb_lock {
 	struct tdb_context *owner;
-	uint32_t off;
+	off_t off;
 	uint32_t count;
 	uint32_t ltype;
 };
@@ -316,9 +336,6 @@ struct tdb_access_hdr {
 };
 
 struct tdb_file {
-	/* Single list of all TDBs, to detect multiple opens. */
-	struct tdb_file *next;
-
 	/* How many are sharing us? */
 	unsigned int refcnt;
 
@@ -342,68 +359,12 @@ struct tdb_file {
 	ino_t inode;
 };
 
-struct tdb_context {
-	/* Filename of the database. */
-	const char *name;
-
-	/* Are we accessing directly? (debugging check). */
-	int direct_access;
-
-	/* Operating read-only? (Opened O_RDONLY, or in traverse_read) */
-	bool read_only;
-
-	/* mmap read only? */
-	int mmap_flags;
-
-	/* the flags passed to tdb_open, for tdb_reopen. */
-	uint32_t flags;
-
-	/* Logging function */
-	void (*log_fn)(struct tdb_context *tdb,
-		       enum tdb_log_level level,
-		       const char *message,
-		       void *data);
-	void *log_data;
-
-	/* Hash function. */
-	uint64_t (*hash_fn)(const void *key, size_t len, uint64_t seed, void *);
-	void *hash_data;
-	uint64_t hash_seed;
-
-	/* low level (fnctl) lock functions. */
-	int (*lock_fn)(int fd, int rw, off_t off, off_t len, bool w, void *);
-	int (*unlock_fn)(int fd, int rw, off_t off, off_t len, void *);
-	void *lock_data;
-
-	/* Set if we are in a transaction. */
-	struct tdb_transaction *transaction;
-
-	/* What free table are we using? */
-	tdb_off_t ftable_off;
-	unsigned int ftable;
-
-	/* IO methods: changes for transactions. */
-	const struct tdb_methods *methods;
-
-	/* Our statistics. */
-	struct tdb_attribute_stats stats;
-
-	/* Direct access information */
-	struct tdb_access_hdr *access;
-
-	/* Last error we returned. */
-	enum TDB_ERROR last_error;
-
-	/* The actual file information */
-	struct tdb_file *file;
-};
-
 struct tdb_methods {
 	enum TDB_ERROR (*tread)(struct tdb_context *, tdb_off_t, void *,
 				tdb_len_t);
 	enum TDB_ERROR (*twrite)(struct tdb_context *, tdb_off_t, const void *,
 				 tdb_len_t);
-	enum TDB_ERROR (*oob)(struct tdb_context *, tdb_off_t, bool);
+	enum TDB_ERROR (*oob)(struct tdb_context *, tdb_off_t, tdb_len_t, bool);
 	enum TDB_ERROR (*expand_file)(struct tdb_context *, tdb_len_t);
 	void *(*direct)(struct tdb_context *, tdb_off_t, size_t, bool);
 };
@@ -412,13 +373,16 @@ struct tdb_methods {
   internal prototypes
 */
 /* hash.c: */
-tdb_bool_err first_in_hash(struct tdb_context *tdb,
-			   struct traverse_info *tinfo,
-			   TDB_DATA *kbuf, size_t *dlen);
+uint64_t tdb_jenkins_hash(const void *key, size_t length, uint64_t seed,
+			  void *unused);
 
-tdb_bool_err next_in_hash(struct tdb_context *tdb,
-			  struct traverse_info *tinfo,
-			  TDB_DATA *kbuf, size_t *dlen);
+enum TDB_ERROR first_in_hash(struct tdb_context *tdb,
+			     struct traverse_info *tinfo,
+			     TDB_DATA *kbuf, size_t *dlen);
+
+enum TDB_ERROR next_in_hash(struct tdb_context *tdb,
+			    struct traverse_info *tinfo,
+			    TDB_DATA *kbuf, size_t *dlen);
 
 /* Hash random memory. */
 uint64_t tdb_hash(struct tdb_context *tdb, const void *ptr, size_t len);
@@ -445,6 +409,8 @@ enum TDB_ERROR delete_from_hash(struct tdb_context *tdb, struct hash_info *h);
 
 /* For tdb_check */
 bool is_subhash(tdb_off_t val);
+enum TDB_ERROR unknown_capability(struct tdb_context *tdb, const char *caller,
+				  tdb_off_t type);
 
 /* free.c: */
 enum TDB_ERROR tdb_ftable_init(struct tdb_context *tdb);
@@ -463,7 +429,7 @@ enum TDB_ERROR add_free_record(struct tdb_context *tdb,
 			       enum tdb_lock_flags waitflag,
 			       bool coalesce_ok);
 
-/* Set up header for a used/ftable/htable/chain record. */
+/* Set up header for a used/ftable/htable/chain/capability record. */
 enum TDB_ERROR set_header(struct tdb_context *tdb,
 			  struct tdb_used_record *rec,
 			  unsigned magic, uint64_t keylen, uint64_t datalen,
@@ -475,6 +441,9 @@ tdb_off_t bucket_off(tdb_off_t ftable_off, unsigned bucket);
 
 /* Used by tdb_summary */
 tdb_off_t dead_space(struct tdb_context *tdb, tdb_off_t off);
+
+/* Adjust expansion, used by create_recovery_area */
+tdb_off_t tdb_expand_adjust(tdb_off_t map_size, tdb_off_t size);
 
 /* io.c: */
 /* Initialize tdb->methods. */
@@ -533,6 +502,12 @@ enum TDB_ERROR tdb_read_convert(struct tdb_context *tdb, tdb_off_t off,
 void tdb_inc_seqnum(struct tdb_context *tdb);
 
 /* lock.c: */
+/* Print message because another tdb owns a lock we want. */
+enum TDB_ERROR owner_conflict(struct tdb_context *tdb, const char *call);
+
+/* If we fork, we no longer really own locks. */
+bool check_lock_pid(struct tdb_context *tdb, const char *call, bool log);
+
 /* Lock/unlock a range of hashes. */
 enum TDB_ERROR tdb_lock_hashes(struct tdb_context *tdb,
 			       tdb_off_t hash_lock, tdb_len_t hash_range,
@@ -560,7 +535,7 @@ bool tdb_has_hash_locks(struct tdb_context *tdb);
 enum TDB_ERROR tdb_allrecord_lock(struct tdb_context *tdb, int ltype,
 				  enum tdb_lock_flags flags, bool upgradable);
 void tdb_allrecord_unlock(struct tdb_context *tdb, int ltype);
-enum TDB_ERROR tdb_allrecord_upgrade(struct tdb_context *tdb);
+enum TDB_ERROR tdb_allrecord_upgrade(struct tdb_context *tdb, off_t start);
 
 /* Serialize db open. */
 enum TDB_ERROR tdb_lock_open(struct tdb_context *tdb,
@@ -576,6 +551,25 @@ bool tdb_has_expansion_lock(struct tdb_context *tdb);
 /* If it needs recovery, grab all the locks and do it. */
 enum TDB_ERROR tdb_lock_and_recover(struct tdb_context *tdb);
 
+/* Byte-range lock wrappers for TDB1 to access. */
+enum TDB_ERROR tdb_brlock(struct tdb_context *tdb,
+			  int rw_type, tdb_off_t offset, tdb_off_t len,
+			  enum tdb_lock_flags flags);
+
+enum TDB_ERROR tdb_brunlock(struct tdb_context *tdb,
+			    int rw_type, tdb_off_t offset, size_t len);
+
+enum TDB_ERROR tdb_nest_lock(struct tdb_context *tdb,
+			     tdb_off_t offset, int ltype,
+			     enum tdb_lock_flags flags);
+
+enum TDB_ERROR tdb_nest_unlock(struct tdb_context *tdb,
+			       tdb_off_t off, int ltype);
+
+enum TDB_ERROR tdb_lock_gradual(struct tdb_context *tdb,
+				int ltype, enum tdb_lock_flags flags,
+				tdb_off_t off, tdb_off_t len);
+
 /* Default lock and unlock functions. */
 int tdb_fcntl_lock(int fd, int rw, off_t off, off_t len, bool waitflag, void *);
 int tdb_fcntl_unlock(int fd, int rw, off_t off, off_t len, void *);
@@ -583,6 +577,167 @@ int tdb_fcntl_unlock(int fd, int rw, off_t off, off_t len, void *);
 /* transaction.c: */
 enum TDB_ERROR tdb_transaction_recover(struct tdb_context *tdb);
 tdb_bool_err tdb_needs_recovery(struct tdb_context *tdb);
+
+/* this is stored at the front of every database */
+struct tdb1_header {
+	char magic_food[32]; /* for /etc/magic */
+	uint32_t version; /* version of the code */
+	uint32_t hash_size; /* number of hash entries */
+	tdb1_off_t rwlocks; /* obsolete - kept to detect old formats */
+	tdb1_off_t recovery_start; /* offset of transaction recovery region */
+	tdb1_off_t sequence_number; /* used when TDB1_SEQNUM is set */
+	uint32_t magic1_hash; /* hash of TDB_MAGIC_FOOD. */
+	uint32_t magic2_hash; /* hash of TDB1_MAGIC. */
+	tdb1_off_t reserved[27];
+};
+
+struct tdb1_traverse_lock {
+	struct tdb1_traverse_lock *next;
+	uint32_t off;
+	uint32_t hash;
+	int lock_rw;
+};
+
+struct tdb_context {
+	/* Single list of all TDBs, to detect multiple opens. */
+	struct tdb_context *next;
+
+	/* Filename of the database. */
+	const char *name;
+
+	/* Logging function */
+	void (*log_fn)(struct tdb_context *tdb,
+		       enum tdb_log_level level,
+		       enum TDB_ERROR ecode,
+		       const char *message,
+		       void *data);
+	void *log_data;
+
+	/* Open flags passed to tdb_open. */
+	int open_flags;
+
+	/* low level (fnctl) lock functions. */
+	int (*lock_fn)(int fd, int rw, off_t off, off_t len, bool w, void *);
+	int (*unlock_fn)(int fd, int rw, off_t off, off_t len, void *);
+	void *lock_data;
+
+	/* the tdb flags passed to tdb_open. */
+	uint32_t flags;
+
+	/* Our statistics. */
+	struct tdb_attribute_stats stats;
+
+	/* The actual file information */
+	struct tdb_file *file;
+
+	/* Hash function. */
+	uint64_t (*hash_fn)(const void *key, size_t len, uint64_t seed, void *);
+	void *hash_data;
+	uint64_t hash_seed;
+
+	/* Our open hook, if any. */
+	enum TDB_ERROR (*openhook)(int fd, void *data);
+	void *openhook_data;
+
+	/* Last error we returned. */
+	enum TDB_ERROR last_error;
+
+	struct {
+
+		/* Are we accessing directly? (debugging check). */
+		int direct_access;
+
+		/* Set if we are in a transaction. */
+		struct tdb_transaction *transaction;
+
+		/* What free table are we using? */
+		tdb_off_t ftable_off;
+		unsigned int ftable;
+
+		/* IO methods: changes for transactions. */
+		const struct tdb_methods *io;
+
+		/* Direct access information */
+		struct tdb_access_hdr *access;
+	} tdb2;
+
+	struct {
+		int traverse_read; /* read-only traversal */
+		int traverse_write; /* read-write traversal */
+
+		struct tdb1_header header; /* a cached copy of the header */
+		struct tdb1_traverse_lock travlocks; /* current traversal locks */
+		const struct tdb1_methods *io;
+		struct tdb1_transaction *transaction;
+		int page_size;
+		int max_dead_records;
+	} tdb1;
+};
+
+#define TDB1_BYTEREV(x) (((((x)&0xff)<<24)|((x)&0xFF00)<<8)|(((x)>>8)&0xFF00)|((x)>>24))
+
+/* tdb1_check.c: */
+int tdb1_check(struct tdb_context *tdb,
+	       enum TDB_ERROR (*check)(TDB_DATA key, TDB_DATA data, void *),
+	       void *private_data);
+
+
+/* tdb1_open.c: */
+enum TDB_ERROR tdb1_new_database(struct tdb_context *tdb,
+				 struct tdb_attribute_tdb1_hashsize *hashsize,
+				 struct tdb_attribute_tdb1_max_dead *max_dead);
+enum TDB_ERROR tdb1_open(struct tdb_context *tdb,
+			 struct tdb_attribute_tdb1_max_dead *max_dead);
+
+/* tdb1_io.c: */
+enum TDB_ERROR tdb1_probe_length(struct tdb_context *tdb);
+
+/* tdb1_lock.c: */
+int tdb1_allrecord_lock(struct tdb_context *tdb, int ltype,
+			enum tdb_lock_flags flags, bool upgradable);
+int tdb1_allrecord_unlock(struct tdb_context *tdb, int ltype);
+
+int tdb1_chainlock(struct tdb_context *tdb, TDB_DATA key);
+int tdb1_chainunlock(struct tdb_context *tdb, TDB_DATA key);
+int tdb1_chainlock_read(struct tdb_context *tdb, TDB_DATA key);
+int tdb1_chainunlock_read(struct tdb_context *tdb, TDB_DATA key);
+
+/* tdb1_transaction.c: */
+int tdb1_transaction_recover(struct tdb_context *tdb);
+int tdb1_transaction_cancel(struct tdb_context *tdb);
+
+/* tdb1_traverse.c: */
+int tdb1_traverse(struct tdb_context *tdb,
+		  int (*)(struct tdb_context *, TDB_DATA, TDB_DATA, void *),
+		  void *private_data);
+
+/* tdb1_summary.c: */
+char *tdb1_summary(struct tdb_context *tdb);
+
+/* tdb1_tdb.c: */
+int tdb1_store(struct tdb_context *tdb, TDB_DATA key, TDB_DATA dbuf, int flag);
+enum TDB_ERROR tdb1_fetch(struct tdb_context *tdb, TDB_DATA key,
+			  TDB_DATA *data);
+int tdb1_append(struct tdb_context *tdb, TDB_DATA key, TDB_DATA new_dbuf);
+int tdb1_delete(struct tdb_context *tdb, TDB_DATA key);
+int tdb1_exists(struct tdb_context *tdb, TDB_DATA key);
+enum TDB_ERROR tdb1_parse_record(struct tdb_context *tdb, TDB_DATA key,
+				 enum TDB_ERROR (*parser)(TDB_DATA key,
+							  TDB_DATA data,
+							  void *private_data),
+				 void *private_data);
+void tdb1_increment_seqnum_nonblock(struct tdb_context *tdb);
+int tdb1_get_seqnum(struct tdb_context *tdb);
+int tdb1_wipe_all(struct tdb_context *tdb);
+
+/* tdb1_transaction.c: */
+int tdb1_transaction_start(struct tdb_context *tdb);
+int tdb1_transaction_prepare_commit(struct tdb_context *tdb);
+int tdb1_transaction_commit(struct tdb_context *tdb);
+
+/* tdb1_traverse.c: */
+TDB_DATA tdb1_firstkey(struct tdb_context *tdb);
+TDB_DATA tdb1_nextkey(struct tdb_context *tdb, TDB_DATA key);
 
 /* tdb.c: */
 enum TDB_ERROR COLD tdb_logerr(struct tdb_context *tdb,

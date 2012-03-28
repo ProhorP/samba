@@ -10,11 +10,11 @@ use target::Samba3;
 use target::Samba4;
 
 sub new($$$$$) {
-	my ($classname, $bindir, $binary_mapping,$ldap, $srcdir, $exeext, $server_maxtime) = @_;
+	my ($classname, $bindir, $binary_mapping,$ldap, $srcdir, $server_maxtime) = @_;
 
 	my $self = {
-	    samba3 => new Samba3($bindir,$binary_mapping, $srcdir, $exeext, $server_maxtime),
-	    samba4 => new Samba4($bindir,$binary_mapping, $ldap, $srcdir, $exeext, $server_maxtime),
+	    samba3 => new Samba3($bindir,$binary_mapping, $srcdir, $server_maxtime),
+	    samba4 => new Samba4($bindir,$binary_mapping, $ldap, $srcdir, $server_maxtime),
 	};
 	bless $self;
 	return $self;
@@ -27,20 +27,24 @@ sub setup_env($$$)
 	$ENV{ENVNAME} = $envname;
 
 	my $env = $self->{samba4}->setup_env($envname, $path);
-	if (defined($env)) {
+	if (defined($env) and $env ne "UNKNOWN") {
 	    if (not defined($env->{target})) {
 		$env->{target} = $self->{samba4};
 	    }
-	} else {
+	} elsif (defined($env) and $env eq "UNKNOWN") {
 	   	$env = $self->{samba3}->setup_env($envname, $path);
-		if (defined($env)) {
+		if (defined($env) and $env ne "UNKNOWN") {
 		    if (not defined($env->{target})) {
 			$env->{target} = $self->{samba3};
 		    }
 		}
 	}
-	if (not defined $env) {
+	if (defined($env) and ($env eq "UNKNOWN")) {
 		warn("Samba can't provide environment '$envname'");
+		return "UNKNOWN";
+	}
+	if (not defined $env) {
+		warn("failed to start up environment '$envname'");
 		return undef;
 	}
 	return $env;
@@ -53,20 +57,25 @@ sub bindir_path($$) {
 	    $path = $object->{binary_mapping}->{$path};
 	}
 
-	my $valpath = "$object->{bindir}/$path$object->{exeext}";
+	my $valpath = "$object->{bindir}/$path";
 
 	return $valpath if (-f $valpath);
 	return $path;
 }
 
-sub mk_krb5_conf($)
+sub mk_krb5_conf($$)
 {
-	my ($ctx) = @_;
+	my ($ctx, $other_realms_stanza) = @_;
 
 	unless (open(KRB5CONF, ">$ctx->{krb5_conf}")) {
 	        warn("can't open $ctx->{krb5_conf}$?");
 		return undef;
 	}
+
+	my $our_realms_stanza = mk_realms_stanza($ctx->{realm},
+						 $ctx->{dnsname},
+						 $ctx->{domain},
+						 $ctx->{kdc_ipv4});
 	print KRB5CONF "
 #Generated krb5.conf for $ctx->{realm}
 
@@ -79,25 +88,10 @@ sub mk_krb5_conf($)
  allow_weak_crypto = yes
 
 [realms]
- $ctx->{realm} = {
-  kdc = $ctx->{kdc_ipv4}:88
-  admin_server = $ctx->{kdc_ipv4}:88
-  default_domain = $ctx->{dnsname}
- }
- $ctx->{dnsname} = {
-  kdc = $ctx->{kdc_ipv4}:88
-  admin_server = $ctx->{kdc_ipv4}:88
-  default_domain = $ctx->{dnsname}
- }
- $ctx->{domain} = {
-  kdc = $ctx->{kdc_ipv4}:88
-  admin_server = $ctx->{kdc_ipv4}:88
-  default_domain = $ctx->{dnsname}
- }
-
-[domain_realm]
- .$ctx->{dnsname} = $ctx->{realm}
+ $our_realms_stanza
+ $other_realms_stanza
 ";
+
 
         if (defined($ctx->{tlsdir})) {
 	       print KRB5CONF "
@@ -113,6 +107,31 @@ sub mk_krb5_conf($)
 ";
         }
 	close(KRB5CONF);
+}
+
+sub mk_realms_stanza($$$$)
+{
+	my ($realm, $dnsname, $domain, $kdc_ipv4) = @_;
+
+	my $realms_stanza = "
+ $realm = {
+  kdc = $kdc_ipv4:88
+  admin_server = $kdc_ipv4:88
+  default_domain = $dnsname
+ }
+ $dnsname = {
+  kdc = $kdc_ipv4:88
+  admin_server = $kdc_ipv4:88
+  default_domain = $dnsname
+ }
+ $domain = {
+  kdc = $kdc_ipv4:88
+  admin_server = $kdc_ipv4:88
+  default_domain = $dnsname
+ }
+
+";
+        return $realms_stanza;
 }
 
 1;

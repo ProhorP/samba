@@ -18,7 +18,7 @@
  */
 
 #include "includes.h"
-#include "popt_common.h"
+#include "auth_info.h"
 
 #include "lib/netapi/netapi.h"
 #include "lib/netapi/netapi_private.h"
@@ -48,7 +48,9 @@ static struct client_ipc_connection *ipc_cm_find(
 	struct client_ipc_connection *p;
 
 	for (p = priv_ctx->ipc_connections; p; p = p->next) {
-		if (strequal(p->cli->desthost, server_name)) {
+		const char *remote_name = cli_state_remote_name(p->cli);
+
+		if (strequal(remote_name, server_name)) {
 			return p;
 		}
 	}
@@ -67,6 +69,7 @@ static WERROR libnetapi_open_ipc_connection(struct libnetapi_ctx *ctx,
 	struct user_auth_info *auth_info = NULL;
 	struct cli_state *cli_ipc = NULL;
 	struct client_ipc_connection *p;
+	NTSTATUS status;
 
 	if (!ctx || !pp || !server_name) {
 		return WERR_INVALID_PARAM;
@@ -84,7 +87,7 @@ static WERROR libnetapi_open_ipc_connection(struct libnetapi_ctx *ctx,
 	if (!auth_info) {
 		return WERR_NOMEM;
 	}
-	auth_info->signing_state = Undefined;
+	auth_info->signing_state = SMB_SIGNING_DEFAULT;
 	set_cmdline_auth_info_use_kerberos(auth_info, ctx->use_kerberos);
 	set_cmdline_auth_info_username(auth_info, ctx->username);
 	if (ctx->password) {
@@ -103,16 +106,18 @@ static WERROR libnetapi_open_ipc_connection(struct libnetapi_ctx *ctx,
 		set_cmdline_auth_info_use_ccache(auth_info, true);
 	}
 
-	cli_ipc = cli_cm_open(ctx, NULL,
-				server_name, "IPC$",
-				auth_info,
-				false, false,
-				PROTOCOL_NT1,
-				0, 0x20);
-	if (cli_ipc) {
+	status = cli_cm_open(ctx, NULL,
+			     server_name, "IPC$",
+			     auth_info,
+			     false, false,
+			     PROTOCOL_NT1,
+			     0, 0x20, &cli_ipc);
+	if (NT_STATUS_IS_OK(status)) {
 		cli_set_username(cli_ipc, ctx->username);
 		cli_set_password(cli_ipc, ctx->password);
 		cli_set_domain(cli_ipc, ctx->workgroup);
+	} else {
+		cli_ipc = NULL;
 	}
 	TALLOC_FREE(auth_info);
 
@@ -161,12 +166,15 @@ static NTSTATUS pipe_cm_find(struct client_ipc_connection *ipc,
 	struct client_pipe_connection *p;
 
 	for (p = ipc->pipe_connections; p; p = p->next) {
+		const char *ipc_remote_name;
 
 		if (!rpc_pipe_np_smb_conn(p->pipe)) {
 			return NT_STATUS_PIPE_EMPTY;
 		}
 
-		if (strequal(ipc->cli->desthost, p->pipe->desthost)
+		ipc_remote_name = cli_state_remote_name(ipc->cli);
+
+		if (strequal(ipc_remote_name, p->pipe->desthost)
 		    && ndr_syntax_id_equal(&p->pipe->abstract_syntax,
 					   interface)) {
 			*presult = p->pipe;

@@ -26,6 +26,9 @@
 #include "../lib/tsocket/tsocket.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "smbprofile.h"
+#include "../lib/util/bitmap.h"
+#include "../librpc/gen_ndr/krb5pac.h"
+#include "auth.h"
 
 #define OUTVEC_ALLOC_SIZE (SMB2_HDR_BODY + 9)
 
@@ -94,8 +97,6 @@ static NTSTATUS smbd_initialize_smb2(struct smbd_server_connection *sconn)
 	int ret;
 
 	TALLOC_FREE(sconn->smb1.fde);
-
-	sconn->smb2.event_ctx = server_event_context();
 
 	sconn->smb2.recv_queue = tevent_queue_create(sconn, "smb2 recv queue");
 	if (sconn->smb2.recv_queue == NULL) {
@@ -205,6 +206,9 @@ static struct smbd_smb2_request *smbd_smb2_request_allocate(TALLOC_CTX *mem_ctx)
 	*parent		= req;
 	req->mem_pool	= mem_pool;
 	req->parent	= parent;
+
+	req->last_session_id = UINT64_MAX;
+	req->last_tid = UINT32_MAX;
 
 	talloc_set_destructor(parent, smbd_smb2_request_parent_destructor);
 	talloc_set_destructor(req, smbd_smb2_request_destructor);
@@ -319,8 +323,14 @@ static bool smb2_validate_message_id(struct smbd_server_connection *sconn,
 		return false;
 	}
 
+	if (sconn->smb2.credits_granted == 0) {
+		DEBUG(0,("smb2_validate_message_id: client used more "
+			 "credits than granted message_id (%llu)\n",
+			 (unsigned long long)message_id));
+		return false;
+	}
+
 	/* client just used a credit. */
-	SMB_ASSERT(sconn->smb2.credits_granted > 0);
 	sconn->smb2.credits_granted -= 1;
 
 	/* Mark the message_id as seen in the bitmap. */
@@ -357,7 +367,6 @@ static NTSTATUS smbd_smb2_request_validate(struct smbd_smb2_request *req)
 {
 	int count;
 	int idx;
-	bool compound_related = false;
 
 	count = req->in.vector_count;
 
@@ -405,7 +414,7 @@ static NTSTATUS smbd_smb2_request_validate(struct smbd_smb2_request *req)
 			 * compounded requests
 			 */
 			if (flags & SMB2_HDR_FLAG_CHAINED) {
-				compound_related = true;
+				req->compound_related = true;
 			}
 		} else if (idx > 4) {
 #if 0
@@ -418,13 +427,13 @@ static NTSTATUS smbd_smb2_request_validate(struct smbd_smb2_request *req)
 			 * all other requests should match the 2nd one
 			 */
 			if (flags & SMB2_HDR_FLAG_CHAINED) {
-				if (!compound_related) {
+				if (!req->compound_related) {
 					req->next_status =
 						NT_STATUS_INVALID_PARAMETER;
 					return NT_STATUS_OK;
 				}
 			} else {
-				if (compound_related) {
+				if (req->compound_related) {
 					req->next_status =
 						NT_STATUS_INVALID_PARAMETER;
 					return NT_STATUS_OK;
@@ -441,20 +450,50 @@ static void smb2_set_operation_credit(struct smbd_server_connection *sconn,
 			const struct iovec *in_vector,
 			struct iovec *out_vector)
 {
+	const uint8_t *inhdr = (const uint8_t *)in_vector->iov_base;
 	uint8_t *outhdr = (uint8_t *)out_vector->iov_base;
-	uint16_t credits_requested = 0;
+	uint16_t credits_requested;
+	uint32_t out_flags;
 	uint16_t credits_granted = 0;
 
-	if (in_vector != NULL) {
-		const uint8_t *inhdr = (const uint8_t *)in_vector->iov_base;
-		credits_requested = SVAL(inhdr, SMB2_HDR_CREDIT);
-	}
+	credits_requested = SVAL(inhdr, SMB2_HDR_CREDIT);
+	out_flags = IVAL(outhdr, SMB2_HDR_FLAGS);
 
 	SMB_ASSERT(sconn->smb2.max_credits >= sconn->smb2.credits_granted);
 
-	/* Remember what we gave out. */
-	credits_granted = MIN(credits_requested, (sconn->smb2.max_credits -
-		sconn->smb2.credits_granted));
+	if (out_flags & SMB2_HDR_FLAG_ASYNC) {
+		/*
+		 * In case we already send an async interim
+		 * response, we should not grant
+		 * credits on the final response.
+		 */
+		credits_requested = 0;
+	}
+
+	if (credits_requested) {
+		uint16_t modified_credits_requested;
+		uint32_t multiplier;
+
+		/*
+		 * Split up max_credits into 1/16ths, and then scale
+		 * the requested credits by how many 16ths have been
+		 * currently granted. Less than 1/16th == grant all
+		 * requested (100%), scale down as more have been
+		 * granted. Never ask for less than 1 as the client
+		 * asked for at least 1. JRA.
+		 */
+
+		multiplier = 16 - (((sconn->smb2.credits_granted * 16) / sconn->smb2.max_credits) % 16);
+
+		modified_credits_requested = (multiplier * credits_requested) / 16;
+		if (modified_credits_requested == 0) {
+			modified_credits_requested = 1;
+		}
+
+		/* Remember what we gave out. */
+		credits_granted = MIN(modified_credits_requested,
+					(sconn->smb2.max_credits - sconn->smb2.credits_granted));
+	}
 
 	if (credits_granted == 0 && sconn->smb2.credits_granted == 0) {
 		/* First negprot packet, or ensure the client credits can
@@ -476,13 +515,24 @@ static void smb2_calculate_credits(const struct smbd_smb2_request *inreq,
 				struct smbd_smb2_request *outreq)
 {
 	int count, idx;
+	uint16_t total_credits = 0;
 
 	count = outreq->out.vector_count;
 
 	for (idx=1; idx < count; idx += 3) {
+		uint8_t *outhdr = (uint8_t *)outreq->out.vector[idx].iov_base;
 		smb2_set_operation_credit(outreq->sconn,
 			&inreq->in.vector[idx],
 			&outreq->out.vector[idx]);
+		/* To match Windows, count up what we
+		   just granted. */
+		total_credits += SVAL(outhdr, SMB2_HDR_CREDIT);
+		/* Set to zero in all but the last reply. */
+		if (idx + 3 < count) {
+			SSVAL(outhdr, SMB2_HDR_CREDIT, 0);
+		} else {
+			SSVAL(outhdr, SMB2_HDR_CREDIT, total_credits);
+		}
 	}
 }
 
@@ -504,7 +554,6 @@ static NTSTATUS smbd_smb2_request_setup_out(struct smbd_smb2_request *req)
 
 	for (idx=1; idx < count; idx += 3) {
 		const uint8_t *inhdr = NULL;
-		uint32_t in_flags;
 		uint8_t *outhdr = NULL;
 		uint8_t *outbody = NULL;
 		uint32_t next_command_ofs = 0;
@@ -517,7 +566,6 @@ static NTSTATUS smbd_smb2_request_setup_out(struct smbd_smb2_request *req)
 		}
 
 		inhdr = (const uint8_t *)req->in.vector[idx].iov_base;
-		in_flags = IVAL(inhdr, SMB2_HDR_FLAGS);
 
 		outhdr = talloc_zero_array(vector, uint8_t,
 				      OUTVEC_ALLOC_SIZE);
@@ -539,7 +587,8 @@ static NTSTATUS smbd_smb2_request_setup_out(struct smbd_smb2_request *req)
 		/* setup the SMB2 header */
 		SIVAL(outhdr, SMB2_HDR_PROTOCOL_ID,	SMB2_MAGIC);
 		SSVAL(outhdr, SMB2_HDR_LENGTH,		SMB2_HDR_BODY);
-		SSVAL(outhdr, SMB2_HDR_EPOCH,		0);
+		SSVAL(outhdr, SMB2_HDR_CREDIT_CHARGE,
+		      SVAL(inhdr, SMB2_HDR_CREDIT_CHARGE));
 		SIVAL(outhdr, SMB2_HDR_STATUS,
 		      NT_STATUS_V(NT_STATUS_INTERNAL_ERROR));
 		SSVAL(outhdr, SMB2_HDR_OPCODE,
@@ -555,7 +604,8 @@ static NTSTATUS smbd_smb2_request_setup_out(struct smbd_smb2_request *req)
 		      IVAL(inhdr, SMB2_HDR_TID));
 		SBVAL(outhdr, SMB2_HDR_SESSION_ID,
 		      BVAL(inhdr, SMB2_HDR_SESSION_ID));
-		memset(outhdr + SMB2_HDR_SIGNATURE, 0, 16);
+		memcpy(outhdr + SMB2_HDR_SIGNATURE,
+		       inhdr + SMB2_HDR_SIGNATURE, 16);
 
 		/* setup error body header */
 		SSVAL(outbody, 0x00, 0x08 + 1);
@@ -665,10 +715,9 @@ static struct smbd_smb2_request *dup_smb2_req(const struct smbd_smb2_request *re
 	}
 
 	newreq->sconn = req->sconn;
+	newreq->session = req->session;
 	newreq->do_signing = req->do_signing;
 	newreq->current_idx = req->current_idx;
-	newreq->async = false;
-	newreq->cancelled = false;
 
 	outvec = talloc_zero_array(newreq, struct iovec, count);
 	if (!outvec) {
@@ -750,7 +799,7 @@ static NTSTATUS smb2_send_async_interim_response(const struct smbd_smb2_request 
 		print_req_vectors(nreq);
 	}
 	nreq->subreq = tstream_writev_queue_send(nreq,
-					nreq->sconn->smb2.event_ctx,
+					nreq->sconn->ev_ctx,
 					nreq->sconn->smb2.stream,
 					nreq->sconn->smb2.send_queue,
 					nreq->out.vector,
@@ -793,19 +842,20 @@ static void smbd_smb2_request_pending_writev_done(struct tevent_req *subreq)
 	TALLOC_FREE(state);
 }
 
+static void smbd_smb2_request_pending_timer(struct tevent_context *ev,
+					    struct tevent_timer *te,
+					    struct timeval current_time,
+					    void *private_data);
+
 NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
-					 struct tevent_req *subreq)
+					 struct tevent_req *subreq,
+					 uint32_t defer_time)
 {
 	NTSTATUS status;
-	struct smbd_smb2_request_pending_state *state = NULL;
 	int i = req->current_idx;
-	uint8_t *reqhdr = NULL;
-	uint8_t *hdr = NULL;
-	uint8_t *body = NULL;
-	uint32_t flags = 0;
-	uint64_t message_id = 0;
-	uint64_t async_id = 0;
-	struct iovec *outvec = NULL;
+	struct timeval defer_endtime;
+	uint8_t *outhdr = NULL;
+	uint32_t flags;
 
 	if (!tevent_req_is_in_progress(subreq)) {
 		return NT_STATUS_OK;
@@ -814,7 +864,14 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 	req->subreq = subreq;
 	subreq = NULL;
 
-	if (req->async) {
+	if (req->async_te) {
+		/* We're already async. */
+		return NT_STATUS_OK;
+	}
+
+	outhdr = (uint8_t *)req->out.vector[i].iov_base;
+	flags = IVAL(outhdr, SMB2_HDR_FLAGS);
+	if (flags & SMB2_HDR_FLAG_ASYNC) {
 		/* We're already async. */
 		return NT_STATUS_OK;
 	}
@@ -837,6 +894,8 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 	}
 
 	if (req->out.vector_count > 4) {
+		struct iovec *outvec = NULL;
+
 		/* This is a compound reply. We
 		 * must do an interim response
 		 * followed by the async response
@@ -846,17 +905,107 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
 		}
+
+		/*
+		 * We're splitting off the last SMB2
+		 * request in a compound set, and the
+		 * smb2_send_async_interim_response()
+		 * call above just sent all the replies
+		 * for the previous SMB2 requests in
+		 * this compound set. So we're no longer
+		 * in the "compound_related_in_progress"
+		 * state, and this is no longer a compound
+		 * request.
+		 */
+		req->compound_related = false;
+		req->sconn->smb2.compound_related_in_progress = false;
+
+		/* Re-arrange the in.vectors. */
+		req->in.vector[1] = req->in.vector[i];
+		req->in.vector[2] = req->in.vector[i+1];
+		req->in.vector[3] = req->in.vector[i+2];
+		req->in.vector_count = 4;
+
+		/* Reset the new in size. */
+		smb2_setup_nbt_length(req->in.vector, 4);
+
+		/* Now recreate the out.vectors. */
+		outvec = talloc_zero_array(req, struct iovec, 4);
+		if (!outvec) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		/* 0 is always boilerplate and must
+		 * be of size 4 for the length field. */
+
+		outvec[0].iov_base = req->out.nbt_hdr;
+		outvec[0].iov_len = 4;
+		SIVAL(req->out.nbt_hdr, 0, 0);
+
+		if (!dup_smb2_vec3(outvec, &outvec[1], &req->out.vector[i])) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		TALLOC_FREE(req->out.vector);
+
+		req->out.vector = outvec;
+
+		req->current_idx = 1;
+		req->out.vector_count = 4;
+
+		outhdr = (uint8_t *)req->out.vector[1].iov_base;
+		flags = (IVAL(outhdr, SMB2_HDR_FLAGS) & ~SMB2_HDR_FLAG_CHAINED);
+		SIVAL(outhdr, SMB2_HDR_FLAGS, flags);
 	}
 
-	/* Don't return an intermediate packet on a pipe read/write. */
-	if (req->tcon && req->tcon->compat_conn && IS_IPC(req->tcon->compat_conn)) {
-		return NT_STATUS_OK;
+	defer_endtime = timeval_current_ofs_usec(defer_time);
+	req->async_te = tevent_add_timer(req->sconn->ev_ctx,
+					 req, defer_endtime,
+					 smbd_smb2_request_pending_timer,
+					 req);
+	if (req->async_te == NULL) {
+		return NT_STATUS_NO_MEMORY;
 	}
 
-	reqhdr = (uint8_t *)req->out.vector[i].iov_base;
-	flags = (IVAL(reqhdr, SMB2_HDR_FLAGS) & ~SMB2_HDR_FLAG_CHAINED);
-	message_id = BVAL(reqhdr, SMB2_HDR_MESSAGE_ID);
+	return NT_STATUS_OK;
+}
+
+static void smbd_smb2_request_pending_timer(struct tevent_context *ev,
+					    struct tevent_timer *te,
+					    struct timeval current_time,
+					    void *private_data)
+{
+	struct smbd_smb2_request *req =
+		talloc_get_type_abort(private_data,
+		struct smbd_smb2_request);
+	struct smbd_smb2_request_pending_state *state = NULL;
+	int i = req->current_idx;
+	uint8_t *outhdr = NULL;
+	const uint8_t *inhdr = NULL;
+	uint8_t *hdr = NULL;
+	uint8_t *body = NULL;
+	uint32_t flags = 0;
+	uint64_t message_id = 0;
+	uint64_t async_id = 0;
+	struct tevent_req *subreq = NULL;
+
+	TALLOC_FREE(req->async_te);
+
+	/* Ensure our final reply matches the interim one. */
+	inhdr = (const uint8_t *)req->in.vector[1].iov_base;
+	outhdr = (uint8_t *)req->out.vector[1].iov_base;
+	flags = IVAL(outhdr, SMB2_HDR_FLAGS);
+	message_id = BVAL(outhdr, SMB2_HDR_MESSAGE_ID);
+
 	async_id = message_id; /* keep it simple for now... */
+
+	SIVAL(outhdr, SMB2_HDR_FLAGS, flags | SMB2_HDR_FLAG_ASYNC);
+	SBVAL(outhdr, SMB2_HDR_ASYNC_ID, async_id);
+
+	DEBUG(10,("smbd_smb2_request_pending_queue: opcode[%s] mid %llu "
+		"going async\n",
+		smb2_opcode_name((uint16_t)IVAL(inhdr, SMB2_HDR_OPCODE)),
+		(unsigned long long)async_id ));
 
 	/*
 	 * What we send is identical to a smbd_smb2_request_error
@@ -866,7 +1015,9 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 
 	state = talloc_zero(req->sconn, struct smbd_smb2_request_pending_state);
 	if (state == NULL) {
-		return NT_STATUS_NO_MEMORY;
+		smbd_server_connection_terminate(req->sconn,
+						 nt_errstr(NT_STATUS_NO_MEMORY));
+		return;
 	}
 	state->sconn = req->sconn;
 
@@ -888,15 +1039,16 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 	SSVAL(hdr, SMB2_HDR_LENGTH, SMB2_HDR_BODY);
 	SSVAL(hdr, SMB2_HDR_EPOCH, 0);
 	SIVAL(hdr, SMB2_HDR_STATUS, NT_STATUS_V(STATUS_PENDING));
-	SSVAL(hdr, SMB2_HDR_OPCODE, SVAL(reqhdr, SMB2_HDR_OPCODE));
+	SSVAL(hdr, SMB2_HDR_OPCODE, SVAL(outhdr, SMB2_HDR_OPCODE));
 
-	SIVAL(hdr, SMB2_HDR_FLAGS, flags | SMB2_HDR_FLAG_ASYNC);
+	SIVAL(hdr, SMB2_HDR_FLAGS, flags);
 	SIVAL(hdr, SMB2_HDR_NEXT_COMMAND, 0);
 	SBVAL(hdr, SMB2_HDR_MESSAGE_ID, message_id);
 	SBVAL(hdr, SMB2_HDR_PID, async_id);
 	SBVAL(hdr, SMB2_HDR_SESSION_ID,
-		BVAL(reqhdr, SMB2_HDR_SESSION_ID));
-	memset(hdr+SMB2_HDR_SIGNATURE, 0, 16);
+		BVAL(outhdr, SMB2_HDR_SESSION_ID));
+	memcpy(hdr+SMB2_HDR_SIGNATURE,
+	       outhdr+SMB2_HDR_SIGNATURE, 16);
 
 	SSVAL(body, 0x00, 0x08 + 1);
 
@@ -913,93 +1065,34 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 			&req->in.vector[i],
 			&state->vector[1]);
 
+	SIVAL(hdr, SMB2_HDR_FLAGS, flags | SMB2_HDR_FLAG_ASYNC);
+
 	if (req->do_signing) {
+		NTSTATUS status;
+
 		status = smb2_signing_sign_pdu(req->session->session_key,
-					state->vector, 3);
+					&state->vector[1], 2);
 		if (!NT_STATUS_IS_OK(status)) {
-			return status;
+			smbd_server_connection_terminate(req->sconn,
+						nt_errstr(status));
+			return;
 		}
 	}
 
 	subreq = tstream_writev_queue_send(state,
-					req->sconn->smb2.event_ctx,
-					req->sconn->smb2.stream,
-					req->sconn->smb2.send_queue,
+					state->sconn->ev_ctx,
+					state->sconn->smb2.stream,
+					state->sconn->smb2.send_queue,
 					state->vector,
 					3);
-
 	if (subreq == NULL) {
-		return NT_STATUS_NO_MEMORY;
+		smbd_server_connection_terminate(state->sconn,
+						 nt_errstr(NT_STATUS_NO_MEMORY));
+		return;
 	}
-
 	tevent_req_set_callback(subreq,
 			smbd_smb2_request_pending_writev_done,
 			state);
-
-	/* Note we're going async with this request. */
-	req->async = true;
-
-	/*
-	 * Now manipulate req so that the outstanding async request
-	 * is the only one left in the struct smbd_smb2_request.
-	 */
-
-	if (req->current_idx == 1) {
-		/* There was only one. */
-		goto out;
-	}
-
-	/* Re-arrange the in.vectors. */
-	req->in.vector[1] = req->in.vector[i];
-	req->in.vector[2] = req->in.vector[i+1];
-	req->in.vector[3] = req->in.vector[i+2];
-	req->in.vector_count = 4;
-	/* Reset the new in size. */
-	smb2_setup_nbt_length(req->in.vector, 4);
-
-	/* Now recreate the out.vectors. */
-	outvec = talloc_zero_array(req, struct iovec, 4);
-	if (!outvec) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	/* 0 is always boilerplate and must
-	 * be of size 4 for the length field. */
-
-	outvec[0].iov_base = req->out.nbt_hdr;
-	outvec[0].iov_len = 4;
-	SIVAL(req->out.nbt_hdr, 0, 0);
-
-	if (!dup_smb2_vec3(outvec, &outvec[1], &req->out.vector[i])) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	TALLOC_FREE(req->out.vector);
-
-	req->out.vector = outvec;
-
-	req->current_idx = 1;
-	req->out.vector_count = 4;
-
-  out:
-
-	smb2_setup_nbt_length(req->out.vector,
-		req->out.vector_count);
-
-	/* Ensure our final reply matches the interim one. */
-	reqhdr = (uint8_t *)req->out.vector[1].iov_base;
-	SIVAL(reqhdr, SMB2_HDR_FLAGS, flags | SMB2_HDR_FLAG_ASYNC);
-	SBVAL(reqhdr, SMB2_HDR_PID, async_id);
-
-	{
-		const uint8_t *inhdr =
-			(const uint8_t *)req->in.vector[1].iov_base;
-		DEBUG(10,("smbd_smb2_request_pending_queue: opcode[%s] mid %llu "
-			"going async\n",
-			smb2_opcode_name((uint16_t)IVAL(inhdr, SMB2_HDR_OPCODE)),
-			(unsigned long long)async_id ));
-	}
-	return NT_STATUS_OK;
 }
 
 static NTSTATUS smbd_smb2_request_process_cancel(struct smbd_smb2_request *req)
@@ -1063,6 +1156,155 @@ static NTSTATUS smbd_smb2_request_process_cancel(struct smbd_smb2_request *req)
 	return NT_STATUS_OK;
 }
 
+/*************************************************************
+ Ensure an incoming tid is a valid one for us to access.
+ Change to the associated uid credentials and chdir to the
+ valid tid directory.
+*************************************************************/
+
+static NTSTATUS smbd_smb2_request_check_tcon(struct smbd_smb2_request *req)
+{
+	const uint8_t *inhdr;
+	int i = req->current_idx;
+	uint32_t in_flags;
+	uint32_t in_tid;
+	void *p;
+	struct smbd_smb2_tcon *tcon;
+
+	req->tcon = NULL;
+
+	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
+
+	in_flags = IVAL(inhdr, SMB2_HDR_FLAGS);
+	in_tid = IVAL(inhdr, SMB2_HDR_TID);
+
+	if (in_flags & SMB2_HDR_FLAG_CHAINED) {
+		in_tid = req->last_tid;
+	}
+
+	/* lookup an existing session */
+	p = idr_find(req->session->tcons.idtree, in_tid);
+	if (p == NULL) {
+		return NT_STATUS_NETWORK_NAME_DELETED;
+	}
+	tcon = talloc_get_type_abort(p, struct smbd_smb2_tcon);
+
+	if (!change_to_user(tcon->compat_conn,req->session->vuid)) {
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	/* should we pass FLAG_CASELESS_PATHNAMES here? */
+	if (!set_current_service(tcon->compat_conn, 0, true)) {
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	req->tcon = tcon;
+	req->last_tid = in_tid;
+
+	return NT_STATUS_OK;
+}
+
+/*************************************************************
+ Ensure an incoming session_id is a valid one for us to access.
+*************************************************************/
+
+static NTSTATUS smbd_smb2_request_check_session(struct smbd_smb2_request *req)
+{
+	const uint8_t *inhdr;
+	int i = req->current_idx;
+	uint32_t in_flags;
+	uint64_t in_session_id;
+	void *p;
+	struct smbd_smb2_session *session;
+
+	req->session = NULL;
+	req->tcon = NULL;
+
+	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
+
+	in_flags = IVAL(inhdr, SMB2_HDR_FLAGS);
+	in_session_id = BVAL(inhdr, SMB2_HDR_SESSION_ID);
+
+	if (in_flags & SMB2_HDR_FLAG_CHAINED) {
+		in_session_id = req->last_session_id;
+	}
+
+	/* lookup an existing session */
+	p = idr_find(req->sconn->smb2.sessions.idtree, in_session_id);
+	if (p == NULL) {
+		return NT_STATUS_USER_SESSION_DELETED;
+	}
+	session = talloc_get_type_abort(p, struct smbd_smb2_session);
+
+	if (!NT_STATUS_IS_OK(session->status)) {
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	set_current_user_info(session->session_info->unix_info->sanitized_username,
+			      session->session_info->unix_info->unix_name,
+			      session->session_info->info->domain_name);
+
+	req->session = session;
+	req->last_session_id = in_session_id;
+
+	return NT_STATUS_OK;
+}
+
+NTSTATUS smbd_smb2_request_verify_sizes(struct smbd_smb2_request *req,
+					size_t expected_body_size)
+{
+	const uint8_t *inhdr;
+	uint16_t opcode;
+	const uint8_t *inbody;
+	int i = req->current_idx;
+	size_t body_size;
+	size_t min_dyn_size = expected_body_size & 0x00000001;
+
+	/*
+	 * The following should be checked already.
+	 */
+	if ((i+2) > req->in.vector_count) {
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+	if (req->in.vector[i+0].iov_len != SMB2_HDR_BODY) {
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+	if (req->in.vector[i+1].iov_len < 2) {
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
+	opcode = SVAL(inhdr, SMB2_HDR_OPCODE);
+
+	switch (opcode) {
+	case SMB2_OP_IOCTL:
+	case SMB2_OP_GETINFO:
+		min_dyn_size = 0;
+		break;
+	}
+
+	/*
+	 * Now check the expected body size,
+	 * where the last byte might be in the
+	 * dynnamic section..
+	 */
+	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+	if (req->in.vector[i+2].iov_len < min_dyn_size) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
+
+	body_size = SVAL(inbody, 0x00);
+	if (body_size != expected_body_size) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	return NT_STATUS_OK;
+}
+
 NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 {
 	const uint8_t *inhdr;
@@ -1086,6 +1328,26 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		smb2_opcode_name(opcode),
 		(unsigned long long)mid));
 
+	if (get_Protocol() >= PROTOCOL_SMB2_02) {
+		/*
+		 * once the protocol is negotiated
+		 * SMB2_OP_NEGPROT is not allowed anymore
+		 */
+		if (opcode == SMB2_OP_NEGPROT) {
+			/* drop the connection */
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+	} else {
+		/*
+		 * if the protocol is not negotiated yet
+		 * only SMB2_OP_NEGPROT is allowed.
+		 */
+		if (opcode != SMB2_OP_NEGPROT) {
+			/* drop the connection */
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+	}
+
 	allowed_flags = SMB2_HDR_FLAG_CHAINED |
 			SMB2_HDR_FLAG_SIGNED |
 			SMB2_HDR_FLAG_DFS;
@@ -1096,6 +1358,14 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
+	/*
+	 * Check if the client provided a valid session id,
+	 * if so smbd_smb2_request_check_session() calls
+	 * set_current_user_info().
+	 *
+	 * As some command don't require a valid session id
+	 * we defer the check of the session_status
+	 */
 	session_status = smbd_smb2_request_check_session(req);
 
 	req->do_signing = false;
@@ -1110,6 +1380,8 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		if (!NT_STATUS_IS_OK(status)) {
 			return smbd_smb2_request_error(req, status);
 		}
+	} else if (opcode == SMB2_OP_CANCEL) {
+		/* Cancel requests are allowed to skip the signing */
 	} else if (req->session && req->session->do_signing) {
 		return smbd_smb2_request_error(req, NT_STATUS_ACCESS_DENIED);
 	}
@@ -1129,8 +1401,15 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		req->compat_chain_fsp = NULL;
 	}
 
+	if (req->compound_related) {
+		req->sconn->smb2.compound_related_in_progress = true;
+	}
+
 	switch (opcode) {
 	case SMB2_OP_NEGPROT:
+		/* This call needs to be run as root */
+		change_to_root_user();
+
 		{
 			START_PROFILE(smb2_negprot);
 			return_value = smbd_smb2_request_process_negprot(req);
@@ -1139,6 +1418,9 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		break;
 
 	case SMB2_OP_SESSSETUP:
+		/* This call needs to be run as root */
+		change_to_root_user();
+
 		{
 			START_PROFILE(smb2_sesssetup);
 			return_value = smbd_smb2_request_process_sesssetup(req);
@@ -1152,6 +1434,9 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			break;
 		}
 
+		/* This call needs to be run as root */
+		change_to_root_user();
+
 		{
 			START_PROFILE(smb2_logoff);
 			return_value = smbd_smb2_request_process_logoff(req);
@@ -1164,11 +1449,15 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
-		status = smbd_smb2_request_check_session(req);
-		if (!NT_STATUS_IS_OK(status)) {
-			return_value = smbd_smb2_request_error(req, status);
-			break;
-		}
+
+		/*
+		 * This call needs to be run as root.
+		 *
+		 * smbd_smb2_request_process_tcon()
+		 * calls make_connection_snum(), which will call
+		 * change_to_user(), when needed.
+		 */
+		change_to_root_user();
 
 		{
 			START_PROFILE(smb2_tcon);
@@ -1182,11 +1471,20 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
 			break;
 		}
+		/* This call needs to be run as root */
+		change_to_root_user();
+
 
 		{
 			START_PROFILE(smb2_tdis);
@@ -1200,6 +1498,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1218,6 +1522,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1236,6 +1546,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1254,6 +1570,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1272,6 +1594,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1294,6 +1622,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			/* Too ugly to live ? JRA. */
@@ -1316,6 +1650,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1330,6 +1670,13 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		break;
 
 	case SMB2_OP_CANCEL:
+		/*
+		 * This call needs to be run as root
+		 *
+		 * That is what we also do in the SMB1 case.
+		 */
+		change_to_root_user();
+
 		{
 			START_PROFILE(smb2_cancel);
 			return_value = smbd_smb2_request_process_cancel(req);
@@ -1338,9 +1685,14 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 		break;
 
 	case SMB2_OP_KEEPALIVE:
-		{START_PROFILE(smb2_keepalive);
-		return_value = smbd_smb2_request_process_keepalive(req);
-		END_PROFILE(smb2_keepalive);}
+		/* This call needs to be run as root */
+		change_to_root_user();
+
+		{
+			START_PROFILE(smb2_keepalive);
+			return_value = smbd_smb2_request_process_keepalive(req);
+			END_PROFILE(smb2_keepalive);
+		}
 		break;
 
 	case SMB2_OP_FIND:
@@ -1348,6 +1700,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1366,6 +1724,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1384,6 +1748,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1402,6 +1772,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1420,6 +1796,12 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 			return_value = smbd_smb2_request_error(req, session_status);
 			break;
 		}
+		/*
+		 * This call needs to be run as user.
+		 *
+		 * smbd_smb2_request_check_tcon()
+		 * calls change_to_user() on success.
+		 */
 		status = smbd_smb2_request_check_tcon(req);
 		if (!NT_STATUS_IS_OK(status)) {
 			return_value = smbd_smb2_request_error(req, status);
@@ -1446,6 +1828,7 @@ static NTSTATUS smbd_smb2_request_reply(struct smbd_smb2_request *req)
 	int i = req->current_idx;
 
 	req->subreq = NULL;
+	TALLOC_FREE(req->async_te);
 
 	req->current_idx += 3;
 
@@ -1463,19 +1846,21 @@ static NTSTATUS smbd_smb2_request_reply(struct smbd_smb2_request *req)
 			return NT_STATUS_NO_MEMORY;
 		}
 		tevent_schedule_immediate(im,
-					req->sconn->smb2.event_ctx,
+					req->sconn->ev_ctx,
 					smbd_smb2_request_dispatch_immediate,
 					req);
 		return NT_STATUS_OK;
 	}
 
+	if (req->compound_related) {
+		req->sconn->smb2.compound_related_in_progress = false;
+	}
+
 	smb2_setup_nbt_length(req->out.vector, req->out.vector_count);
 
-	/* Set credit for this operation (zero credits if this
+	/* Set credit for these operations (zero credits if this
 	   is a final reply for an async operation). */
-	smb2_set_operation_credit(req->sconn,
-			req->async ? NULL : &req->in.vector[i],
-			&req->out.vector[i]);
+	smb2_calculate_credits(req, req);
 
 	if (req->do_signing) {
 		NTSTATUS status;
@@ -1501,7 +1886,7 @@ static NTSTATUS smbd_smb2_request_reply(struct smbd_smb2_request *req)
 	}
 
 	subreq = tstream_writev_queue_send(req,
-					   req->sconn->smb2.event_ctx,
+					   req->sconn->ev_ctx,
 					   req->sconn->smb2.stream,
 					   req->sconn->smb2.send_queue,
 					   req->out.vector,
@@ -1518,6 +1903,8 @@ static NTSTATUS smbd_smb2_request_reply(struct smbd_smb2_request *req)
 
 	return NT_STATUS_OK;
 }
+
+static NTSTATUS smbd_smb2_request_next_incoming(struct smbd_server_connection *sconn);
 
 void smbd_smb2_request_dispatch_immediate(struct tevent_context *ctx,
 					struct tevent_immediate *im,
@@ -1541,6 +1928,12 @@ void smbd_smb2_request_dispatch_immediate(struct tevent_context *ctx,
 		smbd_server_connection_terminate(sconn, nt_errstr(status));
 		return;
 	}
+
+	status = smbd_smb2_request_next_incoming(sconn);
+	if (!NT_STATUS_IS_OK(status)) {
+		smbd_server_connection_terminate(sconn, nt_errstr(status));
+		return;
+	}
 }
 
 static void smbd_smb2_request_writev_done(struct tevent_req *subreq)
@@ -1550,14 +1943,21 @@ static void smbd_smb2_request_writev_done(struct tevent_req *subreq)
 	struct smbd_server_connection *sconn = req->sconn;
 	int ret;
 	int sys_errno;
+	NTSTATUS status;
 
 	ret = tstream_writev_queue_recv(subreq, &sys_errno);
 	TALLOC_FREE(subreq);
 	TALLOC_FREE(req);
 	if (ret == -1) {
-		NTSTATUS status = map_nt_error_from_unix(sys_errno);
+		status = map_nt_error_from_unix(sys_errno);
 		DEBUG(2,("smbd_smb2_request_writev_done: client write error %s\n",
 			nt_errstr(status)));
+		smbd_server_connection_terminate(sconn, nt_errstr(status));
+		return;
+	}
+
+	status = smbd_smb2_request_next_incoming(sconn);
+	if (!NT_STATUS_IS_OK(status)) {
 		smbd_server_connection_terminate(sconn, nt_errstr(status));
 		return;
 	}
@@ -1763,7 +2163,7 @@ NTSTATUS smbd_smb2_send_oplock_break(struct smbd_server_connection *sconn,
 	SBVAL(body, 0x10, file_id_volatile);
 
 	subreq = tstream_writev_queue_send(state,
-					   sconn->smb2.event_ctx,
+					   sconn->ev_ctx,
 					   sconn->smb2.stream,
 					   sconn->smb2.send_queue,
 					   &state->vector, 1);
@@ -2167,12 +2567,55 @@ static NTSTATUS smbd_smb2_request_read_recv(struct tevent_req *req,
 
 static void smbd_smb2_request_incoming(struct tevent_req *subreq);
 
+static NTSTATUS smbd_smb2_request_next_incoming(struct smbd_server_connection *sconn)
+{
+	size_t max_send_queue_len;
+	size_t cur_send_queue_len;
+	struct tevent_req *subreq;
+
+	if (sconn->smb2.compound_related_in_progress) {
+		/*
+		 * Can't read another until the related
+		 * compound is done.
+		 */
+		return NT_STATUS_OK;
+	}
+
+	if (tevent_queue_length(sconn->smb2.recv_queue) > 0) {
+		/*
+		 * if there is already a smbd_smb2_request_read
+		 * pending, we are done.
+		 */
+		return NT_STATUS_OK;
+	}
+
+	max_send_queue_len = MAX(1, sconn->smb2.max_credits/16);
+	cur_send_queue_len = tevent_queue_length(sconn->smb2.send_queue);
+
+	if (cur_send_queue_len > max_send_queue_len) {
+		/*
+		 * if we have a lot of requests to send,
+		 * we wait until they are on the wire until we
+		 * ask for the next request.
+		 */
+		return NT_STATUS_OK;
+	}
+
+	/* ask for the next request */
+	subreq = smbd_smb2_request_read_send(sconn, sconn->ev_ctx, sconn);
+	if (subreq == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	tevent_req_set_callback(subreq, smbd_smb2_request_incoming, sconn);
+
+	return NT_STATUS_OK;
+}
+
 void smbd_smb2_first_negprot(struct smbd_server_connection *sconn,
 			     const uint8_t *inbuf, size_t size)
 {
 	NTSTATUS status;
 	struct smbd_smb2_request *req = NULL;
-	struct tevent_req *subreq;
 
 	DEBUG(10,("smbd_smb2_first_negprot: packet length %u\n",
 		 (unsigned int)size));
@@ -2201,13 +2644,13 @@ void smbd_smb2_first_negprot(struct smbd_server_connection *sconn,
 		return;
 	}
 
-	/* ask for the next request */
-	subreq = smbd_smb2_request_read_send(sconn, sconn->smb2.event_ctx, sconn);
-	if (subreq == NULL) {
-		smbd_server_connection_terminate(sconn, "no memory for reading");
+	status = smbd_smb2_request_next_incoming(sconn);
+	if (!NT_STATUS_IS_OK(status)) {
+		smbd_server_connection_terminate(sconn, nt_errstr(status));
 		return;
 	}
-	tevent_req_set_callback(subreq, smbd_smb2_request_incoming, sconn);
+
+	sconn->num_requests++;
 }
 
 static void smbd_smb2_request_incoming(struct tevent_req *subreq)
@@ -2257,11 +2700,24 @@ static void smbd_smb2_request_incoming(struct tevent_req *subreq)
 	}
 
 next:
-	/* ask for the next request (this constructs the main loop) */
-	subreq = smbd_smb2_request_read_send(sconn, sconn->smb2.event_ctx, sconn);
-	if (subreq == NULL) {
-		smbd_server_connection_terminate(sconn, "no memory for reading");
+	status = smbd_smb2_request_next_incoming(sconn);
+	if (!NT_STATUS_IS_OK(status)) {
+		smbd_server_connection_terminate(sconn, nt_errstr(status));
 		return;
 	}
-	tevent_req_set_callback(subreq, smbd_smb2_request_incoming, sconn);
+
+	sconn->num_requests++;
+
+	/* The timeout_processing function isn't run nearly
+	   often enough to implement 'max log size' without
+	   overrunning the size of the file by many megabytes.
+	   This is especially true if we are running at debug
+	   level 10.  Checking every 50 SMB2s is a nice
+	   tradeoff of performance vs log file size overrun. */
+
+	if ((sconn->num_requests % 50) == 0 &&
+	    need_to_check_log_size()) {
+		change_to_root_user();
+		check_log_size();
+	}
 }

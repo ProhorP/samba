@@ -29,9 +29,12 @@
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
 #include "session.h"
 #include "auth.h"
+#include "../lib/tsocket/tsocket.h"
+#include "../libcli/security/security.h"
+#include "messages.h"
 
 /********************************************************************
  called when a session is created
@@ -39,19 +42,20 @@
 
 bool session_claim(struct smbd_server_connection *sconn, user_struct *vuser)
 {
-	struct server_id pid = sconn_server_id(sconn);
+	struct server_id pid = messaging_server_id(sconn->msg_ctx);
 	TDB_DATA data;
 	int i = 0;
 	struct sessionid sessionid;
 	fstring keystr;
 	struct db_record *rec;
 	NTSTATUS status;
+	char *raddr;
 
 	vuser->session_keystr = NULL;
 
 	/* don't register sessions for the guest user - its just too
 	   expensive to go through pam session code for browsing etc */
-	if (vuser->session_info->guest) {
+	if (security_session_user_level(vuser->session_info, NULL) < SECURITY_USER) {
 		return True;
 	}
 
@@ -73,6 +77,7 @@ bool session_claim(struct smbd_server_connection *sconn, user_struct *vuser)
 			 */
 
 			struct server_id sess_pid;
+			TDB_DATA value;
 
 			snprintf(keystr, sizeof(keystr), "ID/%d", i);
 
@@ -82,13 +87,15 @@ bool session_claim(struct smbd_server_connection *sconn, user_struct *vuser)
 				return False;
 			}
 
-			if (rec->value.dsize != sizeof(sessionid)) {
+			value = dbwrap_record_get_value(rec);
+
+			if (value.dsize != sizeof(sessionid)) {
 				DEBUG(1, ("Re-using invalid record\n"));
 				break;
 			}
 
 			memcpy(&sess_pid,
-			       ((char *)rec->value.dptr)
+			       ((char *)value.dptr)
 			       + offsetof(struct sessionid, pid),
 			       sizeof(sess_pid));
 
@@ -128,20 +135,23 @@ bool session_claim(struct smbd_server_connection *sconn, user_struct *vuser)
 
 	SMB_ASSERT(rec != NULL);
 
-	/* If 'hostname lookup' == yes, then do the DNS lookup.  This is
-           needed because utmp and PAM both expect DNS names
+	raddr = tsocket_address_inet_addr_string(sconn->remote_address,
+						 talloc_tos());
+	if (raddr == NULL) {
+		return false;
+	}
 
-	   client_name() handles this case internally.
-	*/
+	/* Make clear that we require the optional unix_token in the source3 code */
+	SMB_ASSERT(vuser->session_info->unix_token);
 
-	fstrcpy(sessionid.username, vuser->session_info->unix_name);
-	fstrcpy(sessionid.hostname, sconn->client_id.name);
+	fstrcpy(sessionid.username, vuser->session_info->unix_info->unix_name);
+	fstrcpy(sessionid.hostname, sconn->remote_hostname);
 	sessionid.id_num = i;  /* Only valid for utmp sessions */
 	sessionid.pid = pid;
-	sessionid.uid = vuser->session_info->utok.uid;
-	sessionid.gid = vuser->session_info->utok.gid;
+	sessionid.uid = vuser->session_info->unix_token->uid;
+	sessionid.gid = vuser->session_info->unix_token->gid;
 	fstrcpy(sessionid.remote_machine, get_remote_machine_name());
-	fstrcpy(sessionid.ip_addr_str, sconn->client_id.addr);
+	fstrcpy(sessionid.ip_addr_str, raddr);
 	sessionid.connect_start = time(NULL);
 
 	if (!smb_pam_claim_session(sessionid.username, sessionid.id_str,
@@ -156,7 +166,7 @@ bool session_claim(struct smbd_server_connection *sconn, user_struct *vuser)
 	data.dptr = (uint8 *)&sessionid;
 	data.dsize = sizeof(sessionid);
 
-	status = rec->store(rec, data, TDB_REPLACE);
+	status = dbwrap_record_store(rec, data, TDB_REPLACE);
 
 	TALLOC_FREE(rec);
 
@@ -188,6 +198,7 @@ void session_yield(user_struct *vuser)
 {
 	struct sessionid sessionid;
 	struct db_record *rec;
+	TDB_DATA value;
 
 	if (!vuser->session_keystr) {
 		return;
@@ -198,10 +209,12 @@ void session_yield(user_struct *vuser)
 		return;
 	}
 
-	if (rec->value.dsize != sizeof(sessionid))
+	value = dbwrap_record_get_value(rec);
+
+	if (value.dsize != sizeof(sessionid))
 		return;
 
-	memcpy(&sessionid, rec->value.dptr, sizeof(sessionid));
+	memcpy(&sessionid, value.dptr, sizeof(sessionid));
 
 	if (lp_utmp()) {
 		sys_utmp_yield(sessionid.username, sessionid.hostname, 
@@ -212,7 +225,7 @@ void session_yield(user_struct *vuser)
 	smb_pam_close_session(sessionid.username, sessionid.id_str,
 			      sessionid.hostname);
 
-	rec->delete_rec(rec);
+	dbwrap_record_delete(rec);
 
 	TALLOC_FREE(rec);
 }
@@ -257,14 +270,14 @@ static int gather_sessioninfo(const char *key, struct sessionid *session,
 int list_sessions(TALLOC_CTX *mem_ctx, struct sessionid **session_list)
 {
 	struct session_list sesslist;
-	int ret;
+	NTSTATUS status;
 
 	sesslist.mem_ctx = mem_ctx;
 	sesslist.count = 0;
 	sesslist.sessions = NULL;
 
-	ret = sessionid_traverse_read(gather_sessioninfo, (void *) &sesslist);
-	if (ret < 0) {
+	status = sessionid_traverse_read(gather_sessioninfo, (void *) &sesslist);
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("Session traverse failed\n"));
 		SAFE_FREE(sesslist.sessions);
 		*session_list = NULL;

@@ -27,6 +27,7 @@
 #include "lib/socket/interfaces.h"
 #include "../lib/util/tevent_unix.h"
 #include "../lib/util/tevent_ntstatus.h"
+#include "../lib/tsocket/tsocket.h"
 
 const char *client_name(int fd)
 {
@@ -45,26 +46,6 @@ int client_socket_port(int fd)
 	return get_socket_port(fd);
 }
 #endif
-
-/****************************************************************************
- Accessor functions to make thread-safe code easier later...
-****************************************************************************/
-
-void set_smb_read_error(enum smb_read_errors *pre,
-			enum smb_read_errors newerr)
-{
-	if (pre) {
-		*pre = newerr;
-	}
-}
-
-void cond_set_smb_read_error(enum smb_read_errors *pre,
-			enum smb_read_errors newerr)
-{
-	if (pre && *pre == SMB_READ_OK) {
-		*pre = newerr;
-	}
-}
 
 /****************************************************************************
  Determine if a file descriptor is in fact a socket.
@@ -319,7 +300,7 @@ bool send_keepalive(int client)
 {
 	unsigned char buf[4];
 
-	buf[0] = SMBkeepalive;
+	buf[0] = NBSSkeepalive;
 	buf[1] = buf[2] = buf[3] = 0;
 
 	return(write_data(client,(char *)buf,4) == 4);
@@ -349,7 +330,7 @@ NTSTATUS read_smb_length_return_keepalive(int fd, char *inbuf,
 	*len = smb_len(inbuf);
 	msg_type = CVAL(inbuf,0);
 
-	if (msg_type == SMBkeepalive) {
+	if (msg_type == NBSSkeepalive) {
 		DEBUG(5,("Got keepalive packet\n"));
 	}
 
@@ -501,8 +482,9 @@ int open_socket_in(int type,
 
 	/* now we've got a socket - we need to bind it */
 	if (bind(res, (struct sockaddr *)&sock, slen) == -1 ) {
-		if( DEBUGLVL(dlevel) && (port == SMB_PORT1 ||
-				port == SMB_PORT2 || port == NMB_PORT) ) {
+		if( DEBUGLVL(dlevel) && (port == NMB_PORT ||
+					 port == NBT_SMB_PORT ||
+					 port == TCP_SMB_PORT) ) {
 			char addr[INET6_ADDRSTRLEN];
 			print_sockaddr(addr, sizeof(addr),
 					&sock);
@@ -1126,6 +1108,113 @@ const char *get_peer_addr(int fd, char *addr, size_t addr_len)
 	return get_peer_addr_internal(fd, addr, addr_len, NULL, NULL);
 }
 
+int get_remote_hostname(const struct tsocket_address *remote_address,
+			char **name,
+			TALLOC_CTX *mem_ctx)
+{
+	char name_buf[MAX_DNS_NAME_LENGTH];
+	char tmp_name[MAX_DNS_NAME_LENGTH];
+	struct name_addr_pair nc;
+	struct sockaddr_storage ss;
+	ssize_t len;
+	int rc;
+
+	if (!lp_hostname_lookups()) {
+		nc.name = tsocket_address_inet_addr_string(remote_address,
+							   mem_ctx);
+		if (nc.name == NULL) {
+			return -1;
+		}
+
+		len = tsocket_address_bsd_sockaddr(remote_address,
+						   (struct sockaddr *) &nc.ss,
+						   sizeof(struct sockaddr_storage));
+		if (len < 0) {
+			return -1;
+		}
+
+		store_nc(&nc);
+		lookup_nc(&nc);
+
+		if (nc.name == NULL) {
+			*name = talloc_strdup(mem_ctx, "UNKNOWN");
+		} else {
+			*name = talloc_strdup(mem_ctx, nc.name);
+		}
+		return 0;
+	}
+
+	lookup_nc(&nc);
+
+	ZERO_STRUCT(ss);
+
+	len = tsocket_address_bsd_sockaddr(remote_address,
+					   (struct sockaddr *) &ss,
+					   sizeof(struct sockaddr_storage));
+	if (len < 0) {
+		return -1;
+	}
+
+	/* it might be the same as the last one - save some DNS work */
+	if (sockaddr_equal((struct sockaddr *)&ss, (struct sockaddr *)&nc.ss)) {
+		if (nc.name == NULL) {
+			*name = talloc_strdup(mem_ctx, "UNKNOWN");
+		} else {
+			*name = talloc_strdup(mem_ctx, nc.name);
+		}
+		return 0;
+	}
+
+	/* Look up the remote host name. */
+	rc = sys_getnameinfo((struct sockaddr *) &ss,
+			     len,
+			     name_buf,
+			     sizeof(name_buf),
+			     NULL,
+			     0,
+			     0);
+	if (rc < 0) {
+		char *p;
+
+		p = tsocket_address_inet_addr_string(remote_address, mem_ctx);
+		if (p == NULL) {
+			return -1;
+		}
+
+		DEBUG(1,("getnameinfo failed for %s with error %s\n",
+			 p,
+			 gai_strerror(rc)));
+		strlcpy(name_buf, p, sizeof(name_buf));
+
+		TALLOC_FREE(p);
+	} else {
+		if (!matchname(name_buf, (struct sockaddr *)&ss, len)) {
+			DEBUG(0,("matchname failed on %s\n", name_buf));
+			strlcpy(name_buf, "UNKNOWN", sizeof(name_buf));
+		}
+	}
+
+	strlcpy(tmp_name, name_buf, sizeof(tmp_name));
+	alpha_strcpy(name_buf, tmp_name, "_-.", sizeof(name_buf));
+	if (strstr(name_buf,"..")) {
+		strlcpy(name_buf, "UNKNOWN", sizeof(name_buf));
+	}
+
+	nc.name = name_buf;
+	nc.ss = ss;
+
+	store_nc(&nc);
+	lookup_nc(&nc);
+
+	if (nc.name == NULL) {
+		*name = talloc_strdup(mem_ctx, "UNKOWN");
+	} else {
+		*name = talloc_strdup(mem_ctx, nc.name);
+	}
+
+	return 0;
+}
+
 /*******************************************************************
  Create protected unix domain socket.
 
@@ -1206,12 +1295,6 @@ int create_pipe_sock(const char *socket_dir,
 
 	if (bind(sock, (struct sockaddr *)&sunaddr, sizeof(sunaddr)) == -1) {
 		DEBUG(0, ("bind failed on pipe socket %s: %s\n", path,
-			strerror(errno)));
-		goto out_close;
-	}
-
-	if (listen(sock, 5) == -1) {
-		DEBUG(0, ("listen failed on pipe socket %s: %s\n", path,
 			strerror(errno)));
 		goto out_close;
 	}
@@ -1521,7 +1604,7 @@ int poll_one_fd(int fd, int events, int timeout, int *revents)
 	int ret;
 	int saved_errno;
 
-	fds = talloc_zero_array(talloc_tos(), struct pollfd, 2);
+	fds = talloc_zero_array(talloc_tos(), struct pollfd, 1);
 	if (fds == NULL) {
 		errno = ENOMEM;
 		return -1;
@@ -1529,7 +1612,7 @@ int poll_one_fd(int fd, int events, int timeout, int *revents)
 	fds[0].fd = fd;
 	fds[0].events = events;
 
-	ret = sys_poll(fds, 1, timeout);
+	ret = poll(fds, 1, timeout);
 
 	/*
 	 * Assign whatever poll did, even in the ret<=0 case.

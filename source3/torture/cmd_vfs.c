@@ -1,4 +1,4 @@
-/* 
+/*
    Unix SMB/CIFS implementation.
    VFS module functions
 
@@ -9,12 +9,12 @@
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -31,7 +31,7 @@ static const char *null_string = "";
 static NTSTATUS cmd_load_module(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, const char **argv)
 {
 	int i;
-	
+
 	if (argc < 2) {
 		printf("Usage: load <modules>\n");
 		return NT_STATUS_OK;
@@ -207,7 +207,7 @@ static NTSTATUS cmd_mkdir(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, 
 		printf("mkdir error=%d (%s)\n", errno, strerror(errno));
 		return NT_STATUS_UNSUCCESSFUL;
 	}
-	
+
 	printf("mkdir: ok\n");
 	return NT_STATUS_OK;
 }
@@ -216,7 +216,7 @@ static NTSTATUS cmd_mkdir(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, 
 static NTSTATUS cmd_closedir(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, const char **argv)
 {
 	int ret;
-	
+
 	if (vfs->currentdir == NULL) {
 		printf("closedir: failure (no directory open)\n");
 		return NT_STATUS_UNSUCCESSFUL;
@@ -329,7 +329,7 @@ static NTSTATUS cmd_open(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, c
 	}
 	fsp->conn = vfs->conn;
 
-	status = create_synthetic_smb_fname_split(mem_ctx, argv[1], NULL,
+	status = create_synthetic_smb_fname_split(NULL, argv[1], NULL,
 						  &smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
 		SAFE_FREE(fsp);
@@ -441,7 +441,7 @@ static NTSTATUS cmd_read(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, c
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 	vfs->data_size = size;
-	
+
 	rsize = SMB_VFS_READ(vfs->files[fd], vfs->data, size);
 	if (rsize == -1) {
 		printf("read: error=%d (%s)\n", errno, strerror(errno));
@@ -781,7 +781,7 @@ static NTSTATUS cmd_lstat(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, 
 	printf("  Modify: %s", ctime(&tmp_time));
 	tmp_time = convert_timespec_to_time_t(st.st_ex_ctime);
 	printf("  Change: %s", ctime(&tmp_time));
-	
+
 	return NT_STATUS_OK;
 }
 
@@ -970,7 +970,7 @@ static NTSTATUS cmd_lock(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, c
 	long count;
 	int type;
 	const char *typestr;
-	
+
 	if (argc != 6) {
 		printf("Usage: lock <fd> <op> <offset> <count> <type>\n");
                 printf("  ops: G = F_GETLK\n");
@@ -1103,7 +1103,7 @@ static NTSTATUS cmd_mknod(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int argc, 
 	mode_t mode;
 	unsigned int dev_val;
 	SMB_DEV_T dev;
-	
+
 	if (argc != 4) {
 		printf("Usage: mknod <path> <mode> <dev>\n");
 		printf("  mode is octal\n");
@@ -1147,6 +1147,131 @@ static NTSTATUS cmd_realpath(struct vfs_state *vfs, TALLOC_CTX *mem_ctx, int arg
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS cmd_getxattr(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
+			     int argc, const char **argv)
+{
+	uint8_t *buf;
+	ssize_t ret;
+
+	if (argc != 3) {
+		printf("Usage: getxattr <path> <xattr>\n");
+		return NT_STATUS_OK;
+	}
+
+	buf = NULL;
+
+	ret = SMB_VFS_GETXATTR(vfs->conn, argv[1], argv[2], buf,
+			       talloc_get_size(buf));
+	if (ret == -1) {
+		int err = errno;
+		printf("getxattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	buf = talloc_array(mem_ctx, uint8_t, ret);
+	if (buf == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	ret = SMB_VFS_GETXATTR(vfs->conn, argv[1], argv[2], buf,
+			       talloc_get_size(buf));
+	if (ret == -1) {
+		int err = errno;
+		printf("getxattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	dump_data_file(buf, talloc_get_size(buf), false, stdout);
+	return NT_STATUS_OK;
+}
+
+static NTSTATUS cmd_listxattr(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
+			      int argc, const char **argv)
+{
+	char *buf, *p;
+	ssize_t ret;
+
+	if (argc != 2) {
+		printf("Usage: listxattr <path>\n");
+		return NT_STATUS_OK;
+	}
+
+	buf = NULL;
+
+	ret = SMB_VFS_LISTXATTR(vfs->conn, argv[1], buf, talloc_get_size(buf));
+	if (ret == -1) {
+		int err = errno;
+		printf("listxattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	buf = talloc_array(mem_ctx, char, ret);
+	if (buf == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	ret = SMB_VFS_LISTXATTR(vfs->conn, argv[1], buf, talloc_get_size(buf));
+	if (ret == -1) {
+		int err = errno;
+		printf("listxattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	if (ret == 0) {
+		return NT_STATUS_OK;
+	}
+	if (buf[ret-1] != '\0') {
+		printf("listxattr returned non 0-terminated strings\n");
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	p = buf;
+	while (p < buf+ret) {
+		printf("%s\n", p);
+		p = strchr(p, 0);
+		p += 1;
+	}
+	return NT_STATUS_OK;
+}
+
+static NTSTATUS cmd_setxattr(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
+			     int argc, const char **argv)
+{
+	ssize_t ret;
+	int flags = 0;
+
+	if ((argc < 4) || (argc > 5)) {
+		printf("Usage: setxattr <path> <xattr> <value> [flags]\n");
+		return NT_STATUS_OK;
+	}
+
+	if (argc == 5) {
+		flags = atoi(argv[4]);
+	}
+
+	ret = SMB_VFS_SETXATTR(vfs->conn, argv[1], argv[2],
+			       argv[3], strlen(argv[3]), flags);
+	if (ret == -1) {
+		int err = errno;
+		printf("setxattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	return NT_STATUS_OK;
+}
+
+static NTSTATUS cmd_removexattr(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
+				int argc, const char **argv)
+{
+	ssize_t ret;
+
+	if (argc != 3) {
+		printf("Usage: removexattr <path> <xattr>\n");
+		return NT_STATUS_OK;
+	}
+
+	ret = SMB_VFS_REMOVEXATTR(vfs->conn, argv[1], argv[2]);
+	if (ret == -1) {
+		int err = errno;
+		printf("removexattr returned (%s)\n", strerror(err));
+		return map_nt_error_from_unix(err);
+	}
+	return NT_STATUS_OK;
+}
+
 struct cmd_set vfs_commands[] = {
 
 	{ "VFS Commands" },
@@ -1187,5 +1312,13 @@ struct cmd_set vfs_commands[] = {
 	{ "link",   cmd_link,   "VFS link()",    "link <oldpath> <newpath>" },
 	{ "mknod",   cmd_mknod,   "VFS mknod()",    "mknod <path> <mode> <dev>" },
 	{ "realpath",   cmd_realpath,   "VFS realpath()",    "realpath <path>" },
+	{ "getxattr", cmd_getxattr, "VFS getxattr()",
+	  "getxattr <path> <name>" },
+	{ "listxattr", cmd_listxattr, "VFS listxattr()",
+	  "listxattr <path>" },
+	{ "setxattr", cmd_setxattr, "VFS setxattr()",
+	  "setxattr <path> <name> <value> [<flags>]" },
+	{ "removexattr", cmd_removexattr, "VFS removexattr()",
+	  "removexattr <path> <name>\n" },
 	{ NULL }
 };

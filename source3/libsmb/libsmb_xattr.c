@@ -884,13 +884,15 @@ cacl_get(SMBCCTX *context,
         if (ipc_cli && (all || some_nt || all_nt_acls)) {
 		char *targetpath = NULL;
 	        struct cli_state *targetcli = NULL;
+		NTSTATUS status;
 
                 /* Point to the portion after "system.nt_sec_desc." */
                 name += 19;     /* if (all) this will be invalid but unused */
 
-		if (!cli_resolve_path(ctx, "", context->internal->auth_info,
-				cli, filename,
-				&targetcli, &targetpath)) {
+		status = cli_resolve_path(
+			ctx, "", context->internal->auth_info,
+			cli, filename, &targetcli, &targetpath);
+		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(5, ("cacl_get Could not resolve %s\n",
 				filename));
                         errno = ENOENT;
@@ -898,22 +900,25 @@ cacl_get(SMBCCTX *context,
 		}
 
                 /* ... then obtain any NT attributes which were requested */
-                if (!NT_STATUS_IS_OK(cli_ntcreate(targetcli, targetpath, 0, CREATE_ACCESS_READ, 0,
-				FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0x0, 0x0, &fnum))) {
+		status = cli_ntcreate(targetcli, targetpath, 0,
+				      CREATE_ACCESS_READ, 0,
+				      FILE_SHARE_READ|FILE_SHARE_WRITE,
+				      FILE_OPEN, 0x0, 0x0, &fnum);
+		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(5, ("cacl_get failed to open %s: %s\n",
-				targetpath, cli_errstr(targetcli)));
+				  targetpath, nt_errstr(status)));
 			errno = 0;
 			return -1;
 		}
 
-		sd = cli_query_secdesc(targetcli, fnum, ctx);
-
-                if (!sd) {
-                        DEBUG(5,
-                              ("cacl_get Failed to query old descriptor\n"));
-                        errno = 0;
-                        return -1;
-                }
+		status = cli_query_secdesc(targetcli, fnum, ctx, &sd);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(5,("cacl_get Failed to query old descriptor "
+				 "of %s: %s\n",
+				  targetpath, nt_errstr(status)));
+			errno = 0;
+			return -1;
+		}
 
                 cli_close(targetcli, fnum);
 
@@ -1544,9 +1549,9 @@ cacl_set(SMBCCTX *context,
 		return -1;
 	}
 
-	if (!cli_resolve_path(ctx, "", context->internal->auth_info,
-			cli, filename,
-			&targetcli, &targetpath)) {
+	status = cli_resolve_path(ctx, "", context->internal->auth_info,
+				  cli, filename, &targetcli, &targetpath);
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5,("cacl_set: Could not resolve %s\n", filename));
 		errno = ENOENT;
 		return -1;
@@ -1555,19 +1560,21 @@ cacl_set(SMBCCTX *context,
 	/* The desired access below is the only one I could find that works
 	   with NT4, W2KP and Samba */
 
-	if (!NT_STATUS_IS_OK(cli_ntcreate(targetcli, targetpath, 0, CREATE_ACCESS_READ, 0,
-				FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0x0, 0x0, &fnum))) {
+	status = cli_ntcreate(targetcli, targetpath, 0, CREATE_ACCESS_READ, 0,
+			      FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN,
+			      0x0, 0x0, &fnum);
+	if (!NT_STATUS_IS_OK(status)) {
                 DEBUG(5, ("cacl_set failed to open %s: %s\n",
-                          targetpath, cli_errstr(targetcli)));
+                          targetpath, nt_errstr(status)));
                 errno = 0;
 		return -1;
 	}
 
-	old = cli_query_secdesc(targetcli, fnum, ctx);
-
-	if (!old) {
-                DEBUG(5, ("cacl_set Failed to query old descriptor\n"));
-                errno = 0;
+	status = cli_query_secdesc(targetcli, fnum, ctx, &old);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(5,("cacl_set Failed to query old descriptor of %s: %s\n",
+			 targetpath, nt_errstr(status)));
+		errno = 0;
 		return -1;
 	}
 
@@ -1660,11 +1667,13 @@ cacl_set(SMBCCTX *context,
 	sd = make_sec_desc(ctx, old->revision, SEC_DESC_SELF_RELATIVE,
 			   owner_sid, group_sid, NULL, dacl, &sd_size);
 
-	if (!NT_STATUS_IS_OK(cli_ntcreate(targetcli, targetpath, 0,
-                             WRITE_DAC_ACCESS | WRITE_OWNER_ACCESS, 0,
-			     FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0x0, 0x0, &fnum))) {
+	status = cli_ntcreate(targetcli, targetpath, 0,
+			      WRITE_DAC_ACCESS | WRITE_OWNER_ACCESS, 0,
+			      FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN,
+			      0x0, 0x0, &fnum);
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5, ("cacl_set failed to open %s: %s\n",
-                          targetpath, cli_errstr(targetcli)));
+                          targetpath, nt_errstr(status)));
                 errno = 0;
 		return -1;
 	}

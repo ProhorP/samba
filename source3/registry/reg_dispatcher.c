@@ -24,6 +24,7 @@
  */
 
 #include "includes.h"
+#include "system/passwd.h" /* uid_wrapper */
 #include "registry.h"
 #include "reg_dispatcher.h"
 #include "../libcli/security/security.h"
@@ -113,10 +114,10 @@ WERROR create_reg_subkey(struct registry_key_handle *key, const char *subkey)
 	return WERR_NOT_SUPPORTED;
 }
 
-WERROR delete_reg_subkey(struct registry_key_handle *key, const char *subkey)
+WERROR delete_reg_subkey(struct registry_key_handle *key, const char *subkey, bool lazy)
 {
 	if (key->ops && key->ops->delete_subkey) {
-		return key->ops->delete_subkey(key->name, subkey);
+		return key->ops->delete_subkey(key->name, subkey, lazy);
 	}
 
 	return WERR_NOT_SUPPORTED;

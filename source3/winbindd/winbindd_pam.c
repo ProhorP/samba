@@ -37,6 +37,7 @@
 #include "../librpc/gen_ndr/krb5pac.h"
 #include "passdb/machine_sid.h"
 #include "auth.h"
+#include "../lib/tsocket/tsocket.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -51,11 +52,11 @@ static NTSTATUS append_info3_as_txt(TALLOC_CTX *mem_ctx,
 	uint32_t i;
 
 	resp->data.auth.info3.logon_time =
-		nt_time_to_unix(info3->base.last_logon);
+		nt_time_to_unix(info3->base.logon_time);
 	resp->data.auth.info3.logoff_time =
-		nt_time_to_unix(info3->base.last_logoff);
+		nt_time_to_unix(info3->base.logoff_time);
 	resp->data.auth.info3.kickoff_time =
-		nt_time_to_unix(info3->base.acct_expiry);
+		nt_time_to_unix(info3->base.kickoff_time);
 	resp->data.auth.info3.pass_last_set_time =
 		nt_time_to_unix(info3->base.last_password_change);
 	resp->data.auth.info3.pass_can_change_time =
@@ -92,7 +93,7 @@ static NTSTATUS append_info3_as_txt(TALLOC_CTX *mem_ctx,
 	fstrcpy(resp->data.auth.info3.logon_srv,
 		info3->base.logon_server.string);
 	fstrcpy(resp->data.auth.info3.logon_dom,
-		info3->base.domain.string);
+		info3->base.logon_domain.string);
 
 	ex = talloc_strdup(mem_ctx, "");
 	NT_STATUS_HAVE_NO_MEMORY(ex);
@@ -155,7 +156,7 @@ static NTSTATUS append_unix_username(TALLOC_CTX *mem_ctx,
 
 	const char *nt_username, *nt_domain;
 
-	nt_domain = talloc_strdup(mem_ctx, info3->base.domain.string);
+	nt_domain = talloc_strdup(mem_ctx, info3->base.logon_domain.string);
 	if (!nt_domain) {
 		/* If the server didn't give us one, just use the one
 		 * we sent them */
@@ -894,7 +895,7 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 			return NT_STATUS_LOGON_FAILURE;
 		}
 
-		kickoff_time = nt_time_to_unix(my_info3->base.acct_expiry);
+		kickoff_time = nt_time_to_unix(my_info3->base.kickoff_time);
 		if (kickoff_time != 0 && time(NULL) > kickoff_time) {
 			return NT_STATUS_ACCOUNT_EXPIRED;
 		}
@@ -976,7 +977,7 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 		/* FIXME: we possibly should handle logon hours as well (does xp when
 		 * offline?) see auth/auth_sam.c:sam_account_ok for details */
 
-		unix_to_nt_time(&my_info3->base.last_logon, time(NULL));
+		unix_to_nt_time(&my_info3->base.logon_time, time(NULL));
 		my_info3->base.bad_password_count = 0;
 
 		result = winbindd_update_creds_by_info3(domain,
@@ -1078,7 +1079,8 @@ static NTSTATUS winbindd_dual_pam_auth_kerberos(struct winbindd_domain *domain,
 			DEBUG(3, ("Authentication for domain for [%s] -> [%s]\\[%s] failed as %s is not a trusted domain\n",
 				  state->request->data.auth.user, name_domain, name_user, name_domain));
 
-			contact_domain = find_our_domain();
+			result =  NT_STATUS_NO_SUCH_USER;
+			goto done;
 		}
 	}
 
@@ -1108,6 +1110,7 @@ done:
 }
 
 static NTSTATUS winbindd_dual_auth_passdb(TALLOC_CTX *mem_ctx,
+					  uint32_t logon_parameters,
 					  const char *domain, const char *user,
 					  const DATA_BLOB *challenge,
 					  const DATA_BLOB *lm_resp,
@@ -1115,15 +1118,26 @@ static NTSTATUS winbindd_dual_auth_passdb(TALLOC_CTX *mem_ctx,
 					  struct netr_SamInfo3 **pinfo3)
 {
 	struct auth_usersupplied_info *user_info = NULL;
+	struct tsocket_address *local;
 	NTSTATUS status;
+	int rc;
 
+	rc = tsocket_address_inet_from_strings(mem_ctx,
+					       "ip",
+					       "127.0.0.1",
+					       0,
+					       &local);
+	if (rc < 0) {
+		return NT_STATUS_NO_MEMORY;
+	}
 	status = make_user_info(&user_info, user, user, domain, domain,
-				lp_netbios_name(), lm_resp, nt_resp, NULL, NULL,
+				lp_netbios_name(), local, lm_resp, nt_resp, NULL, NULL,
 				NULL, AUTH_PASSWORD_RESPONSE);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("make_user_info failed: %s\n", nt_errstr(status)));
 		return status;
 	}
+	user_info->logon_parameters = logon_parameters;
 
 	/* We don't want any more mapping of the username */
 	user_info->mapped_state = True;
@@ -1224,7 +1238,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 			result = rpccli_netlogon_sam_network_logon_ex(
 					netlogon_pipe,
 					mem_ctx,
-					0,
+					logon_parameters,
 					server,		/* server name */
 					username,	/* user name */
 					domainname,	/* target domain */
@@ -1238,7 +1252,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 			result = rpccli_netlogon_sam_network_logon(
 					netlogon_pipe,
 					mem_ctx,
-					0,
+					logon_parameters,
 					server,		/* server name */
 					username,	/* user name */
 					domainname,	/* target domain */
@@ -1250,18 +1264,30 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					info3);
 		}
 
-		if (NT_STATUS_EQUAL(result, NT_STATUS_RPC_PROCNUM_OUT_OF_RANGE)
-		    && domain->can_do_samlogon_ex) {
-			DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
-				  "retrying with NetSamLogon\n"));
-			domain->can_do_samlogon_ex = false;
+		if (NT_STATUS_EQUAL(result, NT_STATUS_RPC_PROCNUM_OUT_OF_RANGE)) {
+
 			/*
 			 * It's likely that the server also does not support
 			 * validation level 6
 			 */
 			domain->can_do_validation6 = false;
-			retry = true;
-			continue;
+
+			if (domain->can_do_samlogon_ex) {
+				DEBUG(3, ("Got a DC that can not do NetSamLogonEx, "
+					  "retrying with NetSamLogon\n"));
+				domain->can_do_samlogon_ex = false;
+				retry = true;
+				continue;
+			}
+
+
+			/* Got DCERPC_FAULT_OP_RNG_ERROR for SamLogon
+			 * (no Ex). This happens against old Samba
+			 * DCs. Drop the connection.
+			 */
+			invalidate_cm_connection(&domain->conn);
+			result = NT_STATUS_LOGON_FAILURE;
+			break;
 		}
 
 		if (domain->can_do_validation6 &&
@@ -1373,7 +1399,7 @@ static NTSTATUS winbindd_dual_pam_auth_samlogon(TALLOC_CTX *mem_ctx,
 		DATA_BLOB chal_blob = data_blob_const(chal, sizeof(chal));
 
 		result = winbindd_dual_auth_passdb(
-			mem_ctx, name_domain, name_user,
+			mem_ctx, 0, name_domain, name_user,
 			&chal_blob, &lm_resp, &nt_resp, info3);
 		goto done;
 	}
@@ -1796,7 +1822,9 @@ enum winbindd_result winbindd_dual_pam_auth_crap(struct winbindd_domain *domain,
 			sizeof(state->request->data.auth_crap.chal));
 
 		result = winbindd_dual_auth_passdb(
-			state->mem_ctx, name_domain, name_user,
+			state->mem_ctx,
+			state->request->data.auth_crap.logon_parameters,
+			name_domain, name_user,
 			&chal_blob, &lm_resp, &nt_resp, &info3);
 		goto process_result;
 	}

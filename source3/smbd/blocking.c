@@ -139,9 +139,9 @@ static bool recalc_brl_timeout(struct smbd_server_connection *sconn)
 		    (int)from_now.tv_sec, (int)from_now.tv_usec));
 	}
 
-	sconn->smb1.locks.brl_timeout = event_add_timed(server_event_context(),
-							NULL, next_timeout,
-							brl_timeout_fn, sconn);
+	sconn->smb1.locks.brl_timeout = tevent_add_timer(sconn->ev_ctx,
+							 NULL, next_timeout,
+							 brl_timeout_fn, sconn);
 	if (sconn->smb1.locks.brl_timeout == NULL) {
 		return False;
 	}
@@ -225,7 +225,7 @@ bool push_blocking_lock_request( struct byte_range_lock *br_lck,
 	status = brl_lock(req->sconn->msg_ctx,
 			br_lck,
 			smblctx,
-			sconn_server_id(req->sconn),
+			messaging_server_id(req->sconn->msg_ctx),
 			offset,
 			count,
 			lock_type == READ_LOCK ? PENDING_READ_LOCK : PENDING_WRITE_LOCK,
@@ -248,7 +248,7 @@ bool push_blocking_lock_request( struct byte_range_lock *br_lck,
 
 	/* Ensure we'll receive messages when this is unlocked. */
 	if (!sconn->smb1.locks.blocking_lock_unlock_state) {
-		messaging_register(sconn->msg_ctx, NULL,
+		messaging_register(sconn->msg_ctx, sconn,
 				   MSG_SMB_UNLOCK, received_unlock_msg);
 		sconn->smb1.locks.blocking_lock_unlock_state = true;
 	}
@@ -302,7 +302,7 @@ static void generic_blocking_lock_error(struct blocking_lock_record *blr, NTSTAT
 			fsp->last_lock_failure.context.smblctx = blr->smblctx;
 			fsp->last_lock_failure.context.tid = fsp->conn->cnum;
 			fsp->last_lock_failure.context.pid =
-				sconn_server_id(fsp->conn->sconn);
+				messaging_server_id(fsp->conn->sconn->msg_ctx);
 			fsp->last_lock_failure.start = blr->offset;
 			fsp->last_lock_failure.size = blr->count;
 			fsp->last_lock_failure.fnum = fsp->fnum;
@@ -616,7 +616,7 @@ void smbd_cancel_pending_lock_requests_by_fid(files_struct *fsp,
 
 		brl_lock_cancel(br_lck,
 				blr->smblctx,
-				sconn_server_id(sconn),
+				messaging_server_id(sconn->msg_ctx),
 				blr->offset,
 				blr->count,
 				blr->lock_flav,
@@ -659,7 +659,7 @@ void remove_pending_lock_requests_by_mid_smb1(
 
 			brl_lock_cancel(br_lck,
 					blr->smblctx,
-					sconn_server_id(sconn),
+					messaging_server_id(sconn->msg_ctx),
 					blr->offset,
 					blr->count,
 					blr->lock_flav,
@@ -702,13 +702,9 @@ static void received_unlock_msg(struct messaging_context *msg,
 				struct server_id server_id,
 				DATA_BLOB *data)
 {
-	struct smbd_server_connection *sconn;
-
-	sconn = msg_ctx_to_sconn(msg);
-	if (sconn == NULL) {
-		DEBUG(1, ("could not find sconn\n"));
-		return;
-	}
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
 
 	DEBUG(10,("received_unlock_msg\n"));
 	process_blocking_lock_queue(sconn);
@@ -762,7 +758,7 @@ void process_blocking_lock_queue(struct smbd_server_connection *sconn)
 			if (br_lck) {
 				brl_lock_cancel(br_lck,
 					blr->smblctx,
-					sconn_server_id(sconn),
+					messaging_server_id(sconn->msg_ctx),
 					blr->offset,
 					blr->count,
 					blr->lock_flav,
@@ -799,7 +795,7 @@ void process_blocking_lock_queue(struct smbd_server_connection *sconn)
 
 				brl_lock_cancel(br_lck,
 					blr->smblctx,
-					sconn_server_id(sconn),
+					messaging_server_id(sconn->msg_ctx),
 					blr->offset,
 					blr->count,
 					blr->lock_flav,
@@ -828,10 +824,12 @@ static void process_blocking_lock_cancel_message(struct messaging_context *ctx,
 						 struct server_id server_id,
 						 DATA_BLOB *data)
 {
-	struct smbd_server_connection *sconn;
 	NTSTATUS err;
 	const char *msg = (const char *)data->data;
 	struct blocking_lock_record *blr;
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
 
 	if (data->data == NULL) {
 		smb_panic("process_blocking_lock_cancel_message: null msg");
@@ -842,12 +840,6 @@ static void process_blocking_lock_cancel_message(struct messaging_context *ctx,
 			  "Got invalid msg len %d\n", (int)data->length));
 		smb_panic("process_blocking_lock_cancel_message: bad msg");
         }
-
-	sconn = msg_ctx_to_sconn(ctx);
-	if (sconn == NULL) {
-		DEBUG(1, ("could not find sconn\n"));
-		return;
-	}
 
 	memcpy(&blr, msg, sizeof(blr));
 	memcpy(&err, &msg[sizeof(blr)], sizeof(NTSTATUS));
@@ -880,7 +872,7 @@ struct blocking_lock_record *blocking_lock_cancel_smb1(files_struct *fsp,
 
 	if (!sconn->smb1.locks.blocking_lock_cancel_state) {
 		/* Register our message. */
-		messaging_register(sconn->msg_ctx, NULL,
+		messaging_register(sconn->msg_ctx, sconn,
 				   MSG_SMB_BLOCKING_LOCK_CANCEL,
 				   process_blocking_lock_cancel_message);
 
@@ -916,7 +908,7 @@ struct blocking_lock_record *blocking_lock_cancel_smb1(files_struct *fsp,
 	memcpy(msg, &blr, sizeof(blr));
 	memcpy(&msg[sizeof(blr)], &err, sizeof(NTSTATUS));
 
-	messaging_send_buf(sconn->msg_ctx, sconn_server_id(sconn),
+	messaging_send_buf(sconn->msg_ctx, messaging_server_id(sconn->msg_ctx),
 			   MSG_SMB_BLOCKING_LOCK_CANCEL,
 			   (uint8 *)&msg, sizeof(msg));
 

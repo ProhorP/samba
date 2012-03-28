@@ -26,6 +26,10 @@
 #include "system/passwd.h"
 #include "system/filesys.h"
 
+#ifdef HAVE_SYS_SYSCTL_H
+#include <sys/sysctl.h>
+#endif
+
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
 #endif
@@ -205,42 +209,6 @@ ssize_t sys_send(int s, const void *msg, size_t len, int flags)
 }
 
 /*******************************************************************
-A sendto wrapper that will deal with EINTR or EAGAIN or EWOULDBLOCK.
-********************************************************************/
-
-ssize_t sys_sendto(int s,  const void *msg, size_t len, int flags, const struct sockaddr *to, socklen_t tolen)
-{
-	ssize_t ret;
-
-	do {
-		ret = sendto(s, msg, len, flags, to, tolen);
-#if defined(EWOULDBLOCK)
-	} while (ret == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK));
-#else
-	} while (ret == -1 && (errno == EINTR || errno == EAGAIN));
-#endif
-	return ret;
-}
-
-/*******************************************************************
-A recv wrapper that will deal with EINTR or EAGAIN or EWOULDBLOCK.
-********************************************************************/
-
-ssize_t sys_recv(int fd, void *buf, size_t count, int flags)
-{
-	ssize_t ret;
-
-	do {
-		ret = recv(fd, buf, count, flags);
-#if defined(EWOULDBLOCK)
-	} while (ret == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK));
-#else
-	} while (ret == -1 && (errno == EINTR || errno == EAGAIN));
-#endif
-	return ret;
-}
-
-/*******************************************************************
 A recvfrom wrapper that will deal with EINTR.
 ********************************************************************/
 
@@ -263,20 +231,6 @@ A fcntl wrapper that will deal with EINTR.
 ********************************************************************/
 
 int sys_fcntl_ptr(int fd, int cmd, void *arg)
-{
-	int ret;
-
-	do {
-		ret = fcntl(fd, cmd, arg);
-	} while (ret == -1 && errno == EINTR);
-	return ret;
-}
-
-/*******************************************************************
-A fcntl wrapper that will deal with EINTR.
-********************************************************************/
-
-int sys_fcntl_long(int fd, int cmd, long arg)
 {
 	int ret;
 
@@ -720,21 +674,6 @@ SMB_OFF_T sys_lseek(int fd, SMB_OFF_T offset, int whence)
 	return lseek64(fd, offset, whence);
 #else
 	return lseek(fd, offset, whence);
-#endif
-}
-
-/*******************************************************************
- An fseek() wrapper that will deal with 64 bit filesizes.
-********************************************************************/
-
-int sys_fseek(FILE *fp, SMB_OFF_T offset, int whence)
-{
-#if defined(HAVE_EXPLICIT_LARGEFILE_SUPPORT) && defined(LARGE_SMB_OFF_T) && defined(HAVE_FSEEK64)
-	return fseek64(fp, offset, whence);
-#elif defined(HAVE_EXPLICIT_LARGEFILE_SUPPORT) && defined(LARGE_SMB_OFF_T) && defined(HAVE_FSEEKO64)
-	return fseeko64(fp, offset, whence);
-#else
-	return fseek(fp, offset, whence);
 #endif
 }
 
@@ -1791,7 +1730,7 @@ static ssize_t bsd_attr_list (int type, extattr_arg arg, char *list, size_t size
 	int i, t, len;
 	char *buf;
 	/* Iterate through extattr(2) namespaces */
-	for(t = 0; t < (sizeof(extattr)/sizeof(extattr[0])); t++) {
+	for(t = 0; t < ARRAY_SIZE(extattr); t++) {
 		switch(type) {
 #if defined(HAVE_EXTATTR_LIST_FILE)
 			case 0:
@@ -2473,6 +2412,53 @@ uint32 unix_dev_minor(SMB_DEV_T dev)
         return (uint32)(dev & 0xff);
 #endif
 }
+
+#if 0
+/*******************************************************************
+ Return the number of CPUs.
+********************************************************************/
+
+int sys_get_number_of_cores(void)
+{
+	int ret = -1;
+
+#if defined(HAVE_SYSCONF)
+#if defined(_SC_NPROCESSORS_ONLN)
+	ret = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+#if defined(_SC_NPROCESSORS_CONF)
+	if (ret < 1) {
+		ret = (int)sysconf(_SC_NPROCESSORS_CONF);
+	}
+#endif
+#elif defined(HAVE_SYSCTL) && defined(CTL_HW)
+	int name[2];
+	unsigned int len = sizeof(ret);
+
+	name[0] = CTL_HW;
+#if defined(HW_AVAILCPU)
+	name[1] = HW_AVAILCPU;
+
+	if (sysctl(name, 2, &ret, &len, NULL, 0) == -1) {
+		ret = -1;
+	}
+#endif
+#if defined(HW_NCPU)
+	if(ret < 1) {
+		name[0] = CTL_HW;
+		name[1] = HW_NCPU;
+		if (sysctl(nm, 2, &count, &len, NULL, 0) == -1) {
+			ret = -1;
+		}
+	}
+#endif
+#endif
+	if (ret < 1) {
+		ret = 1;
+	}
+	return ret;
+}
+#endif
 
 #if defined(WITH_AIO)
 

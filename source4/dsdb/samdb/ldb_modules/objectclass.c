@@ -3,7 +3,7 @@
 
    Copyright (C) Simo Sorce  2006-2008
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2005-2009
-   Copyright (C) Matthias Dieter Wallnöfer 2010
+   Copyright (C) Matthias Dieter Wallnöfer 2010-2011
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@
 #include "param/param.h"
 #include "../libds/common/flags.h"
 #include "dsdb/samdb/ldb_modules/schema.h"
-#include "util.h"
+#include "dsdb/samdb/ldb_modules/util.h"
 
 struct oc_context {
 
@@ -217,6 +217,60 @@ static int objectclass_sort(struct ldb_module *module,
 	 */
 	ldb_asprintf_errstring(ldb, "objectclass %s is not a valid objectClass in objectClass chain", unsorted->objectclass->lDAPDisplayName);
 	return LDB_ERR_OBJECT_CLASS_VIOLATION;
+}
+
+/*
+ * This checks if we have unrelated object classes in our entry's "objectClass"
+ * attribute. That means "unsatisfied" abstract classes (no concrete subclass)
+ * or two or more disjunct structural ones.
+ * If one of these conditions are true, blame.
+ */
+static int check_unrelated_objectclasses(struct ldb_module *module,
+					const struct dsdb_schema *schema,
+					const struct dsdb_class *struct_objectclass,
+					struct ldb_message_element *objectclass_element)
+{
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	unsigned int i;
+	bool found;
+
+	if (schema == NULL) {
+		return LDB_SUCCESS;
+	}
+
+	for (i = 0; i < objectclass_element->num_values; i++) {
+		const struct dsdb_class *tmp_class = dsdb_class_by_lDAPDisplayName_ldb_val(schema,
+											   &objectclass_element->values[i]);
+		const struct dsdb_class *tmp_class2 = struct_objectclass;
+
+		/* Pointer comparison can be used due to the same schema str. */
+		if (tmp_class == NULL ||
+		    tmp_class == struct_objectclass ||
+		    tmp_class->objectClassCategory > 2 ||
+		    ldb_attr_cmp(tmp_class->lDAPDisplayName, "top") == 0) {
+			continue;
+		}
+
+		found = false;
+		while (!found &&
+		       ldb_attr_cmp(tmp_class2->lDAPDisplayName, "top") != 0) {
+			tmp_class2 = dsdb_class_by_lDAPDisplayName(schema,
+								   tmp_class2->subClassOf);
+			if (tmp_class2 == tmp_class) {
+				found = true;
+			}
+		}
+		if (found) {
+			continue;
+		}
+
+		ldb_asprintf_errstring(ldb,
+				       "objectclass: the objectclass '%s' seems to be unrelated to the entry!",
+				       tmp_class->lDAPDisplayName);
+		return LDB_ERR_OBJECT_CLASS_VIOLATION;
+	}
+
+	return LDB_SUCCESS;
 }
 
 static int get_search_callback(struct ldb_request *req, struct ldb_reply *ares)
@@ -449,7 +503,7 @@ static bool check_rodc_ntdsdsa_add(struct oc_context *ac,
 {
 	struct ldb_control *rodc_control;
 
-	if (strcasecmp(objectclass->lDAPDisplayName, "nTDSDSA") != 0) {
+	if (ldb_attr_cmp(objectclass->lDAPDisplayName, "nTDSDSA") != 0) {
 		return false;
 	}
 	rodc_control = ldb_request_get_control(ac->req, LDB_CONTROL_RODC_DCPROMO_OID);
@@ -555,7 +609,8 @@ static int objectclass_do_add(struct oc_context *ac)
 
 		/* We must completely replace the existing objectClass entry,
 		 * because we need it sorted. */
-		ret = ldb_msg_add_empty(msg, "objectClass", 0, NULL);
+		ret = ldb_msg_add_empty(msg, "objectClass", 0,
+					&objectclass_element);
 		if (ret != LDB_SUCCESS) {
 			talloc_free(mem_ctx);
 			return ret;
@@ -577,9 +632,6 @@ static int objectclass_do_add(struct oc_context *ac)
 
 		talloc_free(mem_ctx);
 
-		/* Retrive the message again so get_last_structural_class works */
-		objectclass_element = ldb_msg_find_element(msg, "objectClass");
-
 		/* Make sure its valid to add an object of this type */
 		objectclass = get_last_structural_class(ac->schema,
 							objectclass_element, ac->req);
@@ -588,6 +640,13 @@ static int objectclass_do_add(struct oc_context *ac)
 					       "Failed to find a structural class for %s",
 					       ldb_dn_get_linearized(msg->dn));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+
+		ret = check_unrelated_objectclasses(ac->module, ac->schema,
+						    objectclass,
+						    objectclass_element);
+		if (ret != LDB_SUCCESS) {
+			return ret;
 		}
 
 		rdn_name = ldb_dn_get_rdn_name(msg->dn);
@@ -734,14 +793,15 @@ static int objectclass_do_add(struct oc_context *ac)
 		} else if (ldb_attr_cmp(objectclass->lDAPDisplayName, "site") == 0
 				|| ldb_attr_cmp(objectclass->lDAPDisplayName, "serversContainer") == 0
 				|| ldb_attr_cmp(objectclass->lDAPDisplayName, "nTDSDSA") == 0) {
+			if (ldb_attr_cmp(objectclass->lDAPDisplayName, "site") == 0)
+				systemFlags |= (int32_t)(SYSTEM_FLAG_CONFIG_ALLOW_RENAME);
 			systemFlags |= (int32_t)(SYSTEM_FLAG_DISALLOW_MOVE_ON_DELETE);
-
 		} else if (ldb_attr_cmp(objectclass->lDAPDisplayName, "siteLink") == 0
+				|| ldb_attr_cmp(objectclass->lDAPDisplayName, "subnet") == 0
 				|| ldb_attr_cmp(objectclass->lDAPDisplayName, "siteLinkBridge") == 0
 				|| ldb_attr_cmp(objectclass->lDAPDisplayName, "nTDSConnection") == 0) {
 			systemFlags |= (int32_t)(SYSTEM_FLAG_CONFIG_ALLOW_RENAME);
 		}
-
 		/* TODO: If parent object is site or subnet, also add (SYSTEM_FLAG_CONFIG_ALLOW_RENAME) */
 
 		if (el || systemFlags != 0) {
@@ -925,7 +985,6 @@ static int objectclass_do_mod(struct oc_context *ac)
 {
 	struct ldb_context *ldb;
 	struct ldb_request *mod_req;
-	char *value;
 	struct ldb_message_element *oc_el_entry, *oc_el_change;
 	struct ldb_val *vals;
 	struct ldb_message *msg;
@@ -933,7 +992,7 @@ static int objectclass_do_mod(struct oc_context *ac)
 	struct class_list *sorted, *current;
 	const struct dsdb_class *objectclass;
 	unsigned int i, j, k;
-	bool found, replace = false;
+	bool found;
 	int ret;
 
 	ldb = ldb_module_get_ctx(ac->module);
@@ -1002,50 +1061,18 @@ static int objectclass_do_mod(struct oc_context *ac)
 				++(oc_el_entry->num_values);
 			}
 
-			objectclass = get_last_structural_class(ac->schema,
-								oc_el_change, ac->req);
-			if (objectclass != NULL) {
-				ldb_asprintf_errstring(ldb,
-						       "objectclass: cannot add a new top-most structural objectclass '%s'!",
-						       objectclass->lDAPDisplayName);
-				talloc_free(mem_ctx);
-				return LDB_ERR_OBJECT_CLASS_VIOLATION;
-			}
-
-			/* Now do the sorting */
-			ret = objectclass_sort(ac->module, ac->schema, mem_ctx,
-					       oc_el_entry, &sorted);
-			if (ret != LDB_SUCCESS) {
-				talloc_free(mem_ctx);
-				return ret;
-			}
-
 			break;
 
 		case LDB_FLAG_MOD_REPLACE:
-			/* Do the sorting for the change message element */
-			ret = objectclass_sort(ac->module, ac->schema, mem_ctx,
-					       oc_el_change, &sorted);
-			if (ret != LDB_SUCCESS) {
-				talloc_free(mem_ctx);
-				return ret;
-			}
-
-			/* this is a replace */
-			replace = true;
+			/*
+			 * In this case the new "oc_el_entry" is simply
+			 * "oc_el_change"
+			 */
+			oc_el_entry = oc_el_change;
 
 			break;
 
 		case LDB_FLAG_MOD_DELETE:
-			/* get the actual top-most structural objectclass */
-			objectclass = get_last_structural_class(ac->schema,
-								oc_el_entry, ac->req);
-			if (objectclass == NULL) {
-				/* no structural objectclass? */
-				talloc_free(mem_ctx);
-				return ldb_operr(ldb);
-			}
-
 			/* Merge the two message elements */
 			for (i = 0; i < oc_el_change->num_values; i++) {
 				found = false;
@@ -1077,40 +1104,40 @@ static int objectclass_do_mod(struct oc_context *ac)
 				}
 			}
 
-			/* Make sure that the top-most structural object class
-			 * hasn't been deleted */
-			found = false;
-			for (i = 0; i < oc_el_entry->num_values; i++) {
-				if (ldb_attr_cmp(objectclass->lDAPDisplayName,
-						 (char *)oc_el_entry->values[i].data) == 0) {
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
-				ldb_asprintf_errstring(ldb,
-						       "objectclass: cannot delete the top-most structural objectclass '%s'!",
-						       objectclass->lDAPDisplayName);
-				talloc_free(mem_ctx);
-				return LDB_ERR_OBJECT_CLASS_VIOLATION;
-			}
-
-			/* Now do the sorting */
-			ret = objectclass_sort(ac->module, ac->schema, mem_ctx,
-					       oc_el_entry, &sorted);
-			if (ret != LDB_SUCCESS) {
-				talloc_free(mem_ctx);
-				return ret;
-			}
-
 			break;
+		}
+
+		/* Get the new top-most structural object class */
+		objectclass = get_last_structural_class(ac->schema, oc_el_entry,
+							ac->req);
+		if (objectclass == NULL) {
+			ldb_set_errstring(ldb,
+					  "objectclass: cannot delete all structural objectclasses!");
+			talloc_free(mem_ctx);
+			return LDB_ERR_OBJECT_CLASS_VIOLATION;
+		}
+
+		ret = check_unrelated_objectclasses(ac->module, ac->schema,
+						    objectclass,
+						    oc_el_entry);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(mem_ctx);
+			return ret;
+		}
+
+		/* Now do the sorting */
+		ret = objectclass_sort(ac->module, ac->schema, mem_ctx,
+				       oc_el_entry, &sorted);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(mem_ctx);
+			return ret;
 		}
 
 		/* (Re)-add an empty "objectClass" attribute on the object
 		 * classes change message "msg". */
 		ldb_msg_remove_attr(msg, "objectClass");
 		ret = ldb_msg_add_empty(msg, "objectClass",
-					LDB_FLAG_MOD_REPLACE, &oc_el_change);
+					LDB_FLAG_MOD_REPLACE, &oc_el_entry);
 		if (ret != LDB_SUCCESS) {
 			talloc_free(mem_ctx);
 			return ret;
@@ -1118,13 +1145,10 @@ static int objectclass_do_mod(struct oc_context *ac)
 
 		/* Move from the linked list back into an ldb msg */
 		for (current = sorted; current; current = current->next) {
-			value = talloc_strdup(msg,
-					      current->objectclass->lDAPDisplayName);
-			if (value == NULL) {
-				talloc_free(mem_ctx);
-				return ldb_module_oom(ac->module);
-			}
-			ret = ldb_msg_add_string(msg, "objectClass", value);
+			const char *objectclass_name = current->objectclass->lDAPDisplayName;
+
+			ret = ldb_msg_add_string(msg, "objectClass",
+						 objectclass_name);
 			if (ret != LDB_SUCCESS) {
 				ldb_set_errstring(ldb,
 						  "objectclass: could not re-add sorted objectclasses!");
@@ -1132,37 +1156,6 @@ static int objectclass_do_mod(struct oc_context *ac)
 				return ret;
 			}
 		}
-
-		if (replace) {
-			/* Well, on replace we are nearly done: we have to test
-			 * if the change and entry message element are identical
-			 * ly. We can use "ldb_msg_element_compare" since now
-			 * the specified objectclasses match for sure in case.
-			 */
-			ret = ldb_msg_element_compare(oc_el_entry,
-						      oc_el_change);
-			if (ret == 0) {
-				ret = ldb_msg_element_compare(oc_el_change,
-							      oc_el_entry);
-			}
-			if (ret == 0) {
-				/* they are the same so we are done in this
-				 * case */
-				talloc_free(mem_ctx);
-				return ldb_module_done(ac->req, NULL, NULL,
-						       LDB_SUCCESS);
-			} else {
-				ldb_set_errstring(ldb,
-						  "objectclass: the specified objectclasses are not exactly the same as on the entry!");
-				talloc_free(mem_ctx);
-				return LDB_ERR_OBJECT_CLASS_VIOLATION;
-			}
-		}
-
-		/* Now we've applied all changes from "oc_el_change" to
-		 * "oc_el_entry" therefore the new "oc_el_entry" will be
-		 * "oc_el_change". */
-		oc_el_entry = oc_el_change;
 	}
 
 	talloc_free(mem_ctx);
@@ -1419,6 +1412,7 @@ static int objectclass_delete(struct ldb_module *module, struct ldb_request *req
 {
 	static const char * const attrs[] = { "nCName", "objectClass",
 					      "systemFlags",
+					      "isDeleted",
 					      "isCriticalSystemObject", NULL };
 	struct ldb_context *ldb;
 	struct ldb_request *search_req;
@@ -1450,7 +1444,7 @@ static int objectclass_delete(struct ldb_module *module, struct ldb_request *req
 	ret = ldb_build_search_req(&search_req, ldb,
 				   ac, req->op.del.dn, LDB_SCOPE_BASE,
 				   "(objectClass=*)",
-				   attrs, NULL,
+				   attrs, req->controls,
 				   ac, get_search_callback,
 				   req);
 	LDB_REQ_SET_LOCATION(search_req);
@@ -1505,6 +1499,17 @@ static int objectclass_do_delete(struct oc_context *ac)
 		talloc_free(dn);
 	}
 
+	/* Only trusted request from system account are allowed to delete
+	 * deleted objects.
+	 */
+	if (ldb_msg_check_string_attribute(ac->search_res->message, "isDeleted", "TRUE") &&
+			(ldb_req_is_untrusted(ac->req) ||
+				!dsdb_module_am_system(ac->module))) {
+		ldb_asprintf_errstring(ldb, "Delete of '%s' failed",
+						ldb_dn_get_linearized(ac->req->op.del.dn));
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
 	/* crossRef objects regarding config, schema and default domain NCs */
 	if (samdb_find_attribute(ldb, ac->search_res->message, "objectClass",
 				 "crossRef") != NULL) {
@@ -1544,10 +1549,28 @@ static int objectclass_do_delete(struct oc_context *ac)
 		isCriticalSystemObject = ldb_msg_find_attr_as_bool(ac->search_res->message,
 								   "isCriticalSystemObject", false);
 		if (isCriticalSystemObject) {
-			ldb_asprintf_errstring(ldb,
+			/*
+			 * Following the explaination from Microsoft
+			 * https://lists.samba.org/archive/cifs-protocol/2011-August/002046.html
+			 * "I finished the investigation on this behavior.
+			 * As per MS-ADTS 3.1.5.5.7.2 , when a tree deletion is performed ,
+			 * every object in the tree will be checked to see if it has isCriticalSystemObject
+			 * set to TRUE, including the root node on which the delete operation is performed
+			 * But there is an exception  if the root object is a SAM specific objects(3.1.1.5.2.3 MS-ADTS)
+			 * Its deletion is done through SAM manger and isCriticalSystemObject attribute is not checked
+			 * The root node of the tree delete in your case is CN=ARES,OU=Domain Controllers,DC=w2k8r2,DC=home,DC=matws,DC=net
+			 * which is a SAM object  with  user class.  Therefore the tree deletion is performed without any error
+			 */
+
+			if (samdb_find_attribute(ldb, ac->search_res->message, "objectClass", "group") == NULL &&
+			    samdb_find_attribute(ldb, ac->search_res->message, "objectClass", "samDomain") == NULL &&
+			    samdb_find_attribute(ldb, ac->search_res->message, "objectClass", "samServer") == NULL &&
+			    samdb_find_attribute(ldb, ac->search_res->message, "objectClass", "user") == NULL) {
+					ldb_asprintf_errstring(ldb,
 					       "objectclass: Cannot tree-delete %s, it's a critical system object!",
 					       ldb_dn_get_linearized(ac->req->op.del.dn));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
+			}
 		}
 	}
 

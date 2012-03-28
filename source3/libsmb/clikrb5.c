@@ -50,26 +50,6 @@ krb5_error_code krb5_auth_con_set_req_cksumtype(
 	krb5_cksumtype     cksumtype);
 #endif
 
-#ifndef HAVE_KRB5_SET_REAL_TIME
-/*
- * This function is not in the Heimdal mainline.
- */
- krb5_error_code krb5_set_real_time(krb5_context context, int32_t seconds, int32_t microseconds)
-{
-	krb5_error_code ret;
-	int32_t sec, usec;
-
-	ret = krb5_us_timeofday(context, &sec, &usec);
-	if (ret)
-		return ret;
-
-	context->kdc_sec_offset = seconds - sec;
-	context->kdc_usec_offset = microseconds - usec;
-
-	return 0;
-}
-#endif
-
 #if !defined(HAVE_KRB5_SET_DEFAULT_TGS_KTYPES)
 
 #if defined(HAVE_KRB5_SET_DEFAULT_TGS_ENCTYPES)
@@ -187,7 +167,11 @@ krb5_error_code krb5_auth_con_set_req_cksumtype(
  krb5_error_code get_kerberos_allowed_etypes(krb5_context context, 
 					    krb5_enctype **enctypes)
 {
+#ifdef HAVE_KRB5_PDU_NONE_DECL
+	return krb5_get_default_in_tkt_etypes(context, KRB5_PDU_NONE, enctypes);
+#else
 	return krb5_get_default_in_tkt_etypes(context, enctypes);
+#endif
 }
 #else
 #error UNKNOWN_GET_ENCTYPES_FUNCTIONS
@@ -363,120 +347,6 @@ bool unwrap_pac(TALLOC_CTX *mem_ctx, DATA_BLOB *auth_data, DATA_BLOB *unwrapped_
 #endif
 }
 
-#if !defined(HAVE_KRB5_LOCATE_KDC)
-
-/* krb5_locate_kdc is an internal MIT symbol. MIT are not yet willing to commit
- * to a public interface for this functionality, so we have to be able to live
- * without it if the MIT libraries are hiding their internal symbols.
- */
-
-#if defined(KRB5_KRBHST_INIT)
-/* Heimdal */
- krb5_error_code smb_krb5_locate_kdc(krb5_context ctx, const krb5_data *realm, struct sockaddr **addr_pp, int *naddrs, int get_masters)
-{
-	krb5_krbhst_handle hnd;
-	krb5_krbhst_info *hinfo;
-	krb5_error_code rc;
-	int num_kdcs, i;
-	struct sockaddr *sa;
-	struct addrinfo *ai;
-
-	*addr_pp = NULL;
-	*naddrs = 0;
-
-	rc = krb5_krbhst_init(ctx, realm->data, KRB5_KRBHST_KDC, &hnd);
-	if (rc) {
-		DEBUG(0, ("smb_krb5_locate_kdc: krb5_krbhst_init failed (%s)\n", error_message(rc)));
-		return rc;
-	}
-
-	for ( num_kdcs = 0; (rc = krb5_krbhst_next(ctx, hnd, &hinfo) == 0); num_kdcs++)
-		;
-
-	krb5_krbhst_reset(ctx, hnd);
-
-	if (!num_kdcs) {
-		DEBUG(0, ("smb_krb5_locate_kdc: zero kdcs found !\n"));
-		krb5_krbhst_free(ctx, hnd);
-		return -1;
-	}
-
-	sa = SMB_MALLOC_ARRAY( struct sockaddr, num_kdcs );
-	if (!sa) {
-		DEBUG(0, ("smb_krb5_locate_kdc: malloc failed\n"));
-		krb5_krbhst_free(ctx, hnd);
-		naddrs = 0;
-		return -1;
-	}
-
-	memset(sa, '\0', sizeof(struct sockaddr) * num_kdcs );
-
-	for (i = 0; i < num_kdcs && (rc = krb5_krbhst_next(ctx, hnd, &hinfo) == 0); i++) {
-
-#if defined(HAVE_KRB5_KRBHST_GET_ADDRINFO)
-		rc = krb5_krbhst_get_addrinfo(ctx, hinfo, &ai);
-		if (rc) {
-			DEBUG(0,("krb5_krbhst_get_addrinfo failed: %s\n", error_message(rc)));
-			continue;
-		}
-#endif
-		if (hinfo->ai && hinfo->ai->ai_family == AF_INET) 
-			memcpy(&sa[i], hinfo->ai->ai_addr, sizeof(struct sockaddr));
-	}
-
-	krb5_krbhst_free(ctx, hnd);
-
-	*naddrs = num_kdcs;
-	*addr_pp = sa;
-	return 0;
-}
-
-#else /* ! defined(KRB5_KRBHST_INIT) */
-
- krb5_error_code smb_krb5_locate_kdc(krb5_context ctx, const krb5_data *realm,
-		struct sockaddr **addr_pp, int *naddrs, int get_masters)
-{
-	DEBUG(0, ("unable to explicitly locate the KDC on this platform\n"));
-	return KRB5_KDC_UNREACH;
-}
-
-#endif /* KRB5_KRBHST_INIT */
-
-#else /* ! HAVE_KRB5_LOCATE_KDC */
-
- krb5_error_code smb_krb5_locate_kdc(krb5_context ctx, const krb5_data *realm,
-		struct sockaddr **addr_pp, int *naddrs, int get_masters)
-{
-	return krb5_locate_kdc(ctx, realm, addr_pp, naddrs, get_masters);
-}
-
-#endif /* HAVE_KRB5_LOCATE_KDC */
-
- void kerberos_set_creds_enctype(krb5_creds *pcreds, int enctype)
-{
-#if defined(HAVE_KRB5_KEYBLOCK_IN_CREDS)
-	KRB5_KEY_TYPE((&pcreds->keyblock)) = enctype;
-#elif defined(HAVE_KRB5_SESSION_IN_CREDS)
-	KRB5_KEY_TYPE((&pcreds->session)) = enctype;
-#else
-#error UNKNOWN_KEYBLOCK_MEMBER_IN_KRB5_CREDS_STRUCT
-#endif
-}
-
- bool kerberos_compatible_enctypes(krb5_context context,
-				  krb5_enctype enctype1,
-				  krb5_enctype enctype2)
-{
-#if defined(HAVE_KRB5_C_ENCTYPE_COMPARE)
-	krb5_boolean similar = 0;
-
-	krb5_c_enctype_compare(context, enctype1, enctype2, &similar);
-	return similar ? True : False;
-#elif defined(HAVE_KRB5_ENCTYPES_COMPATIBLE_KEYS)
-	return krb5_enctypes_compatible_keys(context, enctype1, enctype2) ? True : False;
-#endif
-}
-
 static bool ads_cleanup_expired_creds(krb5_context context, 
 				      krb5_ccache  ccache,
 				      krb5_creds  *credsp)
@@ -538,7 +408,7 @@ static krb5_error_code setup_auth_context(krb5_context context,
 	return retval;
 }
 
-#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_FWD_TGT_CREDS) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
+#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
 static krb5_error_code create_gss_checksum(krb5_data *in_data, /* [inout] */
 						uint32_t gss_flags)
 {
@@ -690,7 +560,7 @@ static krb5_error_code ads_krb5_mk_req(krb5_context context,
 		goto cleanup_creds;
 	}
 
-#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_FWD_TGT_CREDS) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
+#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
 	{
 		uint32_t gss_flags = 0;
 
@@ -779,7 +649,7 @@ static krb5_error_code ads_krb5_mk_req(krb5_context context,
 			 error_message(retval)));
 	}
 
-#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_FWD_TGT_CREDS) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
+#if defined(TKT_FLG_OK_AS_DELEGATE ) && defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY) && defined(KRB5_AUTH_CONTEXT_USE_SUBKEY) && defined(HAVE_KRB5_AUTH_CON_SET_REQ_CKSUMTYPE)
 cleanup_data:
 #endif
 
@@ -1156,56 +1026,11 @@ out:
 		}
 	}
 
-#ifdef HAVE_KRB5_GET_RENEWED_CREDS	/* MIT */
-	{
-		ret = krb5_get_renewed_creds(context, &creds, client, ccache, discard_const_p(char, service_string));
-		if (ret) {
-			DEBUG(10,("smb_krb5_renew_ticket: krb5_get_kdc_cred failed: %s\n", error_message(ret)));
-			goto done;
-		}
+	ret = krb5_get_renewed_creds(context, &creds, client, ccache, discard_const_p(char, service_string));
+	if (ret) {
+		DEBUG(10,("smb_krb5_renew_ticket: krb5_get_kdc_cred failed: %s\n", error_message(ret)));
+		goto done;
 	}
-#elif defined(HAVE_KRB5_GET_KDC_CRED)	/* Heimdal */
-	{
-		krb5_kdc_flags flags;
-		krb5_realm *client_realm = NULL;
-
-		ret = krb5_copy_principal(context, client, &creds_in.client);
-		if (ret) {
-			goto done;
-		}
-
-		if (service_string) {
-			ret = smb_krb5_parse_name(context, service_string, &creds_in.server);
-			if (ret) { 
-				goto done;
-			}
-		} else {
-			/* build tgt service by default */
-			client_realm = krb5_princ_realm(context, creds_in.client);
-			if (!client_realm) {
-				ret = ENOMEM;
-				goto done;
-			}
-			ret = krb5_make_principal(context, &creds_in.server, *client_realm, KRB5_TGS_NAME, *client_realm, NULL);
-			if (ret) {
-				goto done;
-			}
-		}
-
-		flags.i = 0;
-		flags.b.renewable = flags.b.renew = True;
-
-		ret = krb5_get_kdc_cred(context, ccache, flags, NULL, NULL, &creds_in, &creds_out);
-		if (ret) {
-			DEBUG(10,("smb_krb5_renew_ticket: krb5_get_kdc_cred failed: %s\n", error_message(ret)));
-			goto done;
-		}
-
-		creds = *creds_out;
-	}
-#else
-#error NO_SUITABLE_KRB5_TICKET_RENEW_FUNCTION_AVAILABLE
-#endif
 
 	/* hm, doesn't that create a new one if the old one wasn't there? - Guenther */
 	ret = krb5_cc_initialize(context, ccache, client);
@@ -1412,44 +1237,15 @@ done:
  krb5_error_code smb_krb5_get_init_creds_opt_alloc(krb5_context context,
 					    krb5_get_init_creds_opt **opt)
 {
-#ifdef HAVE_KRB5_GET_INIT_CREDS_OPT_ALLOC
 	/* Heimdal or modern MIT version */
 	return krb5_get_init_creds_opt_alloc(context, opt);
-#else
-	/* Historical MIT version */
-	krb5_get_init_creds_opt *my_opt;
-
-	*opt = NULL;
-
-	if ((my_opt = SMB_MALLOC_P(krb5_get_init_creds_opt)) == NULL) {
-		return ENOMEM;
-	}
-
-	krb5_get_init_creds_opt_init(my_opt);
-
-	*opt =  my_opt;
-	return 0;
-#endif /* HAVE_KRB5_GET_INIT_CREDS_OPT_ALLOC  */
 }
 
  void smb_krb5_get_init_creds_opt_free(krb5_context context,
 				krb5_get_init_creds_opt *opt)
 {
-#ifdef HAVE_KRB5_GET_INIT_CREDS_OPT_FREE
-
-#ifdef KRB5_CREDS_OPT_FREE_REQUIRES_CONTEXT
 	/* Modern MIT or Heimdal version */
 	krb5_get_init_creds_opt_free(context, opt);
-#else
-	/* Heimdal version */
-	krb5_get_init_creds_opt_free(opt);
-#endif /* KRB5_CREDS_OPT_FREE_REQUIRES_CONTEXT */
-
-#else /* HAVE_KRB5_GET_INIT_CREDS_OPT_FREE */
-	/* Historical MIT version */
-	SAFE_FREE(opt);
-	opt = NULL;
-#endif /* HAVE_KRB5_GET_INIT_CREDS_OPT_FREE */
 }
 
  krb5_enctype smb_get_enctype_from_kt_entry(krb5_keytab_entry *kt_entry)
@@ -1478,43 +1274,6 @@ done:
 	return ret;
 #else
 #error UNKNOWN_KRB5_ENCTYPE_TO_STRING_FUNCTION
-#endif
-}
-
- krb5_error_code smb_krb5_mk_error(krb5_context context,
-				krb5_error_code error_code,
-				const krb5_principal server,
-				krb5_data *reply)
-{
-#ifdef HAVE_SHORT_KRB5_MK_ERROR_INTERFACE /* MIT */
-	/*
-	 * The MIT interface is *terrible*.
-	 * We have to construct this ourselves...
-	 */
-	krb5_error e;
-
-	memset(&e, 0, sizeof(e));
-	krb5_us_timeofday(context, &e.stime, &e.susec);
-	e.server = server;
-#if defined(krb5_err_base)
-	e.error = error_code - krb5_err_base;
-#elif defined(ERROR_TABLE_BASE_krb5)
-	e.error = error_code - ERROR_TABLE_BASE_krb5;
-#else
-	e.error = error_code; /* Almost certainly wrong, but what can we do... ? */
-#endif
-
-	return krb5_mk_error(context, &e, reply);
-#else /* Heimdal. */
-	return krb5_mk_error(context,
-				error_code,
-				NULL,
-				NULL, /* e_data */
-				NULL,
-				server,
-				NULL,
-				NULL,
-				reply);
 #endif
 }
 
@@ -1809,11 +1568,6 @@ krb5_error_code smb_krb5_get_credentials(krb5_context context,
 		ret = krb5_get_credentials(context, 0, ccache,
 					   &in_creds, &creds);
 	}
-	if (ret) {
-		goto done;
-	}
-
-	ret = krb5_cc_store_cred(context, ccache, creds);
 	if (ret) {
 		goto done;
 	}

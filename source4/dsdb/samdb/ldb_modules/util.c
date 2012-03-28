@@ -4,6 +4,7 @@
 
    Copyright (C) Andrew Tridgell 2009
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2009
+   Copyright (C) Matthieu Patou <mat@matws.net> 2011
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -25,7 +26,7 @@
 #include "librpc/ndr/libndr.h"
 #include "dsdb/samdb/ldb_modules/util.h"
 #include "dsdb/samdb/samdb.h"
-#include "util.h"
+#include "dsdb/common/util.h"
 #include "libcli/security/security.h"
 
 /*
@@ -126,6 +127,8 @@ int dsdb_module_search_tree(struct ldb_module *module,
 
 	tmp_ctx = talloc_new(mem_ctx);
 
+	/* cross-partitions searches with a basedn break multi-domain support */
+	SMB_ASSERT(basedn == NULL || (dsdb_flags & DSDB_SEARCH_SEARCH_ALL_PARTITIONS) == 0);
 
 	res = talloc_zero(tmp_ctx, struct ldb_result);
 	if (!res) {
@@ -196,6 +199,9 @@ int dsdb_module_search(struct ldb_module *module,
 	va_list ap;
 	char *expression;
 	struct ldb_parse_tree *tree;
+
+	/* cross-partitions searches with a basedn break multi-domain support */
+	SMB_ASSERT(basedn == NULL || (dsdb_flags & DSDB_SEARCH_SEARCH_ALL_PARTITIONS) == 0);
 
 	tmp_ctx = talloc_new(mem_ctx);
 
@@ -308,6 +314,84 @@ int dsdb_module_guid_by_dn(struct ldb_module *module, struct ldb_dn *dn, struct 
 	talloc_free(tmp_ctx);
 	return LDB_SUCCESS;
 }
+
+
+/*
+  a ldb_extended request operating on modules below the
+  current module
+
+  Note that this does not automatically start a transaction. If you
+  need a transaction the caller needs to start it as needed.
+ */
+int dsdb_module_extended(struct ldb_module *module,
+			 TALLOC_CTX *mem_ctx,
+			 struct ldb_result **_res,
+			 const char* oid, void* data,
+			 uint32_t dsdb_flags,
+			 struct ldb_request *parent)
+{
+	struct ldb_request *req;
+	int ret;
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	TALLOC_CTX *tmp_ctx = talloc_new(module);
+	struct ldb_result *res;
+
+	if (_res != NULL) {
+		(*_res) = NULL;
+	}
+
+	res = talloc_zero(tmp_ctx, struct ldb_result);
+	if (!res) {
+		talloc_free(tmp_ctx);
+		return ldb_oom(ldb_module_get_ctx(module));
+	}
+
+	ret = ldb_build_extended_req(&req, ldb,
+			tmp_ctx,
+			oid,
+			data,
+			NULL,
+			res, ldb_extended_default_callback,
+			parent);
+
+	LDB_REQ_SET_LOCATION(req);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	ret = dsdb_request_add_controls(req, dsdb_flags);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	if (dsdb_flags & DSDB_FLAG_TRUSTED) {
+		ldb_req_mark_trusted(req);
+	}
+
+	/* Run the new request */
+	if (dsdb_flags & DSDB_FLAG_NEXT_MODULE) {
+		ret = ldb_next_request(module, req);
+	} else if (dsdb_flags & DSDB_FLAG_TOP_MODULE) {
+		ret = ldb_request(ldb_module_get_ctx(module), req);
+	} else {
+		const struct ldb_module_ops *ops = ldb_module_get_ops(module);
+		SMB_ASSERT(dsdb_flags & DSDB_FLAG_OWN_MODULE);
+		ret = ops->extended(module, req);
+	}
+	if (ret == LDB_SUCCESS) {
+		ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+	}
+
+	if (_res != NULL && ret == LDB_SUCCESS) {
+		(*_res) = talloc_steal(mem_ctx, res);
+	}
+
+	talloc_free(tmp_ctx);
+	return ret;
+}
+
 
 /*
   a ldb_modify request operating on modules below the
@@ -585,8 +669,16 @@ int dsdb_check_single_valued_link(const struct dsdb_attribute *attr,
 	return LDB_SUCCESS;
 }
 
-int dsdb_check_optional_feature(struct ldb_module *module, struct ldb_dn *scope,
-					struct GUID op_feature_guid, bool *feature_enabled)
+/*
+  check if an optional feature is enabled on our own NTDS DN
+
+  Note that features can be marked as enabled in more than one
+  place. For example, the recyclebin feature is marked as enabled both
+  on the CN=Partitions,CN=Configurration object and on the NTDS DN of
+  each DC in the forest. It seems likely that it is the job of the KCC
+  to propogate between the two
+ */
+int dsdb_check_optional_feature(struct ldb_module *module, struct GUID op_feature_guid, bool *feature_enabled)
 {
 	TALLOC_CTX *tmp_ctx;
 	struct ldb_context *ldb = ldb_module_get_ctx(module);
@@ -597,33 +689,35 @@ int dsdb_check_optional_feature(struct ldb_module *module, struct ldb_dn *scope,
 	int ret;
 	unsigned int i;
 	struct ldb_message_element *el;
+	struct ldb_dn *feature_dn;
+
+	feature_dn = samdb_ntds_settings_dn(ldb_module_get_ctx(module));
+	if (feature_dn == NULL) {
+		return ldb_operr(ldb_module_get_ctx(module));
+	}
 
 	*feature_enabled = false;
 
 	tmp_ctx = talloc_new(ldb);
 
-	ret = ldb_search(ldb, tmp_ctx, &res,
-					scope, LDB_SCOPE_BASE, attrs,
-					NULL);
+	ret = dsdb_module_search_dn(module, tmp_ctx, &res, feature_dn, attrs, DSDB_FLAG_NEXT_MODULE, NULL);
 	if (ret != LDB_SUCCESS) {
 		ldb_asprintf_errstring(ldb,
-				"Could no find the scope object - dn: %s\n",
-				ldb_dn_get_linearized(scope));
+				"Could not find the feature object - dn: %s\n",
+				ldb_dn_get_linearized(feature_dn));
 		talloc_free(tmp_ctx);
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	if (res->msgs[0]->num_elements > 0) {
+		const char *attrs2[] = {"msDS-OptionalFeatureGUID", NULL};
 
 		el = ldb_msg_find_element(res->msgs[0],"msDS-EnabledFeature");
-
-		attrs[0] = "msDS-OptionalFeatureGUID";
 
 		for (i=0; i<el->num_values; i++) {
 			search_dn = ldb_dn_from_ldb_val(tmp_ctx, ldb, &el->values[i]);
 
-			ret = ldb_search(ldb, tmp_ctx, &res,
-							search_dn, LDB_SCOPE_BASE, attrs,
-							NULL);
+			ret = dsdb_module_search_dn(module, tmp_ctx, &res,
+						    search_dn, attrs2, DSDB_FLAG_NEXT_MODULE, NULL);
 			if (ret != LDB_SUCCESS) {
 				ldb_asprintf_errstring(ldb,
 						"Could no find object dn: %s\n",
@@ -634,7 +728,7 @@ int dsdb_check_optional_feature(struct ldb_module *module, struct ldb_dn *scope,
 
 			search_guid = samdb_result_guid(res->msgs[0], "msDS-OptionalFeatureGUID");
 
-			if (GUID_compare(&search_guid, &op_feature_guid) == 0){
+			if (GUID_compare(&search_guid, &op_feature_guid) == 0) {
 				*feature_enabled = true;
 				break;
 			}
@@ -689,7 +783,7 @@ int dsdb_module_reference_dn(struct ldb_module *module, TALLOC_CTX *mem_ctx, str
 	attrs[1] = NULL;
 
 	ret = dsdb_module_search_dn(module, mem_ctx, &res, base, attrs,
-	                            DSDB_FLAG_NEXT_MODULE, parent);
+	                            DSDB_FLAG_NEXT_MODULE | DSDB_SEARCH_SHOW_EXTENDED_DN, parent);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -940,22 +1034,17 @@ bool dsdb_module_am_administrator(struct ldb_module *module)
 int dsdb_recyclebin_enabled(struct ldb_module *module, bool *enabled)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(module);
-	struct ldb_dn *partitions_dn;
 	struct GUID recyclebin_guid;
 	int ret;
 
-	partitions_dn = samdb_partitions_dn(ldb, module);
-
 	GUID_from_string(DS_GUID_FEATURE_RECYCLE_BIN, &recyclebin_guid);
 
-	ret = dsdb_check_optional_feature(module, partitions_dn, recyclebin_guid, enabled);
+	ret = dsdb_check_optional_feature(module, recyclebin_guid, enabled);
 	if (ret != LDB_SUCCESS) {
 		ldb_asprintf_errstring(ldb, "Could not verify if Recycle Bin is enabled \n");
-		talloc_free(partitions_dn);
 		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
-	talloc_free(partitions_dn);
 	return LDB_SUCCESS;
 }
 

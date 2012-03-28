@@ -27,7 +27,7 @@
 #include "libcli/auth/krb5_wrap.h"
 #include "librpc/gen_ndr/krb5pac.h"
 
-#if defined(HAVE_KRB5_PRINCIPAL2SALT) && defined(HAVE_KRB5_USE_ENCTYPE) && defined(HAVE_KRB5_STRING_TO_KEY) && defined(HAVE_KRB5_ENCRYPT_BLOCK)
+#if defined(HAVE_KRB5_PRINCIPAL2SALT) && defined(HAVE_KRB5_USE_ENCTYPE) && defined(HAVE_KRB5_ENCRYPT_BLOCK)
 int create_kerberos_key_from_string_direct(krb5_context context,
 						  krb5_principal host_princ,
 						  krb5_data *password,
@@ -187,35 +187,7 @@ krb5_error_code smb_krb5_unparse_name(TALLOC_CTX *mem_ctx,
 					  krb5_const_principal princ1, 
 					  krb5_const_principal princ2)
 {
-#ifdef HAVE_KRB5_PRINCIPAL_COMPARE_ANY_REALM
-
 	return krb5_principal_compare_any_realm(context, princ1, princ2);
-
-/* krb5_princ_size is a macro in MIT */
-#elif defined(HAVE_KRB5_PRINC_SIZE) || defined(krb5_princ_size)
-
-	int i, len1, len2;
-	const krb5_data *p1, *p2;
-
-	len1 = krb5_princ_size(context, princ1);
-	len2 = krb5_princ_size(context, princ2);
-
-	if (len1 != len2)
-		return False;
-
-	for (i = 0; i < len1; i++) {
-
-		p1 = krb5_princ_component(context, (krb5_principal)discard_const(princ1), i);
-		p2 = krb5_princ_component(context, (krb5_principal)discard_const(princ2), i);
-
-		if (p1->length != p2->length ||	memcmp(p1->data, p2->data, p1->length))
-			return False;
-	}
-
-	return True;
-#else
-#error NO_SUITABLE_PRINCIPAL_COMPARE_FUNCTION
-#endif
 }
 
  void smb_krb5_checksum_from_pac_sig(krb5_checksum *cksum,
@@ -241,71 +213,28 @@ krb5_error_code smb_krb5_unparse_name(TALLOC_CTX *mem_ctx,
 {
 	krb5_error_code ret;
 
-	/* verify the checksum */
+	/* verify the checksum, heimdal 0.7 and MIT krb 1.4.2 and above */
 
-	/* welcome to the wonderful world of samba's kerberos abstraction layer:
-	 * 
-	 * function			heimdal 0.6.1rc3	heimdal 0.7	MIT krb 1.4.2
-	 * -----------------------------------------------------------------------------
-	 * krb5_c_verify_checksum	-			works		works
-	 * krb5_verify_checksum		works (6 args)		works (6 args)	broken (7 args) 
-	 */
-
-#if defined(HAVE_KRB5_C_VERIFY_CHECKSUM)
-	{
-		krb5_boolean checksum_valid = false;
-		krb5_data input;
-
-		input.data = (char *)data;
-		input.length = length;
-
-		ret = krb5_c_verify_checksum(context, 
-					     keyblock, 
-					     usage,
-					     &input, 
-					     cksum,
-					     &checksum_valid);
-		if (ret) {
-			DEBUG(3,("smb_krb5_verify_checksum: krb5_c_verify_checksum() failed: %s\n", 
-				error_message(ret)));
-			return ret;
-		}
-
-		if (!checksum_valid)
-			ret = KRB5KRB_AP_ERR_BAD_INTEGRITY;
+	krb5_boolean checksum_valid = false;
+	krb5_data input;
+	
+	input.data = (char *)data;
+	input.length = length;
+	
+	ret = krb5_c_verify_checksum(context, 
+				     keyblock, 
+				     usage,
+				     &input, 
+				     cksum,
+				     &checksum_valid);
+	if (ret) {
+		DEBUG(3,("smb_krb5_verify_checksum: krb5_c_verify_checksum() failed: %s\n", 
+			 error_message(ret)));
+		return ret;
 	}
-
-#elif KRB5_VERIFY_CHECKSUM_ARGS == 6 && defined(HAVE_KRB5_CRYPTO_INIT) && defined(HAVE_KRB5_CRYPTO) && defined(HAVE_KRB5_CRYPTO_DESTROY)
-
-	/* Warning: MIT's krb5_verify_checksum cannot be used as it will use a key
-	 * without enctype and it ignores any key_usage types - Guenther */
-
-	{
-
-		krb5_crypto crypto;
-		ret = krb5_crypto_init(context,
-				       keyblock,
-				       0,
-				       &crypto);
-		if (ret) {
-			DEBUG(0,("smb_krb5_verify_checksum: krb5_crypto_init() failed: %s\n", 
-				error_message(ret)));
-			return ret;
-		}
-
-		ret = krb5_verify_checksum(context,
-					   crypto,
-					   usage,
-					   data,
-					   length,
-					   cksum);
-
-		krb5_crypto_destroy(context, crypto);
-	}
-
-#else
-#error UNKNOWN_KRB5_VERIFY_CHECKSUM_FUNCTION
-#endif
+	
+	if (!checksum_valid)
+		ret = KRB5KRB_AP_ERR_BAD_INTEGRITY;
 
 	return ret;
 }

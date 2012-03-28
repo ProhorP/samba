@@ -19,7 +19,8 @@
 
 #include "includes.h"
 #include "system/filesys.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "session.h"
 #include "util_tdb.h"
 
@@ -33,7 +34,8 @@ static struct db_context *session_db_ctx(void)
 
 	session_db_ctx_ptr = db_open(NULL, lock_path("sessionid.tdb"), 0,
 				     TDB_CLEAR_IF_FIRST|TDB_DEFAULT|TDB_INCOMPATIBLE_HASH,
-				     O_RDWR | O_CREAT, 0644);
+				     O_RDWR | O_CREAT, 0644,
+				     DBWRAP_LOCK_ORDER_1);
 	return session_db_ctx_ptr;
 }
 
@@ -55,7 +57,7 @@ struct db_record *sessionid_fetch_record(TALLOC_CTX *mem_ctx, const char *key)
 	if (db == NULL) {
 		return NULL;
 	}
-	return db->fetch_locked(db, mem_ctx, string_term_tdb_data(key));
+	return dbwrap_fetch_locked(db, mem_ctx, string_term_tdb_data(key));
 }
 
 struct sessionid_traverse_state {
@@ -66,37 +68,43 @@ struct sessionid_traverse_state {
 
 static int sessionid_traverse_fn(struct db_record *rec, void *private_data)
 {
+	TDB_DATA key;
+	TDB_DATA value;
 	struct sessionid_traverse_state *state =
 		(struct sessionid_traverse_state *)private_data;
 	struct sessionid session;
 
-	if ((rec->key.dptr[rec->key.dsize-1] != '\0')
-	    || (rec->value.dsize != sizeof(struct sessionid))) {
+	key = dbwrap_record_get_key(rec);
+	value = dbwrap_record_get_value(rec);
+	if ((key.dptr[key.dsize-1] != '\0')
+	    || (value.dsize != sizeof(struct sessionid))) {
 		DEBUG(1, ("Found invalid record in sessionid.tdb\n"));
 		return 0;
 	}
 
-	memcpy(&session, rec->value.dptr, sizeof(session));
+	memcpy(&session, value.dptr, sizeof(session));
 
-	return state->fn(rec, (char *)rec->key.dptr, &session,
+	return state->fn(rec, (char *)key.dptr, &session,
 			 state->private_data);
 }
 
-int sessionid_traverse(int (*fn)(struct db_record *rec, const char *key,
-				 struct sessionid *session,
-				 void *private_data),
-		       void *private_data)
+NTSTATUS sessionid_traverse(int (*fn)(struct db_record *rec, const char *key,
+				      struct sessionid *session,
+				      void *private_data),
+			    void *private_data)
 {
 	struct db_context *db;
 	struct sessionid_traverse_state state;
+	NTSTATUS status;
 
 	db = session_db_ctx();
 	if (db == NULL) {
-		return -1;
+		return NT_STATUS_UNSUCCESSFUL;
 	}
 	state.fn = fn;
 	state.private_data = private_data;
-	return db->traverse(db, sessionid_traverse_fn, &state);
+	status = dbwrap_traverse(db, sessionid_traverse_fn, &state, NULL);
+	return status;
 }
 
 struct sessionid_traverse_read_state {
@@ -108,35 +116,43 @@ struct sessionid_traverse_read_state {
 static int sessionid_traverse_read_fn(struct db_record *rec,
 				      void *private_data)
 {
+	TDB_DATA key;
+	TDB_DATA value;
 	struct sessionid_traverse_read_state *state =
 		(struct sessionid_traverse_read_state *)private_data;
 	struct sessionid session;
 
-	if ((rec->key.dptr[rec->key.dsize-1] != '\0')
-	    || (rec->value.dsize != sizeof(struct sessionid))) {
+	key = dbwrap_record_get_key(rec);
+	value = dbwrap_record_get_value(rec);
+
+	if ((key.dptr[key.dsize-1] != '\0')
+	    || (value.dsize != sizeof(struct sessionid))) {
 		DEBUG(1, ("Found invalid record in sessionid.tdb\n"));
 		return 0;
 	}
 
-	memcpy(&session, rec->value.dptr, sizeof(session));
+	memcpy(&session, value.dptr, sizeof(session));
 
-	return state->fn((char *)rec->key.dptr, &session,
+	return state->fn((char *)key.dptr, &session,
 			 state->private_data);
 }
 
-int sessionid_traverse_read(int (*fn)(const char *key,
-				      struct sessionid *session,
-				      void *private_data),
-			    void *private_data)
+NTSTATUS sessionid_traverse_read(int (*fn)(const char *key,
+					  struct sessionid *session,
+					  void *private_data),
+				 void *private_data)
 {
 	struct db_context *db;
 	struct sessionid_traverse_read_state state;
+	NTSTATUS status;
 
 	db = session_db_ctx();
 	if (db == NULL) {
-		return -1;
+		return NT_STATUS_UNSUCCESSFUL;
 	}
 	state.fn = fn;
 	state.private_data = private_data;
-	return db->traverse(db, sessionid_traverse_read_fn, &state);
+	status = dbwrap_traverse_read(db, sessionid_traverse_read_fn, &state,
+				      NULL);
+	return status;
 }

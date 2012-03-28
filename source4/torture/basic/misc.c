@@ -24,7 +24,7 @@
 #include "system/time.h"
 #include "system/wait.h"
 #include "system/filesys.h"
-#include "libcli/raw/ioctl.h"
+#include "../libcli/smb/smb_constants.h"
 #include "libcli/libcli.h"
 #include "lib/events/events.h"
 #include "libcli/resolve/resolve.h"
@@ -198,7 +198,7 @@ bool torture_holdcon(struct torture_context *tctx)
 			return false;
 		}
 		if (torture_setting_bool(tctx, "progress", true)) {
-			torture_comment(tctx, "opened %d connections\r", i);
+			torture_comment(tctx, "opened %d connections\r", i+1);
 			fflush(stdout);
 		}
 	}
@@ -997,7 +997,7 @@ bool run_benchrw(struct torture_context *tctx)
 				finished++;
 				break;
 			default:
-				event_loop_once(ev);
+				tevent_loop_once(ev);
 			}
 		}
 	}

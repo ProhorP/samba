@@ -12,18 +12,17 @@ import wafsamba, Options, samba_dist, Scripting, Utils, samba_version
 
 
 samba_dist.DIST_DIRS('.')
+samba_dist.DIST_BLACKLIST('.gitignore .bzrignore')
 
 # install in /usr/local/samba by default
 Options.default_prefix = '/usr/local/samba'
-
-os.environ['TOPLEVEL_BUILD'] = '1'
 
 def set_options(opt):
     opt.BUILTIN_DEFAULT('NONE')
     opt.PRIVATE_EXTENSION_DEFAULT('samba4')
     opt.RECURSE('lib/replace')
     opt.RECURSE('dynconfig')
-    opt.RECURSE('source4/lib/ldb')
+    opt.RECURSE('lib/ldb')
     opt.RECURSE('selftest')
     opt.RECURSE('source4/lib/tls')
     opt.RECURSE('lib/nss_wrapper')
@@ -42,16 +41,15 @@ def set_options(opt):
 
 
 def configure(conf):
-    conf.env.toplevel_build = True
     version = samba_version.load_version(env=conf.env)
 
     conf.DEFINE('CONFIG_H_IS_FROM_SAMBA', 1)
-    conf.DEFINE('_SAMBA_WAF_BUILD_', version.MAJOR)
     conf.DEFINE('_SAMBA_BUILD_', version.MAJOR, add_to_cflags=True)
     conf.DEFINE('HAVE_CONFIG_H', 1, add_to_cflags=True)
 
     if Options.options.developer:
         conf.ADD_CFLAGS('-DDEVELOPER -DDEBUG_PASSWORD')
+        conf.env.DEVELOPER = True
 
     # this enables smbtorture.static for s3 in the build farm
     conf.env.BUILD_FARM = Options.options.BUILD_FARM or os.environ.get('RUN_FROM_BUILD_FARM')
@@ -76,11 +74,15 @@ def configure(conf):
             conf.ADD_CFLAGS('-fno-common')
         if not conf.CHECK_SHLIB_W_PYTHON("Checking if -undefined dynamic_lookup is not need"):
             conf.env.append_value('shlib_LINKFLAGS', ['-undefined', 'dynamic_lookup'])
+
+    if sys.platform == 'darwin':
+        conf.ADD_LDFLAGS('-framework CoreFoundation')
+
     if int(conf.env['PYTHON_VERSION'][0]) >= 3:
         raise Utils.WafError('Python version 3.x is not supported by Samba yet')
 
     conf.RECURSE('dynconfig')
-    conf.RECURSE('source4/lib/ldb')
+    conf.RECURSE('lib/ldb')
     conf.RECURSE('source4/heimdal_build')
     conf.RECURSE('source4/lib/tls')
     conf.RECURSE('source4/ntvfs/sysdep')
@@ -96,31 +98,20 @@ def configure(conf):
     conf.RECURSE('lib/popt')
     conf.RECURSE('lib/subunit/c')
     conf.RECURSE('libcli/smbreadline')
+    conf.RECURSE('lib/crypto')
     conf.RECURSE('pidl')
     conf.RECURSE('selftest')
     conf.RECURSE('source3')
 
-    # we don't want any libraries or modules to rely on runtime
-    # resolution of symbols
-    if sys.platform != "openbsd4":
-        conf.env.undefined_ldflags = conf.ADD_LDFLAGS('-Wl,-no-undefined', testflags=True)
-
-    if sys.platform != "openbsd4" and conf.env.undefined_ignore_ldflags == []:
-        if conf.CHECK_LDFLAGS(['-undefined', 'dynamic_lookup']):
-            conf.env.undefined_ignore_ldflags = ['-undefined', 'dynamic_lookup']
-
+    conf.SAMBA_CHECK_UNDEFINED_SYMBOL_FLAGS()
 
     # gentoo always adds this. We want our normal build to be as
     # strict as the strictest OS we support, so adding this here
     # allows us to find problems on our development hosts faster.
     # It also results in faster load time.
 
-    # However, until the source3 waf build settles down, this needs to
-    # be disabled, as the bugs mentioned above are hitting too many of
-    # our users
-
-    #if sys.platform != "openbsd4":
-    #    conf.env.asneeded_ldflags = conf.ADD_LDFLAGS('-Wl,--as-needed', testflags=True)
+    if sys.platform != "openbsd4":
+        conf.env.asneeded_ldflags = conf.ADD_LDFLAGS('-Wl,--as-needed', testflags=True)
 
     if not conf.CHECK_NEED_LC("-lc not needed"):
         conf.ADD_LDFLAGS('-lc', testflags=False)
@@ -145,7 +136,7 @@ def ctags(ctx):
     "build 'tags' file using ctags"
     import Utils
     source_root = os.path.dirname(Utils.g_module.root_path)
-    cmd = 'ctags $(find %s -name "*.[ch]" | grep -v "*_proto\.h" | egrep -v \.inst\.)' % source_root
+    cmd = 'ctags --python-kinds=-i $(find %s -name "*.[ch]" | grep -v "*_proto\.h" | egrep -v \.inst\.) $(find %s -name "*.py")' % (source_root, source_root)
     print("Running: %s" % cmd)
     os.system(cmd)
 
@@ -162,6 +153,14 @@ def pydoctor(ctx):
     cmd='PYTHONPATH=bin/python pydoctor --project-name=Samba --project-url=http://www.samba.org --make-html --docformat=restructuredtext --add-package bin/python/samba'
     print("Running: %s" % cmd)
     os.system(cmd)
+
+
+def pep8(ctx):
+    '''run pep8 validator'''
+    cmd='PYTHONPATH=bin/python pep8 -r bin/python/samba'
+    print("Running: %s" % cmd)
+    os.system(cmd)
+
 
 def wafdocs(ctx):
     '''build wafsamba apidocs'''

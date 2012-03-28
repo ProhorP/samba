@@ -1,4 +1,4 @@
-/* 
+/*
  *  Unix SMB/CIFS implementation.
  *  Provide a connection to GPFS specific features
  *  Copyright (C) Volker Lendecke 2005
@@ -7,12 +7,12 @@
  *  it under the terms of the GNU General Public License as published by
  *  the Free Software Foundation; either version 3 of the License, or
  *  (at your option) any later version.
- *  
+ *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *  
+ *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
@@ -21,15 +21,9 @@
 #include "system/filesys.h"
 #include "smbd/smbd.h"
 
-#ifdef HAVE_GPFS
-
 #include "libcli/security/security.h"
 #include "gpfs_gpl.h"
 #include "vfs_gpfs.h"
-
-static bool gpfs_getrealfilename;
-static bool gpfs_winattr;
-static bool gpfs_do_ftruncate;
 
 static int (*gpfs_set_share_fn)(int fd, unsigned int allow, unsigned int deny);
 static int (*gpfs_set_lease_fn)(int fd, unsigned int leaseType);
@@ -138,7 +132,7 @@ int smbd_gpfs_putacl(char *pathname, int flags, void *acl)
 
 int smbd_gpfs_ftruncate(int fd, gpfs_off64_t length)
 {
-	if (!gpfs_do_ftruncate || (gpfs_ftruncate_fn == NULL)) {
+	if (gpfs_ftruncate_fn == NULL) {
 		errno = ENOSYS;
 		return -1;
 	}
@@ -149,8 +143,7 @@ int smbd_gpfs_ftruncate(int fd, gpfs_off64_t length)
 int smbd_gpfs_get_realfilename_path(char *pathname, char *filenamep,
 				    int *buflen)
 {
-	if ((!gpfs_getrealfilename)
-	    || (gpfs_get_realfilename_path_fn == NULL)) {
+	if (gpfs_get_realfilename_path_fn == NULL) {
 		errno = ENOSYS;
 		return -1;
 	}
@@ -161,7 +154,7 @@ int smbd_gpfs_get_realfilename_path(char *pathname, char *filenamep,
 int get_gpfs_winattrs(char *pathname,struct gpfs_winattr *attrs)
 {
 
-        if ((!gpfs_winattr) || (gpfs_get_winattrs_path_fn == NULL)) {
+	if (gpfs_get_winattrs_path_fn == NULL) {
                 errno = ENOSYS;
                 return -1;
         }
@@ -172,7 +165,7 @@ int get_gpfs_winattrs(char *pathname,struct gpfs_winattr *attrs)
 int smbd_fget_gpfs_winattrs(int fd, struct gpfs_winattr *attrs)
 {
 
-        if ((!gpfs_winattr) || (gpfs_get_winattrs_fn == NULL)) {
+	if (gpfs_get_winattrs_fn == NULL) {
                 errno = ENOSYS;
                 return -1;
         }
@@ -182,7 +175,7 @@ int smbd_fget_gpfs_winattrs(int fd, struct gpfs_winattr *attrs)
 
 int set_gpfs_winattrs(char *pathname,int flags,struct gpfs_winattr *attrs)
 {
-        if ((!gpfs_winattr) || (gpfs_set_winattrs_path_fn == NULL)) {
+	if (gpfs_set_winattrs_path_fn == NULL) {
                 errno = ENOSYS;
                 return -1;
         }
@@ -266,73 +259,5 @@ void init_gpfs(void)
 	init_gpfs_function(&gpfs_ftruncate_fn, "gpfs_ftruncate");
         init_gpfs_function(&gpfs_lib_init_fn,"gpfs_lib_init");
 
-	gpfs_getrealfilename = lp_parm_bool(-1, "gpfs", "getrealfilename",
-					    True);
-	gpfs_winattr = lp_parm_bool(-1, "gpfs", "winattr", False);
-	gpfs_do_ftruncate = lp_parm_bool(-1, "gpfs", "ftruncate", True);
-
 	return;
 }
-
-#else
-
-int set_gpfs_lease(int snum, int leasetype)
-{
-	DEBUG(0, ("'VFS module smbgpfs loaded, without gpfs support compiled\n"));
-
-	/* We need to indicate that no GPFS is around by returning ENOSYS, so
-	 * that the normal linux kernel oplock code is called. */
-	errno = ENOSYS;
-	return -1;
-}
-
-bool set_gpfs_sharemode(files_struct *fsp, uint32 access_mask,
-			uint32 share_access)
-{
-	DEBUG(0, ("VFS module - smbgpfs.so loaded, without gpfs support compiled\n"));
-	/* Don't disturb but complain */
-	return True;
-}
-
-int smbd_gpfs_getacl(char *pathname, int flags, void *acl)
-{
-	errno = ENOSYS;
-	return -1;
-}
-
-int smbd_gpfs_putacl(char *pathname, int flags, void *acl)
-{
-	errno = ENOSYS;
-	return -1;
-}
-
-int smbd_gpfs_get_realfilename_path(char *pathname, char *fileamep,
-				    int *buflen)
-{
-	errno = ENOSYS;
-	return -1;
-}
-
-int set_gpfs_winattrs(char *pathname,int flags,struct gpfs_winattr *attrs)
-{
-        errno = ENOSYS;
-        return -1;
-}
-
-int get_gpfs_winattrs(char *pathname,struct gpfs_winattr *attrs)
-{
-        errno = ENOSYS;
-        return -1;
-}
-
-void smbd_gpfs_lib_init()
-{
-	return;
-}
-
-void init_gpfs(void)
-{
-	return;
-}
-
-#endif /* HAVE_GPFS */

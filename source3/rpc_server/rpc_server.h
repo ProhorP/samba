@@ -21,22 +21,41 @@
 #define _RPC_SERVER_H_
 
 struct pipes_struct;
+enum dcerpc_transport_t;
 
 typedef bool (*dcerpc_ncacn_disconnect_fn)(struct pipes_struct *p);
+typedef void (named_pipe_termination_fn)(void *private_data);
 
 void set_incoming_fault(struct pipes_struct *p);
 void process_complete_pdu(struct pipes_struct *p);
+int create_named_pipe_socket(const char *pipe_name);
 bool setup_named_pipe_socket(const char *pipe_name,
-			     struct tevent_context *ev_ctx);
+			     struct tevent_context *ev_ctx,
+			     struct messaging_context *msg_ctx);
+void named_pipe_accept_function(struct tevent_context *ev_ctx,
+			        struct messaging_context *msg_ctx,
+				const char *pipe_name, int fd,
+				named_pipe_termination_fn *term_fn,
+				void *private_data);
 
 uint16_t setup_dcerpc_ncacn_tcpip_socket(struct tevent_context *ev_ctx,
 					 struct messaging_context *msg_ctx,
 					 const struct sockaddr_storage *ifss,
 					 uint16_t port);
 
+int create_dcerpc_ncalrpc_socket(const char *name);
 bool setup_dcerpc_ncalrpc_socket(struct tevent_context *ev_ctx,
 				 struct messaging_context *msg_ctx,
 				 const char *name,
 				 dcerpc_ncacn_disconnect_fn fn);
+
+void dcerpc_ncacn_accept(struct tevent_context *ev_ctx,
+			 struct messaging_context *msg_ctx,
+			 enum dcerpc_transport_t transport,
+			 const char *name,
+			 struct tsocket_address *cli_addr,
+			 struct tsocket_address *srv_addr,
+			 int s,
+			 dcerpc_ncacn_disconnect_fn fn);
 
 #endif /* _PRC_SERVER_H_ */

@@ -64,13 +64,14 @@ typedef struct {
 static PyObject *py_imessaging_connect(PyTypeObject *self, PyObject *args, PyObject *kwargs)
 {
 	struct tevent_context *ev;
-	const char *kwnames[] = { "own_id", "messaging_path", NULL };
+	const char *kwnames[] = { "own_id", "lp_ctx", NULL };
 	PyObject *own_id = Py_None;
-	const char *imessaging_path = NULL;
+	PyObject *py_lp_ctx = Py_None;
 	imessaging_Object *ret;
+	struct loadparm_context *lp_ctx;
 
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|Oz:connect", 
-		discard_const_p(char *, kwnames), &own_id, &imessaging_path)) {
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OO:connect", 
+		discard_const_p(char *, kwnames), &own_id, &py_lp_ctx)) {
 		return NULL;
 	}
 
@@ -80,14 +81,14 @@ static PyObject *py_imessaging_connect(PyTypeObject *self, PyObject *args, PyObj
 
 	ret->mem_ctx = talloc_new(NULL);
 
-	ev = s4_event_context_init(ret->mem_ctx);
-
-	if (imessaging_path == NULL) {
-		imessaging_path = lpcfg_imessaging_path(ret->mem_ctx,
-								   py_default_loadparm_context(ret->mem_ctx));
-	} else {
-		imessaging_path = talloc_strdup(ret->mem_ctx, imessaging_path);
+	lp_ctx = lpcfg_from_py_object(ret->mem_ctx, py_lp_ctx);
+	if (lp_ctx == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, "imessaging_connect unable to interpret loadparm_context");
+		talloc_free(ret->mem_ctx);
+		return NULL;
 	}
+
+	ev = s4_event_context_init(ret->mem_ctx);
 
 	if (own_id != Py_None) {
 		struct server_id server_id;
@@ -96,13 +97,13 @@ static PyObject *py_imessaging_connect(PyTypeObject *self, PyObject *args, PyObj
 			return NULL;
 
 		ret->msg_ctx = imessaging_init(ret->mem_ctx,
-					    imessaging_path,
-					    server_id,
-					    ev);
+					       lp_ctx,
+					       server_id,
+					       ev, true);
 	} else {
 		ret->msg_ctx = imessaging_client_init(ret->mem_ctx,
-					    imessaging_path,
-					    ev);
+						      lp_ctx,
+						      ev);
 	}
 
 	if (ret->msg_ctx == NULL) {
@@ -249,9 +250,8 @@ PyTypeObject imessaging_Type = {
 	.tp_dealloc = py_imessaging_dealloc,
 	.tp_methods = py_imessaging_methods,
 	.tp_getset = py_imessaging_getset,
-	.tp_doc = "Messaging(own_id=None, imessaging_path=None)\n" \
-		  "Create a new object that can be used to communicate with the peers in the specified messaging path.\n" \
-		  "If no path is specified, the default path from smb.conf will be used."
+	.tp_doc = "Messaging(own_id=None)\n" \
+		  "Create a new object that can be used to communicate with the peers in the specified messaging path.\n"
 };
 
 void initmessaging(void)

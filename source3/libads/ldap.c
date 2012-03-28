@@ -100,11 +100,13 @@ static void gotalarm_sig(int signum)
 	}
 #endif
 
-	/* Setup timeout */
-	gotalarm = 0;
-	CatchSignal(SIGALRM, gotalarm_sig);
-	alarm(to);
-	/* End setup timeout. */
+	if (to) {
+		/* Setup timeout */
+		gotalarm = 0;
+		CatchSignal(SIGALRM, gotalarm_sig);
+		alarm(to);
+		/* End setup timeout. */
+	}
 
 	ldp = ldap_open(server, port);
 
@@ -115,9 +117,11 @@ static void gotalarm_sig(int signum)
 		DEBUG(10, ("Connected to LDAP server '%s:%d'\n", server, port));
 	}
 
-	/* Teardown timeout. */
-	CatchSignal(SIGALRM, SIG_IGN);
-	alarm(0);
+	if (to) {
+		/* Teardown timeout. */
+		alarm(0);
+		CatchSignal(SIGALRM, SIG_IGN);
+	}
 
 	return ldp;
 }
@@ -133,26 +137,39 @@ static int ldap_search_with_timeout(LDAP *ld,
 				    int sizelimit,
 				    LDAPMessage **res )
 {
+	int to = lp_ldap_timeout();
 	struct timeval timeout;
+	struct timeval *timeout_ptr = NULL;
 	int result;
 
 	/* Setup timeout for the ldap_search_ext_s call - local and remote. */
-	timeout.tv_sec = lp_ldap_timeout();
-	timeout.tv_usec = 0;
-
-	/* Setup alarm timeout.... Do we need both of these ? JRA. */
 	gotalarm = 0;
-	CatchSignal(SIGALRM, gotalarm_sig);
-	alarm(lp_ldap_timeout());
-	/* End setup timeout. */
+
+	if (to) {
+		timeout.tv_sec = to;
+	 	timeout.tv_usec = 0;
+		timeout_ptr = &timeout;
+
+		/* Setup alarm timeout. */
+		CatchSignal(SIGALRM, gotalarm_sig);
+		/* Make the alarm time one second beyond
+		   the timout we're setting for the
+		   remote search timeout, to allow that
+		   to fire in preference. */
+		alarm(to+1);
+		/* End setup timeout. */
+	}
+
 
 	result = ldap_search_ext_s(ld, base, scope, filter, attrs,
-				   attrsonly, sctrls, cctrls, &timeout,
+				   attrsonly, sctrls, cctrls, timeout_ptr,
 				   sizelimit, res);
 
-	/* Teardown timeout. */
-	CatchSignal(SIGALRM, SIG_IGN);
-	alarm(0);
+	if (to) {
+		/* Teardown alarm timeout. */
+		CatchSignal(SIGALRM, SIG_IGN);
+		alarm(0);
+	}
 
 	if (gotalarm != 0)
 		return LDAP_TIMELIMIT_EXCEEDED;
@@ -354,7 +371,8 @@ static NTSTATUS ads_find_dc(ADS_STRUCT *ads)
 	}
 
 	if ( !c_realm || !*c_realm ) {
-		DEBUG(0,("ads_find_dc: no realm or workgroup!  Don't know what to do\n"));
+		DEBUG(1, ("ads_find_dc: no realm or workgroup!  Don't know "
+			  "what to do\n"));
 		return NT_STATUS_INVALID_PARAMETER; /* rather need MISSING_PARAMETER ... */
 	}
 
@@ -3258,61 +3276,6 @@ ADS_STATUS ads_get_sid_from_extended_dn(TALLOC_CTX *mem_ctx,
 	}
 
 	return ADS_ERROR_NT(NT_STATUS_OK);
-}
-
-/**
- * pull an array of struct dom_sids from a ADS result
- * @param ads connection to ads server
- * @param mem_ctx TALLOC_CTX for allocating sid array
- * @param msg Results of search
- * @param field Attribute to retrieve
- * @param flags string type of extended_dn
- * @param sids pointer to sid array to allocate
- * @return the count of SIDs pulled
- **/
- int ads_pull_sids_from_extendeddn(ADS_STRUCT *ads,
-				   TALLOC_CTX *mem_ctx,
-				   LDAPMessage *msg,
-				   const char *field,
-				   enum ads_extended_dn_flags flags,
-				   struct dom_sid **sids)
-{
-	int i;
-	ADS_STATUS rc;
-	size_t dn_count, ret_count = 0;
-	char **dn_strings;
-
-	if ((dn_strings = ads_pull_strings(ads, mem_ctx, msg, field,
-					   &dn_count)) == NULL) {
-		return 0;
-	}
-
-	(*sids) = talloc_zero_array(mem_ctx, struct dom_sid, dn_count + 1);
-	if (!(*sids)) {
-		TALLOC_FREE(dn_strings);
-		return 0;
-	}
-
-	for (i=0; i<dn_count; i++) {
-		rc = ads_get_sid_from_extended_dn(mem_ctx, dn_strings[i],
-						  flags, &(*sids)[i]);
-		if (!ADS_ERR_OK(rc)) {
-			if (NT_STATUS_EQUAL(ads_ntstatus(rc),
-			    NT_STATUS_NOT_FOUND)) {
-				continue;
-			}
-			else {
-				TALLOC_FREE(*sids);
-				TALLOC_FREE(dn_strings);
-				return 0;
-			}
-		}
-		ret_count++;
-	}
-
-	TALLOC_FREE(dn_strings);
-
-	return ret_count;
 }
 
 /********************************************************************

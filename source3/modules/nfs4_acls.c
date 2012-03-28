@@ -23,10 +23,12 @@
 #include "librpc/gen_ndr/ndr_security.h"
 #include "../libcli/security/dom_sid.h"
 #include "../libcli/security/security.h"
-#include "include/dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "system/filesys.h"
 #include "passdb/lookup_sid.h"
 #include "util_tdb.h"
+#include "lib/param/loadparm.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_ACLS
@@ -59,7 +61,8 @@ typedef struct _SMB_ACL4_INT_T
  are mapped to what in one place.
 ************************************************/
 
-static uint32_t map_nfs4_ace_flags_to_windows_ace_flags(uint32_t nfs4_ace_flags)
+static uint32_t map_nfs4_ace_flags_to_windows_ace_flags(
+	uint32_t nfs4_ace_flags)
 {
 	uint32_t win_ace_flags = 0;
 
@@ -142,7 +145,8 @@ static SMB_ACE4_INT_T *get_validated_aceint(SMB4ACE_T *ace)
 SMB4ACL_T *smb_create_smb4acl(void)
 {
 	TALLOC_CTX *mem_ctx = talloc_tos();
-	SMB_ACL4_INT_T	*theacl = (SMB_ACL4_INT_T *)TALLOC_ZERO_SIZE(mem_ctx, sizeof(SMB_ACL4_INT_T));
+	SMB_ACL4_INT_T	*theacl = (SMB_ACL4_INT_T *)TALLOC_ZERO_SIZE(
+		mem_ctx, sizeof(SMB_ACL4_INT_T));
 	if (theacl==NULL)
 	{
 		DEBUG(0, ("TALLOC_SIZE failed\n"));
@@ -160,7 +164,8 @@ SMB4ACE_T *smb_add_ace4(SMB4ACL_T *theacl, SMB_ACE4PROP_T *prop)
 	TALLOC_CTX *mem_ctx = talloc_tos();
 	SMB_ACE4_INT_T *ace;
 
-	ace = (SMB_ACE4_INT_T *)TALLOC_ZERO_SIZE(mem_ctx, sizeof(SMB_ACE4_INT_T));
+	ace = (SMB_ACE4_INT_T *)TALLOC_ZERO_SIZE(
+		mem_ctx, sizeof(SMB_ACE4_INT_T));
 	if (ace==NULL)
 	{
 		DEBUG(0, ("TALLOC_SIZE failed\n"));
@@ -271,9 +276,11 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx, SMB4ACL_T *theacl, /* in */
 	DEBUG(10, ("smbacl_nfs42win entered\n"));
 
 	aclint = get_validated_aclint(theacl);
-	/* We do not check for naces being 0 or theacl being NULL here because it is done upstream */
+	/* We do not check for naces being 0 or theacl being NULL here
+	 * because it is done upstream */
 	/* in smb_get_nt_acl_nfs4(). */
-	nt_ace_list = (struct security_ace *)TALLOC_ZERO_SIZE(mem_ctx, aclint->naces * sizeof(struct security_ace));
+	nt_ace_list = (struct security_ace *)TALLOC_ZERO_SIZE(
+		mem_ctx, aclint->naces * sizeof(struct security_ace));
 	if (nt_ace_list==NULL)
 	{
 		DEBUG(10, ("talloc error"));
@@ -281,15 +288,18 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx, SMB4ACL_T *theacl, /* in */
 		return False;
 	}
 
-	for (aceint=aclint->first; aceint!=NULL; aceint=(SMB_ACE4_INT_T *)aceint->next) {
+	for (aceint=aclint->first;
+	     aceint!=NULL;
+	     aceint=(SMB_ACE4_INT_T *)aceint->next) {
 		uint32_t mask;
 		struct dom_sid sid;
 		SMB_ACE4PROP_T	*ace = &aceint->prop;
 		uint32_t win_ace_flags;
 
-		DEBUG(10, ("magic: 0x%x, type: %d, iflags: %x, flags: %x, mask: %x, "
-			"who: %d\n", aceint->magic, ace->aceType, ace->flags,
-			ace->aceFlags, ace->aceMask, ace->who.id));
+		DEBUG(10, ("magic: 0x%x, type: %d, iflags: %x, flags: %x, "
+			   "mask: %x, who: %d\n",
+			   aceint->magic, ace->aceType, ace->flags,
+			   ace->aceFlags, ace->aceMask, ace->who.id));
 
 		SMB_ASSERT(aceint->magic==SMB_ACE4_INT_MAGIC);
 
@@ -322,22 +332,31 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx, SMB4ACL_T *theacl, /* in */
 			ace->aceMask |= SMB_ACE4_DELETE_CHILD;
 		}
 
-		win_ace_flags = map_nfs4_ace_flags_to_windows_ace_flags(ace->aceFlags);
-		if (!is_directory && (win_ace_flags & (SEC_ACE_FLAG_OBJECT_INHERIT|SEC_ACE_FLAG_CONTAINER_INHERIT))) {
+		win_ace_flags = map_nfs4_ace_flags_to_windows_ace_flags(
+			ace->aceFlags);
+		if (!is_directory &&
+		    (win_ace_flags & (SEC_ACE_FLAG_OBJECT_INHERIT|
+				      SEC_ACE_FLAG_CONTAINER_INHERIT))) {
 			/*
 			 * GPFS sets inherits dir_inhert and file_inherit flags
 			 * to files, too, which confuses windows, and seems to
 			 * be wrong anyways. ==> Map these bits away for files.
 			 */
 			DEBUG(10, ("removing inherit flags from nfs4 ace\n"));
-			win_ace_flags &= ~(SEC_ACE_FLAG_OBJECT_INHERIT|SEC_ACE_FLAG_CONTAINER_INHERIT);
+			win_ace_flags &= ~(SEC_ACE_FLAG_OBJECT_INHERIT|
+					   SEC_ACE_FLAG_CONTAINER_INHERIT);
 		}
 		DEBUG(10, ("Windows mapped ace flags: 0x%x => 0x%x\n",
 		      ace->aceFlags, win_ace_flags));
 
+		mask = ace->aceMask;
 		/* Windows clients expect SYNC on acls to
 		   correctly allow rename. See bug #7909. */
-		mask = ace->aceMask | SMB_ACE4_SYNCHRONIZE;
+		/* But not on DENY ace entries. See
+		   bug #8442. */
+		if(ace->aceType == SMB_ACE4_ACCESS_ALLOWED_ACE_TYPE) {
+			mask = ace->aceMask | SMB_ACE4_SYNCHRONIZE;
+		}
 		init_sec_ace(&nt_ace_list[good_aces++], &sid,
 			ace->aceType, mask,
 			win_ace_flags);
@@ -382,24 +401,27 @@ static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 	}
 
 	DEBUG(10,("after make sec_acl\n"));
-	*ppdesc = make_sec_desc(mem_ctx, SD_REVISION, SEC_DESC_SELF_RELATIVE,
-	                        (security_info & SECINFO_OWNER) ? &sid_owner : NULL,
-	                        (security_info & SECINFO_GROUP) ? &sid_group : NULL,
-	                        NULL, psa, &sd_size);
+	*ppdesc = make_sec_desc(
+		mem_ctx, SD_REVISION, SEC_DESC_SELF_RELATIVE,
+		(security_info & SECINFO_OWNER) ? &sid_owner : NULL,
+		(security_info & SECINFO_GROUP) ? &sid_group : NULL,
+		NULL, psa, &sd_size);
 	if (*ppdesc==NULL) {
 		DEBUG(2,("make_sec_desc failed\n"));
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	DEBUG(10, ("smb_get_nt_acl_nfs4_common successfully exited with sd_size %d\n",
+	DEBUG(10, ("smb_get_nt_acl_nfs4_common successfully exited with "
+		   "sd_size %d\n",
 		   (int)ndr_size_security_descriptor(*ppdesc, 0)));
 
 	return NT_STATUS_OK;
 }
 
 NTSTATUS smb_fget_nt_acl_nfs4(files_struct *fsp,
-			       uint32 security_info,
-			       struct security_descriptor **ppdesc, SMB4ACL_T *theacl)
+			      uint32 security_info,
+			      struct security_descriptor **ppdesc,
+			      SMB4ACL_T *theacl)
 {
 	SMB_STRUCT_STAT sbuf;
 
@@ -409,13 +431,15 @@ NTSTATUS smb_fget_nt_acl_nfs4(files_struct *fsp,
 		return map_nt_error_from_unix(errno);
 	}
 
-	return smb_get_nt_acl_nfs4_common(&sbuf, security_info, ppdesc, theacl);
+	return smb_get_nt_acl_nfs4_common(&sbuf, security_info, ppdesc,
+					  theacl);
 }
 
 NTSTATUS smb_get_nt_acl_nfs4(struct connection_struct *conn,
-			      const char *name,
-			      uint32 security_info,
-			      struct security_descriptor **ppdesc, SMB4ACL_T *theacl)
+			     const char *name,
+			     uint32 security_info,
+			     struct security_descriptor **ppdesc,
+			     SMB4ACL_T *theacl)
 {
 	SMB_STRUCT_STAT sbuf;
 
@@ -425,7 +449,8 @@ NTSTATUS smb_get_nt_acl_nfs4(struct connection_struct *conn,
 		return map_nt_error_from_unix(errno);
 	}
 
-	return smb_get_nt_acl_nfs4_common(&sbuf, security_info, ppdesc, theacl);
+	return smb_get_nt_acl_nfs4_common(&sbuf, security_info, ppdesc,
+					  theacl);
 }
 
 enum smbacl4_mode_enum {e_simple=0, e_special=1};
@@ -485,14 +510,17 @@ static void smbacl4_dump_nfs4acl(int level, SMB4ACL_T *theacl)
 
 	DEBUG(level, ("NFS4ACL: size=%d\n", aclint->naces));
 
-	for(aceint = aclint->first; aceint!=NULL; aceint=(SMB_ACE4_INT_T *)aceint->next) {
+	for (aceint = aclint->first;
+	     aceint!=NULL;
+	     aceint=(SMB_ACE4_INT_T *)aceint->next) {
 		SMB_ACE4PROP_T *ace = &aceint->prop;
 
-		DEBUG(level, ("\tACE: type=%d, flags=0x%x, fflags=0x%x, mask=0x%x, id=%d\n",
-			ace->aceType,
-			ace->aceFlags, ace->flags,
-			ace->aceMask,
-			ace->who.id));
+		DEBUG(level, ("\tACE: type=%d, flags=0x%x, fflags=0x%x, "
+			      "mask=0x%x, id=%d\n",
+			      ace->aceType,
+			      ace->aceFlags, ace->flags,
+			      ace->aceMask,
+			      ace->who.id));
 	}
 }
 
@@ -508,7 +536,8 @@ static SMB_ACE4PROP_T *smbacl4_find_equal_special(
 	SMB_ACL4_INT_T *aclint = get_validated_aclint(theacl);
 	SMB_ACE4_INT_T *aceint;
 
-	for(aceint = aclint->first; aceint!=NULL; aceint=(SMB_ACE4_INT_T *)aceint->next) {
+	for (aceint = aclint->first; aceint != NULL;
+	     aceint=(SMB_ACE4_INT_T *)aceint->next) {
 		SMB_ACE4PROP_T *ace = &aceint->prop;
 
                 DEBUG(10,("ace type:0x%x flags:0x%x aceFlags:0x%x "
@@ -518,15 +547,13 @@ static SMB_ACE4PROP_T *smbacl4_find_equal_special(
 
 		if (ace->flags == aceNew->flags &&
 			ace->aceType==aceNew->aceType &&
-			((ace->aceFlags&SMB_ACE4_INHERIT_ONLY_ACE)==
-			 (aceNew->aceFlags&SMB_ACE4_INHERIT_ONLY_ACE)) &&
-			(ace->aceFlags&SMB_ACE4_IDENTIFIER_GROUP)==
-			(aceNew->aceFlags&SMB_ACE4_IDENTIFIER_GROUP)
-		) {
+			ace->aceFlags==aceNew->aceFlags)
+		{
 			/* keep type safety; e.g. gid is an u.short */
 			if (ace->flags & SMB_ACE4_ID_SPECIAL)
 			{
-				if (ace->who.special_id==aceNew->who.special_id)
+				if (ace->who.special_id ==
+				    aceNew->who.special_id)
 					return ace;
 			} else {
 				if (ace->aceFlags & SMB_ACE4_IDENTIFIER_GROUP)
@@ -549,37 +576,40 @@ static bool nfs4_map_sid(smbacl4_vfs_params *params, const struct dom_sid *src,
 {
 	static struct db_context *mapping_db = NULL;
 	TDB_DATA data;
-	
+	NTSTATUS status;
+
 	if (mapping_db == NULL) {
 		const char *dbname = lp_parm_const_string(
 			-1, SMBACL4_PARAM_TYPE_NAME, "sidmap", NULL);
-		
+
 		if (dbname == NULL) {
 			DEBUG(10, ("%s:sidmap not defined\n",
 				   SMBACL4_PARAM_TYPE_NAME));
 			return False;
 		}
-		
+
 		become_root();
 		mapping_db = db_open(NULL, dbname, 0, TDB_DEFAULT,
-				     O_RDONLY, 0600);
+				     O_RDONLY, 0600,
+				     DBWRAP_LOCK_ORDER_1);
 		unbecome_root();
-		
+
 		if (mapping_db == NULL) {
 			DEBUG(1, ("could not open sidmap: %s\n",
 				  strerror(errno)));
 			return False;
 		}
 	}
-	
-	if (mapping_db->fetch(mapping_db, NULL,
+
+	status = dbwrap_fetch(mapping_db, NULL,
 			      string_term_tdb_data(sid_string_tos(src)),
-			      &data) != 0) {
+			      &data);
+	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("could not find mapping for SID %s\n",
 			   sid_string_dbg(src)));
 		return False;
 	}
-	
+
 	if ((data.dptr == NULL) || (data.dsize <= 0)
 	    || (data.dptr[data.dsize-1] != '\0')) {
 		DEBUG(5, ("invalid mapping for SID %s\n",
@@ -587,7 +617,7 @@ static bool nfs4_map_sid(smbacl4_vfs_params *params, const struct dom_sid *src,
 		TALLOC_FREE(data.dptr);
 		return False;
 	}
-	
+
 	if (!string_to_sid(dst, (char *)data.dptr)) {
 		DEBUG(1, ("invalid mapping %s for SID %s\n",
 			  (char *)data.dptr, sid_string_dbg(src)));
@@ -596,7 +626,7 @@ static bool nfs4_map_sid(smbacl4_vfs_params *params, const struct dom_sid *src,
 	}
 
 	TALLOC_FREE(data.dptr);
-	
+
 	return True;
 }
 
@@ -613,8 +643,12 @@ static bool smbacl4_fill_ace4(
 	DEBUG(10, ("got ace for %s\n", sid_string_dbg(&ace_nt->trustee)));
 
 	memset(ace_v4, 0, sizeof(SMB_ACE4PROP_T));
-	ace_v4->aceType = ace_nt->type; /* only ACCESS|DENY supported right now */
-	ace_v4->aceFlags = map_windows_ace_flags_to_nfs4_ace_flags(ace_nt->flags);
+
+	/* only ACCESS|DENY supported right now */
+	ace_v4->aceType = ace_nt->type;
+
+	ace_v4->aceFlags = map_windows_ace_flags_to_nfs4_ace_flags(
+		ace_nt->flags);
 	ace_v4->aceMask = ace_nt->access_mask &
 		(SEC_STD_ALL | SEC_FILE_ALL);
 
@@ -637,35 +671,38 @@ static bool smbacl4_fill_ace4(
 		uid_t uid;
 		gid_t gid;
 		struct dom_sid sid;
-		
+
 		sid_copy(&sid, &ace_nt->trustee);
-		
+
 		if (!lookup_sid(mem_ctx, &sid, &dom, &name, &type)) {
-			
+
 			struct dom_sid mapped;
-			
+
 			if (!nfs4_map_sid(params, &sid, &mapped)) {
 				DEBUG(1, ("nfs4_acls.c: file [%s]: SID %s "
-					  "unknown\n", filename, sid_string_dbg(&sid)));
+					  "unknown\n", filename,
+					  sid_string_dbg(&sid)));
 				errno = EINVAL;
 				return False;
 			}
-			
+
 			DEBUG(2, ("nfs4_acls.c: file [%s]: mapped SID %s "
-				  "to %s\n", filename, sid_string_dbg(&sid), sid_string_dbg(&mapped)));
-			
+				  "to %s\n", filename, sid_string_dbg(&sid),
+				  sid_string_dbg(&mapped)));
+
 			if (!lookup_sid(mem_ctx, &mapped, &dom,
 					&name, &type)) {
 				DEBUG(1, ("nfs4_acls.c: file [%s]: SID %s "
 					  "mapped from %s is unknown\n",
-					  filename, sid_string_dbg(&mapped), sid_string_dbg(&sid)));
+					  filename, sid_string_dbg(&mapped),
+					  sid_string_dbg(&sid)));
 				errno = EINVAL;
 				return False;
 			}
-			
+
 			sid_copy(&sid, &mapped);
 		}
-		
+
 		if (type == SID_NAME_USER) {
 			if (!sid_to_uid(&sid, &uid)) {
 				DEBUG(1, ("nfs4_acls.c: file [%s]: could not "
@@ -687,7 +724,7 @@ static bool smbacl4_fill_ace4(
 					  sid_string_dbg(&sid)));
 				return False;
 			}
-				
+
 			ace_v4->aceFlags |= SMB_ACE4_IDENTIFIER_GROUP;
 
 			if (params->mode==e_special && gid==ownerGID) {
@@ -802,7 +839,8 @@ NTSTATUS smb_set_nt_acl_nfs4(files_struct *fsp,
 	{
 		DEBUG(9, ("security_info_sent (0x%x) ignored\n",
 			security_info_sent));
-		return NT_STATUS_OK; /* won't show error - later to be refined... */
+		return NT_STATUS_OK; /* won't show error - later to be
+				      * refined... */
 	}
 
 	/* Special behaviours */
@@ -814,7 +852,8 @@ NTSTATUS smb_set_nt_acl_nfs4(files_struct *fsp,
 
 	if (params.do_chown) {
 		/* chown logic is a copy/paste from posix_acl.c:set_nt_acl */
-		NTSTATUS status = unpack_nt_owners(fsp->conn, &newUID, &newGID, security_info_sent, psd);
+		NTSTATUS status = unpack_nt_owners(fsp->conn, &newUID, &newGID,
+						   security_info_sent, psd);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(8, ("unpack_nt_owners failed"));
 			return status;
@@ -848,7 +887,8 @@ NTSTATUS smb_set_nt_acl_nfs4(files_struct *fsp,
 	}
 
 	if (!(security_info_sent & SECINFO_DACL) || psd->dacl ==NULL) {
-		DEBUG(10, ("no dacl found; security_info_sent = 0x%x\n", security_info_sent));
+		DEBUG(10, ("no dacl found; security_info_sent = 0x%x\n",
+			   security_info_sent));
 		return NT_STATUS_OK;
 	}
 
@@ -869,7 +909,8 @@ NTSTATUS smb_set_nt_acl_nfs4(files_struct *fsp,
 	}
 	if (result!=True) {
 		errno = saved_errno;
-		DEBUG(10, ("set_nfs4_native failed with %s\n", strerror(errno)));
+		DEBUG(10, ("set_nfs4_native failed with %s\n",
+			   strerror(errno)));
 		return map_nt_error_from_unix(errno);
 	}
 

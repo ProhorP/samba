@@ -3,8 +3,14 @@
 	workgroup	= ${DOMAIN}
 	realm		= ${REALM}
 	server role     = ${SERVERROLE}
+	${SERVER_SERVICES_LINE}
+
 	${PRIVATEDIR_LINE}
 	${LOCKDIR_LINE}
+	${STATEDIR_LINE}
+	${CACHEDIR_LINE}
+
+	passdb backend = samba4
 
 [netlogon]
 	path = ${NETLOGONPATH}

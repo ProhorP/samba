@@ -27,12 +27,11 @@
 #define _LIBSMB_PROTO_H_
 
 #include "ads.h"
+#include "auth_info.h"
+
+struct smb_trans_enc_state;
 
 /* The following definitions come from libsmb/cliconnect.c  */
-
-ADS_STATUS cli_session_setup_spnego(struct cli_state *cli, const char *user,
-			      const char *pass, const char *user_domain,
-				    const char * dest_realm);
 
 NTSTATUS cli_session_setup(struct cli_state *cli,
 			   const char *user,
@@ -66,28 +65,31 @@ struct tevent_req *cli_tcon_andx_send(TALLOC_CTX *mem_ctx,
 NTSTATUS cli_tcon_andx_recv(struct tevent_req *req);
 NTSTATUS cli_tcon_andx(struct cli_state *cli, const char *share,
 		       const char *dev, const char *pass, int passlen);
+NTSTATUS cli_tree_connect(struct cli_state *cli, const char *share,
+			  const char *dev, const char *pass, int passlen);
 struct tevent_req *cli_tdis_send(TALLOC_CTX *mem_ctx,
                                  struct tevent_context *ev,
                                  struct cli_state *cli);
 NTSTATUS cli_tdis_recv(struct tevent_req *req);
 NTSTATUS cli_tdis(struct cli_state *cli);
-NTSTATUS cli_negprot(struct cli_state *cli);
+NTSTATUS cli_negprot(struct cli_state *cli, enum protocol_types max_protocol);
 struct tevent_req *cli_negprot_send(TALLOC_CTX *mem_ctx,
 				    struct event_context *ev,
-				    struct cli_state *cli);
+				    struct cli_state *cli,
+				    enum protocol_types max_protocol);
 NTSTATUS cli_negprot_recv(struct tevent_req *req);
-NTSTATUS cli_connect_nb(const char *host, struct sockaddr_storage *pss,
+NTSTATUS cli_connect_nb(const char *host, const struct sockaddr_storage *dest_ss,
 			uint16_t port, int name_type, const char *myname,
-			int signing_state, struct cli_state **pcli);
+			int signing_state, int flags, struct cli_state **pcli);
 NTSTATUS cli_start_connection(struct cli_state **output_cli,
 			      const char *my_name,
 			      const char *dest_host,
-			      struct sockaddr_storage *dest_ss, int port,
+			      const struct sockaddr_storage *dest_ss, int port,
 			      int signing_state, int flags);
 NTSTATUS cli_full_connection(struct cli_state **output_cli,
 			     const char *my_name,
 			     const char *dest_host,
-			     struct sockaddr_storage *dest_ss, int port,
+			     const struct sockaddr_storage *dest_ss, int port,
 			     const char *service, const char *service_type,
 			     const char *user, const char *domain,
 			     const char *password, int flags,
@@ -113,7 +115,7 @@ NTSTATUS cli_cm_force_encryption(struct cli_state *c,
 			const char *password,
 			const char *domain,
 			const char *sharename);
-struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
+NTSTATUS cli_cm_open(TALLOC_CTX *ctx,
 				struct cli_state *referring_cli,
 				const char *server,
 				const char *share,
@@ -122,8 +124,9 @@ struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
 				bool force_encrypt,
 				int max_protocol,
 				int port,
-				int name_type);
-void cli_cm_display(const struct cli_state *c);
+				int name_type,
+				struct cli_state **pcli);
+void cli_cm_display(struct cli_state *c);
 struct client_dfs_referral;
 NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 			struct cli_state *cli,
@@ -131,13 +134,13 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 			struct client_dfs_referral **refs,
 			size_t *num_refs,
 			size_t *consumed);
-bool cli_resolve_path(TALLOC_CTX *ctx,
-			const char *mountpt,
-			const struct user_auth_info *dfs_auth_info,
-			struct cli_state *rootcli,
-			const char *path,
-			struct cli_state **targetcli,
-			char **pp_targetpath);
+NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
+			  const char *mountpt,
+			  const struct user_auth_info *dfs_auth_info,
+			  struct cli_state *rootcli,
+			  const char *path,
+			  struct cli_state **targetcli,
+			  char **pp_targetpath);
 
 bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 			struct cli_state *cli,
@@ -153,19 +156,45 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 
 int cli_set_message(char *buf,int num_words,int num_bytes,bool zero);
 unsigned int cli_set_timeout(struct cli_state *cli, unsigned int timeout);
-void cli_set_port(struct cli_state *cli, int port);
+bool cli_set_backup_intent(struct cli_state *cli, bool flag);
 void cli_setup_packet_buf(struct cli_state *cli, char *buf);
 NTSTATUS cli_set_domain(struct cli_state *cli, const char *domain);
 NTSTATUS cli_set_username(struct cli_state *cli, const char *username);
 NTSTATUS cli_set_password(struct cli_state *cli, const char *password);
 NTSTATUS cli_init_creds(struct cli_state *cli, const char *username, const char *domain, const char *password);
-struct cli_state *cli_initialise(void);
-struct cli_state *cli_initialise_ex(int signing_state);
+struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
+				   int fd,
+				   const char *remote_name,
+				   const char *remote_realm,
+				   int signing_state,
+				   int flags);
+bool cli_state_encryption_on(struct cli_state *cli);
 void cli_nt_pipes_close(struct cli_state *cli);
 void cli_shutdown(struct cli_state *cli);
 void cli_sockopt(struct cli_state *cli, const char *options);
+const struct sockaddr_storage *cli_state_local_sockaddr(struct cli_state *cli);
+const struct sockaddr_storage *cli_state_remote_sockaddr(struct cli_state *cli);
+const char *cli_state_remote_name(struct cli_state *cli);
+const char *cli_state_remote_realm(struct cli_state *cli);
+uint16_t cli_state_get_vc_num(struct cli_state *cli);
+uint32_t cli_state_server_session_key(struct cli_state *cli);
 uint16 cli_setpid(struct cli_state *cli, uint16 pid);
+uint16_t cli_getpid(struct cli_state *cli);
+bool cli_state_has_tcon(struct cli_state *cli);
+uint16_t cli_state_get_tid(struct cli_state *cli);
+uint16_t cli_state_set_tid(struct cli_state *cli, uint16_t tid);
+uint16_t cli_state_get_uid(struct cli_state *cli);
+uint16_t cli_state_set_uid(struct cli_state *cli, uint16_t uid);
 bool cli_set_case_sensitive(struct cli_state *cli, bool case_sensitive);
+enum protocol_types cli_state_protocol(struct cli_state *cli);
+uint32_t cli_state_capabilities(struct cli_state *cli);
+uint32_t cli_state_available_size(struct cli_state *cli, uint32_t ofs);
+uint16_t cli_state_max_requests(struct cli_state *cli);
+const uint8_t *cli_state_server_challenge(struct cli_state *cli);
+const DATA_BLOB *cli_state_server_gss_blob(struct cli_state *cli);
+uint16_t cli_state_security_mode(struct cli_state *cli);
+int cli_state_server_time_zone(struct cli_state *cli);
+time_t cli_state_server_time(struct cli_state *cli);
 struct tevent_req *cli_echo_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
 				 struct cli_state *cli, uint16_t num_echos,
 				 DATA_BLOB data);
@@ -191,6 +220,7 @@ bool cli_is_error(struct cli_state *cli);
 bool cli_is_nt_error(struct cli_state *cli);
 bool cli_is_dos_error(struct cli_state *cli);
 bool cli_state_is_connected(struct cli_state *cli);
+void cli_state_disconnect(struct cli_state *cli);
 
 /* The following definitions come from libsmb/clifile.c  */
 
@@ -353,15 +383,21 @@ uint8_t *smb_bytes_push_str(uint8_t *buf, bool ucs2, const char *str,
 			    size_t str_len, size_t *pconverted_size);
 uint8_t *smb_bytes_push_bytes(uint8_t *buf, uint8_t prefix,
 			      const uint8_t *bytes, size_t num_bytes);
-struct tevent_req *cli_open_create(TALLOC_CTX *mem_ctx,
+uint8_t *trans2_bytes_push_str(uint8_t *buf, bool ucs2,
+			       const char *str, size_t str_len,
+			       size_t *pconverted_size);
+uint8_t *trans2_bytes_push_bytes(uint8_t *buf,
+				 const uint8_t *bytes, size_t num_bytes);
+struct tevent_req *cli_openx_create(TALLOC_CTX *mem_ctx,
 				   struct event_context *ev,
 				   struct cli_state *cli, const char *fname,
 				   int flags, int share_mode,
 				   struct tevent_req **psmbreq);
-struct tevent_req *cli_open_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
+struct tevent_req *cli_openx_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
 				 struct cli_state *cli, const char *fname,
 				 int flags, int share_mode);
-NTSTATUS cli_open_recv(struct tevent_req *req, uint16_t *fnum);
+NTSTATUS cli_openx_recv(struct tevent_req *req, uint16_t *fnum);
+NTSTATUS cli_openx(struct cli_state *cli, const char *fname, int flags, int share_mode, uint16_t *pfnum);
 NTSTATUS cli_open(struct cli_state *cli, const char *fname, int flags, int share_mode, uint16_t *pfnum);
 struct tevent_req *cli_close_create(TALLOC_CTX *mem_ctx,
 				    struct event_context *ev,
@@ -382,8 +418,8 @@ NTSTATUS cli_ftruncate(struct cli_state *cli, uint16_t fnum, uint64_t size);
 NTSTATUS cli_locktype(struct cli_state *cli, uint16_t fnum,
 		      uint32_t offset, uint32_t len,
 		      int timeout, unsigned char locktype);
-bool cli_lock(struct cli_state *cli, uint16_t fnum,
-	      uint32_t offset, uint32_t len, int timeout, enum brl_type lock_type);
+NTSTATUS cli_lock32(struct cli_state *cli, uint16_t fnum, uint32_t offset,
+		    uint32_t len, int timeout, enum brl_type lock_type);
 struct tevent_req *cli_unlock_send(TALLOC_CTX *mem_ctx,
                                 struct event_context *ev,
                                 struct cli_state *cli,
@@ -392,8 +428,9 @@ struct tevent_req *cli_unlock_send(TALLOC_CTX *mem_ctx,
                                 uint64_t len);
 NTSTATUS cli_unlock_recv(struct tevent_req *req);
 NTSTATUS cli_unlock(struct cli_state *cli, uint16_t fnum, uint32_t offset, uint32_t len);
-bool cli_lock64(struct cli_state *cli, uint16_t fnum,
-		uint64_t offset, uint64_t len, int timeout, enum brl_type lock_type);
+NTSTATUS cli_lock64(struct cli_state *cli, uint16_t fnum,
+		    uint64_t offset, uint64_t len, int timeout,
+		    enum brl_type lock_type);
 struct tevent_req *cli_unlock64_send(TALLOC_CTX *mem_ctx,
                                 struct event_context *ev,
                                 struct cli_state *cli,
@@ -610,7 +647,8 @@ struct tevent_req *cli_get_fs_attr_info_send(TALLOC_CTX *mem_ctx,
 					     struct cli_state *cli);
 NTSTATUS cli_get_fs_attr_info_recv(struct tevent_req *req, uint32_t *fs_attr);
 NTSTATUS cli_get_fs_attr_info(struct cli_state *cli, uint32_t *fs_attr);
-NTSTATUS cli_get_fs_volume_info(struct cli_state *cli, fstring volume_name,
+NTSTATUS cli_get_fs_volume_info(struct cli_state *cli,
+				TALLOC_CTX *mem_ctx, char **volume_name,
 				uint32 *pserial_number, time_t *pdate);
 NTSTATUS cli_get_fs_full_size_info(struct cli_state *cli,
 				   uint64_t *total_allocation_units,
@@ -672,14 +710,18 @@ NTSTATUS cli_message(struct cli_state *cli, const char *host,
 
 /* The following definitions come from libsmb/clioplock.c  */
 
+struct tevent_req *cli_smb_oplock_break_waiter_send(TALLOC_CTX *mem_ctx,
+						    struct event_context *ev,
+						    struct cli_state *cli);
+NTSTATUS cli_smb_oplock_break_waiter_recv(struct tevent_req *req,
+					  uint16_t *pfnum,
+					  uint8_t *plevel);
+
 struct tevent_req *cli_oplock_ack_send(TALLOC_CTX *mem_ctx,
 				       struct tevent_context *ev,
 				       struct cli_state *cli,
 				       uint16_t fnum, uint8_t level);
 NTSTATUS cli_oplock_ack_recv(struct tevent_req *req);
-NTSTATUS cli_oplock_ack(struct cli_state *cli, uint16_t fnum, unsigned char level);
-void cli_oplock_handler(struct cli_state *cli,
-			NTSTATUS (*handler)(struct cli_state *, uint16_t, unsigned char));
 
 /* The following definitions come from libsmb/cliprint.c  */
 
@@ -728,8 +770,9 @@ NTSTATUS cli_pull(struct cli_state *cli, uint16_t fnum,
 		  off_t start_offset, SMB_OFF_T size, size_t window_size,
 		  NTSTATUS (*sink)(char *buf, size_t n, void *priv),
 		  void *priv, SMB_OFF_T *received);
-ssize_t cli_read(struct cli_state *cli, uint16_t fnum, char *buf,
-		 off_t offset, size_t size);
+NTSTATUS cli_read(struct cli_state *cli, uint16_t fnum,
+		  char *buf, off_t offset, size_t size,
+		  size_t *nread);
 NTSTATUS cli_smbwrite(struct cli_state *cli, uint16_t fnum, char *buf,
 		      off_t offset, size_t size1, size_t *ptotal);
 struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
@@ -766,24 +809,13 @@ NTSTATUS cli_push(struct cli_state *cli, uint16_t fnum, uint16_t mode,
 
 /* The following definitions come from libsmb/clisecdesc.c  */
 
-struct security_descriptor *cli_query_secdesc(struct cli_state *cli, uint16_t fnum,
-			    TALLOC_CTX *mem_ctx);
+NTSTATUS cli_query_secdesc(struct cli_state *cli, uint16_t fnum,
+			  TALLOC_CTX *mem_ctx, struct security_descriptor **sd);
 NTSTATUS cli_set_secdesc(struct cli_state *cli, uint16_t fnum,
-			 struct security_descriptor *sd);
+			 const struct security_descriptor *sd);
 
 /* The following definitions come from libsmb/clistr.c  */
 
-size_t clistr_push_fn(struct cli_state *cli,
-			void *dest,
-			const char *src,
-			int dest_len,
-			int flags);
-size_t clistr_pull_fn(const char *inbuf,
-			char *dest,
-			const void *src,
-			int dest_len,
-			int src_len,
-			int flags);
 size_t clistr_pull_talloc(TALLOC_CTX *ctx,
 			  const char *base,
 			  uint16_t flags2,
@@ -795,7 +827,7 @@ size_t clistr_pull_talloc(TALLOC_CTX *ctx,
 /* The following definitions come from libsmb/clitrans.c  */
 
 struct tevent_req *cli_trans_send(
-	TALLOC_CTX *mem_ctx, struct event_context *ev,
+	TALLOC_CTX *mem_ctx, struct tevent_context *ev,
 	struct cli_state *cli, uint8_t cmd,
 	const char *pipe_name, uint16_t fid, uint16_t function, int flags,
 	uint16_t *setup, uint8_t num_setup, uint8_t max_setup,
@@ -821,34 +853,44 @@ NTSTATUS cli_trans(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		   uint8_t **rparam, uint32_t min_rparam, uint32_t *num_rparam,
 		   uint8_t **rdata, uint32_t min_rdata, uint32_t *num_rdata);
 
-/* The following definitions come from libsmb/smb_seal.c  */
-
-NTSTATUS get_enc_ctx_num(const uint8_t *buf, uint16 *p_enc_ctx_num);
-bool common_encryption_on(struct smb_trans_enc_state *es);
-NTSTATUS common_ntlm_decrypt_buffer(struct ntlmssp_state *ntlmssp_state, char *buf);
-NTSTATUS common_ntlm_encrypt_buffer(struct ntlmssp_state *ntlmssp_state,
-				uint16 enc_ctx_num,
-				char *buf,
-				char **ppbuf_out);
-NTSTATUS common_encrypt_buffer(struct smb_trans_enc_state *es, char *buffer, char **buf_out);
-NTSTATUS common_decrypt_buffer(struct smb_trans_enc_state *es, char *buf);
-void common_free_encryption_state(struct smb_trans_enc_state **pp_es);
-void common_free_enc_buffer(struct smb_trans_enc_state *es, char *buf);
-bool cli_encryption_on(struct cli_state *cli);
-void cli_free_encryption_context(struct cli_state *cli);
-void cli_free_enc_buffer(struct cli_state *cli, char *buf);
-
 /* The following definitions come from libsmb/clisigning.c  */
 
 bool cli_simple_set_signing(struct cli_state *cli,
 			    const DATA_BLOB user_session_key,
 			    const DATA_BLOB response);
-bool cli_temp_set_signing(struct cli_state *cli);
-void cli_calculate_sign_mac(struct cli_state *cli, char *buf, uint32_t *seqnum);
 bool cli_check_sign_mac(struct cli_state *cli, const char *buf, uint32_t seqnum);
 bool client_is_signing_on(struct cli_state *cli);
-bool client_is_signing_allowed(struct cli_state *cli);
-bool client_is_signing_mandatory(struct cli_state *cli);
-void cli_set_signing_negotiated(struct cli_state *cli);
+
+/* The following definitions come from libsmb/reparse_symlink.c  */
+
+bool symlink_reparse_buffer_marshall(
+	const char *substitute, const char *printname, uint32_t flags,
+	TALLOC_CTX *mem_ctx, uint8_t **pdst, size_t *pdstlen);
+bool symlink_reparse_buffer_parse(
+	const uint8_t *src, size_t srclen, TALLOC_CTX *mem_ctx,
+	char **psubstitute_name, char **pprint_name, uint32_t *pflags);
+
+/* The following definitions come from libsmb/clisymlink.c  */
+
+struct tevent_req *cli_symlink_send(TALLOC_CTX *mem_ctx,
+				    struct tevent_context *ev,
+				    struct cli_state *cli,
+				    const char *oldpath,
+				    const char *newpath,
+				    uint32_t flags);
+NTSTATUS cli_symlink_recv(struct tevent_req *req);
+NTSTATUS cli_symlink(struct cli_state *cli, const char *oldname,
+		     const char *newname, uint32_t flags);
+
+struct tevent_req *cli_readlink_send(TALLOC_CTX *mem_ctx,
+				     struct tevent_context *ev,
+				     struct cli_state *cli,
+				     const char *fname);
+NTSTATUS cli_readlink_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
+			   char **psubstitute_name, char **pprint_name,
+			   uint32_t *pflags);
+NTSTATUS cli_readlink(struct cli_state *cli, const char *fname,
+		       TALLOC_CTX *mem_ctx, char **psubstitute_name,
+		      char **pprint_name, uint32_t *pflags);
 
 #endif /* _LIBSMB_PROTO_H_ */

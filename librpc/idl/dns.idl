@@ -36,7 +36,7 @@ interface dns
 		DNS_OPCODE_QUERY          =  (0x0<<11),
 		DNS_OPCODE_IQUERY         =  (0x1<<11),
 		DNS_OPCODE_STATUS         =  (0x2<<11),
-		DNS_OPCODE_REGISTER       =  (0x5<<11),
+		DNS_OPCODE_UPDATE         =  (0x5<<11),
 		DNS_OPCODE_RELEASE        =  (0x6<<11),
 		DNS_OPCODE_WACK           =  (0x7<<11),
 		DNS_OPCODE_REFRESH        =  (0x8<<11),
@@ -60,7 +60,7 @@ interface dns
 	} dns_rcode;
 
 	typedef [public,enum16bit] enum {
-		DNS_QCLASS_IP   = 0x0001,
+		DNS_QCLASS_IN   = 0x0001,
 		DNS_QCLASS_NONE = 0x00FE,
 		DNS_QCLASS_ANY  = 0x00FF
 	} dns_qclass;
@@ -105,9 +105,10 @@ interface dns
 		DNS_QTYPE_NSEC   = 0x002F,
 		DNS_QTYPE_DNSKEY = 0x0030,
 		DNS_QTYPE_DHCID  = 0x0031,
-		DNS_QTYPE_ALL    = 0x00FF,
-		DNS_QTYPE_WINS   = 0xFF01,
-		DNS_QTYPE_WINSR  = 0xFF02
+		DNS_QTYPE_AXFR   = 0x00FC,
+		DNS_QTYPE_MAILB  = 0x00FD,
+		DNS_QTYPE_MAILA  = 0x00FE,
+		DNS_QTYPE_ALL    = 0x00FF
 	} dns_qtype;
 
 	typedef [public] struct {
@@ -132,16 +133,21 @@ interface dns
 	} dns_soa_record;
 
 	typedef [public] struct {
+		uint16     preference;
+		dns_string exchange;
+	} dns_mx_record;
+
+	typedef [public] struct {
+		[value(strlen(txt))] uint8 length;
+		[charset(DOS)] uint8 txt[length];
+	} dns_txt_record;
+
+	typedef [public] struct {
 		uint16     priority;
 		uint16     weight;
 		uint16     port;
 		dns_string target;
 	} dns_srv_record;
-
-	typedef [public] struct {
-		uint16     preference;
-		dns_string exchange;
-	} dns_mx_record;
 
 	typedef [nodiscriminant,public,flag(NDR_NOALIGN)] union {
 		[case(DNS_QTYPE_A)]     ipv4address	 ipv4_record;
@@ -150,6 +156,7 @@ interface dns
 		[case(DNS_QTYPE_SOA)]   dns_soa_record   soa_record;
 		[case(DNS_QTYPE_PTR)]   dns_string       ptr_record;
 		[case(DNS_QTYPE_MX)]    dns_mx_record    mx_record;
+		[case(DNS_QTYPE_TXT)]	dns_txt_record   txt_record;
 		[case(DNS_QTYPE_AAAA)]	ipv6address	 ipv6_record;
 		[case(DNS_QTYPE_SRV)]	dns_srv_record	 srv_record;
 		[default];

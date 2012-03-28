@@ -1,21 +1,38 @@
+ /*
+   Trivial Database 2: opening and closing TDBs
+   Copyright (C) Rusty Russell 2010
+
+   This library is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Lesser General Public
+   License as published by the Free Software Foundation; either
+   version 3 of the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; if not, see <http://www.gnu.org/licenses/>.
+*/
 #include "private.h"
-#include <ccan/hash/hash.h>
+#include <ccan/build_assert/build_assert.h>
 #include <assert.h>
 
-/* all lock info, to detect double-opens (fcntl file don't nest!) */
-static struct tdb_file *files = NULL;
+/* all tdbs, to detect double-opens (fcntl file don't nest!) */
+static struct tdb_context *tdbs = NULL;
 
 static struct tdb_file *find_file(dev_t device, ino_t ino)
 {
-	struct tdb_file *i;
+	struct tdb_context *i;
 
-	for (i = files; i; i = i->next) {
-		if (i->device == device && i->inode == ino) {
-			i->refcnt++;
-			break;
+	for (i = tdbs; i; i = i->next) {
+		if (i->file->device == device && i->file->inode == ino) {
+			i->file->refcnt++;
+			return i->file;
 		}
 	}
-	return i;
+	return NULL;
 }
 
 static bool read_all(int fd, void *buf, size_t len)
@@ -79,6 +96,15 @@ static uint64_t random_number(struct tdb_context *tdb)
 	return ret;
 }
 
+static void tdb2_context_init(struct tdb_context *tdb)
+{
+	/* Initialize the TDB2 fields here */
+	tdb_io_init(tdb);
+	tdb->tdb2.direct_access = 0;
+	tdb->tdb2.transaction = NULL;
+	tdb->tdb2.access = NULL;
+}
+
 struct new_database {
 	struct tdb_header hdr;
 	struct tdb_freetable ftable;
@@ -109,6 +135,7 @@ static enum TDB_ERROR tdb_new_database(struct tdb_context *tdb,
 	newdb.hdr.recovery = 0;
 	newdb.hdr.features_used = newdb.hdr.features_offered = TDB_FEATURE_MASK;
 	newdb.hdr.seqnum = 0;
+	newdb.hdr.capabilities = 0;
 	memset(newdb.hdr.reserved, 0, sizeof(newdb.hdr.reserved));
 	/* Initial hashes are empty. */
 	memset(newdb.hdr.hashtable, 0, sizeof(newdb.hdr.hashtable));
@@ -179,10 +206,11 @@ static enum TDB_ERROR tdb_new_file(struct tdb_context *tdb)
 	tdb->file->lockrecs = NULL;
 	tdb->file->allrecord_lock.count = 0;
 	tdb->file->refcnt = 1;
+	tdb->file->map_ptr = NULL;
 	return TDB_SUCCESS;
 }
 
-enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
+_PUBLIC_ enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
 				 const union tdb_attribute *attr)
 {
 	switch (attr->base.attr) {
@@ -193,6 +221,7 @@ enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
 	case TDB_ATTRIBUTE_HASH:
 	case TDB_ATTRIBUTE_SEED:
 	case TDB_ATTRIBUTE_OPENHOOK:
+	case TDB_ATTRIBUTE_TDB1_HASHSIZE:
 		return tdb->last_error
 			= tdb_logerr(tdb, TDB_ERR_EINVAL,
 				     TDB_LOG_USE_ERROR,
@@ -202,7 +231,9 @@ enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
 				     ? "TDB_ATTRIBUTE_HASH"
 				     : attr->base.attr == TDB_ATTRIBUTE_SEED
 				     ? "TDB_ATTRIBUTE_SEED"
-				     : "TDB_ATTRIBUTE_OPENHOOK");
+				     : attr->base.attr == TDB_ATTRIBUTE_OPENHOOK
+				     ? "TDB_ATTRIBUTE_OPENHOOK"
+				     : "TDB_ATTRIBUTE_TDB1_HASHSIZE");
 	case TDB_ATTRIBUTE_STATS:
 		return tdb->last_error
 			= tdb_logerr(tdb, TDB_ERR_EINVAL,
@@ -225,17 +256,7 @@ enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
 	return TDB_SUCCESS;
 }
 
-static uint64_t jenkins_hash(const void *key, size_t length, uint64_t seed,
-			     void *unused)
-{
-	uint64_t ret;
-	/* hash64_stable assumes lower bits are more important; they are a
-	 * slightly better hash.  We use the upper bits first, so swap them. */
-	ret = hash64_stable((const unsigned char *)key, length, seed);
-	return (ret >> 32) | (ret << 32);
-}
-
-enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
+_PUBLIC_ enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
 				 union tdb_attribute *attr)
 {
 	switch (attr->base.attr) {
@@ -250,14 +271,21 @@ enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
 		attr->hash.data = tdb->hash_data;
 		break;
 	case TDB_ATTRIBUTE_SEED:
+		if (tdb->flags & TDB_VERSION1)
+			return tdb->last_error
+				= tdb_logerr(tdb, TDB_ERR_EINVAL,
+					     TDB_LOG_USE_ERROR,
+				     "tdb_get_attribute:"
+				     " cannot get TDB_ATTRIBUTE_SEED"
+				     " on TDB1 tdb.");
 		attr->seed.seed = tdb->hash_seed;
 		break;
 	case TDB_ATTRIBUTE_OPENHOOK:
-		return tdb->last_error
-			= tdb_logerr(tdb, TDB_ERR_EINVAL,
-				     TDB_LOG_USE_ERROR,
-				     "tdb_get_attribute:"
-				     " cannot get TDB_ATTRIBUTE_OPENHOOK");
+		if (!tdb->openhook)
+			return tdb->last_error = TDB_ERR_NOEXIST;
+		attr->openhook.fn = tdb->openhook;
+		attr->openhook.data = tdb->openhook_data;
+		break;
 	case TDB_ATTRIBUTE_STATS: {
 		size_t size = attr->stats.size;
 		if (size > tdb->stats.size)
@@ -269,6 +297,16 @@ enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
 		attr->flock.lock = tdb->lock_fn;
 		attr->flock.unlock = tdb->unlock_fn;
 		attr->flock.data = tdb->lock_data;
+		break;
+	case TDB_ATTRIBUTE_TDB1_HASHSIZE:
+		if (!(tdb->flags & TDB_VERSION1))
+			return tdb->last_error
+				= tdb_logerr(tdb, TDB_ERR_EINVAL,
+					     TDB_LOG_USE_ERROR,
+				     "tdb_get_attribute:"
+				     " cannot get TDB_ATTRIBUTE_TDB1_HASHSIZE"
+				     " on TDB2 tdb.");
+		attr->tdb1_hashsize.hsize = tdb->tdb1.header.hash_size;
 		break;
 	default:
 		return tdb->last_error
@@ -282,23 +320,26 @@ enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
 	return TDB_SUCCESS;
 }
 
-void tdb_unset_attribute(struct tdb_context *tdb,
+_PUBLIC_ void tdb_unset_attribute(struct tdb_context *tdb,
 			 enum tdb_attribute_type type)
 {
 	switch (type) {
 	case TDB_ATTRIBUTE_LOG:
 		tdb->log_fn = NULL;
 		break;
+	case TDB_ATTRIBUTE_OPENHOOK:
+		tdb->openhook = NULL;
+		break;
 	case TDB_ATTRIBUTE_HASH:
 	case TDB_ATTRIBUTE_SEED:
-	case TDB_ATTRIBUTE_OPENHOOK:
+	case TDB_ATTRIBUTE_TDB1_HASHSIZE:
 		tdb_logerr(tdb, TDB_ERR_EINVAL, TDB_LOG_USE_ERROR,
 			   "tdb_unset_attribute: cannot unset %s after opening",
 			   type == TDB_ATTRIBUTE_HASH
 			   ? "TDB_ATTRIBUTE_HASH"
 			   : type == TDB_ATTRIBUTE_SEED
 			   ? "TDB_ATTRIBUTE_SEED"
-			   : "TDB_ATTRIBUTE_OPENHOOK");
+			   : "TDB_ATTRIBUTE_TDB1_HASHSIZE");
 		break;
 	case TDB_ATTRIBUTE_STATS:
 		tdb_logerr(tdb, TDB_ERR_EINVAL,
@@ -318,7 +359,72 @@ void tdb_unset_attribute(struct tdb_context *tdb,
 	}
 }
 
-struct tdb_context *tdb_open(const char *name, int tdb_flags,
+static bool is_tdb1(struct tdb1_header *hdr, const void *buf, ssize_t rlen)
+{
+	/* This code assumes we've tried to read entire tdb1 header. */
+	BUILD_ASSERT(sizeof(*hdr) <= sizeof(struct tdb_header));
+
+	if (rlen < (ssize_t)sizeof(*hdr)) {
+		return false;
+	}
+
+	memcpy(hdr, buf, sizeof(*hdr));
+	if (strcmp(hdr->magic_food, TDB_MAGIC_FOOD) != 0)
+		return false;
+
+	return hdr->version == TDB1_VERSION
+		|| hdr->version == TDB1_BYTEREV(TDB1_VERSION);
+}
+
+/* The top three bits of the capability tell us whether it matters. */
+enum TDB_ERROR unknown_capability(struct tdb_context *tdb, const char *caller,
+				  tdb_off_t type)
+{
+	if (type & TDB_CAP_NOOPEN) {
+		return tdb_logerr(tdb, TDB_ERR_IO, TDB_LOG_ERROR,
+				  "%s: file has unknown capability %llu",
+				  caller, type & TDB_CAP_NOOPEN);
+	}
+
+	if ((type & TDB_CAP_NOWRITE) && !(tdb->flags & TDB_RDONLY)) {
+		return tdb_logerr(tdb, TDB_ERR_RDONLY, TDB_LOG_ERROR,
+				  "%s: file has unknown capability %llu"
+				  " (cannot write to it)",
+				  caller, type & TDB_CAP_NOOPEN);
+	}
+
+	if (type & TDB_CAP_NOCHECK) {
+		tdb->flags |= TDB_CANT_CHECK;
+	}
+	return TDB_SUCCESS;
+}
+
+static enum TDB_ERROR capabilities_ok(struct tdb_context *tdb,
+				      tdb_off_t capabilities)
+{
+	tdb_off_t off, next;
+	enum TDB_ERROR ecode = TDB_SUCCESS;
+	const struct tdb_capability *cap;
+
+	/* Check capability list. */
+	for (off = capabilities; off && ecode == TDB_SUCCESS; off = next) {
+		cap = tdb_access_read(tdb, off, sizeof(*cap), true);
+		if (TDB_PTR_IS_ERR(cap)) {
+			return TDB_PTR_ERR(cap);
+		}
+
+		switch (cap->type & TDB_CAP_TYPE_MASK) {
+		/* We don't understand any capabilities (yet). */
+		default:
+			ecode = unknown_capability(tdb, "tdb_open", cap->type);
+		}
+		next = cap->next;
+		tdb_access_release(tdb, cap);
+	}
+	return ecode;
+}
+
+_PUBLIC_ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 			     int open_flags, mode_t mode,
 			     union tdb_attribute *attr)
 {
@@ -330,7 +436,8 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	ssize_t rlen;
 	struct tdb_header hdr;
 	struct tdb_attribute_seed *seed = NULL;
-	struct tdb_attribute_openhook *openhook = NULL;
+	struct tdb_attribute_tdb1_hashsize *hsize_attr = NULL;
+	struct tdb_attribute_tdb1_max_dead *maxsize_attr = NULL;
 	tdb_bool_err berr;
 	enum TDB_ERROR ecode;
 	int openlock;
@@ -347,20 +454,18 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	} else {
 		tdb->name = NULL;
 	}
-	tdb->direct_access = 0;
 	tdb->flags = tdb_flags;
 	tdb->log_fn = NULL;
-	tdb->transaction = NULL;
-	tdb->access = NULL;
+	tdb->open_flags = open_flags;
 	tdb->last_error = TDB_SUCCESS;
 	tdb->file = NULL;
+	tdb->openhook = NULL;
 	tdb->lock_fn = tdb_fcntl_lock;
 	tdb->unlock_fn = tdb_fcntl_unlock;
-	tdb->hash_fn = jenkins_hash;
+	tdb->hash_fn = tdb_jenkins_hash;
 	memset(&tdb->stats, 0, sizeof(tdb->stats));
 	tdb->stats.base.attr = TDB_ATTRIBUTE_STATS;
 	tdb->stats.size = sizeof(tdb->stats);
-	tdb_io_init(tdb);
 
 	while (attr) {
 		switch (attr->base.attr) {
@@ -372,7 +477,14 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 			seed = &attr->seed;
 			break;
 		case TDB_ATTRIBUTE_OPENHOOK:
-			openhook = &attr->openhook;
+			tdb->openhook = attr->openhook.fn;
+			tdb->openhook_data = attr->openhook.data;
+			break;
+		case TDB_ATTRIBUTE_TDB1_HASHSIZE:
+			hsize_attr = &attr->tdb1_hashsize;
+			break;
+		case TDB_ATTRIBUTE_TDB1_MAX_DEAD:
+			maxsize_attr = &attr->tdb1_max_dead;
 			break;
 		default:
 			/* These are set as normal. */
@@ -384,10 +496,42 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	}
 
 	if (tdb_flags & ~(TDB_INTERNAL | TDB_NOLOCK | TDB_NOMMAP | TDB_CONVERT
-			  | TDB_NOSYNC | TDB_SEQNUM | TDB_ALLOW_NESTING)) {
+			  | TDB_NOSYNC | TDB_SEQNUM | TDB_ALLOW_NESTING
+			  | TDB_RDONLY | TDB_VERSION1)) {
 		ecode = tdb_logerr(tdb, TDB_ERR_EINVAL, TDB_LOG_USE_ERROR,
 				   "tdb_open: unknown flags %u", tdb_flags);
 		goto fail;
+	}
+
+	if (hsize_attr) {
+		if (!(tdb_flags & TDB_VERSION1) ||
+		    (!(tdb_flags & TDB_INTERNAL) && !(open_flags & O_CREAT))) {
+			ecode = tdb_logerr(tdb, TDB_ERR_EINVAL,
+					   TDB_LOG_USE_ERROR,
+					   "tdb_open: can only use"
+					   " TDB_ATTRIBUTE_TDB1_HASHSIZE when"
+					   " creating a TDB_VERSION1 tdb");
+			goto fail;
+		}
+	}
+
+	if (seed) {
+		if (tdb_flags & TDB_VERSION1) {
+			ecode = tdb_logerr(tdb, TDB_ERR_EINVAL,
+					   TDB_LOG_USE_ERROR,
+					   "tdb_open:"
+					   " cannot set TDB_ATTRIBUTE_SEED"
+					   " on TDB1 tdb.");
+			goto fail;
+		} else if (!(tdb_flags & TDB_INTERNAL)
+			   && !(open_flags & O_CREAT)) {
+			ecode = tdb_logerr(tdb, TDB_ERR_EINVAL,
+					   TDB_LOG_USE_ERROR,
+					   "tdb_open:"
+					   " cannot set TDB_ATTRIBUTE_SEED"
+					   " without O_CREAT.");
+			goto fail;
+		}
 	}
 
 	if ((open_flags & O_ACCMODE) == O_WRONLY) {
@@ -398,12 +542,16 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	}
 
 	if ((open_flags & O_ACCMODE) == O_RDONLY) {
-		tdb->read_only = true;
-		tdb->mmap_flags = PROT_READ;
 		openlock = F_RDLCK;
+		tdb->flags |= TDB_RDONLY;
 	} else {
-		tdb->read_only = false;
-		tdb->mmap_flags = PROT_READ | PROT_WRITE;
+		if (tdb_flags & TDB_RDONLY) {
+			ecode = tdb_logerr(tdb, TDB_ERR_EINVAL,
+					   TDB_LOG_USE_ERROR,
+					   "tdb_open: can't use TDB_RDONLY"
+					   " without O_RDONLY");
+			goto fail;
+		}
 		openlock = F_WRLCK;
 	}
 
@@ -415,13 +563,21 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 			goto fail;
 		}
 		tdb->file->fd = -1;
-		ecode = tdb_new_database(tdb, seed, &hdr);
+		if (tdb->flags & TDB_VERSION1)
+			ecode = tdb1_new_database(tdb, hsize_attr, maxsize_attr);
+		else {
+			ecode = tdb_new_database(tdb, seed, &hdr);
+			if (ecode == TDB_SUCCESS) {
+				tdb_convert(tdb, &hdr.hash_seed,
+					    sizeof(hdr.hash_seed));
+				tdb->hash_seed = hdr.hash_seed;
+				tdb2_context_init(tdb);
+				tdb_ftable_init(tdb);
+			}
+		}
 		if (ecode != TDB_SUCCESS) {
 			goto fail;
 		}
-		tdb_convert(tdb, &hdr.hash_seed, sizeof(hdr.hash_seed));
-		tdb->hash_seed = hdr.hash_seed;
-		tdb_ftable_init(tdb);
 		return tdb;
 	}
 
@@ -459,12 +615,11 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 			goto fail;
 		}
 
-		tdb->file->next = files;
 		tdb->file->fd = fd;
 		tdb->file->device = st.st_dev;
 		tdb->file->inode = st.st_ino;
 		tdb->file->map_ptr = NULL;
-		tdb->file->map_size = sizeof(struct tdb_header);
+		tdb->file->map_size = 0;
 	}
 
 	/* ensure there is only one process initialising at once */
@@ -475,8 +630,8 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	}
 
 	/* call their open hook if they gave us one. */
-	if (openhook) {
-		ecode = openhook->fn(tdb->file->fd, openhook->data);
+	if (tdb->openhook) {
+		ecode = tdb->openhook(tdb->file->fd, tdb->openhook_data);
 		if (ecode != TDB_SUCCESS) {
 			tdb_logerr(tdb, ecode, TDB_LOG_ERROR,
 				   "tdb_open: open hook failed");
@@ -488,6 +643,12 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 	/* If they used O_TRUNC, read will return 0. */
 	rlen = pread(tdb->file->fd, &hdr, sizeof(hdr), 0);
 	if (rlen == 0 && (open_flags & O_CREAT)) {
+		if (tdb->flags & TDB_VERSION1) {
+			ecode = tdb1_new_database(tdb, hsize_attr, maxsize_attr);
+			if (ecode != TDB_SUCCESS)
+				goto fail;
+			goto finished;
+		}
 		ecode = tdb_new_database(tdb, seed, &hdr);
 		if (ecode != TDB_SUCCESS) {
 			goto fail;
@@ -499,6 +660,12 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 		goto fail;
 	} else if (rlen < sizeof(hdr)
 		   || strcmp(hdr.magic_food, TDB_MAGIC_FOOD) != 0) {
+		if (is_tdb1(&tdb->tdb1.header, &hdr, rlen)) {
+			ecode = tdb1_open(tdb, maxsize_attr);
+			if (!ecode)
+				goto finished;
+			goto fail;
+		}
 		ecode = tdb_logerr(tdb, TDB_ERR_IO, TDB_LOG_ERROR,
 				   "tdb_open: %s is not a tdb file", name);
 		goto fail;
@@ -508,6 +675,12 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 		if (hdr.version == bswap_64(TDB_VERSION))
 			tdb->flags |= TDB_CONVERT;
 		else {
+			if (is_tdb1(&tdb->tdb1.header, &hdr, rlen)) {
+				ecode = tdb1_open(tdb, maxsize_attr);
+				if (!ecode)
+					goto finished;
+				goto fail;
+			}
 			/* wrong version */
 			ecode = tdb_logerr(tdb, TDB_ERR_IO, TDB_LOG_ERROR,
 					   "tdb_open:"
@@ -515,7 +688,20 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 					   name, (long long)hdr.version);
 			goto fail;
 		}
+	} else if (tdb->flags & TDB_CONVERT) {
+		ecode = tdb_logerr(tdb, TDB_ERR_IO, TDB_LOG_ERROR,
+				   "tdb_open:"
+				   " %s does not need TDB_CONVERT",
+				   name);
+		goto fail;
 	}
+
+	/* This is a version2 tdb. */
+	if (tdb->flags & TDB_VERSION1) {
+		tdb->flags &= ~TDB_VERSION1;
+	}
+
+	tdb2_context_init(tdb);
 
 	tdb_convert(tdb, &hdr, sizeof(hdr));
 	tdb->hash_seed = hdr.hash_seed;
@@ -530,58 +716,80 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 		goto fail;
 	}
 
+	ecode = capabilities_ok(tdb, hdr.capabilities);
+	if (ecode != TDB_SUCCESS) {
+		goto fail;
+	}
+
 	/* Clear any features we don't understand. */
 	if ((open_flags & O_ACCMODE) != O_RDONLY) {
 		hdr.features_used &= TDB_FEATURE_MASK;
-		if (tdb_write_convert(tdb, offsetof(struct tdb_header,
-						    features_used),
-				      &hdr.features_used,
-				      sizeof(hdr.features_used)) == -1)
+		ecode = tdb_write_convert(tdb, offsetof(struct tdb_header,
+							features_used),
+					  &hdr.features_used,
+					  sizeof(hdr.features_used));
+		if (ecode != TDB_SUCCESS)
 			goto fail;
+	}
+
+finished:
+	if (tdb->flags & TDB_VERSION1) {
+		/* if needed, run recovery */
+		if (tdb1_transaction_recover(tdb) == -1) {
+			ecode = tdb->last_error;
+			goto fail;
+		}
 	}
 
 	tdb_unlock_open(tdb, openlock);
 
-	/* This make sure we have current map_size and mmap. */
-	tdb->methods->oob(tdb, tdb->file->map_size + 1, true);
+	/* This makes sure we have current map_size and mmap. */
+	if (tdb->flags & TDB_VERSION1) {
+		ecode = tdb1_probe_length(tdb);
+	} else {
+		ecode = tdb->tdb2.io->oob(tdb, tdb->file->map_size, 1, true);
+	}
+	if (unlikely(ecode != TDB_SUCCESS))
+		goto fail;
 
-	/* Now it's fully formed, recover if necessary. */
-	berr = tdb_needs_recovery(tdb);
-	if (unlikely(berr != false)) {
-		if (berr < 0) {
-			ecode = berr;
-			goto fail;
+	if (!(tdb->flags & TDB_VERSION1)) {
+		/* Now it's fully formed, recover if necessary. */
+		berr = tdb_needs_recovery(tdb);
+		if (unlikely(berr != false)) {
+			if (berr < 0) {
+				ecode = TDB_OFF_TO_ERR(berr);
+				goto fail;
+			}
+			ecode = tdb_lock_and_recover(tdb);
+			if (ecode != TDB_SUCCESS) {
+				goto fail;
+			}
 		}
-		ecode = tdb_lock_and_recover(tdb);
+
+		ecode = tdb_ftable_init(tdb);
 		if (ecode != TDB_SUCCESS) {
 			goto fail;
 		}
 	}
 
-	ecode = tdb_ftable_init(tdb);
-	if (ecode != TDB_SUCCESS) {
-		goto fail;
-	}
-
-	/* Add to linked list if we're new. */
-	if (tdb->file->refcnt == 1)
-		files = tdb->file;
+	tdb->next = tdbs;
+	tdbs = tdb;
 	return tdb;
 
  fail:
 	/* Map ecode to some logical errno. */
-	switch (ecode) {
-	case TDB_ERR_CORRUPT:
-	case TDB_ERR_IO:
+	switch (TDB_ERR_TO_OFF(ecode)) {
+	case TDB_ERR_TO_OFF(TDB_ERR_CORRUPT):
+	case TDB_ERR_TO_OFF(TDB_ERR_IO):
 		saved_errno = EIO;
 		break;
-	case TDB_ERR_LOCK:
+	case TDB_ERR_TO_OFF(TDB_ERR_LOCK):
 		saved_errno = EWOULDBLOCK;
 		break;
-	case TDB_ERR_OOM:
+	case TDB_ERR_TO_OFF(TDB_ERR_OOM):
 		saved_errno = ENOMEM;
 		break;
-	case TDB_ERR_EINVAL:
+	case TDB_ERR_TO_OFF(TDB_ERR_EINVAL):
 		saved_errno = EINVAL;
 		break;
 	default:
@@ -617,14 +825,21 @@ fail_errno:
 	return NULL;
 }
 
-int tdb_close(struct tdb_context *tdb)
+_PUBLIC_ int tdb_close(struct tdb_context *tdb)
 {
 	int ret = 0;
+	struct tdb_context **i;
 
 	tdb_trace(tdb, "tdb_close");
 
-	if (tdb->transaction) {
-		tdb_transaction_cancel(tdb);
+	if (tdb->flags & TDB_VERSION1) {
+		if (tdb->tdb1.transaction) {
+			tdb1_transaction_cancel(tdb);
+		}
+	} else {
+		if (tdb->tdb2.transaction) {
+			tdb_transaction_cancel(tdb);
+		}
 	}
 
 	if (tdb->file->map_ptr) {
@@ -634,21 +849,19 @@ int tdb_close(struct tdb_context *tdb)
 			tdb_munmap(tdb->file);
 	}
 	if (tdb->file) {
-		struct tdb_file **i;
-
 		tdb_lock_cleanup(tdb);
 		if (--tdb->file->refcnt == 0) {
 			ret = close(tdb->file->fd);
-
-			/* Remove from files list */
-			for (i = &files; *i; i = &(*i)->next) {
-				if (*i == tdb->file) {
-					*i = tdb->file->next;
-					break;
-				}
-			}
 			free(tdb->file->lockrecs);
 			free(tdb->file);
+		}
+	}
+
+	/* Remove from tdbs list */
+	for (i = &tdbs; *i; i = &(*i)->next) {
+		if (*i == tdb) {
+			*i = tdb->next;
+			break;
 		}
 	}
 
@@ -658,4 +871,14 @@ int tdb_close(struct tdb_context *tdb)
 	free(tdb);
 
 	return ret;
+}
+
+_PUBLIC_ void tdb_foreach_(int (*fn)(struct tdb_context *, void *), void *p)
+{
+	struct tdb_context *i;
+
+	for (i = tdbs; i; i = i->next) {
+		if (fn(i, p) != 0)
+			break;
+	}
 }

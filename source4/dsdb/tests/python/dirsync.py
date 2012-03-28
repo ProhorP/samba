@@ -37,7 +37,7 @@ from samba.ndr import ndr_unpack, ndr_pack
 from samba.auth import system_session
 from samba import gensec, sd_utils
 from samba.samdb import SamDB
-from samba.credentials import Credentials
+from samba.credentials import Credentials, DONT_USE_KERBEROS
 import samba.tests
 from samba.tests import delete_force
 from subunit.run import SubunitTestRunner
@@ -98,6 +98,7 @@ class DirsyncBaseTests(samba.tests.TestCase):
         creds_tmp.set_workstation(creds.get_workstation())
         creds_tmp.set_gensec_features(creds_tmp.get_gensec_features()
                                       | gensec.FEATURE_SEAL)
+        creds_tmp.set_kerberos_state(DONT_USE_KERBEROS) # kinit is too expensive to use in a tight loop
         ldb_target = SamDB(url=ldaphost, credentials=creds_tmp, lp=lp)
         return ldb_target
 
@@ -136,7 +137,7 @@ class SimpleDirsyncTests(DirsyncBaseTests):
         self.sd_utils.modify_sd_on_dn(self.base_dn, self.desc_sddl)
         try:
             self.ldb_admin.deletegroup("testgroup")
-        except:
+        except Exception:
             pass
 
     #def test_dirsync_errors(self):
@@ -165,12 +166,9 @@ class SimpleDirsyncTests(DirsyncBaseTests):
 
     def test_ok_not_rootdc(self):
         """Test if it's ok to do dirsync on another NC that is not the root DC"""
-        try:
-            res = self.ldb_admin.search("CN=Configuration, %s" % self.base_dn,
-                                        expression="samaccountname=*",
-                                        controls=["dirsync:1:0:1"])
-        except:
-            self.assertTrue(False)
+        self.ldb_admin.search(self.ldb_admin.get_config_basedn(),
+                                    expression="samaccountname=*",
+                                    controls=["dirsync:1:0:1"])
 
     def test_dirsync_errors(self):
         """Test if dirsync returns the correct LDAP errors in case of pb"""

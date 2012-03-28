@@ -81,14 +81,14 @@ static void sync_child(char *name, int nm_type,
 
 	in_addr_to_sockaddr_storage(&ss, ip);
 
-	status = cli_connect_nb(name, &ss, 139, nm_type,
-				get_local_machine_name(), Undefined,
-				&cli);
+	status = cli_connect_nb(name, &ss, NBT_SMB_PORT, nm_type,
+				get_local_machine_name(), SMB_SIGNING_DEFAULT,
+				0, &cli);
 	if (!NT_STATUS_IS_OK(status)) {
 		return;
 	}
 
-	status = cli_negprot(cli);
+	status = cli_negprot(cli, PROTOCOL_NT1);
 	if (!NT_STATUS_IS_OK(status)) {
 		cli_shutdown(cli);
 		return;
@@ -100,7 +100,7 @@ static void sync_child(char *name, int nm_type,
 		return;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_tcon_andx(cli, "IPC$", "IPC", "", 1))) {
+	if (!NT_STATUS_IS_OK(cli_tree_connect(cli, "IPC$", "IPC", "", 1))) {
 		cli_shutdown(cli);
 		return;
 	}

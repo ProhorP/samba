@@ -187,7 +187,7 @@ static int samldb_check_sAMAccountName(struct samldb_ctx *ac)
 	}
 
 	ret = dsdb_module_search(ac->module, ac, &res,
-				 NULL, LDB_SCOPE_SUBTREE, noattrs,
+				 ldb_get_default_basedn(ldb), LDB_SCOPE_SUBTREE, noattrs,
 				 DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
 				 "(sAMAccountName=%s)",
@@ -260,7 +260,8 @@ static bool samldb_krbtgtnumber_available(struct samldb_ctx *ac,
 	const char *no_attrs[] = { NULL };
 	int ret;
 
-	ret = dsdb_module_search(ac->module, tmp_ctx, &res, NULL,
+	ret = dsdb_module_search(ac->module, tmp_ctx, &res,
+				 ldb_get_default_basedn(ldb_module_get_ctx(ac->module)),
 				 LDB_SCOPE_SUBTREE, no_attrs,
 				 DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
@@ -379,6 +380,30 @@ static int samldb_find_for_defaultObjectCategory(struct samldb_ctx *ac)
 		return ret;
 	}
 
+	if (ret == LDB_SUCCESS) {
+		/* ensure the defaultObjectCategory has a full GUID */
+		struct ldb_message *m;
+		m = ldb_msg_new(ac->msg);
+		if (m == NULL) {
+			return ldb_oom(ldb);
+		}
+		m->dn = ac->msg->dn;
+		if (ldb_msg_add_string(m, "defaultObjectCategory",
+				       ldb_dn_get_extended_linearized(m, res->msgs[0]->dn, 1)) !=
+		    LDB_SUCCESS) {
+			return ldb_oom(ldb);
+		}
+		m->elements[0].flags = LDB_FLAG_MOD_REPLACE;
+
+		ret = dsdb_module_modify(ac->module, m,
+					 DSDB_FLAG_NEXT_MODULE,
+					 ac->req);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+	}
+
+
 	ac->res_dn = ac->dn;
 
 	return samldb_next_step(ac);
@@ -492,8 +517,7 @@ static int samldb_add_entry_callback(struct ldb_request *req,
 					ares->response, ares->error);
 	}
 	if (ares->type != LDB_REPLY_DONE) {
-		ldb_set_errstring(ldb,
-			"Invalid reply type!\n");
+		ldb_asprintf_errstring(ldb, "Invalid LDB reply type %d", ares->type);
 		return ldb_module_done(ac->req, NULL, NULL,
 					LDB_ERR_OPERATIONS_ERROR);
 	}
@@ -779,7 +803,9 @@ static int samldb_schema_info_update(struct samldb_ctx *ac)
 	}
 
 	ret = dsdb_module_schema_info_update(ac->module, schema,
-					     DSDB_FLAG_NEXT_MODULE, ac->req);
+					     DSDB_FLAG_NEXT_MODULE|
+					     DSDB_FLAG_AS_SYSTEM,
+					     ac->req);
 	if (ret != LDB_SUCCESS) {
 		ldb_asprintf_errstring(ldb,
 				       "samldb_schema_info_update: dsdb_module_schema_info_update failed with %s",
@@ -1051,7 +1077,9 @@ static int samldb_prim_group_tester(struct samldb_ctx *ac, uint32_t rid)
 		return ldb_operr(ldb);
 	}
 
-	ret = dsdb_module_search(ac->module, ac, &res, NULL, LDB_SCOPE_SUBTREE,
+	ret = dsdb_module_search(ac->module, ac, &res,
+				 ldb_get_default_basedn(ldb),
+				 LDB_SCOPE_SUBTREE,
 				 noattrs, DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
 				 "(objectSid=%s)",
@@ -1157,7 +1185,9 @@ static int samldb_prim_group_change(struct samldb_ctx *ac)
 		return LDB_SUCCESS;
 	}
 
-	ret = dsdb_module_search(ac->module, ac, &group_res, NULL, LDB_SCOPE_SUBTREE,
+	ret = dsdb_module_search(ac->module, ac, &group_res,
+				 ldb_get_default_basedn(ldb),
+				 LDB_SCOPE_SUBTREE,
 				 noattrs, DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
 				 "(objectSid=%s)",
@@ -1175,7 +1205,9 @@ static int samldb_prim_group_change(struct samldb_ctx *ac)
 		return ldb_operr(ldb);
 	}
 
-	ret = dsdb_module_search(ac->module, ac, &group_res, NULL, LDB_SCOPE_SUBTREE,
+	ret = dsdb_module_search(ac->module, ac, &group_res,
+				 ldb_get_default_basedn(ldb),
+				 LDB_SCOPE_SUBTREE,
 				 noattrs, DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
 				 "(objectSid=%s)",
@@ -1427,7 +1459,8 @@ static int samldb_group_type_change(struct samldb_ctx *ac)
 	talloc_free(tmp_msg);
 
 	ret = dsdb_module_search_dn(ac->module, ac, &res, ac->msg->dn, attrs,
-				    DSDB_FLAG_NEXT_MODULE, ac->req);
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_SEARCH_SHOW_DELETED, ac->req);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -1537,7 +1570,9 @@ static int samldb_sam_accountname_check(struct samldb_ctx *ac)
 
 	/* Make sure that a "sAMAccountName" is only used once */
 
-	ret = dsdb_module_search(ac->module, ac, &res, NULL, LDB_SCOPE_SUBTREE, no_attrs,
+	ret = dsdb_module_search(ac->module, ac, &res,
+				 ldb_get_default_basedn(ldb),
+				 LDB_SCOPE_SUBTREE, no_attrs,
 				 DSDB_FLAG_NEXT_MODULE, ac->req,
 				 "(sAMAccountName=%s)", enc_str);
 	if (ret != LDB_SUCCESS) {
@@ -1568,7 +1603,6 @@ static int samldb_member_check(struct samldb_ctx *ac)
 	struct ldb_result *res;
 	struct dom_sid *group_sid;
 	unsigned int i, j;
-	int cnt;
 	int ret;
 
 	/* Fetch information from the existing object */
@@ -1596,45 +1630,23 @@ static int samldb_member_check(struct samldb_ctx *ac)
 
 		el = &ac->msg->elements[i];
 		for (j = 0; j < el->num_values; j++) {
-			struct ldb_message_element *mo;
 			struct ldb_result *group_res;
 			const char *group_attrs[] = { "primaryGroupID" , NULL };
 			uint32_t prim_group_rid;
+
+			if (LDB_FLAG_MOD_TYPE(el->flags) == LDB_FLAG_MOD_DELETE) {
+				/* Deletes will be handled in
+				 * repl_meta_data, and deletes not
+				 * matching a member will return
+				 * LDB_ERR_UNWILLING_TO_PERFORM
+				 * there */
+				continue;
+			}
 
 			member_dn = ldb_dn_from_ldb_val(ac, ldb,
 							&el->values[j]);
 			if (!ldb_dn_validate(member_dn)) {
 				return ldb_operr(ldb);
-			}
-
-			/* The "member" attribute can be modified with the
-			 * following restrictions (beside a valid DN):
-			 *
-			 * - "add" operations can only be performed when the
-			 *   member still doesn't exist - if not then return
-			 *   ERR_ENTRY_ALREADY_EXISTS (not
-			 *   ERR_ATTRIBUTE_OR_VALUE_EXISTS!)
-			 * - "delete" operations can only be performed when the
-			 *   member does exist - if not then return
-			 *   ERR_UNWILLING_TO_PERFORM (not
-			 *   ERR_NO_SUCH_ATTRIBUTE!)
-			 * - primary group check
-			 */
-			mo = samdb_find_attribute(ldb, res->msgs[0], "member",
-						  ldb_dn_get_linearized(member_dn));
-			if (mo == NULL) {
-				cnt = 0;
-			} else {
-				cnt = 1;
-			}
-
-			if ((cnt > 0) && (LDB_FLAG_MOD_TYPE(el->flags)
-			    == LDB_FLAG_MOD_ADD)) {
-				return LDB_ERR_ENTRY_ALREADY_EXISTS;
-			}
-			if ((cnt == 0) && LDB_FLAG_MOD_TYPE(el->flags)
-			    == LDB_FLAG_MOD_DELETE) {
-				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 
 			/* Denies to add "member"s to groups which are primary
@@ -1665,6 +1677,9 @@ static int samldb_member_check(struct samldb_ctx *ac)
 			}
 
 			if (dom_sid_equal(group_sid, sid)) {
+				ldb_asprintf_errstring(ldb,
+						       "samldb: member %s already set via primaryGroupID %u",
+						       ldb_dn_get_linearized(member_dn), prim_group_rid);
 				return LDB_ERR_ENTRY_ALREADY_EXISTS;
 			}
 		}
@@ -2035,9 +2050,11 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 	/* make sure that "objectSid" is not specified */
 	el = ldb_msg_find_element(req->op.mod.message, "objectSid");
 	if (el != NULL) {
-		ldb_set_errstring(ldb,
-				  "samldb: objectSid must not be specified!");
-		return LDB_ERR_UNWILLING_TO_PERFORM;
+		if (ldb_request_get_control(req, LDB_CONTROL_PROVISION_OID) == NULL) {
+			ldb_set_errstring(ldb,
+					  "samldb: objectSid must not be specified!");
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
 	}
 	/* make sure that "sAMAccountType" is not specified */
 	el = ldb_msg_find_element(req->op.mod.message, "sAMAccountType");
@@ -2172,15 +2189,22 @@ static int samldb_prim_group_users_check(struct samldb_ctx *ac)
 	NTSTATUS status;
 	int ret;
 	struct ldb_result *res;
-	const char *attrs[] = { "objectSid", NULL };
+	const char *attrs[] = { "objectSid", "isDeleted", NULL };
 	const char *noattrs[] = { NULL };
 
 	ldb = ldb_module_get_ctx(ac->module);
 
 	/* Finds out the SID/RID of the SAM object */
-	ret = dsdb_module_search_dn(ac->module, ac, &res, ac->req->op.del.dn, attrs, DSDB_FLAG_NEXT_MODULE, ac->req);
+	ret = dsdb_module_search_dn(ac->module, ac, &res, ac->req->op.del.dn,
+					attrs,
+					DSDB_FLAG_NEXT_MODULE | DSDB_SEARCH_SHOW_DELETED,
+					ac->req);
 	if (ret != LDB_SUCCESS) {
 		return ret;
+	}
+
+	if (ldb_msg_check_string_attribute(res->msgs[0], "isDeleted", "TRUE")) {
+		return LDB_SUCCESS;
 	}
 
 	sid = samdb_result_dom_sid(ac, res->msgs[0], "objectSid");
@@ -2198,7 +2222,9 @@ static int samldb_prim_group_users_check(struct samldb_ctx *ac)
 	}
 
 	/* Deny delete requests from groups which are primary ones */
-	ret = dsdb_module_search(ac->module, ac, &res, NULL, LDB_SCOPE_SUBTREE, noattrs,
+	ret = dsdb_module_search(ac->module, ac, &res,
+				 ldb_get_default_basedn(ldb),
+				 LDB_SCOPE_SUBTREE, noattrs,
 				 DSDB_FLAG_NEXT_MODULE,
 				 ac->req,
 				 "(&(primaryGroupID=%u)(objectClass=user))", rid);

@@ -28,7 +28,8 @@
 #include "system/filesys.h"
 #include "locking/proto.h"
 #include "smbd/globals.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "serverid.h"
 #include "messages.h"
 
@@ -289,7 +290,8 @@ void brl_init(bool read_only)
 
 	brlock_db = db_open(NULL, lock_path("brlock.tdb"),
 			    lp_open_files_db_hash_size(), tdb_flags,
-			    read_only?O_RDONLY:(O_RDWR|O_CREAT), 0644 );
+			    read_only?O_RDONLY:(O_RDWR|O_CREAT), 0644,
+			    DBWRAP_LOCK_ORDER_2);
 	if (!brlock_db) {
 		DEBUG(0,("Failed to open byte range locking database %s\n",
 			lock_path("brlock.tdb")));
@@ -897,8 +899,8 @@ NTSTATUS smb_vfs_call_brl_lock_windows(struct vfs_handle_struct *handle,
 				       struct blocking_lock_record *blr)
 {
 	VFS_FIND(brl_lock_windows);
-	return handle->fns->brl_lock_windows(handle, br_lck, plock,
-					     blocking_lock, blr);
+	return handle->fns->brl_lock_windows_fn(handle, br_lck, plock,
+						blocking_lock, blr);
 }
 
 /****************************************************************************
@@ -1231,7 +1233,8 @@ bool smb_vfs_call_brl_unlock_windows(struct vfs_handle_struct *handle,
 				     const struct lock_struct *plock)
 {
 	VFS_FIND(brl_unlock_windows);
-	return handle->fns->brl_unlock_windows(handle, msg_ctx, br_lck, plock);
+	return handle->fns->brl_unlock_windows_fn(handle, msg_ctx, br_lck, 
+						  plock);
 }
 
 /****************************************************************************
@@ -1399,7 +1402,7 @@ bool smb_vfs_call_brl_cancel_windows(struct vfs_handle_struct *handle,
 				     struct blocking_lock_record *blr)
 {
 	VFS_FIND(brl_cancel_windows);
-	return handle->fns->brl_cancel_windows(handle, br_lck, plock, blr);
+	return handle->fns->brl_cancel_windows_fn(handle, br_lck, plock, blr);
 }
 
 /****************************************************************************
@@ -1485,136 +1488,37 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 	files_struct *fsp = br_lck->fsp;
 	uint16 tid = fsp->conn->cnum;
 	int fnum = fsp->fnum;
-	unsigned int i, j, dcount=0;
-	int num_deleted_windows_locks = 0;
+	unsigned int i;
 	struct lock_struct *locks = br_lck->lock_data;
-	struct server_id pid = sconn_server_id(fsp->conn->sconn);
-	bool unlock_individually = False;
-	bool posix_level2_contention_ended = false;
+	struct server_id pid = messaging_server_id(fsp->conn->sconn->msg_ctx);
+	struct lock_struct *locks_copy;
+	unsigned int num_locks_copy;
 
-	if(lp_posix_locking(fsp->conn->params)) {
-
-		/* Check if there are any Windows locks associated with this dev/ino
-		   pair that are not this fnum. If so we need to call unlock on each
-		   one in order to release the system POSIX locks correctly. */
-
-		for (i=0; i < br_lck->num_locks; i++) {
-			struct lock_struct *lock = &locks[i];
-
-			if (!procid_equal(&lock->context.pid, &pid)) {
-				continue;
+	/* Copy the current lock array. */
+	if (br_lck->num_locks) {
+		locks_copy = (struct lock_struct *)talloc_memdup(br_lck, locks, br_lck->num_locks * sizeof(struct lock_struct));
+		if (!locks_copy) {
+			smb_panic("brl_close_fnum: talloc failed");
 			}
-
-			if (lock->lock_type != READ_LOCK && lock->lock_type != WRITE_LOCK) {
-				continue; /* Ignore pending. */
-			}
-
-			if (lock->context.tid != tid || lock->fnum != fnum) {
-				unlock_individually = True;
-				break;
-			}
-		}
-
-		if (unlock_individually) {
-			struct lock_struct *locks_copy;
-			unsigned int num_locks_copy;
-
-			/* Copy the current lock array. */
-			if (br_lck->num_locks) {
-				locks_copy = (struct lock_struct *)talloc_memdup(br_lck, locks, br_lck->num_locks * sizeof(struct lock_struct));
-				if (!locks_copy) {
-					smb_panic("brl_close_fnum: talloc failed");
-	 			}
-			} else {	
-				locks_copy = NULL;
-			}
-
-			num_locks_copy = br_lck->num_locks;
-
-			for (i=0; i < num_locks_copy; i++) {
-				struct lock_struct *lock = &locks_copy[i];
-
-				if (lock->context.tid == tid && procid_equal(&lock->context.pid, &pid) &&
-						(lock->fnum == fnum)) {
-					brl_unlock(msg_ctx,
-						br_lck,
-						lock->context.smblctx,
-						pid,
-						lock->start,
-						lock->size,
-						lock->lock_flav);
-				}
-			}
-			return;
-		}
+	} else {	
+		locks_copy = NULL;
 	}
 
-	/* We can bulk delete - any POSIX locks will be removed when the fd closes. */
+	num_locks_copy = br_lck->num_locks;
 
-	/* Remove any existing locks for this fnum (or any fnum if they're POSIX). */
+	for (i=0; i < num_locks_copy; i++) {
+		struct lock_struct *lock = &locks_copy[i];
 
-	for (i=0; i < br_lck->num_locks; i++) {
-		struct lock_struct *lock = &locks[i];
-		bool del_this_lock = False;
-
-		if (lock->context.tid == tid && procid_equal(&lock->context.pid, &pid)) {
-			if ((lock->lock_flav == WINDOWS_LOCK) && (lock->fnum == fnum)) {
-				del_this_lock = True;
-				num_deleted_windows_locks++;
-				contend_level2_oplocks_end(br_lck->fsp,
-				    LEVEL2_CONTEND_WINDOWS_BRL);
-			} else if (lock->lock_flav == POSIX_LOCK) {
-				del_this_lock = True;
-
-				/* Only end level2 contention once for posix */
-				if (!posix_level2_contention_ended) {
-					posix_level2_contention_ended = true;
-					contend_level2_oplocks_end(br_lck->fsp,
-					    LEVEL2_CONTEND_POSIX_BRL);
-				}
-			}
+		if (lock->context.tid == tid && procid_equal(&lock->context.pid, &pid) &&
+				(lock->fnum == fnum)) {
+			brl_unlock(msg_ctx,
+				br_lck,
+				lock->context.smblctx,
+				pid,
+				lock->start,
+				lock->size,
+				lock->lock_flav);
 		}
-
-		if (del_this_lock) {
-			/* Send unlock messages to any pending waiters that overlap. */
-			for (j=0; j < br_lck->num_locks; j++) {
-				struct lock_struct *pend_lock = &locks[j];
-
-				/* Ignore our own or non-pending locks. */
-				if (!IS_PENDING_LOCK(pend_lock->lock_type)) {
-					continue;
-				}
-
-				/* Optimisation - don't send to this fnum as we're
-				   closing it. */
-				if (pend_lock->context.tid == tid &&
-				    procid_equal(&pend_lock->context.pid, &pid) &&
-				    pend_lock->fnum == fnum) {
-					continue;
-				}
-
-				/* We could send specific lock info here... */
-				if (brl_pending_overlap(lock, pend_lock)) {
-					messaging_send(msg_ctx, pend_lock->context.pid,
-						       MSG_SMB_UNLOCK, &data_blob_null);
-				}
-			}
-
-			/* found it - delete it */
-			if (br_lck->num_locks > 1 && i < br_lck->num_locks - 1) {
-				memmove(&locks[i], &locks[i+1], 
-					sizeof(*locks)*((br_lck->num_locks-1) - i));
-			}
-			br_lck->num_locks--;
-			br_lck->modified = True;
-			i--;
-			dcount++;
-		}
-	}
-
-	if(lp_posix_locking(fsp->conn->params) && num_deleted_windows_locks) {
-		/* Reduce the Windows lock POSIX reference count on this dev/ino pair. */
-		reduce_windows_lock_ref_count(fsp, num_deleted_windows_locks);
 	}
 }
 
@@ -1691,18 +1595,22 @@ static int traverse_fn(struct db_record *rec, void *state)
 	unsigned int i;
 	unsigned int num_locks = 0;
 	unsigned int orig_num_locks = 0;
+	TDB_DATA dbkey;
+	TDB_DATA value;
+
+	dbkey = dbwrap_record_get_key(rec);
+	value = dbwrap_record_get_value(rec);
 
 	/* In a traverse function we must make a copy of
 	   dbuf before modifying it. */
 
-	locks = (struct lock_struct *)memdup(rec->value.dptr,
-					     rec->value.dsize);
+	locks = (struct lock_struct *)memdup(value.dptr, value.dsize);
 	if (!locks) {
 		return -1; /* Terminate traversal. */
 	}
 
-	key = (struct file_id *)rec->key.dptr;
-	orig_num_locks = num_locks = rec->value.dsize/sizeof(*locks);
+	key = (struct file_id *)dbkey.dptr;
+	orig_num_locks = num_locks = value.dsize/sizeof(*locks);
 
 	/* Ensure the lock db is clean of entries from invalid processes. */
 
@@ -1716,9 +1624,9 @@ static int traverse_fn(struct db_record *rec, void *state)
 			TDB_DATA data;
 			data.dptr = (uint8_t *)locks;
 			data.dsize = num_locks*sizeof(struct lock_struct);
-			rec->store(rec, data, TDB_REPLACE);
+			dbwrap_record_store(rec, data, TDB_REPLACE);
 		} else {
-			rec->delete_rec(rec);
+			dbwrap_record_delete(rec);
 		}
 	}
 
@@ -1750,13 +1658,21 @@ int brl_forall(void (*fn)(struct file_id id, struct server_id pid,
 	       void *private_data)
 {
 	struct brl_forall_cb cb;
+	NTSTATUS status;
+	int count = 0;
 
 	if (!brlock_db) {
 		return 0;
 	}
 	cb.fn = fn;
 	cb.private_data = private_data;
-	return brlock_db->traverse(brlock_db, traverse_fn, &cb);
+	status = dbwrap_traverse(brlock_db, traverse_fn, &cb, &count);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		return -1;
+	} else {
+		return count;
+	}
 }
 
 /*******************************************************************
@@ -1777,7 +1693,7 @@ static void byte_range_lock_flush(struct byte_range_lock *br_lck)
 
 	if (br_lck->num_locks == 0) {
 		/* No locks - delete this entry. */
-		NTSTATUS status = br_lck->record->delete_rec(br_lck->record);
+		NTSTATUS status = dbwrap_record_delete(br_lck->record);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("delete_rec returned %s\n",
 				  nt_errstr(status)));
@@ -1790,8 +1706,7 @@ static void byte_range_lock_flush(struct byte_range_lock *br_lck)
 		data.dptr = (uint8 *)br_lck->lock_data;
 		data.dsize = br_lck->num_locks * sizeof(struct lock_struct);
 
-		status = br_lck->record->store(br_lck->record, data,
-					       TDB_REPLACE);
+		status = dbwrap_record_store(br_lck->record, data, TDB_REPLACE);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("store returned %s\n", nt_errstr(status)));
 			smb_panic("Could not store byte range mode entry");
@@ -1845,14 +1760,16 @@ static struct byte_range_lock *brl_get_locks_internal(TALLOC_CTX *mem_ctx,
 	}
 
 	if (do_read_only) {
-		if (brlock_db->fetch(brlock_db, br_lck, key, &data) != 0) {
+		NTSTATUS status;
+		status = dbwrap_fetch(brlock_db, br_lck, key, &data);
+		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(3, ("Could not fetch byte range lock record\n"));
 			TALLOC_FREE(br_lck);
 			return NULL;
 		}
 		br_lck->record = NULL;
 	} else {
-		br_lck->record = brlock_db->fetch_locked(brlock_db, br_lck, key);
+		br_lck->record = dbwrap_fetch_locked(brlock_db, br_lck, key);
 
 		if (br_lck->record == NULL) {
 			DEBUG(3, ("Could not lock byte range lock entry\n"));
@@ -1860,7 +1777,7 @@ static struct byte_range_lock *brl_get_locks_internal(TALLOC_CTX *mem_ctx,
 			return NULL;
 		}
 
-		data = br_lck->record->value;
+		data = dbwrap_record_get_value(br_lck->record);
 	}
 
 	br_lck->read_only = do_read_only;
@@ -1942,7 +1859,7 @@ struct byte_range_lock *brl_get_locks_readonly(files_struct *fsp)
 	}
 
 	if ((fsp->brlock_rec != NULL)
-	    && (brlock_db->get_seqnum(brlock_db) == fsp->brlock_seqnum)) {
+	    && (dbwrap_get_seqnum(brlock_db) == fsp->brlock_seqnum)) {
 		return fsp->brlock_rec;
 	}
 
@@ -1952,7 +1869,7 @@ struct byte_range_lock *brl_get_locks_readonly(files_struct *fsp)
 	if (br_lock == NULL) {
 		return NULL;
 	}
-	fsp->brlock_seqnum = brlock_db->get_seqnum(brlock_db);
+	fsp->brlock_seqnum = dbwrap_get_seqnum(brlock_db);
 
 	fsp->brlock_rec = talloc_move(fsp, &br_lock);
 
@@ -2010,11 +1927,11 @@ static int compare_procids(const void *p1, const void *p2)
  * array, then qsort that array and only send to non-dupes.
  */
 
-static void brl_revalidate(struct messaging_context *msg_ctx,
-			   void *private_data,
-			   uint32_t msg_type,
-			   struct server_id server_id,
-			   DATA_BLOB *data)
+void brl_revalidate(struct messaging_context *msg_ctx,
+		    void *private_data,
+		    uint32_t msg_type,
+		    struct server_id server_id,
+		    DATA_BLOB *data)
 {
 	struct brl_revalidate_state *state;
 	uint32 i;
@@ -2056,10 +1973,4 @@ static void brl_revalidate(struct messaging_context *msg_ctx,
  done:
 	TALLOC_FREE(state);
 	return;
-}
-
-void brl_register_msgs(struct messaging_context *msg_ctx)
-{
-	messaging_register(msg_ctx, NULL, MSG_SMB_BRL_VALIDATE,
-			   brl_revalidate);
 }

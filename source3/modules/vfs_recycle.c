@@ -443,11 +443,11 @@ static int recycle_unlink(vfs_handle_struct *handle,
 	int rc = -1;
 
 	repository = talloc_sub_advanced(NULL, lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					recycle_repository(handle));
 	ALLOC_CHECK(repository, done);
 	/* shouldn't we allow absolute path names here? --metze */
@@ -639,7 +639,7 @@ done:
 }
 
 static struct vfs_fn_pointers vfs_recycle_fns = {
-	.unlink = recycle_unlink
+	.unlink_fn = recycle_unlink
 };
 
 NTSTATUS vfs_recycle_init(void);

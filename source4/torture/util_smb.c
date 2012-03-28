@@ -22,7 +22,7 @@
 #include "lib/cmdline/popt_common.h"
 #include "libcli/raw/libcliraw.h"
 #include "libcli/raw/raw_proto.h"
-#include "libcli/raw/ioctl.h"
+#include "../libcli/smb/smb_constants.h"
 #include "libcli/libcli.h"
 #include "system/filesys.h"
 #include "system/shmem.h"
@@ -729,6 +729,14 @@ double torture_create_procs(struct torture_context *tctx,
 
 	if (synccount != torture_nprocs) {
 		printf("FAILED TO START %d CLIENTS (started %d)\n", torture_nprocs, synccount);
+
+		/* cleanup child processes */
+		for (i = 0; i < torture_nprocs; i++) {
+			if (child_status[i]) {
+				kill(child_status[i], SIGTERM);
+			}
+		}
+
 		*result = false;
 		return timeval_elapsed(&tv);
 	}

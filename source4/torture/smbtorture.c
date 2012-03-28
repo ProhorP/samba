@@ -32,6 +32,7 @@
 #include "librpc/rpc/dcerpc.h"
 #include "auth/gensec/gensec.h"
 #include "param/param.h"
+#include "lib/util/samba_modules.h"
 
 #if HAVE_READLINE_HISTORY_H
 #include <readline/history.h>
@@ -601,7 +602,7 @@ int main(int argc,char *argv[])
 	}
 
 	if (extra_module != NULL) {
-	    init_module_fn fn = load_module(talloc_autofree_context(), poptGetOptArg(pc));
+		init_module_fn fn = load_module(poptGetOptArg(pc), false, NULL);
 
 		if (fn == NULL) 
 			d_printf("Unable to load module from %s\n", poptGetOptArg(pc));

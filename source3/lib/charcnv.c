@@ -287,7 +287,7 @@ static size_t push_ucs2(const void *base_ptr, void *dest, const char *src, size_
 		   terminated if STR_TERMINATE isn't set. */
 
 		for (i = 0; i < (ret / 2) && i < (dest_len / 2) && dest_ucs2[i]; i++) {
-			smb_ucs2_t v = toupper_m(dest_ucs2[i]);
+			smb_ucs2_t v = toupper_w(dest_ucs2[i]);
 			if (v != dest_ucs2[i]) {
 				dest_ucs2[i] = v;
 			}
@@ -295,80 +295,6 @@ static size_t push_ucs2(const void *base_ptr, void *dest, const char *src, size_
 	}
 
 	return len;
-}
-
-
-
-/**
- Copy a string from a ucs2 source to a unix char* destination.
- Flags can have:
-  STR_TERMINATE means the string in src is null terminated.
-  STR_NOALIGN   means don't try to align.
- if STR_TERMINATE is set then src_len is ignored if it is -1.
- src_len is the length of the source area in bytes
- Return the number of bytes occupied by the string in src.
- The resulting string in "dest" is always null terminated.
-**/
-
-static size_t pull_ucs2(const void *base_ptr, char *dest, const void *src, size_t dest_len, size_t src_len, int flags)
-{
-	size_t size = 0;
-	size_t ucs2_align_len = 0;
-	bool ret;
-
-	if (dest_len == (size_t)-1) {
-		/* No longer allow dest_len of -1. */
-		smb_panic("pull_ucs2 - invalid dest_len of -1");
-	}
-
-	if (!src_len) {
-		if (dest && dest_len > 0) {
-			dest[0] = '\0';
-		}
-		return 0;
-	}
-
-	if (ucs2_align(base_ptr, src, flags)) {
-		src = (const void *)((const char *)src + 1);
-		if (src_len != (size_t)-1)
-			src_len--;
-		ucs2_align_len = 1;
-	}
-
-	if (flags & STR_TERMINATE) {
-		/* src_len -1 is the default for null terminated strings. */
-		if (src_len != (size_t)-1) {
-			size_t len = strnlen_w((const smb_ucs2_t *)src,
-						src_len/2);
-			if (len < src_len/2)
-				len++;
-			src_len = len*2;
-		}
-	}
-
-	/* ucs2 is always a multiple of 2 bytes */
-	if (src_len != (size_t)-1)
-		src_len &= ~1;
-
-	ret = convert_string(CH_UTF16LE, CH_UNIX, src, src_len, dest, dest_len, &size);
-	if (ret == false) {
-		size = 0;
-		dest_len = 0;
-	}
-
-	if (src_len == (size_t)-1)
-		src_len = size*2;
-
-	if (dest_len && size) {
-		/* Did we already process the terminating zero ? */
-		if (dest[MIN(size-1, dest_len-1)] != 0) {
-			dest[MIN(size, dest_len-1)] = 0;
-		}
-	} else {
-		dest[0] = 0;
-	}
-
-	return src_len + ucs2_align_len;
 }
 
 /**
@@ -523,41 +449,6 @@ size_t push_string_base(const char *base, uint16 flags2,
 /**
  Copy a string from a unicode or ascii source (depending on
  the packet flags) to a char* destination.
- Flags can have:
-  STR_TERMINATE means the string in src is null terminated.
-  STR_UNICODE   means to force as unicode.
-  STR_ASCII     use ascii even with unicode packet.
-  STR_NOALIGN   means don't do alignment.
- if STR_TERMINATE is set then src_len is ignored is it is -1
- src_len is the length of the source area in bytes.
- Return the number of bytes occupied by the string in src.
- The resulting string in "dest" is always null terminated.
-**/
-
-size_t pull_string_fn(const void *base_ptr,
-		   uint16 smb_flags2,
-		   char *dest,
-		   const void *src,
-		   size_t dest_len,
-		   size_t src_len,
-		   int flags)
-{
-	if ((base_ptr == NULL) && ((flags & (STR_ASCII|STR_UNICODE)) == 0)) {
-		smb_panic("No base ptr to get flg2 and neither ASCII nor "
-			  "UNICODE defined");
-	}
-
-	if (!(flags & STR_ASCII) && \
-	    ((flags & STR_UNICODE || \
-	      (smb_flags2 & FLAGS2_UNICODE_STRINGS)))) {
-		return pull_ucs2(base_ptr, dest, src, dest_len, src_len, flags);
-	}
-	return pull_ascii(dest, src, dest_len, src_len, flags);
-}
-
-/**
- Copy a string from a unicode or ascii source (depending on
- the packet flags) to a char* destination.
  Variant that uses talloc.
  Flags can have:
   STR_TERMINATE means the string in src is null terminated.
@@ -629,14 +520,6 @@ size_t dos_PutUniCode(char *dst,const char *src, size_t len, bool null_terminate
 	return push_ucs2(NULL, dst, src, len, flags);
 }
 
-
-/* Converts a string from internal samba format to unicode
- */
-
-int rpcstr_push(void *dest, const char *src, size_t dest_len, int flags)
-{
-	return push_ucs2(NULL, dest, src, dest_len, flags|STR_UNICODE|STR_NOALIGN);
-}
 
 /* Converts a string from internal samba format to unicode. Always terminates.
  * Actually just a wrapper round push_ucs2_talloc().

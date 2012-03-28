@@ -28,8 +28,8 @@
 #include "lib/util/util_net.h"
 #include "lib/util/charset/charset.h"
 #include "libcli/auth/libcli_auth.h"
-#include "source4/param/param.h"
-#include "lib/util/util.h"
+#include "lib/param/param.h"
+#include "lib/util/samba_util.h"
 #include "lib/crypto/arcfour.h"
 
 #define WBC_ERROR_EQUAL(x,y) (x == y)

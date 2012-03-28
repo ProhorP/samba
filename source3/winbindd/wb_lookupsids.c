@@ -198,7 +198,7 @@ static bool wb_lookupsids_next(struct tevent_req *req,
 			}
 			subreq = dcerpc_wbint_LookupRids_send(
 				state, state->ev, dom_child_handle(d->domain),
-				&state->rids, &state->domain_name,
+				&d->sid, &state->rids, &state->domain_name,
 				&state->rid_names);
 			if (tevent_req_nomem(subreq, req)) {
 				return false;
@@ -367,7 +367,7 @@ static bool wb_lookupsids_find_dom_idx(struct lsa_DomainInfo *domain,
 	struct lsa_DomainInfo *new_domain;
 
 	for (i=0; i<list->count; i++) {
-		if (sid_equal(domain->sid, list->domains[i].sid)) {
+		if (dom_sid_equal(domain->sid, list->domains[i].sid)) {
 			*idx = i;
 			return true;
 		}

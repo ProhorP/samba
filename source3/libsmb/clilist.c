@@ -77,11 +77,11 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 				return pdata_end - base;
 			}
 			finfo->ctime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+4, cli->serverzone));
+				make_unix_date2(p+4, cli_state_server_time_zone(cli)));
 			finfo->atime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+8, cli->serverzone));
+				make_unix_date2(p+8, cli_state_server_time_zone(cli)));
 			finfo->mtime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+12, cli->serverzone));
+				make_unix_date2(p+12, cli_state_server_time_zone(cli)));
 			finfo->size = IVAL(p,16);
 			finfo->mode = CVAL(p,24);
 			len = CVAL(p, 26);
@@ -126,11 +126,11 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 				return pdata_end - base;
 			}
 			finfo->ctime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+4, cli->serverzone));
+				make_unix_date2(p+4, cli_state_server_time_zone(cli)));
 			finfo->atime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+8, cli->serverzone));
+				make_unix_date2(p+8, cli_state_server_time_zone(cli)));
 			finfo->mtime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+12, cli->serverzone));
+				make_unix_date2(p+12, cli_state_server_time_zone(cli)));
 			finfo->size = IVAL(p,16);
 			finfo->mode = CVAL(p,24);
 			len = CVAL(p, 30);
@@ -189,13 +189,15 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 				return pdata_end - base;
 			}
 			p += 2;
-			{
-				/* stupid NT bugs. grr */
-				int flags = 0;
-				if (p[1] == 0 && namelen > 1) flags |= STR_UNICODE;
-				clistr_pull(base_ptr, finfo->short_name, p,
-					    sizeof(finfo->short_name),
-					    slen, flags);
+			ret = clistr_pull_talloc(ctx,
+						base_ptr,
+						recv_flags2,
+						&finfo->short_name,
+						p,
+						slen,
+						STR_UNICODE);
+			if (ret == (size_t)-1) {
+				return pdata_end - base;
 			}
 			p += 24; /* short name? */
 			if (p + namelen < p || p + namelen > pdata_end) {
@@ -246,14 +248,14 @@ static bool interpret_short_filename(TALLOC_CTX *ctx,
 	finfo->mode = CVAL(p,21);
 
 	/* this date is converted to GMT by make_unix_date */
-	finfo->ctime_ts.tv_sec = make_unix_date(p+22, cli->serverzone);
+	finfo->ctime_ts.tv_sec = make_unix_date(p+22, cli_state_server_time_zone(cli));
 	finfo->ctime_ts.tv_nsec = 0;
 	finfo->mtime_ts.tv_sec = finfo->atime_ts.tv_sec = finfo->ctime_ts.tv_sec;
 	finfo->mtime_ts.tv_nsec = finfo->atime_ts.tv_nsec = 0;
 	finfo->size = IVAL(p,26);
 	ret = clistr_pull_talloc(ctx,
-			cli->inbuf,
-			SVAL(cli->inbuf, smb_flg2),
+			NULL,
+			0,
 			&finfo->name,
 			p+30,
 			12,
@@ -263,9 +265,10 @@ static bool interpret_short_filename(TALLOC_CTX *ctx,
 	}
 
 	if (finfo->name) {
-		strlcpy(finfo->short_name,
-			finfo->name,
-			sizeof(finfo->short_name));
+		finfo->short_name = talloc_strdup(ctx, finfo->name);
+		if (finfo->short_name == NULL) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -295,6 +298,7 @@ static struct tevent_req *cli_list_old_send(TALLOC_CTX *mem_ctx,
 	struct cli_list_old_state *state;
 	uint8_t *bytes;
 	static const uint16_t zero = 0;
+	uint32_t usable_space;
 
 	req = tevent_req_create(mem_ctx, &state, struct cli_list_old_state);
 	if (req == NULL) {
@@ -308,7 +312,8 @@ static struct tevent_req *cli_list_old_send(TALLOC_CTX *mem_ctx,
 	if (tevent_req_nomem(state->mask, req)) {
 		return tevent_req_post(req, ev);
 	}
-	state->num_asked = (cli->max_xmit - 100) / DIR_STRUCT_SIZE;
+	usable_space = cli_state_available_size(cli, 100);
+	state->num_asked = usable_space / DIR_STRUCT_SIZE;
 
 	SSVAL(state->vwv + 0, 0, state->num_asked);
 	SSVAL(state->vwv + 1, 0, state->attribute);
@@ -549,8 +554,7 @@ static struct tevent_req *cli_list_trans_send(TALLOC_CTX *mem_ctx,
 {
 	struct tevent_req *req, *subreq;
 	struct cli_list_trans_state *state;
-	size_t nlen, param_len;
-	char *p;
+	size_t param_len;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct cli_list_trans_state);
@@ -570,10 +574,9 @@ static struct tevent_req *cli_list_trans_send(TALLOC_CTX *mem_ctx,
 
 	state->max_matches = 1366; /* Match W2k */
 
-	state->setup[0] = TRANSACT2_FINDFIRST;
+	SSVAL(&state->setup[0], 0, TRANSACT2_FINDFIRST);
 
-	nlen = 2*(strlen(mask)+1);
-	state->param = talloc_array(state, uint8_t, 12+nlen+2);
+	state->param = talloc_array(state, uint8_t, 12);
 	if (tevent_req_nomem(state->param, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -582,20 +585,24 @@ static struct tevent_req *cli_list_trans_send(TALLOC_CTX *mem_ctx,
 	SSVAL(state->param, 2, state->max_matches);
 	SSVAL(state->param, 4,
 	      FLAG_TRANS2_FIND_REQUIRE_RESUME
-	      |FLAG_TRANS2_FIND_CLOSE_IF_END);
+	      |FLAG_TRANS2_FIND_CLOSE_IF_END
+	      |(cli->backup_intent ? FLAG_TRANS2_FIND_BACKUP_INTENT : 0));
 	SSVAL(state->param, 6, state->info_level);
 	SIVAL(state->param, 8, 0);
 
-	p = ((char *)state->param)+12;
-	p += clistr_push(state->cli, p, state->mask, nlen,
-			 STR_TERMINATE);
-	param_len = PTR_DIFF(p, state->param);
+	state->param = trans2_bytes_push_str(state->param, cli_ucs2(cli),
+					     state->mask, strlen(state->mask)+1,
+					     NULL);
+	if (tevent_req_nomem(state->param, req)) {
+		return tevent_req_post(req, ev);
+	}
+	param_len = talloc_get_size(state->param);
 
 	subreq = cli_trans_send(state, state->ev, state->cli,
 				SMBtrans2, NULL, -1, 0, 0,
 				state->setup, 1, 0,
 				state->param, param_len, 10,
-				NULL, 0, cli->max_xmit);
+				NULL, 0, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -626,7 +633,7 @@ static void cli_list_trans_done(struct tevent_req *subreq)
 	int i;
 	DATA_BLOB last_name_raw;
 	struct file_info *finfo = NULL;
-	size_t nlen, param_len;
+	size_t param_len;
 
 	min_param = (state->first ? 6 : 4);
 
@@ -732,12 +739,9 @@ static void cli_list_trans_done(struct tevent_req *subreq)
 		return;
 	}
 
-	state->setup[0] = TRANSACT2_FINDNEXT;
+	SSVAL(&state->setup[0], 0, TRANSACT2_FINDNEXT);
 
-	nlen = 2*(strlen(state->mask) + 1);
-
-	param = talloc_realloc(state, state->param, uint8_t,
-				     12 + nlen + last_name_raw.length + 2);
+	param = talloc_realloc(state, state->param, uint8_t, 12);
 	if (tevent_req_nomem(param, req)) {
 		return;
 	}
@@ -757,24 +761,33 @@ static void cli_list_trans_done(struct tevent_req *subreq)
 	 * continue instead. JRA
 	 */
 	SSVAL(param, 10, (FLAG_TRANS2_FIND_REQUIRE_RESUME
-			  |FLAG_TRANS2_FIND_CLOSE_IF_END));
-	p = ((char *)param)+12;
+			  |FLAG_TRANS2_FIND_CLOSE_IF_END
+			  |(state->cli->backup_intent ? FLAG_TRANS2_FIND_BACKUP_INTENT : 0)));
 	if (last_name_raw.length) {
-		memcpy(p, last_name_raw.data, last_name_raw.length);
-		p += last_name_raw.length;
+		state->param = trans2_bytes_push_bytes(state->param,
+						       last_name_raw.data,
+						       last_name_raw.length);
+		if (tevent_req_nomem(state->param, req)) {
+			return;
+		}
 		data_blob_free(&last_name_raw);
 	} else {
-		p += clistr_push(state->cli, p, state->mask, nlen,
-				 STR_TERMINATE);
+		state->param = trans2_bytes_push_str(state->param,
+						     cli_ucs2(state->cli),
+						     state->mask,
+						     strlen(state->mask)+1,
+						     NULL);
+		if (tevent_req_nomem(state->param, req)) {
+			return;
+		}
 	}
-
-	param_len = PTR_DIFF(p, param);
+	param_len = talloc_get_size(state->param);
 
 	subreq = cli_trans_send(state, state->ev, state->cli,
 				SMBtrans2, NULL, -1, 0, 0,
 				state->setup, 1, 0,
 				state->param, param_len, 10,
-				NULL, 0, state->cli->max_xmit);
+				NULL, 0, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return;
 	}
@@ -866,7 +879,7 @@ struct tevent_req *cli_list_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	if (cli->protocol <= PROTOCOL_LANMAN1) {
+	if (cli_state_protocol(cli) <= PROTOCOL_LANMAN1) {
 		subreq = cli_list_old_send(state, ev, cli, mask, attribute);
 		state->recv_fn = cli_list_old_recv;
 	} else {
@@ -937,7 +950,7 @@ NTSTATUS cli_list(struct cli_state *cli, const char *mask, uint16 attribute,
 		goto fail;
 	}
 
-	info_level = (cli->capabilities & CAP_NT_SMBS)
+	info_level = (cli_state_capabilities(cli) & CAP_NT_SMBS)
 		? SMB_FIND_FILE_BOTH_DIRECTORY_INFO : SMB_FIND_INFO_STANDARD;
 
 	req = cli_list_send(frame, ev, cli, mask, attribute, info_level);

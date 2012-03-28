@@ -24,6 +24,14 @@
 
 #include "prefixmap.h"
 
+enum dsdb_dn_format {
+	DSDB_NORMAL_DN,
+	DSDB_BINARY_DN,
+	DSDB_STRING_DN,
+	DSDB_INVALID_DN
+};
+
+
 struct dsdb_attribute;
 struct dsdb_class;
 struct dsdb_schema;
@@ -65,6 +73,7 @@ struct dsdb_syntax {
 	WERROR (*validate_ldb)(const struct dsdb_syntax_ctx *ctx,
 			       const struct dsdb_attribute *attr,
 			       const struct ldb_message_element *in);
+	bool auto_normalise;
 };
 
 struct dsdb_attribute {
@@ -107,6 +116,9 @@ struct dsdb_attribute {
 	bool isDefunct;
 	bool systemOnly;
 
+	bool one_way_link;
+	enum dsdb_dn_format dn_format;
+
 	/* internal stuff */
 	const struct dsdb_syntax *syntax;
 	const struct ldb_schema_attribute *ldb_schema_attribute;
@@ -143,6 +155,7 @@ struct dsdb_class {
 	const char *defaultSecurityDescriptor;
 
 	uint32_t schemaFlagsEx;
+	uint32_t systemFlags;
 	struct ldb_val msDs_Schema_Extensions;
 
 	bool showInAdvancedViewOnly;
@@ -224,6 +237,7 @@ struct dsdb_schema {
 
 	struct {
 		bool we_are_master;
+		bool update_allowed;
 		struct ldb_dn *master_dn;
 	} fsmo;
 

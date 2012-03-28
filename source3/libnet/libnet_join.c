@@ -35,7 +35,6 @@
 #include "secrets.h"
 #include "rpc_client/init_lsa.h"
 #include "rpc_client/cli_pipe.h"
-#include "krb5_env.h"
 #include "../libcli/security/security.h"
 #include "passdb.h"
 #include "libsmb/libsmb.h"
@@ -700,7 +699,7 @@ static NTSTATUS libnet_join_connect_dc_ipc(const char *dc,
 				   NULL,
 				   pass,
 				   flags,
-				   Undefined);
+				   SMB_SIGNING_DEFAULT);
 }
 
 /****************************************************************
@@ -1180,7 +1179,7 @@ NTSTATUS libnet_join_ok(const char *netbios_domain_name,
 				     NULL,
 				     machine_password,
 				     0,
-				     Undefined);
+				     SMB_SIGNING_DEFAULT);
 	free(machine_account);
 	free(machine_password);
 
@@ -1193,7 +1192,7 @@ NTSTATUS libnet_join_ok(const char *netbios_domain_name,
 					     NULL,
 					     "",
 					     0,
-					     Undefined);
+					     SMB_SIGNING_DEFAULT);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1210,7 +1209,8 @@ NTSTATUS libnet_join_ok(const char *netbios_domain_name,
 
 		DEBUG(0,("libnet_join_ok: failed to get schannel session "
 			"key from server %s for domain %s. Error was %s\n",
-		cli->desthost, netbios_domain_name, nt_errstr(status)));
+			cli_state_remote_name(cli),
+			netbios_domain_name, nt_errstr(status)));
 		cli_shutdown(cli);
 		return status;
 	}
@@ -1231,7 +1231,8 @@ NTSTATUS libnet_join_ok(const char *netbios_domain_name,
 		DEBUG(0,("libnet_join_ok: failed to open schannel session "
 			"on netlogon pipe to server %s for domain %s. "
 			"Error was %s\n",
-			cli->desthost, netbios_domain_name, nt_errstr(status)));
+			cli_state_remote_name(cli),
+			netbios_domain_name, nt_errstr(status)));
 		return status;
 	}
 
@@ -1574,7 +1575,7 @@ static WERROR do_JoinConfig(struct libnet_JoinCtx *r)
 		return werr;
 	}
 
-	lp_load(get_dyn_CONFIGFILE(),true,false,false,true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	r->out.modified_config = true;
 	r->out.result = werr;
@@ -1602,7 +1603,7 @@ static WERROR libnet_unjoin_config(struct libnet_UnjoinCtx *r)
 		return werr;
 	}
 
-	lp_load(get_dyn_CONFIGFILE(),true,false,false,true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	r->out.modified_config = true;
 	r->out.result = werr;
@@ -1697,7 +1698,7 @@ static void libnet_join_add_dom_rids_to_builtins(struct dom_sid *domain_sid)
 	if (NT_STATUS_EQUAL(status, NT_STATUS_PROTOCOL_UNREACHABLE)) {
 		DEBUG(10,("Unable to auto-add domain administrators to "
 			  "BUILTIN\\Administrators during join because "
-			  "winbindd must be running."));
+			  "winbindd must be running.\n"));
 	} else if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5, ("Failed to auto-add domain administrators to "
 			  "BUILTIN\\Administrators during join: %s\n",
@@ -1708,7 +1709,7 @@ static void libnet_join_add_dom_rids_to_builtins(struct dom_sid *domain_sid)
 	status = create_builtin_users(domain_sid);
 	if (NT_STATUS_EQUAL(status, NT_STATUS_PROTOCOL_UNREACHABLE)) {
 		DEBUG(10,("Unable to auto-add domain users to BUILTIN\\users "
-			  "during join because winbindd must be running."));
+			  "during join because winbindd must be running.\n"));
 	} else if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5, ("Failed to auto-add domain administrators to "
 			  "BUILTIN\\Administrators during join: %s\n",
@@ -1764,15 +1765,8 @@ static WERROR libnet_join_post_processing(TALLOC_CTX *mem_ctx,
 
 static int libnet_destroy_JoinCtx(struct libnet_JoinCtx *r)
 {
-	const char *krb5_cc_env = NULL;
-
 	if (r->in.ads) {
 		ads_destroy(&r->in.ads);
-	}
-
-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
-	if (krb5_cc_env && strcasecmp_m(krb5_cc_env, "MEMORY:libnetjoin")) {
-		unsetenv(KRB5_ENV_CCNAME);
 	}
 
 	return 0;
@@ -1783,15 +1777,8 @@ static int libnet_destroy_JoinCtx(struct libnet_JoinCtx *r)
 
 static int libnet_destroy_UnjoinCtx(struct libnet_UnjoinCtx *r)
 {
-	const char *krb5_cc_env = NULL;
-
 	if (r->in.ads) {
 		ads_destroy(&r->in.ads);
-	}
-
-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
-	if (krb5_cc_env && strcasecmp_m(krb5_cc_env, "MEMORY:libnetjoin")) {
-		unsetenv(KRB5_ENV_CCNAME);
 	}
 
 	return 0;
@@ -1804,7 +1791,6 @@ WERROR libnet_init_JoinCtx(TALLOC_CTX *mem_ctx,
 			   struct libnet_JoinCtx **r)
 {
 	struct libnet_JoinCtx *ctx;
-	const char *krb5_cc_env = NULL;
 
 	ctx = talloc_zero(mem_ctx, struct libnet_JoinCtx);
 	if (!ctx) {
@@ -1815,13 +1801,6 @@ WERROR libnet_init_JoinCtx(TALLOC_CTX *mem_ctx,
 
 	ctx->in.machine_name = talloc_strdup(mem_ctx, lp_netbios_name());
 	W_ERROR_HAVE_NO_MEMORY(ctx->in.machine_name);
-
-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
-		krb5_cc_env = talloc_strdup(mem_ctx, "MEMORY:libnetjoin");
-		W_ERROR_HAVE_NO_MEMORY(krb5_cc_env);
-		setenv(KRB5_ENV_CCNAME, krb5_cc_env, 1);
-	}
 
 	ctx->in.secure_channel_type = SEC_CHAN_WKSTA;
 
@@ -1837,7 +1816,6 @@ WERROR libnet_init_UnjoinCtx(TALLOC_CTX *mem_ctx,
 			     struct libnet_UnjoinCtx **r)
 {
 	struct libnet_UnjoinCtx *ctx;
-	const char *krb5_cc_env = NULL;
 
 	ctx = talloc_zero(mem_ctx, struct libnet_UnjoinCtx);
 	if (!ctx) {
@@ -1848,13 +1826,6 @@ WERROR libnet_init_UnjoinCtx(TALLOC_CTX *mem_ctx,
 
 	ctx->in.machine_name = talloc_strdup(mem_ctx, lp_netbios_name());
 	W_ERROR_HAVE_NO_MEMORY(ctx->in.machine_name);
-
-	krb5_cc_env = getenv(KRB5_ENV_CCNAME);
-	if (!krb5_cc_env || (strlen(krb5_cc_env) == 0)) {
-		krb5_cc_env = talloc_strdup(mem_ctx, "MEMORY:libnetjoin");
-		W_ERROR_HAVE_NO_MEMORY(krb5_cc_env);
-		setenv(KRB5_ENV_CCNAME, krb5_cc_env, 1);
-	}
 
 	*r = ctx;
 
@@ -2007,7 +1978,8 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 
 	create_local_private_krb5_conf_for_domain(
 		r->out.dns_domain_name, r->out.netbios_domain_name,
-		NULL, &cli->dest_ss, cli->desthost);
+		NULL, cli_state_remote_sockaddr(cli),
+		cli_state_remote_name(cli));
 
 	if (r->out.domain_is_ad && r->in.account_ou &&
 	    !(r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_UNSECURE)) {

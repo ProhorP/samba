@@ -4,6 +4,7 @@
 
    Copyright (C) Stefan Metzmacher <metze@samba.org> 2006-2007
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2006-2008
+   Copyright (C) Matthieu Patou <mat@matws.net> 2011
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -28,6 +29,11 @@
 #include "librpc/ndr/libndr.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 #include "lib/util/tsort.h"
+
+/* change this when we change something in our schema code that
+ * requires a re-index of the database
+ */
+#define SAMDB_INDEXING_VERSION "2"
 
 /*
   override the name to attribute handler function
@@ -90,6 +96,12 @@ static int dsdb_schema_set_attributes(struct ldb_context *ldb, struct dsdb_schem
 	}
 
 	ret = ldb_msg_add_string(msg_idx, "@IDXONE", "1");
+	if (ret != LDB_SUCCESS) {
+		goto op_error;
+	}
+
+
+	ret = ldb_msg_add_string(msg_idx, "@IDXVERSION", SAMDB_INDEXING_VERSION);
 	if (ret != LDB_SUCCESS) {
 		goto op_error;
 	}
@@ -199,6 +211,45 @@ op_error:
 	return ldb_operr(ldb);
 }
 
+
+/*
+  create extra attribute shortcuts
+ */
+static void dsdb_setup_attribute_shortcuts(struct ldb_context *ldb, struct dsdb_schema *schema)
+{
+	struct dsdb_attribute *attribute;
+
+	/* setup fast access to one_way_link and DN format */
+	for (attribute=schema->attributes; attribute; attribute=attribute->next) {
+		attribute->dn_format = dsdb_dn_oid_to_format(attribute->syntax->ldap_oid);
+
+		if (attribute->dn_format == DSDB_INVALID_DN) {
+			attribute->one_way_link = false;
+			continue;
+		}
+
+		/* these are not considered to be one way links for
+		   the purpose of DN link fixups */
+		if (ldb_attr_cmp("distinguishedName", attribute->lDAPDisplayName) == 0 ||
+		    ldb_attr_cmp("objectCategory", attribute->lDAPDisplayName) == 0) {
+			attribute->one_way_link = false;
+			continue;
+		}
+
+		if (attribute->linkID == 0) {
+			attribute->one_way_link = true;
+			continue;
+		}
+		/* handle attributes with a linkID but no backlink */
+		if ((attribute->linkID & 1) == 0 &&
+		    dsdb_attribute_by_linkID(schema, attribute->linkID + 1) == NULL) {
+			attribute->one_way_link = true;
+			continue;
+		}
+		attribute->one_way_link = false;
+	}
+}
+
 static int uint32_cmp(uint32_t c1, uint32_t c2)
 {
 	if (c1 == c2) return 0;
@@ -271,6 +322,7 @@ int dsdb_setup_sorted_accessors(struct ldb_context *ldb,
 	struct dsdb_attribute *a;
 	unsigned int i;
 	unsigned int num_int_id;
+	int ret;
 
 	/* free all caches */
 	dsdb_sorted_accessors_free(schema);
@@ -353,29 +405,19 @@ int dsdb_setup_sorted_accessors(struct ldb_context *ldb,
 	TYPESAFE_QSORT(schema->attributes_by_attributeID_oid, schema->num_attributes, dsdb_compare_attribute_by_attributeID_oid);
 	TYPESAFE_QSORT(schema->attributes_by_linkID, schema->num_attributes, dsdb_compare_attribute_by_linkID);
 
+	dsdb_setup_attribute_shortcuts(ldb, schema);
+
+	ret = schema_fill_constructed(schema);
+	if (ret != LDB_SUCCESS) {
+		dsdb_sorted_accessors_free(schema);
+		return ret;
+	}
+
 	return LDB_SUCCESS;
 
 failed:
 	dsdb_sorted_accessors_free(schema);
 	return ldb_oom(ldb);
-}
-
-int dsdb_setup_schema_inversion(struct ldb_context *ldb, struct dsdb_schema *schema)
-{
-	/* Walk the list of schema classes */
-
-	/*  For each subClassOf, add us to subclasses of the parent */
-
-	/* collect these subclasses into a recursive list of total subclasses, preserving order */
-
-	/* For each subclass under 'top', write the index from it's
-	 * order as an integer in the dsdb_class (for sorting
-	 * objectClass lists efficiently) */
-
-	/* Walk the list of schema classes */
-
-	/*  Create a 'total possible superiors' on each class */
-	return LDB_SUCCESS;
 }
 
 /**
@@ -388,11 +430,6 @@ int dsdb_set_schema(struct ldb_context *ldb, struct dsdb_schema *schema)
 	int ret;
 
 	ret = dsdb_setup_sorted_accessors(ldb, schema);
-	if (ret != LDB_SUCCESS) {
-		return ret;
-	}
-
-	ret = schema_fill_constructed(schema);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -646,7 +683,9 @@ WERROR dsdb_schema_set_el_from_ldb_msg(struct ldb_context *ldb, struct dsdb_sche
  * schema itself to the directory.
  */
 
-WERROR dsdb_set_schema_from_ldif(struct ldb_context *ldb, const char *pf, const char *df)
+WERROR dsdb_set_schema_from_ldif(struct ldb_context *ldb,
+				 const char *pf, const char *df,
+				 const char *dn)
 {
 	struct ldb_ldif *ldif;
 	struct ldb_message *msg;
@@ -665,9 +704,16 @@ WERROR dsdb_set_schema_from_ldif(struct ldb_context *ldb, const char *pf, const 
 	}
 
 	schema = dsdb_new_schema(mem_ctx);
-
+	if (!schema) {
+		goto nomem;
+	}
+	schema->base_dn = ldb_dn_new(schema, ldb, dn);
+	if (!schema->base_dn) {
+		goto nomem;
+	}
 	schema->fsmo.we_are_master = true;
-	schema->fsmo.master_dn = ldb_dn_new_fmt(schema, ldb, "@PROVISION_SCHEMA_MASTER");
+	schema->fsmo.update_allowed = true;
+	schema->fsmo.master_dn = ldb_dn_new(schema, ldb, "@PROVISION_SCHEMA_MASTER");
 	if (!schema->fsmo.master_dn) {
 		goto nomem;
 	}

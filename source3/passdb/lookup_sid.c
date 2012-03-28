@@ -1193,11 +1193,12 @@ static bool legacy_sid_to_uid(const struct dom_sid *psid, uid_t *puid)
 	enum lsa_SidType type;
 
 	if (sid_check_is_in_our_domain(psid)) {
-		union unid_t id;
+		uid_t uid;
+		gid_t gid;
 		bool ret;
 
 		become_root();
-		ret = pdb_sid_to_id(psid, &id, &type);
+		ret = pdb_sid_to_id(psid, &uid, &gid, &type);
 		unbecome_root();
 
 		if (ret) {
@@ -1207,7 +1208,7 @@ static bool legacy_sid_to_uid(const struct dom_sid *psid, uid_t *puid)
 					  sid_type_lookup(type)));
 				return false;
 			}
-			*puid = id.uid;
+			*puid = uid;
 			goto done;
 		}
 
@@ -1233,20 +1234,24 @@ done:
 
 static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 {
-	GROUP_MAP map;
-	union unid_t id;
+	GROUP_MAP *map;
 	enum lsa_SidType type;
+
+	map = talloc_zero(NULL, GROUP_MAP);
+	if (!map) {
+		return false;
+	}
 
 	if ((sid_check_is_in_builtin(psid) ||
 	     sid_check_is_in_wellknown_domain(psid))) {
 		bool ret;
 
 		become_root();
-		ret = pdb_getgrsid(&map, *psid);
+		ret = pdb_getgrsid(map, *psid);
 		unbecome_root();
 
 		if (ret) {
-			*pgid = map.gid;
+			*pgid = map->gid;
 			goto done;
 		}
 		DEBUG(10,("LEGACY: mapping failed for sid %s\n",
@@ -1255,10 +1260,12 @@ static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 	}
 
 	if (sid_check_is_in_our_domain(psid)) {
+		uid_t uid;
+		gid_t gid;
 		bool ret;
 
 		become_root();
-		ret = pdb_sid_to_id(psid, &id, &type);
+		ret = pdb_sid_to_id(psid, &uid, &gid, &type);
 		unbecome_root();
 
 		if (ret) {
@@ -1269,7 +1276,7 @@ static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 					  sid_type_lookup(type)));
 				return false;
 			}
-			*pgid = id.gid;
+			*pgid = gid;
 			goto done;
 		}
 
@@ -1286,6 +1293,7 @@ static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 
 	store_gid_sid_cache(psid, *pgid);
 
+	TALLOC_FREE(map);
 	return true;
 }
 
@@ -1745,68 +1753,3 @@ done:
 	return NT_STATUS_OK;
 }
 
-bool delete_uid_cache(uid_t puid)
-{
-	DATA_BLOB uid = data_blob_const(&puid, sizeof(puid));
-	DATA_BLOB sid;
-
-	if (!memcache_lookup(NULL, UID_SID_CACHE, uid, &sid)) {
-		DEBUG(3, ("UID %d is not memcached!\n", (int)puid));
-		return false;
-	}
-	DEBUG(3, ("Delete mapping UID %d <-> %s from memcache\n", (int)puid,
-		  sid_string_dbg((struct dom_sid*)sid.data)));
-	memcache_delete(NULL, SID_UID_CACHE, sid);
-	memcache_delete(NULL, UID_SID_CACHE, uid);
-	return true;
-}
-
-bool delete_gid_cache(gid_t pgid)
-{
-	DATA_BLOB gid = data_blob_const(&pgid, sizeof(pgid));
-	DATA_BLOB sid;
-	if (!memcache_lookup(NULL, GID_SID_CACHE, gid, &sid)) {
-		DEBUG(3, ("GID %d is not memcached!\n", (int)pgid));
-		return false;
-	}
-	DEBUG(3, ("Delete mapping GID %d <-> %s from memcache\n", (int)pgid,
-		  sid_string_dbg((struct dom_sid*)sid.data)));
-	memcache_delete(NULL, SID_GID_CACHE, sid);
-	memcache_delete(NULL, GID_SID_CACHE, gid);
-	return true;
-}
-
-bool delete_sid_cache(const struct dom_sid* psid)
-{
-	DATA_BLOB sid = data_blob_const(psid, ndr_size_dom_sid(psid, 0));
-	DATA_BLOB id;
-	if (memcache_lookup(NULL, SID_GID_CACHE, sid, &id)) {
-		DEBUG(3, ("Delete mapping %s <-> GID %d from memcache\n",
-			  sid_string_dbg(psid), *(int*)id.data));
-		memcache_delete(NULL, SID_GID_CACHE, sid);
-		memcache_delete(NULL, GID_SID_CACHE, id);
-	} else if (memcache_lookup(NULL, SID_UID_CACHE, sid, &id)) {
-		DEBUG(3, ("Delete mapping %s <-> UID %d from memcache\n",
-			  sid_string_dbg(psid), *(int*)id.data));
-		memcache_delete(NULL, SID_UID_CACHE, sid);
-		memcache_delete(NULL, UID_SID_CACHE, id);
-	} else {
-		DEBUG(3, ("SID %s is not memcached!\n", sid_string_dbg(psid)));
-		return false;
-	}
-	return true;
-}
-
-void flush_gid_cache(void)
-{
-	DEBUG(3, ("Flush GID <-> SID memcache\n"));
-	memcache_flush(NULL, SID_GID_CACHE);
-	memcache_flush(NULL, GID_SID_CACHE);
-}
-
-void flush_uid_cache(void)
-{
-	DEBUG(3, ("Flush UID <-> SID memcache\n"));
-	memcache_flush(NULL, SID_UID_CACHE);
-	memcache_flush(NULL, UID_SID_CACHE);
-}

@@ -22,7 +22,7 @@
 #ifndef __LIBCLI_RAW_INTERFACES_H__
 #define __LIBCLI_RAW_INTERFACES_H__
 
-#include "libcli/raw/smb.h"
+#include "source4/libcli/raw/smb.h"
 #include "../libcli/smb/smb_common.h"
 #include "librpc/gen_ndr/misc.h" /* for struct GUID */
 
@@ -1741,6 +1741,7 @@ union smb_open {
 			uint32_t maximal_access;
 			uint8_t on_disk_id[32];
 			struct smb2_lease lease_response;
+			bool durable_open;
 
 			/* tagged blobs in the reply */
 			struct smb2_create_blobs blobs;
@@ -2190,6 +2191,9 @@ enum smb_ioctl_level {
 	RAW_IOCTL_SMB2,
 	RAW_IOCTL_SMB2_NO_HANDLE
 };
+
+/* 2.2.31 SMB2 IOCTL Request */
+#define SMB2_IOCTL_FLAG_IS_FSCTL		0x00000001
 
 /*
   union for ioctl() backend

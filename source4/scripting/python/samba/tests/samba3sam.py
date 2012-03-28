@@ -5,17 +5,17 @@
 # Copyright (C) Martin Kuehl <mkhl@samba.org> 2006
 #
 # This is a Python port of the original in testprogs/ejs/samba3sam.js
-#   
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 3 of the License, or
 # (at your option) any later version.
-#   
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-#   
+#
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
@@ -55,7 +55,7 @@ class MapBaseTestCase(TestCaseInTempDir):
                  "@TO": "sambaDomainName=TESTS," + s3.basedn})
 
         ldb.add({"dn": "@MODULES",
-                 "@LIST": "rootdse,paged_results,server_sort,asq,samldb,password_hash,operational,objectguid,rdn_name,samba3sam,samba3sid,partition"})
+                 "@LIST": "rootdse,paged_results,server_sort,asq,samldb,password_hash,operational,objectguid,rdn_name,samba3sam,samba3sid,show_deleted,partition"})
 
         ldb.add({"dn": "@PARTITION",
             "partition": ["%s" % (s4.basedn_casefold), 
@@ -122,6 +122,11 @@ class MapBaseTestCase(TestCaseInTempDir):
         os.unlink(self.ldbfile)
         os.unlink(self.samba3.file)
         os.unlink(self.samba4.file)
+        pdir = "%s.d" % self.ldbfile
+        mdata = os.path.join(pdir, "metadata.tdb")
+        if os.path.exists(mdata):
+            os.unlink(mdata)
+            os.rmdir(pdir)
         super(MapBaseTestCase, self).tearDown()
 
     def assertSidEquals(self, text, ndr_sid):

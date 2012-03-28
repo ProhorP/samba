@@ -62,8 +62,13 @@ static inline TDB_DATA tdb_nextkey_compat(struct tdb_context *tdb, TDB_DATA k)
 	return k;
 }
 
-/* tdb_traverse_read and tdb_traverse are equal: both only take read locks. */
-#define tdb_traverse_read tdb_traverse
+#define tdb_traverse_read(tdb, fn, p)					\
+	tdb_traverse_read_(tdb, typesafe_cb_preargs(int, void *, (fn), (p), \
+						    struct tdb_context *, \
+						    TDB_DATA, TDB_DATA), (p))
+int64_t tdb_traverse_read_(struct tdb_context *tdb,
+			   int (*fn)(struct tdb_context *,
+				     TDB_DATA, TDB_DATA, void *), void *p);
 
 /* Old-style tdb_errorstr */
 #define tdb_errorstr_compat(tdb) tdb_errorstr(tdb_error(tdb))
@@ -71,14 +76,14 @@ static inline TDB_DATA tdb_nextkey_compat(struct tdb_context *tdb, TDB_DATA k)
 /* This typedef doesn't exist in TDB2. */
 typedef struct tdb_context TDB_CONTEXT;
 
-/* We don't need these any more. */
-#define tdb_reopen_all(flag) 0
-#define tdb_reopen(tdb) 0
+/* We only need these for the CLEAR_IF_FIRST lock. */
+int tdb_reopen(struct tdb_context *tdb);
+int tdb_reopen_all(int parent_longlived);
 
 /* These no longer exist in tdb2. */
 #define TDB_CLEAR_IF_FIRST 1048576
-#define TDB_INCOMPATIBLE_HASH 0
-#define TDB_VOLATILE 0
+#define TDB_INCOMPATIBLE_HASH 2097152
+#define TDB_VOLATILE 4194304
 
 /* tdb2 does nonblocking functions via attibutes. */
 enum TDB_ERROR tdb_transaction_start_nonblock(struct tdb_context *tdb);
@@ -90,14 +95,16 @@ enum TDB_ERROR tdb_transaction_start_nonblock(struct tdb_context *tdb);
 					     (log_fn), (log_data),	\
 					     struct tdb_context *,	\
 					     enum tdb_log_level,	\
+					     enum TDB_ERROR,	        \
 					     const char *),		\
 			 (log_data))
 
 struct tdb_context *
-tdb_open_compat_(const char *name, int hash_size_unused,
+tdb_open_compat_(const char *name, int hash_size,
 		 int tdb_flags, int open_flags, mode_t mode,
 		 void (*log_fn)(struct tdb_context *,
 				enum tdb_log_level,
+				enum TDB_ERROR ecode,
 				const char *message,
 				void *data),
 		 void *log_data);

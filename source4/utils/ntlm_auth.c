@@ -449,7 +449,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 		case NTLMSSP_CLIENT_1:
 			/* setup the client side */
 
-			nt_status = gensec_client_start(NULL, &state->gensec_state, ev, 
+			nt_status = gensec_client_start(NULL, &state->gensec_state,
 							lpcfg_gensec_settings(NULL, lp_ctx));
 			if (!NT_STATUS_IS_OK(nt_status)) {
 				talloc_free(mem_ctx);
@@ -463,7 +463,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 			const char *winbind_method[] = { "winbind", NULL };
 			struct auth4_context *auth_context;
 
-			msg = imessaging_client_init(state, lpcfg_imessaging_path(state, lp_ctx), ev);
+			msg = imessaging_client_init(state, lp_ctx, ev);
 			if (!msg) {
 				talloc_free(mem_ctx);
 				exit(1);
@@ -481,7 +481,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 				exit(1);
 			}
 			
-			if (!NT_STATUS_IS_OK(gensec_server_start(state, ev, 
+			if (!NT_STATUS_IS_OK(gensec_server_start(state,
 								 lpcfg_gensec_settings(state, lp_ctx),
 								 auth_context, &state->gensec_state))) {
 				talloc_free(mem_ctx);
@@ -575,7 +575,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 		char *grouplist = NULL;
 		struct auth_session_info *session_info;
 
-		nt_status = gensec_session_info(state->gensec_state, &session_info); 
+		nt_status = gensec_session_info(state->gensec_state, mem_ctx, &session_info);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			DEBUG(1, ("gensec_session_info failed: %s\n", nt_errstr(nt_status)));
 			mux_printf(mux_id, "BH %s\n", nt_errstr(nt_status));
@@ -604,7 +604,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 	if (strncmp(buf, "GK", 2) == 0) {
 		char *base64_key;
 		DEBUG(10, ("Requested session key\n"));
-		nt_status = gensec_session_key(state->gensec_state, &session_key);
+		nt_status = gensec_session_key(state->gensec_state, mem_ctx, &session_key);
 		if(!NT_STATUS_IS_OK(nt_status)) {
 			DEBUG(1, ("gensec_session_key failed: %s\n", nt_errstr(nt_status)));
 			mux_printf(mux_id, "BH No session key\n");
@@ -632,7 +632,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 		return;
 	}
 
-	nt_status = gensec_update(state->gensec_state, mem_ctx, in, &out);
+	nt_status = gensec_update(state->gensec_state, mem_ctx, ev, in, &out);
 	
 	/* don't leak 'bad password'/'no such user' info to the network client */
 	nt_status = nt_status_squash(nt_status);
@@ -671,7 +671,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 	} else if /* OK */ (state->gensec_state->gensec_role == GENSEC_SERVER) {
 		struct auth_session_info *session_info;
 
-		nt_status = gensec_session_info(state->gensec_state, &session_info);
+		nt_status = gensec_session_info(state->gensec_state, mem_ctx, &session_info);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			reply_code = "BH Failed to retrive session info";
 			reply_arg = nt_errstr(nt_status);

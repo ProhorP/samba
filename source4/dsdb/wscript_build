@@ -7,8 +7,9 @@ bld.SAMBA_LIBRARY('samdb',
 	pc_files='samdb.pc',
 	autoproto='samdb/samdb_proto.h',
 	public_deps='krb5',
+	public_headers='',
 	vnum='0.0.1',
-	deps='ndr NDR_DRSUAPI NDR_DRSBLOBS auth_system_session LIBCLI_AUTH ndr SAMDB_SCHEMA ldbsamba samdb-common LIBCLI_DRSUAPI cli-ldap-common samba-util com_err authkrb5 credentials ldbwrap errors',
+	deps='ndr NDR_DRSUAPI NDR_DRSBLOBS auth_system_session LIBCLI_AUTH ndr SAMDB_SCHEMA ldbsamba samdb-common LIBCLI_DRSUAPI cli-ldap-common samba-util com_err authkrb5 samba-credentials ldbwrap errors',
 	)
 
 
@@ -42,7 +43,7 @@ bld.SAMBA_MODULE('service_kcc',
 	autoproto='kcc/kcc_service_proto.h',
 	subsystem='service',
 	init_function='server_service_kcc_init',
-	deps='samdb process_model RPC_NDR_IRPC RPC_NDR_DRSUAPI',
+	deps='samdb process_model RPC_NDR_IRPC RPC_NDR_DRSUAPI UTIL_RUNCMD',
 	internal_module=False,
 	)
 

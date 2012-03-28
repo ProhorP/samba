@@ -20,6 +20,7 @@
 
 import os
 import subprocess
+import sys
 
 def srcdir():
     return os.path.normpath(os.getenv("SRCDIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
@@ -35,16 +36,19 @@ binary_mapping = {}
 def binpath(name):
     if name in binary_mapping:
         name = binary_mapping[name]
-    return os.path.join(bindir(), "%s%s" % (name, os.getenv("EXEEXT", "")))
+    return os.path.join(bindir(), name)
 
 binary_mapping_string = os.getenv("BINARY_MAPPING", None)
 if binary_mapping_string is not None:
     for binmapping_entry in binary_mapping_string.split(','):
-        binmapping = binmapping_entry.split(':')
-        binary_mapping[binmapping[0]] = binmapping[1]
+        try:
+            (from_path, to_path) = binmapping_entry.split(':', 1)
+        except ValueError:
+            continue
+        binary_mapping[from_path] = to_path
 
-perl = os.getenv("PERL", "perl")
-perl = perl.split()
+# Split perl variable to allow $PERL to be set to e.g. "perl -W"
+perl = os.getenv("PERL", "perl").split()
 
 if subprocess.call(perl + ["-e", "eval require Test::More;"]) == 0:
     has_perl_test_more = True
@@ -102,7 +106,7 @@ def plantestsuite(name, env, cmdline, allow_empty_output=False):
                                                                         " ".join(filter_subunit_args),
                                                                         name)
     if allow_empty_output:
-        print "WARNING: allowing empty subunit output from %s" % name
+        print >>sys.stderr, "WARNING: allowing empty subunit output from %s" % name
 
 
 def add_prefix(prefix, support_list=False):
@@ -129,7 +133,11 @@ def plantestsuite_loadlist(name, env, cmdline):
 
 def plantestsuite_idlist(name, env, cmdline):
     print "-- TEST-IDLIST --"
-    print name
+    if env == "none":
+        fullname = name
+    else:
+        fullname = "%s(%s)" % (name, env)
+    print fullname
     print env
     if isinstance(cmdline, list):
         cmdline = " ".join(cmdline)
@@ -143,7 +151,7 @@ def skiptestsuite(name, reason):
     :param reason: Reason the test suite was skipped
     """
     # FIXME: Report this using subunit, but re-adjust the testsuite count somehow
-    print "skipping %s (%s)" % (name, reason)
+    print >>sys.stderr, "skipping %s (%s)" % (name, reason)
 
 
 def planperltestsuite(name, path):
@@ -158,10 +166,14 @@ def planperltestsuite(name, path):
         skiptestsuite(name, "Test::More not available")
 
 
-def planpythontestsuite(env, module):
-    if has_system_subunit_run:
-        plantestsuite_idlist(module, env, [python, "-m", "subunit.run", "$LISTOPT", module])
-    else:
-        plantestsuite_idlist(module, env, "PYTHONPATH=$PYTHONPATH:%s/lib/subunit/python:%s/lib/testtools %s -m subunit.run $LISTOPT %s" % (srcdir(), srcdir(), python, module))
-
-
+def planpythontestsuite(env, module, name=None, extra_path=[]):
+    if name is None:
+        name = module
+    pypath = list(extra_path)
+    if not has_system_subunit_run:
+        pypath.extend(["%s/lib/subunit/python" % srcdir(),
+            "%s/lib/testtools" % srcdir()])
+    args = [python, "-m", "subunit.run", "$LISTOPT", module]
+    if pypath:
+        args.insert(0, "PYTHONPATH=%s" % ":".join(["$PYTHONPATH"] + pypath))
+    plantestsuite_idlist(name, env, args)

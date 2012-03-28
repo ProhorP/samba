@@ -108,6 +108,7 @@ def SAMBA_LIBRARY(bld, libname, source,
                   external_library=False,
                   realname=None,
                   autoproto=None,
+                  autoproto_extra_source='',
                   group='libraries',
                   depends_on='',
                   local_include=True,
@@ -168,9 +169,11 @@ def SAMBA_LIBRARY(bld, libname, source,
                         cflags         = cflags,
                         group          = subsystem_group,
                         autoproto      = autoproto,
+                        autoproto_extra_source=autoproto_extra_source,
                         depends_on     = depends_on,
                         hide_symbols   = hide_symbols,
-                        pyext          = pyext or (target_type == "PYTHON"),
+                        pyembed        = pyembed,
+                        pyext          = pyext,
                         local_include  = local_include,
                         global_include = global_include)
 
@@ -189,22 +192,29 @@ def SAMBA_LIBRARY(bld, libname, source,
     link_name = bld.map_shlib_extension(link_name, python=(target_type=='PYTHON'))
 
     # we don't want any public libraries without version numbers
-    if not private_library and vnum is None and soname is None and target_type != 'PYTHON' and not realname:
-        raise Utils.WafError("public library '%s' must have a vnum" % libname)
+    if (not private_library and target_type != 'PYTHON' and not realname):
+        if vnum is None and soname is None:
+            raise Utils.WafError("public library '%s' must have a vnum" %
+                    libname)
+        if pc_files is None:
+            raise Utils.WafError("public library '%s' must have pkg-config file" %
+                       libname)
+        if public_headers is None:
+            raise Utils.WafError("public library '%s' must have header files" %
+                       libname)
 
     if target_type == 'PYTHON' or realname or not private_library:
         bundled_name = libname.replace('_', '-')
     else:
-        bundled_name = PRIVATE_NAME(bld, libname, bundled_extension, private_library)
+        bundled_name = PRIVATE_NAME(bld, libname, bundled_extension,
+            private_library)
 
     ldflags = TO_LIST(ldflags)
 
     features = 'cc cshlib symlink_lib install_lib'
-    if target_type == 'PYTHON':
+    if pyext:
         features += ' pyext'
-    if pyext or pyembed:
-        # this is quite strange. we should add pyext feature for pyext
-        # but that breaks the build. This may be a bug in the waf python tool
+    if pyembed:
         features += ' pyembed'
 
     if abi_directory:
@@ -268,10 +278,11 @@ def SAMBA_LIBRARY(bld, libname, source,
     if link_name:
         t.link_name = link_name
 
-    if pc_files is not None:
+    if pc_files is not None and not private_library:
         bld.PKG_CONFIG_FILES(pc_files, vnum=vnum)
 
-    if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
+    if (manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and 
+        bld.env['XSLTPROC_MANPAGES']):
         bld.MANPAGES(manpages)
 
 
@@ -480,7 +491,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
                     vars=None,
                     subdir=None,
                     hide_symbols=False,
-                    pyext=False):
+                    pyext=False,
+                    pyembed=False):
     '''define a Samba subsystem'''
 
     if not enabled:
@@ -507,6 +519,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
     features = 'cc'
     if pyext:
         features += ' pyext'
+    if pyembed:
+        features += ' pyembed'
 
     t = bld(
         features       = features,
@@ -521,7 +535,7 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
         global_include = global_include,
         samba_subsystem= subsystem_name,
         samba_use_hostcc = use_hostcc,
-        samba_use_global_deps = use_global_deps
+        samba_use_global_deps = use_global_deps,
         )
 
     if cflags_end is not None:

@@ -35,6 +35,7 @@
 #include "../libcli/security/sddl.h"
 #include "../libcli/registry/util_reg.h"
 #include "passdb/machine_sid.h"
+#include "net_registry_check.h"
 
 /*
  *
@@ -641,7 +642,7 @@ static int net_registry_increment(struct net_context *c, int argc,
 	}
 
 	status = g_lock_do("registry_increment_lock", G_LOCK_WRITE,
-			   timeval_set(600, 0), procid_self(),
+			   timeval_set(600, 0),
 			   net_registry_increment_fn, &state);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, _("g_lock_do failed: %s\n"),
@@ -1243,6 +1244,54 @@ static int net_registry_convert(struct net_context *c, int argc,
 }
 /**@}*/
 
+static int net_registry_check(struct net_context *c, int argc,
+			      const char **argv)
+{
+	const char* dbfile;
+	struct check_options opts;
+
+	if (argc > 1|| c->display_usage) {
+		d_printf("%s\n%s",
+			 _("Usage:"),
+			 _("net registry check  [-vraTfl] [-o <ODB>] [--wipe] [<TDB>]\n"
+			   "  Check a registry database.\n"
+			   "    -v|--verbose\t be verbose\n"
+			   "    -r|--repair\t\t interactive repair mode\n"
+			   "    -a|--auto\t\t noninteractive repair mode\n"
+			   "    -T|--test\t\t dry run\n"
+			   "    -f|--force\t\t force\n"
+			   "    -l|--lock\t\t lock <TDB> while doing the check\n"
+			   "    -o|--output=<ODB>\t output database\n"
+			   "    --reg-version=n\t assume database format version {n|1,2,3}\n"
+			   "    --wipe\t\t create a new database from scratch\n"
+			   "    --db=<TDB>\t\t registry database to open\n"));
+		return c->display_usage ? 0 : -1;
+	}
+
+	dbfile = c->opt_db ? c->opt_db : (
+		(argc > 0) ? argv[0] :
+		state_path("registry.tdb"));
+	if (dbfile == NULL) {
+		return -1;
+	}
+
+	opts = (struct check_options) {
+		.lock = c->opt_lock || c->opt_long_list_entries,
+		.test = c->opt_testmode,
+		.automatic = c->opt_auto,
+		.verbose = c->opt_verbose,
+		.force = c->opt_force,
+		.repair = c->opt_repair || c->opt_reboot,
+		.version = c->opt_reg_version,
+		.output  = c->opt_output,
+		.wipe = c->opt_wipe,
+		.implicit_db = (c->opt_db == NULL) && (argc == 0),
+	};
+
+	return net_registry_check_db(dbfile, &opts);
+}
+
+
 /******************************************************************************/
 
 int net_registry(struct net_context *c, int argc, const char **argv)
@@ -1386,11 +1435,25 @@ int net_registry(struct net_context *c, int argc, const char **argv)
 			N_("net registry convert\n"
 			   "    Convert .reg file")
 		},
+		{
+			"check",
+			net_registry_check,
+			NET_TRANSPORT_LOCAL,
+			N_("Check a registry database"),
+			N_("net registry check\n"
+			   "    Check a registry database")
+		},
 	{ NULL, NULL, 0, NULL, NULL }
 	};
 
-	if (!W_ERROR_IS_OK(registry_init_basic())) {
-		return -1;
+	if (!c->display_usage
+	    && argc > 0
+	    && (strcasecmp_m(argv[0], "convert") != 0)
+	    && (strcasecmp_m(argv[0], "check") != 0))
+	{
+		if (!W_ERROR_IS_OK(registry_init_basic())) {
+			return -1;
+		}
 	}
 
 	ret = net_run_function(c, argc, argv, "net registry", func);

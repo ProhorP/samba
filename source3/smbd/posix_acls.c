@@ -201,7 +201,7 @@ static char *create_pai_buf_v2(canon_ace *file_ace_list,
 	*store_size = PAI_V2_ENTRIES_BASE +
 		((num_entries + num_def_entries)*PAI_V2_ENTRY_LENGTH);
 
-	pai_buf = (char *)SMB_MALLOC(*store_size);
+	pai_buf = talloc_array(talloc_tos(), char, *store_size);
 	if (!pai_buf) {
 		return NULL;
 	}
@@ -283,7 +283,7 @@ static void store_inheritance_attributes(files_struct *fsp,
 				       pai_buf, store_size, 0);
 	}
 
-	SAFE_FREE(pai_buf);
+	TALLOC_FREE(pai_buf);
 
 	DEBUG(10,("store_inheritance_attribute: type 0x%x for file %s\n",
 		(unsigned int)sd_type,
@@ -304,13 +304,13 @@ static void free_inherited_info(struct pai_val *pal)
 		struct pai_entry *paie, *paie_next;
 		for (paie = pal->entry_list; paie; paie = paie_next) {
 			paie_next = paie->next;
-			SAFE_FREE(paie);
+			TALLOC_FREE(paie);
 		}
 		for (paie = pal->def_entry_list; paie; paie = paie_next) {
 			paie_next = paie->next;
-			SAFE_FREE(paie);
+			TALLOC_FREE(paie);
 		}
-		SAFE_FREE(pal);
+		TALLOC_FREE(pal);
 	}
 }
 
@@ -440,14 +440,14 @@ static const char *create_pai_v1_entries(struct pai_val *paiv,
 	int i;
 
 	for (i = 0; i < paiv->num_entries; i++) {
-		struct pai_entry *paie = SMB_MALLOC_P(struct pai_entry);
+		struct pai_entry *paie = talloc(talloc_tos(), struct pai_entry);
 		if (!paie) {
 			return NULL;
 		}
 
 		paie->ace_flags = SEC_ACE_FLAG_INHERITED_ACE;
 		if (!get_pai_owner_type(paie, entry_offset)) {
-			SAFE_FREE(paie);
+			TALLOC_FREE(paie);
 			return NULL;
 		}
 
@@ -474,7 +474,7 @@ static struct pai_val *create_pai_val_v1(const char *buf, size_t size)
 		return NULL;
 	}
 
-	paiv = SMB_MALLOC_P(struct pai_val);
+	paiv = talloc(talloc_tos(), struct pai_val);
 	if (!paiv) {
 		return NULL;
 	}
@@ -518,7 +518,7 @@ static const char *create_pai_v2_entries(struct pai_val *paiv,
 	unsigned int i;
 
 	for (i = 0; i < num_entries; i++) {
-		struct pai_entry *paie = SMB_MALLOC_P(struct pai_entry);
+		struct pai_entry *paie = talloc(talloc_tos(), struct pai_entry);
 		if (!paie) {
 			return NULL;
 		}
@@ -526,7 +526,7 @@ static const char *create_pai_v2_entries(struct pai_val *paiv,
 		paie->ace_flags = CVAL(entry_offset,0);
 
 		if (!get_pai_owner_type(paie, entry_offset+1)) {
-			SAFE_FREE(paie);
+			TALLOC_FREE(paie);
 			return NULL;
 		}
 		if (!def_entry) {
@@ -552,7 +552,7 @@ static struct pai_val *create_pai_val_v2(const char *buf, size_t size)
 		return NULL;
 	}
 
-	paiv = SMB_MALLOC_P(struct pai_val);
+	paiv = talloc(talloc_tos(), struct pai_val);
 	if (!paiv) {
 		return NULL;
 	}
@@ -619,7 +619,7 @@ static struct pai_val *fload_inherited_info(files_struct *fsp)
 		return NULL;
 	}
 
-	if ((pai_buf = (char *)SMB_MALLOC(pai_buf_size)) == NULL) {
+	if ((pai_buf = talloc_array(talloc_tos(), char, pai_buf_size)) == NULL) {
 		return NULL;
 	}
 
@@ -640,11 +640,11 @@ static struct pai_val *fload_inherited_info(files_struct *fsp)
 			}
 			/* Buffer too small - enlarge it. */
 			pai_buf_size *= 2;
-			SAFE_FREE(pai_buf);
+			TALLOC_FREE(pai_buf);
 			if (pai_buf_size > 1024*1024) {
 				return NULL; /* Limit malloc to 1mb. */
 			}
-			if ((pai_buf = (char *)SMB_MALLOC(pai_buf_size)) == NULL)
+			if ((pai_buf = talloc_array(talloc_tos(), char, pai_buf_size)) == NULL)
 				return NULL;
 		}
 	} while (ret == -1);
@@ -661,7 +661,7 @@ static struct pai_val *fload_inherited_info(files_struct *fsp)
 		if (errno != ENOSYS)
 			DEBUG(10,("load_inherited_info: Error %s\n", strerror(errno) ));
 #endif
-		SAFE_FREE(pai_buf);
+		TALLOC_FREE(pai_buf);
 		return NULL;
 	}
 
@@ -672,7 +672,7 @@ static struct pai_val *fload_inherited_info(files_struct *fsp)
 			  (unsigned int)paiv->sd_type, fsp_str_dbg(fsp)));
 	}
 
-	SAFE_FREE(pai_buf);
+	TALLOC_FREE(pai_buf);
 	return paiv;
 }
 
@@ -692,7 +692,7 @@ static struct pai_val *load_inherited_info(const struct connection_struct *conn,
 		return NULL;
 	}
 
-	if ((pai_buf = (char *)SMB_MALLOC(pai_buf_size)) == NULL) {
+	if ((pai_buf = talloc_array(talloc_tos(), char, pai_buf_size)) == NULL) {
 		return NULL;
 	}
 
@@ -707,11 +707,11 @@ static struct pai_val *load_inherited_info(const struct connection_struct *conn,
 			}
 			/* Buffer too small - enlarge it. */
 			pai_buf_size *= 2;
-			SAFE_FREE(pai_buf);
+			TALLOC_FREE(pai_buf);
 			if (pai_buf_size > 1024*1024) {
 				return NULL; /* Limit malloc to 1mb. */
 			}
-			if ((pai_buf = (char *)SMB_MALLOC(pai_buf_size)) == NULL)
+			if ((pai_buf = talloc_array(talloc_tos(), char, pai_buf_size)) == NULL)
 				return NULL;
 		}
 	} while (ret == -1);
@@ -727,7 +727,7 @@ static struct pai_val *load_inherited_info(const struct connection_struct *conn,
 		if (errno != ENOSYS)
 			DEBUG(10,("load_inherited_info: Error %s\n", strerror(errno) ));
 #endif
-		SAFE_FREE(pai_buf);
+		TALLOC_FREE(pai_buf);
 		return NULL;
 	}
 
@@ -739,7 +739,7 @@ static struct pai_val *load_inherited_info(const struct connection_struct *conn,
 			fname));
 	}
 
-	SAFE_FREE(pai_buf);
+	TALLOC_FREE(pai_buf);
 	return paiv;
 }
 
@@ -773,7 +773,7 @@ static void free_canon_ace_list( canon_ace *l_head )
 	for (list = l_head; list; list = next) {
 		next = list->next;
 		DLIST_REMOVE(l_head, list);
-		SAFE_FREE(list);
+		TALLOC_FREE(list);
 	}
 }
 
@@ -783,7 +783,7 @@ static void free_canon_ace_list( canon_ace *l_head )
 
 static canon_ace *dup_canon_ace( canon_ace *src_ace)
 {
-	canon_ace *dst_ace = SMB_MALLOC_P(canon_ace);
+	canon_ace *dst_ace = talloc(talloc_tos(), canon_ace);
 
 	if (dst_ace == NULL)
 		return NULL;
@@ -977,7 +977,7 @@ static void merge_aces( canon_ace **pp_list_head, bool dir_acl)
 				curr_ace_outer->perms |= curr_ace->perms;
 				curr_ace_outer->ace_flags |= curr_ace->ace_flags;
 				DLIST_REMOVE(l_head, curr_ace);
-				SAFE_FREE(curr_ace);
+				TALLOC_FREE(curr_ace);
 				curr_ace_outer_next = curr_ace_outer->next; /* We may have deleted the link. */
 			}
 		}
@@ -1022,7 +1022,7 @@ static void merge_aces( canon_ace **pp_list_head, bool dir_acl)
 					 */
 
 					DLIST_REMOVE(l_head, curr_ace);
-					SAFE_FREE(curr_ace);
+					TALLOC_FREE(curr_ace);
 					curr_ace_outer_next = curr_ace_outer->next; /* We may have deleted the link. */
 
 				} else {
@@ -1038,7 +1038,7 @@ static void merge_aces( canon_ace **pp_list_head, bool dir_acl)
 					 */
 
 					DLIST_REMOVE(l_head, curr_ace_outer);
-					SAFE_FREE(curr_ace_outer);
+					TALLOC_FREE(curr_ace_outer);
 					break;
 				}
 			}
@@ -1130,8 +1130,8 @@ uint32_t map_canon_ace_perms(int snum,
  Map NT perms to a UNIX mode_t.
 ****************************************************************************/
 
-#define FILE_SPECIFIC_READ_BITS (FILE_READ_DATA|FILE_READ_EA|FILE_READ_ATTRIBUTES)
-#define FILE_SPECIFIC_WRITE_BITS (FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA|FILE_WRITE_ATTRIBUTES)
+#define FILE_SPECIFIC_READ_BITS (FILE_READ_DATA|FILE_READ_EA)
+#define FILE_SPECIFIC_WRITE_BITS (FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA)
 #define FILE_SPECIFIC_EXECUTE_BITS (FILE_EXECUTE)
 
 static mode_t map_nt_perms( uint32 *mask, int type)
@@ -1362,9 +1362,8 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 							bool setting_acl)
 {
 	canon_ace *pace;
-	bool got_user = False;
-	bool got_grp = False;
-	bool got_other = False;
+	canon_ace *pace_user = NULL;
+	canon_ace *pace_group = NULL;
 	canon_ace *pace_other = NULL;
 
 	for (pace = *pp_ace; pace; pace = pace->next) {
@@ -1372,7 +1371,7 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 
 			if (setting_acl)
 				apply_default_perms(params, is_directory, pace, S_IRUSR);
-			got_user = True;
+			pace_user = pace;
 
 		} else if (pace->type == SMB_ACL_GROUP_OBJ) {
 
@@ -1382,7 +1381,7 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 
 			if (setting_acl)
 				apply_default_perms(params, is_directory, pace, S_IRGRP);
-			got_grp = True;
+			pace_group = pace;
 
 		} else if (pace->type == SMB_ACL_OTHER) {
 
@@ -1392,13 +1391,12 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 
 			if (setting_acl)
 				apply_default_perms(params, is_directory, pace, S_IROTH);
-			got_other = True;
 			pace_other = pace;
 		}
 	}
 
-	if (!got_user) {
-		if ((pace = SMB_MALLOC_P(canon_ace)) == NULL) {
+	if (!pace_user) {
+		if ((pace = talloc(talloc_tos(), canon_ace)) == NULL) {
 			DEBUG(0,("ensure_canon_entry_valid: malloc fail.\n"));
 			return False;
 		}
@@ -1409,29 +1407,32 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 		pace->unix_ug.uid = pst->st_ex_uid;
 		pace->trustee = *pfile_owner_sid;
 		pace->attr = ALLOW_ACE;
+		/* Start with existing permissions, principle of least
+		   surprises for the user. */
+		pace->perms = pst->st_ex_mode;
 
 		if (setting_acl) {
 			/* See if the owning user is in any of the other groups in
-			   the ACE. If so, OR in the permissions from that group. */
+			   the ACE, or if there's a matching user entry.
+			   If so, OR in the permissions from that entry. */
 
-			bool group_matched = False;
 			canon_ace *pace_iter;
 
 			for (pace_iter = *pp_ace; pace_iter; pace_iter = pace_iter->next) {
-				if (pace_iter->type == SMB_ACL_GROUP_OBJ || pace_iter->type == SMB_ACL_GROUP) {
+				if (pace_iter->type == SMB_ACL_USER &&
+						pace_iter->unix_ug.uid == pace->unix_ug.uid) {
+					pace->perms |= pace_iter->perms;
+				} else if (pace_iter->type == SMB_ACL_GROUP_OBJ || pace_iter->type == SMB_ACL_GROUP) {
 					if (uid_entry_in_group(conn, pace, pace_iter)) {
 						pace->perms |= pace_iter->perms;
-						group_matched = True;
 					}
 				}
 			}
 
-			/* If we only got an "everyone" perm, just use that. */
-			if (!group_matched) {
-				if (got_other)
+			if (pace->perms == 0) {
+				/* If we only got an "everyone" perm, just use that. */
+				if (pace_other)
 					pace->perms = pace_other->perms;
-				else
-					pace->perms = 0;
 			}
 
 			apply_default_perms(params, is_directory, pace, S_IRUSR);
@@ -1440,10 +1441,11 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 		}
 
 		DLIST_ADD(*pp_ace, pace);
+		pace_user = pace;
 	}
 
-	if (!got_grp) {
-		if ((pace = SMB_MALLOC_P(canon_ace)) == NULL) {
+	if (!pace_group) {
+		if ((pace = talloc(talloc_tos(), canon_ace)) == NULL) {
 			DEBUG(0,("ensure_canon_entry_valid: malloc fail.\n"));
 			return False;
 		}
@@ -1451,12 +1453,12 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 		ZERO_STRUCTP(pace);
 		pace->type = SMB_ACL_GROUP_OBJ;
 		pace->owner_type = GID_ACE;
-		pace->unix_ug.uid = pst->st_ex_gid;
+		pace->unix_ug.gid = pst->st_ex_gid;
 		pace->trustee = *pfile_grp_sid;
 		pace->attr = ALLOW_ACE;
 		if (setting_acl) {
 			/* If we only got an "everyone" perm, just use that. */
-			if (got_other)
+			if (pace_other)
 				pace->perms = pace_other->perms;
 			else
 				pace->perms = 0;
@@ -1466,10 +1468,11 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 		}
 
 		DLIST_ADD(*pp_ace, pace);
+		pace_group = pace;
 	}
 
-	if (!got_other) {
-		if ((pace = SMB_MALLOC_P(canon_ace)) == NULL) {
+	if (!pace_other) {
+		if ((pace = talloc(talloc_tos(), canon_ace)) == NULL) {
 			DEBUG(0,("ensure_canon_entry_valid: malloc fail.\n"));
 			return False;
 		}
@@ -1487,6 +1490,67 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
 			pace->perms = unix_perms_to_acl_perms(pst->st_ex_mode, S_IROTH, S_IWOTH, S_IXOTH);
 
 		DLIST_ADD(*pp_ace, pace);
+		pace_other = pace;
+	}
+
+	if (setting_acl) {
+		/* Ensure when setting a POSIX ACL, that the uid for a
+		   SMB_ACL_USER_OBJ ACE (the owner ACE entry) has a duplicate
+		   permission entry as an SMB_ACL_USER, and a gid for a
+		   SMB_ACL_GROUP_OBJ ACE (the primary group ACE entry) also has
+		   a duplicate permission entry as an SMB_ACL_GROUP. If not,
+		   then if the ownership or group ownership of this file or
+		   directory gets changed, the user or group can lose their
+		   access. */
+
+		for (pace = *pp_ace; pace; pace = pace->next) {
+			if (pace->type == SMB_ACL_USER &&
+					pace->unix_ug.uid == pace_user->unix_ug.uid) {
+				/* Already got one. */
+				pace_user = NULL;
+			} else if (pace->type == SMB_ACL_USER &&
+					pace->unix_ug.uid == pace_user->unix_ug.uid) {
+				/* Already got one. */
+				pace_group = NULL;
+			}
+		}
+
+		if (pace_user) {
+			/* Add a duplicate SMB_ACL_USER entry. */
+			if ((pace = talloc(talloc_tos(), canon_ace)) == NULL) {
+				DEBUG(0,("ensure_canon_entry_valid: talloc fail.\n"));
+				return false;
+			}
+
+			ZERO_STRUCTP(pace);
+			pace->type = SMB_ACL_USER;;
+			pace->owner_type = UID_ACE;
+			pace->unix_ug.uid = pace_user->unix_ug.uid;
+			pace->trustee = pace_user->trustee;
+			pace->attr = pace_user->attr;
+			pace->perms = pace_user->perms;
+
+			DLIST_ADD(*pp_ace, pace);
+		}
+
+		if (pace_group) {
+			/* Add a duplicate SMB_ACL_GROUP entry. */
+			if ((pace = talloc(talloc_tos(), canon_ace)) == NULL) {
+				DEBUG(0,("ensure_canon_entry_valid: talloc fail.\n"));
+				return false;
+			}
+
+			ZERO_STRUCTP(pace);
+			pace->type = SMB_ACL_GROUP;;
+			pace->owner_type = GID_ACE;
+			pace->unix_ug.gid = pace_group->unix_ug.gid;
+			pace->trustee = pace_group->trustee;
+			pace->attr = pace_group->attr;
+			pace->perms = pace_group->perms;
+
+			DLIST_ADD(*pp_ace, pace);
+		}
+
 	}
 
 	return True;
@@ -1496,6 +1560,7 @@ static bool ensure_canon_entry_valid(connection_struct *conn, canon_ace **pp_ace
  Check if a POSIX ACL has the required SMB_ACL_USER_OBJ and SMB_ACL_GROUP_OBJ entries.
  If it does not have them, check if there are any entries where the trustee is the
  file owner or the owning group, and map these to SMB_ACL_USER_OBJ and SMB_ACL_GROUP_OBJ.
+ Note we must not do this to default directory ACLs.
 ****************************************************************************/
 
 static void check_owning_objs(canon_ace *ace, struct dom_sid *pfile_owner_sid, struct dom_sid *pfile_grp_sid)
@@ -1535,50 +1600,6 @@ static void check_owning_objs(canon_ace *ace, struct dom_sid *pfile_owner_sid, s
 		DEBUG(10,("check_owning_objs: ACL is missing an owner entry.\n"));
 	if (!got_group_obj)
 		DEBUG(10,("check_owning_objs: ACL is missing an owning group entry.\n"));
-}
-
-/****************************************************************************
- If an ACE entry is SMB_ACL_USER_OBJ and not CREATOR_OWNER, map to SMB_ACL_USER.
- If an ACE entry is SMB_ACL_GROUP_OBJ and not CREATOR_GROUP, map to SMB_ACL_GROUP
-****************************************************************************/
-
-static bool dup_owning_ace(canon_ace *dir_ace, canon_ace *ace)
-{
-	/* dir ace must be followings.
-	   SMB_ACL_USER_OBJ : trustee(CREATOR_OWNER) -> Posix ACL d:u::perm
-	   SMB_ACL_USER     : not trustee    -> Posix ACL u:user:perm
-	   SMB_ACL_USER_OBJ : trustee -> convert to SMB_ACL_USER : trustee
-	   Posix ACL u:trustee:perm
-
-	   SMB_ACL_GROUP_OBJ: trustee(CREATOR_GROUP) -> Posix ACL d:g::perm
-	   SMB_ACL_GROUP    : not trustee   -> Posix ACL g:group:perm
-	   SMB_ACL_GROUP_OBJ: trustee -> convert to SMB_ACL_GROUP : trustee
-	   Posix ACL g:trustee:perm
-	*/
-
-	if (ace->type == SMB_ACL_USER_OBJ &&
-			!(dom_sid_equal(&ace->trustee, &global_sid_Creator_Owner))) {
-		canon_ace *dup_ace = dup_canon_ace(ace);
-
-		if (dup_ace == NULL) {
-			return false;
-		}
-		dup_ace->type = SMB_ACL_USER;
-		DLIST_ADD_END(dir_ace, dup_ace, canon_ace *);
-	}
-
-	if (ace->type == SMB_ACL_GROUP_OBJ &&
-			!(dom_sid_equal(&ace->trustee, &global_sid_Creator_Group))) {
-		canon_ace *dup_ace = dup_canon_ace(ace);
-
-		if (dup_ace == NULL) {
-			return false;
-		}
-		dup_ace->type = SMB_ACL_GROUP;
-		DLIST_ADD_END(dir_ace, dup_ace, canon_ace *);
-	}
-
-	return true;
 }
 
 /****************************************************************************
@@ -1683,7 +1704,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 		 * Create a canon_ace entry representing this NT DACL ACE.
 		 */
 
-		if ((current_ace = SMB_MALLOC_P(canon_ace)) == NULL) {
+		if ((current_ace = talloc(talloc_tos(), canon_ace)) == NULL) {
 			free_canon_ace_list(file_ace);
 			free_canon_ace_list(dir_ace);
 			DEBUG(0,("create_canon_ace_lists: malloc fail.\n"));
@@ -1756,7 +1777,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 				DEBUG(10, ("create_canon_ace_lists: ignoring "
 					   "non-mappable SID %s\n",
 					   sid_string_dbg(&psa->trustee)));
-				SAFE_FREE(current_ace);
+				TALLOC_FREE(current_ace);
 				continue;
 			}
 
@@ -1764,7 +1785,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 				DEBUG(10, ("create_canon_ace_lists: ignoring "
 					"unknown or foreign SID %s\n",
 					sid_string_dbg(&psa->trustee)));
-				SAFE_FREE(current_ace);
+				TALLOC_FREE(current_ace);
 				continue;
 			}
 
@@ -1773,7 +1794,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 			DEBUG(0, ("create_canon_ace_lists: unable to map SID "
 				  "%s to uid or gid.\n",
 				  sid_string_dbg(&current_ace->trustee)));
-			SAFE_FREE(current_ace);
+			TALLOC_FREE(current_ace);
 			return False;
 		}
 
@@ -1804,6 +1825,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 			if ((psa->flags & (SEC_ACE_FLAG_OBJECT_INHERIT|SEC_ACE_FLAG_CONTAINER_INHERIT)) ==
 				(SEC_ACE_FLAG_OBJECT_INHERIT|SEC_ACE_FLAG_CONTAINER_INHERIT)) {
 
+				canon_ace *current_dir_ace = current_ace;
 				DLIST_ADD_END(dir_ace, current_ace, canon_ace *);
 
 				/*
@@ -1829,34 +1851,6 @@ static bool create_canon_ace_lists(files_struct *fsp,
 				if( DEBUGLVL( 10 )) {
 					dbgtext("create_canon_ace_lists: adding dir ACL:\n");
 					print_canon_ace( current_ace, 0);
-				}
-
-				/*
-				 * We have a lossy mapping: directory ACE entries
-				 * CREATOR_OWNER ------\
-				 *     (map to)         +---> SMB_ACL_USER_OBJ
-				 * owning sid    ------/
-				 *
-				 * CREATOR_GROUP ------\
-				 *     (map to)         +---> SMB_ACL_GROUP_OBJ
-				 * primary group sid --/
-				 *
-				 * on set. And on read of a directory ACL
-				 *
-				 * SMB_ACL_USER_OBJ ----> CREATOR_OWNER
-				 * SMB_ACL_GROUP_OBJ ---> CREATOR_GROUP.
-				 *
-				 * Deal with this on set by duplicating
-				 * owning sid and primary group sid ACE
-				 * entries into the directory ACL.
-				 * Fix from Tsukasa Hamano <hamano@osstech.co.jp>.
-				 */
-
-				if (!dup_owning_ace(dir_ace, current_ace)) {
-					DEBUG(0,("create_canon_ace_lists: malloc fail !\n"));
-					free_canon_ace_list(file_ace);
-					free_canon_ace_list(dir_ace);
-					return false;
 				}
 
 				/*
@@ -1892,6 +1886,43 @@ static bool create_canon_ace_lists(files_struct *fsp,
 					 * pointer is now owned by the dir_ace list.
 					 */
 					current_ace = NULL;
+				}
+
+				/*
+				 * current_ace is now either owned by file_ace
+				 * or is NULL. We can safely operate on current_dir_ace
+				 * to treat mapping for default acl entries differently
+				 * than access acl entries.
+				 */
+
+				if (current_dir_ace->owner_type == UID_ACE) {
+					/*
+					 * We already decided above this is a uid,
+					 * for default acls ace's only CREATOR_OWNER
+					 * maps to ACL_USER_OBJ. All other uid
+					 * ace's are ACL_USER.
+					 */
+					if (dom_sid_equal(&current_dir_ace->trustee,
+							&global_sid_Creator_Owner)) {
+						current_dir_ace->type = SMB_ACL_USER_OBJ;
+					} else {
+						current_dir_ace->type = SMB_ACL_USER;
+					}
+				}
+
+				if (current_dir_ace->owner_type == GID_ACE) {
+					/*
+					 * We already decided above this is a gid,
+					 * for default acls ace's only CREATOR_GROUP
+					 * maps to ACL_GROUP_OBJ. All other uid
+					 * ace's are ACL_GROUP.
+					 */
+					if (dom_sid_equal(&current_dir_ace->trustee,
+							&global_sid_Creator_Group)) {
+						current_dir_ace->type = SMB_ACL_GROUP_OBJ;
+					} else {
+						current_dir_ace->type = SMB_ACL_GROUP;
+					}
 				}
 			}
 		}
@@ -1937,7 +1968,7 @@ static bool create_canon_ace_lists(files_struct *fsp,
 		 * Free if ACE was not added.
 		 */
 
-		SAFE_FREE(current_ace);
+		TALLOC_FREE(current_ace);
 	}
 
 	if (fsp->is_directory && all_aces_are_inherit_only) {
@@ -1954,16 +1985,14 @@ static bool create_canon_ace_lists(files_struct *fsp,
 		dir_ace = NULL;
 	} else {
 		/*
-		 * Check if we have SMB_ACL_USER_OBJ and SMB_ACL_GROUP_OBJ entries in each
-		 * ACL. If we don't have them, check if any SMB_ACL_USER/SMB_ACL_GROUP
-		 * entries can be converted to *_OBJ. Usually we will already have these
-		 * entries in the Default ACL, and the Access ACL will not have them.
+		 * Check if we have SMB_ACL_USER_OBJ and SMB_ACL_GROUP_OBJ entries in
+		 * the file ACL. If we don't have them, check if any SMB_ACL_USER/SMB_ACL_GROUP
+		 * entries can be converted to *_OBJ. Don't do this for the default
+		 * ACL, we will create them separately for this if needed inside
+		 * ensure_canon_entry_valid().
 		 */
 		if (file_ace) {
 			check_owning_objs(file_ace, pfile_owner_sid, pfile_grp_sid);
-		}
-		if (dir_ace) {
-			check_owning_objs(dir_ace, pfile_owner_sid, pfile_grp_sid);
 		}
 	}
 
@@ -2286,44 +2315,6 @@ static void process_deny_list(connection_struct *conn, canon_ace **pp_ace_list )
 }
 
 /****************************************************************************
- Create a default mode that will be used if a security descriptor entry has
- no user/group/world entries.
-****************************************************************************/
-
-static mode_t create_default_mode(files_struct *fsp, bool interitable_mode)
-{
-	int snum = SNUM(fsp->conn);
-	mode_t and_bits = (mode_t)0;
-	mode_t or_bits = (mode_t)0;
-	mode_t mode;
-
-	if (interitable_mode) {
-		mode = unix_mode(fsp->conn, FILE_ATTRIBUTE_ARCHIVE,
-				 fsp->fsp_name, NULL);
-	} else {
-		mode = S_IRUSR;
-	}
-
-	if (fsp->is_directory)
-		mode |= (S_IWUSR|S_IXUSR);
-
-	/*
-	 * Now AND with the create mode/directory mode bits then OR with the
-	 * force create mode/force directory mode bits.
-	 */
-
-	if (fsp->is_directory) {
-		and_bits = lp_dir_security_mask(snum);
-		or_bits = lp_force_dir_security_mode(snum);
-	} else {
-		and_bits = lp_security_mask(snum);
-		or_bits = lp_force_security_mode(snum);
-	}
-
-	return ((mode & and_bits)|or_bits);
-}
-
-/****************************************************************************
  Unpack a struct security_descriptor into two canonical ace lists. We don't depend on this
  succeeding.
 ****************************************************************************/
@@ -2337,7 +2328,6 @@ static bool unpack_canon_ace(files_struct *fsp,
 				uint32 security_info_sent,
 				const struct security_descriptor *psd)
 {
-	SMB_STRUCT_STAT st;
 	canon_ace *file_ace = NULL;
 	canon_ace *dir_ace = NULL;
 
@@ -2401,17 +2391,8 @@ static bool unpack_canon_ace(files_struct *fsp,
 
 	print_canon_ace_list( "file ace - before valid", file_ace);
 
-	st = *pst;
-
-	/*
-	 * A default 3 element mode entry for a file should be r-- --- ---.
-	 * A default 3 element mode entry for a directory should be rwx --- ---.
-	 */
-
-	st.st_ex_mode = create_default_mode(fsp, False);
-
 	if (!ensure_canon_entry_valid(fsp->conn, &file_ace, fsp->conn->params,
-			fsp->is_directory, pfile_owner_sid, pfile_grp_sid, &st, True)) {
+			fsp->is_directory, pfile_owner_sid, pfile_grp_sid, pst, True)) {
 		free_canon_ace_list(file_ace);
 		free_canon_ace_list(dir_ace);
 		return False;
@@ -2419,16 +2400,8 @@ static bool unpack_canon_ace(files_struct *fsp,
 
 	print_canon_ace_list( "dir ace - before valid", dir_ace);
 
-	/*
-	 * A default inheritable 3 element mode entry for a directory should be the
-	 * mode Samba will use to create a file within. Ensure user rwx bits are set if
-	 * it's a directory.
-	 */
-
-	st.st_ex_mode = create_default_mode(fsp, True);
-
 	if (dir_ace && !ensure_canon_entry_valid(fsp->conn, &dir_ace, fsp->conn->params,
-			fsp->is_directory, pfile_owner_sid, pfile_grp_sid, &st, True)) {
+			fsp->is_directory, pfile_owner_sid, pfile_grp_sid, pst, True)) {
 		free_canon_ace_list(file_ace);
 		free_canon_ace_list(dir_ace);
 		return False;
@@ -2593,7 +2566,7 @@ static canon_ace *canonicalise_acl(struct connection_struct *conn,
 		 * Add this entry to the list.
 		 */
 
-		if ((ace = SMB_MALLOC_P(canon_ace)) == NULL)
+		if ((ace = talloc(talloc_tos(), canon_ace)) == NULL)
 			goto fail;
 
 		ZERO_STRUCTP(ace);
@@ -3277,12 +3250,12 @@ static NTSTATUS posix_get_nt_acl_common(struct connection_struct *conn,
 				ace = canon_ace_entry_for(dir_ace, SMB_ACL_OTHER, NULL);
 				if (ace && !ace->perms) {
 					DLIST_REMOVE(dir_ace, ace);
-					SAFE_FREE(ace);
+					TALLOC_FREE(ace);
 
 					ace = canon_ace_entry_for(file_ace, SMB_ACL_OTHER, NULL);
 					if (ace && !ace->perms) {
 						DLIST_REMOVE(file_ace, ace);
-						SAFE_FREE(ace);
+						TALLOC_FREE(ace);
 					}
 				}
 
@@ -3299,14 +3272,14 @@ static NTSTATUS posix_get_nt_acl_common(struct connection_struct *conn,
 				ace = canon_ace_entry_for(dir_ace, SMB_ACL_GROUP_OBJ, NULL);
 				if (ace && !ace->perms) {
 					DLIST_REMOVE(dir_ace, ace);
-					SAFE_FREE(ace);
+					TALLOC_FREE(ace);
 				}
 #endif
 
 				ace = canon_ace_entry_for(file_ace, SMB_ACL_GROUP_OBJ, NULL);
 				if (ace && !ace->perms) {
 					DLIST_REMOVE(file_ace, ace);
-					SAFE_FREE(ace);
+					TALLOC_FREE(ace);
 				}
 			}
 
@@ -3314,7 +3287,7 @@ static NTSTATUS posix_get_nt_acl_common(struct connection_struct *conn,
 			num_def_acls = count_canon_ace_list(dir_ace);
 
 			/* Allocate the ace list. */
-			if ((nt_ace_list = SMB_MALLOC_ARRAY(struct security_ace,num_acls + num_profile_acls + num_def_acls)) == NULL) {
+			if ((nt_ace_list = talloc_array(talloc_tos(), struct security_ace,num_acls + num_profile_acls + num_def_acls)) == NULL) {
 				DEBUG(0,("get_nt_acl: Unable to malloc space for nt_ace_list.\n"));
 				goto done;
 			}
@@ -3448,7 +3421,7 @@ static NTSTATUS posix_get_nt_acl_common(struct connection_struct *conn,
 	free_canon_ace_list(file_ace);
 	free_canon_ace_list(dir_ace);
 	free_inherited_info(pal);
-	SAFE_FREE(nt_ace_list);
+	TALLOC_FREE(nt_ace_list);
 
 	return NT_STATUS_OK;
 }

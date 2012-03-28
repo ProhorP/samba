@@ -77,7 +77,8 @@
  *
  **/
 NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
-			 const char *server, struct sockaddr_storage *pss)
+			 const char *server,
+			 const struct sockaddr_storage *server_ss)
 {
 	enum security_types sec;
 	unsigned int conn_flags = NET_FLAGS_PDC;
@@ -101,8 +102,8 @@ NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
 	}
 
 	/* Connect to remote machine */
-	ntret = net_make_ipc_connection_ex(c, domain, server, pss, conn_flags,
-					   &cli);
+	ntret = net_make_ipc_connection_ex(c, domain, server, server_ss,
+					   conn_flags, &cli);
 	if (!NT_STATUS_IS_OK(ntret)) {
 		return ntret;
 	}
@@ -121,7 +122,7 @@ NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
 		} else {
 			DEBUG(0,("net_rpc_join_ok: failed to get schannel session "
 					"key from server %s for domain %s. Error was %s\n",
-				cli->desthost, domain, nt_errstr(ntret) ));
+				cli_state_remote_name(cli), domain, nt_errstr(ntret) ));
 			cli_shutdown(cli);
 			return ntret;
 		}
@@ -142,7 +143,7 @@ NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
 	if (!NT_STATUS_IS_OK(ntret)) {
 		DEBUG(0,("net_rpc_join_ok: failed to open schannel session "
 				"on netlogon pipe to server %s for domain %s. Error was %s\n",
-			cli->desthost, domain, nt_errstr(ntret) ));
+			cli_state_remote_name(cli), domain, nt_errstr(ntret) ));
 		/*
 		 * Note: here, we have:
 		 * (pipe_hnd != NULL) if and only if NT_STATUS_IS_OK(ntret)
@@ -441,7 +442,7 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 	}
 
 	status = rpccli_netlogon_setup_creds(pipe_hnd,
-					cli->desthost, /* server name */
+					pipe_hnd->desthost, /* server name */
 					domain,        /* domain */
 					lp_netbios_name(), /* client name */
 					lp_netbios_name(), /* machine account name */
@@ -511,7 +512,8 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 	}
 
 	/* double-check, connection from scratch */
-	status = net_rpc_join_ok(c, domain, cli->desthost, &cli->dest_ss);
+	status = net_rpc_join_ok(c, domain, cli_state_remote_name(cli),
+				 cli_state_remote_sockaddr(cli));
 	retval = NT_STATUS_IS_OK(status) ? 0 : -1;
 
 done:

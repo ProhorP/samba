@@ -83,9 +83,10 @@ static void sesssetup_old_send(struct tevent_req *subreq)
 		flags |= AUTH_SESSION_INFO_AUTHENTICATED;
 	}
 	/* This references user_info_dc into session_info */
-	status = req->smb_conn->negotiate.auth_context->generate_session_info(req,
-									      req->smb_conn->negotiate.auth_context,
-									      user_info_dc, flags, &session_info);
+	status = req->smb_conn->negotiate.auth_context->generate_session_info(req->smb_conn->negotiate.auth_context,
+									      req,
+									      user_info_dc, sess->old.in.user, 
+									      flags, &session_info);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
 
 	/* allocate a new session */
@@ -214,9 +215,10 @@ static void sesssetup_nt1_send(struct tevent_req *subreq)
 		flags |= AUTH_SESSION_INFO_AUTHENTICATED;
 	}
 	/* This references user_info_dc into session_info */
-	status = state->auth_context->generate_session_info(req,
-							    state->auth_context,
+	status = state->auth_context->generate_session_info(state->auth_context,
+							    req,
 							    user_info_dc,
+							    sess->nt1.in.user,
 							    flags,
 							    &session_info);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
@@ -379,10 +381,11 @@ static void sesssetup_spnego_send(struct tevent_req *subreq)
 		goto failed;
 	}
 
-	status = gensec_session_info(smb_sess->gensec_ctx, &session_info);
+	status = gensec_session_info(smb_sess->gensec_ctx, smb_sess, &session_info);
 	if (!NT_STATUS_IS_OK(status)) goto failed;
 
-	skey_status = gensec_session_key(smb_sess->gensec_ctx, &session_key);
+	/* The session_key is only needed until the end of the smbsrv_setup_signing() call */
+	skey_status = gensec_session_key(smb_sess->gensec_ctx, req, &session_key);
 	if (NT_STATUS_IS_OK(skey_status)) {
 		smbsrv_setup_signing(req->smb_conn, &session_key, NULL);
 	}

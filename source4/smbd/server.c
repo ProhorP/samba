@@ -42,6 +42,7 @@
 #include "librpc/gen_ndr/ndr_irpc.h"
 #include "cluster/cluster.h"
 #include "dynconfig/dynconfig.h"
+#include "lib/util/samba_modules.h"
 
 /*
   recursively delete a directory tree
@@ -178,8 +179,8 @@ _NORETURN_ static void max_runtime_handler(struct tevent_context *ev,
 					   struct timeval t, void *private_data)
 {
 	const char *binary_name = (const char *)private_data;
-	DEBUG(0,("%s: maximum runtime exceeded - terminating, current ts: %llu\n",
-	      binary_name, (unsigned long long) time(NULL)));
+	DEBUG(0,("%s: maximum runtime exceeded - terminating at %llu, current ts: %llu\n",
+		 binary_name, (unsigned long long)t.tv_sec, (unsigned long long) time(NULL)));
 	exit(0);
 }
 
@@ -220,8 +221,8 @@ static NTSTATUS setup_parent_messaging(struct tevent_context *event_ctx,
 	NTSTATUS status;
 
 	msg = imessaging_init(talloc_autofree_context(),
-			     lpcfg_imessaging_path(event_ctx, lp_ctx),
-			     cluster_id(0, SAMBA_PARENT_TASKID), event_ctx);
+			      lp_ctx,
+			      cluster_id(0, SAMBA_PARENT_TASKID), event_ctx, false);
 	NT_STATUS_HAVE_NO_MEMORY(msg);
 
 	irpc_add_name(msg, "samba");
@@ -252,6 +253,8 @@ static void show_build(void)
 		CONFIG_OPTION(DATADIR),
 		CONFIG_OPTION(MODULESDIR),
 		CONFIG_OPTION(LOCKDIR),
+		CONFIG_OPTION(STATEDIR),
+		CONFIG_OPTION(CACHEDIR),
 		CONFIG_OPTION(PIDDIR),
 		CONFIG_OPTION(PRIVATE_DIR),
 		CONFIG_OPTION(SWATDIR),
@@ -361,7 +364,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	umask(0);
 
 	DEBUG(0,("%s version %s started.\n", binary_name, SAMBA_VERSION_STRING));
-	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2011\n"));
+	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2012\n"));
 
 	if (sizeof(uint16_t) < 2 || sizeof(uint32_t) < 4 || sizeof(uint64_t) < 8) {
 		DEBUG(0,("ERROR: Samba is not configured correctly for the word size on your machine\n"));
@@ -390,7 +393,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	}
 
 	if (lpcfg_server_role(cmdline_lp_ctx) == ROLE_DOMAIN_CONTROLLER) {
-		if (!open_schannel_session_store(talloc_autofree_context(), lpcfg_private_dir(cmdline_lp_ctx))) {
+		if (!open_schannel_session_store(talloc_autofree_context(), cmdline_lp_ctx)) {
 			DEBUG(0,("ERROR: Samba cannot open schannel store for secured NETLOGON operations.\n"));
 			exit(1);
 		}

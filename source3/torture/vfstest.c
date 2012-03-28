@@ -1,4 +1,4 @@
-/* 
+/*
    Unix SMB/CIFS implementation.
    VFS module tester
 
@@ -13,21 +13,26 @@
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "includes.h"
 #include "smbd/smbd.h"
+#include "smbd/globals.h"
 #include "popt_common.h"
 #include "vfstest.h"
 #include "../libcli/smbreadline/smbreadline.h"
+#include "auth.h"
+#include "serverid.h"
+#include "messages.h"
+#include "libcli/security/security.h"
 
 /* List to hold groups of commands */
 static struct cmd_list {
@@ -45,11 +50,11 @@ static char **completion_fn(const char *text, int start, int end)
 	int i, count=0;
 	struct cmd_list *commands = cmd_list;
 
-	if (start) 
+	if (start)
 		return NULL;
 
 	/* make sure we have a list of valid commands */
-	if (!commands) 
+	if (!commands)
 		return NULL;
 
 	matches = SMB_MALLOC_ARRAY(char *, MAX_COMPLETIONS);
@@ -58,25 +63,24 @@ static char **completion_fn(const char *text, int start, int end)
 	matches[count++] = SMB_STRDUP(text);
 	if (!matches[0]) return NULL;
 
-	while (commands && count < MAX_COMPLETIONS-1) 
+	while (commands && count < MAX_COMPLETIONS-1)
 	{
 		if (!commands->cmd_set)
 			break;
-		
+
 		for (i=0; commands->cmd_set[i].name; i++)
 		{
 			if ((strncmp(text, commands->cmd_set[i].name, strlen(text)) == 0) &&
-				commands->cmd_set[i].fn) 
+				commands->cmd_set[i].fn)
 			{
 				matches[count] = SMB_STRDUP(commands->cmd_set[i].name);
-				if (!matches[count]) 
+				if (!matches[count])
 					return NULL;
 				count++;
 			}
 		}
-		
+
 		commands = commands->next;
-		
 	}
 
 	if (count == 2) {
@@ -121,7 +125,7 @@ static NTSTATUS cmd_conf(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
 	printf("\"%s\" successfully loaded\n", argv[1]);
 	return NT_STATUS_OK;
 }
-	
+
 /* Display help on commands */
 static NTSTATUS cmd_help(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
 			 int argc, const char **argv)
@@ -139,7 +143,7 @@ static NTSTATUS cmd_help(struct vfs_state *vfs, TALLOC_CTX *mem_ctx,
 
 	if (argc == 2) {
 		for (tmp = cmd_list; tmp; tmp = tmp->next) {
-			
+
 			tmp_set = tmp->cmd_set;
 
 			while(tmp_set->name) {
@@ -412,18 +416,43 @@ void exit_server_cleanly(const char *const reason)
 	exit_server("normal exit");
 }
 
-int last_message = -1;
+struct smb_request *vfstest_get_smbreq(TALLOC_CTX *mem_ctx,
+				       struct vfs_state *vfs)
+{
+	struct smb_request *result;
+
+	result = talloc_zero(mem_ctx, struct smb_request);
+	if (result == NULL) {
+		return NULL;
+	}
+	result->sconn = vfs->conn->sconn;
+	result->mid = ++vfs->mid;
+
+	result->inbuf = talloc_array(result, uint8_t, smb_size);
+	if (result->inbuf == NULL) {
+		goto fail;
+	}
+	SSVAL(result->inbuf, smb_mid, result->mid);
+	smb_setlen(result->inbuf, smb_size-4);
+	return result;
+fail:
+	TALLOC_FREE(result);
+	return NULL;
+}
 
 /* Main function */
 
 int main(int argc, char *argv[])
 {
-	static char		*cmdstr = NULL;
-	struct cmd_set 		**cmd_set;
-	static struct vfs_state vfs;
+	char *cmdstr = NULL;
+	struct cmd_set	**cmd_set;
+	struct vfs_state vfs = { 0, };
 	int i;
-	static char		*filename = NULL;
+	char *filename = NULL;
+	char cwd[MAXPATHLEN];
 	TALLOC_CTX *frame = talloc_stackframe();
+	struct tevent_context *ev = tevent_context_init(NULL);
+	NTSTATUS status = NT_STATUS_OK;
 
 	/* make sure the vars that get altered (4th field) are in
 	   a fixed location or certain compilers complain */
@@ -442,7 +471,7 @@ int main(int argc, char *argv[])
 
 	pc = poptGetContext("vfstest", argc, (const char **) argv,
 			    long_options, 0);
-	
+
 	while(poptGetNextOpt(pc) != -1);
 
 
@@ -451,12 +480,12 @@ int main(int argc, char *argv[])
 	lp_load_initial_only(get_dyn_CONFIGFILE());
 
 	/* TODO: check output */
-	reload_services(smbd_messaging_context(), -1, False);
+	reload_services(NULL, NULL, false);
 
 	/* the following functions are part of the Samba debugging
 	   facilities.  See lib/debug.c */
 	setup_logging("vfstest", DEBUG_STDOUT);
-	
+
 	/* Load command lists */
 
 	cmd_set = vfstest_command_list;
@@ -469,13 +498,28 @@ int main(int argc, char *argv[])
 
 	/* some basic initialization stuff */
 	sec_init();
+	init_guest_info();
+	locking_init();
+	serverid_parent_init(NULL);
 	vfs.conn = talloc_zero(NULL, connection_struct);
-	vfs.conn->params = talloc(vfs.conn, struct share_params);
+	vfs.conn->share_access = FILE_GENERIC_ALL;
+	vfs.conn->params = talloc_zero(vfs.conn, struct share_params);
+	vfs.conn->sconn = talloc_zero(NULL, struct smbd_server_connection);
+	vfs.conn->sconn->msg_ctx = messaging_init(vfs.conn->sconn, ev);
+	vfs.conn->sconn->ev_ctx = ev;
+	serverid_register(messaging_server_id(vfs.conn->sconn->msg_ctx), 0);
+	make_session_info_guest(NULL, &vfs.conn->session_info);
+	file_init(vfs.conn->sconn);
+	set_conn_connectpath(vfs.conn, getcwd(cwd, sizeof(cwd)));
 	for (i=0; i < 1024; i++)
 		vfs.files[i] = NULL;
 
-	/* some advanced initiliazation stuff */
+	/* some advanced initialization stuff */
 	smbd_vfs_init(vfs.conn);
+
+	if (!posix_locking_init(false)) {
+		return 1;
+	}
 
 	/* Do we have a file input? */
 	if (filename && filename[0]) {
@@ -489,11 +533,11 @@ int main(int argc, char *argv[])
 		char    *p = cmdstr;
 
 		while((cmd=next_command(frame, &p)) != NULL) {
-			process_cmd(&vfs, cmd);
+			status = process_cmd(&vfs, cmd);
 		}
 
 		TALLOC_FREE(cmd);
-		return 0;
+		return NT_STATUS_IS_OK(status) ? 0 : 1;
 	}
 
 	/* Loop around accepting commands */
@@ -508,12 +552,12 @@ int main(int argc, char *argv[])
 		}
 
 		if (line[0] != '\n') {
-			process_cmd(&vfs, line);
+			status = process_cmd(&vfs, line);
 		}
 		SAFE_FREE(line);
 	}
 
 	TALLOC_FREE(vfs.conn);
 	TALLOC_FREE(frame);
-	return 0;
+	return NT_STATUS_IS_OK(status) ? 0 : 1;
 }

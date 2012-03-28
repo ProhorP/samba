@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Unix SMB/CIFS implementation.
-# Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009
+# Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009-2011
 # Copyright (C) Theresa Halloran <theresahalloran@gmail.com> 2011
 #
 # This program is free software; you can redistribute it and/or modify
@@ -22,17 +22,40 @@ import optparse, samba
 from samba import getopt as options
 from ldb import LdbError
 import sys, traceback
-
+import textwrap
 
 class Option(optparse.Option):
     pass
 
+# This help formatter does text wrapping and preserves newlines
+class PlainHelpFormatter(optparse.IndentedHelpFormatter):
+    def format_description(self,description=""):
+            desc_width = self.width - self.current_indent
+            indent = " "*self.current_indent
+            paragraphs = description.split('\n')
+            wrapped_paragraphs = [
+                textwrap.fill(p,
+                        desc_width,
+                        initial_indent=indent,
+                        subsequent_indent=indent)
+                for p in paragraphs]
+            result = "\n".join(wrapped_paragraphs) + "\n"
+            return result
+
 
 class Command(object):
-    """A net command."""
+    """A samba-tool command."""
 
-    def _get_description(self):
+    def _get_short_description(self):
         return self.__doc__.splitlines()[0].rstrip("\n")
+
+    short_description = property(_get_short_description)
+
+    def _get_full_description(self):
+        lines = self.__doc__.split("\n")
+        return lines[0] + "\n" + textwrap.dedent("\n".join(lines[1:]))
+
+    full_description = property(_get_full_description)
 
     def _get_name(self):
         name = self.__class__.__name__
@@ -42,17 +65,20 @@ class Command(object):
 
     name = property(_get_name)
 
-    def usage(self, *args):
-        parser, _ = self._create_parser()
+    # synopsis must be defined in all subclasses in order to provide the
+    # command usage
+    synopsis = None
+    takes_args = []
+    takes_options = []
+    takes_optiongroups = {}
+
+    def __init__(self, outf=sys.stdout, errf=sys.stderr):
+        self.outf = outf
+        self.errf = errf
+
+    def usage(self, prog, *args):
+        parser, _ = self._create_parser(prog)
         parser.print_usage()
-
-    description = property(_get_description)
-
-    def _get_synopsis(self):
-        ret = self.name
-        if self.takes_args:
-            ret += " " + " ".join([x.upper() for x in self.takes_args])
-        return ret
 
     def show_command_error(self, e):
         '''display a command error'''
@@ -69,36 +95,30 @@ class Command(object):
 
         if isinstance(inner_exception, LdbError):
             (ldb_ecode, ldb_emsg) = inner_exception
-            print >>sys.stderr, "ERROR(ldb): %s - %s" % (message, ldb_emsg)
+            self.errf.write("ERROR(ldb): %s - %s\n" % (message, ldb_emsg))
         elif isinstance(inner_exception, AssertionError):
-            print >>sys.stderr, "ERROR(assert): %s" % message
+            self.errf.write("ERROR(assert): %s\n" % message)
             force_traceback = True
         elif isinstance(inner_exception, RuntimeError):
-            print >>sys.stderr, "ERROR(runtime): %s - %s" % (message, evalue)
+            self.errf.write("ERROR(runtime): %s - %s\n" % (message, evalue))
         elif type(inner_exception) is Exception:
-            print >>sys.stderr, "ERROR(exception): %s - %s" % (message, evalue)
+            self.errf.write("ERROR(exception): %s - %s\n" % (message, evalue))
             force_traceback = True
         elif inner_exception is None:
-            print >>sys.stderr, "ERROR: %s" % (message)
+            self.errf.write("ERROR: %s\n" % (message))
         else:
-            print >>sys.stderr, "ERROR(%s): %s - %s" % (str(etype), message, evalue)
+            self.errf.write("ERROR(%s): %s - %s\n" % (str(etype), message, evalue))
             force_traceback = True
 
         if force_traceback or samba.get_debug_level() >= 3:
             traceback.print_tb(etraceback)
 
-
-    synopsis = property(_get_synopsis)
-
-    outf = sys.stdout
-
-    takes_args = []
-    takes_options = []
-    takes_optiongroups = {}
-
-    def _create_parser(self):
-        parser = optparse.OptionParser(self.synopsis)
-        parser.prog = "net"
+    def _create_parser(self, prog):
+        parser = optparse.OptionParser(
+            usage=self.synopsis,
+            description=self.full_description,
+            formatter=PlainHelpFormatter(),
+            prog=prog)
         parser.add_options(self.takes_options)
         optiongroups = {}
         for name, optiongroup in self.takes_optiongroups.iteritems():
@@ -107,10 +127,10 @@ class Command(object):
         return parser, optiongroups
 
     def message(self, text):
-        print text
+        self.outf.write(text+"\n")
 
     def _run(self, *argv):
-        parser, optiongroups = self._create_parser()
+        parser, optiongroups = self._create_parser(argv[0])
         opts, args = parser.parse_args(list(argv))
         # Filter out options from option groups
         args = args[1:]
@@ -120,17 +140,24 @@ class Command(object):
                 if option.dest is not None:
                     del kwargs[option.dest]
         kwargs.update(optiongroups)
+
+        # Check for a min a max number of allowed arguments, whenever possible
+        # The suffix "?" means zero or one occurence
+        # The suffix "+" means at least one occurence
         min_args = 0
         max_args = 0
+        undetermined_max_args = False
         for i, arg in enumerate(self.takes_args):
-            if arg[-1] not in ("?", "*"):
-                min_args += 1
-            max_args += 1
-            if arg[-1] == "*":
-                max_args = -1
-        if len(args) < min_args or (max_args != -1 and len(args) > max_args):
-            self.usage(*args)
+            if arg[-1] != "?":
+               min_args += 1
+            if arg[-1] == "+":
+               undetermined_max_args = True
+            else:
+               max_args += 1
+        if (len(args) < min_args) or (undetermined_max_args == False and len(args) > max_args):
+            parser.print_usage()
             return -1
+
         try:
             return self.run(*args, **kwargs)
         except Exception, e:
@@ -141,76 +168,47 @@ class Command(object):
         """Run the command. This should be overriden by all subclasses."""
         raise NotImplementedError(self.run)
 
+    def get_logger(self, name="netcmd"):
+        """Get a logger object."""
+        import logging
+        logger = logging.getLogger(name)
+        logger.addHandler(logging.StreamHandler(self.outf))
+        return logger
+
 
 class SuperCommand(Command):
-    """A command with subcommands."""
+    """A samba-tool command with subcommands."""
+
+    synopsis = "%prog <subcommand>"
 
     subcommands = {}
 
     def _run(self, myname, subcommand=None, *args):
         if subcommand in self.subcommands:
-            return self.subcommands[subcommand]._run(subcommand, *args)
-        print "Available subcommands:"
-        for cmd in self.subcommands:
-            print "\t%-20s - %s" % (cmd, self.subcommands[cmd].description)
-        if subcommand in [None, 'help', '-h', '--help' ]:
+            return self.subcommands[subcommand]._run(
+                "%s %s" % (myname, subcommand), *args)
+
+        self.usage(myname)
+        self.outf.write("Available subcommands:\n")
+        subcmds = self.subcommands.keys()
+        subcmds.sort()
+        max_length = max([len(c) for c in subcmds])
+        for cmd in subcmds:
+            self.outf.write("  %*s  - %s\n" % (
+                -max_length, cmd, self.subcommands[cmd].short_description))
+        if subcommand in [None]:
+            raise CommandError("You must specify a subcommand")
+        if subcommand in ['help', '-h', '--help']:
+            self.outf.write("For more help on a specific subcommand, please type: %s (-h|--help)\n" % myname)
             return 0
         raise CommandError("No such subcommand '%s'" % subcommand)
 
-    def usage(self, myname, subcommand=None, *args):
-        if subcommand is None or not subcommand in self.subcommands:
-            print "Usage: %s (%s) [options]" % (myname,
-                " | ".join(self.subcommands.keys()))
-        else:
-            return self.subcommands[subcommand].usage(*args)
 
 
 class CommandError(Exception):
-    '''an exception class for netcmd errors'''
+    """An exception class for samba-tool Command errors."""
+
     def __init__(self, message, inner_exception=None):
         self.message = message
         self.inner_exception = inner_exception
         self.exception_info = sys.exc_info()
-
-
-commands = {}
-from samba.netcmd.pwsettings import cmd_pwsettings
-commands["pwsettings"] = cmd_pwsettings()
-from samba.netcmd.domainlevel import cmd_domainlevel
-commands["domainlevel"] = cmd_domainlevel()
-from samba.netcmd.setpassword import cmd_setpassword
-commands["setpassword"] = cmd_setpassword()
-from samba.netcmd.newuser import cmd_newuser
-commands["newuser"] = cmd_newuser()
-from samba.netcmd.netacl import cmd_acl
-commands["acl"] = cmd_acl()
-from samba.netcmd.fsmo import cmd_fsmo
-commands["fsmo"] = cmd_fsmo()
-from samba.netcmd.export import cmd_export
-commands["export"] = cmd_export()
-from samba.netcmd.time import cmd_time
-commands["time"] = cmd_time()
-from samba.netcmd.user import cmd_user
-commands["user"] = cmd_user()
-from samba.netcmd.vampire import cmd_vampire
-commands["vampire"] = cmd_vampire()
-from samba.netcmd.machinepw import cmd_machinepw
-commands["machinepw"] = cmd_machinepw()
-from samba.netcmd.spn import cmd_spn
-commands["spn"] = cmd_spn()
-from samba.netcmd.group import cmd_group
-commands["group"] = cmd_group()
-from samba.netcmd.join import cmd_join
-commands["join"] = cmd_join()
-from samba.netcmd.rodc import cmd_rodc
-commands["rodc"] = cmd_rodc()
-from samba.netcmd.drs import cmd_drs
-commands["drs"] = cmd_drs()
-from samba.netcmd.gpo import cmd_gpo
-commands["gpo2"] = cmd_gpo()
-from samba.netcmd.ldapcmp import cmd_ldapcmp
-commands["ldapcmp"] = cmd_ldapcmp()
-from samba.netcmd.testparm import cmd_testparm
-commands["testparm"] =  cmd_testparm()
-from samba.netcmd.dbcheck import cmd_dbcheck
-commands["dbcheck"] =  cmd_dbcheck()

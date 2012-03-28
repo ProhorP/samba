@@ -158,6 +158,7 @@ NTSTATUS se_access_check(const struct security_descriptor *sd,
 {
 	uint32_t i;
 	uint32_t bits_remaining;
+	uint32_t explicitly_denied_bits = 0;
 
 	*access_granted = access_desired;
 	bits_remaining = access_desired;
@@ -204,6 +205,11 @@ NTSTATUS se_access_check(const struct security_descriptor *sd,
 		bits_remaining &= ~(SEC_RIGHTS_PRIV_BACKUP);
 	}
 
+	if ((bits_remaining & SEC_STD_WRITE_OWNER) &&
+	     security_token_has_privilege(token, SEC_PRIV_TAKE_OWNERSHIP)) {
+		bits_remaining &= ~(SEC_STD_WRITE_OWNER);
+	}
+
 	/* a NULL dacl allows access */
 	if ((sd->type & SEC_DESC_DACL_PRESENT) && sd->dacl == NULL) {
 		*access_granted = access_desired;
@@ -232,14 +238,14 @@ NTSTATUS se_access_check(const struct security_descriptor *sd,
 			break;
 		case SEC_ACE_TYPE_ACCESS_DENIED:
 		case SEC_ACE_TYPE_ACCESS_DENIED_OBJECT:
-			if (bits_remaining & ace->access_mask) {
-				return NT_STATUS_ACCESS_DENIED;
-			}
+			explicitly_denied_bits |= (bits_remaining & ace->access_mask);
 			break;
 		default:	/* Other ACE types not handled/supported */
 			break;
 		}
 	}
+
+	bits_remaining |= explicitly_denied_bits;
 
 done:
 	if (bits_remaining != 0) {

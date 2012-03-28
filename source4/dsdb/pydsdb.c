@@ -38,14 +38,13 @@ typedef inquiry lenfunc;
 typedef intargfunc ssizeargfunc;
 #endif
 
-/* FIXME: These should be in a header file somewhere, once we finish moving
- * away from SWIG .. */
+/* FIXME: These should be in a header file somewhere */
 #define PyErr_LDB_OR_RAISE(py_ldb, ldb) \
 /*	if (!PyLdb_Check(py_ldb)) { \
 		PyErr_SetString(py_ldb_get_exception(), "Ldb connection object required"); \
 		return NULL; \
 	} */\
-	ldb = PyLdb_AsLdbContext(py_ldb);
+	ldb = pyldb_Ldb_AsLdbContext(py_ldb);
 
 static PyObject *py_ldb_get_exception(void)
 {
@@ -168,8 +167,8 @@ static PyObject *py_samdb_set_ntds_settings_dn(PyLdbObject *self, PyObject *args
 		return NULL;
 	}
 
-	if (!PyObject_AsDn(tmp_ctx, py_ntds_settings_dn, ldb, &ntds_settings_dn)) {
-		/* exception thrown by "PyObject_AsDn" */
+	if (!pyldb_Object_AsDn(tmp_ctx, py_ntds_settings_dn, ldb, &ntds_settings_dn)) {
+		/* exception thrown by "pyldb_Object_AsDn" */
 		talloc_free(tmp_ctx);
 		return NULL;
 	}
@@ -329,6 +328,144 @@ static PyObject *py_dsdb_get_attid_from_lDAPDisplayName(PyObject *self, PyObject
 
 	return PyLong_FromUnsignedLong(attid);
 }
+
+/*
+  return the systemFlags as int from the attribute name
+ */
+static PyObject *py_dsdb_get_systemFlags_from_lDAPDisplayName(PyObject *self, PyObject *args)
+{
+	PyObject *py_ldb;
+	struct ldb_context *ldb;
+	struct dsdb_schema *schema;
+	const char *ldap_display_name;
+	const struct dsdb_attribute *attribute;
+
+	if (!PyArg_ParseTuple(args, "Os", &py_ldb, &ldap_display_name))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+
+	schema = dsdb_get_schema(ldb, NULL);
+
+	if (!schema) {
+		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+		return NULL;
+	}
+
+	attribute = dsdb_attribute_by_lDAPDisplayName(schema, ldap_display_name);
+	if (attribute == NULL) {
+		PyErr_Format(PyExc_RuntimeError, "Failed to find attribute '%s'", ldap_display_name);
+		return NULL;
+	}
+
+	return PyInt_FromLong(attribute->systemFlags);
+}
+
+/*
+  return the linkID from the attribute name
+ */
+static PyObject *py_dsdb_get_linkId_from_lDAPDisplayName(PyObject *self, PyObject *args)
+{
+	PyObject *py_ldb;
+	struct ldb_context *ldb;
+	struct dsdb_schema *schema;
+	const char *ldap_display_name;
+	const struct dsdb_attribute *attribute;
+
+	if (!PyArg_ParseTuple(args, "Os", &py_ldb, &ldap_display_name))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+
+	schema = dsdb_get_schema(ldb, NULL);
+
+	if (!schema) {
+		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+		return NULL;
+	}
+
+	attribute = dsdb_attribute_by_lDAPDisplayName(schema, ldap_display_name);
+	if (attribute == NULL) {
+		PyErr_Format(PyExc_RuntimeError, "Failed to find attribute '%s'", ldap_display_name);
+		return NULL;
+	}
+
+	return PyInt_FromLong(attribute->linkID);
+}
+
+/*
+  return the backlink attribute name (if any) for an attribute
+ */
+static PyObject *py_dsdb_get_backlink_from_lDAPDisplayName(PyObject *self, PyObject *args)
+{
+	PyObject *py_ldb;
+	struct ldb_context *ldb;
+	struct dsdb_schema *schema;
+	const char *ldap_display_name;
+	const struct dsdb_attribute *attribute, *target_attr;
+
+	if (!PyArg_ParseTuple(args, "Os", &py_ldb, &ldap_display_name))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+
+	schema = dsdb_get_schema(ldb, NULL);
+
+	if (!schema) {
+		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+		return NULL;
+	}
+
+	attribute = dsdb_attribute_by_lDAPDisplayName(schema, ldap_display_name);
+	if (attribute == NULL) {
+		PyErr_Format(PyExc_RuntimeError, "Failed to find attribute '%s'", ldap_display_name);
+		return NULL;
+	}
+
+	if (attribute->linkID == 0) {
+		Py_RETURN_NONE;
+	}
+
+	target_attr = dsdb_attribute_by_linkID(schema, attribute->linkID ^ 1);
+	if (target_attr == NULL) {
+		/* when we add pseudo-backlinks we'll need to handle
+		   them here */
+		Py_RETURN_NONE;
+	}
+
+	return PyString_FromString(target_attr->lDAPDisplayName);
+}
+
+
+static PyObject *py_dsdb_get_lDAPDisplayName_by_attid(PyObject *self, PyObject *args)
+{
+	PyObject *py_ldb;
+	struct ldb_context *ldb;
+	struct dsdb_schema *schema;
+	const struct dsdb_attribute *a;
+	uint32_t attid;
+
+	if (!PyArg_ParseTuple(args, "Oi", &py_ldb, &attid))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+
+	schema = dsdb_get_schema(ldb, NULL);
+
+	if (!schema) {
+		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+		return NULL;
+	}
+
+	a = dsdb_attribute_by_attributeID_id(schema, attid);
+	if (a == NULL) {
+		PyErr_Format(PyExc_RuntimeError, "Failed to find attribute '0x%08x'", attid);
+		return NULL;
+	}
+
+	return PyString_FromString(a->lDAPDisplayName);
+}
+
 
 /*
   return the attribute syntax oid as a string from the attribute name
@@ -640,13 +777,13 @@ static PyObject *py_dsdb_load_partition_usn(PyObject *self, PyObject *args)
 
 	mem_ctx = talloc_new(NULL);
 	if (mem_ctx == NULL) {
-	   PyErr_NoMemory();
-	   return NULL;
+		PyErr_NoMemory();
+		return NULL;
 	}
 
-	if (!PyObject_AsDn(mem_ctx, py_dn, ldb, &dn)) {
-	   talloc_free(mem_ctx);
-	   return NULL;
+	if (!pyldb_Object_AsDn(mem_ctx, py_dn, ldb, &dn)) {
+		talloc_free(mem_ctx);
+		return NULL;
 	}
 
 	ret = dsdb_load_partition_usn(ldb, dn, &highest_uSN, &urgent_uSN);
@@ -692,16 +829,16 @@ static PyObject *py_dsdb_set_am_rodc(PyObject *self, PyObject *args)
 static PyObject *py_dsdb_set_schema_from_ldif(PyObject *self, PyObject *args)
 {
 	WERROR result;
-	char *pf, *df;
+	char *pf, *df, *dn;
 	PyObject *py_ldb;
 	struct ldb_context *ldb;
 
-	if (!PyArg_ParseTuple(args, "Oss", &py_ldb, &pf, &df))
+	if (!PyArg_ParseTuple(args, "Osss", &py_ldb, &pf, &df, &dn))
 		return NULL;
 
 	PyErr_LDB_OR_RAISE(py_ldb, ldb);
 
-	result = dsdb_set_schema_from_ldif(ldb, pf, df);
+	result = dsdb_set_schema_from_ldif(ldb, pf, df, dn);
 	PyErr_WERROR_IS_ERR_RAISE(result);
 
 	Py_RETURN_NONE;
@@ -778,7 +915,7 @@ static PyObject *py_dsdb_get_partitions_dn(PyObject *self, PyObject *args)
 		PyErr_NoMemory();
 		return NULL;
 	}
-	ret = PyLdbDn_FromDn(dn);
+	ret = pyldb_Dn_FromDn(dn);
 	talloc_free(dn);
 	return ret;
 }
@@ -806,6 +943,24 @@ static PyObject *py_dsdb_am_rodc(PyObject *self, PyObject *args)
 	}
 
 	return PyBool_FromLong(am_rodc);
+}
+
+/*
+  call into samdb_is_pdc()
+ */
+static PyObject *py_dsdb_am_pdc(PyObject *self, PyObject *args)
+{
+	PyObject *py_ldb;
+	struct ldb_context *ldb;
+	bool am_pdc;
+
+	if (!PyArg_ParseTuple(args, "O", &py_ldb))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+
+	am_pdc = samdb_is_pdc(ldb);
+	return PyBool_FromLong(am_pdc);
 }
 
 
@@ -836,6 +991,14 @@ static PyMethodDef py_dsdb_methods[] = {
 		METH_VARARGS, NULL },
 	{ "_dsdb_get_syntax_oid_from_lDAPDisplayName", (PyCFunction)py_dsdb_get_syntax_oid_from_lDAPDisplayName,
 		METH_VARARGS, NULL },
+	{ "_dsdb_get_systemFlags_from_lDAPDisplayName", (PyCFunction)py_dsdb_get_systemFlags_from_lDAPDisplayName,
+		METH_VARARGS, NULL },
+	{ "_dsdb_get_linkId_from_lDAPDisplayName", (PyCFunction)py_dsdb_get_linkId_from_lDAPDisplayName,
+		METH_VARARGS, NULL },
+	{ "_dsdb_get_lDAPDisplayName_by_attid", (PyCFunction)py_dsdb_get_lDAPDisplayName_by_attid,
+		METH_VARARGS, NULL },
+	{ "_dsdb_get_backlink_from_lDAPDisplayName", (PyCFunction)py_dsdb_get_backlink_from_lDAPDisplayName,
+		METH_VARARGS, NULL },
 	{ "_dsdb_set_ntds_invocation_id",
 		(PyCFunction)py_dsdb_set_ntds_invocation_id, METH_VARARGS,
 		NULL },
@@ -851,6 +1014,9 @@ static PyMethodDef py_dsdb_methods[] = {
 		NULL },
 	{ "_am_rodc",
 		(PyCFunction)py_dsdb_am_rodc, METH_VARARGS,
+		NULL },
+	{ "_am_pdc",
+		(PyCFunction)py_dsdb_am_pdc, METH_VARARGS,
 		NULL },
 	{ "_dsdb_set_schema_from_ldif", (PyCFunction)py_dsdb_set_schema_from_ldif, METH_VARARGS,
 		NULL },
@@ -939,6 +1105,14 @@ void initdsdb(void)
 	ADD_DSDB_FLAG(DS_DOMAIN_FUNCTION_2008);
 	ADD_DSDB_FLAG(DS_DOMAIN_FUNCTION_2008_R2);
 
+        /* nc replica flags */
+	ADD_DSDB_FLAG(INSTANCE_TYPE_IS_NC_HEAD);
+	ADD_DSDB_FLAG(INSTANCE_TYPE_UNINSTANT);
+	ADD_DSDB_FLAG(INSTANCE_TYPE_WRITE);
+	ADD_DSDB_FLAG(INSTANCE_TYPE_NC_ABOVE);
+	ADD_DSDB_FLAG(INSTANCE_TYPE_NC_COMING);
+	ADD_DSDB_FLAG(INSTANCE_TYPE_NC_GOING);
+
 	/* "systemFlags" */
 	ADD_DSDB_FLAG(SYSTEM_FLAG_CR_NTDS_NC);
 	ADD_DSDB_FLAG(SYSTEM_FLAG_CR_NTDS_DOMAIN);
@@ -976,6 +1150,17 @@ void initdsdb(void)
 	ADD_DSDB_FLAG(DS_FLAG_ATTR_REQ_PARTIAL_SET_MEMBER);
 	ADD_DSDB_FLAG(DS_FLAG_ATTR_IS_CONSTRUCTED);
 
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_AUTO_TOPOLOGY_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_TOPL_CLEANUP_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_TOPL_MIN_HOPS_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_TOPL_DETECT_STALE_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_INTER_SITE_AUTO_TOPOLOGY_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_GROUP_CACHING_ENABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_FORCE_KCC_WHISTLER_BEHAVIOR);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_RAND_BH_SELECTION_DISABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_SCHEDULE_HASHING_ENABLED);
+	ADD_DSDB_FLAG(DS_NTDSSETTINGS_OPT_IS_REDUNDANT_SERVER_TOPOLOGY_ENABLED);
+
 	ADD_DSDB_FLAG(DS_NTDSDSA_OPT_IS_GC);
 	ADD_DSDB_FLAG(DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL);
 	ADD_DSDB_FLAG(DS_NTDSDSA_OPT_DISABLE_OUTBOUND_REPL);
@@ -993,6 +1178,19 @@ void initdsdb(void)
 	ADD_DSDB_FLAG(NTDSCONN_KCC_SITE_FAILOVER_TOPOLOGY);
 	ADD_DSDB_FLAG(NTDSCONN_KCC_REDUNDANT_SERVER_TOPOLOGY);
 
+        ADD_DSDB_FLAG(NTDSCONN_OPT_IS_GENERATED);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_TWOWAY_SYNC);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_OVERRIDE_NOTIFY_DEFAULT);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_USE_NOTIFY);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_DISABLE_INTERSITE_COMPRESSION);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_USER_OWNED_SCHEDULE);
+        ADD_DSDB_FLAG(NTDSCONN_OPT_RODC_TOPOLOGY);
+
+        /* Site Link Object options */
+        ADD_DSDB_FLAG(NTDSSITELINK_OPT_USE_NOTIFY);
+        ADD_DSDB_FLAG(NTDSSITELINK_OPT_TWOWAY_SYNC);
+        ADD_DSDB_FLAG(NTDSSITELINK_OPT_DISABLE_COMPRESSION);
+
 	/* GPO policy flags */
 	ADD_DSDB_FLAG(GPLINK_OPT_DISABLE);
 	ADD_DSDB_FLAG(GPLINK_OPT_ENFORCE);
@@ -1006,4 +1204,5 @@ void initdsdb(void)
 	ADD_DSDB_STRING(DSDB_SYNTAX_BINARY_DN);
 	ADD_DSDB_STRING(DSDB_SYNTAX_STRING_DN);
 	ADD_DSDB_STRING(DSDB_SYNTAX_OR_NAME);
+	ADD_DSDB_STRING(DSDB_CONTROL_DBCHECK);
 }

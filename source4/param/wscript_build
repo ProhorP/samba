@@ -1,31 +1,5 @@
 #!/usr/bin/env python
 
-bld.SAMBA_GENERATOR('s3_param_h',
-                    source= 'loadparm.c ../script/mks3param.pl',
-                    target='s3_param.h',
-                    rule='${PERL} ${SRC[1].abspath(env)} ${SRC[0].abspath(env)} --file ${TGT}')
-
-bld.SAMBA_GENERATOR('param_local_h',
-                    source= 'loadparm.c ../script/mkparamdefs.pl',
-                    target='param_local.h',
-                    rule='${PERL} ${SRC[1].abspath(env)} ${SRC[0].abspath(env)} --file ${TGT} --generate-scope=LOCAL')
-
-bld.SAMBA_GENERATOR('param_global_h',
-                    source= 'loadparm.c ../script/mkparamdefs.pl',
-                    target='param_global.h',
-                    rule='${PERL} ${SRC[1].abspath(env)} ${SRC[0].abspath(env)} --file ${TGT} --generate-scope=GLOBAL')
-
-bld.SAMBA_LIBRARY('samba-hostconfig',
-	source='loadparm.c generic.c util.c',
-	pc_files='samba-hostconfig.pc',
-	vnum='0.0.1',
-	deps='DYNCONFIG',
-	public_deps='samba-util',
-	public_headers='param.h',
-	autoproto='param_proto.h',
-	)
-
-
 bld.SAMBA_SUBSYSTEM('PROVISION',
 	source='provision.c pyparam.c',
 	deps='LIBPYTHON pyparam_util ldb pytalloc-util pyldb-util',
@@ -36,7 +10,7 @@ bld.SAMBA_SUBSYSTEM('PROVISION',
 bld.SAMBA_SUBSYSTEM('share',
 	source='share.c',
 	public_headers='share.h',
-	deps='samba-util'
+	deps='samba-util samba-modules'
 	)
 
 
@@ -68,6 +42,10 @@ bld.SAMBA_PYTHON('pyparam',
 	realname='samba/param.so'
 	)
 
+bld.SAMBA_SUBSYSTEM('param_options',
+	source='loadparm.c',
+	deps='samba-hostconfig')
+
 
 bld.SAMBA_SUBSYSTEM('pyparam_util',
 	source='pyparam_util.c',
@@ -77,6 +55,6 @@ bld.SAMBA_SUBSYSTEM('pyparam_util',
 
 bld.SAMBA_LIBRARY('shares',
                   source=[],
-                  deps='share share_classic share_ldb',
+                  deps='share',
                   grouping_library=True,
                   private_library=True)

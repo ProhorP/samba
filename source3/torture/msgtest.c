@@ -51,10 +51,10 @@ static void pong_message(struct messaging_context *msg_ctx,
 
 	setup_logging(argv[0], DEBUG_STDOUT);
 
-	lp_load(get_dyn_CONFIGFILE(),False,False,False,True);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	if (!(evt_ctx = tevent_context_init(NULL)) ||
-	    !(msg_ctx = messaging_init(NULL, procid_self(), evt_ctx))) {
+	    !(msg_ctx = messaging_init(NULL, evt_ctx))) {
 		fprintf(stderr, "could not init messaging context\n");
 		exit(1);
 	}

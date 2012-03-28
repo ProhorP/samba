@@ -24,6 +24,7 @@
 #include "smbd/globals.h"
 #include "../librpc/gen_ndr/netlogon.h"
 #include "auth.h"
+#include "../libcli/security/security.h"
 
 /* Fix up prototypes for OSX 10.4, where they're missing */
 #ifndef HAVE_SETNETGRENT_PROTOTYPE
@@ -123,8 +124,8 @@ void invalidate_vuid(struct smbd_server_connection *sconn, uint16 vuid)
 
 	session_yield(vuser);
 
-	if (vuser->auth_ntlmssp_state) {
-		TALLOC_FREE(vuser->auth_ntlmssp_state);
+	if (vuser->gensec_security) {
+		TALLOC_FREE(vuser->gensec_security);
 	}
 
 	DLIST_REMOVE(sconn->smb1.sessions.validated_users, vuser);
@@ -263,12 +264,11 @@ int register_homes_share(const char *username)
 
 int register_existing_vuid(struct smbd_server_connection *sconn,
 			uint16 vuid,
-			struct auth_serversupplied_info *session_info,
-			DATA_BLOB response_blob,
-			const char *smb_name)
+			struct auth_session_info *session_info,
+			DATA_BLOB response_blob)
 {
-	fstring tmp;
 	user_struct *vuser;
+	bool guest = security_session_user_level(session_info, NULL) < SECURITY_USER;
 
 	vuser = get_partial_auth_user_struct(sconn, vuid);
 	if (!vuser) {
@@ -278,23 +278,21 @@ int register_existing_vuid(struct smbd_server_connection *sconn,
 	/* Use this to keep tabs on all our info from the authentication */
 	vuser->session_info = talloc_move(vuser, &session_info);
 
-	/* This is a potentially untrusted username */
-	alpha_strcpy(tmp, smb_name, ". _-$", sizeof(tmp));
-
-	vuser->session_info->sanitized_username = talloc_strdup(
-		vuser->session_info, tmp);
+	/* Make clear that we require the optional unix_token and unix_info in the source3 code */
+	SMB_ASSERT(vuser->session_info->unix_token);
+	SMB_ASSERT(vuser->session_info->unix_info);
 
 	DEBUG(10,("register_existing_vuid: (%u,%u) %s %s %s guest=%d\n",
-		  (unsigned int)vuser->session_info->utok.uid,
-		  (unsigned int)vuser->session_info->utok.gid,
-		  vuser->session_info->unix_name,
-		  vuser->session_info->sanitized_username,
-		  vuser->session_info->info3->base.domain.string,
-		  vuser->session_info->guest ));
+		  (unsigned int)vuser->session_info->unix_token->uid,
+		  (unsigned int)vuser->session_info->unix_token->gid,
+		  vuser->session_info->unix_info->unix_name,
+		  vuser->session_info->unix_info->sanitized_username,
+		  vuser->session_info->info->domain_name,
+		  guest));
 
 	DEBUG(3, ("register_existing_vuid: User name: %s\t"
-		  "Real name: %s\n", vuser->session_info->unix_name,
-		  vuser->session_info->info3->base.full_name.string));
+		  "Real name: %s\n", vuser->session_info->unix_info->unix_name,
+		  vuser->session_info->info->full_name));
 
 	if (!vuser->session_info->security_token) {
 		DEBUG(1, ("register_existing_vuid: session_info does not "
@@ -302,9 +300,12 @@ int register_existing_vuid(struct smbd_server_connection *sconn,
 		goto fail;
 	}
 
+	/* Make clear that we require the optional unix_token in the source3 code */
+	SMB_ASSERT(vuser->session_info->unix_token);
+
 	DEBUG(3,("register_existing_vuid: UNIX uid %d is UNIX user %s, "
-		"and will be vuid %u\n", (int)vuser->session_info->utok.uid,
-		 vuser->session_info->unix_name, vuser->vuid));
+		"and will be vuid %u\n", (int)vuser->session_info->unix_token->uid,
+		 vuser->session_info->unix_info->unix_name, vuser->vuid));
 
 	if (!session_claim(sconn, vuser)) {
 		DEBUG(1, ("register_existing_vuid: Failed to claim session "
@@ -321,13 +322,14 @@ int register_existing_vuid(struct smbd_server_connection *sconn,
 
 	vuser->homes_snum = -1;
 
-	if (!vuser->session_info->guest) {
+
+	if (!guest) {
 		vuser->homes_snum = register_homes_share(
-			vuser->session_info->unix_name);
+			vuser->session_info->unix_info->unix_name);
 	}
 
 	if (srv_is_signing_negotiated(sconn) &&
-	    !vuser->session_info->guest) {
+	    !guest) {
 		/* Try and turn on server signing on the first non-guest
 		 * sessionsetup. */
 		srv_set_signing(sconn,
@@ -337,9 +339,9 @@ int register_existing_vuid(struct smbd_server_connection *sconn,
 
 	/* fill in the current_user_info struct */
 	set_current_user_info(
-		vuser->session_info->sanitized_username,
-		vuser->session_info->unix_name,
-		vuser->session_info->info3->base.domain.string);
+		vuser->session_info->unix_info->sanitized_username,
+		vuser->session_info->unix_info->unix_name,
+		vuser->session_info->info->domain_name);
 
 	return vuser->vuid;
 
@@ -495,7 +497,9 @@ static char *validate_group(struct smbd_server_connection *sconn,
 				if (user_ok(user, snum) &&
 				    password_ok(actx, enc,
 						get_session_workgroup(sconn),
-						user,password)) {
+						user,
+						sconn->remote_address,
+						password)) {
 					endnetgrent();
 					return(user);
 				}
@@ -561,7 +565,9 @@ static char *validate_group(struct smbd_server_connection *sconn,
 				if (user_ok(member,snum) &&
 				    password_ok(actx, enc,
 						get_session_workgroup(sconn),
-						member,password)) {
+						member,
+						sconn->remote_address,
+						password)) {
 					char *name = talloc_strdup(talloc_tos(),
 								member);
 					SAFE_FREE(member_list);
@@ -642,7 +648,9 @@ bool authorise_login(struct smbd_server_connection *sconn,
 
 			if (password_ok(actx, enc,
 					get_session_workgroup(sconn),
-					user2,password)) {
+					user2,
+					sconn->remote_address,
+					password)) {
 				ok = True;
 				strlcpy(user,user2,sizeof(fstring));
 				DEBUG(3,("authorise_login: ACCEPTED: session "
@@ -693,7 +701,9 @@ bool authorise_login(struct smbd_server_connection *sconn,
 				if (user_ok(user2,snum) &&
 				    password_ok(actx, enc,
 						get_session_workgroup(sconn),
-						user2,password)) {
+						user2,
+						sconn->remote_address,
+						password)) {
 					ok = True;
 					strlcpy(user,user2,sizeof(fstring));
 					DEBUG(3,("authorise_login: ACCEPTED: "

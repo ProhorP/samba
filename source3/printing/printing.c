@@ -28,11 +28,14 @@
 #include "../librpc/gen_ndr/netlogon.h"
 #include "printing/notify.h"
 #include "printing/pcap.h"
+#include "printing/printer_list.h"
+#include "printing/queue_process.h"
 #include "serverid.h"
 #include "smbd/smbd.h"
 #include "auth.h"
 #include "messages.h"
 #include "util_tdb.h"
+#include "lib/param/loadparm.h"
 
 extern struct current_user current_user;
 extern userdom_struct current_user_info;
@@ -194,6 +197,10 @@ bool print_backend_init(struct messaging_context *msg_ctx)
 	const char *sversion = "INFO/version";
 	int services = lp_numservices();
 	int snum;
+
+	if (!printer_list_parent_init()) {
+		return false;
+	}
 
 	unlink(cache_path("printing.tdb"));
 	mkdir(cache_path("printing"),0755);
@@ -1598,122 +1605,11 @@ void print_queue_receive(struct messaging_context *msg,
 	return;
 }
 
-static void printing_pause_fd_handler(struct tevent_context *ev,
-				      struct tevent_fd *fde,
-				      uint16_t flags,
-				      void *private_data)
-{
-	/*
-	 * If pause_pipe[1] is closed it means the parent smbd
-	 * and children exited or aborted.
-	 */
-	exit_server_cleanly(NULL);
-}
-
-extern struct child_pid *children;
-extern int num_children;
-
-static void add_child_pid(pid_t pid)
-{
-	struct child_pid *child;
-
-        child = SMB_MALLOC_P(struct child_pid);
-        if (child == NULL) {
-                DEBUG(0, ("Could not add child struct -- malloc failed\n"));
-                return;
-        }
-        child->pid = pid;
-        DLIST_ADD(children, child);
-        num_children += 1;
-}
-
-static pid_t background_lpq_updater_pid = -1;
-
-/****************************************************************************
-main thread of the background lpq updater
-****************************************************************************/
-void start_background_queue(struct tevent_context *ev,
-			    struct messaging_context *msg_ctx)
-{
-	/* Use local variables for this as we don't
-	 * need to save the parent side of this, just
-	 * ensure it closes when the process exits.
-	 */
-	int pause_pipe[2];
-
-	DEBUG(3,("start_background_queue: Starting background LPQ thread\n"));
-
-	if (pipe(pause_pipe) == -1) {
-		DEBUG(5,("start_background_queue: cannot create pipe. %s\n", strerror(errno) ));
-		exit(1);
-	}
-
-	background_lpq_updater_pid = sys_fork();
-
-	if (background_lpq_updater_pid == -1) {
-		DEBUG(5,("start_background_queue: background LPQ thread failed to start. %s\n", strerror(errno) ));
-		exit(1);
-	}
-
-	/* Track the printing pid along with other smbd children */
-	add_child_pid(background_lpq_updater_pid);
-
-	if(background_lpq_updater_pid == 0) {
-		struct tevent_fd *fde;
-		int ret;
-		NTSTATUS status;
-
-		/* Child. */
-		DEBUG(5,("start_background_queue: background LPQ thread started\n"));
-
-		close(pause_pipe[0]);
-		pause_pipe[0] = -1;
-
-		status = reinit_after_fork(msg_ctx, ev, procid_self(), true);
-
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0,("reinit_after_fork() failed\n"));
-			smb_panic("reinit_after_fork() failed");
-		}
-
-		smbd_setup_sig_term_handler();
-		smbd_setup_sig_hup_handler(ev, msg_ctx);
-
-		if (!serverid_register(procid_self(),
-				       FLAG_MSG_GENERAL|FLAG_MSG_SMBD
-				       |FLAG_MSG_PRINT_GENERAL)) {
-			exit(1);
-		}
-
-		if (!locking_init()) {
-			exit(1);
-		}
-
-		messaging_register(msg_ctx, NULL, MSG_PRINTER_UPDATE,
-				   print_queue_receive);
-
-		fde = tevent_add_fd(ev, ev, pause_pipe[1], TEVENT_FD_READ,
-				    printing_pause_fd_handler,
-				    NULL);
-		if (!fde) {
-			DEBUG(0,("tevent_add_fd() failed for pause_pipe\n"));
-			smb_panic("tevent_add_fd() failed for pause_pipe");
-		}
-
-		DEBUG(5,("start_background_queue: background LPQ thread waiting for messages\n"));
-		ret = tevent_loop_wait(ev);
-		/* should not be reached */
-		DEBUG(0,("background_queue: tevent_loop_wait() exited with %d - %s\n",
-			 ret, (ret == 0) ? "out of events" : strerror(errno)));
-		exit(1);
-	}
-
-	close(pause_pipe[1]);
-}
-
 /****************************************************************************
 update the internal database from the system print queue for a queue
 ****************************************************************************/
+
+extern pid_t background_lpq_updater_pid;
 
 static void print_queue_update(struct messaging_context *msg_ctx,
 			       int snum, bool force)
@@ -2242,7 +2138,7 @@ static bool print_job_delete1(struct tevent_context *ev,
  Return true if the current user owns the print job.
 ****************************************************************************/
 
-static bool is_owner(const struct auth_serversupplied_info *server_info,
+static bool is_owner(const struct auth_session_info *server_info,
 		     const char *servicename,
 		     uint32 jobid)
 {
@@ -2251,14 +2147,14 @@ static bool is_owner(const struct auth_serversupplied_info *server_info,
 	if (!pjob || !server_info)
 		return False;
 
-	return strequal(pjob->user, server_info->sanitized_username);
+	return strequal(pjob->user, server_info->unix_info->sanitized_username);
 }
 
 /****************************************************************************
  Delete a print job.
 ****************************************************************************/
 
-WERROR print_job_delete(const struct auth_serversupplied_info *server_info,
+WERROR print_job_delete(const struct auth_session_info *server_info,
 			struct messaging_context *msg_ctx,
 			int snum, uint32_t jobid)
 {
@@ -2281,7 +2177,7 @@ WERROR print_job_delete(const struct auth_serversupplied_info *server_info,
 		sys_adminlog( LOG_ERR,
 			      "Permission denied-- user not allowed to delete, \
 pause, or resume print job. User name: %s. Printer name: %s.",
-			      uidtoname(server_info->utok.uid),
+			      uidtoname(server_info->unix_token->uid),
 			      lp_printername(snum) );
 		/* END_ADMIN_LOG */
 
@@ -2326,7 +2222,7 @@ pause, or resume print job. User name: %s. Printer name: %s.",
  Pause a job.
 ****************************************************************************/
 
-bool print_job_pause(const struct auth_serversupplied_info *server_info,
+bool print_job_pause(const struct auth_session_info *server_info,
 		     struct messaging_context *msg_ctx,
 		     int snum, uint32 jobid, WERROR *errcode)
 {
@@ -2358,7 +2254,7 @@ bool print_job_pause(const struct auth_serversupplied_info *server_info,
 		sys_adminlog( LOG_ERR,
 			"Permission denied-- user not allowed to delete, \
 pause, or resume print job. User name: %s. Printer name: %s.",
-			      uidtoname(server_info->utok.uid),
+			      uidtoname(server_info->unix_token->uid),
 			      lp_printername(snum) );
 		/* END_ADMIN_LOG */
 
@@ -2391,7 +2287,7 @@ pause, or resume print job. User name: %s. Printer name: %s.",
  Resume a job.
 ****************************************************************************/
 
-bool print_job_resume(const struct auth_serversupplied_info *server_info,
+bool print_job_resume(const struct auth_session_info *server_info,
 		      struct messaging_context *msg_ctx,
 		      int snum, uint32 jobid, WERROR *errcode)
 {
@@ -2424,7 +2320,7 @@ bool print_job_resume(const struct auth_serversupplied_info *server_info,
 		sys_adminlog( LOG_ERR,
 			 "Permission denied-- user not allowed to delete, \
 pause, or resume print job. User name: %s. Printer name: %s.",
-			      uidtoname(server_info->utok.uid),
+			      uidtoname(server_info->unix_token->uid),
 			      lp_printername(snum) );
 		/* END_ADMIN_LOG */
 		return False;
@@ -2659,7 +2555,7 @@ static bool add_to_jobs_added(struct tdb_print_db *pdb, uint32 jobid)
  Do all checks needed to determine if we can start a job.
 ***************************************************************************/
 
-static WERROR print_job_checks(const struct auth_serversupplied_info *server_info,
+static WERROR print_job_checks(const struct auth_session_info *server_info,
 			       struct messaging_context *msg_ctx,
 			       int snum, int *njobs)
 {
@@ -2785,7 +2681,7 @@ static WERROR print_job_spool_file(int snum, uint32_t jobid,
  Start spooling a job - return the jobid.
 ***************************************************************************/
 
-WERROR print_job_start(const struct auth_serversupplied_info *server_info,
+WERROR print_job_start(const struct auth_session_info *server_info,
 		       struct messaging_context *msg_ctx,
 		       const char *clientmachine,
 		       int snum, const char *docname, const char *filename,
@@ -2839,13 +2735,11 @@ WERROR print_job_start(const struct auth_serversupplied_info *server_info,
 	fstrcpy(pjob.clientmachine, clientmachine);
 
 	fstrcpy(pjob.user, lp_printjob_username(snum));
-	standard_sub_advanced(sharename, server_info->sanitized_username,
-			      path, server_info->utok.gid,
-			      server_info->sanitized_username,
-			      server_info->info3->base.domain.string,
-			      pjob.user, sizeof(pjob.user)-1);
-	/* ensure NULL termination */
-	pjob.user[sizeof(pjob.user)-1] = '\0';
+	standard_sub_advanced(sharename, server_info->unix_info->sanitized_username,
+			      path, server_info->unix_token->gid,
+			      server_info->unix_info->sanitized_username,
+			      server_info->info->domain_name,
+			      pjob.user, sizeof(pjob.user));
 
 	fstrcpy(pjob.queuename, lp_const_servicename(snum));
 
@@ -3244,7 +3138,7 @@ int print_queue_status(struct messaging_context *msg_ctx, int snum,
  Pause a queue.
 ****************************************************************************/
 
-WERROR print_queue_pause(const struct auth_serversupplied_info *server_info,
+WERROR print_queue_pause(const struct auth_session_info *server_info,
 			 struct messaging_context *msg_ctx, int snum)
 {
 	int ret;
@@ -3281,7 +3175,7 @@ WERROR print_queue_pause(const struct auth_serversupplied_info *server_info,
  Resume a queue.
 ****************************************************************************/
 
-WERROR print_queue_resume(const struct auth_serversupplied_info *server_info,
+WERROR print_queue_resume(const struct auth_session_info *server_info,
 			  struct messaging_context *msg_ctx, int snum)
 {
 	int ret;
@@ -3318,7 +3212,7 @@ WERROR print_queue_resume(const struct auth_serversupplied_info *server_info,
  Purge a queue - implemented by deleting all jobs that we can delete.
 ****************************************************************************/
 
-WERROR print_queue_purge(const struct auth_serversupplied_info *server_info,
+WERROR print_queue_purge(const struct auth_session_info *server_info,
 			 struct messaging_context *msg_ctx, int snum)
 {
 	print_queue_struct *queue;

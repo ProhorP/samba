@@ -1205,7 +1205,8 @@ static NTSTATUS dcesrv_samr_CreateUser2(struct dcesrv_call_state *dce_call, TALL
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	status = dsdb_add_user(d_state->sam_ctx, mem_ctx, account_name, r->in.acct_flags, &sid, &dn);
+	status = dsdb_add_user(d_state->sam_ctx, mem_ctx, account_name, r->in.acct_flags, NULL,
+			       &sid, &dn);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -3665,7 +3666,7 @@ static NTSTATUS dcesrv_samr_QueryDisplayInfo(struct dcesrv_call_state *dce_call,
 
 	/* search for all requested objects in all domains. This could
 	   possibly be cached and resumed based on resume_key */
-	ret = dsdb_search(d_state->sam_ctx, mem_ctx, &res, NULL,
+	ret = dsdb_search(d_state->sam_ctx, mem_ctx, &res, ldb_get_default_basedn(d_state->sam_ctx),
 			  LDB_SCOPE_SUBTREE, attrs, 0, "%s", filter);
 	if (ret != LDB_SUCCESS) {
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;

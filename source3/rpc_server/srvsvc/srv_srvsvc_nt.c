@@ -29,7 +29,8 @@
 #include "../librpc/gen_ndr/srv_srvsvc.h"
 #include "../libcli/security/security.h"
 #include "../librpc/gen_ndr/ndr_security.h"
-#include "dbwrap.h"
+#include "../librpc/gen_ndr/open_files.h"
+#include "dbwrap/dbwrap.h"
 #include "session.h"
 #include "../lib/util/util_pw.h"
 #include "smbd/smbd.h"
@@ -79,11 +80,14 @@ static int pipe_enum_fn( struct db_record *rec, void *p)
 	int i = fenum->ctr3->count;
 	char *fullpath = NULL;
 	const char *username;
+	TDB_DATA value;
 
-	if (rec->value.dsize != sizeof(struct pipe_open_rec))
+	value = dbwrap_record_get_value(rec);
+
+	if (value.dsize != sizeof(struct pipe_open_rec))
 		return 0;
 
-	memcpy(&prec, rec->value.dptr, sizeof(struct pipe_open_rec));
+	memcpy(&prec, value.dptr, sizeof(struct pipe_open_rec));
 
 	if ( !process_exists(prec.pid) ) {
 		return 0;
@@ -247,18 +251,19 @@ static WERROR net_enum_files(TALLOC_CTX *ctx,
 /*******************************************************************
  Utility function to get the 'type' of a share from an snum.
  ********************************************************************/
-static uint32 get_share_type(int snum)
+static enum srvsvc_ShareType get_share_type(int snum)
 {
 	/* work out the share type */
-	uint32 type = STYPE_DISKTREE;
+	enum srvsvc_ShareType type = STYPE_DISKTREE;
 
-	if (lp_print_ok(snum))
-		type = STYPE_PRINTQ;
-	if (strequal(lp_fstype(snum), "IPC"))
-		type = STYPE_IPC;
-	if (lp_administrative_share(snum))
-		type |= STYPE_HIDDEN;
-
+	if (lp_print_ok(snum)) {
+		type = lp_administrative_share(snum)
+			? STYPE_PRINTQ_HIDDEN : STYPE_PRINTQ;
+	}
+	if (strequal(lp_fstype(snum), "IPC")) {
+		type = lp_administrative_share(snum)
+			? STYPE_IPC_HIDDEN : STYPE_IPC;
+	}
 	return type;
 }
 
@@ -287,7 +292,7 @@ static void init_srv_share_info_1(struct pipes_struct *p,
 		remark = talloc_sub_advanced(
 			p->mem_ctx, lp_servicename(snum),
 			get_current_username(), lp_pathname(snum),
-			p->session_info->utok.uid, get_current_username(),
+			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 
@@ -315,7 +320,7 @@ static void init_srv_share_info_2(struct pipes_struct *p,
 		remark = talloc_sub_advanced(
 			p->mem_ctx, lp_servicename(snum),
 			get_current_username(), lp_pathname(snum),
-			p->session_info->utok.uid, get_current_username(),
+			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 	path = talloc_asprintf(p->mem_ctx,
@@ -380,7 +385,7 @@ static void init_srv_share_info_501(struct pipes_struct *p,
 		remark = talloc_sub_advanced(
 			p->mem_ctx, lp_servicename(snum),
 			get_current_username(), lp_pathname(snum),
-			p->session_info->utok.uid, get_current_username(),
+			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 
@@ -409,7 +414,7 @@ static void init_srv_share_info_502(struct pipes_struct *p,
 		remark = talloc_sub_advanced(
 			p->mem_ctx, lp_servicename(snum),
 			get_current_username(), lp_pathname(snum),
-			p->session_info->utok.uid, get_current_username(),
+			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 	path = talloc_asprintf(ctx, "C:%s", lp_pathname(snum));
@@ -450,7 +455,7 @@ static void init_srv_share_info_1004(struct pipes_struct *p,
 		remark = talloc_sub_advanced(
 			p->mem_ctx, lp_servicename(snum),
 			get_current_username(), lp_pathname(snum),
-			p->session_info->utok.uid, get_current_username(),
+			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 
@@ -540,8 +545,8 @@ static bool is_enumeration_allowed(struct pipes_struct *p,
     if (!lp_access_based_share_enum(snum))
         return true;
 
-    return share_access_check(p->session_info->security_token, lp_servicename(snum),
-                              FILE_READ_DATA);
+    return share_access_check(p->session_info->security_token,
+			      lp_servicename(snum), FILE_READ_DATA, NULL);
 }
 
 /*******************************************************************
@@ -569,7 +574,7 @@ static WERROR init_srv_share_info_ctr(struct pipes_struct *p,
 
 	/* Ensure all the usershares are loaded. */
 	become_root();
-	load_usershare_shares(msg_ctx_to_sconn(p->msg_ctx));
+	load_usershare_shares(NULL, connections_snum_used);
 	load_registry_shares();
 	num_services = lp_numservices();
 	unbecome_root();
@@ -1332,7 +1337,7 @@ WERROR _srvsvc_NetSessDel(struct pipes_struct *p,
 
 	/* fail out now if you are not root or not a domain admin */
 
-	if ((p->session_info->utok.uid != sec_initial_uid()) &&
+	if ((p->session_info->unix_token->uid != sec_initial_uid()) &&
 		( ! nt_token_check_domain_rid(p->session_info->security_token,
 					      DOMAIN_RID_ADMINS))) {
 
@@ -1346,7 +1351,7 @@ WERROR _srvsvc_NetSessDel(struct pipes_struct *p,
 
 			NTSTATUS ntstat;
 
-			if (p->session_info->utok.uid != sec_initial_uid()) {
+			if (p->session_info->unix_token->uid != sec_initial_uid()) {
 				not_root = True;
 				become_root();
 			}
@@ -1571,11 +1576,11 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 
 	/* fail out now if you are not root and not a disk op */
 
-	if ( p->session_info->utok.uid != sec_initial_uid() && !is_disk_op ) {
+	if ( p->session_info->unix_token->uid != sec_initial_uid() && !is_disk_op ) {
 		DEBUG(2,("_srvsvc_NetShareSetInfo: uid %u doesn't have the "
 			"SeDiskOperatorPrivilege privilege needed to modify "
 			"share %s\n",
-			(unsigned int)p->session_info->utok.uid,
+			(unsigned int)p->session_info->unix_token->uid,
 			share_name ));
 		return WERR_ACCESS_DENIED;
 	}
@@ -1772,7 +1777,7 @@ WERROR _srvsvc_NetShareAdd(struct pipes_struct *p,
 
 	is_disk_op = security_token_has_privilege(p->session_info->security_token, SEC_PRIV_DISK_OPERATOR);
 
-	if (p->session_info->utok.uid != sec_initial_uid()  && !is_disk_op )
+	if (p->session_info->unix_token->uid != sec_initial_uid()  && !is_disk_op )
 		return WERR_ACCESS_DENIED;
 
 	if (!lp_add_share_cmd() || !*lp_add_share_cmd()) {
@@ -1978,7 +1983,7 @@ WERROR _srvsvc_NetShareDel(struct pipes_struct *p,
 
 	is_disk_op = security_token_has_privilege(p->session_info->security_token, SEC_PRIV_DISK_OPERATOR);
 
-	if (p->session_info->utok.uid != sec_initial_uid()  && !is_disk_op )
+	if (p->session_info->unix_token->uid != sec_initial_uid()  && !is_disk_op )
 		return WERR_ACCESS_DENIED;
 
 	if (!lp_delete_share_cmd() || !*lp_delete_share_cmd()) {
@@ -2128,9 +2133,9 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), &conn, snum,
-				       lp_pathname(snum), p->session_info,
-				       &oldcwd);
+	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+				       snum, lp_pathname(snum),
+				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(10, ("create_conn_struct failed: %s\n",
 			   nt_errstr(nt_status)));
@@ -2269,9 +2274,9 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), &conn, snum,
-				       lp_pathname(snum), p->session_info,
-				       &oldcwd);
+	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+				       snum, lp_pathname(snum),
+				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(10, ("create_conn_struct failed: %s\n",
 			   nt_errstr(nt_status)));
@@ -2548,7 +2553,7 @@ WERROR _srvsvc_NetFileClose(struct pipes_struct *p,
 
 	is_disk_op = security_token_has_privilege(p->session_info->security_token, SEC_PRIV_DISK_OPERATOR);
 
-	if (p->session_info->utok.uid != sec_initial_uid() && !is_disk_op) {
+	if (p->session_info->unix_token->uid != sec_initial_uid() && !is_disk_op) {
 		return WERR_ACCESS_DENIED;
 	}
 

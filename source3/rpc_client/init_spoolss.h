@@ -34,5 +34,14 @@ WERROR push_spoolss_PrinterData(TALLOC_CTX *mem_ctx, DATA_BLOB *blob,
 				union spoolss_PrinterData *data);
 void spoolss_printerinfo2_to_setprinterinfo2(const struct spoolss_PrinterInfo2 *i,
 					     struct spoolss_SetPrinterInfo2 *s);
+bool driver_info_ctr_to_info8(struct spoolss_AddDriverInfoCtr *r,
+			      struct spoolss_DriverInfo8 *_info8);
+
+WERROR spoolss_create_default_devmode(TALLOC_CTX *mem_ctx,
+				      const char *devicename,
+				      struct spoolss_DeviceMode **devmode);
+
+WERROR spoolss_create_default_secdesc(TALLOC_CTX *mem_ctx,
+				      struct spoolss_security_descriptor **secdesc);
 
 #endif /* _RPC_CLIENT_INIT_SPOOLSS_H_ */

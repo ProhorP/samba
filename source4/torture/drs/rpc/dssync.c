@@ -347,6 +347,7 @@ static bool test_analyse_objects(struct torture_context *tctx,
 						 0, NULL,
 						 NULL, NULL,
 						 gensec_skey,
+						 0,
 						 ctx, &objs);
 	torture_assert_werr_ok(tctx, status, "dsdb_extended_replicated_objects_convert() failed!");
 
@@ -678,7 +679,7 @@ static bool test_GetNCChanges(struct torture_context *tctx,
 		}
 	}
 	status = gensec_session_key(ctx->new_dc.drsuapi.drs_pipe->conn->security_state.generic_state,
-				    &gensec_skey);
+				    ctx, &gensec_skey);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("failed to get gensec session key: %s\n", nt_errstr(status));
 		return false;

@@ -32,7 +32,9 @@
 #include "source4/lib/events/events.h"
 #include "source4/auth/session.h"
 #include "source4/auth/system_session_proto.h"
-#include "source4/param/param.h"
+#include "lib/param/param.h"
+#include "source4/dsdb/common/util.h"
+#include "source3/include/secrets.h"
 
 struct pdb_samba4_state {
 	struct tevent_context *ev;
@@ -49,7 +51,7 @@ static NTSTATUS pdb_samba4_getsamupriv(struct pdb_samba4_state *state,
 				    TALLOC_CTX *mem_ctx,
 				    struct ldb_message **pmsg);
 static bool pdb_samba4_sid_to_id(struct pdb_methods *m, const struct dom_sid *sid,
-				 union unid_t *id, enum lsa_SidType *type);
+				 uid_t *uid, gid_t *gid, enum lsa_SidType *type);
 
 static bool pdb_samba4_pull_time(struct ldb_message *msg, const char *attr,
 			      time_t *ptime)
@@ -75,7 +77,6 @@ static struct pdb_domain_info *pdb_samba4_get_domain_info(
 	const char *dom_attrs[] = {
 		"objectSid", 
 		"objectGUID", 
-		"nTMixedDomain",
 		"fSMORoleOwner",
 		NULL
 	};
@@ -328,115 +329,232 @@ static bool pdb_samba4_add_time(struct ldb_message *msg,
 	return ldb_msg_add_fmt(msg, attrib, "%llu", (unsigned long long) nt_time);
 }
 
-/* Like in pdb_ldap(), this will need to be a function pointer when we
- * start to support 'adds' for migrations from samba3 passdb backends
- * to samba4 */
-static bool update_required(struct samu *sam, enum pdb_elements element)
-{
-	return (IS_SAM_CHANGED(sam, element));
-}
-
-static bool pdb_samba4_init_samba4_from_sam(struct pdb_samba4_state *state,
-					    struct ldb_message *existing,
-					    TALLOC_CTX *mem_ctx,
-					    struct ldb_message **pmods, 
-					    struct samu *sam)
+static int pdb_samba4_replace_by_sam(struct pdb_samba4_state *state,
+				     bool (*need_update)(const struct samu *,
+							 enum pdb_elements),
+				     struct ldb_dn *dn,
+				     struct samu *sam)
 {
 	int ret = LDB_SUCCESS;
 	const char *pw;
 	struct ldb_message *msg;
-
+	struct ldb_request *req;
+	uint32_t dsdb_flags = 0;
 	/* TODO: All fields :-) */
 
-	msg = ldb_msg_new(mem_ctx);
+	msg = ldb_msg_new(talloc_tos());
 	if (!msg) {
 		return false;
 	}
 
-	msg->dn = existing->dn;
+	msg->dn = dn;
 
-	pw = pdb_get_plaintext_passwd(sam);
-	if (update_required(sam, PDB_PLAINTEXT_PW)) {
-		if (pw == NULL) {
-			ret = LDB_ERR_OPERATIONS_ERROR;
-			goto fail;
-		}
+	/* build modify request */
+	ret = ldb_build_mod_req(&req, state->ldb, talloc_tos(), msg, NULL, NULL,
+				ldb_op_default_callback,
+				NULL);
+        if (ret != LDB_SUCCESS) {
+		talloc_free(msg);
+		return ret;
+        }
+
+	/* If we set a plaintext password, the system will
+	 * force the pwdLastSet to now() */
+	if (need_update(sam, PDB_PASSLASTSET)) {
+		dsdb_flags = DSDB_PASSWORD_BYPASS_LAST_SET;
 		
-		ret |= ldb_msg_add_string(msg, "clearTextPassword", pw);
+		ret |= pdb_samba4_add_time(msg, "pwdLastSet",
+					   pdb_get_pass_last_set_time(sam));
 	}
 
-	if (update_required(sam, PDB_FULLNAME)) {
+	pw = pdb_get_plaintext_passwd(sam);
+	if (need_update(sam, PDB_PLAINTEXT_PW)) {
+		struct ldb_val pw_utf16;
+		if (pw == NULL) {
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		
+		if (!convert_string_talloc(msg,
+					   CH_UNIX, CH_UTF16,
+					   pw, strlen(pw),
+					   (void *)&pw_utf16.data,
+					   &pw_utf16.length)) {
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		ret |= ldb_msg_add_value(msg, "clearTextPassword", &pw_utf16, NULL);
+	} else {
+		bool changed_lm_pw = false;
+		bool changed_nt_pw = false;
+		bool changed_history = false;
+		if (need_update(sam, PDB_LMPASSWD)) {
+			struct ldb_val val;
+			val.data = pdb_get_lanman_passwd(sam);
+			if (!val.data) {
+				samdb_msg_add_delete(state->ldb, msg, msg,
+						     "dBCSPwd");
+			} else {
+				val.length = LM_HASH_LEN;
+				ret |= ldb_msg_add_value(msg, "dBCSPwd", &val, NULL);
+			}
+			changed_lm_pw = true;
+		}
+		if (need_update(sam, PDB_NTPASSWD)) {
+			struct ldb_val val;
+			val.data = pdb_get_nt_passwd(sam);
+			if (!val.data) {
+				samdb_msg_add_delete(state->ldb, msg, msg,
+						     "unicodePwd");
+			} else {
+				val.length = NT_HASH_LEN;
+				ret |= ldb_msg_add_value(msg, "unicodePwd", &val, NULL);
+			}
+			changed_nt_pw = true;
+		}
+
+		/* Try to ensure we don't get out of sync */
+		if (changed_lm_pw && !changed_nt_pw) {
+			samdb_msg_add_delete(state->ldb, msg, msg,
+					     "unicodePwd");
+		} else if (changed_nt_pw && !changed_lm_pw) {
+			samdb_msg_add_delete(state->ldb, msg, msg,
+					     "dBCSPwd");
+		}
+		if (changed_lm_pw || changed_nt_pw) {
+			samdb_msg_add_delete(state->ldb, msg, msg,
+					     "supplementalCredentials");
+
+		}
+
+		if (need_update(sam, PDB_PWHISTORY)) {
+			uint32_t current_hist_len;
+			const uint8_t *history = pdb_get_pw_history(sam, &current_hist_len);
+
+			bool invalid_history = false;
+			struct samr_Password *history_hashes = talloc_array(talloc_tos(), struct samr_Password,
+									    current_hist_len);
+			if (!history) {
+				invalid_history = true;
+			} else {
+				unsigned int i;
+				static const uint8_t zeros[16];
+				/* Parse the history into the correct format */
+				for (i = 0; i < current_hist_len; i++) {
+					if (memcmp(&history[i*PW_HISTORY_ENTRY_LEN], zeros, 16) != 0) {
+						/* If the history is in the old format, with a salted hash, then we can't migrate it to AD format */
+						invalid_history = true;
+						break;
+					}
+					/* Copy out the 2nd 16 bytes of the 32 byte password history, containing the NT hash */
+					memcpy(history_hashes[i].hash,
+					       &history[(i*PW_HISTORY_ENTRY_LEN) + PW_HISTORY_SALT_LEN],
+					       sizeof(history_hashes[i].hash));
+				}
+			}
+			if (invalid_history) {
+				ret |= samdb_msg_add_delete(state->ldb, msg, msg,
+						     "ntPwdHistory");
+
+				ret |= samdb_msg_add_delete(state->ldb, msg, msg,
+						     "lmPwdHistory");
+			} else {
+				ret |= samdb_msg_add_hashes(state->ldb, msg, msg,
+							    "ntPwdHistory",
+							    history_hashes,
+							    current_hist_len);
+			}
+			changed_history = true;
+		}
+		if (changed_lm_pw || changed_nt_pw || changed_history) {
+			/* These attributes can only be modified directly by using a special control */
+			dsdb_flags = DSDB_BYPASS_PASSWORD_HASH;
+		}
+	}
+
+	/* PDB_USERSID is only allowed on ADD, handled in caller */
+	if (need_update(sam, PDB_GROUPSID)) {
+		const struct dom_sid *sid = pdb_get_group_sid(sam);
+		uint32_t rid;
+		NTSTATUS status = dom_sid_split_rid(NULL, sid, NULL, &rid);
+		if (!NT_STATUS_IS_OK(status)) {
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		if (!dom_sid_in_domain(samdb_domain_sid(state->ldb), sid)) {
+			return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+		}
+		ret |= samdb_msg_add_uint(state->ldb, msg, msg, "primaryGroupID", rid);
+	}
+	if (need_update(sam, PDB_FULLNAME)) {
 		ret |= ldb_msg_add_string(msg, "displayName", pdb_get_fullname(sam));
 	}
 
-	if (update_required(sam, PDB_SMBHOME)) {
+	if (need_update(sam, PDB_SMBHOME)) {
 		ret |= ldb_msg_add_string(msg, "homeDirectory",
 					  pdb_get_homedir(sam));
 	}
 
-	if (update_required(sam, PDB_PROFILE)) {
+	if (need_update(sam, PDB_PROFILE)) {
 		ret |= ldb_msg_add_string(msg, "profilePath",
 					  pdb_get_profile_path(sam));
 	}
 
-	if (update_required(sam, PDB_DRIVE)) {
+	if (need_update(sam, PDB_DRIVE)) {
 		ret |= ldb_msg_add_string(msg, "homeDrive",
 					  pdb_get_dir_drive(sam));
 	}
 
-	if (update_required(sam, PDB_LOGONSCRIPT)) {
+	if (need_update(sam, PDB_LOGONSCRIPT)) {
 		ret |= ldb_msg_add_string(msg, "scriptPath",
 					  pdb_get_logon_script(sam));
 	}
 
-	if (update_required(sam, PDB_KICKOFFTIME)) {
+	if (need_update(sam, PDB_KICKOFFTIME)) {
 		ret |= pdb_samba4_add_time(msg, "accountExpires",
 					pdb_get_kickoff_time(sam));
 	}
 
-	if (update_required(sam, PDB_USERNAME)) {
+	if (need_update(sam, PDB_USERNAME)) {
 		ret |= ldb_msg_add_string(msg, "samAccountName",
 					  pdb_get_username(sam));
 	}
 
-	if (update_required(sam, PDB_HOURSLEN) || update_required(sam, PDB_HOURS)) {
+	if (need_update(sam, PDB_HOURSLEN) || need_update(sam, PDB_HOURS)) {
 		struct ldb_val hours = data_blob_const(pdb_get_hours(sam), pdb_get_hours_len(sam));
 		ret |= ldb_msg_add_value(msg, "logonHours",
 					 &hours, NULL);
 	}
 
-	if (update_required(sam, PDB_ACCTCTRL)) {
-		ret |= ldb_msg_add_fmt(msg, "userAccountControl",
-				       "%d", ds_acb2uf(pdb_get_acct_ctrl(sam)));
+	if (need_update(sam, PDB_ACCTCTRL)) {
+		ret |= samdb_msg_add_acct_flags(state->ldb, msg, msg,
+						"userAccountControl", pdb_get_acct_ctrl(sam));
 	}
 
-	if (update_required(sam, PDB_COMMENT)) {
+	if (need_update(sam, PDB_COMMENT)) {
 		ret |= ldb_msg_add_string(msg, "comment",
 					  pdb_get_comment(sam));
 	}
 
-	if (update_required(sam, PDB_ACCTDESC)) {
+	if (need_update(sam, PDB_ACCTDESC)) {
 		ret |= ldb_msg_add_string(msg, "description",
 					  pdb_get_acct_desc(sam));
 	}
 
-	if (update_required(sam, PDB_WORKSTATIONS)) {
+	if (need_update(sam, PDB_WORKSTATIONS)) {
 		ret |= ldb_msg_add_string(msg, "userWorkstations",
 					  pdb_get_workstations(sam));
 	}
 
 	/* This will need work, it is actually a UTF8 'string' with internal NULLs, to handle TS parameters */
-	if (update_required(sam, PDB_MUNGEDDIAL)) {
+	if (need_update(sam, PDB_MUNGEDDIAL)) {
 		ret |= ldb_msg_add_string(msg, "userParameters",
 					  pdb_get_munged_dial(sam));
 	}
 
-	if (update_required(sam, PDB_COUNTRY_CODE)) {
+	if (need_update(sam, PDB_COUNTRY_CODE)) {
 		ret |= ldb_msg_add_fmt(msg, "countryCode",
 				       "%i", (int)pdb_get_country_code(sam));
 	}
 
-	if (update_required(sam, PDB_CODE_PAGE)) {
+	if (need_update(sam, PDB_CODE_PAGE)) {
 		ret |= ldb_msg_add_fmt(msg, "codePage",
 				       "%i", (int)pdb_get_code_page(sam));
 	}
@@ -445,28 +563,37 @@ static bool pdb_samba4_init_samba4_from_sam(struct pdb_samba4_state *state,
 	PDB_LOGONTIME,
 	PDB_LOGOFFTIME,
 	PDB_BAD_PASSWORD_TIME,
-	PDB_CANCHANGETIME,
-	PDB_MUSTCHANGETIME,
+	PDB_CANCHANGETIME, - these are calculated per policy, not stored
+	PDB_MUSTCHANGETIME, - these are calculated per policy, not stored
 	PDB_DOMAIN,
-	PDB_NTUSERNAME,
+	PDB_NTUSERNAME, - this makes no sense, and never really did
 	PDB_LOGONDIVS,
-	PDB_USERSID,
-	PDB_GROUPSID,
-	PDB_PASSLASTSET,
+	PDB_USERSID, - Handled in pdb_samba4_add_sam_account()
 	PDB_FIELDS_PRESENT,
 	PDB_BAD_PASSWORD_COUNT,
 	PDB_LOGON_COUNT,
 	PDB_UNKNOWN6,
-	PDB_LMPASSWD,
-	PDB_NTPASSWD,
-	PDB_PWHISTORY,
 	PDB_BACKEND_PRIVATE_DATA,
 
  */
+	if (ret != LDB_SUCCESS) {
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
 
-	*pmods = msg;
-fail:
-	return ret == LDB_SUCCESS;
+	if (msg->num_elements == 0) {
+		/* Nothing to do, just return success */
+		return LDB_SUCCESS;
+	}
+
+	ret = dsdb_replace(state->ldb, msg, dsdb_flags);
+
+	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to modify account record %s to set user attributes: %s\n",
+			 ldb_dn_get_linearized(msg->dn),
+			 ldb_errstring(state->ldb)));
+	}
+
+	return ret;
 }
 
 static NTSTATUS pdb_samba4_getsamupriv(struct pdb_samba4_state *state,
@@ -483,7 +610,7 @@ static NTSTATUS pdb_samba4_getsamupriv(struct pdb_samba4_state *state,
 		"badPwdCount", "logonCount", "countryCode", "codePage",
 		"unicodePwd", "dBCSPwd", NULL };
 
-	int rc = dsdb_search_one(state->ldb, mem_ctx, msg, NULL, LDB_SCOPE_SUBTREE, attrs, 0, "%s", filter); 
+	int rc = dsdb_search_one(state->ldb, mem_ctx, msg, ldb_get_default_basedn(state->ldb), LDB_SCOPE_SUBTREE, attrs, 0, "%s", filter);
 	if (rc != LDB_SUCCESS) {
 		DEBUG(10, ("ldap_search failed %s\n",
 			   ldb_errstring(state->ldb)));
@@ -580,7 +707,8 @@ static NTSTATUS pdb_samba4_create_user(struct pdb_methods *m,
 
 	/* Internally this uses transactions to ensure all the steps
 	 * happen or fail as one */
-	status = dsdb_add_user(state->ldb, tmp_ctx, name, acct_flags, &sid, &dn);
+	status = dsdb_add_user(state->ldb, tmp_ctx, name, acct_flags, NULL,
+			       &sid, &dn);
 	if (!NT_STATUS_IS_OK(status)) {
 		talloc_free(tmp_ctx);
 		return status;
@@ -625,7 +753,50 @@ static NTSTATUS pdb_samba4_delete_user(struct pdb_methods *m,
 static NTSTATUS pdb_samba4_add_sam_account(struct pdb_methods *m,
 					struct samu *sampass)
 {
-	return NT_STATUS_NOT_IMPLEMENTED;
+	int ret;
+	NTSTATUS status;
+	struct ldb_dn *dn;
+	struct pdb_samba4_state *state = talloc_get_type_abort(
+		m->private_data, struct pdb_samba4_state);
+	uint32_t acb_flags = pdb_get_acct_ctrl(sampass);
+	const char *username = pdb_get_username(sampass);
+	const struct dom_sid *user_sid = pdb_get_user_sid(sampass);
+	TALLOC_CTX *tframe = talloc_stackframe();
+
+	acb_flags &= (ACB_NORMAL|ACB_WSTRUST|ACB_SVRTRUST|ACB_DOMTRUST);
+
+	ret = ldb_transaction_start(state->ldb);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tframe);
+		return NT_STATUS_LOCK_NOT_GRANTED;
+	}
+
+	status = dsdb_add_user(state->ldb, talloc_tos(), username,
+			       acb_flags, user_sid, NULL, &dn);
+	if (!NT_STATUS_IS_OK(status)) {
+		ldb_transaction_cancel(state->ldb);
+		talloc_free(tframe);
+		return status;
+	}
+
+	ret = pdb_samba4_replace_by_sam(state, pdb_element_is_set_or_changed,
+					dn, sampass);
+	if (ret != LDB_SUCCESS) {
+		ldb_transaction_cancel(state->ldb);
+		talloc_free(tframe);
+		return dsdb_ldb_err_to_ntstatus(ret);
+	}
+
+	ret = ldb_transaction_commit(state->ldb);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to commit transaction to add and modify account record %s: %s\n",
+			 ldb_dn_get_linearized(dn),
+			 ldb_errstring(state->ldb)));
+		talloc_free(tframe);
+		return NT_STATUS_INTERNAL_DB_CORRUPTION;
+	}
+	talloc_free(tframe);
+	return NT_STATUS_OK;
 }
 
 /*
@@ -641,28 +812,11 @@ static NTSTATUS pdb_samba4_update_sam_account(struct pdb_methods *m,
 		m->private_data, struct pdb_samba4_state);
 	struct ldb_message *msg = pdb_samba4_get_samu_private(
 		m, sam);
-	struct ldb_message *replace_msg;
-	int rc;
+	int ret;
 
-	if (!pdb_samba4_init_samba4_from_sam(state, msg, talloc_tos(),
-					     &replace_msg, sam)) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	if (replace_msg->num_elements == 0) {
-		/* Nothing to do, just return success */
-		return NT_STATUS_OK;
-	}
-
-	rc = dsdb_replace(state->ldb, replace_msg, 0);
-	TALLOC_FREE(replace_msg);
-	if (rc != LDB_SUCCESS) {
-		DEBUG(10, ("dsdb_replace for %s failed: %s\n", ldb_dn_get_linearized(replace_msg->dn),
-			   ldb_errstring(state->ldb)));
-		return NT_STATUS_LDAP(rc);
-	}
-
-	return NT_STATUS_OK;
+	ret = pdb_samba4_replace_by_sam(state, pdb_element_is_changed, msg->dn,
+					sam);
+	return dsdb_ldb_err_to_ntstatus(ret);
 }
 
 static NTSTATUS pdb_samba4_delete_sam_account(struct pdb_methods *m,
@@ -707,7 +861,7 @@ static NTSTATUS pdb_samba4_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 	struct dom_sid *sid;
 	const char *str;
 	int rc;
-	union unid_t id;
+	uid_t uid;
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
 	NT_STATUS_HAVE_NO_MEMORY(tmp_ctx);
 	
@@ -720,7 +874,7 @@ static NTSTATUS pdb_samba4_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rc = dsdb_search_one(state->ldb, tmp_ctx, &msg, NULL, LDB_SCOPE_SUBTREE, attrs, 0, "%s", expression);
+	rc = dsdb_search_one(state->ldb, tmp_ctx, &msg, ldb_get_default_basedn(state->ldb), LDB_SCOPE_SUBTREE, attrs, 0, "%s", expression);
 	if (rc == LDB_ERR_NO_SUCH_OBJECT) {
 		talloc_free(tmp_ctx);
 		return NT_STATUS_NO_SUCH_GROUP;
@@ -740,7 +894,7 @@ static NTSTATUS pdb_samba4_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 	
 	map->sid = *sid;
 	
-	if (!pdb_samba4_sid_to_id(m, sid, &id, &map->sid_name_use)) {
+	if (!pdb_samba4_sid_to_id(m, sid, &uid, &map->gid, &map->sid_name_use)) {
 		talloc_free(tmp_ctx);
 		return NT_STATUS_NO_SUCH_GROUP;
 	}
@@ -748,7 +902,6 @@ static NTSTATUS pdb_samba4_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 		DEBUG(1, (__location__ "Got SID_NAME_USER when searching for a group with %s", expression));
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
-	map->gid = id.gid;
 
 	str = ldb_msg_find_attr_as_string(msg, "samAccountName",
 					  NULL);
@@ -756,14 +909,22 @@ static NTSTATUS pdb_samba4_getgrfilter(struct pdb_methods *m, GROUP_MAP *map,
 		talloc_free(tmp_ctx);
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
-	fstrcpy(map->nt_name, str);
+	map->nt_name = talloc_strdup(map, str);
+	if (!map->nt_name) {
+		talloc_free(tmp_ctx);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	str = ldb_msg_find_attr_as_string(msg, "description",
 					    NULL);
 	if (str != NULL) {
-		fstrcpy(map->comment, str);
+		map->comment = talloc_strdup(map, str);
 	} else {
-		map->comment[0] = '\0';
+		map->comment = talloc_strdup(map, "");
+	}
+	if (!map->comment) {
+		talloc_free(tmp_ctx);
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	talloc_free(tmp_ctx);
@@ -926,7 +1087,7 @@ static NTSTATUS pdb_samba4_delete_group_mapping_entry(struct pdb_methods *m,
 static NTSTATUS pdb_samba4_enum_group_mapping(struct pdb_methods *m,
 					   const struct dom_sid *sid,
 					   enum lsa_SidType sid_name_use,
-					   GROUP_MAP **pp_rmap,
+					   GROUP_MAP ***pp_rmap,
 					   size_t *p_num_entries,
 					   bool unix_only)
 {
@@ -1679,7 +1840,7 @@ static bool pdb_samba4_search_filter(struct pdb_methods *m,
 		return false;
 	}
 
-	rc = dsdb_search(state->ldb, tmp_ctx, &res, NULL, LDB_SCOPE_SUBTREE, attrs, 0, "%s", expression);
+	rc = dsdb_search(state->ldb, tmp_ctx, &res, ldb_get_default_basedn(state->ldb), LDB_SCOPE_SUBTREE, attrs, 0, "%s", expression);
 	if (rc != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
 		DEBUG(10, ("dsdb_search failed: %s\n",
@@ -1848,7 +2009,7 @@ static bool pdb_samba4_gid_to_sid(struct pdb_methods *m, gid_t gid,
 }
 
 static bool pdb_samba4_sid_to_id(struct pdb_methods *m, const struct dom_sid *sid,
-				 union unid_t *id, enum lsa_SidType *type)
+				 uid_t *uid, gid_t *gid, enum lsa_SidType *type)
 {
 	struct pdb_samba4_state *state = talloc_get_type_abort(
 		m->private_data, struct pdb_samba4_state);
@@ -1906,7 +2067,7 @@ static bool pdb_samba4_sid_to_id(struct pdb_methods *m, const struct dom_sid *si
 			return false;
 		}
 		if (id_map.xid.type == ID_TYPE_GID || id_map.xid.type == ID_TYPE_BOTH) {
-			id->gid = id_map.xid.id;
+			*gid = id_map.xid.id;
 			return true;
 		}
 		return false;
@@ -1923,7 +2084,7 @@ static bool pdb_samba4_sid_to_id(struct pdb_methods *m, const struct dom_sid *si
 			return false;
 		}
 		if (id_map.xid.type == ID_TYPE_UID || id_map.xid.type == ID_TYPE_BOTH) {
-			id->uid = id_map.xid.id;
+			*uid = id_map.xid.id;
 			return true;
 		}
 		return false;
@@ -2035,6 +2196,40 @@ static void free_private_data(void **vp)
 	return;
 }
 
+static NTSTATUS pdb_samba4_init_secrets(struct pdb_methods *m)
+{
+	struct pdb_domain_info *dom_info;
+	bool ret;
+
+	dom_info = pdb_samba4_get_domain_info(m, m);
+	if (!dom_info) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+
+	secrets_clear_domain_protection(dom_info->name);
+	ret = secrets_store_domain_sid(dom_info->name,
+				       &dom_info->sid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_store_domain_guid(dom_info->name,
+				        &dom_info->guid);
+	if (!ret) {
+		goto done;
+	}
+	ret = secrets_mark_domain_protected(dom_info->name);
+	if (!ret) {
+		goto done;
+	}
+
+done:
+	TALLOC_FREE(dom_info);
+	if (!ret) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS pdb_init_samba4(struct pdb_methods **pdb_method,
 			     const char *location)
 {
@@ -2056,30 +2251,46 @@ static NTSTATUS pdb_init_samba4(struct pdb_methods **pdb_method,
 
 	state->ev = s4_event_context_init(state);
 	if (!state->ev) {
-		DEBUG(10, ("s4_event_context_init failed\n"));
-		goto fail;
+		DEBUG(0, ("s4_event_context_init failed\n"));
+		goto nomem;
 	}
 
 	state->lp_ctx = loadparm_init_s3(state, loadparm_s3_context());
 	if (state->lp_ctx == NULL) {
-		DEBUG(10, ("loadparm_init_s3 failed\n"));
-		goto fail;
+		DEBUG(0, ("loadparm_init_s3 failed\n"));
+		goto nomem;
 	}
 
-	state->ldb = samdb_connect(state,
+	if (location) {
+		state->ldb = samdb_connect_url(state,
+				   state->ev,
+				   state->lp_ctx,
+				   system_session(state->lp_ctx),
+				   0, location);
+	} else {
+		state->ldb = samdb_connect(state,
 				   state->ev,
 				   state->lp_ctx,
 				   system_session(state->lp_ctx), 0);
+	}
 
 	if (!state->ldb) {
-		DEBUG(10, ("samdb_connect failed\n"));
+		DEBUG(0, ("samdb_connect failed\n"));
+		status = NT_STATUS_INTERNAL_ERROR;
 		goto fail;
 	}
 
 	state->idmap_ctx = idmap_init(state, state->ev,
 				      state->lp_ctx);
 	if (!state->idmap_ctx) {
-		DEBUG(10, ("samdb_connect failed\n"));
+		DEBUG(0, ("idmap failed\n"));
+		status = NT_STATUS_INTERNAL_ERROR;
+		goto fail;
+	}
+
+	status = pdb_samba4_init_secrets(m);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("pdb_samba4_init_secrets failed!\n"));
 		goto fail;
 	}
 

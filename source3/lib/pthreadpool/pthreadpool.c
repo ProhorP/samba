@@ -17,16 +17,17 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "config.h"
 #include <errno.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
 #include <assert.h>
 #include <fcntl.h>
-#include <sys/time.h>
+#include "system/time.h"
+#include "system/filesys.h"
 
 #include "pthreadpool.h"
 #include "lib/util/dlinklist.h"
@@ -284,16 +285,16 @@ static void pthreadpool_join_children(struct pthreadpool *pool)
  * Fetch a finished job number from the signal pipe
  */
 
-int pthreadpool_finished_job(struct pthreadpool *pool)
+int pthreadpool_finished_job(struct pthreadpool *pool, int *jobid)
 {
-	int result;
+	int ret_jobid;
 	ssize_t nread;
 
 	nread = -1;
 	errno = EINTR;
 
 	while ((nread == -1) && (errno == EINTR)) {
-		nread = read(pool->sig_pipe[0], &result, sizeof(int));
+		nread = read(pool->sig_pipe[0], &ret_jobid, sizeof(int));
 	}
 	if (nread == -1) {
 		return errno;
@@ -301,7 +302,8 @@ int pthreadpool_finished_job(struct pthreadpool *pool)
 	if (nread != sizeof(int)) {
 		return EINVAL;
 	}
-	return result;
+	*jobid = ret_jobid;
+	return 0;
 }
 
 /*

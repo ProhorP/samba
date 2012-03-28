@@ -24,6 +24,7 @@
  * @date   Sep 2010
  */
 
+#include "includes.h"
 #include "reg_format.h"
 #include "reg_parse.h"
 #include "reg_parse_internal.h"
@@ -92,7 +93,7 @@ static int
 cbuf_print_hive(cbuf* ost, const char* hive, int len, const struct fmt_key* fmt)
 {
 	if (fmt->hive_fmt != FMT_HIVE_PRESERVE) {
-		const struct hive_info* hinfo = hive_info(hive, len);
+		const struct hive_info* hinfo = hive_info(hive);
 		if (hinfo == NULL) {
 			DEBUG(0, ("Unknown hive %*s", len, hive));
 		} else {
@@ -325,6 +326,21 @@ done:
 	return ret;
 }
 
+static bool is_zero_terminated_ucs2(const uint8_t* data, size_t len) {
+	const size_t idx = len/sizeof(smb_ucs2_t);
+	const smb_ucs2_t *str = (const smb_ucs2_t*)data;
+
+	if ((len % sizeof(smb_ucs2_t)) != 0) {
+		return false;
+	}
+
+	if (idx == 0) {
+		return false;
+	}
+
+	return (str[idx-1] == 0);
+}
+
 int reg_format_value(struct reg_format* f, const char* name, uint32_t type,
 		     const uint8_t* data, size_t len)
 {
@@ -333,7 +349,9 @@ int reg_format_value(struct reg_format* f, const char* name, uint32_t type,
 
 	switch (type) {
 	case REG_SZ:
-		if (!(f->flags & REG_FMT_HEX_SZ)) {
+		if (!(f->flags & REG_FMT_HEX_SZ)
+		    && is_zero_terminated_ucs2(data, len))
+		{
 			char* str = NULL;
 			size_t dlen;
 			if (pull_ucs2_talloc(mem_ctx, &str, (const smb_ucs2_t*)data, &dlen)) {

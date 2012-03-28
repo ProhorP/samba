@@ -1,4 +1,4 @@
-What's new in Samba 4 alpha16
+What's new in Samba 4 alpha18
 =============================
 
 Samba 4.0 will be the next version of the Samba suite and incorporates
@@ -10,14 +10,11 @@ and above.
 WARNINGS
 ========
 
-Samba4 alpha16 is not a final Samba release, however we are now making
+Samba4 alpha18 is not a final Samba release, however we are now making
 good progress towards a Samba 4.0 release, of which this is a preview.
 Be aware the this release contains both the technology of Samba 3.6
 (that you can reasonably expect to upgrade existing Samba 3.x releases
 to) and the AD domain controller work previously known as 'samba4'.
-No migration path is currently provided between these two sets of
-technology.  These missing migration paths will be the focus of
-development between now and a Samba 4.0 release.
 
 While binaries for the stable file server are provided in this
 release, for a stable, supported file server, Samba3 domain or AD
@@ -58,36 +55,74 @@ programs to interface to Samba's internals, and many tools and
 internal workings of the DC code is now implemented in python.
 
 
-CHANGES SINCE alpha15
+CHANGES SINCE alpha17
 =====================
 
-For a list of changes since alpha 15, please see the git log.
+For a list of changes since alpha 17, please see the git log.
 
 $ git clone git://git.samba.org/samba.git
 $ cd samba.git
-$ git log release-4-0-0alpha15..release-4-0-0alpha16
+$ git log samba-4.0.0alpha17..samba-4.0.0alpha18
 
-The biggest user-visible change is that binaries from the Samba 3.x
-series of development are now built and installed.  These binaries
-(smbd, nmbd, winbindd, net, testparm, etc) operate much as they do in
-the Samba 3.6 release candidates. 
+Some major user-visible changes include:
 
-CHANGES
-=======
+Improvements to DNS servers.  Samba4 now has 3 options for the
+handling of DNS:  The default option is to use the BIND 9.8 DLZ plugin,
+which stores the information about the DNS zone in the directory.
+There is also an internal DNS server (but which does not support
+secure DNS updates at this time) and the flat file BIND 9.8 backend
+(storing the data in traditional zone files).
 
-smb.conf changes
-----------------
+To migrate from zone files to directory based DNS servers, a migration
+tool (upgradedns) has been added.
 
-   Parameter Name                      Description     Default
-   --------------                      -----------     -------
-   announce version 		       Removed
-   announce as	 		       Removed
+samba-tool dns commands to manage DNS records stored in directory.
 
-Those familiar with Samba 3 can find a list of user-visible changes
-between the two technology sets provided in the NEWS file.
+smbwrapper (a user-space file system based on LD_PRELOAD) has been
+removed.  
+
+Improvement to the upgrade process between Samba 3.x domains and Samba
+4.0 AD domains (samba-tool domain samba3upgrade).
+
+Some major but less visible changes include:
+
+Major work to bridge the code gap between the major parts of the code
+base, including a common loadparm wrapper, smb client library, as well
+as NTLMSSP, GSSAPI and SPNEGO code as part of the GENSEC
+authentication and authorization stack.
+
+Preparation work for moving to TDB2, a new version of Samba's core TDB
+database.
+
+smbtorture tests for SMB 2 and SMB 2.2 as the team improves and
+develops support these new protocols.
+
+Major cleanup and removal of global variables in the smbd SMB and SMB2 server.
+
+Heimdal security issue 2012-01-11 - libkrb5 checksum - denial of serice
+http://www.h5l.org//advisories.html?show=2012-01-11
 
 KNOWN ISSUES
 ============
+
+- upgradeprovision should not be run when upgrading to this release
+  from a recent release.  No important database format changes have
+  been made since alpha16.  
+
+- The BIND 9 DLZ plugin is compatible only with BIND 9.8, not BIND 9.9. 
+
+- Systems with tdb or ldb installed as a system library may have
+  difficulty building this release of Samba4.  The --disable-tdb2
+  configure switch may be of assistance.  (Distributors who (rightly)
+  have difficulty with this may wish to wait until a future release,
+  which will soon fix this issue).
+
+- Installation on systems without a system iconv (and developer
+  headers at compile time) is known to cause errors when dealing with
+  non-ASCII characters.
+
+- In some situations, group members may not be upgraded by the
+  samba-tool domain samba3upgrade tool
 
 - Domain member support in the 'samba' binary is in it's infancy, and
   is not comparable to the support found in winbindd.  As such, do not
@@ -96,8 +131,8 @@ KNOWN ISSUES
 
 - There is no printing support in the 'samba' binary (use smbd instead)
 
-- There is no NetBIOS browsing support in the 'samba' binary (use nmbd
-  and smbd instead)
+- There is no NetBIOS browsing support (network neighbourhood) in the
+  'samba' binary (use nmbd and smbd instead)
 
 - Clock Synchronisation is critical.  Many 'wrong password' errors are
   actually due to Kerberos objecting to a clock skew between client
@@ -107,14 +142,6 @@ KNOWN ISSUES
 - The DRS replication code may fail.  Please contact the team if you
   experience issues with DRS replication, as we have fixed many issues
   here in response to feedback from our production users. 
-
-- Users upgrading existing databases to Samba4 should carefully
-  consult upgrading-samba4.txt.  We have made a number of changes in
-  this release that should make it easier to upgrade in future.
-  Btw: there exists also a script under the "setup" directory of the
-  source distribution called "upgrade_from_s3" which should allow a step-up
-  from Samba3 to Samba4. It's not included yet in the binary distributions
-  since it's completely experimental!
 
 RUNNING Samba 4.0 as an AD DC
 =============================

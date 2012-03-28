@@ -41,11 +41,9 @@ static NTSTATUS smbd_smb2_ioctl_recv(struct tevent_req *req,
 static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq);
 NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 {
-	const uint8_t *inhdr;
+	NTSTATUS status;
 	const uint8_t *inbody;
 	int i = req->current_idx;
-	size_t expected_body_size = 0x39;
-	size_t body_size;
 	uint32_t in_ctl_code;
 	uint64_t in_file_id_persistent;
 	uint64_t in_file_id_volatile;
@@ -56,17 +54,11 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	uint32_t in_flags;
 	struct tevent_req *subreq;
 
-	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
-	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
+	status = smbd_smb2_request_verify_sizes(req, 0x39);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(req, status);
 	}
-
 	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_ctl_code		= IVAL(inbody, 0x04);
 	in_file_id_persistent	= BVAL(inbody, 0x08);
@@ -76,7 +68,16 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	in_max_output_length	= IVAL(inbody, 0x2C);
 	in_flags		= IVAL(inbody, 0x30);
 
-	if (in_input_offset != (SMB2_HDR_BODY + (body_size & 0xFFFFFFFE))) {
+	/*
+	 * InputOffset (4 bytes): The offset, in bytes, from the beginning of
+	 * the SMB2 header to the input data buffer. If no input data is
+	 * required for the FSCTL/IOCTL command being issued, the client SHOULD
+	 * set this value to 0.<49>
+	 * <49> If no input data is required for the FSCTL/IOCTL command being
+	 * issued, Windows-based clients set this field to any value.
+	 */
+	if ((in_input_length > 0)
+	 && (in_input_offset != (SMB2_HDR_BODY + req->in.vector[i+1].iov_len))) {
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -97,7 +98,7 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	}
 
 	subreq = smbd_smb2_ioctl_send(req,
-				      req->sconn->smb2.event_ctx,
+				      req->sconn->ev_ctx,
 				      req,
 				      in_ctl_code,
 				      in_file_id_volatile,
@@ -109,7 +110,7 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	}
 	tevent_req_set_callback(subreq, smbd_smb2_request_ioctl_done, req);
 
-	return smbd_smb2_request_pending_queue(req, subreq);
+	return smbd_smb2_request_pending_queue(req, subreq, 1000);
 }
 
 static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
@@ -118,7 +119,6 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 					struct smbd_smb2_request);
 	const uint8_t *inbody;
 	int i = req->current_idx;
-	uint8_t *outhdr;
 	DATA_BLOB outbody;
 	DATA_BLOB outdyn;
 	uint32_t in_ctl_code;
@@ -158,8 +158,6 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 	in_ctl_code		= IVAL(inbody, 0x04);
 	in_file_id_persistent	= BVAL(inbody, 0x08);
 	in_file_id_volatile	= BVAL(inbody, 0x10);
-
-	outhdr = (uint8_t *)req->out.vector[i].iov_base;
 
 	outbody = data_blob_talloc(req->out.vector, NULL, 0x30);
 	if (outbody.data == NULL) {
@@ -554,7 +552,7 @@ static void smbd_smb2_ioctl_pipe_write_done(struct tevent_req *subreq)
 
 	TALLOC_FREE(subreq);
 	subreq = np_read_send(state->smbreq->conn,
-			      state->smb2req->sconn->smb2.event_ctx,
+			      state->smb2req->sconn->ev_ctx,
 			      state->fsp->fake_file_handle,
 			      state->out_output.data,
 			      state->out_output.length);
@@ -589,6 +587,11 @@ static void smbd_smb2_ioctl_pipe_read_done(struct tevent_req *subreq)
 	}
 
 	state->out_output.length = nread;
+
+	if (is_data_outstanding) {
+		tevent_req_nterror(req, STATUS_BUFFER_OVERFLOW);
+		return;
+	}
 
 	tevent_req_done(req);
 }

@@ -146,7 +146,8 @@ static int count_commas(const char *str)
  attributes and a user SID.
 *********************************************************************/
 
-static NTSTATUS samu_set_unix_internal(struct samu *user, const struct passwd *pwd, bool create)
+static NTSTATUS samu_set_unix_internal(struct pdb_methods *methods,
+				       struct samu *user, const struct passwd *pwd, bool create)
 {
 	const char *guest_account = lp_guestaccount();
 	const char *domain = lp_netbios_name();
@@ -246,11 +247,11 @@ static NTSTATUS samu_set_unix_internal(struct samu *user, const struct passwd *p
 	   initialized and will fill in these fields later (such as from a 
 	   netr_SamInfo3 structure) */
 
-	if ( create && (pdb_capabilities() & PDB_CAP_STORE_RIDS)) {
+	if ( create && (methods->capabilities(methods) & PDB_CAP_STORE_RIDS)) {
 		uint32_t user_rid;
 		struct dom_sid user_sid;
 
-		if ( !pdb_new_rid( &user_rid ) ) {
+		if ( !methods->new_rid(methods, &user_rid) ) {
 			DEBUG(3, ("Could not allocate a new RID\n"));
 			return NT_STATUS_ACCESS_DENIED;
 		}
@@ -282,12 +283,13 @@ static NTSTATUS samu_set_unix_internal(struct samu *user, const struct passwd *p
 
 NTSTATUS samu_set_unix(struct samu *user, const struct passwd *pwd)
 {
-	return samu_set_unix_internal( user, pwd, False );
+	return samu_set_unix_internal( NULL, user, pwd, False );
 }
 
-NTSTATUS samu_alloc_rid_unix(struct samu *user, const struct passwd *pwd)
+NTSTATUS samu_alloc_rid_unix(struct pdb_methods *methods,
+			     struct samu *user, const struct passwd *pwd)
 {
-	return samu_set_unix_internal( user, pwd, True );
+	return samu_set_unix_internal( methods, user, pwd, True );
 }
 
 /**********************************************************
@@ -407,8 +409,8 @@ bool pdb_gethexpwd(const char *p, unsigned char *pwd)
 		return false;
 
 	for (i = 0; i < 32; i += 2) {
-		hinybble = toupper_ascii(p[i]);
-		lonybble = toupper_ascii(p[i + 1]);
+		hinybble = toupper_m(p[i]);
+		lonybble = toupper_m(p[i + 1]);
 
 		p1 = strchr(hexchars, hinybble);
 		p2 = strchr(hexchars, lonybble);
@@ -457,8 +459,8 @@ bool pdb_gethexhours(const char *p, unsigned char *hours)
 	}
 
 	for (i = 0; i < 42; i += 2) {
-		hinybble = toupper_ascii(p[i]);
-		lonybble = toupper_ascii(p[i + 1]);
+		hinybble = toupper_m(p[i]);
+		lonybble = toupper_m(p[i + 1]);
 
 		p1 = strchr(hexchars, hinybble);
 		p2 = strchr(hexchars, lonybble);
@@ -589,7 +591,7 @@ bool algorithmic_pdb_rid_is_user(uint32_t rid)
 bool lookup_global_sam_name(const char *name, int flags, uint32_t *rid,
 			    enum lsa_SidType *type)
 {
-	GROUP_MAP map;
+	GROUP_MAP *map;
 	bool ret;
 
 	/* Windows treats "MACHINE\None" as a special name for 
@@ -643,24 +645,32 @@ bool lookup_global_sam_name(const char *name, int flags, uint32_t *rid,
 	 * Maybe it is a group ?
 	 */
 
+	map = talloc_zero(NULL, GROUP_MAP);
+	if (!map) {
+		return false;
+	}
+
 	become_root();
-	ret = pdb_getgrnam(&map, name);
+	ret = pdb_getgrnam(map, name);
 	unbecome_root();
 
  	if (!ret) {
+		TALLOC_FREE(map);
 		return False;
 	}
 
 	/* BUILTIN groups are looked up elsewhere */
-	if (!sid_check_is_in_our_domain(&map.sid)) {
+	if (!sid_check_is_in_our_domain(&map->sid)) {
 		DEBUG(10, ("Found group %s (%s) not in our domain -- "
-			   "ignoring.", name, sid_string_dbg(&map.sid)));
+			   "ignoring.", name, sid_string_dbg(&map->sid)));
+		TALLOC_FREE(map);
 		return False;
 	}
 
 	/* yes it's a mapped group */
-	sid_peek_rid(&map.sid, rid);
-	*type = map.sid_name_use;
+	sid_peek_rid(&map->sid, rid);
+	*type = map->sid_name_use;
+	TALLOC_FREE(map);
 	return True;
 }
 

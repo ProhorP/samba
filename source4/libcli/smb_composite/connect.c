@@ -34,7 +34,6 @@
 
 /* the stages of this call */
 enum connect_stage {CONNECT_SOCKET, 
-		    CONNECT_SESSION_REQUEST,
 		    CONNECT_NEGPROT,
 		    CONNECT_SESSION_SETUP,
 		    CONNECT_SESSION_SETUP_ANON,
@@ -52,11 +51,14 @@ struct connect_state {
 	struct smb_composite_sesssetup *io_setup;
 	struct smbcli_request *req;
 	struct composite_context *creq;
+	struct tevent_req *subreq;
+	struct nbt_name calling, called;
 };
 
 
 static void request_handler(struct smbcli_request *);
 static void composite_handler(struct composite_context *);
+static void subreq_handler(struct tevent_req *subreq);
 
 /*
   a tree connect request has completed
@@ -230,7 +232,8 @@ static NTSTATUS connect_negprot(struct composite_context *c,
 	struct connect_state *state = talloc_get_type(c->private_data, struct connect_state);
 	NTSTATUS status;
 
-	status = smb_raw_negotiate_recv(state->req);
+	status = smb_raw_negotiate_recv(state->subreq);
+	TALLOC_FREE(state->subreq);
 	NT_STATUS_NOT_OK_RETURN(status);
 
 	/* next step is a session setup */
@@ -281,31 +284,20 @@ static NTSTATUS connect_send_negprot(struct composite_context *c,
 {
 	struct connect_state *state = talloc_get_type(c->private_data, struct connect_state);
 
-	state->req = smb_raw_negotiate_send(state->transport, io->in.options.unicode, io->in.options.max_protocol);
-	NT_STATUS_HAVE_NO_MEMORY(state->req);
+	/* the socket is up - we can initialise the smbcli transport layer */
+	state->transport = smbcli_transport_init(state->sock, state, true,
+						 &io->in.options);
+	NT_STATUS_HAVE_NO_MEMORY(state->transport);
 
-	state->req->async.fn = request_handler;
-	state->req->async.private_data = c;
+	state->subreq = smb_raw_negotiate_send(state,
+					       state->transport->ev,
+					       state->transport,
+					       io->in.options.max_protocol);
+	NT_STATUS_HAVE_NO_MEMORY(state->subreq);
+	tevent_req_set_callback(state->subreq, subreq_handler, c);
 	state->stage = CONNECT_NEGPROT;
-	
+
 	return NT_STATUS_OK;
-}
-
-
-/*
-  a session request operation has completed
-*/
-static NTSTATUS connect_session_request(struct composite_context *c, 
-					struct smb_composite_connect *io)
-{
-	struct connect_state *state = talloc_get_type(c->private_data, struct connect_state);
-	NTSTATUS status;
-
-	status = smbcli_transport_connect_recv(state->req);
-	NT_STATUS_NOT_OK_RETURN(status);
-
-	/* next step is a negprot */
-	return connect_send_negprot(c, io);
 }
 
 /*
@@ -316,15 +308,9 @@ static NTSTATUS connect_socket(struct composite_context *c,
 {
 	struct connect_state *state = talloc_get_type(c->private_data, struct connect_state);
 	NTSTATUS status;
-	struct nbt_name calling, called;
 
 	status = smbcli_sock_connect_recv(state->creq, state, &state->sock);
 	NT_STATUS_NOT_OK_RETURN(status);
-
-	/* the socket is up - we can initialise the smbcli transport layer */
-	state->transport = smbcli_transport_init(state->sock, state, true, 
-						 &io->in.options);
-	NT_STATUS_HAVE_NO_MEMORY(state->transport);
 
 	if (is_ipaddress(state->sock->hostname) &&
 	    (state->io->in.called_name != NULL)) {
@@ -336,28 +322,8 @@ static NTSTATUS connect_socket(struct composite_context *c,
 		NT_STATUS_HAVE_NO_MEMORY(state->sock->hostname);
 	}
 
-	make_nbt_name_client(&calling, cli_credentials_get_workstation(io->in.credentials));
-
-	nbt_choose_called_name(state, &called, io->in.called_name, NBT_NAME_SERVER);
-
-	/* we have a connected socket - next step is a session
-	   request, if needed. Port 445 doesn't need it, so it goes
-	   straight to the negprot */
-	if (state->sock->port == 445) {
-		status = nbt_name_dup(state->transport, &called, 
-				      &state->transport->called);
-		NT_STATUS_NOT_OK_RETURN(status);
-		return connect_send_negprot(c, io);
-	}
-
-	state->req = smbcli_transport_connect_send(state->transport, &calling, &called);
-	NT_STATUS_HAVE_NO_MEMORY(state->req);
-
-	state->req->async.fn = request_handler;
-	state->req->async.private_data = c;
-	state->stage = CONNECT_SESSION_REQUEST;
-
-	return NT_STATUS_OK;
+	/* next step is a negprot */
+	return connect_send_negprot(c, io);
 }
 
 
@@ -371,9 +337,6 @@ static void state_handler(struct composite_context *c)
 	switch (state->stage) {
 	case CONNECT_SOCKET:
 		c->status = connect_socket(c, state->io);
-		break;
-	case CONNECT_SESSION_REQUEST:
-		c->status = connect_session_request(c, state->io);
 		break;
 	case CONNECT_NEGPROT:
 		c->status = connect_negprot(c, state->io);
@@ -421,6 +384,17 @@ static void composite_handler(struct composite_context *creq)
 }
 
 /*
+  handler for completion of a tevent_req sub-request
+*/
+static void subreq_handler(struct tevent_req *subreq)
+{
+	struct composite_context *c =
+		tevent_req_callback_data(subreq,
+		struct composite_context);
+	state_handler(c);
+}
+
+/*
   a function to establish a smbcli_tree from scratch
 */
 struct composite_context *smb_composite_connect_send(struct smb_composite_connect *io,
@@ -446,12 +420,20 @@ struct composite_context *smb_composite_connect_send(struct smb_composite_connec
 	c->state = COMPOSITE_STATE_IN_PROGRESS;
 	c->private_data = state;
 
+	make_nbt_name_client(&state->calling,
+			     cli_credentials_get_workstation(io->in.credentials));
+
+	nbt_choose_called_name(state, &state->called,
+			       io->in.called_name, NBT_NAME_SERVER);
+
 	state->creq = smbcli_sock_connect_send(state, 
 					       NULL,
 					       io->in.dest_ports,
 					       io->in.dest_host, 
 					       resolve_ctx, c->event_ctx, 
-					       io->in.socket_options);
+					       io->in.socket_options,
+					       &state->calling,
+					       &state->called);
 	if (state->creq == NULL) goto failed;
 
 	state->stage = CONNECT_SOCKET;

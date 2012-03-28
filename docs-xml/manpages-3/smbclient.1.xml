@@ -559,6 +559,17 @@
 		</varlistentry>
 
 		<varlistentry>
+		<term>backup</term>
+		<listitem><para>Toggle the state of the "backup intent" flag
+		sent to the server on directory listings and file opens. If
+		the "backup intent" flag is true, the server will try and
+		bypass some file system checks if the user has been granted
+		SE_BACKUP or SE_RESTORE privilages. This state is useful when
+		performing a backup or restore operation.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
 		<term>blocksize &lt;number&gt;</term>
 		<listitem><para>Sets the blocksize parameter for a tar operation. The default is 20.
 		Causes tar file to be written out in blocksize*TBLOCK (normally 512 byte) units.
@@ -731,6 +742,13 @@
 		<term>logon &lt;username&gt; &lt;password&gt;</term>
 		<listitem><para>Establishes a new vuid for this session by logging on again.
 		Replaces the current vuid. Prints out the new vuid. Used for internal Samba testing purposes.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>logoff</term>
+		<listitem><para>Logs the user off the server, closing the session.
+		Used for internal Samba testing purposes.
 		</para></listitem>
 		</varlistentry>
 
@@ -1041,6 +1059,30 @@
 		<listitem><para>Changes the currently used vuid in the protocol to
 		the given arbitrary number. Without an argument prints out the current
 		vuid being used. Used for internal Samba testing purposes.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>tcon &lt;sharename&gt;</term>
+		<listitem><para>Establishes a new tree connect (connection to a share).
+		Replaces the current tree connect. Prints the new tid (tree id).
+		Used for internal Samba testing purposes.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>tdis</term>
+		<listitem><para>Close the current share connection (tree disconnect).
+		Used for internal Samba testing purposes.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>tid &lt;number&gt;</term>
+		<listitem><para>Changes the current tree id (tid) in the
+		protocol to a new arbitrary number. Without an argument, it
+		prints out the tid currently used.
+		Used for internal Samba testing purposes.
 		</para></listitem>
 		</varlistentry>
 

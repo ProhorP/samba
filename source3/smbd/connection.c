@@ -20,8 +20,10 @@
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
 #include "auth.h"
+#include "../lib/tsocket/tsocket.h"
+#include "messages.h"
 
 /****************************************************************************
  Delete a connection record.
@@ -40,7 +42,7 @@ bool yield_connection(connection_struct *conn, const char *name)
 		return False;
 	}
 
-	status = rec->delete_rec(rec);
+	status = dbwrap_record_delete(rec);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG( NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND) ? 3 : 0,
 		       ("deleting connection record returned %s\n",
@@ -80,7 +82,7 @@ static int count_fn(struct db_record *rec,
 			 procid_str_static(&crec->pid), crec->cnum,
 			 crec->servicename));
 
-		status = rec->delete_rec(rec);
+		status = dbwrap_record_delete(rec);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("count_fn: tdb_delete failed with error %s\n",
 				 nt_errstr(status)));
@@ -129,6 +131,18 @@ int count_current_connections( const char *sharename, bool clear  )
 	return cs.curr_connections;
 }
 
+bool connections_snum_used(struct smbd_server_connection *unused, int snum)
+{
+	int active;
+
+	active = count_current_connections(lp_servicename(snum), true);
+	if (active > 0) {
+		return true;
+	}
+
+	return false;
+}
+
 /****************************************************************************
  Claim an entry in the connections database.
 ****************************************************************************/
@@ -137,6 +151,7 @@ bool claim_connection(connection_struct *conn, const char *name)
 {
 	struct db_record *rec;
 	struct connections_data crec;
+	char *raddr;
 	TDB_DATA dbuf;
 	NTSTATUS status;
 
@@ -147,24 +162,33 @@ bool claim_connection(connection_struct *conn, const char *name)
 		return False;
 	}
 
+	/* Make clear that we require the optional unix_token in the source3 code */
+	SMB_ASSERT(conn->session_info->unix_token);
+
 	/* fill in the crec */
 	ZERO_STRUCT(crec);
 	crec.magic = 0x280267;
-	crec.pid = sconn_server_id(conn->sconn);
+	crec.pid = messaging_server_id(conn->sconn->msg_ctx);
 	crec.cnum = conn->cnum;
-	crec.uid = conn->session_info->utok.uid;
-	crec.gid = conn->session_info->utok.gid;
+	crec.uid = conn->session_info->unix_token->uid;
+	crec.gid = conn->session_info->unix_token->gid;
 	strlcpy(crec.servicename, lp_servicename(SNUM(conn)),
 		sizeof(crec.servicename));
 	crec.start = time(NULL);
 
+	raddr = tsocket_address_inet_addr_string(conn->sconn->remote_address,
+						 talloc_tos());
+	if (raddr == NULL) {
+		return false;
+	}
+
 	strlcpy(crec.machine,get_remote_machine_name(),sizeof(crec.machine));
-	strlcpy(crec.addr, conn->sconn->client_id.addr, sizeof(crec.addr));
+	strlcpy(crec.addr, raddr, sizeof(crec.addr));
 
 	dbuf.dptr = (uint8 *)&crec;
 	dbuf.dsize = sizeof(crec);
 
-	status = rec->store(rec, dbuf, TDB_REPLACE);
+	status = dbwrap_record_store(rec, dbuf, TDB_REPLACE);
 
 	TALLOC_FREE(rec);
 

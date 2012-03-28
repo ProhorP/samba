@@ -22,7 +22,7 @@
 */
 
 #include "includes.h"
-#include "popt_common.h"
+#include "auth_info.h"
 #include "secrets.h"
 
 /**************************************************************************n
@@ -39,7 +39,7 @@ struct user_auth_info *user_auth_info_init(TALLOC_CTX *mem_ctx)
 		return NULL;
 	}
 
-	result->signing_state = Undefined;
+	result->signing_state = SMB_SIGNING_DEFAULT;
 	return result;
 }
 
@@ -104,16 +104,17 @@ void set_cmdline_auth_info_password(struct user_auth_info *auth_info,
 bool set_cmdline_auth_info_signing_state(struct user_auth_info *auth_info,
 					 const char *arg)
 {
-	auth_info->signing_state = -1;
+	auth_info->signing_state = SMB_SIGNING_DEFAULT;
 	if (strequal(arg, "off") || strequal(arg, "no") ||
 			strequal(arg, "false")) {
-		auth_info->signing_state = false;
+		auth_info->signing_state = SMB_SIGNING_OFF;
 	} else if (strequal(arg, "on") || strequal(arg, "yes") ||
+			strequal(arg, "if_required") ||
 			strequal(arg, "true") || strequal(arg, "auto")) {
-		auth_info->signing_state = true;
+		auth_info->signing_state = SMB_SIGNING_IF_REQUIRED;
 	} else if (strequal(arg, "force") || strequal(arg, "required") ||
 			strequal(arg, "forced")) {
-		auth_info->signing_state = Required;
+		auth_info->signing_state = SMB_SIGNING_REQUIRED;
 	} else {
 		return false;
 	}
@@ -188,30 +189,6 @@ bool get_cmdline_auth_info_smb_encrypt(const struct user_auth_info *auth_info)
 bool get_cmdline_auth_info_use_machine_account(const struct user_auth_info *auth_info)
 {
 	return auth_info->use_machine_account;
-}
-
-struct user_auth_info *get_cmdline_auth_info_copy(TALLOC_CTX *mem_ctx,
-						  const struct user_auth_info *src)
-{
-	struct user_auth_info *result;
-
-	result = user_auth_info_init(mem_ctx);
-	if (result == NULL) {
-		return NULL;
-	}
-
-	*result = *src;
-
-	result->username = talloc_strdup(
-		result, get_cmdline_auth_info_username(src));
-	result->password = talloc_strdup(
-		result, get_cmdline_auth_info_password(src));
-	if ((result->username == NULL) || (result->password == NULL)) {
-		TALLOC_FREE(result);
-		return NULL;
-	}
-
-	return result;
 }
 
 bool set_cmdline_auth_info_machine_account_creds(struct user_auth_info *auth_info)

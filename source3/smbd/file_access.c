@@ -27,60 +27,13 @@
 #undef  DBGC_CLASS
 #define DBGC_CLASS DBGC_ACLS
 
-/**
- * Security descriptor / NT Token level access check function.
- */
-bool can_access_file_acl(struct connection_struct *conn,
-			 const struct smb_filename *smb_fname,
-			 uint32_t access_mask)
-{
-	NTSTATUS status;
-	uint32_t access_granted;
-	struct security_descriptor *secdesc = NULL;
-	bool ret;
-
-	if (get_current_uid(conn) == (uid_t)0) {
-		/* I'm sorry sir, I didn't know you were root... */
-		return true;
-	}
-
-	status = SMB_VFS_GET_NT_ACL(conn, smb_fname->base_name,
-				    (SECINFO_OWNER |
-				     SECINFO_GROUP |
-				     SECINFO_DACL),
-				    &secdesc);
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(5, ("Could not get acl: %s\n", nt_errstr(status)));
-		ret = false;
-		goto out;
-	}
-
-	status = se_access_check(secdesc, get_current_nttok(conn),
-				 access_mask, &access_granted);
-	ret = NT_STATUS_IS_OK(status);
-
-	if (DEBUGLEVEL >= 10) {
-		DEBUG(10,("can_access_file_acl for file %s "
-			"access_mask 0x%x, access_granted 0x%x "
-			"access %s\n",
-			smb_fname_str_dbg(smb_fname),
-			(unsigned int)access_mask,
-			(unsigned int)access_granted,
-			ret ? "ALLOWED" : "DENIED" ));
-		NDR_PRINT_DEBUG(security_descriptor, secdesc);
-	}
- out:
-	TALLOC_FREE(secdesc);
-	return ret;
-}
-
 /****************************************************************************
  Actually emulate the in-kernel access checking for delete access. We need
  this to successfully return ACCESS_DENIED on a file open for delete access.
 ****************************************************************************/
 
 bool can_delete_file_in_directory(connection_struct *conn,
-				  struct smb_filename *smb_fname)
+				  const struct smb_filename *smb_fname)
 {
 	TALLOC_CTX *ctx = talloc_tos();
 	char *dname = NULL;
@@ -130,18 +83,10 @@ bool can_delete_file_in_directory(connection_struct *conn,
 	/* sticky bit means delete only by owner of file or by root or
 	 * by owner of directory. */
 	if (smb_fname_parent->st.st_ex_mode & S_ISVTX) {
-		if(SMB_VFS_STAT(conn, smb_fname) != 0) {
-			if (errno == ENOENT) {
-				/* If the file doesn't already exist then
-				 * yes we'll be able to delete it. */
-				ret = true;
-				goto out;
-			}
-			DEBUG(10,("can_delete_file_in_directory: can't "
-				  "stat file %s (%s)",
-				  smb_fname_str_dbg(smb_fname),
-				  strerror(errno) ));
-			ret = false;
+		if (!VALID_STAT(smb_fname->st)) {
+			/* If the file doesn't already exist then
+			 * yes we'll be able to delete it. */
+			ret = true;
 			goto out;
 		}
 
@@ -177,7 +122,9 @@ bool can_delete_file_in_directory(connection_struct *conn,
 	 * check the file DELETE permission separately.
 	 */
 
-	ret = can_access_file_acl(conn, smb_fname_parent, FILE_DELETE_CHILD);
+	ret = NT_STATUS_IS_OK(smbd_check_access_rights(conn,
+				smb_fname_parent,
+				FILE_DELETE_CHILD));
  out:
 	TALLOC_FREE(dname);
 	TALLOC_FREE(smb_fname_parent);
@@ -185,69 +132,15 @@ bool can_delete_file_in_directory(connection_struct *conn,
 }
 
 /****************************************************************************
- Actually emulate the in-kernel access checking for read/write access. We need
- this to successfully check for ability to write for dos filetimes.
- Note this doesn't take into account share write permissions.
-****************************************************************************/
-
-bool can_access_file_data(connection_struct *conn,
-			  const struct smb_filename *smb_fname,
-			  uint32 access_mask)
-{
-	if (!(access_mask & (FILE_READ_DATA|FILE_WRITE_DATA))) {
-		return False;
-	}
-	access_mask &= (FILE_READ_DATA|FILE_WRITE_DATA);
-
-	/* some fast paths first */
-
-	DEBUG(10,("can_access_file_data: requesting 0x%x on file %s\n",
-		  (unsigned int)access_mask, smb_fname_str_dbg(smb_fname)));
-
-	if (get_current_uid(conn) == (uid_t)0) {
-		/* I'm sorry sir, I didn't know you were root... */
-		return True;
-	}
-
-	SMB_ASSERT(VALID_STAT(smb_fname->st));
-
-	/* Check primary owner access. */
-	if (get_current_uid(conn) == smb_fname->st.st_ex_uid) {
-		switch (access_mask) {
-			case FILE_READ_DATA:
-				return (smb_fname->st.st_ex_mode & S_IRUSR) ?
-				    True : False;
-
-			case FILE_WRITE_DATA:
-				return (smb_fname->st.st_ex_mode & S_IWUSR) ?
-				    True : False;
-
-			default: /* FILE_READ_DATA|FILE_WRITE_DATA */
-
-				if ((smb_fname->st.st_ex_mode &
-					(S_IWUSR|S_IRUSR)) ==
-				    (S_IWUSR|S_IRUSR)) {
-					return True;
-				} else {
-					return False;
-				}
-		}
-	}
-
-	/* now for ACL checks */
-
-	return can_access_file_acl(conn, smb_fname, access_mask);
-}
-
-/****************************************************************************
  Userspace check for write access.
- Note this doesn't take into account share write permissions.
 ****************************************************************************/
 
 bool can_write_to_file(connection_struct *conn,
 		       const struct smb_filename *smb_fname)
 {
-	return can_access_file_data(conn, smb_fname, FILE_WRITE_DATA);
+	return NT_STATUS_IS_OK(smbd_check_access_rights(conn,
+				smb_fname,
+				FILE_WRITE_DATA));
 }
 
 /****************************************************************************
@@ -276,4 +169,63 @@ bool directory_has_default_acl(connection_struct *conn, const char *fname)
 	}
 	TALLOC_FREE(secdesc);
 	return false;
+}
+
+/****************************************************************************
+ Check if setting delete on close is allowed on this fsp.
+****************************************************************************/
+
+NTSTATUS can_set_delete_on_close(files_struct *fsp, uint32 dosmode)
+{
+	/*
+	 * Only allow delete on close for writable files.
+	 */
+
+	if ((dosmode & FILE_ATTRIBUTE_READONLY) &&
+	    !lp_delete_readonly(SNUM(fsp->conn))) {
+		DEBUG(10,("can_set_delete_on_close: file %s delete on close "
+			  "flag set but file attribute is readonly.\n",
+			  fsp_str_dbg(fsp)));
+		return NT_STATUS_CANNOT_DELETE;
+	}
+
+	/*
+	 * Only allow delete on close for writable shares.
+	 */
+
+	if (!CAN_WRITE(fsp->conn)) {
+		DEBUG(10,("can_set_delete_on_close: file %s delete on "
+			  "close flag set but write access denied on share.\n",
+			  fsp_str_dbg(fsp)));
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	/*
+	 * Only allow delete on close for files/directories opened with delete
+	 * intent.
+	 */
+
+	if (!(fsp->access_mask & DELETE_ACCESS)) {
+		DEBUG(10,("can_set_delete_on_close: file %s delete on "
+			  "close flag set but delete access denied.\n",
+			  fsp_str_dbg(fsp)));
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	/* Don't allow delete on close for non-empty directories. */
+	if (fsp->is_directory) {
+		SMB_ASSERT(!is_ntfs_stream_smb_fname(fsp->fsp_name));
+
+		/* Or the root of a share. */
+		if (ISDOT(fsp->fsp_name->base_name)) {
+			DEBUG(10,("can_set_delete_on_close: can't set delete on "
+				  "close for the root of a share.\n"));
+			return NT_STATUS_ACCESS_DENIED;
+		}
+
+		return can_delete_directory(fsp->conn,
+					    fsp->fsp_name->base_name);
+	}
+
+	return NT_STATUS_OK;
 }

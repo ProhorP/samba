@@ -4,23 +4,24 @@
 
 if [ $# -lt 7 ]; then
 cat <<EOF
-Usage: test_smbclient_s3.sh SERVER SERVER_IP DOMAIN USERNAME PASSWORD USERID LOCAL_PATH PREFIX SMBCLIENT
+Usage: test_smbclient_s3.sh SERVER SERVER_IP DOMAIN USERNAME PASSWORD USERID LOCAL_PATH PREFIX SMBCLIENT WBINFO
 EOF
 exit 1;
 fi
 
-SERVER="$1"
-SERVER_IP="$2"
-DOMAIN="$3"
-USERNAME="$4"
-PASSWORD="$5"
-USERID="$6"
-LOCAL_PATH="$7"
-PREFIX="$8"
-SMBCLIENT="$9"
+SERVER="${1}"
+SERVER_IP="${2}"
+DOMAIN="${3}"
+USERNAME="${4}"
+PASSWORD="${5}"
+USERID="${6}"
+LOCAL_PATH="${7}"
+PREFIX="${8}"
+SMBCLIENT="${9}"
+WBINFO="${10}"
 SMBCLIENT="$VALGRIND ${SMBCLIENT}"
-WBINFO="$VALGRIND ${WBINFO:-$BINDIR/wbinfo}"
-shift 9
+WBINFO="$VALGRIND ${WBINFO}"
+shift 10
 ADDARGS="$*"
 
 incdir=`dirname $0`/../../../testprogs/blackbox
@@ -260,6 +261,7 @@ EOF
 	return
     fi
 
+    # The server writes this into a file message.msgtest, via message.%m to test the % sub code
     cmd='$SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/tmpguest -p 139 $ADDARGS -c "get message.msgtest $PREFIX/message_out.$$" 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
@@ -410,6 +412,14 @@ EOF
 test_ccache_access()
 {
     $WBINFO --ccache-save="${USERNAME}%${PASSWORD}"
+    ret=$?
+
+    if [ $ret != 0 ] ; then
+	echo "wbinfo failed to store creds in cache (user='${USERNAME}', pass='${PASSWORD}')"
+	false
+	return
+    fi
+
     $SMBCLIENT //$SERVER_IP/tmp -C -U "${USERNAME}%" \
 	-c quit 2>&1
     ret=$?
@@ -421,6 +431,14 @@ test_ccache_access()
     fi
 
     $WBINFO --ccache-save="${USERNAME}%GarBage"
+    ret=$?
+
+    if [ $ret != 0 ] ; then
+	echo "wbinfo failed to store creds in cache (user='${USERNAME}', pass='GarBage')"
+	false
+	return
+    fi
+
     $SMBCLIENT //$SERVER_IP/tmp -C -U "${USERNAME}%" \
 	-c quit 2>&1
     ret=$?
@@ -480,7 +498,7 @@ for OLDDIR in $(find ${PREFIX} -type d -name "${LOGDIR_PREFIX}_*") ;  do
 	rm -rf ${OLDDIR}
 done
 
-LOGDIR=$(mktemp -d ${PREFIX}/${LOGDIR_PREFIX}_XXXX)
+LOGDIR=$(mktemp -d ${PREFIX}/${LOGDIR_PREFIX}_XXXXXX)
 
 
 testit "smbclient -L $SERVER_IP" $SMBCLIENT -L $SERVER_IP -N -p 139 || failed=`expr $failed + 1`

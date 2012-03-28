@@ -54,7 +54,7 @@ WERROR _dfs_Add(struct pipes_struct *p, struct dfs_Add *r)
 	NTSTATUS status;
 	TALLOC_CTX *ctx = talloc_tos();
 
-	if (p->session_info->utok.uid != sec_initial_uid()) {
+	if (p->session_info->unix_token->uid != sec_initial_uid()) {
 		DEBUG(10,("_dfs_add: uid != 0. Access denied.\n"));
 		return WERR_ACCESS_DENIED;
 	}
@@ -75,8 +75,8 @@ WERROR _dfs_Add(struct pipes_struct *p, struct dfs_Add *r)
 	}
 
 	/* The following call can change the cwd. */
-	status = get_referred_path(ctx, r->in.path, jn,
-			&consumedcnt, &self_ref);
+	status = get_referred_path(ctx, r->in.path, smbd_server_conn, jn,
+				   &consumedcnt, &self_ref);
 	if(!NT_STATUS_IS_OK(status)) {
 		return ntstatus_to_werror(status);
 	}
@@ -118,8 +118,9 @@ WERROR _dfs_Remove(struct pipes_struct *p, struct dfs_Remove *r)
 	bool found = False;
 	TALLOC_CTX *ctx = talloc_tos();
 	char *altpath = NULL;
+	NTSTATUS status;
 
-	if (p->session_info->utok.uid != sec_initial_uid()) {
+	if (p->session_info->unix_token->uid != sec_initial_uid()) {
 		DEBUG(10,("_dfs_remove: uid != 0. Access denied.\n"));
 		return WERR_ACCESS_DENIED;
 	}
@@ -141,8 +142,9 @@ WERROR _dfs_Remove(struct pipes_struct *p, struct dfs_Remove *r)
 			r->in.dfs_entry_path, r->in.servername, r->in.sharename));
 	}
 
-	if(!NT_STATUS_IS_OK(get_referred_path(ctx, r->in.dfs_entry_path, jn,
-				&consumedcnt, &self_ref))) {
+	status = get_referred_path(ctx, r->in.dfs_entry_path, smbd_server_conn,
+				   jn, &consumedcnt, &self_ref);
+	if(!NT_STATUS_IS_OK(status)) {
 		return WERR_DFS_NO_SUCH_VOL;
 	}
 
@@ -279,8 +281,7 @@ WERROR _dfs_Enum(struct pipes_struct *p, struct dfs_Enum *r)
 	size_t i;
 	TALLOC_CTX *ctx = talloc_tos();
 
-	jn = enum_msdfs_links(msg_ctx_to_sconn(p->msg_ctx),
-			      ctx, &num_jn);
+	jn = enum_msdfs_links(ctx, &num_jn);
 	if (!jn || num_jn == 0) {
 		num_jn = 0;
 		jn = NULL;
@@ -353,19 +354,22 @@ WERROR _dfs_GetInfo(struct pipes_struct *p, struct dfs_GetInfo *r)
 	bool self_ref = False;
 	TALLOC_CTX *ctx = talloc_tos();
 	bool ret;
+	NTSTATUS status;
 
 	jn = talloc_zero(ctx, struct junction_map);
 	if (!jn) {
 		return WERR_NOMEM;
 	}
 
-	if(!create_junction(ctx, r->in.dfs_entry_path, jn)) {
+	if(!create_junction(ctx, r->in.dfs_entry_path,
+			    !smbd_server_conn->using_smb2, jn)) {
 		return WERR_DFS_NO_SUCH_SERVER;
 	}
 
 	/* The following call can change the cwd. */
-	if(!NT_STATUS_IS_OK(get_referred_path(ctx, r->in.dfs_entry_path,
-					jn, &consumedcnt, &self_ref)) ||
+	status = get_referred_path(ctx, r->in.dfs_entry_path, smbd_server_conn,
+				   jn, &consumedcnt, &self_ref);
+	if(!NT_STATUS_IS_OK(status) ||
 			consumedcnt < strlen(r->in.dfs_entry_path)) {
 		return WERR_DFS_NO_SUCH_VOL;
 	}

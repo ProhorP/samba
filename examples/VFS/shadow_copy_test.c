@@ -18,7 +18,9 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "includes.h"
+#include "../source3/include/includes.h"
+#include "ntioctl.h"
+#include "smbd/proto.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_VFS
@@ -50,7 +52,10 @@
 	  Directories are always displayed...    
 */
 
-static int test_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fsp, SHADOW_COPY_DATA *shadow_copy_data, bool labels)
+static int test_get_shadow_copy_data(vfs_handle_struct *handle,
+				    files_struct *fsp,
+				    struct shadow_copy_data *shadow_copy_data,
+				    bool labels)
 {
 	uint32 num = 3;
 	uint32 i;
@@ -59,7 +64,7 @@ static int test_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fs
 	
 	if (labels) {	
 		if (num) {
-			shadow_copy_data->labels = talloc_zero_array(shadow_copy_data->mem_ctx,SHADOW_COPY_LABEL,num);
+			shadow_copy_data->labels = talloc_zero_array(shadow_copy_data,SHADOW_COPY_LABEL,num);
 		} else {
 			shadow_copy_data->labels = NULL;
 		}
@@ -76,10 +81,12 @@ static int test_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fs
 /* VFS operations structure */
 
 static struct vfs_fn_pointers vfs_test_shadow_copy_fns = {
-	.get_shadow_copy_data = test_get_shadow_copy_data
+	.get_shadow_copy_data_fn = test_get_shadow_copy_data
 };
 
 NTSTATUS vfs_shadow_copy_test_init(void)
 {
-	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION, "shadow_copy_test", &vfs_test_shadow_copy_fns);
+	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
+				"shadow_copy_test",
+				&vfs_test_shadow_copy_fns);
 }

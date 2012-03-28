@@ -170,7 +170,7 @@ CFLAGS="$RPM_OPT_FLAGS $EXTRA -D_GNU_SOURCE" ./configure \
 	--with-pammodulesdir=%{_libarch}/security \
         --with-lockdir=/var/lib/samba \
         --with-logfilebase=/var/log/samba \
-        --with-mandir=%{_mandir} \
+        --mandir=%{_mandir} \
         --with-piddir=/var/run \
 	--with-privatedir=%{_sysconfdir}/samba \
         --with-sambabook=%{_datadir}/swat/using_samba \
@@ -480,7 +480,7 @@ exit 0
 %{_datadir}/swat/*
 %{_sbindir}/swat
 %{_mandir}/man8/swat.8*
-%attr(755,root,root) %{_libarchdir}/samba/*.msg
+%attr(755,root,root) /usr/share/codepages/*.msg
 
 ##########
 
@@ -538,18 +538,16 @@ exit 0
 /usr/share/locale/*/LC_MESSAGES/pam_winbind.mo
 /usr/share/locale/*/LC_MESSAGES/net.mo
 
-%{_libarchdir}/samba/charset/CP437.so
-%{_libarchdir}/samba/charset/CP850.so
 %{_libarchdir}/samba/idmap/ad.so
 %{_libarchdir}/samba/idmap/rid.so
 %{_libarchdir}/samba/idmap/tdb2.so
 %{_libarchdir}/samba/idmap/autorid.so
-%{_libarchdir}/samba/lowcase.dat
 %{_libarchdir}/samba/nss_info/rfc2307.so
 %{_libarchdir}/samba/nss_info/sfu.so
 %{_libarchdir}/samba/nss_info/sfu20.so
-%{_libarchdir}/samba/upcase.dat
-%{_libarchdir}/samba/valid.dat
+/usr/share/codepages/lowcase.dat
+/usr/share/codepages/upcase.dat
+/usr/share/codepages/valid.dat
 
 %{_includedir}/libsmbclient.h
 %{_libarchdir}/libsmbclient.*

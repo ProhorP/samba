@@ -1,11 +1,4 @@
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/check.c>
-#include <ccan/tdb2/transaction.c>
+#include "tdb2-source.h"
 #include <ccan/tap/tap.h>
 #include "logging.h"
 
@@ -14,6 +7,7 @@ static int log_count = 0;
 /* Normally we get a log when setting random seed. */
 static void my_log_fn(struct tdb_context *tdb,
 		      enum tdb_log_level level,
+		      enum TDB_ERROR ecode,
 		      const char *message, void *priv)
 {
 	log_count++;

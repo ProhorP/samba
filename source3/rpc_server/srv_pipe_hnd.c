@@ -20,13 +20,14 @@
  */
 
 #include "includes.h"
-#include "rpc_server.h"
 #include "fake_file.h"
 #include "rpc_dce.h"
 #include "ntdomain.h"
 #include "rpc_server/rpc_ncacn_np.h"
 #include "rpc_server/srv_pipe_hnd.h"
 #include "rpc_server/srv_pipe.h"
+#include "rpc_server/rpc_server.h"
+#include "rpc_server/rpc_config.h"
 #include "../lib/tsocket/tsocket.h"
 #include "../lib/util/tevent_ntstatus.h"
 
@@ -411,15 +412,14 @@ bool fsp_is_np(struct files_struct *fsp)
 NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 		 const struct tsocket_address *local_address,
 		 const struct tsocket_address *remote_address,
-		 struct client_address *client_id,
-		 struct auth_serversupplied_info *session_info,
+		 struct auth_session_info *session_info,
 		 struct messaging_context *msg_ctx,
 		 struct fake_file_handle **phandle)
 {
-	const char *rpcsrv_type;
+	enum rpc_service_mode_e pipe_mode;
 	const char **proxy_list;
 	struct fake_file_handle *handle;
-	bool external = false;
+	struct ndr_syntax_id syntax;
 
 	proxy_list = lp_parm_string_list(-1, "np", "proxy", NULL);
 
@@ -430,42 +430,42 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 
 	/* Check what is the server type for this pipe.
 	   Defaults to "embedded" */
-	rpcsrv_type = lp_parm_const_string(GLOBAL_SECTION_SNUM,
-					   "rpc_server", name,
-					   "embedded");
-	if (strcasecmp_m(rpcsrv_type, "embedded") != 0) {
-		external = true;
-	}
+	pipe_mode = rpc_service_mode(name);
 
 	/* Still support the old method for defining external servers */
 	if ((proxy_list != NULL) && str_list_check_ci(proxy_list, name)) {
-		external = true;
+		pipe_mode = RPC_SERVICE_MODE_EXTERNAL;
 	}
 
-	if (external) {
-		struct np_proxy_state *p;
+	switch (pipe_mode) {
+	case RPC_SERVICE_MODE_EXTERNAL:
 
-		p = make_external_rpc_pipe_p(handle, name,
+		handle->private_data = (void *)make_external_rpc_pipe_p(
+					     handle, name,
 					     local_address,
 					     remote_address,
 					     session_info);
 
 		handle->type = FAKE_FILE_TYPE_NAMED_PIPE_PROXY;
-		handle->private_data = p;
-	} else {
-		struct pipes_struct *p;
-		struct ndr_syntax_id syntax;
+		break;
+
+	case RPC_SERVICE_MODE_EMBEDDED:
 
 		if (!is_known_pipename(name, &syntax)) {
 			TALLOC_FREE(handle);
 			return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 		}
 
-		p = make_internal_rpc_pipe_p(handle, &syntax, client_id,
+		handle->private_data = (void *)make_internal_rpc_pipe_p(
+					     handle, &syntax, remote_address,
 					     session_info, msg_ctx);
 
 		handle->type = FAKE_FILE_TYPE_NAMED_PIPE;
-		handle->private_data = p;
+		break;
+
+	case RPC_SERVICE_MODE_DISABLED:
+		handle->private_data = NULL;
+		break;
 	}
 
 	if (handle->private_data == NULL) {

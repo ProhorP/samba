@@ -39,7 +39,7 @@ struct NL_AUTH_MESSAGE;
 struct pipe_auth_data {
 	enum dcerpc_AuthType auth_type;
 	enum dcerpc_AuthLevel auth_level;
-
+	
 	void *auth_ctx;
 
 	/* Only the client code uses these 3 for now */

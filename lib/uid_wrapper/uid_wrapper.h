@@ -1,5 +1,6 @@
 /*
    Copyright (C) Andrew Tridgell 2009
+   Copyright (c) 2011      Andreas Schneider <asn@samba.org>
  
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -21,23 +22,48 @@
 
 int uwrap_enabled(void);
 int uwrap_seteuid(uid_t euid);
+int uwrap_setreuid(uid_t reuid, uid_t euid);
+int uwrap_setresuid(uid_t reuid, uid_t euid, uid_t suid);
 uid_t uwrap_geteuid(void);
 int uwrap_setegid(gid_t egid);
+int uwrap_setregid(gid_t rgid, gid_t egid);
 uid_t uwrap_getegid(void);
 int uwrap_setgroups(size_t size, const gid_t *list);
 int uwrap_getgroups(int size, gid_t *list);
 uid_t uwrap_getuid(void);
 gid_t uwrap_getgid(void);
 
+#ifdef UID_WRAPPER_REPLACE
+
 #ifdef seteuid
 #undef seteuid
 #endif
 #define seteuid	uwrap_seteuid
 
+#ifdef setreuid
+#undef setreuid
+#endif
+#define setreuid	uwrap_setreuid
+
+#ifdef setresuid
+#undef setresuid
+#endif
+#define setresuid	uwrap_setresuid
+
 #ifdef setegid
 #undef setegid
 #endif
 #define setegid	uwrap_setegid
+
+#ifdef setregid
+#undef setregid
+#endif
+#define setregid	uwrap_setregid
+
+#ifdef setresgid
+#undef setresgid
+#endif
+#define setresgid	uwrap_setresgid
 
 #ifdef geteuid
 #undef geteuid
@@ -69,5 +95,6 @@ gid_t uwrap_getgid(void);
 #endif
 #define getgid	uwrap_getgid
 
-#endif
+#endif /* UID_WRAPPER_REPLACE */
+#endif /* uwrap_enabled */
 #endif /* __UID_WRAPPER_H__ */

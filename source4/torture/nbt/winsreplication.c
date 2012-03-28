@@ -27,6 +27,7 @@
 #include "system/network.h"
 #include "lib/socket/netif.h"
 #include "librpc/gen_ndr/ndr_nbt.h"
+#include "libcli/nbt/libnbt.h"
 #include "torture/torture.h"
 #include "torture/nbt/proto.h"
 #include "param/param.h"
@@ -9378,7 +9379,7 @@ static bool test_conflict_owned_active_vs_replica(struct torture_context *tctx,
 			req = nbt_name_register_send(ctx->nbtsock, name_register);
 
 			/* push the request on the wire */
-			event_loop_once(ctx->nbtsock->event_ctx);
+			tevent_loop_once(ctx->nbtsock->event_ctx);
 
 			/*
 			 * if we register multiple addresses,
@@ -9389,7 +9390,7 @@ static bool test_conflict_owned_active_vs_replica(struct torture_context *tctx,
 				end = timeval_current_ofs(records[i].defend.timeout,0);
 				records[i].defend.ret = true;
 				while (records[i].defend.timeout > 0) {
-					event_loop_once(ctx->nbtsock_srv->event_ctx);
+					tevent_loop_once(ctx->nbtsock_srv->event_ctx);
 					if (timeval_expired(&end)) break;
 				}
 				ret &= records[i].defend.ret;
@@ -9451,7 +9452,7 @@ static bool test_conflict_owned_active_vs_replica(struct torture_context *tctx,
 		end = timeval_current_ofs(records[i].defend.timeout,0);
 		records[i].defend.ret = true;
 		while (records[i].defend.timeout > 0) {
-			event_loop_once(ctx->nbtsock_srv->event_ctx);
+			tevent_loop_once(ctx->nbtsock_srv->event_ctx);
 			if (timeval_expired(&end)) break;
 		}
 		ret &= records[i].defend.ret;
@@ -9466,7 +9467,7 @@ static bool test_conflict_owned_active_vs_replica(struct torture_context *tctx,
 			end = timeval_current_ofs(records[i].defend.timeout,0);
 			records[i].defend.ret = true;
 			while (records[i].defend.timeout > 0) {
-				event_loop_once(ctx->nbtsock_srv->event_ctx);
+				tevent_loop_once(ctx->nbtsock_srv->event_ctx);
 				if (timeval_expired(&end)) break;
 			}
 			ret &= records[i].defend.ret;
@@ -9693,7 +9694,7 @@ static void test_conflict_owned_active_vs_replica_handler_query(struct nbt_name_
 
 	/* make sure we push the reply to the wire */
 	while (nbtsock->send_queue) {
-		event_loop_once(nbtsock->event_ctx);
+		tevent_loop_once(nbtsock->event_ctx);
 	}
 	smb_msleep(1000);
 
@@ -9750,7 +9751,7 @@ static void test_conflict_owned_active_vs_replica_handler_release(
 
 	/* make sure we push the reply to the wire */
 	while (nbtsock->send_queue) {
-		event_loop_once(nbtsock->event_ctx);
+		tevent_loop_once(nbtsock->event_ctx);
 	}
 	smb_msleep(1000);
 

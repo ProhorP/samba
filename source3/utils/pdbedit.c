@@ -175,7 +175,7 @@ static int export_database (struct pdb_methods *in,
 
 static int export_groups (struct pdb_methods *in, struct pdb_methods *out)
 {
-	GROUP_MAP *maps = NULL;
+	GROUP_MAP **maps = NULL;
 	size_t i, entries = 0;
 	NTSTATUS status;
 
@@ -188,10 +188,10 @@ static int export_groups (struct pdb_methods *in, struct pdb_methods *out)
 	}
 
 	for (i=0; i<entries; i++) {
-		out->add_group_mapping_entry(out, &(maps[i]));
+		out->add_group_mapping_entry(out, maps[i]);
 	}
 
-	SAFE_FREE( maps );
+	TALLOC_FREE(maps);
 
 	return 0;
 }
@@ -1077,7 +1077,7 @@ int main (int argc, char **argv)
 	if (user_name == NULL)
 		user_name = poptGetArg(pc);
 
-	if (!lp_load(get_dyn_CONFIGFILE(),True,False,False,True)) {
+	if (!lp_load_global(get_dyn_CONFIGFILE())) {
 		fprintf(stderr, "Can't load %s - run testparm to debug it\n", get_dyn_CONFIGFILE());
 		exit(1);
 	}
@@ -1117,7 +1117,7 @@ int main (int argc, char **argv)
 		/* HACK: set the global passdb backend by overwriting globals.
 		 * This way we can use regular pdb functions for default
 		 * operations that do not involve passdb migrations */
-		lp_set_passdb_backend(backend);
+		lp_set_cmdline("passdb backend", backend);
 	} else {
 		backend = lp_passdb_backend();
 	}
@@ -1142,7 +1142,7 @@ int main (int argc, char **argv)
 			const char **names;
 			int count;
 			int i;
-			account_policy_names_list(&names, &count);
+			account_policy_names_list(talloc_tos(), &names, &count);
 			fprintf(stderr, "No account policy by that name!\n");
 			if (count !=0) {
 				fprintf(stderr, "Account policy names are:\n");
@@ -1150,7 +1150,7 @@ int main (int argc, char **argv)
                         		d_fprintf(stderr, "%s\n", names[i]);
 				}
 			}
-			SAFE_FREE(names);
+			TALLOC_FREE(names);
 			exit(1);
 		}
 		if (!pdb_get_account_policy(field, &value)) {

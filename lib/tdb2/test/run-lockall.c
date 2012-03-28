@@ -1,17 +1,10 @@
-#include "config.h"
+#include <ccan/tdb2/private.h>
 #include <unistd.h>
 #include "lock-tracking.h"
 
 #define fcntl fcntl_with_lockcheck
+#include "tdb2-source.h"
 
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/check.c>
-#include <ccan/tdb2/transaction.c>
 #include <ccan/tap/tap.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -27,10 +20,11 @@
 int main(int argc, char *argv[])
 {
 	struct agent *agent;
-	const int flags[] = { TDB_DEFAULT,
-			      TDB_NOMMAP,
-			      TDB_CONVERT,
-			      TDB_CONVERT | TDB_NOMMAP };
+	int flags[] = { TDB_DEFAULT, TDB_NOMMAP,
+			TDB_CONVERT, TDB_NOMMAP|TDB_CONVERT,
+			TDB_VERSION1, TDB_NOMMAP|TDB_VERSION1,
+			TDB_CONVERT|TDB_VERSION1,
+			TDB_NOMMAP|TDB_CONVERT|TDB_VERSION1 };
 	int i;
 
 	plan_tests(13 * sizeof(flags)/sizeof(flags[0]) + 1);

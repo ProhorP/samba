@@ -29,6 +29,8 @@
 #include "../libcli/auth/schannel.h"
 #include "librpc/rpc/dcerpc.h"
 #include "param/param.h"
+#include "auth/gensec/schannel.h"
+#include "auth/gensec/gensec_toplevel_proto.h"
 
 _PUBLIC_ NTSTATUS gensec_schannel_init(void);
 
@@ -43,13 +45,15 @@ static size_t schannel_sig_size(struct gensec_security *gensec_security, size_t 
 }
 
 static NTSTATUS schannel_session_key(struct gensec_security *gensec_security,
-					    DATA_BLOB *session_key)
+				     TALLOC_CTX *mem_ctx,
+				     DATA_BLOB *session_key)
 {
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 static NTSTATUS schannel_update(struct gensec_security *gensec_security, TALLOC_CTX *out_mem_ctx,
-				       const DATA_BLOB in, DATA_BLOB *out)
+				struct tevent_context *ev,
+				const DATA_BLOB in, DATA_BLOB *out)
 {
 	struct schannel_state *state = (struct schannel_state *)gensec_security->private_data;
 	NTSTATUS status;
@@ -151,7 +155,7 @@ static NTSTATUS schannel_update(struct gensec_security *gensec_security, TALLOC_
 		}
 
 		status = schannel_get_creds_state(out_mem_ctx,
-						  lpcfg_private_dir(gensec_security->settings->lp_ctx),
+						  gensec_security->settings->lp_ctx,
 						  workstation, &creds);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(3, ("Could not find session key for attempted schannel connection from %s: %s\n",
@@ -215,10 +219,10 @@ _PUBLIC_ NTSTATUS dcerpc_schannel_creds(struct gensec_security *gensec_security,
  */
 
 static NTSTATUS schannel_session_info(struct gensec_security *gensec_security,
-					 struct auth_session_info **_session_info)
+				      TALLOC_CTX *mem_ctx,
+				      struct auth_session_info **_session_info)
 {
-	struct schannel_state *state = talloc_get_type(gensec_security->private_data, struct schannel_state);
-	return auth_anonymous_session_info(state, gensec_security->settings->lp_ctx, _session_info);
+	return auth_anonymous_session_info(mem_ctx, gensec_security->settings->lp_ctx, _session_info);
 }
 
 static NTSTATUS schannel_start(struct gensec_security *gensec_security)
@@ -290,7 +294,6 @@ static bool schannel_have_feature(struct gensec_security *gensec_security,
   unseal a packet
 */
 static NTSTATUS schannel_unseal_packet(struct gensec_security *gensec_security,
-				       TALLOC_CTX *mem_ctx,
 				       uint8_t *data, size_t length,
 				       const uint8_t *whole_pdu, size_t pdu_length,
 				       const DATA_BLOB *sig)
@@ -299,7 +302,7 @@ static NTSTATUS schannel_unseal_packet(struct gensec_security *gensec_security,
 		talloc_get_type(gensec_security->private_data,
 				struct schannel_state);
 
-	return netsec_incoming_packet(state, mem_ctx, true,
+	return netsec_incoming_packet(state, true,
 				      discard_const_p(uint8_t, data),
 				      length, sig);
 }
@@ -308,7 +311,6 @@ static NTSTATUS schannel_unseal_packet(struct gensec_security *gensec_security,
   check the signature on a packet
 */
 static NTSTATUS schannel_check_packet(struct gensec_security *gensec_security,
-				      TALLOC_CTX *mem_ctx,
 				      const uint8_t *data, size_t length,
 				      const uint8_t *whole_pdu, size_t pdu_length,
 				      const DATA_BLOB *sig)
@@ -317,7 +319,7 @@ static NTSTATUS schannel_check_packet(struct gensec_security *gensec_security,
 		talloc_get_type(gensec_security->private_data,
 				struct schannel_state);
 
-	return netsec_incoming_packet(state, mem_ctx, false,
+	return netsec_incoming_packet(state, false,
 				      discard_const_p(uint8_t, data),
 				      length, sig);
 }

@@ -27,8 +27,21 @@ from samba.netcmd import (
     )
 
 class cmd_time(Command):
-    """Retrieve the time on a remote server [server connection needed]"""
-    synopsis = "%prog time <server-name>"
+    """Retrieve the time on a server
+
+This command returns the date and time of the Active Directory server specified on the command.  The server name specified may be the local server or a remote server.  If the servername is not specified, the command returns the time and date of the local AD server.
+
+Example1:
+samba-tool time samdom.example.com
+
+Example1 returns the date and time of the server samdom.example.com.
+
+Example2:
+samba-tool time
+
+Example2 return the date and time of the local server.
+"""
+    synopsis = "%prog [server-name] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -44,4 +57,4 @@ class cmd_time(Command):
         net = Net(creds, lp, server=credopts.ipaddress)
         if server_name is None:
             server_name = common.netcmd_dnsname(lp)
-        print net.time(server_name)
+        self.outf.write(net.time(server_name)+"\n")

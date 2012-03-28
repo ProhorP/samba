@@ -21,17 +21,14 @@
 #include "libsmb/libsmb.h"
 #include "../libcli/security/secdesc.h"
 
-/****************************************************************************
-  query the security descriptor for a open file
- ****************************************************************************/
-struct security_descriptor *cli_query_secdesc(struct cli_state *cli, uint16_t fnum,
-			    TALLOC_CTX *mem_ctx)
+NTSTATUS cli_query_secdesc(struct cli_state *cli, uint16_t fnum,
+			   TALLOC_CTX *mem_ctx, struct security_descriptor **sd)
 {
 	uint8_t param[8];
 	uint8_t *rdata=NULL;
 	uint32_t rdata_count=0;
-	struct security_descriptor *psd = NULL;
 	NTSTATUS status;
+	struct security_descriptor *lsd;
 
 	SIVAL(param, 0, fnum);
 	SIVAL(param, 4, 0x7);
@@ -54,26 +51,31 @@ struct security_descriptor *cli_query_secdesc(struct cli_state *cli, uint16_t fn
 	}
 
 	status = unmarshall_sec_desc(mem_ctx, (uint8 *)rdata, rdata_count,
-				     &psd);
-
+				     &lsd);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("unmarshall_sec_desc failed: %s\n",
 			   nt_errstr(status)));
 		goto cleanup;
 	}
 
+	if (sd != NULL) {
+		*sd = lsd;
+	} else {
+		TALLOC_FREE(lsd);
+	}
+
  cleanup:
 
 	TALLOC_FREE(rdata);
 
-	return psd;
+	return status;
 }
 
 /****************************************************************************
   set the security descriptor for a open file
  ****************************************************************************/
 NTSTATUS cli_set_secdesc(struct cli_state *cli, uint16_t fnum,
-			 struct security_descriptor *sd)
+			 const struct security_descriptor *sd)
 {
 	uint8_t param[8];
 	uint32 sec_info = 0;
@@ -92,6 +94,8 @@ NTSTATUS cli_set_secdesc(struct cli_state *cli, uint16_t fnum,
 
 	if (sd->dacl)
 		sec_info |= SECINFO_DACL;
+	if (sd->sacl)
+		sec_info |= SECINFO_SACL;
 	if (sd->owner_sid)
 		sec_info |= SECINFO_OWNER;
 	if (sd->group_sid)

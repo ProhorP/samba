@@ -94,8 +94,8 @@ NTSTATUS cli_qpathinfo_streams(struct cli_state *cli, const char *fname,
 			       TALLOC_CTX *mem_ctx,
 			       unsigned int *pnum_streams,
 			       struct stream_struct **pstreams);
-NTSTATUS cli_qfilename(struct cli_state *cli, uint16_t fnum, char *name,
-		       size_t namelen);
+NTSTATUS cli_qfilename(struct cli_state *cli, uint16_t fnum,
+		       TALLOC_CTX *mem_ctx, char **name);
 NTSTATUS cli_qfileinfo_basic(struct cli_state *cli, uint16_t fnum,
 			     uint16 *mode, SMB_OFF_T *size,
 			     struct timespec *create_time,
@@ -130,10 +130,11 @@ struct tevent_req *cli_qfileinfo_send(TALLOC_CTX *mem_ctx,
 				      uint16_t level, uint32_t min_rdata,
 				      uint32_t max_rdata);
 NTSTATUS cli_qfileinfo_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
+			    uint16_t *recv_flags2,
 			    uint8_t **rdata, uint32_t *num_rdata);
 NTSTATUS cli_qfileinfo(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		       uint16_t fnum, uint16_t level, uint32_t min_rdata,
-		       uint32_t max_rdata,
+		       uint32_t max_rdata, uint16_t *recv_flags2,
 		       uint8_t **rdata, uint32_t *num_rdata);
 
 struct tevent_req *cli_flush_send(TALLOC_CTX *mem_ctx,

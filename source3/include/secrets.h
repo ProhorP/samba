@@ -39,6 +39,7 @@
    really secret. */
 #define SECRETS_DOMAIN_SID    "SECRETS/SID"
 #define SECRETS_SAM_SID       "SAM/SID"
+#define SECRETS_PROTECT_IDS   "SECRETS/PROTECT/IDS"
 
 /* The domain GUID and server GUID (NOT the same) are also not secret */
 #define SECRETS_DOMAIN_GUID   "SECRETS/DOMGUID"
@@ -81,12 +82,17 @@ struct afs_keyfile {
 
 /* The following definitions come from passdb/secrets.c  */
 
+bool secrets_init_path(const char *private_dir);
 bool secrets_init(void);
 struct db_context *secrets_db_ctx(void);
 void secrets_shutdown(void);
 void *secrets_fetch(const char *key, size_t *size);
 bool secrets_store(const char *key, const void *data, size_t size);
 bool secrets_delete(const char *key);
+
+/* The following definitions come from passdb/machine_account_secrets.c */
+bool secrets_mark_domain_protected(const char *domain);
+bool secrets_clear_domain_protection(const char *domain);
 bool secrets_store_domain_sid(const char *domain, const struct dom_sid  *sid);
 bool secrets_fetch_domain_sid(const char *domain, struct dom_sid  *sid);
 bool secrets_store_domain_guid(const char *domain, struct GUID *guid);
@@ -104,7 +110,6 @@ bool secrets_fetch_trusted_domain_password(const char *domain, char** pwd,
                                            struct dom_sid  *sid, time_t *pass_last_set_time);
 bool secrets_store_trusted_domain_password(const char* domain, const char* pwd,
                                            const struct dom_sid  *sid);
-bool secrets_delete_machine_password(const char *domain);
 bool secrets_delete_machine_password_ex(const char *domain);
 bool secrets_delete_domain_sid(const char *domain);
 bool secrets_store_machine_password(const char *pass, const char *domain, enum netr_SchannelType sec_channel);
@@ -115,14 +120,24 @@ char *secrets_fetch_machine_password(const char *domain,
 bool trusted_domain_password_delete(const char *domain);
 bool secrets_store_ldap_pw(const char* dn, char* pw);
 bool fetch_ldap_pw(char **dn, char** pw);
-struct trustdom_info;
-NTSTATUS secrets_trusted_domains(TALLOC_CTX *mem_ctx, uint32 *num_domains,
-				 struct trustdom_info ***domains);
 bool secrets_store_afs_keyfile(const char *cell, const struct afs_keyfile *keyfile);
 bool secrets_fetch_afs_key(const char *cell, struct afs_key *result);
 void secrets_fetch_ipc_userpass(char **username, char **domain, char **password);
 bool secrets_store_generic(const char *owner, const char *key, const char *secret);
 char *secrets_fetch_generic(const char *owner, const char *key);
-bool secrets_delete_generic(const char *owner, const char *key);
+
+/* The following definitions come from passdb/secrets_lsa.c  */
+NTSTATUS lsa_secret_get(TALLOC_CTX *mem_ctx,
+			const char *secret_name,
+			DATA_BLOB *secret_current,
+			NTTIME *secret_current_lastchange,
+			DATA_BLOB *secret_old,
+			NTTIME *secret_old_lastchange,
+			struct security_descriptor **sd);
+NTSTATUS lsa_secret_set(const char *secret_name,
+			DATA_BLOB *secret_current,
+			DATA_BLOB *secret_old,
+			struct security_descriptor *sd);
+NTSTATUS lsa_secret_delete(const char *secret_name);
 
 #endif /* _SECRETS_H */

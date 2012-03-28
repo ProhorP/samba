@@ -26,7 +26,7 @@
 #include "passdb.h"
 #include "../libcli/auth/libcli_auth.h"
 #include "secrets.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
 #include "../librpc/ndr/libndr.h"
 #include "util_tdb.h"
 
@@ -53,18 +53,54 @@ static const char *domain_sid_keystr(const char *domain)
 	return keystr;
 }
 
-bool secrets_store_domain_sid(const char *domain, const struct dom_sid  *sid)
+static const char *protect_ids_keystr(const char *domain)
+{
+	char *keystr;
+
+	keystr = talloc_asprintf_strupper_m(talloc_tos(), "%s/%s",
+					    SECRETS_PROTECT_IDS, domain);
+	SMB_ASSERT(keystr != NULL);
+	return keystr;
+}
+
+/* N O T E: never use this outside of passdb modules that store the SID on their own */
+bool secrets_mark_domain_protected(const char *domain)
 {
 	bool ret;
 
-#ifdef _SAMBA_WAF_BUILD_
-	if (strequal(domain, get_global_sam_name()) &&
-	    (pdb_capabilities() & PDB_CAP_ADS)) {
-		/* If we have a ADS-capable passdb backend, we
-		 * must never make up our own SID, it will
-		 * already be in the directory */
-		DEBUG(0, ("Refusing to store a Domain SID, this should be read from the directory not stored here\n"));
-		return false;
+	ret = secrets_store(protect_ids_keystr(domain), "TRUE", 5);
+	if (!ret) {
+		DEBUG(0, ("Failed to protect the Domain IDs\n"));
+	}
+	return ret;
+}
+
+bool secrets_clear_domain_protection(const char *domain)
+{
+	bool ret;
+
+	ret = secrets_delete(protect_ids_keystr(domain));
+	if (!ret) {
+		DEBUG(0, ("Failed to remove Domain IDs protection\n"));
+	}
+	return ret;
+}
+
+bool secrets_store_domain_sid(const char *domain, const struct dom_sid  *sid)
+{
+#if _SAMBA_BUILD_ == 4
+	char *protect_ids;
+#endif
+	bool ret;
+
+#if _SAMBA_BUILD_ == 4
+	protect_ids = secrets_fetch(protect_ids_keystr(domain), NULL);
+	if (protect_ids) {
+		if (strncmp(protect_ids, "TRUE", 4)) {
+			DEBUG(0, ("Refusing to store a Domain SID, "
+				  "it has been marked as protected!\n"));
+			return false;
+		}
 	}
 #endif
 
@@ -80,24 +116,6 @@ bool secrets_fetch_domain_sid(const char *domain, struct dom_sid  *sid)
 {
 	struct dom_sid  *dyn_sid;
 	size_t size = 0;
-
-#ifdef _SAMBA_WAF_BUILD_
-	if (strequal(domain, get_global_sam_name()) &&
-	    (pdb_capabilities() & PDB_CAP_ADS)) {
-		struct pdb_domain_info *domain_info;
-		domain_info = pdb_get_domain_info(talloc_tos());
-		if (!domain_info) {
-			/* If we have a ADS-capable passdb backend, we
-			 * must never make up our own SID, it will
-			 * already be in the directory */
-			DEBUG(0, ("Unable to fetch a Domain SID from the directory!\n"));
-			return false;
-		}
-
-		*sid = domain_info->sid;
-		return true;
-	}
-#endif
 
 	dyn_sid = (struct dom_sid  *)secrets_fetch(domain_sid_keystr(domain), &size);
 
@@ -116,16 +134,19 @@ bool secrets_fetch_domain_sid(const char *domain, struct dom_sid  *sid)
 
 bool secrets_store_domain_guid(const char *domain, struct GUID *guid)
 {
+#if _SAMBA_BUILD_ == 4
+	char *protect_ids;
+#endif
 	fstring key;
 
-#ifdef _SAMBA_WAF_BUILD_
-	if (strequal(domain, get_global_sam_name()) &&
-	    (pdb_capabilities() & PDB_CAP_ADS)) {
-		/* If we have a ADS-capable passdb backend, we
-		 * must never make up our own GUID, it will
-		 * already be in the directory */
-		DEBUG(0, ("Refusing to store a Domain GUID, this should be read from the directory not stored here\n"));
-		return false;
+#if _SAMBA_BUILD_ == 4
+	protect_ids = secrets_fetch(protect_ids_keystr(domain), NULL);
+	if (protect_ids) {
+		if (strncmp(protect_ids, "TRUE", 4)) {
+			DEBUG(0, ("Refusing to store a Domain SID, "
+				  "it has been marked as protected!\n"));
+			return false;
+		}
 	}
 #endif
 
@@ -140,24 +161,6 @@ bool secrets_fetch_domain_guid(const char *domain, struct GUID *guid)
 	fstring key;
 	size_t size = 0;
 	struct GUID new_guid;
-
-#ifdef _SAMBA_WAF_BUILD_
-	if (strequal(domain, get_global_sam_name()) &&
-	    (pdb_capabilities() & PDB_CAP_ADS)) {
-		struct pdb_domain_info *domain_info;
-		domain_info = pdb_get_domain_info(talloc_tos());
-		if (!domain_info) {
-			/* If we have a ADS-capable passdb backend, we
-			 * must never make up our own SID, it will
-			 * already be in the directory */
-			DEBUG(0, ("Unable to fetch a Domain GUID from the directory!\n"));
-			return false;
-		}
-
-		*guid = domain_info->guid;
-		return true;
-	}
-#endif
 
 	slprintf(key, sizeof(key)-1, "%s/%s", SECRETS_DOMAIN_GUID, domain);
 	strupper_m(key);
@@ -287,7 +290,7 @@ void *secrets_get_trust_account_lock(TALLOC_CTX *mem_ctx, const char *domain)
 
 	db_ctx = secrets_db_ctx();
 
-	return db_ctx->fetch_locked(
+	return dbwrap_fetch_locked(
 		db_ctx, mem_ctx, string_term_tdb_data(trust_keystr(domain)));
 }
 
@@ -391,19 +394,6 @@ static bool secrets_delete_prev_machine_password(const char *domain)
 	}
 	SAFE_FREE(oldpass);
 	return secrets_delete(machine_prev_password_keystr(domain));
-}
-
-/************************************************************************
- Routine to delete the plaintext machine account password and old
- password if any
-************************************************************************/
-
-bool secrets_delete_machine_password(const char *domain)
-{
-	if (!secrets_delete_prev_machine_password(domain)) {
-		return false;
-	}
-	return secrets_delete(machine_password_keystr(domain));
 }
 
 /************************************************************************

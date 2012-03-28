@@ -116,12 +116,19 @@ static void smb_panic_default(const char *why)
 {
 	int result;
 
+#if defined(HAVE_PRCTL) && defined(PR_SET_PTRACER)
+	/*
+	 * Make sure all children can attach a debugger.
+	 */
+	prctl(PR_SET_PTRACER, getpid(), 0, 0, 0);
+#endif
+
 	if (panic_action && *panic_action) {
 		char pidstr[20];
 		char cmdstring[200];
 		strlcpy(cmdstring, panic_action, sizeof(cmdstring));
 		snprintf(pidstr, sizeof(pidstr), "%d", (int) getpid());
-		all_string_sub(cmdstring, "%PID%", pidstr, sizeof(cmdstring));
+		all_string_sub(cmdstring, "%d", pidstr, sizeof(cmdstring));
 		DEBUG(0, ("smb_panic(): calling panic action [%s]\n", cmdstring));
 		result = system(cmdstring);
 

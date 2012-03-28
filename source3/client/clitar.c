@@ -105,9 +105,6 @@ static bool must_free_cliplist = False;
 extern char *cmd_ptr;
 
 extern bool lowercase;
-extern uint16 cnum;
-extern bool readbraw_supported;
-extern int max_xmit;
 extern int get_total_time_ms;
 extern int get_total_size;
 
@@ -191,8 +188,10 @@ static void writetarheader(int f, const char *aname, uint64_t size, time_t mtime
 
 		memset(hb.dbuf.size, 0, 4);
 		hb.dbuf.size[0]=128;
-		for (i = 8, jp=(char*)&size; i; i--)
-			hb.dbuf.size[i+3] = *(jp++);
+		for (i = 8; i; i--) {
+			hb.dbuf.size[i+3] = size & 0xff;
+			size >>= 8;
+		}
 	}
 	oct_it((uint64_t) mtime, 13, hb.dbuf.mtime);
 	memcpy(hb.dbuf.chksum, "        ", sizeof(hb.dbuf.chksum));
@@ -294,7 +293,17 @@ of link other than a GNUtar Longlink - ignoring\n"));
 	finfo->mtime_ts = finfo->ctime_ts =
 		convert_time_t_to_timespec((time_t)strtol(hb->dbuf.mtime, NULL, 8));
 	finfo->atime_ts = convert_time_t_to_timespec(time(NULL));
-	finfo->size = unoct(hb->dbuf.size, sizeof(hb->dbuf.size));
+	if ((hb->dbuf.size[0] & 0xff) == 0x80) {
+		/* This is a non-POSIX compatible extention to extract files
+			greater than 8GB. */
+		finfo->size = 0;
+		for (i = 0; i < 8; i++) {
+			finfo->size <<= 8;
+			finfo->size |= hb->dbuf.size[i+4] & 0xff;
+		}
+	} else {
+		finfo->size = unoct(hb->dbuf.size, sizeof(hb->dbuf.size));
+	}
 
 	return True;
 }
@@ -473,7 +482,7 @@ static int strslashcmp(char *s1, char *s2)
 {
 	char *s1_0=s1;
 
-	while(*s1 && *s2 && (*s1 == *s2 || tolower_ascii(*s1) == tolower_ascii(*s2) ||
+	while(*s1 && *s2 && (*s1 == *s2 || tolower_m(*s1) == tolower_m(*s2) ||
 				(*s1 == '\\' && *s2=='/') || (*s1 == '/' && *s2=='\\'))) {
 		s1++; s2++;
 	}
@@ -616,7 +625,7 @@ static NTSTATUS do_atar(const char *rname_in, char *lname,
 	bool shallitime=True;
 	char *data = NULL;
 	int read_size = 65520;
-	int datalen=0;
+	size_t datalen=0;
 	char *rname = NULL;
 	TALLOC_CTX *ctx = talloc_stackframe();
 	NTSTATUS status = NT_STATUS_OK;
@@ -693,11 +702,11 @@ static NTSTATUS do_atar(const char *rname_in, char *lname,
 
 			DEBUG(3,("nread=%.0f\n",(double)nread));
 
-			datalen = cli_read(cli, fnum, data, nread, read_size);
-
-			if (datalen == -1) {
-				DEBUG(0,("Error reading file %s : %s\n", rname, cli_errstr(cli)));
-				status = cli_nt_error(cli);
+			status = cli_read(cli, fnum, data, nread,
+					  read_size, &datalen);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(0,("Error reading file %s : %s\n",
+					 rname, nt_errstr(status)));
 				break;
 			}
 
@@ -1008,8 +1017,8 @@ static int skip_file(int skipsize)
 static int get_file(file_info2 finfo)
 {
 	uint16_t fnum = (uint16_t) -1;
-	int pos = 0, dsize = 0, bpos = 0;
-	uint64_t rsize = 0;
+	int dsize = 0, bpos = 0;
+	uint64_t rsize = 0, pos = 0;
 	NTSTATUS status;
 
 	DEBUG(5, ("get_file: file: %s, size %.0f\n", finfo.name, (double)finfo.size));

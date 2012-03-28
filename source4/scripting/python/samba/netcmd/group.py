@@ -40,9 +40,33 @@ distribution_group = dict({"Domain": GTYPE_DISTRIBUTION_DOMAIN_LOCAL_GROUP, "Glo
 
 
 class cmd_group_add(Command):
-    """Creates a new group"""
+    """Creates a new AD group
 
-    synopsis = "%prog group add [options] <groupname>"
+This command creates a new Active Directory group.  The groupname specified on the command is a unique sAMAccountName.
+
+An Active Directory group may contain user and computer accounts as well as other groups.  An administrator creates a group and adds members to that group so they can be managed as a single entity.  This helps to simplify security and system administration.
+
+Groups may also be used to establish email distribution lists, using --group-type=Distribution.
+
+Groups are located in domains in organizational units (OUs).  The group's scope is a characteristic of the group that designates the extent to which the group is applied within the domain tree or forest.
+
+The group location (OU), type (security or distribution) and scope may all be specified on the samba-tool command when the group is created.
+
+The command may be run from the root userid or another authorized userid.  The
+-H or --URL= option can be used to execute the command on a remote server.
+
+Example1:
+samba-tool group add Group1 -H ldap://samba.samdom.example.com --description='Simple group'
+
+Example1 adds a new group with the name Group1 added to the Users container on a remote LDAP server.  The -U parameter is used to pass the userid and password of a user that exists on the remote server and is authorized to issue the command on that server.  It defaults to the security type and global scope.
+
+Example2:
+sudo samba-tool group add Group2 --group-type=Distribution
+
+Example2 adds a new distribution group to the local server.  The command is run under root using the sudo command.
+"""
+
+    synopsis = "%prog <groupname> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -51,10 +75,11 @@ class cmd_group_add(Command):
     }
 
     takes_options = [
-        Option("-H", help="LDB URL for database or target server", type=str),
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
         Option("--groupou",
-	   help="Alternative location (without domainDN counterpart) to default CN=Users in which new user object will be created",
-	   type=str),
+           help="Alternative location (without domainDN counterpart) to default CN=Users in which new user object will be created",
+           type=str),
         Option("--group-scope", type="choice", choices=["Domain", "Global", "Universal"],
             help="Group scope (Domain | Global | Universal)"),
         Option("--group-type", type="choice", choices=["Security", "Distribution"],
@@ -84,14 +109,32 @@ class cmd_group_add(Command):
             samdb.newgroup(groupname, groupou=groupou, grouptype = gtype,
                           description=description, mailaddress=mail_address, notes=notes)
         except Exception, e:
+            # FIXME: catch more specific exception
             raise CommandError('Failed to create group "%s"' % groupname, e)
-        print("Added group %s" % groupname)
+        self.outf.write("Added group %s\n" % groupname)
 
 
 class cmd_group_delete(Command):
-    """Delete a group"""
+    """Deletes an AD group
 
-    synopsis = "%prog group delete <groupname>"
+The command deletes an existing AD group from the Active Directory domain.  The groupname specified on the command is the sAMAccountName.
+
+Deleting a group is a permanent operation.  When a group is deleted, all permissions and rights that users in the group had inherited from the group account are deleted as well.
+
+The command may be run from the root userid or another authorized userid.  The -H or --URL option can be used to execute the command on a remote server.
+
+Example1:
+samba-tool group delete Group1 -H ldap://samba.samdom.example.com -Uadministrator%passw0rd
+
+Example1 shows how to delete an AD group from a remote LDAP server.  The -U parameter is used to pass the userid and password of a user that exists on the remote server and is authorized to issue the command on that server.
+
+Example2:
+sudo samba-tool group delete Group2
+
+Example2 deletes group Group2 from the local server.  The command is run under root using the sudo command.
+"""
+
+    synopsis = "%prog <groupname> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -100,7 +143,8 @@ class cmd_group_delete(Command):
     }
 
     takes_options = [
-        Option("-H", help="LDB URL for database or target server", type=str),
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
     ]
 
     takes_args = ["groupname"]
@@ -115,14 +159,30 @@ class cmd_group_delete(Command):
                           credentials=creds, lp=lp)
             samdb.deletegroup(groupname)
         except Exception, e:
+            # FIXME: catch more specific exception
             raise CommandError('Failed to remove group "%s"' % groupname, e)
-        print("Deleted group %s" % groupname)
+        self.outf.write("Deleted group %s\n" % groupname)
 
 
 class cmd_group_add_members(Command):
-    """Add (comma-separated list of) group members"""
+    """Add members to an AD group
 
-    synopsis = "%prog group addmembers <groupname> <listofmembers>"
+This command adds one or more members to an existing Active Directory group.  The command accepts one or more group member names seperated by commas.  A group member may be a user or computer account or another Active Directory group.
+
+When a member is added to a group the member may inherit permissions and rights from the group.  Likewise, when permission or rights of a group are changed, the changes may reflect in the members through inheritance.
+
+Example1:
+samba-tool group addmembers supergroup Group1,Group2,User1 -H ldap://samba.samdom.example.com -Uadministrator%passw0rd
+
+Example1 shows how to add two groups, Group1 and Group2 and one user account, User1, to the existing AD group named supergroup.  The command will be run on a remote server specified with the -H.  The -U parameter is used to pass the userid and password of a user authorized to issue the command on the remote server.
+
+Example2:
+sudo samba-tool group addmembers supergroup User2
+
+Example2 shows how to add a single user account, User2, to the supergroup AD group.  It uses the sudo command to run as root when issuing the command.
+"""
+
+    synopsis = "%prog <groupname> <listofmembers> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -131,7 +191,8 @@ class cmd_group_add_members(Command):
     }
 
     takes_options = [
-        Option("-H", help="LDB URL for database or target server", type=str),
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
     ]
 
     takes_args = ["groupname", "listofmembers"]
@@ -147,14 +208,31 @@ class cmd_group_add_members(Command):
                           credentials=creds, lp=lp)
             samdb.add_remove_group_members(groupname, listofmembers, add_members_operation=True)
         except Exception, e:
-            raise CommandError('Failed to add members "%s" to group "%s"' % (listofmembers, groupname), e)
-        print("Added members to group %s" % groupname)
+            # FIXME: catch more specific exception
+            raise CommandError('Failed to add members "%s" to group "%s"' % (
+                listofmembers, groupname), e)
+        self.outf.write("Added members to group %s\n" % groupname)
 
 
 class cmd_group_remove_members(Command):
-    """Remove (comma-separated list of) group members"""
+    """Remove members from an AD group
 
-    synopsis = "%prog group removemembers <groupname> <listofmembers>"
+This command removes one or more members from an existing Active Directory group.  The command accepts one or more group member names seperated by commas.  A group member may be a user or computer account or another Active Directory group that is a member of the group specified on the command.
+
+When a member is removed from a group, inherited permissions and rights will no longer apply to the member.
+
+Example1:
+samba-tool group removemembers supergroup Group1 -H ldap://samba.samdom.example.com -Uadministrator%passw0rd
+
+Example1 shows how to remove Group1 from supergroup.  The command will run on the remote server specified on the -H parameter.  The -U parameter is used to pass the userid and password of a user authorized to issue the command on the remote server.
+
+Example2:
+sudo samba-tool group removemembers supergroup User1
+
+Example2 shows how to remove a single user account, User2, from the supergroup AD group.  It uses the sudo command to run as root when issuing the command.
+"""
+
+    synopsis = "%prog <groupname> <listofmembers> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -163,7 +241,8 @@ class cmd_group_remove_members(Command):
     }
 
     takes_options = [
-        Option("-H", help="LDB URL for database or target server", type=str),
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
     ]
 
     takes_args = ["groupname", "listofmembers"]
@@ -179,8 +258,9 @@ class cmd_group_remove_members(Command):
                           credentials=creds, lp=lp)
             samdb.add_remove_group_members(groupname, listofmembers, add_members_operation=False)
         except Exception, e:
+            # FIXME: Catch more specific exception
             raise CommandError('Failed to remove members "%s" from group "%s"' % (listofmembers, groupname), e)
-        print("Removed members from group %s" % groupname)
+        self.outf.write("Removed members from group %s\n" % groupname)
 
 
 class cmd_group(SuperCommand):

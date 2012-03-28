@@ -28,6 +28,7 @@
 #include "transfer_file.h"
 #include "auth.h"
 #include "messages.h"
+#include "../librpc/gen_ndr/open_files.h"
 
 /****************************************************************************
  Run a file if it is a magic script.
@@ -155,26 +156,75 @@ static NTSTATUS close_filestruct(files_struct *fsp)
 	return status;
 }
 
+static int compare_share_mode_times(const void *p1, const void *p2)
+{
+	struct share_mode_entry *s1 = (struct share_mode_entry *)p1;
+	struct share_mode_entry *s2 = (struct share_mode_entry *)p2;
+	return timeval_compare(&s1->time, &s2->time);
+}
+
 /****************************************************************************
  If any deferred opens are waiting on this close, notify them.
 ****************************************************************************/
 
-static void notify_deferred_opens(struct messaging_context *msg_ctx,
+static void notify_deferred_opens(struct smbd_server_connection *sconn,
 				  struct share_mode_lock *lck)
 {
- 	int i;
+	uint32_t i, num_deferred;
+	struct share_mode_entry *deferred;
 
 	if (!should_notify_deferred_opens()) {
 		return;
 	}
- 
- 	for (i=0; i<lck->num_share_modes; i++) {
- 		struct share_mode_entry *e = &lck->share_modes[i];
- 
- 		if (!is_deferred_open_entry(e)) {
- 			continue;
- 		}
- 
+
+	num_deferred = 0;
+	for (i=0; i<lck->data->num_share_modes; i++) {
+		if (is_deferred_open_entry(&lck->data->share_modes[i])) {
+			num_deferred += 1;
+		}
+	}
+	if (num_deferred == 0) {
+		return;
+	}
+
+	deferred = talloc_array(talloc_tos(), struct share_mode_entry,
+				num_deferred);
+	if (deferred == NULL) {
+		return;
+	}
+
+	num_deferred = 0;
+	for (i=0; i<lck->data->num_share_modes; i++) {
+		struct share_mode_entry *e = &lck->data->share_modes[i];
+		if (is_deferred_open_entry(e)) {
+			deferred[num_deferred] = *e;
+			num_deferred += 1;
+		}
+	}
+
+	/*
+	 * We need to sort the notifications by initial request time. Imagine
+	 * two opens come in asyncronously, both conflicting with the open we
+	 * just close here. If we don't sort the notifications, the one that
+	 * came in last might get the response before the one that came in
+	 * first. This is demonstrated with the smbtorture4 raw.mux test.
+	 *
+	 * As long as we had the UNUSED_SHARE_MODE_ENTRY, we happened to
+	 * survive this particular test. Without UNUSED_SHARE_MODE_ENTRY, we
+	 * shuffle the share mode entries around a bit, so that we do not
+	 * survive raw.mux anymore.
+	 *
+	 * We could have kept the ordering in del_share_mode, but as the
+	 * ordering was never formalized I think it is better to do it here
+	 * where it is necessary.
+	 */
+
+	qsort(deferred, num_deferred, sizeof(struct share_mode_entry),
+	      compare_share_mode_times);
+
+	for (i=0; i<num_deferred; i++) {
+		struct share_mode_entry *e = &deferred[i];
+
  		if (procid_is_me(&e->pid)) {
  			/*
  			 * We need to notify ourself to retry the open.  Do
@@ -182,17 +232,19 @@ static void notify_deferred_opens(struct messaging_context *msg_ctx,
  			 * the head of the queue and changing the wait time to
  			 * zero.
  			 */
- 			schedule_deferred_open_message_smb(e->op_mid);
+			schedule_deferred_open_message_smb(sconn, e->op_mid);
  		} else {
 			char msg[MSG_SMB_SHARE_MODE_ENTRY_SIZE];
 
 			share_mode_entry_to_message(msg, e);
 
-			messaging_send_buf(msg_ctx, e->pid, MSG_SMB_OPEN_RETRY,
+			messaging_send_buf(sconn->msg_ctx, e->pid,
+					   MSG_SMB_OPEN_RETRY,
 					   (uint8 *)msg,
 					   MSG_SMB_SHARE_MODE_ENTRY_SIZE);
  		}
  	}
+	TALLOC_FREE(deferred);
 }
 
 /****************************************************************************
@@ -201,14 +253,14 @@ static void notify_deferred_opens(struct messaging_context *msg_ctx,
 
 NTSTATUS delete_all_streams(connection_struct *conn, const char *fname)
 {
-	struct stream_struct *stream_info;
+	struct stream_struct *stream_info = NULL;
 	int i;
-	unsigned int num_streams;
+	unsigned int num_streams = 0;
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS status;
 
-	status = SMB_VFS_STREAMINFO(conn, NULL, fname, talloc_tos(),
-				    &num_streams, &stream_info);
+	status = vfs_streaminfo(conn, NULL, fname, talloc_tos(),
+				&num_streams, &stream_info);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_IMPLEMENTED)) {
 		DEBUG(10, ("no streams around\n"));
@@ -217,7 +269,7 @@ NTSTATUS delete_all_streams(connection_struct *conn, const char *fname)
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(10, ("SMB_VFS_STREAMINFO failed: %s\n",
+		DEBUG(10, ("vfs_streaminfo failed: %s\n",
 			   nt_errstr(status)));
 		goto fail;
 	}
@@ -283,7 +335,7 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 
 	/* Ensure any pending write time updates are done. */
 	if (fsp->update_write_time_event) {
-		update_write_time_handler(server_event_context(),
+		update_write_time_handler(fsp->conn->sconn->ev_ctx,
 					fsp->update_write_time_event,
 					timeval_current(),
 					(void *)fsp);
@@ -295,9 +347,7 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 	 * This prevents race conditions with the file being created. JRA.
 	 */
 
-	lck = get_share_mode_lock(talloc_tos(), fsp->file_id, NULL, NULL,
-				  NULL);
-
+	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 	if (lck == NULL) {
 		DEBUG(0, ("close_remove_share_mode: Could not get share mode "
 			  "lock for file %s\n", fsp_str_dbg(fsp)));
@@ -309,7 +359,7 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 		DEBUG(10,("close_remove_share_mode: write time forced "
 			"for file %s\n",
 			fsp_str_dbg(fsp)));
-		set_close_write_time(fsp, lck->changed_write_time);
+		set_close_write_time(fsp, lck->data->changed_write_time);
 	} else if (fsp->update_write_time_on_close) {
 		/* Someone had a pending write. */
 		if (null_timespec(fsp->close_write_time)) {
@@ -358,8 +408,8 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 		/* See if others still have the file open via this pathname.
 		   If this is the case, then don't delete. If all opens are
 		   POSIX delete now. */
-		for (i=0; i<lck->num_share_modes; i++) {
-			struct share_mode_entry *e = &lck->share_modes[i];
+		for (i=0; i<lck->data->num_share_modes; i++) {
+			struct share_mode_entry *e = &lck->data->share_modes[i];
 			if (is_valid_share_mode_entry(e) &&
 					e->name_hash == fsp->name_hash) {
 				if (fsp->posix_open && (e->flags & SHARE_MODE_FLAG_POSIX_OPEN)) {
@@ -372,7 +422,7 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 	}
 
 	/* Notify any deferred opens waiting on this close. */
-	notify_deferred_opens(conn->sconn->msg_ctx, lck);
+	notify_deferred_opens(conn->sconn, lck);
 	reply_to_oplock_break_requests(fsp);
 
 	/*
@@ -565,22 +615,20 @@ static NTSTATUS update_write_time_on_close(struct files_struct *fsp)
 	 * must update it in the open file db too. */
 	(void)set_write_time(fsp->file_id, fsp->close_write_time);
 
-	lck = get_share_mode_lock(talloc_tos(), fsp->file_id, NULL, NULL, NULL);
+	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 	if (lck) {
 		/* Close write times overwrite sticky write times
 		   so we must replace any sticky write time here. */
-		if (!null_timespec(lck->changed_write_time)) {
+		if (!null_timespec(lck->data->changed_write_time)) {
 			(void)set_sticky_write_time(fsp->file_id, fsp->close_write_time);
 		}
 		TALLOC_FREE(lck);
 	}
 
 	ft.mtime = fsp->close_write_time;
-	/* We must use NULL for the fsp handle here, as smb_set_file_time()
-	   checks the fsp access_mask, which may not include FILE_WRITE_ATTRIBUTES.
-	   As this is a close based update, we are not directly changing the
+	/* As this is a close based update, we are not directly changing the
 	   file attributes from a client call, but indirectly from a write. */
-	status = smb_set_file_time(fsp->conn, NULL, fsp->fsp_name, &ft, false);
+	status = smb_set_file_time(fsp->conn, fsp, fsp->fsp_name, &ft, false);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10,("update_write_time_on_close: smb_set_file_time "
 			"on file %s returned %s\n",
@@ -686,7 +734,7 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
 	status = ntstatus_keeperror(status, tmp);
 
 	DEBUG(2,("%s closed file %s (numopen=%d) %s\n",
-		conn->session_info->unix_name, fsp_str_dbg(fsp),
+		conn->session_info->unix_info->unix_name, fsp_str_dbg(fsp),
 		conn->num_files_open - 1,
 		nt_errstr(status) ));
 
@@ -969,9 +1017,7 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 	 * reference to a directory also.
 	 */
 
-	lck = get_share_mode_lock(talloc_tos(), fsp->file_id, NULL, NULL,
-				  NULL);
-
+	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 	if (lck == NULL) {
 		DEBUG(0, ("close_directory: Could not get share mode lock for "
 			  "%s\n", fsp_str_dbg(fsp)));
@@ -1012,8 +1058,8 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 		int i;
 		/* See if others still have the dir open. If this is the
 		 * case, then don't delete. If all opens are POSIX delete now. */
-		for (i=0; i<lck->num_share_modes; i++) {
-			struct share_mode_entry *e = &lck->share_modes[i];
+		for (i=0; i<lck->data->num_share_modes; i++) {
+			struct share_mode_entry *e = &lck->data->share_modes[i];
 			if (is_valid_share_mode_entry(e) &&
 					e->name_hash == fsp->name_hash) {
 				if (fsp->posix_open && (e->flags & SHARE_MODE_FLAG_POSIX_OPEN)) {
@@ -1041,6 +1087,17 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 				NULL);
 
 		TALLOC_FREE(lck);
+
+		if ((fsp->conn->fs_capabilities & FILE_NAMED_STREAMS)
+		    && !is_ntfs_stream_smb_fname(fsp->fsp_name)) {
+
+			status = delete_all_streams(fsp->conn, fsp->fsp_name->base_name);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(5, ("delete_all_streams failed: %s\n",
+					  nt_errstr(status)));
+				goto out;
+			}
+		}
 
 		status = rmdir_internals(talloc_tos(), fsp);
 
@@ -1134,15 +1191,11 @@ void msg_close_file(struct messaging_context *msg_ctx,
 			struct server_id server_id,
 			DATA_BLOB *data)
 {
-	struct smbd_server_connection *sconn;
 	files_struct *fsp = NULL;
 	struct share_mode_entry e;
-
-	sconn = msg_ctx_to_sconn(msg_ctx);
-	if (sconn == NULL) {
-		DEBUG(1, ("could not find sconn\n"));
-		return;
-	}
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
 
 	message_to_share_mode_entry(&e, (char *)data->data);
 

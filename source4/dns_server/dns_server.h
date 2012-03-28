@@ -23,6 +23,7 @@
 #define __DNS_SERVER_H__
 
 #include "librpc/gen_ndr/dns.h"
+#include "librpc/gen_ndr/ndr_dnsp.h"
 
 struct tsocket_address;
 
@@ -49,12 +50,26 @@ WERROR dns_server_process_query(struct dns_server *dns,
 WERROR dns_server_process_update(struct dns_server *dns,
 				 TALLOC_CTX *mem_ctx,
 				 struct dns_name_packet *in,
-				 const struct dns_res_rec *prereqs, uint16_t prereq_count,
-				 struct dns_res_rec **updates,      uint16_t *update_count,
-				 struct dns_res_rec **additional,   uint16_t *arcount);
+				 struct dns_res_rec **prereqs,    uint16_t *prereq_count,
+				 struct dns_res_rec **updates,    uint16_t *update_count,
+				 struct dns_res_rec **additional, uint16_t *arcount);
 
 uint8_t werr_to_dns_err(WERROR werror);
 bool dns_name_match(const char *zone, const char *name, size_t *host_part_len);
+bool dns_name_equal(const char *name1, const char *name2);
+bool dns_records_match(struct dnsp_DnssrvRpcRecord *rec1,
+		       struct dnsp_DnssrvRpcRecord *rec2);
+WERROR dns_lookup_records(struct dns_server *dns,
+			  TALLOC_CTX *mem_ctx,
+			  struct ldb_dn *dn,
+			  struct dnsp_DnssrvRpcRecord **records,
+			  uint16_t *rec_count);
+WERROR dns_replace_records(struct dns_server *dns,
+			   TALLOC_CTX *mem_ctx,
+			   struct ldb_dn *dn,
+			   bool needs_add,
+			   const struct dnsp_DnssrvRpcRecord *records,
+			   uint16_t rec_count);
 WERROR dns_name2dn(struct dns_server *dns,
 		   TALLOC_CTX *mem_ctx,
 		   const char *name,

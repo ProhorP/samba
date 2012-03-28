@@ -24,7 +24,8 @@
 #include "registry.h"
 #include "reg_objects.h"
 #include "util_tdb.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_rbt.h"
 #include "../libcli/registry/util_reg.h"
 
 #undef DBGC_CLASS
@@ -169,13 +170,15 @@ static WERROR regsubkey_ctr_index_for_keyname(struct regsubkey_ctr *ctr,
 					      uint32_t *idx)
 {
 	TDB_DATA data;
+	NTSTATUS status;
 
 	if ((ctr == NULL) || (keyname == NULL)) {
 		return WERR_INVALID_PARAM;
 	}
 
-	data = dbwrap_fetch_bystring_upper(ctr->subkeys_hash, ctr, keyname);
-	if (data.dptr == NULL) {
+	status = dbwrap_fetch_bystring_upper(ctr->subkeys_hash, ctr, keyname,
+					     &data);
+	if (!NT_STATUS_IS_OK(status)) {
 		return WERR_NOT_FOUND;
 	}
 
@@ -340,60 +343,6 @@ WERROR regval_ctr_init(TALLOC_CTX *mem_ctx, struct regval_ctr **ctr)
 int regval_ctr_numvals(struct regval_ctr *ctr)
 {
 	return ctr->num_values;
-}
-
-/***********************************************************************
- allocate memory for and duplicate a struct regval_blob.
- This is malloc'd memory so the caller should free it when done
- **********************************************************************/
-
-struct regval_blob* dup_registry_value(struct regval_blob *val)
-{
-	struct regval_blob *copy = NULL;
-
-	if ( !val )
-		return NULL;
-
-	if ( !(copy = SMB_MALLOC_P( struct regval_blob)) ) {
-		DEBUG(0,("dup_registry_value: malloc() failed!\n"));
-		return NULL;
-	}
-
-	/* copy all the non-pointer initial data */
-
-	memcpy( copy, val, sizeof(struct regval_blob) );
-
-	copy->size = 0;
-	copy->data_p = NULL;
-
-	if ( val->data_p && val->size )
-	{
-		if ( !(copy->data_p = (uint8_t *)memdup( val->data_p,
-						       val->size )) ) {
-			DEBUG(0,("dup_registry_value: memdup() failed for [%d] "
-				 "bytes!\n", val->size));
-			SAFE_FREE( copy );
-			return NULL;
-		}
-		copy->size = val->size;
-	}
-
-	return copy;
-}
-
-/**********************************************************************
- free the memory allocated to a struct regval_blob
- *********************************************************************/
-
-void free_registry_value(struct regval_blob *val)
-{
-	if ( !val )
-		return;
-
-	SAFE_FREE( val->data_p );
-	SAFE_FREE( val );
-
-	return;
 }
 
 /**********************************************************************

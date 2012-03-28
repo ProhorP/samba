@@ -42,10 +42,6 @@ krb5_error_code smb_krb5_unparse_name(TALLOC_CTX *mem_ctx,
 				      krb5_const_principal principal,
 				      char **unix_name);
 
-#ifndef HAVE_KRB5_SET_REAL_TIME
-krb5_error_code krb5_set_real_time(krb5_context context, int32_t seconds, int32_t microseconds);
-#endif
-
 krb5_error_code krb5_set_default_tgs_ktypes(krb5_context ctx, const krb5_enctype *enc);
 
 #if defined(HAVE_KRB5_AUTH_CON_SETKEY) && !defined(HAVE_KRB5_AUTH_CON_SETUSERUSERKEY)
@@ -71,10 +67,6 @@ bool setup_kaddr( krb5_address *pkaddr, struct sockaddr_storage *paddr);
 int create_kerberos_key_from_string(krb5_context context, krb5_principal host_princ, krb5_data *password, krb5_keyblock *key, krb5_enctype enctype, bool no_salt);
 bool get_auth_data_from_tkt(TALLOC_CTX *mem_ctx, DATA_BLOB *auth_data, krb5_ticket *tkt);
 krb5_const_principal get_principal_from_tkt(krb5_ticket *tkt);
-krb5_error_code smb_krb5_locate_kdc(krb5_context ctx, const krb5_data *realm, struct sockaddr **addr_pp, int *naddrs, int get_masters);
-#if defined(HAVE_KRB5_LOCATE_KDC)
-krb5_error_code krb5_locate_kdc(krb5_context ctx, const krb5_data *realm, struct sockaddr **addr_pp, int *naddrs, int get_masters);
-#endif
 krb5_error_code get_kerberos_allowed_etypes(krb5_context context, krb5_enctype **enctypes);
 bool get_krb5_smb_session_key(TALLOC_CTX *mem_ctx,
 			      krb5_context context,
@@ -118,10 +110,6 @@ void smb_krb5_get_init_creds_opt_free(krb5_context context,
 				    krb5_get_init_creds_opt *opt);
 krb5_error_code smb_krb5_get_init_creds_opt_alloc(krb5_context context,
 				    krb5_get_init_creds_opt **opt);
-krb5_error_code smb_krb5_mk_error(krb5_context context,
-					krb5_error_code error_code,
-					const krb5_principal server,
-					krb5_data *reply);
 krb5_enctype smb_get_enctype_from_kt_entry(krb5_keytab_entry *kt_entry);
 krb5_error_code smb_krb5_enctype_to_string(krb5_context context,
 					    krb5_enctype enctype,

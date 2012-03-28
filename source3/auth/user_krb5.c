@@ -73,9 +73,9 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 		}
 	}
 
-	if (logon_info && logon_info->info3.base.domain.string) {
+	if (logon_info && logon_info->info3.base.logon_domain.string) {
 		domain = talloc_strdup(mem_ctx,
-					logon_info->info3.base.domain.string);
+					logon_info->info3.base.logon_domain.string);
 		if (!domain) {
 			return NT_STATUS_NO_MEMORY;
 		}
@@ -125,6 +125,7 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 	if (!fuser) {
 		return NT_STATUS_NO_MEMORY;
 	}
+	*mapped_to_guest = false;
 
 	pw = smb_getpwnam(mem_ctx, fuser, &unixuser, true);
 	if (pw) {
@@ -187,7 +188,7 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				struct PAC_LOGON_INFO *logon_info,
 				bool mapped_to_guest, bool username_was_mapped,
 				DATA_BLOB *session_key,
-				struct auth_serversupplied_info **session_info)
+				struct auth_session_info **session_info)
 {
 	NTSTATUS status;
 	struct auth_serversupplied_info *server_info;
@@ -242,6 +243,7 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				   "make_server_info_pw\n", username));
 			status = make_server_info_pw(&tmp, username, pw);
 		}
+
 		TALLOC_FREE(sampass);
 
 		if (!NT_STATUS_IS_OK(status)) {
@@ -250,19 +252,22 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 			return status;
                 }
 
+		/* Steal tmp server info into the server_info pointer. */
+		server_info = talloc_move(mem_ctx, &tmp);
+
 		/* make_server_info_pw does not set the domain. Without this
 		 * we end up with the local netbios name in substitutions for
 		 * %D. */
 
 		if (server_info->info3 != NULL) {
-			server_info->info3->base.domain.string =
+			server_info->info3->base.logon_domain.string =
 				talloc_strdup(server_info->info3, ntdomain);
 		}
 	}
 
 	server_info->nss_token |= username_was_mapped;
 
-	status = create_local_token(mem_ctx, server_info, session_key, session_info);
+	status = create_local_token(mem_ctx, server_info, session_key, ntuser, session_info);
 	talloc_free(server_info);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10,("failed to create local token: %s\n",
@@ -296,7 +301,7 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				struct PAC_LOGON_INFO *logon_info,
 				bool mapped_to_guest, bool username_was_mapped,
 				DATA_BLOB *session_key,
-				struct auth_serversupplied_info **session_info)
+				struct auth_session_info **session_info)
 {
 	return NT_STATUS_NOT_IMPLEMENTED;
 }

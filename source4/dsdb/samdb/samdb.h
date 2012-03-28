@@ -53,8 +53,19 @@ struct dsdb_control_current_partition {
 	struct ldb_dn *dn;
 };
 
+
+/*
+  flags in dsdb_repl_flags to control replication logic
+ */
+#define DSDB_REPL_FLAG_PRIORITISE_INCOMING 1
+#define DSDB_REPL_FLAG_PARTIAL_REPLICA     2
+#define DSDB_REPL_FLAG_ADD_NCNAME	   4
+
+
 #define DSDB_CONTROL_REPLICATED_UPDATE_OID "1.3.6.1.4.1.7165.4.3.3"
-/* DSDB_CONTROL_REPLICATED_UPDATE_OID has NULL data */
+struct dsdb_control_replicated_update {
+	uint32_t dsdb_repl_flags;
+};
 
 #define DSDB_CONTROL_DN_STORAGE_FORMAT_OID "1.3.6.1.4.1.7165.4.3.4"
 /* DSDB_CONTROL_DN_STORAGE_FORMAT_OID has NULL data and behaves very
@@ -81,7 +92,6 @@ struct dsdb_control_password_change_status {
 #define DSDB_CONTROL_PASSWORD_HASH_VALUES_OID "1.3.6.1.4.1.7165.4.3.9"
 
 #define DSDB_CONTROL_PASSWORD_CHANGE_OID "1.3.6.1.4.1.7165.4.3.10"
-
 struct dsdb_control_password_change {
 	const struct samr_Password *old_nt_pwd_hash;
 	const struct samr_Password *old_lm_pwd_hash;
@@ -103,6 +113,18 @@ struct dsdb_control_password_change {
 */
 #define DSDB_CONTROL_CHANGEREPLMETADATA_OID "1.3.6.1.4.1.7165.4.3.14"
 
+/* passed when we want to get the behaviour of the non-global catalog port */
+#define DSDB_CONTROL_NO_GLOBAL_CATALOG "1.3.6.1.4.1.7165.4.3.17"
+
+/* passed when we want special behaviour for partial replicas */
+#define DSDB_CONTROL_PARTIAL_REPLICA "1.3.6.1.4.1.7165.4.3.18"
+
+/* passed when we want special behaviour for dbcheck */
+#define DSDB_CONTROL_DBCHECK "1.3.6.1.4.1.7165.4.3.19"
+
+/* passed when importing plain text password on upgrades */
+#define DSDB_CONTROL_PASSWORD_BYPASS_LAST_SET_OID "1.3.6.1.4.1.7165.4.3.20"
+
 #define DSDB_EXTENDED_REPLICATED_OBJECTS_OID "1.3.6.1.4.1.7165.4.4.1"
 struct dsdb_extended_replicated_object {
 	struct ldb_message *msg;
@@ -116,8 +138,11 @@ struct dsdb_extended_replicated_objects {
 	 * this is the version of the dsdb_extended_replicated_objects
 	 * version 0: initial implementation
 	 */
-#define DSDB_EXTENDED_REPLICATED_OBJECTS_VERSION 1
+#define DSDB_EXTENDED_REPLICATED_OBJECTS_VERSION 2
 	uint32_t version;
+
+	/* DSDB_REPL_FLAG_* flags */
+	uint32_t dsdb_repl_flags;
 
 	struct ldb_dn *partition_dn;
 
@@ -129,16 +154,6 @@ struct dsdb_extended_replicated_objects {
 
 	uint32_t linked_attributes_count;
 	const struct drsuapi_DsReplicaLinkedAttribute *linked_attributes;
-};
-
-struct dsdb_naming_fsmo {
-	bool we_are_master;
-	struct ldb_dn *master_dn;
-};
-
-struct dsdb_pdc_fsmo {
-	bool we_are_master;
-	struct ldb_dn *master_dn;
 };
 
 #define DSDB_EXTENDED_CREATE_PARTITION_OID "1.3.6.1.4.1.7165.4.4.4"

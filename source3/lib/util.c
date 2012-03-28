@@ -29,6 +29,11 @@
 #include "../lib/util/util_pw.h"
 #include "messages.h"
 #include <ccan/hash/hash.h>
+#include "libcli/security/security.h"
+
+#ifdef HAVE_SYS_PRCTL_H
+#include <sys/prctl.h>
+#endif
 
 /* Max allowable allococation - 256mb - 0x10000000 */
 #define MAX_ALLOC_SIZE (1024*1024*256)
@@ -122,19 +127,6 @@ uint64_t get_file_size_stat(const SMB_STRUCT_STAT *sbuf)
 }
 
 /*******************************************************************
- Returns the size in bytes of the named file.
-********************************************************************/
-
-SMB_OFF_T get_file_size(char *file_name)
-{
-	SMB_STRUCT_STAT buf;
-	buf.st_ex_size = 0;
-	if (sys_stat(file_name, &buf, false) != 0)
-		return (SMB_OFF_T)-1;
-	return get_file_size_stat(&buf);
-}
-
-/*******************************************************************
  Show a smb message structure.
 ********************************************************************/
 
@@ -176,33 +168,6 @@ void show_msg(const char *buf)
 		bcc = MIN(bcc, 512);
 
 	dump_data(10, (const uint8 *)smb_buf_const(buf), bcc);
-}
-
-/*******************************************************************
- Set the length and marker of an encrypted smb packet.
-********************************************************************/
-
-void smb_set_enclen(char *buf,int len,uint16 enc_ctx_num)
-{
-	_smb_setlen(buf,len);
-
-	SCVAL(buf,4,0xFF);
-	SCVAL(buf,5,'E');
-	SSVAL(buf,6,enc_ctx_num);
-}
-
-/*******************************************************************
- Set the length and marker of an smb packet.
-********************************************************************/
-
-void smb_setlen(char *buf,int len)
-{
-	_smb_setlen(buf,len);
-
-	SCVAL(buf,4,0xFF);
-	SCVAL(buf,5,'S');
-	SCVAL(buf,6,'M');
-	SCVAL(buf,7,'B');
 }
 
 /*******************************************************************
@@ -394,7 +359,6 @@ ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, SMB_OFF_T pos
 
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 			   struct event_context *ev_ctx,
-			   struct server_id id,
 			   bool parent_longlived)
 {
 	NTSTATUS status = NT_STATUS_OK;
@@ -421,7 +385,7 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 		 * For clustering, we need to re-init our ctdbd connection after the
 		 * fork
 		 */
-		status = messaging_reinit(msg_ctx, id);
+		status = messaging_reinit(msg_ctx);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("messaging_reinit() failed: %s\n",
 				 nt_errstr(status)));
@@ -679,6 +643,72 @@ bool process_exists(const struct server_id pid)
 #endif
 }
 
+bool processes_exist(const struct server_id *pids, int num_pids,
+		     bool *results)
+{
+	struct server_id *remote_pids = NULL;
+	int *remote_idx = NULL;
+	bool *remote_results = NULL;
+	int i, num_remote_pids;
+	bool result = false;
+
+	remote_pids = talloc_array(talloc_tos(), struct server_id, num_pids);
+	if (remote_pids == NULL) {
+		goto fail;
+	}
+	remote_idx = talloc_array(talloc_tos(), int, num_pids);
+	if (remote_idx == NULL) {
+		goto fail;
+	}
+	remote_results = talloc_array(talloc_tos(), bool, num_pids);
+	if (remote_results == NULL) {
+		goto fail;
+	}
+
+	num_remote_pids = 0;
+
+	for (i=0; i<num_pids; i++) {
+		if (procid_is_me(&pids[i])) {
+			results[i] = true;
+			continue;
+		}
+		if (procid_is_local(&pids[i])) {
+			results[i] = ((kill(pids[i].pid,0) == 0) ||
+				      (errno != ESRCH));
+			continue;
+		}
+
+		remote_pids[num_remote_pids] = pids[i];
+		remote_idx[num_remote_pids] = i;
+		num_remote_pids += 1;
+	}
+
+	if (num_remote_pids != 0) {
+#ifdef CLUSTER_SUPPORT
+		if (!ctdb_processes_exist(messaging_ctdbd_connection(),
+					  remote_pids, num_remote_pids,
+					  remote_results)) {
+			goto fail;
+		}
+#else
+		for (i=0; i<num_remote_pids; i++) {
+			remote_results[i] = false;
+		}
+#endif
+
+		for (i=0; i<num_remote_pids; i++) {
+			results[remote_idx[i]] = remote_results[i];
+		}
+	}
+
+	result = true;
+fail:
+	TALLOC_FREE(remote_results);
+	TALLOC_FREE(remote_idx);
+	TALLOC_FREE(remote_pids);
+	return result;
+}
+
 /*******************************************************************
  Convert a uid into a user name.
 ********************************************************************/
@@ -776,6 +806,13 @@ void smb_panic_s3(const char *why)
 	DEBUG(0,("PANIC (pid %llu): %s\n",
 		    (unsigned long long)sys_getpid(), why));
 	log_stack_trace();
+
+#if defined(HAVE_PRCTL) && defined(PR_SET_PTRACER)
+	/*
+	 * Make sure all children can attach a debugger.
+	 */
+	prctl(PR_SET_PTRACER, getpid(), 0, 0, 0);
+#endif
 
 	cmd = lp_panic_action();
 	if (cmd && *cmd) {
@@ -1178,23 +1215,6 @@ bool is_myname(const char *s)
 }
 
 /*******************************************************************
- Is the name specified our workgroup/domain.
- Returns true if it is equal, false otherwise.
-********************************************************************/
-
-bool is_myworkgroup(const char *s)
-{
-	bool ret = False;
-
-	if (strequal(s, lp_workgroup())) {
-		ret=True;
-	}
-
-	DEBUG(8, ("is_myworkgroup(\"%s\") returns %d\n", s, ret));
-	return(ret);
-}
-
-/*******************************************************************
  we distinguish between 2K and XP by the "Native Lan Manager" string
    WinXP => "Windows 2002 5.1"
    WinXP 64bit => "Windows XP 5.2"
@@ -1516,19 +1536,6 @@ static char *xx_path(const char *name, const char *rootpath)
 char *lock_path(const char *name)
 {
 	return xx_path(name, lp_lockdir());
-}
-
-/**
- * @brief Returns an absolute path to a file in the Samba pid directory.
- *
- * @param name File to find, relative to PIDDIR.
- *
- * @retval Pointer to a talloc'ed string containing the full path.
- **/
-
-char *pid_path(const char *name)
-{
-	return xx_path(name, lp_piddir());
 }
 
 /**
@@ -2031,25 +2038,6 @@ bool procid_is_local(const struct server_id *pid)
 }
 
 /****************************************************************
- Check if offset/length fit into bufsize. Should probably be
- merged with is_offset_safe, but this would require a rewrite
- of lanman.c. Later :-)
-****************************************************************/
-
-bool trans_oob(uint32_t bufsize, uint32_t offset, uint32_t length)
-{
-	if ((offset + length < offset) || (offset + length < length)) {
-		/* wrap */
-		return true;
-	}
-	if ((offset > bufsize) || (offset + length > bufsize)) {
-		/* overflow */
-		return true;
-	}
-	return false;
-}
-
-/****************************************************************
  Check if an offset into a buffer is safe.
  If this returns True it's safe to indirect into the byte at
  pointer ptr+off.
@@ -2237,4 +2225,177 @@ char *valid_share_pathname(TALLOC_CTX *ctx, const char *dos_pathname)
 		return NULL;
 
 	return ptr;
+}
+
+/*******************************************************************
+ Return True if the filename is one of the special executable types.
+********************************************************************/
+
+bool is_executable(const char *fname)
+{
+	if ((fname = strrchr_m(fname,'.'))) {
+		if (strequal(fname,".com") ||
+		    strequal(fname,".dll") ||
+		    strequal(fname,".exe") ||
+		    strequal(fname,".sym")) {
+			return True;
+		}
+	}
+	return False;
+}
+
+/****************************************************************************
+ Open a file with a share mode - old openX method - map into NTCreate.
+****************************************************************************/
+
+bool map_open_params_to_ntcreate(const char *smb_base_fname,
+				 int deny_mode, int open_func,
+				 uint32 *paccess_mask,
+				 uint32 *pshare_mode,
+				 uint32 *pcreate_disposition,
+				 uint32 *pcreate_options,
+				 uint32_t *pprivate_flags)
+{
+	uint32 access_mask;
+	uint32 share_mode;
+	uint32 create_disposition;
+	uint32 create_options = FILE_NON_DIRECTORY_FILE;
+	uint32_t private_flags = 0;
+
+	DEBUG(10,("map_open_params_to_ntcreate: fname = %s, deny_mode = 0x%x, "
+		  "open_func = 0x%x\n",
+		  smb_base_fname, (unsigned int)deny_mode,
+		  (unsigned int)open_func ));
+
+	/* Create the NT compatible access_mask. */
+	switch (GET_OPENX_MODE(deny_mode)) {
+		case DOS_OPEN_EXEC: /* Implies read-only - used to be FILE_READ_DATA */
+		case DOS_OPEN_RDONLY:
+			access_mask = FILE_GENERIC_READ;
+			break;
+		case DOS_OPEN_WRONLY:
+			access_mask = FILE_GENERIC_WRITE;
+			break;
+		case DOS_OPEN_RDWR:
+		case DOS_OPEN_FCB:
+			access_mask = FILE_GENERIC_READ|FILE_GENERIC_WRITE;
+			break;
+		default:
+			DEBUG(10,("map_open_params_to_ntcreate: bad open mode = 0x%x\n",
+				  (unsigned int)GET_OPENX_MODE(deny_mode)));
+			return False;
+	}
+
+	/* Create the NT compatible create_disposition. */
+	switch (open_func) {
+		case OPENX_FILE_EXISTS_FAIL|OPENX_FILE_CREATE_IF_NOT_EXIST:
+			create_disposition = FILE_CREATE;
+			break;
+
+		case OPENX_FILE_EXISTS_OPEN:
+			create_disposition = FILE_OPEN;
+			break;
+
+		case OPENX_FILE_EXISTS_OPEN|OPENX_FILE_CREATE_IF_NOT_EXIST:
+			create_disposition = FILE_OPEN_IF;
+			break;
+
+		case OPENX_FILE_EXISTS_TRUNCATE:
+			create_disposition = FILE_OVERWRITE;
+			break;
+
+		case OPENX_FILE_EXISTS_TRUNCATE|OPENX_FILE_CREATE_IF_NOT_EXIST:
+			create_disposition = FILE_OVERWRITE_IF;
+			break;
+
+		default:
+			/* From samba4 - to be confirmed. */
+			if (GET_OPENX_MODE(deny_mode) == DOS_OPEN_EXEC) {
+				create_disposition = FILE_CREATE;
+				break;
+			}
+			DEBUG(10,("map_open_params_to_ntcreate: bad "
+				  "open_func 0x%x\n", (unsigned int)open_func));
+			return False;
+	}
+
+	/* Create the NT compatible share modes. */
+	switch (GET_DENY_MODE(deny_mode)) {
+		case DENY_ALL:
+			share_mode = FILE_SHARE_NONE;
+			break;
+
+		case DENY_WRITE:
+			share_mode = FILE_SHARE_READ;
+			break;
+
+		case DENY_READ:
+			share_mode = FILE_SHARE_WRITE;
+			break;
+
+		case DENY_NONE:
+			share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
+			break;
+
+		case DENY_DOS:
+			private_flags |= NTCREATEX_OPTIONS_PRIVATE_DENY_DOS;
+	                if (is_executable(smb_base_fname)) {
+				share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
+			} else {
+				if (GET_OPENX_MODE(deny_mode) == DOS_OPEN_RDONLY) {
+					share_mode = FILE_SHARE_READ;
+				} else {
+					share_mode = FILE_SHARE_NONE;
+				}
+			}
+			break;
+
+		case DENY_FCB:
+			private_flags |= NTCREATEX_OPTIONS_PRIVATE_DENY_FCB;
+			share_mode = FILE_SHARE_NONE;
+			break;
+
+		default:
+			DEBUG(10,("map_open_params_to_ntcreate: bad deny_mode 0x%x\n",
+				(unsigned int)GET_DENY_MODE(deny_mode) ));
+			return False;
+	}
+
+	DEBUG(10,("map_open_params_to_ntcreate: file %s, access_mask = 0x%x, "
+		  "share_mode = 0x%x, create_disposition = 0x%x, "
+		  "create_options = 0x%x private_flags = 0x%x\n",
+		  smb_base_fname,
+		  (unsigned int)access_mask,
+		  (unsigned int)share_mode,
+		  (unsigned int)create_disposition,
+		  (unsigned int)create_options,
+		  (unsigned int)private_flags));
+
+	if (paccess_mask) {
+		*paccess_mask = access_mask;
+	}
+	if (pshare_mode) {
+		*pshare_mode = share_mode;
+	}
+	if (pcreate_disposition) {
+		*pcreate_disposition = create_disposition;
+	}
+	if (pcreate_options) {
+		*pcreate_options = create_options;
+	}
+	if (pprivate_flags) {
+		*pprivate_flags = private_flags;
+	}
+
+	return True;
+
+}
+
+
+void init_modules(void)
+{
+	/* FIXME: This can cause undefined symbol errors :
+	 *  smb_register_vfs() isn't available in nmbd, for example */
+	if(lp_preload_modules())
+		smb_load_modules(lp_preload_modules());
 }

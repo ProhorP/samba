@@ -810,19 +810,8 @@ static NTSTATUS streams_xattr_streaminfo(vfs_handle_struct *handle,
 		return map_nt_error_from_unix(errno);
 	}
 
-	state.streams = NULL;
-	state.num_streams = 0;
-
-	if (!S_ISDIR(sbuf.st_ex_mode)) {
-		if (!add_one_stream(mem_ctx,
-				    &state.num_streams, &state.streams,
-				    "::$DATA", sbuf.st_ex_size,
-				    SMB_VFS_GET_ALLOC_SIZE(handle->conn, fsp,
-							   &sbuf))) {
-			return NT_STATUS_NO_MEMORY;
-		}
-	}
-
+	state.streams = *pstreams;
+	state.num_streams = *pnum_streams;
 	state.mem_ctx = mem_ctx;
 	state.handle = handle;
 	state.status = NT_STATUS_OK;
@@ -842,7 +831,8 @@ static NTSTATUS streams_xattr_streaminfo(vfs_handle_struct *handle,
 
 	*pnum_streams = state.num_streams;
 	*pstreams = state.streams;
-	return NT_STATUS_OK;
+
+	return SMB_VFS_NEXT_STREAMINFO(handle, fsp, fname, mem_ctx, pnum_streams, pstreams);
 }
 
 static uint32_t streams_xattr_fs_capabilities(struct vfs_handle_struct *handle,
@@ -1052,18 +1042,18 @@ static int streams_xattr_fallocate(struct vfs_handle_struct *handle,
 
 
 static struct vfs_fn_pointers vfs_streams_xattr_fns = {
-	.fs_capabilities = streams_xattr_fs_capabilities,
+	.fs_capabilities_fn = streams_xattr_fs_capabilities,
 	.open_fn = streams_xattr_open,
-	.stat = streams_xattr_stat,
-	.fstat = streams_xattr_fstat,
-	.lstat = streams_xattr_lstat,
-	.pread = streams_xattr_pread,
-	.pwrite = streams_xattr_pwrite,
-	.unlink = streams_xattr_unlink,
-	.rename = streams_xattr_rename,
-        .ftruncate = streams_xattr_ftruncate,
-        .fallocate = streams_xattr_fallocate,
-	.streaminfo = streams_xattr_streaminfo,
+	.stat_fn = streams_xattr_stat,
+	.fstat_fn = streams_xattr_fstat,
+	.lstat_fn = streams_xattr_lstat,
+	.pread_fn = streams_xattr_pread,
+	.pwrite_fn = streams_xattr_pwrite,
+	.unlink_fn = streams_xattr_unlink,
+	.rename_fn = streams_xattr_rename,
+	.ftruncate_fn = streams_xattr_ftruncate,
+	.fallocate_fn = streams_xattr_fallocate,
+	.streaminfo_fn = streams_xattr_streaminfo,
 };
 
 NTSTATUS vfs_streams_xattr_init(void);

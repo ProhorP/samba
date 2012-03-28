@@ -169,6 +169,7 @@ static struct cli_state *connect_one(char *share, int snum)
 	fstring myname;
 	static int count;
 	NTSTATUS status;
+	int flags = 0;
 
 	fstrcpy(server,share+2);
 	share = strchr_m(server,'\\');
@@ -182,17 +183,22 @@ static struct cli_state *connect_one(char *share, int snum)
 
 	/* have to open a new connection */
 
-	status = cli_connect_nb(server_n, NULL, 0, 0x20, myname, Undefined,
-				&c);
+	if (use_kerberos) {
+		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+	}
+	if (use_oplocks) {
+		flags |= CLI_FULL_CONNECTION_OPLOCKS;
+	}
+
+	status = cli_connect_nb(server_n, NULL, 0, 0x20, myname,
+				SMB_SIGNING_DEFAULT, flags, &c);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("Connection to %s failed. Error %s\n", server_n,
 			  nt_errstr(status)));
 		return NULL;
 	}
 
-	c->use_kerberos = use_kerberos;
-
-	status = cli_negprot(c);
+	status = cli_negprot(c, PROTOCOL_NT1);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("protocol negotiation failed: %s\n",
 			  nt_errstr(status)));
@@ -236,8 +242,8 @@ static struct cli_state *connect_one(char *share, int snum)
 	
 	DEBUG(4,(" session setup ok\n"));
 
-	status = cli_tcon_andx(c, share, "?????", password[snum],
-			       strlen(password[snum])+1);
+	status = cli_tree_connect(c, share, "?????", password[snum],
+				  strlen(password[snum])+1);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("tree connect failed: %s\n", nt_errstr(status)));
 		cli_shutdown(c);
@@ -245,8 +251,6 @@ static struct cli_state *connect_one(char *share, int snum)
 	}
 
 	DEBUG(4,(" tconx ok\n"));
-
-	c->use_oplocks = use_oplocks;
 
 	return c;
 }
@@ -289,17 +293,16 @@ static bool test_one(struct cli_state *cli[NSERVERS][NCONNECTIONS],
 	uint64_t len = rec->len;
 	enum brl_type op = rec->lock_type;
 	int server;
-	bool ret[NSERVERS];
 	NTSTATUS status[NSERVERS];
 
 	switch (rec->lock_op) {
 	case OP_LOCK:
 		/* set a lock */
 		for (server=0;server<NSERVERS;server++) {
-			ret[server] = cli_lock64(cli[server][conn], 
-						 fnum[server][conn][f],
-						 start, len, LOCK_TIMEOUT, op);
-			status[server] = cli_nt_error(cli[server][conn]);
+			status[server] = cli_lock64(cli[server][conn],
+						    fnum[server][conn][f],
+						    start, len, LOCK_TIMEOUT,
+						    op);
 			if (!exact_error_codes && 
 			    NT_STATUS_EQUAL(status[server], 
 					    NT_STATUS_FILE_LOCK_CONFLICT)) {
@@ -320,10 +323,9 @@ static bool test_one(struct cli_state *cli[NSERVERS][NCONNECTIONS],
 	case OP_UNLOCK:
 		/* unset a lock */
 		for (server=0;server<NSERVERS;server++) {
-			ret[server] = NT_STATUS_IS_OK(cli_unlock64(cli[server][conn], 
-						   fnum[server][conn][f],
-						   start, len));
-			status[server] = cli_nt_error(cli[server][conn]);
+			status[server] = cli_unlock64(cli[server][conn],
+						      fnum[server][conn][f],
+						      start, len);
 		}
 		if (showall || 
 		    (!hide_unlock_fails && !NT_STATUS_EQUAL(status[0],status[1]))) {
@@ -345,7 +347,7 @@ static bool test_one(struct cli_state *cli[NSERVERS][NCONNECTIONS],
 		}
 		for (server=0;server<NSERVERS;server++) {
 			fnum[server][conn][f] = (uint16_t)-1;
-			if (!NT_STATUS_IS_OK(cli_open(cli[server][conn], FILENAME,
+			if (!NT_STATUS_IS_OK(cli_openx(cli[server][conn], FILENAME,
 							 O_RDWR|O_CREAT,
 							 DENY_NONE, &fnum[server][conn][f]))) {
 				printf("failed to reopen on share%d\n", server);
@@ -390,7 +392,7 @@ static void open_files(struct cli_state *cli[NSERVERS][NCONNECTIONS],
 	for (conn=0;conn<NCONNECTIONS;conn++)
 	for (f=0;f<NFILES;f++) {
 		fnum[server][conn][f] = (uint16_t)-1;
-		if (!NT_STATUS_IS_OK(cli_open(cli[server][conn], FILENAME,
+		if (!NT_STATUS_IS_OK(cli_openx(cli[server][conn], FILENAME,
 						 O_RDWR|O_CREAT,
 						 DENY_NONE,
 						 &fnum[server][conn][f]))) {
@@ -598,7 +600,7 @@ static void usage(void)
 	argc -= NSERVERS;
 	argv += NSERVERS;
 
-	lp_load(get_dyn_CONFIGFILE(),True,False,False,True);
+	lp_load_global(get_dyn_CONFIGFILE());
 	load_interfaces();
 
 	if (getenv("USER")) {

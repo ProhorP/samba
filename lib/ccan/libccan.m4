@@ -135,7 +135,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clz],
 	       samba_cv_builtin_clz,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_clz(1) == (sizeof(int)*8 - 1) ? 0 : 1;
 			}],
@@ -150,7 +150,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clzl],
 	       samba_cv_builtin_clzl,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_clzl(1) == (sizeof(int)*8 - 1) ? 0 : 1;
 			}],
@@ -164,7 +164,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clzll],
 	       samba_cv_builtin_clzll,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_clzll(1) == (sizeof(int)*8 - 1) ? 0 : 1;
 			}],
@@ -179,7 +179,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_constant_p],
 	       samba_cv_builtin_constant_p,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_constant_p(1) ? 0 : 1;
 			}],
@@ -194,9 +194,9 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_expect],
 	       samba_cv_builtin_expect,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
-				return __builtin_expect(main != 0) ? 0 : 1;
+				return __builtin_expect(main != 0, 1) ? 0 : 1;
 			}],
 			samba_cv_builtin_expect=yes)
 		])
@@ -209,7 +209,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_popcountl],
 	       samba_cv_builtin_popcountl,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_popcountl(255L) == 8 ? 0 : 1;
 			}],
@@ -224,7 +224,7 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_types_compatible_p],
 	       samba_cv_builtin_types_compatible_p,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[int main(void) {
 				return __builtin_types_compatible_p(char *, int) ? 1 : 0;
 			}],
@@ -236,26 +236,42 @@ if test x"$samba_cv_builtin_types_compatible_p" = xyes ; then
 	     [whether we have __builtin_types_compatible_p])
 fi
 
-AC_CACHE_CHECK([whether we have __builtin_compound_literals],
-	       samba_cv_builtin_compound_literals,
+AC_CACHE_CHECK([whether we have __builtin_choose_expr],
+	       samba_cv_builtin_choose_expr,
+	       [
+	         AC_LINK_IFELSE(
+			[int main(void) {
+				return __builtin_choose_expr(1, 0, "garbage");
+			}],
+			samba_cv_builtin_choose_expr=yes)
+		])
+
+if test x"$samba_cv_builtin_choose_expr" = xyes ; then
+   AC_DEFINE(HAVE_BUILTIN_CHOOSE_EXPR, 1,
+	     [whether we have __builtin_choose_expr])
+fi
+
+# We use @<:@ and @:>@ here for embedded [ and ].
+AC_CACHE_CHECK([whether we have compound literals],
+	       samba_cv_compound_literals,
 	       [
 	         AC_COMPILE_IFELSE(
 			[int main(void) {
-				int *foo = (int[]) { 1, 2, 3, 4 };
-				return foo[0] == 1 ? 0 : 1;
+				int *foo = (int@<:@@:>@) { 1, 2, 3, 4 };
+				return foo@<:@0@:>@ == 1 ? 0 : 1;
 			}],
-			samba_cv_builtin_compound_literals=yes)
+			samba_cv_compound_literals=yes)
 		])
 
-if test x"$samba_cv_builtin_compound_literals" = xyes ; then
-   AC_DEFINE(HAVE_BUILTIN_COMPOUND_LITERALS, 1,
-	     [whether we have __builtin_compound_literals])
+if test x"$samba_cv_compound_literals" = xyes ; then
+   AC_DEFINE(HAVE_COMPOUND_LITERALS, 1,
+	     [whether we have compound literals])
 fi
 
 AC_CACHE_CHECK([whether we have __builtin_have_isblank],
 	       samba_cv_builtin_have_isblank,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_LINK_IFELSE(
 			[#include <ctype.h>
 			 int main(void) { return isblank(' ') ? 0 : 1; }
 			],

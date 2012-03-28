@@ -29,7 +29,12 @@
 extern "C" {
 #endif
 
-#ifndef _SAMBA_BUILD_
+#ifdef HAVE_LIBREPLACE
+#include <replace.h>
+#else
+#if HAVE_FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
 /* For mode_t */
 #include <sys/types.h>
 /* For O_* flags. */
@@ -42,12 +47,26 @@ extern "C" {
 #include <stdbool.h>
 /* For memcmp */
 #include <string.h>
-#else
-#include "replace.h"
 #endif
+
+#if HAVE_CCAN
 #include <ccan/compiler/compiler.h>
 #include <ccan/typesafe_cb/typesafe_cb.h>
 #include <ccan/cast/cast.h>
+#else
+#ifndef typesafe_cb_preargs
+/* Failing to have CCAN just mean less typesafe protection, etc. */
+#define typesafe_cb_preargs(rtype, atype, fn, arg, ...)	\
+	((rtype (*)(__VA_ARGS__, atype))(fn))
+#endif
+#ifndef cast_const
+#if defined(__intptr_t_defined) || defined(HAVE_INTPTR_T)
+#define cast_const(type, expr) ((type)((intptr_t)(expr)))
+#else
+#define cast_const(type, expr) ((type *)(expr))
+#endif
+#endif
+#endif /* !HAVE_CCAN */
 
 union tdb_attribute;
 struct tdb_context;
@@ -83,6 +102,21 @@ struct tdb_context *tdb_open(const char *name, int tdb_flags,
 #define TDB_NOSYNC   64 /* don't use synchronous transactions */
 #define TDB_SEQNUM   128 /* maintain a sequence number */
 #define TDB_ALLOW_NESTING   256 /* fake nested transactions */
+#define TDB_RDONLY   512 /* implied by O_RDONLY */
+#define TDB_VERSION1  1024 /* create/open an old style TDB */
+#define TDB_CANT_CHECK  2048 /* has a feature which we don't understand */
+
+/**
+ * tdb1_incompatible_hash - better (Jenkins) hash for tdb1
+ *
+ * This is better than the default hash for tdb1; but older versions of the
+ * tdb library (prior to version 1.2.6) won't be able to open them.
+ *
+ * It only makes sense to specify this (using tdb_attribute_hash) when
+ * creating (with O_CREAT) an old tdb version using TDB_VERSION1.  It's
+ * equivalent to the TDB_INCOMPATIBLE_HASH flag for tdb1.
+ */
+uint64_t tdb1_incompatible_hash(const void *, size_t, uint64_t, void *);
 
 /**
  * tdb_close - close and free a tdb.
@@ -502,6 +536,16 @@ void tdb_unlockall_read(struct tdb_context *tdb);
 enum TDB_ERROR tdb_wipe_all(struct tdb_context *tdb);
 
 /**
+ * tdb_repack - repack the database
+ * @tdb: the tdb context returned from tdb_open()
+ *
+ * This repacks the database; if it is suffering from a great deal of
+ * fragmentation this might help.  However, it can take twice the
+ * memory of the existing TDB.
+ */
+enum TDB_ERROR tdb_repack(struct tdb_context *tdb);
+
+/**
  * tdb_check - check a TDB for consistency
  * @tdb: the tdb context returned from tdb_open()
  * @check: function to check each key/data pair (or NULL)
@@ -511,6 +555,11 @@ enum TDB_ERROR tdb_wipe_all(struct tdb_context *tdb);
  * a check() function on each record so you can do your own data consistency
  * checks as well.  If check() returns an error, that is returned from
  * tdb_check().
+ *
+ * Note that the TDB uses a feature which we don't understand which
+ * indicates we can't run tdb_check(), this will log a warning to that
+ * effect and return TDB_SUCCESS.  You can detect this condition by
+ * looking for TDB_CANT_CHECK in tdb_get_flags().
  *
  * Returns TDB_SUCCESS or an error.
  */
@@ -603,7 +652,9 @@ enum tdb_attribute_type {
 	TDB_ATTRIBUTE_SEED = 2,
 	TDB_ATTRIBUTE_STATS = 3,
 	TDB_ATTRIBUTE_OPENHOOK = 4,
-	TDB_ATTRIBUTE_FLOCK = 5
+	TDB_ATTRIBUTE_FLOCK = 5,
+	TDB_ATTRIBUTE_TDB1_HASHSIZE = 128,
+	TDB_ATTRIBUTE_TDB1_MAX_DEAD = 129,
 };
 
 /**
@@ -614,8 +665,6 @@ enum tdb_attribute_type {
  * This gets an attribute from a TDB which has previously been set (or
  * may return the default values).  Set @attr.base.attr to the
  * attribute type you want get.
- *
- * Currently this does not work for TDB_ATTRIBUTE_OPENHOOK.
  */
 enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
 				 union tdb_attribute *attr);
@@ -629,8 +678,9 @@ enum TDB_ERROR tdb_get_attribute(struct tdb_context *tdb,
  * of the same type.  It returns TDB_ERR_EINVAL if the attribute is
  * unknown or invalid.
  *
- * Note that TDB_ATTRIBUTE_HASH, TDB_ATTRIBUTE_SEED and
- * TDB_ATTRIBUTE_OPENHOOK cannot currently be set after tdb_open.
+ * Note that TDB_ATTRIBUTE_HASH, TDB_ATTRIBUTE_SEED,
+ * TDB_ATTRIBUTE_OPENHOOK and TDB_ATTRIBUTE_TDB1_HASHSIZE cannot
+ * currently be set after tdb_open.
  */
 enum TDB_ERROR tdb_set_attribute(struct tdb_context *tdb,
 				 const union tdb_attribute *attr);
@@ -670,6 +720,20 @@ const char *tdb_name(const struct tdb_context *tdb);
 int tdb_fd(const struct tdb_context *tdb);
 
 /**
+ * tdb_foreach - iterate through every open TDB.
+ * @fn: the function to call for every TDB
+ * @p: the pointer to hand to @fn
+ *
+ * TDB internally keeps track of all open TDBs; this function allows you to
+ * iterate through them.  If @fn returns non-zero, traversal stops.
+ */
+#define tdb_foreach(fn, p)						\
+	tdb_foreach_(typesafe_cb_preargs(int, void *, (fn), (p),	\
+					 struct tdb_context *), (p))
+
+void tdb_foreach_(int (*fn)(struct tdb_context *, void *), void *p);
+
+/**
  * struct tdb_attribute_base - common fields for all tdb attributes.
  */
 struct tdb_attribute_base {
@@ -702,6 +766,7 @@ struct tdb_attribute_log {
 	struct tdb_attribute_base base; /* .attr = TDB_ATTRIBUTE_LOG */
 	void (*fn)(struct tdb_context *tdb,
 		   enum tdb_log_level level,
+		   enum TDB_ERROR ecode,
 		   const char *message,
 		   void *data);
 	void *data;
@@ -822,6 +887,32 @@ struct tdb_attribute_flock {
 };
 
 /**
+ * struct tdb_attribute_tdb1_hashsize - tdb1 hashsize
+ *
+ * This attribute allows setting the TDB1 hashsize; it only makes sense with
+ * O_CREAT and TDB_VERSION1.
+ *
+ * Hashsize should generally be a prime, such as 10007.
+ */
+struct tdb_attribute_tdb1_hashsize {
+	struct tdb_attribute_base base; /* .attr = TDB_ATTRIBUTE_TDB1_HASHSIZE */
+	unsigned int hsize;
+};
+
+/**
+ * struct tdb_attribute_tdb1_max_dead - tdb1 number of maximum dead records.
+ *
+ * TDB1 has a method to speed up its slow free list: it lets a certain
+ * number of "dead" records build up before freeing them.  This is
+ * particularly useful for volatile TDBs; setting it to 5 is
+ * equivalent to tdb1's TDB_VOLATILE flag.
+ */
+struct tdb_attribute_tdb1_max_dead {
+	struct tdb_attribute_base base; /* .attr = TDB_ATTRIBUTE_TDB1_MAX_DEAD */
+	unsigned int max_dead;
+};
+
+/**
  * union tdb_attribute - tdb attributes.
  *
  * This represents all the known attributes.
@@ -839,6 +930,8 @@ union tdb_attribute {
 	struct tdb_attribute_stats stats;
 	struct tdb_attribute_openhook openhook;
 	struct tdb_attribute_flock flock;
+	struct tdb_attribute_tdb1_hashsize tdb1_hashsize;
+	struct tdb_attribute_tdb1_max_dead tdb1_max_dead;
 };
 
 #ifdef  __cplusplus

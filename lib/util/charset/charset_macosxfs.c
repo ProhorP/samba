@@ -30,7 +30,10 @@
  */
 
 #include "includes.h"
+#include "charset_proto.h"
 #undef realloc
+
+#ifdef DARWINOS
 
 /*
  * Include OS frameworks.  These are only needed in this module.
@@ -201,9 +204,9 @@ static void hexdump( const char * label, const char * s, size_t len )
  * generic, not specifically for the file system.  So they may not be
  * perfect fits.
  */
-static size_t macosxfs_encoding_pull(
+size_t macosxfs_encoding_pull(
 	void *cd,				/* Encoder handle */
-	char **inbuf, size_t *inbytesleft,	/* Script string */
+	const char **inbuf, size_t *inbytesleft, /* Script string */
 	char **outbuf, size_t *outbytesleft)	/* UTF-16-LE string */
 {
 	static const int script_code = kCFStringEncodingUTF8;
@@ -323,9 +326,9 @@ static size_t macosxfs_encoding_pull(
 	return 0;
 }
 
-static size_t macosxfs_encoding_push(
+size_t macosxfs_encoding_push(
 	void *cd,				/* Encoder handle */
-	char **inbuf, size_t *inbytesleft,	/* UTF-16-LE string */
+	const char **inbuf, size_t *inbytesleft, /* UTF-16-LE string */
 	char **outbuf, size_t *outbytesleft)	/* Script string */
 {
 	static const int script_code = kCFStringEncodingUTF8;
@@ -431,7 +434,7 @@ static size_t macosxfs_encoding_push(
  */
 static size_t macosxfs_encoding_pull(
 	void *cd,				/* Encoder handle */
-	char **inbuf, size_t *inbytesleft,	/* Script string */
+	const char **inbuf, size_t *inbytesleft, /* Script string */
 	char **outbuf, size_t *outbytesleft)	/* UTF-16-LE string */
 {
 	static const int script_code = kCFStringEncodingUTF8;
@@ -519,7 +522,7 @@ static size_t macosxfs_encoding_pull(
 
 static size_t macosxfs_encoding_push(
 	void *cd,				/* Encoder handle */
-	char **inbuf, size_t *inbytesleft,	/* UTF-16-LE string */
+	const char **inbuf, size_t *inbytesleft, /* UTF-16-LE string */
 	char **outbuf, size_t *outbytesleft)	/* Script string */
 {
 	static const int script_code = kCFStringEncodingUTF8;
@@ -587,19 +590,12 @@ static size_t macosxfs_encoding_push(
 
 #endif /* USE_INTERNAL_API */
 
-/*
- * For initialization, actually install the encoding as "macosxfs".
- */
-static struct charset_functions macosxfs_encoding_functions = {
-	"MACOSXFS", macosxfs_encoding_pull, macosxfs_encoding_push
-};
-
-NTSTATUS charset_macosxfs_init(void)
+#else /* DARWIN */
+     
+void charset_macosfs_dummy(void);
+void charset_macosfs_dummy(void)
 {
-	if (!smb_register_charset(&macosxfs_encoding_functions)) {
-		return NT_STATUS_INTERNAL_ERROR;
-	}
-	return NT_STATUS_OK;
+	return;
 }
 
-/* eof */
+#endif /* DARWIN */

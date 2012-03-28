@@ -59,6 +59,7 @@ examples/VFS/skel_transparent.so
 semantic.cache
 nsswitch/libnss_winbind.so
 nsswitch/libnss_wins.so
+nsswitch/WINBIND
 source3/config.cache
 source3/config.log
 source3/config.status
@@ -89,7 +90,13 @@ source3/script/installbin.sh
 source3/script/uninstallbin.sh
 source3/smbadduser
 source3/smbd/build_options.c
+source3/param/param_global.h
+source3/param/param_local.h
 source3/setup
+lib/param/param_global.h
+lib/param/param_local.h
+lib/param/param_proto.h
+lib/param/s3_param.h
 pidl/blib
 pidl/cover_db
 pidl/Makefile
@@ -129,4 +136,6 @@ docs-xml/Samba3-HOWTO/images/idmap-uid2sid.png
 docs-xml/Samba3-HOWTO/images/pdftoepsonusb.png
 docs-xml/Samba3-HOWTO/images/pdftosocket.png
 docs-xml/Samba3-HOWTO/images/trusts1.png
-source4/.testrepository
+.testrepository
+bin/.confcache/*/*
+bin/.conf_check_*/*

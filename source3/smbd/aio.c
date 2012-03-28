@@ -49,6 +49,7 @@ struct aio_extra {
 	DATA_BLOB outbuf;
 	struct lock_struct lock;
 	bool write_through;
+	bool pass_cancel;
 	int (*handle_completion)(struct aio_extra *ex, int errcode);
 };
 
@@ -66,6 +67,7 @@ static void smbd_aio_signal_handler(struct tevent_context *ev_ctx,
 				info->si_value.sival_ptr;
 
 	smbd_aio_complete_aio_ex(aio_ex);
+	TALLOC_FREE(aio_ex);
 }
 
 
@@ -380,6 +382,33 @@ NTSTATUS schedule_aio_write_and_X(connection_struct *conn,
 	return NT_STATUS_OK;
 }
 
+bool cancel_smb2_aio(struct smb_request *smbreq)
+{
+	struct smbd_smb2_request *smb2req = smbreq->smb2req;
+	struct aio_extra *aio_ex = NULL;
+	int ret;
+
+	if (smb2req) {
+		aio_ex = talloc_get_type(smbreq->async_priv,
+					 struct aio_extra);
+	}
+
+	if (aio_ex == NULL) {
+		return false;
+	}
+
+	if (aio_ex->fsp == NULL) {
+		return false;
+	}
+
+	ret = SMB_VFS_AIO_CANCEL(aio_ex->fsp, &aio_ex->acb);
+	if (ret != AIO_CANCELED) {
+		return false;
+	}
+
+	return true;
+}
+
 /****************************************************************************
  Set up an aio request from a SMB2 read call.
 *****************************************************************************/
@@ -440,6 +469,7 @@ NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
 		return NT_STATUS_NO_MEMORY;
 	}
 	aio_ex->handle_completion = handle_aio_smb2_read_complete;
+	aio_ex->pass_cancel = true;
 
 	init_strict_lock_struct(fsp, (uint64_t)smbreq->smbpid,
 		(uint64_t)startpos, (uint64_t)smb_maxcnt, READ_LOCK,
@@ -476,6 +506,7 @@ NTSTATUS schedule_smb2_aio_read(connection_struct *conn,
 	/* We don't need talloc_move here as both aio_ex and
 	 * smbreq are children of smbreq->smb2req. */
 	aio_ex->smbreq = smbreq;
+	smbreq->async_priv = aio_ex;
 
 	DEBUG(10,("smb2: scheduled aio_read for file %s, "
 		"offset %.0f, len = %u (mid = %u)\n",
@@ -540,6 +571,7 @@ NTSTATUS schedule_aio_smb2_write(connection_struct *conn,
 
 	aio_ex->handle_completion = handle_aio_smb2_write_complete;
 	aio_ex->write_through = write_through;
+	aio_ex->pass_cancel = true;
 
 	init_strict_lock_struct(fsp, (uint64_t)smbreq->smbpid,
 		in_offset, (uint64_t)in_data.length, WRITE_LOCK,
@@ -576,6 +608,7 @@ NTSTATUS schedule_aio_smb2_write(connection_struct *conn,
 	/* We don't need talloc_move here as both aio_ex and
 	* smbreq are children of smbreq->smb2req. */
 	aio_ex->smbreq = smbreq;
+	smbreq->async_priv = aio_ex;
 
 	/* This should actually be improved to span the write. */
 	contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_WRITE);
@@ -779,6 +812,7 @@ static int handle_aio_smb2_read_complete(struct aio_extra *aio_ex, int errcode)
 
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(subreq, status);
+		return errcode;
 	}
 
 	tevent_req_done(subreq);
@@ -812,6 +846,7 @@ static int handle_aio_smb2_write_complete(struct aio_extra *aio_ex, int errcode)
 
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(subreq, status);
+		return errcode;
 	}
 
 	tevent_req_done(subreq);
@@ -833,6 +868,11 @@ static bool handle_aio_completed(struct aio_extra *aio_ex, int *perr)
 		return false;
 	}
 
+	if (!aio_ex->fsp) {
+	        DEBUG(3, ("handle_aio_completed: aio_ex->fsp == NULL\n"));
+		return false;
+	}
+
 	fsp = aio_ex->fsp;
 
 	/* Ensure the operation has really completed. */
@@ -848,7 +888,7 @@ static bool handle_aio_completed(struct aio_extra *aio_ex, int *perr)
 	/* Unlock now we're done. */
 	SMB_VFS_STRICT_UNLOCK(fsp->conn, fsp, &aio_ex->lock);
 
-	if (err == ECANCELED) {
+	if (!aio_ex->pass_cancel && err == ECANCELED) {
 		/* If error is ECANCELED then don't return anything to the
 		 * client. */
 	        DEBUG(10,( "handle_aio_completed: operation mid %llu"
@@ -892,8 +932,6 @@ void smbd_aio_complete_aio_ex(struct aio_extra *aio_ex)
 	if (!handle_aio_completed(aio_ex, &ret)) {
 		return;
 	}
-
-	TALLOC_FREE(aio_ex);
 }
 
 /****************************************************************************
@@ -1035,6 +1073,11 @@ NTSTATUS schedule_aio_write_and_X(connection_struct *conn,
 			      size_t numtowrite)
 {
 	return NT_STATUS_RETRY;
+}
+
+bool cancel_smb2_aio(struct smb_request *smbreq)
+{
+	return false;
 }
 
 NTSTATUS schedule_smb2_aio_read(connection_struct *conn,

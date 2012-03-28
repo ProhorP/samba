@@ -72,6 +72,8 @@ AC_SUBST(UNINSTALLLIBCMD_A)
 AC_SUBST(INSTALL_LIBWBCLIENT)
 AC_SUBST(UNINSTALL_LIBWBCLIENT)
 AC_SUBST(LIBWBCLIENT_SHARED_TARGET)
+AC_SUBST(LIBWBCLIENT_SHARED_TARGET_SOVER)
+AC_SUBST(LIBWBCLIENT_SHARED_TARGET_FULLVER)
 AC_SUBST(LIBWBCLIENT_SHARED)
 AC_SUBST(LIBWBCLIENT_STATIC_TARGET)
 AC_SUBST(LIBWBCLIENT_STATIC)
@@ -124,6 +126,7 @@ fi
 
 m4_include(../lib/socket_wrapper/config.m4)
 m4_include(../lib/nss_wrapper/config.m4)
+m4_include(../lib/uid_wrapper/config.m4)
 
 m4_include(m4/swat.m4)
 
@@ -265,9 +268,6 @@ if test "$ac_cv_prog_gnu_ld" = "yes"; then
            fi
         fi
 fi
-
-dnl look for executable suffix
-AC_EXEEXT
 
 dnl Check if C compiler understands -c and -o at the same time
 AC_PROG_CC_C_O
@@ -453,8 +453,6 @@ default_shared_modules="$default_shared_modules vfs_cap"
 default_shared_modules="$default_shared_modules vfs_expand_msdfs"
 default_shared_modules="$default_shared_modules vfs_shadow_copy"
 default_shared_modules="$default_shared_modules vfs_shadow_copy2"
-default_shared_modules="$default_shared_modules charset_CP850"
-default_shared_modules="$default_shared_modules charset_CP437"
 default_shared_modules="$default_shared_modules auth_script"
 default_shared_modules="$default_shared_modules vfs_readahead"
 default_shared_modules="$default_shared_modules vfs_xattr_tdb"
@@ -474,7 +472,7 @@ default_shared_modules="$default_shared_modules idmap_autorid"
 if test "x$developer" = xyes; then
    default_static_modules="$default_static_modules rpc_rpcecho pdb_ads"
    default_static_modules="$default_static_modules auth_netlogond"
-   default_shared_modules="$default_shared_modules charset_weird perfcount_test"
+   default_shared_modules="$default_shared_modules perfcount_test"
 fi
 
 #
@@ -683,7 +681,7 @@ main() {
 	AC_DEFINE(BROKEN_UNICODE_COMPOSE_CHARACTERS, 1, [Does this system use unicode compose characters])
 
 # Add a system specific charset module.
-	default_shared_modules="$default_shared_modules charset_macosxfs"
+	default_shared_modules="$default_shared_modules"
 
 	;;
     *hurd*)
@@ -766,6 +764,14 @@ old_CPPFLAGS="$CPPFLAGS"
 CPPFLAGS="-Iinclude $CPPFLAGS"
 AC_CHECK_HEADERS([CoreFoundation/CFStringEncodingConverter.h], [], [AC_CHECK_HEADERS([CFStringEncodingConverter.h])])
 CPPFLAGS="$old_CPPFLAGS"
+
+# To link lib/util/charset/charset_macosxfs.c, we need to tell the linker
+# about CoreFoundation
+case "$host_os" in
+    *darwin11*)
+		LDFLAGS="$LDFLAGS -framework CoreFoundation"
+	;;
+esac
 
 # In valgrind 1.0.x, it's just valgrind.h.  In 1.9.x+ there's a
 # subdirectory of headers.
@@ -1069,7 +1075,7 @@ AC_CHECK_FUNCS(yp_get_default_domain)
 # Check if we have execl, if not we need to compile smbrun.
 AC_CHECK_FUNCS(execl)
 if test x"$ac_cv_func_execl" = x"no"; then
-    EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/smbrun\$(EXEEXT)"
+    EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/smbrun"
 fi
 
 AC_CHECK_FUNCS(getcwd fchown chmod fchmod mknod mknod64)
@@ -1084,7 +1090,7 @@ AC_CHECK_FUNCS(getgrset)
 AC_CHECK_FUNCS(setpriv setgidx setuidx setgroups sysconf stat64 fstat64)
 AC_CHECK_FUNCS(lstat64 fopen64 atexit grantpt lseek64 ftruncate64 posix_fallocate posix_fallocate64)
 AC_CHECK_FUNCS(fallocate fallocate64)
-AC_CHECK_FUNCS(fseek64 fseeko64 ftell64 ftello64 setluid getpwanam)
+AC_CHECK_FUNCS(fseeko fseek64 fseeko64 ftell64 ftello64 setluid getpwanam)
 AC_CHECK_FUNCS(opendir64 readdir64 seekdir64 telldir64 rewinddir64 closedir64)
 AC_CHECK_FUNCS(fdopendir fdopendir64)
 AC_CHECK_FUNCS(getpwent_r)
@@ -1110,8 +1116,9 @@ AC_SEARCH_LIBS(backtrace_symbols, [execinfo])
 AC_CHECK_FUNCS(backtrace_symbols)
 AC_CHECK_LIB(exc, trace_back_stack)
 
-# check for sysctlbyname for BSD systems
+# check for sysctlbyname and sysctl for BSD systems
 AC_CHECK_FUNCS(sysctlbyname)
+AC_CHECK_FUNCS(sysctl)
 
 #################################################
 # Check to see if core dump directory is defined in linux
@@ -2125,7 +2132,7 @@ then
 	SAMBA_CONFIGURE_CPPFLAGS="${SAMBA_CONFIGURE_CPPFLAGS} ${TALLOC_CFLAGS}"
 	AC_SUBST(LIBTALLOC_OBJ0)
 
-	TALLOCTORT="bin/talloctort\$(EXEEXT)"
+	TALLOCTORT="bin/talloctort"
 	AC_SUBST(TALLOCTORT)
 fi
 
@@ -2167,26 +2174,16 @@ then
 	SAMBA_CPPFLAGS="${SAMBA_CPPFLAGS} ${TDB_CFLAGS}"
 	SAMBA_CONFIGURE_CPPFLAGS="${SAMBA_CONFIGURE_CPPFLAGS} ${TDB_CFLAGS}"
 
-	TDBBACKUP="bin/tdbbackup\$(EXEEXT)"
+	TDBBACKUP="bin/tdbbackup"
 	AC_SUBST(TDBBACKUP)
-	TDBDUMP="bin/tdbdump\$(EXEEXT)"
+	TDBDUMP="bin/tdbdump"
 	AC_SUBST(TDBDUMP)
-	TDBRESTORE="bin/tdbrestore\$(EXEEXT)"
+	TDBRESTORE="bin/tdbrestore"
 	AC_SUBST(TDBRESTORE)
-	TDBTOOL="bin/tdbtool\$(EXEEXT)"
+	TDBTOOL="bin/tdbtool"
 	AC_SUBST(TDBTOOL)
-	TDBTORTURE="bin/tdbtorture\$(EXEEXT)"
+	TDBTORTURE="bin/tdbtorture"
 	AC_SUBST(TDBTORTURE)
-	ac_cv_have_tdb_err_nesting=yes
-else
-	AC_TRY_COMPILE([#include <tdb.h>],
-		       [enum TDB_ERROR err = TDB_ERR_NESTING],
-		       ac_cv_have_tdb_err_nesting=yes,
-		       ac_cv_have_tdb_err_nesting=no)
-fi
-
-if test x"$ac_cv_have_tdb_err_nesting" = xyes; then
-   AC_DEFINE(HAVE_TDB_ERR_NESTING, 1, [Whether we have TDB_ERR_NESTING])
 fi
 
 SMB_LIBRARY(netapi, 0)
@@ -2831,8 +2828,10 @@ samba_cv_HAVE_INOTIFY=yes,
 samba_cv_HAVE_INOTIFY=no,
 samba_cv_HAVE_INOTIFY=cross)
 
-if test x"$ac_cv_func_inotify_init" = x"yes" -a x"$ac_cv_header_linux_inotify_h" = x"yes"; then
-    AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotify support])
+if test x"$ac_cv_func_inotify_init" = x"yes"; then
+    if test  x"$ac_cv_header_sys_inotify_h" = x"yes" -o x"$ac_cv_header_linux_inotify_h" = x"yes"; then
+        AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel or sys has inotify support])
+    fi
 fi
 
 #################################################
@@ -3430,8 +3429,6 @@ AC_MSG_RESULT($with_ldap_support)
 
 SMBLDAP=""
 AC_SUBST(SMBLDAP)
-SMBLDAPUTIL=""
-AC_SUBST(SMBLDAPUTIL)
 
 if test x"$with_ldap_support" != x"no"; then
 
@@ -3542,7 +3539,6 @@ if test x"$with_ldap_support" != x"no"; then
     default_static_modules="$default_static_modules pdb_ldap idmap_ldap";
     default_shared_modules="$default_shared_modules";
     SMBLDAP="lib/smbldap.o"
-    SMBLDAPUTIL="lib/smbldap_util.o"
     with_ldap_support=yes
     AC_MSG_CHECKING(whether LDAP support is used)
     AC_MSG_RESULT(yes)
@@ -3845,7 +3841,12 @@ if test x"$with_ads_support" != x"no"; then
   if test x"$have_gssapi" != x"yes"; then
      AC_CHECK_LIB_EXT(gssapi_krb5, KRB5_LIBS,gss_display_status,[],[],have_gssapi=yes)
      AC_CHECK_LIB_EXT(gss, KRB5_LIBS,gss_display_status,[],[],have_gssapi=yes)
-     AC_CHECK_FUNC_EXT(gss_wrap_iov, $KRB5_LIBS)
+  fi
+  ################################################################
+  # test for AD / GSSAPI support being enabled
+  if test x"$have_gssapi" != xyes ; then
+  	AC_MSG_WARN([Samba cannot be supported without GSSAPI])
+	use_ads=no
   fi
 
   AC_CHECK_FUNC_EXT(krb5_set_real_time, $KRB5_LIBS)
@@ -3859,7 +3860,6 @@ if test x"$with_ads_support" != x"no"; then
   AC_CHECK_FUNC_EXT(krb5_string_to_key_salt, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_auth_con_setkey, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_auth_con_setuseruserkey, $KRB5_LIBS)
-  AC_CHECK_FUNC_EXT(krb5_locate_kdc, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_get_permitted_enctypes, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_get_default_in_tkt_etypes, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_free_data_contents, $KRB5_LIBS)
@@ -3869,20 +3869,16 @@ if test x"$with_ads_support" != x"no"; then
   AC_CHECK_FUNC_EXT(krb5_kt_free_entry, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_krbhst_init, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_krbhst_get_addrinfo, $KRB5_LIBS)
-  AC_CHECK_FUNC_EXT(krb5_c_enctype_compare, $KRB5_LIBS)
-  AC_CHECK_FUNC_EXT(krb5_enctypes_compatible_keys, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_crypto_init, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_crypto_destroy, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_decode_ap_req, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(free_AP_REQ, $KRB5_LIBS)
-  AC_CHECK_FUNC_EXT(krb5_verify_checksum, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_c_verify_checksum, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_principal_compare_any_realm, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_parse_name_norealm, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_princ_size, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_get_init_creds_opt_set_pac_request, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_get_renewed_creds, $KRB5_LIBS)
-  AC_CHECK_FUNC_EXT(krb5_get_kdc_cred, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_free_error_contents, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(initialize_krb5_error_table, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(krb5_get_init_creds_opt_alloc, $KRB5_LIBS)
@@ -3899,9 +3895,12 @@ if test x"$with_ads_support" != x"no"; then
   AC_CHECK_FUNC_EXT(krb5_free_host_realm, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(gss_krb5_import_cred, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(gss_get_name_attribute, $KRB5_LIBS)
+  AC_CHECK_FUNC_EXT(gsskrb5_extract_authz_data_from_sec_context, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(gss_mech_krb5, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(gss_oid_equal, $KRB5_LIBS)
   AC_CHECK_FUNC_EXT(gss_inquire_sec_context_by_oid, $KRB5_LIBS)
+  AC_CHECK_FUNC_EXT(gss_wrap_iov, $KRB5_LIBS)
+  AC_CHECK_FUNC_EXT(gss_krb5_export_lucid_sec_context, $KRB5_LIBS)
 
   # This is for FreeBSD (and possibly others). gss_mech_krb5 is a
   # #define to GSS_KRB5_MECHANISM, which is defined in -lgssapi_krb5
@@ -3960,16 +3959,6 @@ if test x"$with_ads_support" != x"no"; then
 	AC_DEFINE(KRB5_CREDS_OPT_FREE_REQUIRES_CONTEXT, 1,
 	    [Whether krb5_get_init_creds_opt_free takes a context argument])
   fi
-
-  AC_CACHE_CHECK(whether krb5_verify_checksum takes 7 arguments, smb_krb5_cv_verify_checksum, [
-    AC_TRY_COMPILE([
-	#include <krb5.h>],
-	[krb5_verify_checksum(0, 0, 0, 0, 0, 0, 0);],
-	[smb_krb5_cv_verify_checksum=7],
-	[smb_krb5_cv_verify_checksum=6],
-    )
-  ])
-  AC_DEFINE_UNQUOTED(KRB5_VERIFY_CHECKSUM_ARGS, $smb_krb5_cv_verify_checksum, [Number of arguments to krb5_verify_checksum])
 
   AC_CACHE_CHECK([for checksum in krb5_checksum],
                 samba_cv_HAVE_CHECKSUM_IN_KRB5_CHECKSUM,[
@@ -4078,30 +4067,6 @@ if test x"$with_ads_support" != x"no"; then
               [Whether the krb5_ticket struct has a enc_part2 property])
   fi
 
-  AC_CACHE_CHECK([for keyblock in krb5_creds],
-                 samba_cv_HAVE_KRB5_KEYBLOCK_IN_CREDS,[
-    AC_TRY_COMPILE([#include <krb5.h>],
-      [krb5_creds creds; krb5_keyblock kb; creds.keyblock = kb;],
-      samba_cv_HAVE_KRB5_KEYBLOCK_IN_CREDS=yes,
-      samba_cv_HAVE_KRB5_KEYBLOCK_IN_CREDS=no)])
-
-  if test x"$samba_cv_HAVE_KRB5_KEYBLOCK_IN_CREDS" = x"yes"; then
-    AC_DEFINE(HAVE_KRB5_KEYBLOCK_IN_CREDS,1,
-              [Whether the krb5_creds struct has a keyblock property])
-  fi
-
-  AC_CACHE_CHECK([for session in krb5_creds],
-                 samba_cv_HAVE_KRB5_SESSION_IN_CREDS,[
-    AC_TRY_COMPILE([#include <krb5.h>],
-      [krb5_creds creds; krb5_keyblock kb; creds.session = kb;],
-      samba_cv_HAVE_KRB5_SESSION_IN_CREDS=yes,
-      samba_cv_HAVE_KRB5_SESSION_IN_CREDS=no)])
-
-  if test x"$samba_cv_HAVE_KRB5_SESSION_IN_CREDS" = x"yes"; then
-    AC_DEFINE(HAVE_KRB5_SESSION_IN_CREDS,1,
-              [Whether the krb5_creds struct has a session property])
-  fi
-
   AC_CACHE_CHECK([for keyvalue in krb5_keyblock],
                  samba_cv_HAVE_KRB5_KEYBLOCK_KEYVALUE,[
     AC_TRY_COMPILE([#include <krb5.h>],
@@ -4145,6 +4110,27 @@ if test x"$with_ads_support" != x"no"; then
     AC_DEFINE(HAVE_ENCTYPE_ARCFOUR_HMAC,1,
               [Whether the ENCTYPE_ARCFOUR_HMAC key type definition is available])
     found_arcfour_hmac=yes
+  fi
+
+  AC_CACHE_CHECK([for ENCTYPE_AES128_CTS_HMAC_SHA1_96],
+                 samba_cv_HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96,[
+    AC_TRY_COMPILE([#include <krb5.h>],
+      [krb5_enctype enctype; enctype = ENCTYPE_AES128_CTS_HMAC_SHA1_96;],
+      samba_cv_HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96=yes,
+      samba_cv_HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96=no)])
+  if test x"$samba_cv_HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96" = x"yes"; then
+    AC_DEFINE(HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96,1,
+              [Whether the ENCTYPE_AES128_CTS_HMAC_SHA1_96 key type definition is available])
+  fi
+  AC_CACHE_CHECK([for ENCTYPE_AES256_CTS_HMAC_SHA1_96],
+                 samba_cv_HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96,[
+    AC_TRY_COMPILE([#include <krb5.h>],
+      [krb5_enctype enctype; enctype = ENCTYPE_AES256_CTS_HMAC_SHA1_96;],
+      samba_cv_HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96=yes,
+      samba_cv_HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96=no)])
+  if test x"$samba_cv_HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96" = x"yes"; then
+    AC_DEFINE(HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96,1,
+              [Whether the ENCTYPE_AES256_CTS_HMAC_SHA1_96 key type definition is available])
   fi
 
   AC_CACHE_CHECK([for AP_OPTS_USE_SUBKEY],
@@ -4302,19 +4288,6 @@ if test x"$with_ads_support" != x"no"; then
                [Whether the type krb5_addresses type exists])
   fi
 
-  AC_CACHE_CHECK([whether krb5_mk_error takes 3 arguments MIT or 9 Heimdal],
-		samba_cv_HAVE_SHORT_KRB5_MK_ERROR_INTERFACE, [
-    AC_TRY_COMPILE([#include <krb5.h>],
-    [
-    krb5_mk_error(0,0,0);],
-    samba_cv_HAVE_SHORT_KRB5_MK_ERROR_INTERFACE=yes,
-    samba_cv_HAVE_SHORT_KRB5_MK_ERROR_INTERFACE=no)])
-
-  if test x"$samba_cv_HAVE_SHORT_KRB5_MK_ERROR_INTERFACE" = x"yes"; then
-    AC_DEFINE(HAVE_SHORT_KRB5_MK_ERROR_INTERFACE,1,
-              [whether krb5_mk_error takes 3 arguments MIT or 9 Heimdal])
-  fi
-
   if test x"$ac_cv_func_ext_krb5_enctype_to_string" = x"yes"; then
     AC_CACHE_CHECK([for krb5_error_code krb5_enctype_to_string(krb5_context context, krb5_enctype enctype, char **str)],
         smb_krb5_cv_enctype_to_string_takes_krb5_context_arg,[
@@ -4380,6 +4353,8 @@ if test x"$with_ads_support" != x"no"; then
                [Whether the macro krb5_princ_realm is defined])
   fi
 
+  AC_HAVE_DECL(KRB5_PDU_NONE,[#include <krb5.h>])
+
   #
   #
   # Now the decisions whether we can support krb5
@@ -4392,8 +4367,61 @@ if test x"$with_ads_support" != x"no"; then
     use_ads=no
   fi
 
+  if test x"$ac_cv_func_ext_krb5_set_real_time" != x"yes"; then
+    AC_MSG_WARN(krb5_set_real_time encryption type not found in -lkrb5)
+    use_ads=no
+  fi
+
   if test x"$ac_cv_lib_ext_krb5_krb5_mk_req_extended" != x"yes"; then
     AC_MSG_WARN(krb5_mk_req_extended not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_get_host_realm" != x"yes"
+  then
+    AC_MSG_WARN(krb5_get_host_realm not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_free_host_realm" != x"yes"
+  then
+    AC_MSG_WARN(krb5_free_host_realm not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_fwd_tgt_creds" != x"yes"
+  then
+    AC_MSG_WARN(krb5_fwd_tgt_creds not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_get_init_creds_opt_alloc" != x"yes"
+  then
+    AC_MSG_WARN(krb5_get_init_creds_opt_alloc found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$smb_krb5_cv_creds_opt_free_context" != x"yes"
+  then
+    AC_MSG_WARN(krb5_get_init_creds_opt_free not found or was too old in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_get_renewed_creds" != x"yes"
+  then
+    AC_MSG_WARN(krb5_get_renewed_creds not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_principal_compare_any_realm" != x"yes"
+  then
+    AC_MSG_WARN(krb5_principal_compare_any_realm not found in -lkrb5)
+    use_ads=no
+  fi
+
+  if test x"$ac_cv_func_ext_krb5_string_to_key" != x"yes"
+  then
+    AC_MSG_WARN(krb5_string_to_key not found in -lkrb5)
     use_ads=no
   fi
 
@@ -4418,10 +4446,9 @@ if test x"$with_ads_support" != x"no"; then
     use_ads=no
   fi
 
-  if test x"$ac_cv_func_ext_krb5_c_verify_checksum" != x"yes" -a \
-          x"$ac_cv_func_ext_krb5_verify_checksum" != x"yes"
+  if test x"$ac_cv_func_ext_krb5_c_verify_checksum" != x"yes"
   then
-    AC_MSG_WARN(no KRB5_VERIFY_CHECKSUM_FUNCTION detected)
+    AC_MSG_WARN(krb5_c_verify_checksum not found in -lkrb5)
     use_ads=no
   fi
 
@@ -4444,12 +4471,23 @@ if test x"$with_ads_support" != x"no"; then
 
   fi
 
+  if test x"$ac_cv_func_ext_gss_get_name_attribute" != x"yes" ; then
+    if test x"$ac_cv_func_ext_gsskrb5_extract_authz_data_from_sec_context" != x"yes" -o \
+            x"$ac_cv_func_ext_gss_inquire_sec_context_by_oid" != x"yes"
+    then
+      AC_MSG_WARN(need either gss_get_name_attribute or gsskrb5_extract_authz_data_from_sec_context and gss_inquire_sec_context_by_oid in -lgssapi for PAC support)
+      use_ads=no
+    fi
+  fi
+
+  if test x"$ac_cv_func_ext_gss_krb5_export_lucid_sec_context" != x"yes" ; then
+    AC_MSG_WARN(need gss_krb5_export_lucid_sec_context for SPNEGO and gss_wrap support)
+    use_ads=no
+  fi
+
   if test x"$use_ads" = x"yes"; then
     AC_DEFINE(WITH_ADS,1,[Whether to include Active Directory support])
     AC_DEFINE(HAVE_KRB5,1,[Whether to have KRB5 support])
-    if test x"$have_gssapi" = x"yes"; then
-      AC_DEFINE(HAVE_GSSAPI,1,[Whether GSSAPI is available])
-    fi
   else
     if test x"$with_ads_support" = x"yes"; then
 	AC_MSG_ERROR(krb5 libs don't have all features required for Active Directory support)
@@ -4467,10 +4505,6 @@ if test x"$with_ads_support" != x"no"; then
   AC_MSG_RESULT([$use_ads])
 
 LIBS="$ac_save_LIBS"
-fi
-
-if test x"$use_ads" != xyes; then
-	smbtorture4_possible=no
 fi
 
 AC_CHECK_LIB_EXT(nscd, NSCD_LIBS, nscd_flush_cache)
@@ -4497,7 +4531,7 @@ if test x"$with_dnsupdate_support" != x"no"; then
 
   ################################################################
   # first test for AD / GSSAPI support being enabled
-	if test x"$have_gssapi" != xyes ; then
+	if test x"$have_gssapi" != xyes -o x"$use_ads" != xyes ; then
 		if test x"$with_dnsupdate_support" = x"yes" ; then
 			AC_MSG_ERROR(DNS Updates support only possible with AD and GSSAPI support)
 		else
@@ -5556,6 +5590,29 @@ if test "x$have_cluster_support" = "xyes" ; then
 fi
 
 if test "x$have_cluster_support" = "xyes" ; then
+	AC_HAVE_DECL(CTDB_CONTROL_CHECK_SRVIDS,[
+	#include "confdefs.h"
+	#define NO_CONFIG_H
+	#include "replace.h"
+	#include "system/wait.h"
+	#include "system/network.h"
+	#include <talloc.h>
+	#include <tdb.h>
+	#include <ctdb.h>
+	#include <ctdb_private.h>
+	])
+	if test x"$ac_cv_have_CTDB_CONTROL_CHECK_SRVIDS_decl" != x"yes"
+	then
+		if test "x$enable_old_ctdb" = "xyes" ; then
+			AC_MSG_WARN([ignoring missing CHECK_SRVIDS (--enable-old-ctdb)])
+		else
+			ctdb_broken="support for CHECK_SRVIDS control missing"
+			have_cluster_support=no
+		fi
+	fi
+fi
+
+if test "x$have_cluster_support" = "xyes" ; then
 	# In ctdb 1.0.57, ctdb_control_tcp was temporarily renamed
 	# to ctdb_tcp_client.
 	AC_CHECK_TYPE(struct ctdb_tcp_client,[
@@ -6355,6 +6412,8 @@ case "$host_os" in
 		WINBIND_NSS="../nsswitch/WINBIND"
 		WINBIND_WINS_NSS=""
 		;;
+	*darwin*)
+		;;
 	*)
 		HAVE_WINBIND=no
 		winbind_no_reason=", unsupported on $host_os"
@@ -6399,7 +6458,7 @@ if test x"$HAVE_WBCLIENT" = x"yes"; then
 	LIBWBCLIENT_LIBS="$LIBWBCLIENT_LIBS $WBCLIENT_LDFLAGS"
 	AC_MSG_RESULT(yes)
 	AC_DEFINE(WITH_WINBIND,1,[Whether to link to wbclient])
-	EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/wbinfo\$(EXEEXT)"
+	EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/wbinfo"
 else
 	if test x"$enable_developer" = x"yes" -a x"$LINK_LIBWBCLIENT" = x"STATIC" ; then
 		BUILD_LIBWBCLIENT_SHARED=no
@@ -6411,6 +6470,8 @@ else
 	LIBWBCLIENT_STATIC_TARGET=bin/libwbclient.a
 	LIBWBCLIENT_SOVER=0
 	LIBWBCLIENT_FULLVER=0
+	LIBWBCLIENT_SHARED_TARGET_SOVER=$LIBWBCLIENT_SHARED_TARGET.$LIBWBCLIENT_SOVER
+	LIBWBCLIENT_SHARED_TARGET_FULLVER=$LIBWBCLIENT_SHARED_TARGET.$LIBWBCLIENT_FULLVER
 	if test $BLDSHARED = true -a x"$HAVE_WINBIND" = x"yes" -a x"$BUILD_LIBWBCLIENT_SHARED" = x"yes"; then
 		NSS_MODULES="${WINBIND_NSS} ${WINBIND_WINS_NSS}"
 		## Only worry about libwbclient if we have shared
@@ -6430,8 +6491,8 @@ if test x"$HAVE_WINBIND" = x"yes"; then
         AC_MSG_RESULT(yes)
 	AC_DEFINE(WITH_WINBIND,1,[Whether to build winbind])
 
-	EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/wbinfo\$(EXEEXT)"
-	EXTRA_SBIN_PROGS="$EXTRA_SBIN_PROGS bin/winbindd\$(EXEEXT)"
+	EXTRA_BIN_PROGS="$EXTRA_BIN_PROGS bin/wbinfo"
+	EXTRA_SBIN_PROGS="$EXTRA_SBIN_PROGS bin/winbindd"
         if test $BLDSHARED = true -a x"$create_pam_modules" = x"yes"; then
 		PAM_MODULES="$PAM_MODULES pam_winbind"
 		INSTALL_PAM_MODULES="installpammodules"
@@ -6695,8 +6756,11 @@ if test x"$enable_pthreadpool" = x"yes" -a x"$samba_cv_HAVE_PTHREAD" = x"yes"; t
     CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
     AC_DEFINE(WITH_PTHREADPOOL, 1, [Whether to include pthreadpool helpers])
     AC_SUBST(PTHREADPOOL_OBJ, "lib/pthreadpool/pthreadpool.o")
-    PTHREADPOOLTEST="bin/pthreadpooltest\$(EXEEXT)"
+    PTHREADPOOLTEST="bin/pthreadpooltest"
     AC_SUBST(PTHREADPOOLTEST)
+    if test x"$samba_cv_HAVE_AIO" = x"yes"; then
+        default_shared_modules="$default_shared_modules vfs_aio_pthread"
+    fi
 fi
 
 #################################################
@@ -6849,7 +6913,7 @@ if test x"$MODULE_DEFAULT_vfs_notify_fam" = xSTATIC -o \
 	AC_SUBST(SMBD_FAM_LIBS)
 fi
 
-SMB_MODULE(pdb_ldap, passdb/pdb_ldap.o passdb/pdb_nds.o passdb/pdb_ipa.o,
+SMB_MODULE(pdb_ldap, passdb/pdb_ldap.o passdb/pdb_nds.o passdb/pdb_ipa.o passdb/pdb_ldap_util.o,
 		   "bin/ldapsam.$SHLIBEXT", PDB,
 		   [ PASSDB_LIBS="$PASSDB_LIBS $LDAP_LIBS" ] )
 SMB_MODULE(pdb_ads, passdb/pdb_ads.o \$(TLDAP_OBJ), "bin/ads.$SHLIBEXT", PDB)
@@ -6873,10 +6937,6 @@ SMB_SUBSYSTEM(IDMAP, winbindd/idmap.o)
 SMB_MODULE(nss_info_template, winbindd/nss_info_template.o, "bin/template.$SHLIBEXT", NSS_INFO)
 SMB_SUBSYSTEM(NSS_INFO, winbindd/nss_info.o)
 
-SMB_MODULE(charset_weird, modules/weird.o, "bin/weird.$SHLIBEXT", CHARSET)
-SMB_MODULE(charset_CP850, modules/CP850.o, "bin/CP850.$SHLIBEXT", CHARSET)
-SMB_MODULE(charset_CP437, modules/CP437.o, "bin/CP437.$SHLIBEXT", CHARSET)
-SMB_MODULE(charset_macosxfs, modules/charset_macosxfs.o,"bin/macosxfs.$SHLIBEXT", CHARSET)
 SMB_SUBSYSTEM(CHARSET,lib/iconv.o)
 
 SMB_MODULE(auth_sam, \$(AUTH_SAM_OBJ), "bin/sam.$SHLIBEXT", AUTH)
@@ -6924,6 +6984,7 @@ SMB_MODULE(vfs_readahead, \$(VFS_READAHEAD_OBJ), "bin/readahead.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_tsmsm, \$(VFS_TSMSM_OBJ), "bin/tsmsm.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_fileid, \$(VFS_FILEID_OBJ), "bin/fileid.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_aio_fork, \$(VFS_AIO_FORK_OBJ), "bin/aio_fork.$SHLIBEXT", VFS)
+SMB_MODULE(vfs_aio_pthread, \$(VFS_AIO_PTHREAD_OBJ), "bin/aio_pthread.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_preopen, \$(VFS_PREOPEN_OBJ), "bin/preopen.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_syncops, \$(VFS_SYNCOPS_OBJ), "bin/syncops.$SHLIBEXT", VFS)
 SMB_MODULE(vfs_zfsacl, \$(VFS_ZFSACL_OBJ), "bin/zfsacl.$SHLIBEXT", VFS)
@@ -7045,13 +7106,6 @@ fi
 m4_include(../lib/zlib/zlib.m4)
 
 if test x$smbtorture4_possible = xyes; then
-	saved_USESHARED="$USESHARED"
-	USESHARED="false"
-	smbtorture4_path="bin/smbtorture4"
-	smbtorture4_option="-t bin/smbtorture4"
-	AC_SUBST(smbtorture4_path)
-	AC_SUBST(smbtorture4_option)
-	USESHARED="$saved_USESHARED"
 	SMBTORTURE4="bin/smbtorture4"
 	AC_SUBST(SMBTORTURE4)
 fi
@@ -7068,6 +7122,9 @@ AC_ZLIB([ZLIB_OBJS=""], [
 	done
 	CFLAGS="-I../lib/zlib $CFLAGS"
 ])
+
+AC_DEFINE(STATIC_gensec_MODULES, [gensec_spnego_init,gensec_ntlmssp_init,NULL],[gensec modules])
+AC_DEFINE(STATIC_gensec_MODULES_PROTO, [_MODULE_PROTO(gensec_spnego_init)_MODULE_PROTO(gensec_ntlmssp_init)],[gensec protos])
 
 AC_ARG_ENABLE(dmalloc, [AS_HELP_STRING([--enable-dmalloc], [Enable heap debugging [default=no]])])
 

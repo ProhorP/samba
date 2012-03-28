@@ -77,7 +77,7 @@ NTSTATUS cli_cm_force_encryption(struct cli_state *c,
  Return a connection to a server.
 ********************************************************************/
 
-static struct cli_state *do_connect(TALLOC_CTX *ctx,
+static NTSTATUS do_connect(TALLOC_CTX *ctx,
 					const char *server,
 					const char *share,
 					const struct user_auth_info *auth_info,
@@ -85,7 +85,8 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 					bool force_encrypt,
 					int max_protocol,
 					int port,
-					int name_type)
+					int name_type,
+					struct cli_state **pcli)
 {
 	struct cli_state *c = NULL;
 	char *servicename;
@@ -94,11 +95,12 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 	const char *username;
 	const char *password;
 	NTSTATUS status;
+	int flags = 0;
 
 	/* make a copy so we don't modify the global string 'service' */
 	servicename = talloc_strdup(ctx,share);
 	if (!servicename) {
-		return NULL;
+		return NT_STATUS_NO_MEMORY;
 	}
 	sharename = servicename;
 	if (*sharename == '\\') {
@@ -108,67 +110,74 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 		}
 		sharename = strchr_m(sharename,'\\');
 		if (!sharename) {
-			return NULL;
+			return NT_STATUS_NO_MEMORY;
 		}
 		*sharename = 0;
 		sharename++;
 	}
 	if (server == NULL) {
-		return NULL;
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	if (get_cmdline_auth_info_use_kerberos(auth_info)) {
+		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+	}
+	if (get_cmdline_auth_info_fallback_after_kerberos(auth_info)) {
+		flags |= CLI_FULL_CONNECTION_FALLBACK_AFTER_KERBEROS;
+	}
+	if (get_cmdline_auth_info_use_ccache(auth_info)) {
+		flags |= CLI_FULL_CONNECTION_USE_CCACHE;
 	}
 
 	status = cli_connect_nb(
 		server, NULL, port, name_type, NULL,
-		get_cmdline_auth_info_signing_state(auth_info), &c);
+		get_cmdline_auth_info_signing_state(auth_info),
+		flags, &c);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("Connection to %s failed (Error %s)\n",
 				server,
 				nt_errstr(status));
-		return NULL;
+		return status;
 	}
 
 	if (max_protocol == 0) {
 		max_protocol = PROTOCOL_NT1;
 	}
-	c->protocol = max_protocol;
-	c->use_kerberos = get_cmdline_auth_info_use_kerberos(auth_info);
-	c->fallback_after_kerberos =
-		get_cmdline_auth_info_fallback_after_kerberos(auth_info);
-	c->use_ccache = get_cmdline_auth_info_use_ccache(auth_info);
-
 	DEBUG(4,(" session request ok\n"));
 
-	status = cli_negprot(c);
+	status = cli_negprot(c, max_protocol);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("protocol negotiation failed: %s\n",
 			 nt_errstr(status));
 		cli_shutdown(c);
-		return NULL;
+		return status;
 	}
 
 	username = get_cmdline_auth_info_username(auth_info);
 	password = get_cmdline_auth_info_password(auth_info);
 
-	if (!NT_STATUS_IS_OK(cli_session_setup(c, username,
-					       password, strlen(password),
-					       password, strlen(password),
-					       lp_workgroup()))) {
+	status = cli_session_setup(c, username,
+				   password, strlen(password),
+				   password, strlen(password),
+				   lp_workgroup());
+	if (!NT_STATUS_IS_OK(status)) {
 		/* If a password was not supplied then
 		 * try again with a null username. */
 		if (password[0] || !username[0] ||
 			get_cmdline_auth_info_use_kerberos(auth_info) ||
-			!NT_STATUS_IS_OK(cli_session_setup(c, "",
+			!NT_STATUS_IS_OK(status = cli_session_setup(c, "",
 				    		"", 0,
 						"", 0,
 					       lp_workgroup()))) {
-			d_printf("session setup failed: %s\n", cli_errstr(c));
-			if (NT_STATUS_V(cli_nt_error(c)) ==
-			    NT_STATUS_V(NT_STATUS_MORE_PROCESSING_REQUIRED))
+			d_printf("session setup failed: %s\n",
+				 nt_errstr(status));
+			if (NT_STATUS_EQUAL(status,
+					    NT_STATUS_MORE_PROCESSING_REQUIRED))
 				d_printf("did you forget to run kinit?\n");
 			cli_shutdown(c);
-			return NULL;
+			return status;
 		}
 		d_printf("Anonymous login successful\n");
 		status = cli_init_creds(c, "", lp_workgroup(), "");
@@ -179,7 +188,7 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10,("cli_init_creds() failed: %s\n", nt_errstr(status)));
 		cli_shutdown(c);
-		return NULL;
+		return status;
 	}
 
 	if ( show_sessetup ) {
@@ -198,7 +207,7 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 	   here before trying to connect to the original share.
 	   cli_check_msdfs_proxy() will fail if it is a normal share. */
 
-	if ((c->capabilities & CAP_DFS) &&
+	if ((cli_state_capabilities(c) & CAP_DFS) &&
 			cli_check_msdfs_proxy(ctx, c, sharename,
 				&newserver, &newshare,
 				force_encrypt,
@@ -209,17 +218,17 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 		return do_connect(ctx, newserver,
 				newshare, auth_info, false,
 				force_encrypt, max_protocol,
-				port, name_type);
+				port, name_type, pcli);
 	}
 
 	/* must be a normal share */
 
-	status = cli_tcon_andx(c, sharename, "?????",
-			       password, strlen(password)+1);
+	status = cli_tree_connect(c, sharename, "?????",
+				  password, strlen(password)+1);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("tree connect failed: %s\n", nt_errstr(status));
 		cli_shutdown(c);
-		return NULL;
+		return status;
 	}
 
 	if (force_encrypt) {
@@ -230,12 +239,13 @@ static struct cli_state *do_connect(TALLOC_CTX *ctx,
 					sharename);
 		if (!NT_STATUS_IS_OK(status)) {
 			cli_shutdown(c);
-			return NULL;
+			return status;
 		}
 	}
 
 	DEBUG(4,(" tconx ok\n"));
-	return c;
+	*pcli = c;
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
@@ -257,26 +267,28 @@ static void cli_set_mntpoint(struct cli_state *cli, const char *mnt)
  referring_cli == NULL means a new initial connection.
 ********************************************************************/
 
-static struct cli_state *cli_cm_connect(TALLOC_CTX *ctx,
-					struct cli_state *referring_cli,
-	 				const char *server,
-					const char *share,
-					const struct user_auth_info *auth_info,
-					bool show_hdr,
-					bool force_encrypt,
-					int max_protocol,
-					int port,
-					int name_type)
+static NTSTATUS cli_cm_connect(TALLOC_CTX *ctx,
+			       struct cli_state *referring_cli,
+			       const char *server,
+			       const char *share,
+			       const struct user_auth_info *auth_info,
+			       bool show_hdr,
+			       bool force_encrypt,
+			       int max_protocol,
+			       int port,
+			       int name_type,
+			       struct cli_state **pcli)
 {
 	struct cli_state *cli;
+	NTSTATUS status;
 
-	cli = do_connect(ctx, server, share,
+	status = do_connect(ctx, server, share,
 				auth_info,
 				show_hdr, force_encrypt, max_protocol,
-				port, name_type);
+				port, name_type, &cli);
 
-	if (!cli ) {
-		return NULL;
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	/* Enter into the list. */
@@ -287,7 +299,6 @@ static struct cli_state *cli_cm_connect(TALLOC_CTX *ctx,
 	if (referring_cli && referring_cli->requested_posix_capabilities) {
 		uint16 major, minor;
 		uint32 caplow, caphigh;
-		NTSTATUS status;
 		status = cli_unix_extensions_version(cli, &major, &minor,
 						     &caplow, &caphigh);
 		if (NT_STATUS_IS_OK(status)) {
@@ -297,7 +308,8 @@ static struct cli_state *cli_cm_connect(TALLOC_CTX *ctx,
 		}
 	}
 
-	return cli;
+	*pcli = cli;
+	return NT_STATUS_OK;
 }
 
 /********************************************************************
@@ -316,7 +328,10 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
 
 	/* Search to the start of the list. */
 	for (p = cli; p; p = DLIST_PREV(p)) {
-		if (strequal(server, p->desthost) &&
+		const char *remote_name =
+			cli_state_remote_name(p);
+
+		if (strequal(server, remote_name) &&
 				strequal(share,p->share)) {
 			return p;
 		}
@@ -324,7 +339,10 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
 
 	/* Search to the end of the list. */
 	for (p = cli->next; p; p = p->next) {
-		if (strequal(server, p->desthost) &&
+		const char *remote_name =
+			cli_state_remote_name(p);
+
+		if (strequal(server, remote_name) &&
 				strequal(share,p->share)) {
 			return p;
 		}
@@ -337,7 +355,7 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
  Open a client connection to a \\server\share.
 ****************************************************************************/
 
-struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
+NTSTATUS cli_cm_open(TALLOC_CTX *ctx,
 				struct cli_state *referring_cli,
 				const char *server,
 				const char *share,
@@ -346,13 +364,16 @@ struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
 				bool force_encrypt,
 				int max_protocol,
 				int port,
-				int name_type)
+				int name_type,
+				struct cli_state **pcli)
 {
 	/* Try to reuse an existing connection in this list. */
 	struct cli_state *c = cli_cm_find(referring_cli, server, share);
+	NTSTATUS status;
 
 	if (c) {
-		return c;
+		*pcli = c;
+		return NT_STATUS_OK;
 	}
 
 	if (auth_info == NULL) {
@@ -361,10 +382,10 @@ struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
 		d_printf("cli_cm_open() Unable to open connection [\\%s\\%s] "
 			"without auth info\n",
 			server, share );
-		return NULL;
+		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	return cli_cm_connect(ctx,
+	status = cli_cm_connect(ctx,
 				referring_cli,
 				server,
 				share,
@@ -373,19 +394,25 @@ struct cli_state *cli_cm_open(TALLOC_CTX *ctx,
 				force_encrypt,
 				max_protocol,
 				port,
-				name_type);
+				name_type,
+				&c);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+	*pcli = c;
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
 ****************************************************************************/
 
-void cli_cm_display(const struct cli_state *cli)
+void cli_cm_display(struct cli_state *cli)
 {
 	int i;
 
 	for (i=0; cli; cli = cli->next,i++ ) {
 		d_printf("%d:\tserver=%s, share=%s\n",
-			i, cli->desthost, cli->share );
+			i, cli_state_remote_name(cli), cli->share);
 	}
 }
 
@@ -552,7 +579,7 @@ static char *cli_dfs_make_full_path(TALLOC_CTX *ctx,
 	}
 	return talloc_asprintf(ctx, "%c%s%c%s%c%s",
 			path_sep,
-			cli->desthost,
+			cli_state_remote_name(cli),
 			path_sep,
 			cli->share,
 			path_sep,
@@ -568,10 +595,10 @@ static bool cli_dfs_check_error(struct cli_state *cli, NTSTATUS expected,
 {
 	/* only deal with DS when we negotiated NT_STATUS codes and UNICODE */
 
-	if (!(cli->capabilities & CAP_UNICODE)) {
+	if (!(cli_state_capabilities(cli) & CAP_UNICODE)) {
 		return false;
 	}
-	if (!(cli->capabilities & CAP_STATUS32)) {
+	if (!(cli_state_capabilities(cli) & CAP_STATUS32)) {
 		return false;
 	}
 	if (NT_STATUS_EQUAL(status, expected)) {
@@ -593,49 +620,52 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 {
 	unsigned int data_len = 0;
 	unsigned int param_len = 0;
-	uint16 setup[1];
+	uint16_t setup[1];
+	uint16_t recv_flags2;
 	uint8_t *param = NULL;
 	uint8_t *rdata = NULL;
 	char *p;
 	char *endp;
-	size_t pathlen = 2*(strlen(path)+1);
 	smb_ucs2_t *path_ucs;
 	char *consumed_path = NULL;
 	uint16_t consumed_ucs;
 	uint16 num_referrals;
 	struct client_dfs_referral *referrals = NULL;
 	NTSTATUS status;
+	TALLOC_CTX *frame = talloc_stackframe();
 
 	*num_refs = 0;
 	*refs = NULL;
 
 	SSVAL(setup, 0, TRANSACT2_GET_DFS_REFERRAL);
 
-	param = SMB_MALLOC_ARRAY(uint8_t, 2+pathlen+2);
+	param = talloc_array(talloc_tos(), uint8_t, 2);
 	if (!param) {
 		status = NT_STATUS_NO_MEMORY;
 		goto out;
 	}
 	SSVAL(param, 0, 0x03);	/* max referral level */
-	p = (char *)(&param[2]);
 
-	path_ucs = (smb_ucs2_t *)p;
-	p += clistr_push(cli, p, path, pathlen, STR_TERMINATE);
-	param_len = PTR_DIFF(p, param);
+	param = trans2_bytes_push_str(param, cli_ucs2(cli),
+				      path, strlen(path)+1,
+				      NULL);
+	if (!param) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+	param_len = talloc_get_size(param);
+	path_ucs = (smb_ucs2_t *)&param[2];
 
 	status = cli_trans(talloc_tos(), cli, SMBtrans2,
 			   NULL, 0xffff, 0, 0,
 			   setup, 1, 0,
 			   param, param_len, 2,
-			   NULL, 0, cli->max_xmit,
-			   NULL,
+			   NULL, 0, CLI_BUFFER_SIZE,
+			   &recv_flags2,
 			   NULL, 0, NULL, /* rsetup */
 			   NULL, 0, NULL,
 			   &rdata, 4, &data_len);
 	if (!NT_STATUS_IS_OK(status)) {
-		goto out;
-	}
-	if (data_len < 4) {
 		goto out;
 	}
 
@@ -651,6 +681,7 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 	 * to get the number of bytes consumed from
 	 * the incoming path. */
 
+	errno = 0;
 	if (pull_string_talloc(talloc_tos(),
 			NULL,
 			0,
@@ -658,9 +689,15 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 			path_ucs,
 			consumed_ucs,
 			STR_UNICODE) == 0) {
+		if (errno != 0) {
+			status = map_nt_error_from_unix(errno);
+		} else {
+			status = NT_STATUS_INVALID_NETWORK_RESPONSE;
+		}
 		goto out;
 	}
 	if (consumed_path == NULL) {
+		status = map_nt_error_from_unix(errno);
 		goto out;
 	}
 	*consumed = strlen(consumed_path);
@@ -675,6 +712,7 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 					 num_referrals);
 
 		if (!referrals) {
+			status = NT_STATUS_NO_MEMORY;
 			goto out;
 		}
 		/* start at the referrals array */
@@ -697,21 +735,25 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 			referrals[i].ttl       = SVAL(p, 10);
 
 			if (p + node_offset > endp) {
+				status = NT_STATUS_INVALID_NETWORK_RESPONSE;
 				goto out;
 			}
-			clistr_pull_talloc(ctx, cli->inbuf,
-					   SVAL(cli->inbuf, smb_flg2),
+			clistr_pull_talloc(referrals,
+					   (const char *)rdata,
+					   recv_flags2,
 					   &referrals[i].dfspath,
 					   p+node_offset,
-					   cli->bufsize - ((p+node_offset)-cli->inbuf),
+					   PTR_DIFF(endp, p+node_offset),
 					   STR_TERMINATE|STR_UNICODE);
 
 			if (!referrals[i].dfspath) {
+				status = map_nt_error_from_unix(errno);
 				goto out;
 			}
 			p += ref_size;
 		}
 		if (i < num_referrals) {
+			status = NT_STATUS_INVALID_NETWORK_RESPONSE;
 			goto out;
 		}
 	}
@@ -721,22 +763,20 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 
   out:
 
-	TALLOC_FREE(consumed_path);
-	SAFE_FREE(param);
-	TALLOC_FREE(rdata);
+	TALLOC_FREE(frame);
 	return status;
 }
 
 /********************************************************************
 ********************************************************************/
 
-bool cli_resolve_path(TALLOC_CTX *ctx,
-			const char *mountpt,
-			const struct user_auth_info *dfs_auth_info,
-			struct cli_state *rootcli,
-			const char *path,
-			struct cli_state **targetcli,
-			char **pp_targetpath)
+NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
+			  const char *mountpt,
+			  const struct user_auth_info *dfs_auth_info,
+			  struct cli_state *rootcli,
+			  const char *path,
+			  struct cli_state **targetcli,
+			  char **pp_targetpath)
 {
 	struct client_dfs_referral *refs = NULL;
 	size_t num_refs = 0;
@@ -757,7 +797,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 	NTSTATUS status;
 
 	if ( !rootcli || !path || !targetcli ) {
-		return false;
+		return NT_STATUS_INVALID_PARAMETER;
 	}
 
 	/* Don't do anything if this is not a DFS root. */
@@ -766,9 +806,9 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 		*targetcli = rootcli;
 		*pp_targetpath = talloc_strdup(ctx, path);
 		if (!*pp_targetpath) {
-			return false;
+			return NT_STATUS_NO_MEMORY;
 		}
-		return true;
+		return NT_STATUS_OK;
 	}
 
 	*targetcli = NULL;
@@ -777,12 +817,12 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 
 	cleanpath = clean_path(ctx, path);
 	if (!cleanpath) {
-		return false;
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	dfs_path = cli_dfs_make_full_path(ctx, rootcli, cleanpath);
 	if (!dfs_path) {
-		return false;
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	status = cli_qpathinfo_basic( rootcli, dfs_path, &sbuf, &attributes);
@@ -791,7 +831,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 		*targetcli = rootcli;
 		*pp_targetpath = talloc_strdup(ctx, path);
 		if (!*pp_targetpath) {
-			return false;
+			return NT_STATUS_NO_MEMORY;
 		}
 		goto done;
 	}
@@ -803,7 +843,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 		*targetcli = rootcli;
 		*pp_targetpath = talloc_strdup(ctx, path);
 		if (!*pp_targetpath) {
-			return false;
+			return NT_STATUS_NO_MEMORY;
 		}
 		goto done;
 	}
@@ -812,51 +852,53 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 
 	if (!cli_dfs_check_error(rootcli, NT_STATUS_PATH_NOT_COVERED,
 				 status)) {
-		return false;
+		return status;
 	}
 
 	/* Check for the referral. */
 
-	if (!(cli_ipc = cli_cm_open(ctx,
-				rootcli,
-				rootcli->desthost,
-				"IPC$",
-				dfs_auth_info,
-				false,
-				(rootcli->trans_enc_state != NULL),
-				rootcli->protocol,
-				0,
-				0x20))) {
-		return false;
+	status = cli_cm_open(ctx,
+			     rootcli,
+			     cli_state_remote_name(rootcli),
+			     "IPC$",
+			     dfs_auth_info,
+			     false,
+			     cli_state_encryption_on(rootcli),
+			     cli_state_protocol(rootcli),
+			     0,
+			     0x20,
+			     &cli_ipc);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	status = cli_dfs_get_referral(ctx, cli_ipc, dfs_path, &refs,
 				      &num_refs, &consumed);
 	if (!NT_STATUS_IS_OK(status) || !num_refs) {
-		return false;
+		return status;
 	}
 
 	/* Just store the first referral for now. */
 
 	if (!refs[0].dfspath) {
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 	if (!split_dfs_path(ctx, refs[0].dfspath, &server, &share,
 			    &extrapath)) {
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	/* Make sure to recreate the original string including any wildcards. */
 
 	dfs_path = cli_dfs_make_full_path(ctx, rootcli, path);
 	if (!dfs_path) {
-		return false;
+		return NT_STATUS_NO_MEMORY;
 	}
 	pathlen = strlen(dfs_path);
 	consumed = MIN(pathlen, consumed);
 	*pp_targetpath = talloc_strdup(ctx, &dfs_path[consumed]);
 	if (!*pp_targetpath) {
-		return false;
+		return NT_STATUS_NO_MEMORY;
 	}
 	dfs_path[consumed] = '\0';
 
@@ -867,18 +909,20 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
  	 */
 
 	/* Open the connection to the target server & share */
-	if ((*targetcli = cli_cm_open(ctx, rootcli,
-					server,
-					share,
-					dfs_auth_info,
-					false,
-					(rootcli->trans_enc_state != NULL),
-					rootcli->protocol,
-					0,
-					0x20)) == NULL) {
+	status = cli_cm_open(ctx, rootcli,
+			     server,
+			     share,
+			     dfs_auth_info,
+			     false,
+			     cli_state_encryption_on(rootcli),
+			     cli_state_protocol(rootcli),
+			     0,
+			     0x20,
+			     targetcli);
+	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("Unable to follow dfs referral [\\%s\\%s]\n",
 			server, share );
-		return false;
+		return status;
 	}
 
 	if (extrapath && strlen(extrapath) > 0) {
@@ -896,7 +940,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 						  *pp_targetpath);
 		}
 		if (!*pp_targetpath) {
-			return false;
+			return NT_STATUS_NO_MEMORY;
 		}
 	}
 
@@ -909,26 +953,26 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 		d_printf("cli_resolve_path: "
 			"dfs_path (%s) not in correct format.\n",
 			dfs_path );
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	ppath++; /* Now pointing at start of server name. */
 
 	if ((ppath = strchr_m( dfs_path, '\\' )) == NULL) {
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	ppath++; /* Now pointing at start of share name. */
 
 	if ((ppath = strchr_m( ppath+1, '\\' )) == NULL) {
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	ppath++; /* Now pointing at path component. */
 
 	newmount = talloc_asprintf(ctx, "%s\\%s", mountpt, ppath );
 	if (!newmount) {
-		return false;
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	cli_set_mntpoint(*targetcli, newmount);
@@ -937,13 +981,14 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 	   checking for loops here. */
 
 	if (!strequal(*pp_targetpath, "\\") && !strequal(*pp_targetpath, "/")) {
-		if (cli_resolve_path(ctx,
-					newmount,
-					dfs_auth_info,
-					*targetcli,
-					*pp_targetpath,
-					&newcli,
-					&newpath)) {
+		status = cli_resolve_path(ctx,
+					  newmount,
+					  dfs_auth_info,
+					  *targetcli,
+					  *pp_targetpath,
+					  &newcli,
+					  &newpath);
+		if (NT_STATUS_IS_OK(status)) {
 			/*
 			 * When cli_resolve_path returns true here it's always
  			 * returning the complete path in newpath, so we're done
@@ -951,7 +996,7 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
  			 */
 			*targetcli = newcli;
 			*pp_targetpath = newpath;
-			return true;
+			return status;
 		}
 	}
 
@@ -961,12 +1006,15 @@ bool cli_resolve_path(TALLOC_CTX *ctx,
 	if ((*targetcli)->dfsroot) {
 		dfs_path = talloc_strdup(ctx, *pp_targetpath);
 		if (!dfs_path) {
-			return false;
+			return NT_STATUS_NO_MEMORY;
 		}
 		*pp_targetpath = cli_dfs_make_full_path(ctx, *targetcli, dfs_path);
+		if (*pp_targetpath == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
 	}
 
-	return true;
+	return NT_STATUS_OK;
 }
 
 /********************************************************************
@@ -990,12 +1038,14 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 	uint16 cnum;
 	char *newextrapath = NULL;
 	NTSTATUS status;
+	const char *remote_name;
 
 	if (!cli || !sharename) {
 		return false;
 	}
 
-	cnum = cli->cnum;
+	remote_name = cli_state_remote_name(cli);
+	cnum = cli_state_get_tid(cli);
 
 	/* special case.  never check for a referral on the IPC$ share */
 
@@ -1005,14 +1055,14 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 
 	/* send a trans2_query_path_info to check for a referral */
 
-	fullpath = talloc_asprintf(ctx, "\\%s\\%s", cli->desthost, sharename );
+	fullpath = talloc_asprintf(ctx, "\\%s\\%s", remote_name, sharename);
 	if (!fullpath) {
 		return false;
 	}
 
 	/* check for the referral */
 
-	if (!NT_STATUS_IS_OK(cli_tcon_andx(cli, "IPC$", "IPC", NULL, 0))) {
+	if (!NT_STATUS_IS_OK(cli_tree_connect(cli, "IPC$", "IPC", NULL, 0))) {
 		return false;
 	}
 
@@ -1036,7 +1086,7 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 		return false;
 	}
 
-	cli->cnum = cnum;
+	cli_state_set_tid(cli, cnum);
 
 	if (!res || !num_refs) {
 		return false;
@@ -1053,7 +1103,7 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 
 	/* check that this is not a self-referral */
 
-	if (strequal(cli->desthost, *pp_newserver) &&
+	if (strequal(remote_name, *pp_newserver) &&
 			strequal(sharename, *pp_newshare)) {
 		return false;
 	}

@@ -34,6 +34,7 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "popt_common.h"
+#include "lib/param/loadparm.h"
 
 /*******************************************************************
  Check if a directory exists.
@@ -71,7 +72,7 @@ static int do_global_checks(void)
 		ret = 1;
 	}
 
-	if (lp_wins_support() && lp_wins_server_list()) {
+	if (lp_we_are_a_wins_server() && lp_wins_server_list()) {
 		fprintf(stderr, "ERROR: both 'wins support = true' and 'wins server = <server list>' \
 cannot be set in the smb.conf file. nmbd will abort with this setting.\n");
 		ret = 1;
@@ -306,25 +307,33 @@ static void do_per_share_checks(int s)
 			   lp_servicename(s) );
 	}
 
-	if (lp_map_hidden(s) && !(lp_create_mask(s) & S_IXOTH)) {
-		fprintf(stderr,"Invalid combination of parameters for service %s. \
-			   Map hidden can only work if create mask includes octal 01 (S_IXOTH).\n",
-			   lp_servicename(s) );
+	if (!lp_store_dos_attributes(s) && lp_map_hidden(s)
+	    && !(lp_create_mask(s) & S_IXOTH))
+	{
+		fprintf(stderr,"Invalid combination of parameters for service "
+			"%s. Map hidden can only work if create mask includes "
+			"octal 01 (S_IXOTH).\n", lp_servicename(s));
 	}
-	if (lp_map_hidden(s) && (lp_force_create_mode(s) & S_IXOTH)) {
-		fprintf(stderr,"Invalid combination of parameters for service %s. \
-			   Map hidden can only work if force create mode excludes octal 01 (S_IXOTH).\n",
-			   lp_servicename(s) );
+	if (!lp_store_dos_attributes(s) && lp_map_hidden(s)
+	    && (lp_force_create_mode(s) & S_IXOTH))
+	{
+		fprintf(stderr,"Invalid combination of parameters for service "
+			"%s. Map hidden can only work if force create mode "
+			"excludes octal 01 (S_IXOTH).\n", lp_servicename(s));
 	}
-	if (lp_map_system(s) && !(lp_create_mask(s) & S_IXGRP)) {
-		fprintf(stderr,"Invalid combination of parameters for service %s. \
-			   Map system can only work if create mask includes octal 010 (S_IXGRP).\n",
-			   lp_servicename(s) );
+	if (!lp_store_dos_attributes(s) && lp_map_system(s)
+	    && !(lp_create_mask(s) & S_IXGRP))
+	{
+		fprintf(stderr,"Invalid combination of parameters for service "
+			"%s. Map system can only work if create mask includes "
+			"octal 010 (S_IXGRP).\n", lp_servicename(s));
 	}
-	if (lp_map_system(s) && (lp_force_create_mode(s) & S_IXGRP)) {
-		fprintf(stderr,"Invalid combination of parameters for service %s. \
-			   Map system can only work if force create mode excludes octal 010 (S_IXGRP).\n",
-			   lp_servicename(s) );
+	if (!lp_store_dos_attributes(s) && lp_map_system(s)
+	    && (lp_force_create_mode(s) & S_IXGRP))
+	{
+		fprintf(stderr,"Invalid combination of parameters for service "
+			"%s. Map system can only work if force create mode "
+			"excludes octal 010 (S_IXGRP).\n", lp_servicename(s));
 	}
 #ifdef HAVE_CUPS
 	if (lp_printing(s) == PRINT_CUPS && *(lp_printcommand(s)) != '\0') {

@@ -43,6 +43,9 @@ static struct cli_state *server_cryptkey(TALLOC_CTX *mem_ctx)
 	bool connected_ok = False;
 	struct named_mutex *mutex = NULL;
 	NTSTATUS status;
+	/* security = server just can't function with spnego */
+	int flags = CLI_FULL_CONNECTION_DONT_SPNEGO;
+	uint16_t sec_mode = 0;
 
         pserver = talloc_strdup(mem_ctx, lp_passwordserver());
 	p = pserver;
@@ -85,7 +88,8 @@ static struct cli_state *server_cryptkey(TALLOC_CTX *mem_ctx)
 		}
 
 		status = cli_connect_nb(desthost, &dest_ss, 0, 0x20,
-					lp_netbios_name(), Undefined, &cli);
+					lp_netbios_name(), SMB_SIGNING_DEFAULT,
+					flags, &cli);
 		if (NT_STATUS_IS_OK(status)) {
 			DEBUG(3,("connected to password server %s\n",desthost));
 			connected_ok = True;
@@ -101,12 +105,9 @@ static struct cli_state *server_cryptkey(TALLOC_CTX *mem_ctx)
 		return NULL;
 	}
 
-	/* security = server just can't function with spnego */
-	cli->use_spnego = False;
-
 	DEBUG(3,("got session\n"));
 
-	status = cli_negprot(cli);
+	status = cli_negprot(cli, PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(mutex);
@@ -116,8 +117,9 @@ static struct cli_state *server_cryptkey(TALLOC_CTX *mem_ctx)
 		return NULL;
 	}
 
-	if (cli->protocol < PROTOCOL_LANMAN2 ||
-	    !(cli->sec_mode & NEGOTIATE_SECURITY_USER_LEVEL)) {
+	sec_mode = cli_state_security_mode(cli);
+	if (cli_state_protocol(cli) < PROTOCOL_LANMAN2 ||
+	    !(sec_mode & NEGOTIATE_SECURITY_USER_LEVEL)) {
 		TALLOC_FREE(mutex);
 		DEBUG(1,("%s isn't in user level security mode\n",desthost));
 		cli_shutdown(cli);
@@ -158,20 +160,25 @@ static bool send_server_keepalive(const struct timeval *now,
 {
 	struct server_security_state *state = talloc_get_type_abort(
 		private_data, struct server_security_state);
+	NTSTATUS status;
+	unsigned char garbage[16];
 
-	if (!state->cli || !state->cli->initialised) {
-		return False;
+	if (!cli_state_is_connected(state->cli)) {
+		return false;
 	}
 
-	if (send_keepalive(state->cli->fd)) {
-		return True;
+	/* Ping the server to keep the connection alive using SMBecho. */
+	memset(garbage, 0xf0, sizeof(garbage));
+	status = cli_echo(state->cli, 1, data_blob_const(garbage, sizeof(garbage)));
+	if (NT_STATUS_IS_OK(status)) {
+		return true;
 	}
 
-	DEBUG( 2, ( "send_server_keepalive: password server keepalive "
-		    "failed.\n"));
+	DEBUG(2,("send_server_keepalive: password server SMBecho failed: %s\n",
+		 nt_errstr(status)));
 	cli_shutdown(state->cli);
 	state->cli = NULL;
-	return False;
+	return false;
 }
 
 static int destroy_server_security(struct server_security_state *state)
@@ -224,9 +231,12 @@ static DATA_BLOB auth_get_challenge_server(const struct auth_context *auth_conte
 	struct cli_state *cli = server_cryptkey(mem_ctx);
 
 	if (cli) {
+		uint16_t sec_mode = cli_state_security_mode(cli);
+		const uint8_t *server_challenge = cli_state_server_challenge(cli);
+
 		DEBUG(3,("using password server validation\n"));
 
-		if ((cli->sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0) {
+		if ((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0) {
 			/* We can't work with unencrypted password servers
 			   unless 'encrypt passwords = no' */
 			DEBUG(5,("make_auth_info_server: Server is unencrypted, no challenge available..\n"));
@@ -236,11 +246,6 @@ static DATA_BLOB auth_get_challenge_server(const struct auth_context *auth_conte
 			*my_private_data =
 				(void *)make_server_security_state(cli);
 			return data_blob_null;
-		} else if (cli->secblob.length < 8) {
-			/* We can't do much if we don't get a full challenge */
-			DEBUG(2,("make_auth_info_server: Didn't receive a full challenge from server\n"));
-			cli_shutdown(cli);
-			return data_blob_null;
 		}
 
 		if (!(*my_private_data = (void *)make_server_security_state(cli))) {
@@ -249,7 +254,7 @@ static DATA_BLOB auth_get_challenge_server(const struct auth_context *auth_conte
 
 		/* The return must be allocated on the caller's mem_ctx, as our own will be
 		   destoyed just after the call. */
-		return data_blob_talloc(discard_const_p(TALLOC_CTX, auth_context), cli->secblob.data,8);
+		return data_blob_talloc(discard_const_p(TALLOC_CTX, auth_context), server_challenge ,8);
 	} else {
 		return data_blob_null;
 	}
@@ -267,16 +272,24 @@ static NTSTATUS check_smbserver_security(const struct auth_context *auth_context
 					 const struct auth_usersupplied_info *user_info,
 					 struct auth_serversupplied_info **server_info)
 {
-	struct server_security_state *state = talloc_get_type_abort(
-		my_private_data, struct server_security_state);
-	struct cli_state *cli;
+	struct server_security_state *state = NULL;
+	struct cli_state *cli = NULL;
 	static bool tested_password_server = False;
 	static bool bad_password_server = False;
 	NTSTATUS nt_status = NT_STATUS_NOT_IMPLEMENTED;
 	bool locally_made_cli = False;
+	uint16_t sec_mode = 0;
 
-	DEBUG(10, ("Check auth for: [%s]\n", user_info->mapped.account_name));
+	DEBUG(10, ("check_smbserver_security: Check auth for: [%s]\n",
+		user_info->mapped.account_name));
 
+	if (my_private_data == NULL) {
+		DEBUG(10,("check_smbserver_security: "
+			"password server is not connected\n"));
+		return NT_STATUS_LOGON_FAILURE;
+	}
+
+	state = talloc_get_type_abort(my_private_data, struct server_security_state);
 	cli = state->cli;
 
 	if (cli) {
@@ -285,19 +298,22 @@ static NTSTATUS check_smbserver_security(const struct auth_context *auth_context
 		locally_made_cli = True;
 	}
 
-	if (!cli || !cli->initialised) {
+	if (!cli_state_is_connected(cli)) {
 		DEBUG(1,("password server is not connected (cli not initialised)\n"));
 		return NT_STATUS_LOGON_FAILURE;
 	}  
 
-	if ((cli->sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0) {
+	sec_mode = cli_state_security_mode(cli);
+	if ((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0) {
 		if (user_info->password_state != AUTH_PASSWORD_PLAIN) {
-			DEBUG(1,("password server %s is plaintext, but we are encrypted. This just can't work :-(\n", cli->desthost));
+			DEBUG(1,("password server %s is plaintext, but we are encrypted. This just can't work :-(\n", cli_state_remote_name(cli)));
 			return NT_STATUS_LOGON_FAILURE;		
 		}
 	} else {
-		if (memcmp(cli->secblob.data, auth_context->challenge.data, 8) != 0) {
-			DEBUG(1,("the challenge that the password server (%s) supplied us is not the one we gave our client. This just can't work :-(\n", cli->desthost));
+		const uint8_t *server_challenge = cli_state_server_challenge(cli);
+
+		if (memcmp(server_challenge, auth_context->challenge.data, 8) != 0) {
+			DEBUG(1,("the challenge that the password server (%s) supplied us is not the one we gave our client. This just can't work :-(\n", cli_state_remote_name(cli)));
 			return NT_STATUS_LOGON_FAILURE;		
 		}
 	}
@@ -350,9 +366,9 @@ static NTSTATUS check_smbserver_security(const struct auth_context *auth_context
 			 */
 			tested_password_server = True;
 
-			if ((SVAL(cli->inbuf,smb_vwv2) & 1) == 0) {
+			if (!cli->is_guestlogin) {
 				DEBUG(0,("server_validate: password server %s allows users as non-guest \
-with a bad password.\n", cli->desthost));
+with a bad password.\n", cli_state_remote_name(cli)));
 				DEBUG(0,("server_validate: This is broken (and insecure) behaviour. Please do not \
 use this machine as the password server.\n"));
 				cli_ulogoff(cli);
@@ -374,7 +390,7 @@ use this machine as the password server.\n"));
 
 		if(bad_password_server) {
 			DEBUG(0,("server_validate: [1] password server %s allows users as non-guest \
-with a bad password.\n", cli->desthost));
+with a bad password.\n", cli_state_remote_name(cli)));
 			DEBUG(0,("server_validate: [1] This is broken (and insecure) behaviour. Please do not \
 use this machine as the password server.\n"));
 			return NT_STATUS_LOGON_FAILURE;
@@ -413,12 +429,13 @@ use this machine as the password server.\n"));
 
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(1,("password server %s rejected the password: %s\n",
-			 cli->desthost, nt_errstr(nt_status)));
+			 cli_state_remote_name(cli), nt_errstr(nt_status)));
 	}
 
 	/* if logged in as guest then reject */
 	if (cli->is_guestlogin) {
-		DEBUG(1,("password server %s gave us guest only\n", cli->desthost));
+		DEBUG(1,("password server %s gave us guest only\n",
+			 cli_state_remote_name(cli)));
 		nt_status = NT_STATUS_LOGON_FAILURE;
 	}
 

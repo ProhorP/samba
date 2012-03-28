@@ -3,25 +3,26 @@
 #
 #   Unix SMB/CIFS implementation.
 #   Test validity of smb.conf
-#   Copyright (C) Karl Auer 1993, 1994-1998
+#   Copyright (C) 2010-2011 Jelmer Vernooij <jelmer@samba.org>
 #
+# Based on the original in C:
+#   Copyright (C) Karl Auer 1993, 1994-1998
 #   Extensively modified by Andrew Tridgell, 1995
 #   Converted to popt by Jelmer Vernooij (jelmer@nl.linux.org), 2002
 #   Updated for Samba4 by Andrew Bartlett <abartlet@samba.org> 2006
-#   Converted to Python by Jelmer Vernooij <jelmer@samba.org> 2010
 #
-#   This program is free software; you can redistribute it and/or modify
-#   it under the terms of the GNU General Public License as published by
-#   the Free Software Foundation; either version 3 of the License, or
-#   (at your option) any later version.
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
 #
-#   This program is distributed in the hope that it will be useful,
-#   but WITHOUT ANY WARRANTY; without even the implied warranty of
-#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#   GNU General Public License for more details.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
 #
-#   You should have received a copy of the GNU General Public License
-#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 # Testbed for loadparm.c/params.c
 #
@@ -34,16 +35,20 @@
 
 import os
 import sys
-import logging
 
 import samba
 import samba.getopt as options
 from samba.netcmd import Command, CommandError, Option
 
 class cmd_testparm(Command):
-    """Syntax check the configuration file"""
+    """Syntax check the configuration file."""
 
-    synopsis = ""
+    synopsis = "%prog [options]"
+
+    takes_optiongroups = {
+        "sambaopts" : options.SambaOptions,
+        "versionopts": options.VersionOptions
+    }
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -71,43 +76,46 @@ class cmd_testparm(Command):
                help="Show the parameters, type, possible values")
         ]
 
-    takes_args = ["hostname?", "hostip?"]
+    takes_args = []
 
-    def run(self, *args, **kwargs):
-        if kwargs.get('hostname', None) is not None and \
-           kwargs.get('hostip', None) is None:
-            raise CommandError("Both a DNS name and an IP address are " \
+    def run(self, sambaopts, versionopts, 
+            section_name=None, parameter_name=None,
+            client_ip=None, client_name=None, verbose=False,
+            suppress_prompt=None,
+            show_all_parameters=False, server=None):
+        if server:
+            raise NotImplementedError("--server not yet implemented")
+        if show_all_parameters:
+            raise NotImplementedError("--show-all-parameters not yet implemented")
+        if client_name is not None and client_ip is None:
+            raise CommandError("Both a DNS name and an IP address are "
                                "required for the host access check")
 
-        lp = kwargs['sambaopts'].get_loadparm()
+        lp = sambaopts.get_loadparm()
 
         # We need this to force the output
         samba.set_debug_level(2)
 
-        logger = logging.getLogger("testparm")
-        logger.addHandler(logging.StreamHandler(sys.stdout))
+        logger = self.get_logger("testparm")
 
         logger.info("Loaded smb config files from %s", lp.configfile)
         logger.info("Loaded services file OK.")
 
         valid = self.do_global_checks(lp, logger)
         valid = valid and self.do_share_checks(lp, logger)
-        if kwargs.get('hostname', None) is not None and \
-           kwargs.get('hostip', None) is not None:
-            self.check_client_access(lp, kwargs['hostname'], kwargs['hostip'])
+        if client_name is not None and client_ip is not None:
+            self.check_client_access(lp, logger, client_name, client_ip)
         else:
-            if kwargs.get('section_name', None) is not None or \
-               kwargs.get('parameter_name', None) is not None:
-                if kwargs.get('parameter_name', None) is None:
-                    lp[kwargs['section_name']].dump(sys.stdout, lp.default_service,
-                                               kwargs['verbose'])
+            if section_name is not None or parameter_name is not None:
+                if parameter_name is None:
+                    lp[section_name].dump(sys.stdout, lp.default_service, verbose)
                 else:
-                    print lp.get(kwargs['parameter_name'], kwargs['section_name'])
+                    self.outf.write(lp.get(parameter_name, section_name)+"\n")
             else:
-                if not kwargs['suppress_prompt']:
-                    print "Press enter to see a dump of your service definitions\n"
+                if not suppress_prompt:
+                    self.outf.write("Press enter to see a dump of your service definitions\n")
                     sys.stdin.readline()
-                lp.dump(sys.stdout, kwargs['verbose'])
+                lp.dump(sys.stdout, verbose)
         if valid:
             return
         else:
@@ -154,10 +162,8 @@ class cmd_testparm(Command):
 
         return valid
 
-
     def allow_access(self, deny_list, allow_list, cname, caddr):
         raise NotImplementedError(self.allow_access)
-
 
     def do_share_checks(self, lp, logger):
         valid = True
@@ -187,7 +193,7 @@ class cmd_testparm(Command):
                         valid = False
         return valid
 
-    def check_client_access(self, lp, cname, caddr):
+    def check_client_access(self, lp, logger, cname, caddr):
         # this is totally ugly, a real `quick' hack
         for s in lp.services():
             if (self.allow_access(lp.get("hosts deny"), lp.get("hosts allow"), cname,

@@ -24,6 +24,9 @@
 #include "auth/auth_sam_reply.h"
 #include "param/param.h"
 #include "source4/lib/events/events.h"
+#include "source4/lib/messaging/messaging.h"
+#include "auth/gensec/gensec.h"
+#include "auth/credentials/credentials.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -92,6 +95,133 @@ static NTSTATUS check_samba4_security(const struct auth_context *auth_context,
 	return nt_status;
 }
 
+/* Hook to allow GENSEC to handle blob-based authentication
+ * mechanisms, without directly linking the mechansim code */
+static NTSTATUS prepare_gensec(TALLOC_CTX *mem_ctx,
+			       struct gensec_security **gensec_context)
+{
+	NTSTATUS status;
+	struct loadparm_context *lp_ctx;
+	struct tevent_context *event_ctx;
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct gensec_security *gensec_ctx;
+	struct imessaging_context *msg_ctx;
+	struct cli_credentials *server_credentials;
+
+	lp_ctx = loadparm_init_s3(frame, loadparm_s3_context());
+	if (lp_ctx == NULL) {
+		DEBUG(1, ("loadparm_init_s3 failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+	event_ctx = s4_event_context_init(frame);
+	if (event_ctx == NULL) {
+		DEBUG(1, ("s4_event_context_init failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	msg_ctx = imessaging_client_init(frame,
+					 lp_ctx,
+					 event_ctx);
+	if (msg_ctx == NULL) {
+		DEBUG(1, ("imessaging_init failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	server_credentials
+		= cli_credentials_init(frame);
+	if (!server_credentials) {
+		DEBUG(1, ("Failed to init server credentials"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	cli_credentials_set_conf(server_credentials, lp_ctx);
+	status = cli_credentials_set_machine_account(server_credentials, lp_ctx);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("Failed to obtain server credentials, perhaps a standalone server?: %s\n", nt_errstr(status)));
+		talloc_free(server_credentials);
+		server_credentials = NULL;
+	}
+
+	status = samba_server_gensec_start(mem_ctx,
+					   event_ctx, msg_ctx,
+					   lp_ctx, server_credentials, "cifs",
+					   &gensec_ctx);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(1, ("Failed to start GENSEC server code: %s\n", nt_errstr(status)));
+		TALLOC_FREE(frame);
+		return status;
+	}
+
+	talloc_reparent(frame, gensec_ctx, msg_ctx);
+	talloc_reparent(frame, gensec_ctx, event_ctx);
+	talloc_reparent(frame, gensec_ctx, lp_ctx);
+	talloc_reparent(frame, gensec_ctx, server_credentials);
+
+	gensec_want_feature(gensec_ctx, GENSEC_FEATURE_SESSION_KEY);
+	gensec_want_feature(gensec_ctx, GENSEC_FEATURE_UNIX_TOKEN);
+
+	*gensec_context = gensec_ctx;
+	TALLOC_FREE(frame);
+	return status;
+}
+
+/* Hook to allow handling of NTLM authentication for AD operation
+ * without directly linking the s4 auth stack */
+static NTSTATUS make_auth4_context_s4(TALLOC_CTX *mem_ctx,
+				      struct auth4_context **auth4_context)
+{
+	NTSTATUS status;
+	struct loadparm_context *lp_ctx;
+	struct tevent_context *event_ctx;
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct imessaging_context *msg_ctx;
+
+	lp_ctx = loadparm_init_s3(frame, loadparm_s3_context());
+	if (lp_ctx == NULL) {
+		DEBUG(1, ("loadparm_init_s3 failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+	event_ctx = s4_event_context_init(frame);
+	if (event_ctx == NULL) {
+		DEBUG(1, ("s4_event_context_init failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	msg_ctx = imessaging_client_init(frame,
+					 lp_ctx,
+					 event_ctx);
+	if (msg_ctx == NULL) {
+		DEBUG(1, ("imessaging_init failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	status = auth_context_create(mem_ctx,
+					event_ctx,
+					msg_ctx,
+					lp_ctx,
+					auth4_context);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(1, ("Failed to start auth server code: %s\n", nt_errstr(status)));
+		TALLOC_FREE(frame);
+		return status;
+	}
+
+	talloc_reparent(frame, *auth4_context, msg_ctx);
+	talloc_reparent(frame, *auth4_context, event_ctx);
+	talloc_reparent(frame, *auth4_context, lp_ctx);
+
+	TALLOC_FREE(frame);
+	return status;
+}
+
 /* module initialisation */
 static NTSTATUS auth_init_samba4(struct auth_context *auth_context,
 				    const char *param,
@@ -99,12 +229,16 @@ static NTSTATUS auth_init_samba4(struct auth_context *auth_context,
 {
 	struct auth_methods *result;
 
+	gensec_init();
+
 	result = talloc_zero(auth_context, struct auth_methods);
 	if (result == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 	result->name = "samba4";
 	result->auth = check_samba4_security;
+	result->prepare_gensec = prepare_gensec;
+	result->make_auth4_context = make_auth4_context_s4;
 
         *auth_method = result;
 	return NT_STATUS_OK;

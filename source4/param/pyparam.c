@@ -21,7 +21,7 @@
 #include "includes.h"
 #include "param/param.h"
 #include "param/loadparm.h"
-#include "lib/talloc/pytalloc.h"
+#include <pytalloc.h>
 #include "dynconfig/dynconfig.h"
 
 void initparam(void);
@@ -32,15 +32,15 @@ typedef int Py_ssize_t;
 typedef inquiry lenfunc;
 #endif
 
-#define PyLoadparmContext_AsLoadparmContext(obj) py_talloc_get_type(obj, struct loadparm_context)
-#define PyLoadparmService_AsLoadparmService(obj) py_talloc_get_type(obj, struct loadparm_service)
+#define PyLoadparmContext_AsLoadparmContext(obj) pytalloc_get_type(obj, struct loadparm_context)
+#define PyLoadparmService_AsLoadparmService(obj) pytalloc_get_type(obj, struct loadparm_service)
 
 extern PyTypeObject PyLoadparmContext;
 extern PyTypeObject PyLoadparmService;
 
 static PyObject *PyLoadparmService_FromService(struct loadparm_service *service)
 {
-	return py_talloc_reference(&PyLoadparmService, service);
+	return pytalloc_reference(&PyLoadparmService, service);
 }
 
 static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const char *service_name, const char *param_name)
@@ -73,8 +73,8 @@ static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const cha
 			return PyString_FromString(value);
 		}
 
-		parm = lpcfg_parm_struct(param_name);
-		if (parm == NULL || parm->pclass == P_GLOBAL) {
+		parm = lpcfg_parm_struct(lp_ctx, param_name);
+		if (parm == NULL || parm->p_class == P_GLOBAL) {
 			return NULL;
 		}
 		parm_ptr = lpcfg_parm_ptr(lp_ctx, service, parm);
@@ -93,7 +93,7 @@ static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const cha
 		return PyString_FromString(value);
 	} else {
 		/* its a global parameter */
-		parm = lpcfg_parm_struct(param_name);
+		parm = lpcfg_parm_struct(lp_ctx, param_name);
 		if (parm == NULL) {
 			return NULL;
 		}
@@ -106,11 +106,15 @@ static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const cha
 
     /* construct and return the right type of python object */
     switch (parm->type) {
+    case P_CHAR:
+	return PyString_FromFormat("%c", *(char *)parm_ptr);
     case P_STRING:
     case P_USTRING:
 	return PyString_FromString(*(char **)parm_ptr);
     case P_BOOL:
 	return PyBool_FromLong(*(bool *)parm_ptr);
+    case P_BOOLREV:
+	return PyBool_FromLong(!(*(bool *)parm_ptr));
     case P_INTEGER:
     case P_OCTAL:
     case P_BYTES:
@@ -139,14 +143,14 @@ static PyObject *py_lp_ctx_get_helper(struct loadparm_context *lp_ctx, const cha
 			       PyString_FromString(strlist[j]));
 	    return pylist;
 	}
-
-	break;
+    case P_SEP:
+	return NULL; /* this stands for a separator, can be ignored */
     }
     return NULL;
 
 }
 
-static PyObject *py_lp_ctx_load(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_load(pytalloc_Object *self, PyObject *args)
 {
 	char *filename;
 	bool ret;
@@ -162,7 +166,7 @@ static PyObject *py_lp_ctx_load(py_talloc_Object *self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
-static PyObject *py_lp_ctx_load_default(py_talloc_Object *self)
+static PyObject *py_lp_ctx_load_default(pytalloc_Object *self)
 {
 	bool ret;
         ret = lpcfg_load_default(PyLoadparmContext_AsLoadparmContext(self));
@@ -174,7 +178,7 @@ static PyObject *py_lp_ctx_load_default(py_talloc_Object *self)
 	Py_RETURN_NONE;
 }
 
-static PyObject *py_lp_ctx_get(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_get(pytalloc_Object *self, PyObject *args)
 {
 	char *param_name;
 	char *section_name = NULL;
@@ -188,7 +192,7 @@ static PyObject *py_lp_ctx_get(py_talloc_Object *self, PyObject *args)
 	return ret;
 }
 
-static PyObject *py_lp_ctx_is_myname(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_is_myname(pytalloc_Object *self, PyObject *args)
 {
 	char *name;
 	if (!PyArg_ParseTuple(args, "s", &name))
@@ -197,7 +201,7 @@ static PyObject *py_lp_ctx_is_myname(py_talloc_Object *self, PyObject *args)
 	return PyBool_FromLong(lpcfg_is_myname(PyLoadparmContext_AsLoadparmContext(self), name));
 }
 
-static PyObject *py_lp_ctx_is_mydomain(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_is_mydomain(pytalloc_Object *self, PyObject *args)
 {
 	char *name;
 	if (!PyArg_ParseTuple(args, "s", &name))
@@ -206,7 +210,7 @@ static PyObject *py_lp_ctx_is_mydomain(py_talloc_Object *self, PyObject *args)
 	return PyBool_FromLong(lpcfg_is_mydomain(PyLoadparmContext_AsLoadparmContext(self), name));
 }
 
-static PyObject *py_lp_ctx_set(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_set(pytalloc_Object *self, PyObject *args)
 {
 	char *name, *value;
 	bool ret;
@@ -222,7 +226,7 @@ static PyObject *py_lp_ctx_set(py_talloc_Object *self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
-static PyObject *py_lp_ctx_private_path(py_talloc_Object *self, PyObject *args)
+static PyObject *py_lp_ctx_private_path(pytalloc_Object *self, PyObject *args)
 {
 	char *name, *path;
 	PyObject *ret;
@@ -236,7 +240,7 @@ static PyObject *py_lp_ctx_private_path(py_talloc_Object *self, PyObject *args)
 	return ret;
 }
 
-static PyObject *py_lp_ctx_services(py_talloc_Object *self)
+static PyObject *py_lp_ctx_services(pytalloc_Object *self)
 {
 	struct loadparm_context *lp_ctx = PyLoadparmContext_AsLoadparmContext(self);
 	PyObject *ret;
@@ -249,6 +253,18 @@ static PyObject *py_lp_ctx_services(py_talloc_Object *self)
 		}
 	}
 	return ret;
+}
+
+static PyObject *py_lp_ctx_server_role(pytalloc_Object *self)
+{
+	struct loadparm_context *lp_ctx = PyLoadparmContext_AsLoadparmContext(self);
+	uint32_t role;
+	const char *role_str;
+
+	role = lpcfg_server_role(lp_ctx);
+	role_str = server_role_str(role);
+
+	return PyString_FromString(role_str);
 }
 
 static PyObject *py_lp_dump(PyObject *self, PyObject *args)
@@ -302,6 +318,9 @@ static PyMethodDef py_lp_ctx_methods[] = {
 		"S.private_path(name) -> path\n" },
 	{ "services", (PyCFunction)py_lp_ctx_services, METH_NOARGS,
 		"S.services() -> list" },
+	{ "server_role", (PyCFunction)py_lp_ctx_server_role, METH_NOARGS,
+		"S.server_role() -> value\n"
+		"Get the server role." },
 	{ "dump", (PyCFunction)py_lp_dump, METH_VARARGS, 
 		"S.dump(stream, show_defaults=False)" },
 	{ "samdb_url", (PyCFunction)py_samdb_url, METH_NOARGS,
@@ -310,12 +329,12 @@ static PyMethodDef py_lp_ctx_methods[] = {
 	{ NULL }
 };
 
-static PyObject *py_lp_ctx_default_service(py_talloc_Object *self, void *closure)
+static PyObject *py_lp_ctx_default_service(pytalloc_Object *self, void *closure)
 {
 	return PyLoadparmService_FromService(lpcfg_default_service(PyLoadparmContext_AsLoadparmContext(self)));
 }
 
-static PyObject *py_lp_ctx_config_file(py_talloc_Object *self, void *closure)
+static PyObject *py_lp_ctx_config_file(pytalloc_Object *self, void *closure)
 {
 	const char *configfile = lpcfg_configfile(PyLoadparmContext_AsLoadparmContext(self));
 	if (configfile == NULL)
@@ -333,7 +352,7 @@ static PyGetSetDef py_lp_ctx_getset[] = {
 
 static PyObject *py_lp_ctx_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-	py_talloc_Object *ret = (py_talloc_Object *)type->tp_alloc(type, 0);
+	pytalloc_Object *ret = (pytalloc_Object *)type->tp_alloc(type, 0);
 	if (ret == NULL) {
 		PyErr_NoMemory();
 		return NULL;
@@ -351,12 +370,12 @@ static PyObject *py_lp_ctx_new(PyTypeObject *type, PyObject *args, PyObject *kwa
 	return (PyObject *)ret;
 }
 
-static Py_ssize_t py_lp_ctx_len(py_talloc_Object *self)
+static Py_ssize_t py_lp_ctx_len(pytalloc_Object *self)
 {
 	return lpcfg_numservices(PyLoadparmContext_AsLoadparmContext(self));
 }
 
-static PyObject *py_lp_ctx_getitem(py_talloc_Object *self, PyObject *name)
+static PyObject *py_lp_ctx_getitem(pytalloc_Object *self, PyObject *name)
 {
 	struct loadparm_service *service;
 	if (!PyString_Check(name)) {
@@ -377,8 +396,8 @@ static PyMappingMethods py_lp_ctx_mapping = {
 };
 
 PyTypeObject PyLoadparmContext = {
-	.tp_name = "LoadParm",
-	.tp_basicsize = sizeof(py_talloc_Object),
+	.tp_name = "param.LoadParm",
+	.tp_basicsize = sizeof(pytalloc_Object),
 	.tp_getset = py_lp_ctx_getset,
 	.tp_methods = py_lp_ctx_methods,
 	.tp_new = py_lp_ctx_new,
@@ -424,25 +443,35 @@ static PyMethodDef py_lp_service_methods[] = {
 };
 
 PyTypeObject PyLoadparmService = {
-	.tp_name = "LoadparmService",
-	.tp_basicsize = sizeof(py_talloc_Object),
+	.tp_name = "param.LoadparmService",
+	.tp_basicsize = sizeof(pytalloc_Object),
 	.tp_methods = py_lp_service_methods,
 	.tp_flags = Py_TPFLAGS_DEFAULT,
 };
 
 static PyObject *py_default_path(PyObject *self)
 {
-    return PyString_FromString(lp_default_path());
+	return PyString_FromString(lp_default_path());
 }
 
 static PyObject *py_setup_dir(PyObject *self)
 {
-    return PyString_FromString(dyn_SETUPDIR);
+	return PyString_FromString(dyn_SETUPDIR);
 }
 
 static PyObject *py_modules_dir(PyObject *self)
 {
-    return PyString_FromString(dyn_MODULESDIR);
+	return PyString_FromString(dyn_MODULESDIR);
+}
+
+static PyObject *py_bin_dir(PyObject *self)
+{
+	return PyString_FromString(dyn_BINDIR);
+}
+
+static PyObject *py_sbin_dir(PyObject *self)
+{
+	return PyString_FromString(dyn_SBINDIR);
 }
 
 static PyMethodDef pyparam_methods[] = {
@@ -452,13 +481,17 @@ static PyMethodDef pyparam_methods[] = {
         "Returns the compiled in location of provision tempates." },
     { "modules_dir", (PyCFunction)py_modules_dir, METH_NOARGS,
         "Returns the compiled in location of modules." },
+    { "bin_dir", (PyCFunction)py_bin_dir, METH_NOARGS,
+	"Returns the compiled in BINDIR." },
+    { "sbin_dir", (PyCFunction)py_sbin_dir, METH_NOARGS,
+	"Returns the compiled in SBINDIR." },
     { NULL }
 };
 
 void initparam(void)
 {
 	PyObject *m;
-	PyTypeObject *talloc_type = PyTalloc_GetObjectType();
+	PyTypeObject *talloc_type = pytalloc_GetObjectType();
 	if (talloc_type == NULL)
 		return;
 

@@ -28,7 +28,9 @@
 #include "../librpc/gen_ndr/svcctl.h"
 #include "memcache.h"
 #include "nsswitch/winbind_client.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
+#include "dbwrap/dbwrap_rbt.h"
 #include "talloc_dict.h"
 #include "async_smb.h"
 #include "libsmb/libsmb.h"
@@ -37,12 +39,12 @@
 #include "libsmb/nmblib.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "util_tdb.h"
-#include "libsmb/read_smb.h"
+#include "../libcli/smb/read_smb.h"
 
 extern char *optarg;
 extern int optind;
 
-static fstring host, workgroup, share, password, username, myname;
+fstring host, workgroup, share, password, username, myname;
 static int max_protocol = PROTOCOL_NT1;
 static const char *sockops="TCP_NODELAY";
 static int nprocs=1;
@@ -55,12 +57,14 @@ static fstring randomfname;
 static bool use_oplocks;
 static bool use_level_II_oplocks;
 static const char *client_txt = "client_oplocks.txt";
+static bool disable_spnego;
 static bool use_kerberos;
+static bool force_dos_errors;
 static fstring multishare_conn_fname;
 static bool use_multishare_conn = False;
 static bool do_encrypt;
 static const char *local_path = NULL;
-static int signing_state = Undefined;
+static int signing_state = SMB_SIGNING_DEFAULT;
 char *test_filename;
 
 bool torture_showall = False;
@@ -180,19 +184,36 @@ static struct cli_state *open_nbt_connection(void)
 {
 	struct cli_state *c;
 	NTSTATUS status;
+	int flags = 0;
+
+	if (disable_spnego) {
+		flags |= CLI_FULL_CONNECTION_DONT_SPNEGO;
+	}
+
+	if (use_oplocks) {
+		flags |= CLI_FULL_CONNECTION_OPLOCKS;
+	}
+
+	if (use_level_II_oplocks) {
+		flags |= CLI_FULL_CONNECTION_LEVEL_II_OPLOCKS;
+	}
+
+	if (use_kerberos) {
+		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+	}
+
+	if (force_dos_errors) {
+		flags |= CLI_FULL_CONNECTION_FORCE_DOS_ERRORS;
+	}
 
 	status = cli_connect_nb(host, NULL, port_to_use, 0x20, myname,
-				signing_state, &c);
+				signing_state, flags, &c);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Failed to connect with %s. Error %s\n", host, nt_errstr(status) );
 		return NULL;
 	}
 
-	c->use_kerberos = use_kerberos;
-
-	c->timeout = 120000; /* set a really long timeout (2 minutes) */
-	if (use_oplocks) c->use_oplocks = True;
-	if (use_level_II_oplocks) c->use_level_II_oplocks = True;
+	cli_set_timeout(c, 120000); /* set a really long timeout (2 minutes) */
 
 	return c;
 }
@@ -213,6 +234,8 @@ static bool cli_bad_session_request(int fd,
 	bool ret = false;
 	uint8_t message_type;
 	uint8_t error;
+	struct event_context *ev;
+	struct tevent_req *req;
 
 	frame = talloc_stackframe();
 
@@ -258,11 +281,24 @@ static bool cli_bad_session_request(int fd,
 	if (len == -1) {
 		goto fail;
 	}
-	len = read_smb(fd, talloc_tos(), &inbuf, &err);
+
+	ev = event_context_init(frame);
+	if (ev == NULL) {
+		goto fail;
+	}
+	req = read_smb_send(frame, ev, fd);
+	if (req == NULL) {
+		goto fail;
+	}
+	if (!tevent_req_poll(req, ev)) {
+		goto fail;
+	}
+	len = read_smb_recv(req, talloc_tos(), &inbuf, &err);
 	if (len == -1) {
 		errno = err;
 		goto fail;
 	}
+	TALLOC_FREE(ev);
 
 	message_type = CVAL(inbuf, 0);
 	if (message_type != 0x83) {
@@ -373,7 +409,7 @@ static bool torture_open_connection_share(struct cli_state **c,
 		return False;
 	}
 
-	(*c)->timeout = 120000; /* set a really long timeout (2 minutes) */
+	cli_set_timeout(*c, 120000); /* set a really long timeout (2 minutes) */
 
 	if (do_encrypt) {
 		return force_cli_encryption(*c,
@@ -414,22 +450,35 @@ bool torture_open_connection(struct cli_state **c, int conn_index)
 	return torture_open_connection_share(c, host, share);
 }
 
+bool torture_init_connection(struct cli_state **pcli)
+{
+	struct cli_state *cli;
+
+	cli = open_nbt_connection();
+	if (cli == NULL) {
+		return false;
+	}
+
+	*pcli = cli;
+	return true;
+}
+
 bool torture_cli_session_setup2(struct cli_state *cli, uint16 *new_vuid)
 {
-	uint16 old_vuid = cli->vuid;
+	uint16_t old_vuid = cli_state_get_uid(cli);
 	fstring old_user_name;
 	size_t passlen = strlen(password);
 	NTSTATUS status;
 	bool ret;
 
 	fstrcpy(old_user_name, cli->user_name);
-	cli->vuid = 0;
+	cli_state_set_uid(cli, 0);
 	ret = NT_STATUS_IS_OK(cli_session_setup(cli, username,
 						password, passlen,
 						password, passlen,
 						workgroup));
-	*new_vuid = cli->vuid;
-	cli->vuid = old_vuid;
+	*new_vuid = cli_state_get_uid(cli);
+	cli_state_set_uid(cli, old_vuid);
 	status = cli_set_username(cli, old_user_name);
 	if (!NT_STATUS_IS_OK(status)) {
 		return false;
@@ -455,36 +504,70 @@ bool torture_close_connection(struct cli_state *c)
 }
 
 
+/* check if the server produced the expected dos or nt error code */
+static bool check_both_error(int line, NTSTATUS status,
+			     uint8 eclass, uint32 ecode, NTSTATUS nterr)
+{
+	if (NT_STATUS_IS_DOS(status)) {
+		uint8 cclass;
+		uint32 num;
+
+		/* Check DOS error */
+		cclass = NT_STATUS_DOS_CLASS(status);
+		num = NT_STATUS_DOS_CODE(status);
+
+		if (eclass != cclass || ecode != num) {
+			printf("unexpected error code class=%d code=%d\n",
+			       (int)cclass, (int)num);
+			printf(" expected %d/%d %s (line=%d)\n",
+			       (int)eclass, (int)ecode, nt_errstr(nterr), line);
+			return false;
+		}
+	} else {
+		/* Check NT error */
+		if (!NT_STATUS_EQUAL(nterr, status)) {
+			printf("unexpected error code %s\n",
+				nt_errstr(status));
+			printf(" expected %s (line=%d)\n",
+				nt_errstr(nterr), line);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+
 /* check if the server produced the expected error code */
-static bool check_error(int line, struct cli_state *c, 
+static bool check_error(int line, NTSTATUS status,
 			uint8 eclass, uint32 ecode, NTSTATUS nterr)
 {
-        if (cli_is_dos_error(c)) {
+	if (NT_STATUS_IS_DOS(status)) {
                 uint8 cclass;
                 uint32 num;
 
                 /* Check DOS error */
 
-                cli_dos_error(c, &cclass, &num);
+		cclass = NT_STATUS_DOS_CLASS(status);
+		num = NT_STATUS_DOS_CODE(status);
 
                 if (eclass != cclass || ecode != num) {
                         printf("unexpected error code class=%d code=%d\n", 
                                (int)cclass, (int)num);
                         printf(" expected %d/%d %s (line=%d)\n", 
-                               (int)eclass, (int)ecode, nt_errstr(nterr), line);
+                               (int)eclass, (int)ecode, nt_errstr(nterr),
+			       line);
                         return False;
                 }
 
         } else {
-                NTSTATUS status;
-
                 /* Check NT error */
 
-                status = cli_nt_error(c);
-
                 if (NT_STATUS_V(nterr) != NT_STATUS_V(status)) {
-                        printf("unexpected error code %s\n", nt_errstr(status));
-                        printf(" expected %s (line=%d)\n", nt_errstr(nterr), line);
+                        printf("unexpected error code %s\n",
+			       nt_errstr(status));
+                        printf(" expected %s (line=%d)\n", nt_errstr(nterr),
+			       line);
                         return False;
                 }
         }
@@ -495,10 +578,20 @@ static bool check_error(int line, struct cli_state *c,
 
 static bool wait_lock(struct cli_state *c, int fnum, uint32 offset, uint32 len)
 {
-	while (!cli_lock(c, fnum, offset, len, -1, WRITE_LOCK)) {
-		if (!check_error(__LINE__, c, ERRDOS, ERRlock, NT_STATUS_LOCK_NOT_GRANTED)) return False;
+	NTSTATUS status;
+
+	status = cli_lock32(c, fnum, offset, len, -1, WRITE_LOCK);
+
+	while (!NT_STATUS_IS_OK(status)) {
+		if (!check_both_error(__LINE__, status, ERRDOS,
+				      ERRlock, NT_STATUS_LOCK_NOT_GRANTED)) {
+			return false;
+		}
+
+		status = cli_lock32(c, fnum, offset, len, -1, WRITE_LOCK);
 	}
-	return True;
+
+	return true;
 }
 
 
@@ -512,14 +605,15 @@ static bool rw_torture(struct cli_state *c)
 	int i, j;
 	char buf[1024];
 	bool correct = True;
+	size_t nread = 0;
 	NTSTATUS status;
 
 	memset(buf, '\0', sizeof(buf));
 
-	status = cli_open(c, lockfname, O_RDWR | O_CREAT | O_EXCL, 
+	status = cli_openx(c, lockfname, O_RDWR | O_CREAT | O_EXCL, 
 			 DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
-		status = cli_open(c, lockfname, O_RDWR, DENY_NONE, &fnum2);
+		status = cli_openx(c, lockfname, O_RDWR, DENY_NONE, &fnum2);
 	}
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n",
@@ -539,7 +633,7 @@ static bool rw_torture(struct cli_state *c)
 			return False;
 		}
 
-		status = cli_open(c, fname, O_RDWR | O_CREAT | O_TRUNC,
+		status = cli_openx(c, fname, O_RDWR | O_CREAT | O_TRUNC,
                                   DENY_ALL, &fnum);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("open failed (%s)\n", nt_errstr(status));
@@ -567,9 +661,16 @@ static bool rw_torture(struct cli_state *c)
 
 		pid2 = 0;
 
-		if (cli_read(c, fnum, (char *)&pid2, 0, sizeof(pid)) != sizeof(pid)) {
-			printf("read failed (%s)\n", cli_errstr(c));
-			correct = False;
+		status = cli_read(c, fnum, (char *)&pid2, 0, sizeof(pid),
+				  &nread);
+		if (!NT_STATUS_IS_OK(status)) {
+			printf("read failed (%s)\n", nt_errstr(status));
+			correct = false;
+		} else if (nread != sizeof(pid)) {
+			printf("read/write compare failed: "
+			       "recv %ld req %ld\n", (unsigned long)nread,
+			       (unsigned long)sizeof(pid));
+			correct = false;
 		}
 
 		if (pid2 != pid) {
@@ -630,7 +731,7 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 	char buf_rd[131072];
 	unsigned count;
 	unsigned countprev = 0;
-	ssize_t sent = 0;
+	size_t sent = 0;
 	bool correct = True;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -642,11 +743,15 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 
 	if (procnum == 0)
 	{
-		if (!NT_STATUS_IS_OK(cli_unlink(c, lockfname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN))) {
-			printf("unlink failed (%s) (normal, this file should not exist)\n", cli_errstr(c));
+		status = cli_unlink(
+			c, lockfname,
+			FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
+		if (!NT_STATUS_IS_OK(status)) {
+			printf("unlink failed (%s) (normal, this file should "
+			       "not exist)\n", nt_errstr(status));
 		}
 
-		status = cli_open(c, lockfname, O_RDWR | O_CREAT | O_EXCL,
+		status = cli_openx(c, lockfname, O_RDWR | O_CREAT | O_EXCL,
 		                  DENY_NONE, &fnum);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("first open read/write of %s failed (%s)\n",
@@ -658,7 +763,7 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 	{
 		for (i = 0; i < 500 && fnum == (uint16_t)-1; i++)
 		{
-			status = cli_open(c, lockfname, O_RDONLY, 
+			status = cli_openx(c, lockfname, O_RDONLY, 
 					 DENY_NONE, &fnum);
 			if (!NT_STATUS_IS_OK(status)) {
 				break;
@@ -691,7 +796,7 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 			}
 
 			status = cli_writeall(c, fnum, 0, (uint8_t *)buf+count,
-					      count, (size_t)sent, NULL);
+					      count, sent, NULL);
 			if (!NT_STATUS_IS_OK(status)) {
 				printf("write failed (%s)\n",
 				       nt_errstr(status));
@@ -700,18 +805,15 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 		}
 		else
 		{
-			sent = cli_read(c, fnum, buf_rd+count, count,
-						  sizeof(buf)-count);
-			if (sent < 0)
-			{
+			status = cli_read(c, fnum, buf_rd+count, count,
+					  sizeof(buf)-count, &sent);
+			if(!NT_STATUS_IS_OK(status)) {
 				printf("read failed offset:%d size:%ld (%s)\n",
 				       count, (unsigned long)sizeof(buf)-count,
-				       cli_errstr(c));
+				       nt_errstr(status));
 				correct = False;
 				sent = 0;
-			}
-			if (sent > 0)
-			{
+			} else if (sent > 0) {
 				if (memcmp(buf_rd+count, buf+count, sent) != 0)
 				{
 					printf("read/write compare failed\n");
@@ -742,7 +844,7 @@ static bool rw_torture2(struct cli_state *c1, struct cli_state *c2)
 	char buf[131072];
 	char buf_rd[131072];
 	bool correct = True;
-	ssize_t bytes_read;
+	size_t bytes_read;
 	NTSTATUS status;
 
 	status = cli_unlink(c1, lockfname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
@@ -750,7 +852,7 @@ static bool rw_torture2(struct cli_state *c1, struct cli_state *c2)
 		printf("unlink failed (%s) (normal, this file should not exist)\n", nt_errstr(status));
 	}
 
-	status = cli_open(c1, lockfname, O_RDWR | O_CREAT | O_EXCL,
+	status = cli_openx(c1, lockfname, O_RDWR | O_CREAT | O_EXCL,
 	                  DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("first open read/write of %s failed (%s)\n",
@@ -758,7 +860,7 @@ static bool rw_torture2(struct cli_state *c1, struct cli_state *c2)
 		return False;
 	}
 
-	status = cli_open(c2, lockfname, O_RDONLY, DENY_NONE, &fnum2);
+	status = cli_openx(c2, lockfname, O_RDONLY, DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("second open read-only of %s failed (%s)\n",
 				lockfname, nt_errstr(status));
@@ -783,9 +885,15 @@ static bool rw_torture2(struct cli_state *c1, struct cli_state *c2)
 			break;
 		}
 
-		if ((bytes_read = cli_read(c2, fnum2, buf_rd, 0, buf_size)) != buf_size) {
-			printf("read failed (%s)\n", cli_errstr(c2));
-			printf("read %d, expected %ld\n", (int)bytes_read, 
+		status = cli_read(c2, fnum2, buf_rd, 0, buf_size, &bytes_read);
+		if(!NT_STATUS_IS_OK(status)) {
+			printf("read failed (%s)\n", nt_errstr(status));
+			correct = false;
+			break;
+		} else if (bytes_read != buf_size) {
+			printf("read failed\n");
+			printf("read %ld, expected %ld\n",
+			       (unsigned long)bytes_read,
 			       (unsigned long)buf_size); 
 			correct = False;
 			break;
@@ -871,7 +979,7 @@ static bool run_readwritemulti(int dummy)
 	return test;
 }
 
-static bool run_readwritelarge_internal(int max_xmit_k)
+static bool run_readwritelarge_internal(void)
 {
 	static struct cli_state *cli1;
 	uint16_t fnum1;
@@ -887,21 +995,11 @@ static bool run_readwritelarge_internal(int max_xmit_k)
 	cli_sockopt(cli1, sockops);
 	memset(buf,'\0',sizeof(buf));
 
-	cli1->max_xmit = max_xmit_k*1024;
-
-	if (signing_state == Required) {
-		/* Horrible cheat to force
-		   multiple signed outstanding
-		   packets against a Samba server.
-		*/
-		cli1->is_samba = false;
-	}
-
 	printf("starting readwritelarge_internal\n");
 
 	cli_unlink(cli1, lockfname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, lockfname, O_RDWR | O_CREAT | O_EXCL,
+	status = cli_openx(cli1, lockfname, O_RDWR | O_CREAT | O_EXCL,
 	                  DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open read/write of %s failed (%s)\n", lockfname, nt_errstr(status));
@@ -938,14 +1036,12 @@ static bool run_readwritelarge_internal(int max_xmit_k)
 		correct = False;
 	}
 
-	status = cli_open(cli1, lockfname, O_RDWR | O_CREAT | O_EXCL,
+	status = cli_openx(cli1, lockfname, O_RDWR | O_CREAT | O_EXCL,
 	                  DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open read/write of %s failed (%s)\n", lockfname, nt_errstr(status));
 		return False;
 	}
-
-	cli1->max_xmit = 4*1024;
 
 	cli_smbwrite(cli1, fnum1, buf, 0, sizeof(buf), NULL);
 
@@ -994,15 +1090,15 @@ static bool run_readwritelarge_internal(int max_xmit_k)
 
 static bool run_readwritelarge(int dummy)
 {
-	return run_readwritelarge_internal(128);
+	return run_readwritelarge_internal();
 }
 
 static bool run_readwritelarge_signtest(int dummy)
 {
 	bool ret;
-	signing_state = Required;
-	ret = run_readwritelarge_internal(2);
-	signing_state = Undefined;
+	signing_state = SMB_SIGNING_REQUIRED;
+	ret = run_readwritelarge_internal();
+	signing_state = SMB_SIGNING_DEFAULT;
 	return ret;
 }
 
@@ -1156,49 +1252,54 @@ static bool run_locktest1(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 	                  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	status = cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum2);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	status = cli_open(cli2, fname, O_RDWR, DENY_NONE, &fnum3);
+	status = cli_openx(cli2, fname, O_RDWR, DENY_NONE, &fnum3);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open3 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	if (!cli_lock(cli1, fnum1, 0, 4, 0, WRITE_LOCK)) {
-		printf("lock1 failed (%s)\n", cli_errstr(cli1));
-		return False;
+	status = cli_lock32(cli1, fnum1, 0, 4, 0, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("lock1 failed (%s)\n", nt_errstr(status));
+		return false;
 	}
 
-
-	if (cli_lock(cli2, fnum3, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli2, fnum3, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("lock2 succeeded! This is a locking bug\n");
-		return False;
+		return false;
 	} else {
-		if (!check_error(__LINE__, cli2, ERRDOS, ERRlock, 
-				 NT_STATUS_LOCK_NOT_GRANTED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_LOCK_NOT_GRANTED)) {
+			return false;
+		}
 	}
-
 
 	lock_timeout = (1 + (random() % 20));
 	printf("Testing lock timeout with timeout=%u\n", lock_timeout);
 	t1 = time(NULL);
-	if (cli_lock(cli2, fnum3, 0, 4, lock_timeout * 1000, WRITE_LOCK)) {
+	status = cli_lock32(cli2, fnum3, 0, 4, lock_timeout * 1000, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("lock3 succeeded! This is a locking bug\n");
-		return False;
+		return false;
 	} else {
-		if (!check_error(__LINE__, cli2, ERRDOS, ERRlock, 
-				 NT_STATUS_FILE_LOCK_CONFLICT)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_FILE_LOCK_CONFLICT)) {
+			return false;
+		}
 	}
 	t2 = time(NULL);
 
@@ -1215,12 +1316,15 @@ static bool run_locktest1(int dummy)
 		return False;
 	}
 
-	if (cli_lock(cli2, fnum3, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli2, fnum3, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("lock4 succeeded! This is a locking bug\n");
-		return False;
+		return false;
 	} else {
-		if (!check_error(__LINE__, cli2, ERRDOS, ERRlock, 
-				 NT_STATUS_FILE_LOCK_CONFLICT)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_FILE_LOCK_CONFLICT)) {
+			return false;
+		}
 	}
 
 	status = cli_close(cli1, fnum1);
@@ -1280,14 +1384,14 @@ static bool run_tcon_test(int dummy)
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	cnum1 = cli->cnum;
-	vuid1 = cli->vuid;
+	cnum1 = cli_state_get_tid(cli);
+	vuid1 = cli_state_get_uid(cli);
 
 	status = cli_writeall(cli, fnum1, 0, (uint8_t *)buf, 130, 4, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1295,8 +1399,8 @@ static bool run_tcon_test(int dummy)
 		return False;
 	}
 
-	status = cli_tcon_andx(cli, share, "?????",
-			       password, strlen(password)+1);
+	status = cli_tree_connect(cli, share, "?????",
+				  password, strlen(password)+1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("%s refused 2nd tree connect (%s)\n", host,
 		       nt_errstr(status));
@@ -1304,12 +1408,12 @@ static bool run_tcon_test(int dummy)
 		return False;
 	}
 
-	cnum2 = cli->cnum;
+	cnum2 = cli_state_get_tid(cli);
 	cnum3 = MAX(cnum1, cnum2) + 1; /* any invalid number */
-	vuid2 = cli->vuid + 1;
+	vuid2 = cli_state_get_uid(cli) + 1;
 
 	/* try a write with the wrong tid */
-	cli->cnum = cnum2;
+	cli_state_set_tid(cli, cnum2);
 
 	status = cli_writeall(cli, fnum1, 0, (uint8_t *)buf, 130, 4, NULL);
 	if (NT_STATUS_IS_OK(status)) {
@@ -1322,7 +1426,7 @@ static bool run_tcon_test(int dummy)
 
 
 	/* try a write with an invalid tid */
-	cli->cnum = cnum3;
+	cli_state_set_tid(cli, cnum3);
 
 	status = cli_writeall(cli, fnum1, 0, (uint8_t *)buf, 130, 4, NULL);
 	if (NT_STATUS_IS_OK(status)) {
@@ -1334,8 +1438,8 @@ static bool run_tcon_test(int dummy)
 	}
 
 	/* try a write with an invalid vuid */
-	cli->vuid = vuid2;
-	cli->cnum = cnum1;
+	cli_state_set_uid(cli, vuid2);
+	cli_state_set_tid(cli, cnum1);
 
 	status = cli_writeall(cli, fnum1, 0, (uint8_t *)buf, 130, 4, NULL);
 	if (NT_STATUS_IS_OK(status)) {
@@ -1346,8 +1450,8 @@ static bool run_tcon_test(int dummy)
 		       nt_errstr(status));
 	}
 
-	cli->cnum = cnum1;
-	cli->vuid = vuid1;
+	cli_state_set_tid(cli, cnum1);
+	cli_state_set_uid(cli, vuid1);
 
 	status = cli_close(cli, fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1355,7 +1459,7 @@ static bool run_tcon_test(int dummy)
 		return False;
 	}
 
-	cli->cnum = cnum2;
+	cli_state_set_tid(cli, cnum2);
 
 	status = cli_tdis(cli);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1363,7 +1467,7 @@ static bool run_tcon_test(int dummy)
 		return False;
 	}
 
-	cli->cnum = cnum1;
+	cli_state_set_tid(cli, cnum1);
 
 	if (!torture_close_connection(cli)) {
 		return False;
@@ -1421,8 +1525,8 @@ static bool tcon_devtest(struct cli_state *cli,
 	NTSTATUS status;
 	bool ret;
 
-	status = cli_tcon_andx(cli, myshare, devtype,
-			       password, strlen(password)+1);
+	status = cli_tree_connect(cli, myshare, devtype,
+				  password, strlen(password)+1);
 
 	if (NT_STATUS_IS_OK(expected_error)) {
 		if (NT_STATUS_IS_OK(status)) {
@@ -1449,8 +1553,7 @@ static bool tcon_devtest(struct cli_state *cli,
 			       myshare, devtype);
 			ret = False;
 		} else {
-			if (NT_STATUS_EQUAL(cli_nt_error(cli),
-					    expected_error)) {
+			if (NT_STATUS_EQUAL(status, expected_error)) {
 				ret = True;
 			} else {
 				printf("Returned unexpected error\n");
@@ -1552,13 +1655,13 @@ static bool run_locktest2(int dummy)
 
 	cli_setpid(cli, 1);
 
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	status = cli_open(cli, fname, O_RDWR, DENY_NONE, &fnum2);
+	status = cli_openx(cli, fname, O_RDWR, DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -1566,7 +1669,7 @@ static bool run_locktest2(int dummy)
 
 	cli_setpid(cli, 2);
 
-	status = cli_open(cli, fname, O_RDWR, DENY_NONE, &fnum3);
+	status = cli_openx(cli, fname, O_RDWR, DENY_NONE, &fnum3);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open3 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -1574,37 +1677,48 @@ static bool run_locktest2(int dummy)
 
 	cli_setpid(cli, 1);
 
-	if (!cli_lock(cli, fnum1, 0, 4, 0, WRITE_LOCK)) {
-		printf("lock1 failed (%s)\n", cli_errstr(cli));
-		return False;
+	status = cli_lock32(cli, fnum1, 0, 4, 0, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("lock1 failed (%s)\n", nt_errstr(status));
+		return false;
 	}
 
-	if (cli_lock(cli, fnum1, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli, fnum1, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("WRITE lock1 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, ERRDOS, ERRlock, 
-				 NT_STATUS_LOCK_NOT_GRANTED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_LOCK_NOT_GRANTED)) {
+			return false;
+		}
 	}
 
-	if (cli_lock(cli, fnum2, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli, fnum2, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("WRITE lock2 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, ERRDOS, ERRlock, 
-				 NT_STATUS_LOCK_NOT_GRANTED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_LOCK_NOT_GRANTED)) {
+			return false;
+		}
 	}
 
-	if (cli_lock(cli, fnum2, 0, 4, 0, READ_LOCK)) {
+	status = cli_lock32(cli, fnum2, 0, 4, 0, READ_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("READ lock2 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, ERRDOS, ERRlock, 
-				 NT_STATUS_FILE_LOCK_CONFLICT)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				 NT_STATUS_FILE_LOCK_CONFLICT)) {
+			return false;
+		}
 	}
 
-	if (!cli_lock(cli, fnum1, 100, 4, 0, WRITE_LOCK)) {
-		printf("lock at 100 failed (%s)\n", cli_errstr(cli));
+	status = cli_lock32(cli, fnum1, 100, 4, 0, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("lock at 100 failed (%s)\n", nt_errstr(status));
 	}
 	cli_setpid(cli, 2);
 	if (NT_STATUS_IS_OK(cli_unlock(cli, fnum1, 100, 4))) {
@@ -1612,29 +1726,37 @@ static bool run_locktest2(int dummy)
 		correct = False;
 	}
 
-	if (NT_STATUS_IS_OK(cli_unlock(cli, fnum1, 0, 4))) {
+	status = cli_unlock(cli, fnum1, 0, 4);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("unlock1 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, 
-				 ERRDOS, ERRlock, 
-				 NT_STATUS_RANGE_NOT_LOCKED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_RANGE_NOT_LOCKED)) {
+			return false;
+		}
 	}
 
-	if (NT_STATUS_IS_OK(cli_unlock(cli, fnum1, 0, 8))) {
+	status = cli_unlock(cli, fnum1, 0, 8);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("unlock2 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, 
-				 ERRDOS, ERRlock, 
-				 NT_STATUS_RANGE_NOT_LOCKED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_RANGE_NOT_LOCKED)) {
+			return false;
+		}
 	}
 
-	if (cli_lock(cli, fnum3, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli, fnum3, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("lock3 succeeded! This is a locking bug\n");
-		correct = False;
+		correct = false;
 	} else {
-		if (!check_error(__LINE__, cli, ERRDOS, ERRlock, NT_STATUS_LOCK_NOT_GRANTED)) return False;
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRlock,
+				      NT_STATUS_LOCK_NOT_GRANTED)) {
+			return false;
+		}
 	}
 
 	cli_setpid(cli, 1);
@@ -1694,14 +1816,14 @@ static bool run_locktest3(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 	                 &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	status = cli_open(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
+	status = cli_openx(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -1709,17 +1831,20 @@ static bool run_locktest3(int dummy)
 
 	for (offset=i=0;i<torture_numops;i++) {
 		NEXT_OFFSET;
-		if (!cli_lock(cli1, fnum1, offset-1, 1, 0, WRITE_LOCK)) {
+
+		status = cli_lock32(cli1, fnum1, offset-1, 1, 0, WRITE_LOCK);
+		if (!NT_STATUS_IS_OK(status)) {
 			printf("lock1 %d failed (%s)\n", 
 			       i,
-			       cli_errstr(cli1));
+			       nt_errstr(status));
 			return False;
 		}
 
-		if (!cli_lock(cli2, fnum2, offset-2, 1, 0, WRITE_LOCK)) {
+		status = cli_lock32(cli2, fnum2, offset-2, 1, 0, WRITE_LOCK);
+		if (!NT_STATUS_IS_OK(status)) {
 			printf("lock2 %d failed (%s)\n", 
 			       i,
-			       cli_errstr(cli1));
+			       nt_errstr(status));
 			return False;
 		}
 	}
@@ -1727,22 +1852,26 @@ static bool run_locktest3(int dummy)
 	for (offset=i=0;i<torture_numops;i++) {
 		NEXT_OFFSET;
 
-		if (cli_lock(cli1, fnum1, offset-2, 1, 0, WRITE_LOCK)) {
+		status = cli_lock32(cli1, fnum1, offset-2, 1, 0, WRITE_LOCK);
+		if (NT_STATUS_IS_OK(status)) {
 			printf("error: lock1 %d succeeded!\n", i);
 			return False;
 		}
 
-		if (cli_lock(cli2, fnum2, offset-1, 1, 0, WRITE_LOCK)) {
+		status = cli_lock32(cli2, fnum2, offset-1, 1, 0, WRITE_LOCK);
+		if (NT_STATUS_IS_OK(status)) {
 			printf("error: lock2 %d succeeded!\n", i);
 			return False;
 		}
 
-		if (cli_lock(cli1, fnum1, offset-1, 1, 0, WRITE_LOCK)) {
+		status = cli_lock32(cli1, fnum1, offset-1, 1, 0, WRITE_LOCK);
+		if (NT_STATUS_IS_OK(status)) {
 			printf("error: lock3 %d succeeded!\n", i);
 			return False;
 		}
 
-		if (cli_lock(cli2, fnum2, offset-2, 1, 0, WRITE_LOCK)) {
+		status = cli_lock32(cli2, fnum2, offset-2, 1, 0, WRITE_LOCK);
+		if (NT_STATUS_IS_OK(status)) {
 			printf("error: lock4 %d succeeded!\n", i);
 			return False;
 		}
@@ -1799,6 +1928,28 @@ static bool run_locktest3(int dummy)
 	return correct;
 }
 
+static bool test_cli_read(struct cli_state *cli, uint16_t fnum,
+                           char *buf, off_t offset, size_t size,
+                           size_t *nread, size_t expect)
+{
+	NTSTATUS status;
+	size_t l_nread;
+
+	status = cli_read(cli, fnum, buf, offset, size, &l_nread);
+
+	if(!NT_STATUS_IS_OK(status)) {
+		return false;
+	} else if (l_nread != expect) {
+		return false;
+	}
+
+	if (nread) {
+		*nread = l_nread;
+	}
+
+	return true;
+}
+
 #define EXPECTED(ret, v) if ((ret) != (v)) { \
         printf("** "); correct = False; \
         }
@@ -1827,8 +1978,8 @@ static bool run_locktest4(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
-	cli_open(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
+	cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	cli_openx(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
 
 	memset(buf, 0, sizeof(buf));
 
@@ -1840,74 +1991,81 @@ static bool run_locktest4(int dummy)
 		goto fail;
 	}
 
-	ret = cli_lock(cli1, fnum1, 0, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 2, 4, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 2, 4, 0, WRITE_LOCK));
 	EXPECTED(ret, False);
 	printf("the same process %s set overlapping write locks\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 10, 4, 0, READ_LOCK) &&
-	      cli_lock(cli1, fnum1, 12, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 10, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 12, 4, 0, READ_LOCK));
 	EXPECTED(ret, True);
 	printf("the same process %s set overlapping read locks\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 20, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli2, fnum2, 22, 4, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 20, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli2, fnum2, 22, 4, 0, WRITE_LOCK));
 	EXPECTED(ret, False);
 	printf("a different connection %s set overlapping write locks\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 30, 4, 0, READ_LOCK) &&
-	      cli_lock(cli2, fnum2, 32, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 30, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli2, fnum2, 32, 4, 0, READ_LOCK));
 	EXPECTED(ret, True);
 	printf("a different connection %s set overlapping read locks\n", ret?"can":"cannot");
 
-	ret = (cli_setpid(cli1, 1), cli_lock(cli1, fnum1, 40, 4, 0, WRITE_LOCK)) &&
-	      (cli_setpid(cli1, 2), cli_lock(cli1, fnum1, 42, 4, 0, WRITE_LOCK));
+	ret = (cli_setpid(cli1, 1),
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 40, 4, 0, WRITE_LOCK))) &&
+	      (cli_setpid(cli1, 2),
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 42, 4, 0, WRITE_LOCK)));
 	EXPECTED(ret, False);
 	printf("a different pid %s set overlapping write locks\n", ret?"can":"cannot");
 
-	ret = (cli_setpid(cli1, 1), cli_lock(cli1, fnum1, 50, 4, 0, READ_LOCK)) &&
-	      (cli_setpid(cli1, 2), cli_lock(cli1, fnum1, 52, 4, 0, READ_LOCK));
+	ret = (cli_setpid(cli1, 1),
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 50, 4, 0, READ_LOCK))) &&
+	      (cli_setpid(cli1, 2),
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 52, 4, 0, READ_LOCK)));
 	EXPECTED(ret, True);
 	printf("a different pid %s set overlapping read locks\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 60, 4, 0, READ_LOCK) &&
-	      cli_lock(cli1, fnum1, 60, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 60, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 60, 4, 0, READ_LOCK));
 	EXPECTED(ret, True);
 	printf("the same process %s set the same read lock twice\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 70, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 70, 4, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 70, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 70, 4, 0, WRITE_LOCK));
 	EXPECTED(ret, False);
 	printf("the same process %s set the same write lock twice\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 80, 4, 0, READ_LOCK) &&
-	      cli_lock(cli1, fnum1, 80, 4, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 80, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 80, 4, 0, WRITE_LOCK));
 	EXPECTED(ret, False);
 	printf("the same process %s overlay a read lock with a write lock\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 90, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 90, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 90, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 90, 4, 0, READ_LOCK));
 	EXPECTED(ret, True);
 	printf("the same process %s overlay a write lock with a read lock\n", ret?"can":"cannot");
 
-	ret = (cli_setpid(cli1, 1), cli_lock(cli1, fnum1, 100, 4, 0, WRITE_LOCK)) &&
-	      (cli_setpid(cli1, 2), cli_lock(cli1, fnum1, 100, 4, 0, READ_LOCK));
+	ret = (cli_setpid(cli1, 1),
+	     NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 100, 4, 0, WRITE_LOCK))) &&
+	     (cli_setpid(cli1, 2),
+	     NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 100, 4, 0, READ_LOCK)));
 	EXPECTED(ret, False);
 	printf("a different pid %s overlay a write lock with a read lock\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 110, 4, 0, READ_LOCK) &&
-	      cli_lock(cli1, fnum1, 112, 4, 0, READ_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 110, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 112, 4, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 110, 6));
 	EXPECTED(ret, False);
 	printf("the same process %s coalesce read locks\n", ret?"can":"cannot");
 
 
-	ret = cli_lock(cli1, fnum1, 120, 4, 0, WRITE_LOCK) &&
-	      (cli_read(cli2, fnum2, buf, 120, 4) == 4);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 120, 4, 0, WRITE_LOCK)) &&
+	      test_cli_read(cli2, fnum2, buf, 120, 4, NULL, 4);
 	EXPECTED(ret, False);
 	printf("this server %s strict write locking\n", ret?"doesn't do":"does");
 
-	ret = cli_lock(cli1, fnum1, 130, 4, 0, READ_LOCK);
+	status = cli_lock32(cli1, fnum1, 130, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(status);
 	if (ret) {
 		status = cli_writeall(cli2, fnum2, 0, (uint8_t *)buf, 130, 4,
 				      NULL);
@@ -1917,58 +2075,58 @@ static bool run_locktest4(int dummy)
 	printf("this server %s strict read locking\n", ret?"doesn't do":"does");
 
 
-	ret = cli_lock(cli1, fnum1, 140, 4, 0, READ_LOCK) &&
-	      cli_lock(cli1, fnum1, 140, 4, 0, READ_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 140, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 140, 4, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 140, 4)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 140, 4));
 	EXPECTED(ret, True);
 	printf("this server %s do recursive read locking\n", ret?"does":"doesn't");
 
 
-	ret = cli_lock(cli1, fnum1, 150, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 150, 4, 0, READ_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 150, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 150, 4, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 150, 4)) &&
-	      (cli_read(cli2, fnum2, buf, 150, 4) == 4) &&
+	      test_cli_read(cli2, fnum2, buf, 150, 4, NULL, 4) &&
 	      !(NT_STATUS_IS_OK(cli_writeall(cli2, fnum2, 0, (uint8_t *)buf,
 					     150, 4, NULL))) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 150, 4));
 	EXPECTED(ret, True);
 	printf("this server %s do recursive lock overlays\n", ret?"does":"doesn't");
 
-	ret = cli_lock(cli1, fnum1, 160, 4, 0, READ_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 160, 4, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 160, 4)) &&
 	      NT_STATUS_IS_OK(cli_writeall(cli2, fnum2, 0, (uint8_t *)buf,
 					   160, 4, NULL)) &&
-	      (cli_read(cli2, fnum2, buf, 160, 4) == 4);		
+	      test_cli_read(cli2, fnum2, buf, 160, 4, NULL, 4);
 	EXPECTED(ret, True);
 	printf("the same process %s remove a read lock using write locking\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 170, 4, 0, WRITE_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 170, 4, 0, WRITE_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 170, 4)) &&
 	      NT_STATUS_IS_OK(cli_writeall(cli2, fnum2, 0, (uint8_t *)buf,
 					   170, 4, NULL)) &&
-	      (cli_read(cli2, fnum2, buf, 170, 4) == 4);		
+	      test_cli_read(cli2, fnum2, buf, 170, 4, NULL, 4);
 	EXPECTED(ret, True);
 	printf("the same process %s remove a write lock using read locking\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli1, fnum1, 190, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 190, 4, 0, READ_LOCK) &&
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 190, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 190, 4, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 190, 4)) &&
 	      !NT_STATUS_IS_OK(cli_writeall(cli2, fnum2, 0, (uint8_t *)buf,
 					    190, 4, NULL)) &&
-	      (cli_read(cli2, fnum2, buf, 190, 4) == 4);		
+	      test_cli_read(cli2, fnum2, buf, 190, 4, NULL, 4);
 	EXPECTED(ret, True);
 	printf("the same process %s remove the first lock first\n", ret?"does":"doesn't");
 
 	cli_close(cli1, fnum1);
 	cli_close(cli2, fnum2);
-	cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
-	cli_open(cli1, fname, O_RDWR, DENY_NONE, &f);
-	ret = cli_lock(cli1, fnum1, 0, 8, 0, READ_LOCK) &&
-	      cli_lock(cli1, f, 0, 1, 0, READ_LOCK) &&
+	cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
+	cli_openx(cli1, fname, O_RDWR, DENY_NONE, &f);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 8, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, f, 0, 1, 0, READ_LOCK)) &&
 	      NT_STATUS_IS_OK(cli_close(cli1, fnum1)) &&
-	      NT_STATUS_IS_OK(cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1)) &&
-	      cli_lock(cli1, fnum1, 7, 1, 0, WRITE_LOCK);
+	      NT_STATUS_IS_OK(cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 7, 1, 0, WRITE_LOCK));
         cli_close(cli1, f);
 	cli_close(cli1, fnum1);
 	EXPECTED(ret, True);
@@ -2009,9 +2167,9 @@ static bool run_locktest5(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
-	cli_open(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
-	cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum3);
+	cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	cli_openx(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
+	cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum3);
 
 	memset(buf, 0, sizeof(buf));
 
@@ -2024,23 +2182,25 @@ static bool run_locktest5(int dummy)
 	}
 
 	/* Check for NT bug... */
-	ret = cli_lock(cli1, fnum1, 0, 8, 0, READ_LOCK) &&
-		  cli_lock(cli1, fnum3, 0, 1, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 8, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum3, 0, 1, 0, READ_LOCK));
 	cli_close(cli1, fnum1);
-	cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
-	ret = cli_lock(cli1, fnum1, 7, 1, 0, WRITE_LOCK);
+	cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
+	status = cli_lock32(cli1, fnum1, 7, 1, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(status);
 	EXPECTED(ret, True);
 	printf("this server %s the NT locking bug\n", ret ? "doesn't have" : "has");
 	cli_close(cli1, fnum1);
-	cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
+	cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
 	cli_unlock(cli1, fnum3, 0, 1);
 
-	ret = cli_lock(cli1, fnum1, 0, 4, 0, WRITE_LOCK) &&
-	      cli_lock(cli1, fnum1, 1, 1, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 4, 0, WRITE_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 1, 1, 0, READ_LOCK));
 	EXPECTED(ret, True);
 	printf("the same process %s overlay a write with a read lock\n", ret?"can":"cannot");
 
-	ret = cli_lock(cli2, fnum2, 0, 4, 0, READ_LOCK);
+	status = cli_lock32(cli2, fnum2, 0, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(status);
 	EXPECTED(ret, False);
 
 	printf("a different processs %s get a read lock on the first process lock stack\n", ret?"can":"cannot");
@@ -2048,7 +2208,8 @@ static bool run_locktest5(int dummy)
 	/* Unlock the process 2 lock. */
 	cli_unlock(cli2, fnum2, 0, 4);
 
-	ret = cli_lock(cli1, fnum3, 0, 4, 0, READ_LOCK);
+	status = cli_lock32(cli1, fnum3, 0, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(status);
 	EXPECTED(ret, False);
 
 	printf("the same processs on a different fnum %s get a read lock\n", ret?"can":"cannot");
@@ -2057,8 +2218,8 @@ static bool run_locktest5(int dummy)
 	cli_unlock(cli1, fnum3, 0, 4);
 
 	/* Stack 2 more locks here. */
-	ret = cli_lock(cli1, fnum1, 0, 4, 0, READ_LOCK) &&
-		  cli_lock(cli1, fnum1, 0, 4, 0, READ_LOCK);
+	ret = NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 4, 0, READ_LOCK)) &&
+	      NT_STATUS_IS_OK(cli_lock32(cli1, fnum1, 0, 4, 0, READ_LOCK));
 
 	EXPECTED(ret, True);
 	printf("the same process %s stack read locks\n", ret?"can":"cannot");
@@ -2067,7 +2228,7 @@ static bool run_locktest5(int dummy)
 		removed. */
 
 	ret = NT_STATUS_IS_OK(cli_unlock(cli1, fnum1, 0, 4)) &&
-			cli_lock(cli2, fnum2, 0, 4, 0, READ_LOCK);
+	      NT_STATUS_IS_OK(cli_lock32(cli2, fnum2, 0, 4, 0, READ_LOCK));
 
 	EXPECTED(ret, True);
 	printf("the first unlock removes the %s lock\n", ret?"WRITE":"READ");
@@ -2090,7 +2251,8 @@ static bool run_locktest5(int dummy)
 	printf("the same process %s count the lock stack\n", !ret?"can":"cannot"); 
 
 	/* Ensure connection 2 can get a write lock. */
-	ret = cli_lock(cli2, fnum2, 0, 4, 0, WRITE_LOCK);
+	status = cli_lock32(cli2, fnum2, 0, 4, 0, WRITE_LOCK);
+	ret = NT_STATUS_IS_OK(status);
 	EXPECTED(ret, True);
 
 	printf("a different processs %s get a write lock on the unlocked stack\n", ret?"can":"cannot");
@@ -2136,12 +2298,12 @@ static bool run_locktest6(int dummy)
 
 		cli_unlink(cli, fname[i], FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-		cli_open(cli, fname[i], O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
+		cli_openx(cli, fname[i], O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
 		status = cli_locktype(cli, fnum, 0, 8, 0, LOCKING_ANDX_CHANGE_LOCKTYPE);
 		cli_close(cli, fnum);
 		printf("CHANGE_LOCKTYPE gave %s\n", nt_errstr(status));
 
-		cli_open(cli, fname[i], O_RDWR, DENY_NONE, &fnum);
+		cli_openx(cli, fname[i], O_RDWR, DENY_NONE, &fnum);
 		status = cli_locktype(cli, fnum, 0, 8, 0, LOCKING_ANDX_CANCEL_LOCK);
 		cli_close(cli, fnum);
 		printf("CANCEL_LOCK gave %s\n", nt_errstr(status));
@@ -2162,6 +2324,7 @@ static bool run_locktest7(int dummy)
 	uint16_t fnum1;
 	char buf[200];
 	bool correct = False;
+	size_t nread;
 	NTSTATUS status;
 
 	if (!torture_open_connection(&cli1, 0)) {
@@ -2174,7 +2337,7 @@ static bool run_locktest7(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 
 	memset(buf, 0, sizeof(buf));
 
@@ -2187,15 +2350,23 @@ static bool run_locktest7(int dummy)
 
 	cli_setpid(cli1, 1);
 
-	if (!cli_lock(cli1, fnum1, 130, 4, 0, READ_LOCK)) {
-		printf("Unable to apply read lock on range 130:4, error was %s\n", cli_errstr(cli1));
+	status = cli_lock32(cli1, fnum1, 130, 4, 0, READ_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("Unable to apply read lock on range 130:4, "
+		       "error was %s\n", nt_errstr(status));
 		goto fail;
 	} else {
 		printf("pid1 successfully locked range 130:4 for READ\n");
 	}
 
-	if (cli_read(cli1, fnum1, buf, 130, 4) != 4) {
-		printf("pid1 unable to read the range 130:4, error was %s\n", cli_errstr(cli1));
+	status = cli_read(cli1, fnum1, buf, 130, 4, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("pid1 unable to read the range 130:4, error was %s\n",
+		      nt_errstr(status));
+		goto fail;
+	} else if (nread != 4) {
+		printf("pid1 unable to read the range 130:4, "
+		       "recv %ld req %d\n", (unsigned long)nread, 4);
 		goto fail;
 	} else {
 		printf("pid1 successfully read the range 130:4\n");
@@ -2216,8 +2387,15 @@ static bool run_locktest7(int dummy)
 
 	cli_setpid(cli1, 2);
 
-	if (cli_read(cli1, fnum1, buf, 130, 4) != 4) {
-		printf("pid2 unable to read the range 130:4, error was %s\n", cli_errstr(cli1));
+	status = cli_read(cli1, fnum1, buf, 130, 4, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("pid2 unable to read the range 130:4, error was %s\n",
+		      nt_errstr(status));
+		goto fail;
+	} else if (nread != 4) {
+		printf("pid2 unable to read the range 130:4, "
+		       "recv %ld req %d\n", (unsigned long)nread, 4);
+		goto fail;
 	} else {
 		printf("pid2 successfully read the range 130:4\n");
 	}
@@ -2238,15 +2416,22 @@ static bool run_locktest7(int dummy)
 	cli_setpid(cli1, 1);
 	cli_unlock(cli1, fnum1, 130, 4);
 
-	if (!cli_lock(cli1, fnum1, 130, 4, 0, WRITE_LOCK)) {
-		printf("Unable to apply write lock on range 130:4, error was %s\n", cli_errstr(cli1));
+	status = cli_lock32(cli1, fnum1, 130, 4, 0, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("Unable to apply write lock on range 130:4, error was %s\n", nt_errstr(status));
 		goto fail;
 	} else {
 		printf("pid1 successfully locked range 130:4 for WRITE\n");
 	}
 
-	if (cli_read(cli1, fnum1, buf, 130, 4) != 4) {
-		printf("pid1 unable to read the range 130:4, error was %s\n", cli_errstr(cli1));
+	status = cli_read(cli1, fnum1, buf, 130, 4, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("pid1 unable to read the range 130:4, error was %s\n",
+		      nt_errstr(status));
+		goto fail;
+	} else if (nread != 4) {
+		printf("pid1 unable to read the range 130:4, "
+		       "recv %ld req %d\n", (unsigned long)nread, 4);
 		goto fail;
 	} else {
 		printf("pid1 successfully read the range 130:4\n");
@@ -2263,14 +2448,17 @@ static bool run_locktest7(int dummy)
 
 	cli_setpid(cli1, 2);
 
-	if (cli_read(cli1, fnum1, buf, 130, 4) != 4) {
-		printf("pid2 unable to read the range 130:4, error was %s\n", cli_errstr(cli1));
-		if (NT_STATUS_V(cli_nt_error(cli1)) != NT_STATUS_V(NT_STATUS_FILE_LOCK_CONFLICT)) {
+	status = cli_read(cli1, fnum1, buf, 130, 4, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("pid2 unable to read the range 130:4, error was "
+		       "%s\n", nt_errstr(status));
+		if (!NT_STATUS_EQUAL(status, NT_STATUS_FILE_LOCK_CONFLICT)) {
 			printf("Incorrect error (should be NT_STATUS_FILE_LOCK_CONFLICT)\n");
 			goto fail;
 		}
 	} else {
-		printf("pid2 successfully read the range 130:4 (should be denied)\n");
+		printf("pid2 successfully read the range 130:4 (should be denied) recv %ld\n",
+		       (unsigned long)nread);
 		goto fail;
 	}
 
@@ -2326,25 +2514,26 @@ static bool run_locktest8(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_WRITE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_WRITE,
 			  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
-		d_fprintf(stderr, "cli_open returned %s\n", nt_errstr(status));
+		d_fprintf(stderr, "cli_openx returned %s\n", nt_errstr(status));
 		return false;
 	}
 
 	memset(buf, 0, sizeof(buf));
 
-	status = cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum2);
+	status = cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
-		d_fprintf(stderr, "cli_open second time returned %s\n",
+		d_fprintf(stderr, "cli_openx second time returned %s\n",
 			  nt_errstr(status));
 		goto fail;
 	}
 
-	if (!cli_lock(cli1, fnum2, 1, 1, 0, READ_LOCK)) {
+	status = cli_lock32(cli1, fnum2, 1, 1, 0, READ_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
 		printf("Unable to apply read lock on range 1:1, error was "
-		       "%s\n", cli_errstr(cli1));
+		       "%s\n", nt_errstr(status));
 		goto fail;
 	}
 
@@ -2354,9 +2543,9 @@ static bool run_locktest8(int dummy)
 		goto fail;
 	}
 
-	status = cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
-		d_fprintf(stderr, "cli_open third time returned %s\n",
+		d_fprintf(stderr, "cli_openx third time returned %s\n",
                           nt_errstr(status));
                 goto fail;
         }
@@ -2381,7 +2570,7 @@ fail:
  */
 
 static bool got_alarm;
-static int alarm_fd;
+static struct cli_state *alarm_cli;
 
 static void alarm_handler(int dummy)
 {
@@ -2390,7 +2579,7 @@ static void alarm_handler(int dummy)
 
 static void alarm_handler_parent(int dummy)
 {
-	close(alarm_fd);
+	cli_state_disconnect(alarm_cli);
 }
 
 static void do_local_lock(int read_fd, int write_fd)
@@ -2516,15 +2705,16 @@ static bool run_locktest9(int dummy)
 
 	cli_sockopt(cli1, sockops);
 
-	status = cli_open(cli1, fname, O_RDWR, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR, DENY_NONE,
 			  &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
-		d_fprintf(stderr, "cli_open returned %s\n", nt_errstr(status));
+		d_fprintf(stderr, "cli_openx returned %s\n", nt_errstr(status));
 		return false;
 	}
 
 	/* Ensure the child has the lock. */
-	if (cli_lock(cli1, fnum, 0, 4, 0, WRITE_LOCK)) {
+	status = cli_lock32(cli1, fnum, 0, 4, 0, WRITE_LOCK);
+	if (NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, "Got the lock on range 0:4 - this should not happen !\n");
 		goto fail;
 	} else {
@@ -2540,15 +2730,16 @@ static bool run_locktest9(int dummy)
 	}
 
 	/* Wait 20 seconds for the lock. */
-	alarm_fd = cli1->fd;
+	alarm_cli = cli1;
 	CatchSignal(SIGALRM, alarm_handler_parent);
 	alarm(20);
 
 	start = timeval_current();
 
-	if (!cli_lock(cli1, fnum, 0, 4, -1, WRITE_LOCK)) {
+	status = cli_lock32(cli1, fnum, 0, 4, -1, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, "Unable to apply write lock on range 0:4, error was "
-		       "%s\n", cli_errstr(cli1));
+		       "%s\n", nt_errstr(status));
 		goto fail_nofd;
 	}
 	alarm(0);
@@ -2598,7 +2789,7 @@ static bool run_fdpasstest(int dummy)
 
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 	                  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
@@ -2612,14 +2803,13 @@ static bool run_fdpasstest(int dummy)
 		return False;
 	}
 
-	cli2->vuid = cli1->vuid;
-	cli2->cnum = cli1->cnum;
-	cli2->pid = cli1->pid;
+	cli_state_set_uid(cli2, cli_state_get_uid(cli1));
+	cli_state_set_tid(cli2, cli_state_get_tid(cli1));
+	cli_setpid(cli2, cli_getpid(cli1));
 
-	if (cli_read(cli2, fnum1, buf, 0, 13) == 13) {
-		printf("read succeeded! nasty security hole [%s]\n",
-		       buf);
-		return False;
+	if (test_cli_read(cli2, fnum1, buf, 0, 13, NULL, 13)) {
+		printf("read succeeded! nasty security hole [%s]\n", buf);
+		return false;
 	}
 
 	cli_close(cli1, fnum1);
@@ -2654,18 +2844,18 @@ static bool run_fdsesstest(int dummy)
 	if (!torture_cli_session_setup2(cli, &new_vuid))
 		return False;
 
-	saved_cnum = cli->cnum;
-	if (!NT_STATUS_IS_OK(cli_tcon_andx(cli, share, "?????", "", 1)))
+	saved_cnum = cli_state_get_tid(cli);
+	if (!NT_STATUS_IS_OK(cli_tree_connect(cli, share, "?????", "", 1)))
 		return False;
-	new_cnum = cli->cnum;
-	cli->cnum = saved_cnum;
+	new_cnum = cli_state_get_tid(cli);
+	cli_state_set_tid(cli, saved_cnum);
 
 	printf("starting fdsesstest\n");
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 	cli_unlink(cli, fname1, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -2678,16 +2868,16 @@ static bool run_fdsesstest(int dummy)
 		return False;
 	}
 
-	saved_vuid = cli->vuid;
-	cli->vuid = new_vuid;
+	saved_vuid = cli_state_get_uid(cli);
+	cli_state_set_uid(cli, new_vuid);
 
-	if (cli_read(cli, fnum1, buf, 0, 13) == 13) {
-		printf("read succeeded with different vuid! nasty security hole [%s]\n",
-		       buf);
-		ret = False;
+	if (test_cli_read(cli, fnum1, buf, 0, 13, NULL, 13)) {
+		printf("read succeeded with different vuid! "
+		       "nasty security hole [%s]\n", buf);
+		ret = false;
 	}
 	/* Try to open a file with different vuid, samba cnum. */
-	if (NT_STATUS_IS_OK(cli_open(cli, fname1, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum2))) {
+	if (NT_STATUS_IS_OK(cli_openx(cli, fname1, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum2))) {
 		printf("create with different vuid, same cnum succeeded.\n");
 		cli_close(cli, fnum2);
 		cli_unlink(cli, fname1, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
@@ -2697,18 +2887,17 @@ static bool run_fdsesstest(int dummy)
 		ret = False;
 	}
 
-	cli->vuid = saved_vuid;
+	cli_state_set_uid(cli, saved_vuid);
 
 	/* Try with same vuid, different cnum. */
-	cli->cnum = new_cnum;
+	cli_state_set_tid(cli, new_cnum);
 
-	if (cli_read(cli, fnum1, buf, 0, 13) == 13) {
-		printf("read succeeded with different cnum![%s]\n",
-		       buf);
-		ret = False;
+	if (test_cli_read(cli, fnum1, buf, 0, 13, NULL, 13)) {
+		printf("read succeeded with different cnum![%s]\n", buf);
+		ret = false;
 	}
 
-	cli->cnum = saved_cnum;
+	cli_state_set_tid(cli, saved_cnum);
 	cli_close(cli, fnum1);
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
@@ -2743,17 +2932,19 @@ static bool run_unlinktest(int dummy)
 
 	cli_setpid(cli, 1);
 
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
-	if (NT_STATUS_IS_OK(cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN))) {
+	status = cli_unlink(cli, fname,
+			    FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("error: server allowed unlink on an open file\n");
 		correct = False;
 	} else {
-		correct = check_error(__LINE__, cli, ERRDOS, ERRbadshare, 
+		correct = check_error(__LINE__, status, ERRDOS, ERRbadshare,
 				      NT_STATUS_SHARING_VIOLATION);
 	}
 
@@ -2794,7 +2985,7 @@ static bool run_maxfidtest(int dummy)
 
 	for (i=0; i<0x11000; i++) {
 		slprintf(fname,sizeof(fname)-1,"\\maxfid.%d.%d", i,(int)getpid());
-		status = cli_open(cli, fname, O_RDWR|O_CREAT|O_TRUNC, DENY_NONE,
+		status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_TRUNC, DENY_NONE,
 		                  &fnums[i]);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("open of %s failed (%s)\n", 
@@ -2861,7 +3052,7 @@ static bool run_negprot_nowait(int dummy)
 	for (i=0;i<50000;i++) {
 		struct tevent_req *req;
 
-		req = cli_negprot_send(ev, ev, cli);
+		req = cli_negprot_send(ev, ev, cli, PROTOCOL_NT1);
 		if (req == NULL) {
 			TALLOC_FREE(ev);
 			return false;
@@ -2903,7 +3094,7 @@ static bool run_bad_nbt_session(int dummy)
 		return false;
 	}
 
-	status = open_socket_out(&ss, 139, 10000, &fd);
+	status = open_socket_out(&ss, NBT_SMB_PORT, 10000, &fd);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, "open_socket_out failed: %s\n",
 			  nt_errstr(status));
@@ -3033,7 +3224,7 @@ static bool run_attrtest(int dummy)
 	}
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
-	cli_open(cli, fname, 
+	cli_openx(cli, fname, 
 			O_RDWR | O_CREAT | O_TRUNC, DENY_NONE, &fnum);
 	cli_close(cli, fnum);
 
@@ -3096,7 +3287,7 @@ static bool run_trans2test(int dummy)
 	const char *fname = "\\trans2.tst";
 	const char *dname = "\\trans2";
 	const char *fname2 = "\\trans2\\trans2.tst";
-	char pname[1024];
+	char *pname;
 	bool correct = True;
 	NTSTATUS status;
 	uint32_t fs_attr;
@@ -3115,7 +3306,7 @@ static bool run_trans2test(int dummy)
 	}
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
-	cli_open(cli, fname, O_RDWR | O_CREAT | O_TRUNC, DENY_NONE, &fnum);
+	cli_openx(cli, fname, O_RDWR | O_CREAT | O_TRUNC, DENY_NONE, &fnum);
 	status = cli_qfileinfo_basic(cli, fnum, NULL, &size, &c_time_ts,
 	                             &a_time_ts, &w_time_ts, &m_time_ts, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3123,7 +3314,7 @@ static bool run_trans2test(int dummy)
 		correct = False;
 	}
 
-	status = cli_qfilename(cli, fnum, pname, sizeof(pname));
+	status = cli_qfilename(cli, fnum, talloc_tos(), &pname);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("ERROR: qfilename failed (%s)\n", nt_errstr(status));
 		correct = False;
@@ -3140,7 +3331,7 @@ static bool run_trans2test(int dummy)
 	sleep(2);
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
-	status = cli_open(cli, fname, O_RDWR | O_CREAT | O_TRUNC, DENY_NONE,
+	status = cli_openx(cli, fname, O_RDWR | O_CREAT | O_TRUNC, DENY_NONE,
 	                  &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
@@ -3154,18 +3345,20 @@ static bool run_trans2test(int dummy)
 		printf("ERROR: qpathinfo failed (%s)\n", nt_errstr(status));
 		correct = False;
 	} else {
+		time_t t = time(NULL);
+
 		if (c_time != m_time) {
 			printf("create time=%s", ctime(&c_time));
 			printf("modify time=%s", ctime(&m_time));
 			printf("This system appears to have sticky create times\n");
 		}
-		if (a_time % (60*60) == 0) {
+		if ((abs(a_time - t) > 60) && (a_time % (60*60) == 0)) {
 			printf("access time=%s", ctime(&a_time));
 			printf("This system appears to set a midnight access time\n");
 			correct = False;
 		}
 
-		if (abs(m_time - time(NULL)) > 60*60*24*7) {
+		if (abs(m_time - t) > 60*60*24*7) {
 			printf("ERROR: totally incorrect times - maybe word reversed? mtime=%s", ctime(&m_time));
 			correct = False;
 		}
@@ -3173,7 +3366,7 @@ static bool run_trans2test(int dummy)
 
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
-	cli_open(cli, fname, 
+	cli_openx(cli, fname, 
 			O_RDWR | O_CREAT | O_TRUNC, DENY_NONE, &fnum);
 	cli_close(cli, fnum);
 	status = cli_qpathinfo2(cli, fname, &c_time_ts, &a_time_ts, &w_time_ts,
@@ -3207,7 +3400,7 @@ static bool run_trans2test(int dummy)
 		correct = False;
 	}
 
-	cli_open(cli, fname2, 
+	cli_openx(cli, fname2, 
 			O_RDWR | O_CREAT | O_TRUNC, DENY_NONE, &fnum);
 	cli_writeall(cli, fnum,  0, (uint8_t *)&fnum, 0, sizeof(fnum), NULL);
 	cli_close(cli, fnum);
@@ -3246,7 +3439,7 @@ static NTSTATUS new_trans(struct cli_state *pcli, int fnum, int level)
 	NTSTATUS status;
 
 	status = cli_qfileinfo(talloc_tos(), pcli, fnum, level, 0,
-			       pcli->max_xmit, &buf, &len);
+			       CLI_BUFFER_SIZE, NULL, &buf, &len);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("ERROR: qfileinfo (%d) failed (%s)\n", level,
 		       nt_errstr(status));
@@ -3273,7 +3466,7 @@ static bool run_w2ktest(int dummy)
 		return False;
 	}
 
-	cli_open(cli, fname, 
+	cli_openx(cli, fname, 
 			O_RDWR | O_CREAT , DENY_NONE, &fnum);
 
 	for (level = 1004; level < 1040; level++) {
@@ -3315,7 +3508,7 @@ static bool run_oplock1(int dummy)
 
 	cli1->use_oplocks = True;
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 			  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
@@ -3357,6 +3550,7 @@ static bool run_oplock2(int dummy)
 	char buf[4];
 	bool correct = True;
 	volatile bool *shared_correct;
+	size_t nread;
 	NTSTATUS status;
 
 	shared_correct = (volatile bool *)shm_setup(sizeof(bool));
@@ -3373,24 +3567,18 @@ static bool run_oplock2(int dummy)
 		return False;
 	}
 
-	cli1->use_oplocks = True;
-	cli1->use_level_II_oplocks = True;
-
 	if (!torture_open_connection(&cli2, 1)) {
 		use_level_II_oplocks = False;
 		use_oplocks = saved_use_oplocks;
 		return False;
 	}
 
-	cli2->use_oplocks = True;
-	cli2->use_level_II_oplocks = True;
-
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
 	cli_sockopt(cli1, sockops);
 	cli_sockopt(cli2, sockops);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 	                  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
@@ -3403,7 +3591,7 @@ static bool run_oplock2(int dummy)
 
 	if (fork() == 0) {
 		/* Child code */
-		status = cli_open(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
+		status = cli_openx(cli2, fname, O_RDWR, DENY_NONE, &fnum2);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("second open of %s failed (%s)\n", fname, nt_errstr(status));
 			*shared_correct = False;
@@ -3425,17 +3613,21 @@ static bool run_oplock2(int dummy)
 
 	/* Ensure cli1 processes the break. Empty file should always return 0
 	 * bytes.  */
-
-	if (cli_read(cli1, fnum1, buf, 0, 4) != 0) {
-		printf("read on fnum1 failed (%s)\n", cli_errstr(cli1));
-		correct = False;
+	status = cli_read(cli1, fnum1, buf, 0, 4, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("read on fnum1 failed (%s)\n", nt_errstr(status));
+		correct = false;
+	} else if (nread != 0) {
+		printf("read on empty fnum1 failed. recv %ld expected %d\n",
+		      (unsigned long)nread, 0);
+		correct = false;
 	}
 
 	/* Should now be at level II. */
 	/* Test if sending a write locks causes a break to none. */
-
-	if (!cli_lock(cli1, fnum1, 0, 4, 0, READ_LOCK)) {
-		printf("lock failed (%s)\n", cli_errstr(cli1));
+	status = cli_lock32(cli1, fnum1, 0, 4, 0, READ_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("lock failed (%s)\n", nt_errstr(status));
 		correct = False;
 	}
 
@@ -3443,8 +3635,9 @@ static bool run_oplock2(int dummy)
 
 	sleep(2);
 
-	if (!cli_lock(cli1, fnum1, 0, 4, 0, WRITE_LOCK)) {
-		printf("lock failed (%s)\n", cli_errstr(cli1));
+	status = cli_lock32(cli1, fnum1, 0, 4, 0, WRITE_LOCK);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("lock failed (%s)\n", nt_errstr(status));
 		correct = False;
 	}
 
@@ -3452,7 +3645,7 @@ static bool run_oplock2(int dummy)
 
 	sleep(2);
 
-	cli_read(cli1, fnum1, buf, 0, 4);
+	cli_read(cli1, fnum1, buf, 0, 4, NULL);
 
 	status = cli_close(cli1, fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3528,7 +3721,7 @@ static bool run_oplock4(int dummy)
 	cli_sockopt(cli2, sockops);
 
 	/* Create the file. */
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE,
 	                  &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
@@ -3549,13 +3742,13 @@ static bool run_oplock4(int dummy)
 	}
 
 	/* Prove that opening hardlinks cause deny modes to conflict. */
-	status = cli_open(cli1, fname, O_RDWR, DENY_ALL, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_ALL, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return false;
 	}
 
-	status = cli_open(cli1, fname_ln, O_RDWR, DENY_NONE, &fnum2);
+	status = cli_openx(cli1, fname_ln, O_RDWR, DENY_NONE, &fnum2);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("open of %s succeeded - should fail with sharing violation.\n",
 			fname_ln);
@@ -3575,12 +3768,9 @@ static bool run_oplock4(int dummy)
 	}
 
 	cli1->use_oplocks = true;
-	cli1->use_level_II_oplocks = true;
-
 	cli2->use_oplocks = true;
-	cli2->use_level_II_oplocks = true;
 
-	status = cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return false;
@@ -3588,7 +3778,7 @@ static bool run_oplock4(int dummy)
 
 	ev = tevent_context_init(talloc_tos());
 	if (ev == NULL) {
-		printf("tevent_req_create failed\n");
+		printf("tevent_context_init failed\n");
 		return false;
 	}
 
@@ -3610,10 +3800,10 @@ static bool run_oplock4(int dummy)
 	}
 	tevent_req_set_callback(oplock_req, oplock4_got_break, state);
 
-	open_req = cli_open_send(
+	open_req = cli_openx_send(
 		talloc_tos(), ev, cli2, fname_ln, O_RDWR, DENY_NONE);
-	if (oplock_req == NULL) {
-		printf("cli_open_send failed\n");
+	if (open_req == NULL) {
+		printf("cli_openx_send failed\n");
 		return false;
 	}
 	tevent_req_set_callback(open_req, oplock4_got_open, state);
@@ -3699,9 +3889,9 @@ static void oplock4_got_open(struct tevent_req *req)
 		req, struct oplock4_state);
 	NTSTATUS status;
 
-	status = cli_open_recv(req, state->fnum2);
+	status = cli_openx_recv(req, state->fnum2);
 	if (!NT_STATUS_IS_OK(status)) {
-		printf("cli_open_recv returned %s\n", nt_errstr(status));
+		printf("cli_openx_recv returned %s\n", nt_errstr(status));
 		*state->fnum2 = 0xffff;
 	}
 }
@@ -3748,7 +3938,7 @@ static bool run_deletetest(int dummy)
 		goto fail;
 	}
 
-	if (NT_STATUS_IS_OK(cli_open(cli1, fname, O_RDWR, DENY_NONE, &fnum1))) {
+	if (NT_STATUS_IS_OK(cli_openx(cli1, fname, O_RDWR, DENY_NONE, &fnum1))) {
 		printf("[1] open of %s succeeded (should fail)\n", fname);
 		correct = False;
 		goto fail;
@@ -3784,7 +3974,7 @@ static bool run_deletetest(int dummy)
 		goto fail;
 	}
 
-	if (NT_STATUS_IS_OK(cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
+	if (NT_STATUS_IS_OK(cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
 		printf("[2] open of %s succeeded should have been deleted on close !\n", fname);
 		status = cli_close(cli1, fnum1);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -3854,7 +4044,7 @@ static bool run_deletetest(int dummy)
 
 	/* This should fail - file should no longer be there. */
 
-	if (NT_STATUS_IS_OK(cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
+	if (NT_STATUS_IS_OK(cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
 		printf("[3] open of %s succeeded should have been deleted on close !\n", fname);
 		status = cli_close(cli1, fnum1);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -3927,7 +4117,7 @@ static bool run_deletetest(int dummy)
 	cli_setatr(cli1, fname, 0, 0);
 	cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[5] open of %s failed (%s)\n", fname, nt_errstr(status));
 		correct = False;
@@ -4017,7 +4207,7 @@ static bool run_deletetest(int dummy)
 	}
 
 	/* This next open should succeed - we reset the flag. */
-	status = cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[5] open of %s failed (%s)\n", fname, nt_errstr(status));
 		correct = False;
@@ -4088,7 +4278,7 @@ static bool run_deletetest(int dummy)
 	}
 
 	/* This should fail.. */
-	status = cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum1);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[8] open of %s succeeded should have been deleted on close !\n", fname);
 		goto fail;
@@ -4126,7 +4316,7 @@ static bool run_deletetest(int dummy)
 	}
 
 	/* This should fail.. */
-	if (NT_STATUS_IS_OK(cli_open(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
+	if (NT_STATUS_IS_OK(cli_openx(cli1, fname, O_RDONLY, DENY_NONE, &fnum1))) {
 		printf("[10] open of %s succeeded should have been deleted on close !\n", fname);
 		goto fail;
 		correct = False;
@@ -4157,17 +4347,19 @@ static bool run_deletetest(int dummy)
 	}
 
 	/* Now try open for delete access. */
-	if (NT_STATUS_IS_OK(cli_ntcreate(cli1, fname, 0, FILE_READ_ATTRIBUTES|DELETE_ACCESS,
-				   0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-				   FILE_OVERWRITE_IF, 0, 0, &fnum1))) {
+	status = cli_ntcreate(cli1, fname, 0,
+			     FILE_READ_ATTRIBUTES|DELETE_ACCESS,
+			     0,
+			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+			     FILE_OVERWRITE_IF, 0, 0, &fnum1);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("[11] open of %s succeeded should have been denied with ACCESS_DENIED!\n", fname);
 		cli_close(cli1, fnum1);
 		goto fail;
 		correct = False;
 	} else {
-		NTSTATUS nterr = cli_nt_error(cli1);
-		if (!NT_STATUS_EQUAL(nterr,NT_STATUS_ACCESS_DENIED)) {
-			printf("[11] open of %s should have been denied with ACCESS_DENIED! Got error %s\n", fname, nt_errstr(nterr));
+		if (!NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			printf("[11] open of %s should have been denied with ACCESS_DENIED! Got error %s\n", fname, nt_errstr(status));
 			goto fail;
 			correct = False;
 		} else {
@@ -4219,7 +4411,7 @@ static bool run_deletetest_ln(int dummy)
 	cli_sockopt(cli, sockops);
 
 	/* Create the file. */
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return false;
@@ -4328,7 +4520,7 @@ static bool run_properties(int dummy)
 
 	cli_sockopt(cli, sockops);
 
-	d_printf("Capabilities 0x%08x\n", cli->capabilities);
+	d_printf("Capabilities 0x%08x\n", cli_state_capabilities(cli));
 
 	if (!torture_close_connection(cli)) {
 		correct = False;
@@ -4675,7 +4867,7 @@ static bool run_opentest(int dummy)
 
 	cli_sockopt(cli1, sockops);
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -4693,16 +4885,16 @@ static bool run_opentest(int dummy)
 		return False;
 	}
 
-	status = cli_open(cli1, fname, O_RDONLY, DENY_WRITE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDONLY, DENY_WRITE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
 	/* This will fail - but the error should be ERRnoaccess, not ERRbadshare. */
-	cli_open(cli1, fname, O_RDWR, DENY_ALL, &fnum2);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_ALL, &fnum2);
 
-        if (check_error(__LINE__, cli1, ERRDOS, ERRnoaccess, 
+        if (check_error(__LINE__, status, ERRDOS, ERRnoaccess,
 			NT_STATUS_ACCESS_DENIED)) {
 		printf("correct error code ERRDOS/ERRnoaccess returned\n");
 	}
@@ -4715,16 +4907,16 @@ static bool run_opentest(int dummy)
 
 	cli_setatr(cli1, fname, 0, 0);
 
-	status = cli_open(cli1, fname, O_RDONLY, DENY_WRITE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDONLY, DENY_WRITE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
 	}
 
 	/* This will fail - but the error should be ERRshare. */
-	cli_open(cli1, fname, O_RDWR, DENY_ALL, &fnum2);
+	status = cli_openx(cli1, fname, O_RDWR, DENY_ALL, &fnum2);
 
-	if (check_error(__LINE__, cli1, ERRDOS, ERRbadshare, 
+	if (check_error(__LINE__, status, ERRDOS, ERRbadshare,
 			NT_STATUS_SHARING_VIOLATION)) {
 		printf("correct error code ERRDOS/ERRbadshare returned\n");
 	}
@@ -4740,7 +4932,7 @@ static bool run_opentest(int dummy)
 	printf("finished open test 2\n");
 
 	/* Test truncate open disposition on file opened for read. */
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("(3) open (1) of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -4775,7 +4967,7 @@ static bool run_opentest(int dummy)
 	}
 
 	/* Now test if we can truncate a file opened for readonly. */
-	status = cli_open(cli1, fname, O_RDONLY|O_TRUNC, DENY_NONE, &fnum1);
+	status = cli_openx(cli1, fname, O_RDONLY|O_TRUNC, DENY_NONE, &fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("(3) open (2) of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5151,6 +5343,7 @@ static bool run_simple_posix_open_test(int dummy)
 	SMB_STRUCT_STAT sbuf;
 	bool correct = false;
 	NTSTATUS status;
+	size_t nread;
 
 	printf("Starting simple POSIX open test\n");
 
@@ -5248,20 +5441,23 @@ static bool run_simple_posix_open_test(int dummy)
 	}
 
 	/* Create again to test open with O_TRUNC. */
-	if (!NT_STATUS_IS_OK(cli_posix_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, 0600, &fnum1))) {
-		printf("POSIX create of %s failed (%s)\n", fname, cli_errstr(cli1));
+	status = cli_posix_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, 0600, &fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("POSIX create of %s failed (%s)\n", fname, nt_errstr(status));
 		goto out;
 	}
 
 	/* Test ftruncate - set file size. */
-	if (!NT_STATUS_IS_OK(cli_ftruncate(cli1, fnum1, 1000))) {
-		printf("ftruncate failed (%s)\n", cli_errstr(cli1));
+	status = cli_ftruncate(cli1, fnum1, 1000);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("ftruncate failed (%s)\n", nt_errstr(status));
 		goto out;
 	}
 
 	/* Ensure st_size == 1000 */
-	if (!NT_STATUS_IS_OK(cli_posix_stat(cli1, fname, &sbuf))) {
-		printf("stat failed (%s)\n", cli_errstr(cli1));
+	status = cli_posix_stat(cli1, fname, &sbuf);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("stat failed (%s)\n", nt_errstr(status));
 		goto out;
 	}
 
@@ -5270,20 +5466,23 @@ static bool run_simple_posix_open_test(int dummy)
 		goto out;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_close(cli1, fnum1))) {
-		printf("close(2) failed (%s)\n", cli_errstr(cli1));
+	status = cli_close(cli1, fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("close(2) failed (%s)\n", nt_errstr(status));
 		goto out;
 	}
 
 	/* Re-open with O_TRUNC. */
-	if (!NT_STATUS_IS_OK(cli_posix_open(cli1, fname, O_WRONLY|O_TRUNC, 0600, &fnum1))) {
-		printf("POSIX create of %s failed (%s)\n", fname, cli_errstr(cli1));
+	status = cli_posix_open(cli1, fname, O_WRONLY|O_TRUNC, 0600, &fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("POSIX create of %s failed (%s)\n", fname, nt_errstr(status));
 		goto out;
 	}
 
 	/* Ensure st_size == 0 */
-	if (!NT_STATUS_IS_OK(cli_posix_stat(cli1, fname, &sbuf))) {
-		printf("stat failed (%s)\n", cli_errstr(cli1));
+	status = cli_posix_stat(cli1, fname, &sbuf);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("stat failed (%s)\n", nt_errstr(status));
 		goto out;
 	}
 
@@ -5292,30 +5491,34 @@ static bool run_simple_posix_open_test(int dummy)
 		goto out;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_close(cli1, fnum1))) {
-		printf("close failed (%s)\n", cli_errstr(cli1));
+	status = cli_close(cli1, fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("close failed (%s)\n", nt_errstr(status));
 		goto out;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_posix_unlink(cli1, fname))) {
-		printf("POSIX unlink of %s failed (%s)\n", fname, cli_errstr(cli1));
+	status = cli_posix_unlink(cli1, fname);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("POSIX unlink of %s failed (%s)\n", fname, nt_errstr(status));
 		goto out;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_posix_open(cli1, dname, O_RDONLY, 0, &fnum1))) {
+	status = cli_posix_open(cli1, dname, O_RDONLY, 0, &fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
 		printf("POSIX open directory O_RDONLY of %s failed (%s)\n",
-			dname, cli_errstr(cli1));
+			dname, nt_errstr(status));
 		goto out;
 	}
 
 	cli_close(cli1, fnum1);
 
 	/* What happens when we try and POSIX open a directory for write ? */
-	if (NT_STATUS_IS_OK(cli_posix_open(cli1, dname, O_RDWR, 0, &fnum1))) {
+	status = cli_posix_open(cli1, dname, O_RDWR, 0, &fnum1);
+	if (NT_STATUS_IS_OK(status)) {
 		printf("POSIX open of directory %s succeeded, should have failed.\n", fname);
 		goto out;
 	} else {
-		if (!check_error(__LINE__, cli1, ERRDOS, EISDIR,
+		if (!check_both_error(__LINE__, status, ERRDOS, EISDIR,
 				NT_STATUS_FILE_IS_A_DIRECTORY)) {
 			goto out;
 		}
@@ -5360,8 +5563,14 @@ static bool run_simple_posix_open_test(int dummy)
 		goto out;
 	}
 
-	if (cli_read(cli1, fnum1, buf, 0, 10) != 10) {
-		printf("POSIX read of %s failed (%s)\n", hname, cli_errstr(cli1));
+	status = cli_read(cli1, fnum1, buf, 0, 10, &nread);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("POSIX read of %s failed (%s)\n", hname,
+		       nt_errstr(status));
+		goto out;
+	} else if (nread != 10) {
+		printf("POSIX read of %s failed. Received %ld, expected %d\n",
+		       hname, (unsigned long)nread, 10);
 		goto out;
 	}
 
@@ -5393,7 +5602,7 @@ static bool run_simple_posix_open_test(int dummy)
 		printf("POSIX open of %s succeeded (should have failed)\n", sname);
 		goto out;
 	} else {
-		if (!check_error(__LINE__, cli1, ERRDOS, ERRbadpath,
+		if (!check_both_error(__LINE__, status, ERRDOS, ERRbadpath,
 				NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
 			printf("POSIX open of %s should have failed "
 				"with NT_STATUS_OBJECT_PATH_NOT_FOUND, "
@@ -5651,7 +5860,7 @@ static bool run_dirtest(int dummy)
 	for (i=0;i<torture_numops;i++) {
 		fstring fname;
 		slprintf(fname, sizeof(fname), "\\%x", (int)random());
-		if (!NT_STATUS_IS_OK(cli_open(cli, fname, O_RDWR|O_CREAT, DENY_NONE, &fnum))) {
+		if (!NT_STATUS_IS_OK(cli_openx(cli, fname, O_RDWR|O_CREAT, DENY_NONE, &fnum))) {
 			fprintf(stderr,"Failed to open %s\n", fname);
 			return False;
 		}
@@ -5731,7 +5940,7 @@ bool torture_ioctl_test(int dummy)
 
 	cli_unlink(cli, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
-	status = cli_open(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
+	status = cli_openx(cli, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5799,7 +6008,7 @@ bool torture_chkpath_test(int dummy)
 		return False;
 	}
 
-	status = cli_open(cli, "\\chkpath.dir\\foo.txt", O_RDWR|O_CREAT|O_EXCL,
+	status = cli_openx(cli, "\\chkpath.dir\\foo.txt", O_RDWR|O_CREAT|O_EXCL,
 			  DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open1 failed (%s)\n", nt_errstr(status));
@@ -5821,23 +6030,25 @@ bool torture_chkpath_test(int dummy)
 
 	status = cli_chkpath(cli, "\\chkpath.dir\\foo.txt");
 	if (!NT_STATUS_IS_OK(status)) {
-		ret = check_error(__LINE__, cli, ERRDOS, ERRbadpath, 
+		ret = check_error(__LINE__, status, ERRDOS, ERRbadpath,
 				  NT_STATUS_NOT_A_DIRECTORY);
 	} else {
 		printf("* chkpath on a file should fail\n");
 		ret = False;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_chkpath(cli, "\\chkpath.dir\\bar.txt"))) {
-		ret = check_error(__LINE__, cli, ERRDOS, ERRbadfile, 
+	status = cli_chkpath(cli, "\\chkpath.dir\\bar.txt");
+	if (!NT_STATUS_IS_OK(status)) {
+		ret = check_error(__LINE__, status, ERRDOS, ERRbadfile,
 				  NT_STATUS_OBJECT_NAME_NOT_FOUND);
 	} else {
 		printf("* chkpath on a non existant file should fail\n");
 		ret = False;
 	}
 
-	if (!NT_STATUS_IS_OK(cli_chkpath(cli, "\\chkpath.dir\\dirxx\\bar.txt"))) {
-		ret = check_error(__LINE__, cli, ERRDOS, ERRbadpath, 
+	status = cli_chkpath(cli, "\\chkpath.dir\\dirxx\\bar.txt");
+	if (!NT_STATUS_IS_OK(status)) {
+		ret = check_error(__LINE__, status, ERRDOS, ERRbadpath,
 				  NT_STATUS_OBJECT_PATH_NOT_FOUND);
 	} else {
 		printf("* chkpath on a non existent component should fail\n");
@@ -6079,7 +6290,7 @@ static bool run_error_map_extract(int dummy) {
 
 	uint32 error;
 
-	uint32 flgs2, errnum;
+	uint32 errnum;
         uint8 errclass;
 
 	NTSTATUS nt_status;
@@ -6088,13 +6299,14 @@ static bool run_error_map_extract(int dummy) {
 
 	/* NT-Error connection */
 
+	disable_spnego = true;
 	if (!(c_nt = open_nbt_connection())) {
+		disable_spnego = false;
 		return False;
 	}
+	disable_spnego = false;
 
-	c_nt->use_spnego = False;
-
-	status = cli_negprot(c_nt);
+	status = cli_negprot(c_nt, PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("%s rejected the NT-error negprot (%s)\n", host,
@@ -6111,14 +6323,17 @@ static bool run_error_map_extract(int dummy) {
 
 	/* DOS-Error connection */
 
+	disable_spnego = true;
+	force_dos_errors = true;
 	if (!(c_dos = open_nbt_connection())) {
+		disable_spnego = false;
+		force_dos_errors = false;
 		return False;
 	}
+	disable_spnego = false;
+	force_dos_errors = false;
 
-	c_dos->use_spnego = False;
-	c_dos->force_dos_errors = True;
-
-	status = cli_negprot(c_dos);
+	status = cli_negprot(c_dos, PROTOCOL_NT1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("%s rejected the DOS-error negprot (%s)\n", host,
 		       nt_errstr(status));
@@ -6133,6 +6348,9 @@ static bool run_error_map_extract(int dummy) {
 		return False;
 	}
 
+	c_nt->map_dos_errors = false;
+	c_dos->map_dos_errors = false;
+
 	for (error=(0xc0000000 | 0x1); error < (0xc0000000| 0xFFF); error++) {
 		fstr_sprintf(user, "%X", error);
 
@@ -6144,32 +6362,31 @@ static bool run_error_map_extract(int dummy) {
 			printf("/** Session setup succeeded.  This shouldn't happen...*/\n");
 		}
 
-		flgs2 = SVAL(c_nt->inbuf,smb_flg2);
-
 		/* Case #1: 32-bit NT errors */
-		if (flgs2 & FLAGS2_32_BIT_ERROR_CODES) {
-			nt_status = NT_STATUS(IVAL(c_nt->inbuf,smb_rcls));
+		if (!NT_STATUS_IS_DOS(status)) {
+			nt_status = status;
 		} else {
 			printf("/** Dos error on NT connection! (%s) */\n", 
-			       cli_errstr(c_nt));
+			       nt_errstr(status));
 			nt_status = NT_STATUS(0xc0000000);
 		}
 
-		if (NT_STATUS_IS_OK(cli_session_setup(c_dos, user, 
-						      password, strlen(password),
-						      password, strlen(password),
-						      workgroup))) {
+		status = cli_session_setup(c_dos, user,
+					   password, strlen(password),
+					   password, strlen(password),
+					   workgroup);
+		if (NT_STATUS_IS_OK(status)) {
 			printf("/** Session setup succeeded.  This shouldn't happen...*/\n");
 		}
-		flgs2 = SVAL(c_dos->inbuf,smb_flg2), errnum;
 
 		/* Case #1: 32-bit NT errors */
-		if (flgs2 & FLAGS2_32_BIT_ERROR_CODES) {
+		if (NT_STATUS_IS_DOS(status)) {
 			printf("/** NT error on DOS connection! (%s) */\n", 
-			       cli_errstr(c_nt));
+			       nt_errstr(status));
 			errnum = errclass = 0;
 		} else {
-			cli_dos_error(c_dos, &errclass, &errnum);
+			errclass = NT_STATUS_DOS_CLASS(status);
+			errnum = NT_STATUS_DOS_CODE(status);
 		}
 
 		if (NT_STATUS_V(nt_status) != error) { 
@@ -6218,7 +6435,7 @@ static bool run_sesssetup_bench(int dummy)
 			return false;
 		}
 
-		d_printf("\r%d   ", (int)c->vuid);
+		d_printf("\r%d   ", (int)cli_state_get_uid(c));
 
 		status = cli_ulogoff(c);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -6226,7 +6443,6 @@ static bool run_sesssetup_bench(int dummy)
 				 __location__, nt_errstr(status));
 			return false;
 		}
-		c->vuid = 0;
 	}
 
 	return true;
@@ -6255,10 +6471,10 @@ static void chain1_open_completion(struct tevent_req *req)
 {
 	uint16_t fnum;
 	NTSTATUS status;
-	status = cli_open_recv(req, &fnum);
+	status = cli_openx_recv(req, &fnum);
 	TALLOC_FREE(req);
 
-	d_printf("cli_open_recv returned %s: %d\n",
+	d_printf("cli_openx_recv returned %s: %d\n",
 		 nt_errstr(status),
 		 NT_STATUS_IS_OK(status) ? fnum : -1);
 }
@@ -6304,7 +6520,7 @@ static bool run_chain1(int dummy)
 
 	cli_sockopt(cli1, sockops);
 
-	reqs[0] = cli_open_create(talloc_tos(), evt, cli1, "\\test",
+	reqs[0] = cli_openx_create(talloc_tos(), evt, cli1, "\\test",
 				  O_CREAT|O_RDWR, 0, &smbreqs[0]);
 	if (reqs[0] == NULL) return false;
 	tevent_req_set_callback(reqs[0], chain1_open_completion, NULL);
@@ -6326,7 +6542,7 @@ static bool run_chain1(int dummy)
 	}
 
 	while (!done) {
-		event_loop_once(evt);
+		tevent_loop_once(evt);
 	}
 
 	torture_close_connection(cli1);
@@ -6359,7 +6575,7 @@ static bool run_chain2(int dummy)
 
 	printf("starting chain2 test\n");
 	status = cli_start_connection(&cli1, lp_netbios_name(), host, NULL,
-				      port_to_use, Undefined, 0);
+				      port_to_use, SMB_SIGNING_DEFAULT, 0);
 	if (!NT_STATUS_IS_OK(status)) {
 		return False;
 	}
@@ -6382,7 +6598,7 @@ static bool run_chain2(int dummy)
 	}
 
 	while (!done) {
-		event_loop_once(evt);
+		tevent_loop_once(evt);
 	}
 
 	torture_close_connection(cli1);
@@ -6827,9 +7043,9 @@ static bool run_mangle1(int dummy)
 	}
 	d_printf("alt_name: %s\n", alt_name);
 
-	status = cli_open(cli, alt_name, O_RDONLY, DENY_NONE, &fnum);
+	status = cli_openx(cli, alt_name, O_RDONLY, DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
-		d_printf("cli_open(%s) failed: %s\n", alt_name,
+		d_printf("cli_openx(%s) failed: %s\n", alt_name,
 			 nt_errstr(status));
 		return false;
 	}
@@ -6878,7 +7094,7 @@ static bool run_windows_write(int dummy)
 		return False;
 	}
 
-	status = cli_open(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
+	status = cli_openx(cli1, fname, O_RDWR|O_CREAT|O_EXCL, DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open failed (%s)\n", nt_errstr(status));
 		return False;
@@ -6959,7 +7175,7 @@ static bool run_uid_regression_test(int dummy)
 	cli_sockopt(cli, sockops);
 
 	/* Ok - now save then logoff our current user. */
-	old_vuid = cli->vuid;
+	old_vuid = cli_state_get_uid(cli);
 
 	status = cli_ulogoff(cli);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -6969,7 +7185,7 @@ static bool run_uid_regression_test(int dummy)
 		goto out;
 	}
 
-	cli->vuid = old_vuid;
+	cli_state_set_uid(cli, old_vuid);
 
 	/* Try an operation. */
 	status = cli_mkdir(cli, "\\uid_reg_test");
@@ -6980,17 +7196,17 @@ static bool run_uid_regression_test(int dummy)
 		goto out;
 	} else {
 		/* Should be bad uid. */
-		if (!check_error(__LINE__, cli, ERRSRV, ERRbaduid,
-				NT_STATUS_USER_SESSION_DELETED)) {
+		if (!check_error(__LINE__, status, ERRSRV, ERRbaduid,
+				 NT_STATUS_USER_SESSION_DELETED)) {
 			correct = false;
 			goto out;
 		}
 	}
 
-	old_cnum = cli->cnum;
+	old_cnum = cli_state_get_tid(cli);
 
 	/* Now try a SMBtdis with the invald vuid set to zero. */
-	cli->vuid = 0;
+	cli_state_set_uid(cli, 0);
 
 	/* This should succeed. */
 	status = cli_tdis(cli);
@@ -7003,8 +7219,8 @@ static bool run_uid_regression_test(int dummy)
 		goto out;
 	}
 
-	cli->vuid = old_vuid;
-	cli->cnum = old_cnum;
+	cli_state_set_uid(cli, old_vuid);
+	cli_state_set_tid(cli, old_cnum);
 
 	/* This should fail. */
 	status = cli_tdis(cli);
@@ -7014,7 +7230,7 @@ static bool run_uid_regression_test(int dummy)
 		goto out;
 	} else {
 		/* Should be bad tid. */
-		if (!check_error(__LINE__, cli, ERRSRV, ERRinvnid,
+		if (!check_error(__LINE__, status, ERRSRV, ERRinvnid,
 				NT_STATUS_NETWORK_NAME_DELETED)) {
 			correct = false;
 			goto out;
@@ -7077,13 +7293,13 @@ static NTSTATUS shortname_list_fn(const char *mnt, struct file_info *finfo,
 #endif
 
 	if (strchr(force_shortname_chars, i)) {
-		if (!finfo->short_name[0]) {
+		if (!finfo->short_name) {
 			/* Shortname not created when it should be. */
 			d_printf("(%s) ERROR: Shortname was not created for file %s containing %d\n",
 				__location__, finfo->name, i);
 			s->val = true;
 		}
-	} else if (finfo->short_name[0]){
+	} else if (finfo->short_name){
 		/* Shortname created when it should not be. */
 		d_printf("(%s) ERROR: Shortname %s was created for file %s\n",
 			__location__, finfo->short_name, finfo->name);
@@ -7148,11 +7364,11 @@ static bool run_shortname_test(int dummy)
 		cli_close(cli, fnum);
 
 		s.matched = 0;
-		cli_list(cli, "\\shortname\\test*.*", 0, shortname_list_fn,
-			 &s);
+		status = cli_list(cli, "\\shortname\\test*.*", 0,
+				  shortname_list_fn, &s);
 		if (s.matched != 1) {
 			d_printf("(%s) failed to list %s: %s\n",
-				__location__, fname, cli_errstr(cli));
+				__location__, fname, nt_errstr(status));
 			correct = false;
 			goto out;
 		}
@@ -7323,10 +7539,10 @@ static bool run_dir_createtime(int dummy)
 	/* Sleep 3 seconds, then create a file. */
 	sleep(3);
 
-	status = cli_open(cli, fname, O_RDWR | O_CREAT | O_EXCL,
+	status = cli_openx(cli, fname, O_RDWR | O_CREAT | O_EXCL,
                          DENY_NONE, &fnum);
 	if (!NT_STATUS_IS_OK(status)) {
-		printf("cli_open failed: %s\n", nt_errstr(status));
+		printf("cli_openx failed: %s\n", nt_errstr(status));
 		goto out;
 	}
 
@@ -7381,10 +7597,8 @@ static bool run_streamerror(int dummy)
 		return false;
 	}
 
-	cli_qpathinfo1(cli, streamname, &change_time, &access_time, &write_time,
-		      &size, &mode);
-	status = cli_nt_error(cli);
-
+	status = cli_qpathinfo1(cli, streamname, &change_time, &access_time,
+				&write_time, &size, &mode);
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
 		printf("pathinfo returned %s, expected "
 		       "NT_STATUS_OBJECT_NAME_NOT_FOUND\n",
@@ -7558,26 +7772,29 @@ static bool rbt_testval(struct db_context *db, const char *key,
 	TDB_DATA data = string_tdb_data(value);
 	bool ret = false;
 	NTSTATUS status;
+	TDB_DATA dbvalue;
 
-	rec = db->fetch_locked(db, db, string_tdb_data(key));
+	rec = dbwrap_fetch_locked(db, db, string_tdb_data(key));
 	if (rec == NULL) {
 		d_fprintf(stderr, "fetch_locked failed\n");
 		goto done;
 	}
-	status = rec->store(rec, data, 0);
+	status = dbwrap_record_store(rec, data, 0);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, "store failed: %s\n", nt_errstr(status));
 		goto done;
 	}
 	TALLOC_FREE(rec);
 
-	rec = db->fetch_locked(db, db, string_tdb_data(key));
+	rec = dbwrap_fetch_locked(db, db, string_tdb_data(key));
 	if (rec == NULL) {
 		d_fprintf(stderr, "second fetch_locked failed\n");
 		goto done;
 	}
-	if ((rec->value.dsize != data.dsize)
-	    || (memcmp(rec->value.dptr, data.dptr, data.dsize) != 0)) {
+
+	dbvalue = dbwrap_record_get_value(rec);
+	if ((dbvalue.dsize != data.dsize)
+	    || (memcmp(dbvalue.dptr, data.dptr, data.dsize) != 0)) {
 		d_fprintf(stderr, "Got wrong data back\n");
 		goto done;
 	}
@@ -8097,7 +8314,7 @@ static bool run_local_memcache(int dummy)
 	size_t size1, size2;
 	bool ret = false;
 
-	cache = memcache_init(NULL, 100);
+	cache = memcache_init(NULL, sizeof(void *) == 8 ? 200 : 100);
 
 	if (cache == NULL) {
 		printf("memcache_init failed\n");
@@ -8233,7 +8450,7 @@ static bool run_local_wbclient(int dummy)
 	i = 0;
 
 	while (i < nprocs * torture_numops) {
-		event_loop_once(ev);
+		tevent_loop_once(ev);
 	}
 
 	result = true;
@@ -8298,28 +8515,30 @@ fail:
 static bool dbtrans_inc(struct db_context *db)
 {
 	struct db_record *rec;
-	uint32_t *val;
+	uint32_t val;
 	bool ret = false;
 	NTSTATUS status;
+	TDB_DATA value;
 
-	rec = db->fetch_locked(db, db, string_term_tdb_data("transtest"));
+	rec = dbwrap_fetch_locked(db, db, string_term_tdb_data("transtest"));
 	if (rec == NULL) {
 		printf(__location__ "fetch_lock failed\n");
 		return false;
 	}
 
-	if (rec->value.dsize != sizeof(uint32_t)) {
+	value = dbwrap_record_get_value(rec);
+
+	if (value.dsize != sizeof(uint32_t)) {
 		printf(__location__ "value.dsize = %d\n",
-		       (int)rec->value.dsize);
+		       (int)value.dsize);
 		goto fail;
 	}
 
-	val = (uint32_t *)rec->value.dptr;
-	*val += 1;
+	memcpy(&val, value.dptr, sizeof(val));
+	val += 1;
 
-	status = rec->store(rec, make_tdb_data((uint8_t *)val,
-					       sizeof(uint32_t)),
-			    0);
+	status = dbwrap_record_store(
+		rec, make_tdb_data((uint8_t *)&val, sizeof(val)), 0);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf(__location__ "store failed: %s\n",
 		       nt_errstr(status));
@@ -8339,29 +8558,32 @@ static bool run_local_dbtrans(int dummy)
 	NTSTATUS status;
 	uint32_t initial;
 	int res;
+	TDB_DATA value;
 
 	db = db_open(talloc_tos(), "transtest.tdb", 0, TDB_DEFAULT,
-		     O_RDWR|O_CREAT, 0600);
+		     O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_1);
 	if (db == NULL) {
 		printf("Could not open transtest.db\n");
 		return false;
 	}
 
-	res = db->transaction_start(db);
+	res = dbwrap_transaction_start(db);
 	if (res != 0) {
 		printf(__location__ "transaction_start failed\n");
 		return false;
 	}
 
-	rec = db->fetch_locked(db, db, string_term_tdb_data("transtest"));
+	rec = dbwrap_fetch_locked(db, db, string_term_tdb_data("transtest"));
 	if (rec == NULL) {
 		printf(__location__ "fetch_lock failed\n");
 		return false;
 	}
 
-	if (rec->value.dptr == NULL) {
+	value = dbwrap_record_get_value(rec);
+
+	if (value.dptr == NULL) {
 		initial = 0;
-		status = rec->store(
+		status = dbwrap_record_store(
 			rec, make_tdb_data((uint8_t *)&initial,
 					   sizeof(initial)),
 			0);
@@ -8374,7 +8596,7 @@ static bool run_local_dbtrans(int dummy)
 
 	TALLOC_FREE(rec);
 
-	res = db->transaction_commit(db);
+	res = dbwrap_transaction_commit(db);
 	if (res != 0) {
 		printf(__location__ "transaction_commit failed\n");
 		return false;
@@ -8384,14 +8606,16 @@ static bool run_local_dbtrans(int dummy)
 		uint32_t val, val2;
 		int i;
 
-		res = db->transaction_start(db);
+		res = dbwrap_transaction_start(db);
 		if (res != 0) {
 			printf(__location__ "transaction_start failed\n");
 			break;
 		}
 
-		if (!dbwrap_fetch_uint32(db, "transtest", &val)) {
-			printf(__location__ "dbwrap_fetch_uint32 failed\n");
+		status = dbwrap_fetch_uint32(db, "transtest", &val);
+		if (!NT_STATUS_IS_OK(status)) {
+			printf(__location__ "dbwrap_fetch_uint32 failed: %s\n",
+			       nt_errstr(status));
 			break;
 		}
 
@@ -8401,8 +8625,10 @@ static bool run_local_dbtrans(int dummy)
 			}
 		}
 
-		if (!dbwrap_fetch_uint32(db, "transtest", &val2)) {
-			printf(__location__ "dbwrap_fetch_uint32 failed\n");
+		status = dbwrap_fetch_uint32(db, "transtest", &val2);
+		if (!NT_STATUS_IS_OK(status)) {
+			printf(__location__ "dbwrap_fetch_uint32 failed: %s\n",
+			       nt_errstr(status));
 			break;
 		}
 
@@ -8414,7 +8640,7 @@ static bool run_local_dbtrans(int dummy)
 
 		printf("val2=%d\r", val2);
 
-		res = db->transaction_commit(db);
+		res = dbwrap_transaction_commit(db);
 		if (res != 0) {
 			printf(__location__ "transaction_commit failed\n");
 			break;
@@ -8465,6 +8691,26 @@ static bool run_local_tevent_select(int dummy)
 fail:
 	TALLOC_FREE(ev);
 	return result;
+}
+
+static bool run_local_hex_encode_buf(int dummy)
+{
+	char buf[17];
+	uint8_t src[8];
+	int i;
+
+	for (i=0; i<sizeof(src); i++) {
+		src[i] = i;
+	}
+	hex_encode_buf(buf, src, sizeof(src));
+	if (strcmp(buf, "0001020304050607") != 0) {
+	       	return false;
+	}
+	hex_encode_buf(buf, NULL, 0);
+	if (buf[0] != '\0') {
+		return false;
+	}
+	return true;
 }
 
 static double create_procs(bool (*fn)(int), bool *result)
@@ -8637,6 +8883,7 @@ static struct {
 	{ "CHAIN2", run_chain2, 0},
 	{ "WINDOWS-WRITE", run_windows_write, 0},
 	{ "NTTRANS-CREATE", run_nttrans_create, 0},
+	{ "NTTRANS-FSCTL", run_nttrans_fsctl, 0},
 	{ "CLI_ECHO", run_cli_echo, 0},
 	{ "GETADDRINFO", run_getaddrinfo_send, 0},
 	{ "TLDAP", run_tldap },
@@ -8645,6 +8892,14 @@ static struct {
 	{ "BAD-NBT-SESSION", run_bad_nbt_session },
 	{ "SMB-ANY-CONNECT", run_smb_any_connect },
 	{ "NOTIFY-ONLINE", run_notify_online },
+	{ "SMB2-BASIC", run_smb2_basic },
+	{ "SMB2-NEGPROT", run_smb2_negprot },
+	{ "SMB2-SESSION-RECONNECT", run_smb2_session_reconnect },
+	{ "SMB2-TCON-DEPENDENCE", run_smb2_tcon_dependence },
+	{ "SMB2-MULTI-CHANNEL", run_smb2_multi_channel },
+	{ "SMB2-SESSION-REAUTH", run_smb2_session_reauth },
+	{ "CLEANUP1", run_cleanup1 },
+	{ "CLEANUP2", run_cleanup2 },
 	{ "LOCAL-SUBSTITUTE", run_local_substitute, 0},
 	{ "LOCAL-GENCACHE", run_local_gencache, 0},
 	{ "LOCAL-TALLOC-DICT", run_local_talloc_dict, 0},
@@ -8658,6 +8913,9 @@ static struct {
 	{ "LOCAL-DBTRANS", run_local_dbtrans, 0},
 	{ "LOCAL-TEVENT-SELECT", run_local_tevent_select, 0},
 	{ "LOCAL-CONVERT-STRING", run_local_convert_string, 0},
+	{ "LOCAL-CONV-AUTH-INFO", run_local_conv_auth_info, 0},
+	{ "LOCAL-sprintf_append", run_local_sprintf_append, 0},
+	{ "LOCAL-hex_encode_buf", run_local_hex_encode_buf, 0},
 	{NULL, NULL, 0}};
 
 
@@ -8778,7 +9036,7 @@ static void usage(void)
 			set_dyn_CONFIGFILE(getenv("SMB_CONF_PATH"));
 		}
 	}
-	lp_load(get_dyn_CONFIGFILE(),True,False,False,True);
+	lp_load_global(get_dyn_CONFIGFILE());
 	load_interfaces();
 
 	if (argc < 2) {

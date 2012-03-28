@@ -1,4 +1,4 @@
-#include "config.h"
+#include <ccan/tdb2/private.h>
 #include <unistd.h>
 #include "lock-tracking.h"
 
@@ -11,14 +11,7 @@ static int ftruncate_check(int fd, off_t length);
 #define fcntl fcntl_with_lockcheck
 #define ftruncate ftruncate_check
 
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/check.c>
-#include <ccan/tdb2/transaction.c>
+#include "tdb2-source.h"
 #include <ccan/tap/tap.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -135,15 +128,16 @@ static int ftruncate_check(int fd, off_t length)
 
 int main(int argc, char *argv[])
 {
-	const int flags[] = { TDB_DEFAULT,
-			      TDB_NOMMAP,
-			      TDB_CONVERT,
-			      TDB_CONVERT | TDB_NOMMAP };
+	const int flags[] = { TDB_DEFAULT, TDB_NOMMAP,
+			TDB_CONVERT, TDB_NOMMAP|TDB_CONVERT,
+			TDB_VERSION1, TDB_NOMMAP|TDB_VERSION1,
+			TDB_CONVERT|TDB_VERSION1,
+			TDB_NOMMAP|TDB_CONVERT|TDB_VERSION1 };
 	int i;
 	struct tdb_context *tdb;
 	TDB_DATA key, data;
 
-	plan_tests(20);
+	plan_tests(sizeof(flags)/sizeof(flags[0]) * 5);
 	agent = prepare_external_agent();
 	if (!agent)
 		err(1, "preparing agent");

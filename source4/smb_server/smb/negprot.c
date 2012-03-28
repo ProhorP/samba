@@ -125,9 +125,6 @@ static void reply_lanman1(struct smbsrv_request *req, uint16_t choice)
 
 	req->smb_conn->negotiate.encrypted_passwords = lpcfg_encrypted_passwords(req->smb_conn->lp_ctx);
 
-	if (lpcfg_security(req->smb_conn->lp_ctx) != SEC_SHARE)
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-
 	if (req->smb_conn->negotiate.encrypted_passwords)
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 
@@ -183,9 +180,6 @@ static void reply_lanman2(struct smbsrv_request *req, uint16_t choice)
 
 	req->smb_conn->negotiate.encrypted_passwords = lpcfg_encrypted_passwords(req->smb_conn->lp_ctx);
   
-	if (lpcfg_security(req->smb_conn->lp_ctx) != SEC_SHARE)
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-
 	if (req->smb_conn->negotiate.encrypted_passwords)
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 
@@ -263,7 +257,6 @@ static void reply_nt1(struct smbsrv_request *req, uint16_t choice)
 	   supports it and we can do encrypted passwords */
 	
 	if (req->smb_conn->negotiate.encrypted_passwords && 
-	    (lpcfg_security(req->smb_conn->lp_ctx) != SEC_SHARE) &&
 	    lpcfg_use_spnego(req->smb_conn->lp_ctx) &&
 	    (req->flags2 & FLAGS2_EXTENDED_SECURITY)) {
 		negotiate_spnego = true; 
@@ -301,9 +294,7 @@ static void reply_nt1(struct smbsrv_request *req, uint16_t choice)
 		capabilities |= CAP_DFS;
 	}
 	
-	if (lpcfg_security(req->smb_conn->lp_ctx) != SEC_SHARE) {
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-	}
+	secword |= NEGOTIATE_SECURITY_USER_LEVEL;
 
 	if (req->smb_conn->negotiate.encrypted_passwords) {
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
@@ -383,16 +374,12 @@ static void reply_nt1(struct smbsrv_request *req, uint16_t choice)
 		}
 		req->smb_conn->negotiate.server_credentials = talloc_reparent(req, req->smb_conn, server_credentials);
 
-		gensec_set_target_service(gensec_security, "cifs");
-
-		gensec_set_credentials(gensec_security, server_credentials);
-
 		oid = GENSEC_OID_SPNEGO;
 		nt_status = gensec_start_mech_by_oid(gensec_security, oid);
 		
 		if (NT_STATUS_IS_OK(nt_status)) {
 			/* Get and push the proposed OID list into the packets */
-			nt_status = gensec_update(gensec_security, req, null_data_blob, &blob);
+			nt_status = gensec_update(gensec_security, req, req->smb_conn->connection->event.ctx, null_data_blob, &blob);
 
 			if (!NT_STATUS_IS_OK(nt_status) && !NT_STATUS_EQUAL(nt_status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
 				DEBUG(1, ("Failed to get SPNEGO to give us the first token: %s\n", nt_errstr(nt_status)));
@@ -465,7 +452,7 @@ static const struct {
 	void (*proto_reply_fn)(struct smbsrv_request *req, uint16_t choice);
 	int protocol_level;
 } supported_protocols[] = {
-	{"SMB 2.002",			"SMB2",		reply_smb2,	PROTOCOL_SMB2},
+	{"SMB 2.002",			"SMB2",		reply_smb2,	PROTOCOL_SMB2_02},
 	{"NT LANMAN 1.0",		"NT1",		reply_nt1,	PROTOCOL_NT1},
 	{"NT LM 0.12",			"NT1",		reply_nt1,	PROTOCOL_NT1},
 	{"LANMAN2.1",			"LANMAN2",	reply_lanman2,	PROTOCOL_LANMAN2},

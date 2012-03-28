@@ -24,10 +24,11 @@
 #include "libcli/composite/composite.h"
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
-#include "libcli/raw/ioctl.h"
+#include "../libcli/smb/smb_constants.h"
 #include "librpc/rpc/dcerpc.h"
 #include "librpc/rpc/dcerpc_proto.h"
 #include "librpc/rpc/rpc_common.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /* transport private information used by SMB2 pipe transport */
 struct smb2_private {
@@ -78,6 +79,7 @@ struct smb2_read_state {
 */
 static void smb2_read_callback(struct smb2_request *req)
 {
+	struct dcecli_connection *c;
 	struct smb2_private *smb;
 	struct smb2_read_state *state;
 	struct smb2_read io;
@@ -86,26 +88,27 @@ static void smb2_read_callback(struct smb2_request *req)
 
 	state = talloc_get_type(req->async.private_data, struct smb2_read_state);
 	smb = talloc_get_type(state->c->transport.private_data, struct smb2_private);
+	c = state->c;
 
 	status = smb2_read_recv(req, state, &io);
 	if (NT_STATUS_IS_ERR(status)) {
-		pipe_dead(state->c, status);
 		talloc_free(state);
+		pipe_dead(c, status);
 		return;
 	}
 
 	if (!data_blob_append(state, &state->data, 
 				  io.out.data.data, io.out.data.length)) {
-		pipe_dead(state->c, NT_STATUS_NO_MEMORY);
 		talloc_free(state);
+		pipe_dead(c, NT_STATUS_NO_MEMORY);
 		return;
 	}
 
 	if (state->data.length < 16) {
 		DEBUG(0,("dcerpc_smb2: short packet (length %d) in read callback!\n",
 			 (int)state->data.length));
-		pipe_dead(state->c, NT_STATUS_INFO_LENGTH_MISMATCH);
 		talloc_free(state);
+		pipe_dead(c, NT_STATUS_INFO_LENGTH_MISMATCH);
 		return;
 	}
 
@@ -113,7 +116,6 @@ static void smb2_read_callback(struct smb2_request *req)
 
 	if (frag_length <= state->data.length) {
 		DATA_BLOB data = state->data;
-		struct dcecli_connection *c = state->c;
 		talloc_steal(c, data.data);
 		talloc_free(state);
 		c->transport.recv_data(c, &data, NT_STATUS_OK);
@@ -131,8 +133,8 @@ static void smb2_read_callback(struct smb2_request *req)
 	
 	req = smb2_read_send(smb->tree, &io);
 	if (req == NULL) {
-		pipe_dead(state->c, NT_STATUS_NO_MEMORY);
 		talloc_free(state);
+		pipe_dead(c, NT_STATUS_NO_MEMORY);
 		return;
 	}
 
@@ -152,7 +154,7 @@ static NTSTATUS send_read_request_continue(struct dcecli_connection *c, DATA_BLO
 	struct smb2_read_state *state;
 	struct smb2_request *req;
 
-	state = talloc(smb, struct smb2_read_state);
+	state = talloc(c, struct smb2_read_state);
 	if (state == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -283,13 +285,17 @@ static NTSTATUS smb2_send_trans_request(struct dcecli_connection *c, DATA_BLOB *
 static void smb2_write_callback(struct smb2_request *req)
 {
 	struct dcecli_connection *c = (struct dcecli_connection *)req->async.private_data;
+	struct smb2_write io;
+	NTSTATUS status;
 
-	if (!NT_STATUS_IS_OK(req->status)) {
-		DEBUG(0,("dcerpc_smb2: write callback error\n"));
-		pipe_dead(c, req->status);
+	ZERO_STRUCT(io);
+
+	status = smb2_write_recv(req, &io);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0,("dcerpc_smb2: write callback error: %s\n",
+			 nt_errstr(status)));
+		pipe_dead(c, status);
 	}
-
-	smb2_request_destroy(req);
 }
 
 /* 
@@ -372,7 +378,7 @@ static const char *smb2_target_hostname(struct dcecli_connection *c)
 {
 	struct smb2_private *smb = talloc_get_type(c->transport.private_data, 
 						   struct smb2_private);
-	return smb->tree->session->transport->socket->hostname;
+	return smbXcli_conn_remote_name(smb->tree->session->transport->conn);
 }
 
 /*
@@ -483,7 +489,7 @@ static void pipe_open_recv(struct smb2_request *req)
 	smb->handle	= io.out.file.handle;
 	smb->tree	= talloc_reference(smb, tree);
 	smb->server_name= strupper_talloc(smb, 
-					  tree->session->transport->socket->hostname);
+					  smbXcli_conn_remote_name(tree->session->transport->conn));
 	if (composite_nomem(smb->server_name, ctx)) return;
 	smb->dead	= false;
 

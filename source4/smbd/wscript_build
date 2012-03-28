@@ -3,7 +3,7 @@
 bld.SAMBA_LIBRARY('service',
 	source='service.c service_stream.c service_named_pipe.c service_task.c',
 	autoproto='service_proto.h',
-	deps='tevent MESSAGING samba_socket RPC_NDR_IRPC NDR_NAMED_PIPE_AUTH npa_tstream gssapi credentials LIBTSOCKET LIBSAMBA_TSOCKET process_model',
+	deps='tevent MESSAGING samba_socket RPC_NDR_IRPC NDR_NAMED_PIPE_AUTH npa_tstream gssapi samba-credentials LIBTSOCKET LIBSAMBA_TSOCKET process_model',
 	private_library=True
 	)
 
@@ -76,7 +76,7 @@ bld.SAMBA_MODULE('process_model_onefork',
 bld.SAMBA_LIBRARY('process_model',
                   source='process_model.c',
                   autoproto='process_model_proto.h',
-                  deps='samba-util samba-hostconfig',
+                  deps='samba-util samba-hostconfig samba-modules',
                   private_library=True
                   )
 

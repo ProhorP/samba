@@ -27,7 +27,7 @@
 #include "../lib/async_req/async_sock.h"
 #include "ctdbd_conn.h"
 #include "../lib/util/select.h"
-#include "printing/pcap.h"
+#include "printing/queue_process.h"
 #include "system/select.h"
 #include "passdb.h"
 #include "auth.h"
@@ -35,12 +35,31 @@
 #include "smbprofile.h"
 #include "rpc_server/spoolss/srv_spoolss_nt.h"
 #include "libsmb/libsmb.h"
+#include "../lib/util/tevent_ntstatus.h"
+#include "../libcli/security/dom_sid.h"
+#include "../libcli/security/security_token.h"
+#include "lib/id_cache.h"
 
 extern bool global_machine_password_needs_changing;
 
+/* Internal message queue for deferred opens. */
+struct pending_message_list {
+	struct pending_message_list *next, *prev;
+	struct timeval request_time; /* When was this first issued? */
+	struct smbd_server_connection *sconn;
+	struct timed_event *te;
+	struct smb_perfcount_data pcd;
+	uint32_t seqnum;
+	bool encrypted;
+	bool processed;
+	DATA_BLOB buf;
+	DATA_BLOB private_data;
+};
+
 static void construct_reply_common(struct smb_request *req, const char *inbuf,
 				   char *outbuf);
-static struct pending_message_list *get_deferred_open_message_smb(uint64_t mid);
+static struct pending_message_list *get_deferred_open_message_smb(
+	struct smbd_server_connection *sconn, uint64_t mid);
 
 static bool smbd_lock_socket_internal(struct smbd_server_connection *sconn)
 {
@@ -142,7 +161,7 @@ bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 	}
 
 	if (do_encrypt) {
-		NTSTATUS status = srv_encrypt_buffer(buffer, &buf_out);
+		NTSTATUS status = srv_encrypt_buffer(sconn, buffer, &buf_out);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("send_smb: SMB encryption failed "
 				"on outgoing packet! Error %s\n",
@@ -166,12 +185,12 @@ bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 			 get_peer_addr(sconn->sock, addr, sizeof(addr)),
 			 (int)ret, strerror(errno) ));
 
-		srv_free_enc_buffer(buf_out);
+		srv_free_enc_buffer(sconn, buf_out);
 		goto out;
 	}
 
 	SMB_PERFCOUNT_SET_MSGLEN_OUT(pcd, len);
-	srv_free_enc_buffer(buf_out);
+	srv_free_enc_buffer(sconn, buf_out);
 out:
 	SMB_PERFCOUNT_END(pcd);
 
@@ -197,9 +216,10 @@ int srv_set_message(char *buf,
 	return (smb_size + num_words*2 + num_bytes);
 }
 
-static bool valid_smb_header(const uint8_t *inbuf)
+static bool valid_smb_header(struct smbd_server_connection *sconn,
+			     const uint8_t *inbuf)
 {
-	if (is_encrypted_packet(inbuf)) {
+	if (is_encrypted_packet(sconn, inbuf)) {
 		return true;
 	}
 	/*
@@ -287,7 +307,9 @@ static NTSTATUS receive_smb_raw_talloc_partial_read(TALLOC_CTX *mem_ctx,
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("read_fd_with_timeout failed for client %s read "
-			  "error = %s.\n", sconn->client_id.addr,
+			  "error = %s.\n",
+			  tsocket_address_string(sconn->remote_address,
+						 talloc_tos()),
 			  nt_errstr(status)));
 		return status;
 	}
@@ -451,14 +473,17 @@ static NTSTATUS receive_smb_talloc(TALLOC_CTX *mem_ctx,
 	status = receive_smb_raw_talloc(mem_ctx, sconn, sock, buffer, timeout,
 					p_unread, &len);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("read_smb_length_return_keepalive failed for "
-			  "client %s read error = %s.\n",
-			  sconn->client_id.addr, nt_errstr(status)));
+		DEBUG(NT_STATUS_EQUAL(status, NT_STATUS_END_OF_FILE)?5:1,
+		      ("receive_smb_raw_talloc failed for client %s "
+		       "read error = %s.\n",
+		       tsocket_address_string(sconn->remote_address,
+					      talloc_tos()),
+		       nt_errstr(status)) );
 		return status;
 	}
 
-	if (is_encrypted_packet((uint8_t *)*buffer)) {
-		status = srv_decrypt_buffer(*buffer);
+	if (is_encrypted_packet(sconn, (uint8_t *)*buffer)) {
+		status = srv_decrypt_buffer(sconn, *buffer);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("receive_smb_talloc: SMB decryption failed on "
 				"incoming packet! Error %s\n",
@@ -504,7 +529,7 @@ static bool init_smb_request(struct smb_request *req,
 	req->vuid   = SVAL(inbuf, smb_uid);
 	req->tid    = SVAL(inbuf, smb_tid);
 	req->wct    = CVAL(inbuf, smb_wct);
-	req->vwv    = discard_const_p(uint16_t, (inbuf+smb_vwv));
+	req->vwv    = (const uint16_t *)(inbuf+smb_vwv);
 	req->buflen = smb_buflen(inbuf);
 	req->buf    = (const uint8_t *)smb_buf_const(inbuf);
 	req->unread_bytes = unread_bytes;
@@ -550,6 +575,7 @@ static void smbd_deferred_open_timer(struct event_context *ev,
 {
 	struct pending_message_list *msg = talloc_get_type(private_data,
 					   struct pending_message_list);
+	struct smbd_server_connection *sconn = msg->sconn;
 	TALLOC_CTX *mem_ctx = talloc_tos();
 	uint64_t mid = (uint64_t)SVAL(msg->buf.data,smb_mid);
 	uint8_t *inbuf;
@@ -570,14 +596,14 @@ static void smbd_deferred_open_timer(struct event_context *ev,
 	 * re-processed in error. */
 	msg->processed = true;
 
-	process_smb(smbd_server_conn, inbuf,
+	process_smb(sconn, inbuf,
 		    msg->buf.length, 0,
 		    msg->seqnum, msg->encrypted, &msg->pcd);
 
 	/* If it's still there and was processed, remove it. */
-	msg = get_deferred_open_message_smb(mid);
+	msg = get_deferred_open_message_smb(sconn, mid);
 	if (msg && msg->processed) {
-		remove_deferred_open_message_smb(mid);
+		remove_deferred_open_message_smb(sconn, mid);
 	}
 }
 
@@ -600,6 +626,7 @@ static bool push_queued_message(struct smb_request *req,
 		DEBUG(0,("push_message: malloc fail (1)\n"));
 		return False;
 	}
+	msg->sconn = req->sconn;
 
 	msg->buf = data_blob_talloc(msg, req->inbuf, msg_len);
 	if(msg->buf.data == NULL) {
@@ -624,18 +651,19 @@ static bool push_queued_message(struct smb_request *req,
 		}
 	}
 
-	msg->te = event_add_timed(server_event_context(),
-				  msg,
-				  end_time,
-				  smbd_deferred_open_timer,
-				  msg);
+	msg->te = tevent_add_timer(msg->sconn->ev_ctx,
+				   msg,
+				   end_time,
+				   smbd_deferred_open_timer,
+				   msg);
 	if (!msg->te) {
 		DEBUG(0,("push_message: event_add_timed failed\n"));
 		TALLOC_FREE(msg);
 		return false;
 	}
 
-	DLIST_ADD_END(deferred_open_queue, msg, struct pending_message_list *);
+	DLIST_ADD_END(req->sconn->deferred_open_queue, msg,
+		      struct pending_message_list *);
 
 	DEBUG(10,("push_message: pushed message length %u on "
 		  "deferred_open_queue\n", (unsigned int)msg_len));
@@ -647,22 +675,23 @@ static bool push_queued_message(struct smb_request *req,
  Function to delete a sharing violation open message by mid.
 ****************************************************************************/
 
-void remove_deferred_open_message_smb(uint64_t mid)
+void remove_deferred_open_message_smb(struct smbd_server_connection *sconn,
+				      uint64_t mid)
 {
 	struct pending_message_list *pml;
 
-	if (smbd_server_conn->using_smb2) {
-		remove_deferred_open_message_smb2(smbd_server_conn, mid);
+	if (sconn->using_smb2) {
+		remove_deferred_open_message_smb2(sconn, mid);
 		return;
 	}
 
-	for (pml = deferred_open_queue; pml; pml = pml->next) {
+	for (pml = sconn->deferred_open_queue; pml; pml = pml->next) {
 		if (mid == (uint64_t)SVAL(pml->buf.data,smb_mid)) {
 			DEBUG(10,("remove_deferred_open_message_smb: "
 				  "deleting mid %llu len %u\n",
 				  (unsigned long long)mid,
 				  (unsigned int)pml->buf.length ));
-			DLIST_REMOVE(deferred_open_queue, pml);
+			DLIST_REMOVE(sconn->deferred_open_queue, pml);
 			TALLOC_FREE(pml);
 			return;
 		}
@@ -674,17 +703,18 @@ void remove_deferred_open_message_smb(uint64_t mid)
  schedule it for immediate processing.
 ****************************************************************************/
 
-void schedule_deferred_open_message_smb(uint64_t mid)
+void schedule_deferred_open_message_smb(struct smbd_server_connection *sconn,
+					uint64_t mid)
 {
 	struct pending_message_list *pml;
 	int i = 0;
 
-	if (smbd_server_conn->using_smb2) {
-		schedule_deferred_open_message_smb2(smbd_server_conn, mid);
+	if (sconn->using_smb2) {
+		schedule_deferred_open_message_smb2(sconn, mid);
 		return;
 	}
 
-	for (pml = deferred_open_queue; pml; pml = pml->next) {
+	for (pml = sconn->deferred_open_queue; pml; pml = pml->next) {
 		uint64_t msg_mid = (uint64_t)SVAL(pml->buf.data,smb_mid);
 
 		DEBUG(10,("schedule_deferred_open_message_smb: [%d] "
@@ -708,11 +738,11 @@ void schedule_deferred_open_message_smb(uint64_t mid)
 				"scheduling mid %llu\n",
 				(unsigned long long)mid ));
 
-			te = event_add_timed(server_event_context(),
-					     pml,
-					     timeval_zero(),
-					     smbd_deferred_open_timer,
-					     pml);
+			te = tevent_add_timer(pml->sconn->ev_ctx,
+					      pml,
+					      timeval_zero(),
+					      smbd_deferred_open_timer,
+					      pml);
 			if (!te) {
 				DEBUG(10,("schedule_deferred_open_message_smb: "
 					"event_add_timed() failed, "
@@ -722,7 +752,7 @@ void schedule_deferred_open_message_smb(uint64_t mid)
 
 			TALLOC_FREE(pml->te);
 			pml->te = te;
-			DLIST_PROMOTE(deferred_open_queue, pml);
+			DLIST_PROMOTE(sconn->deferred_open_queue, pml);
 			return;
 		}
 	}
@@ -736,15 +766,15 @@ void schedule_deferred_open_message_smb(uint64_t mid)
  Return true if this mid is on the deferred queue and was not yet processed.
 ****************************************************************************/
 
-bool open_was_deferred(uint64_t mid)
+bool open_was_deferred(struct smbd_server_connection *sconn, uint64_t mid)
 {
 	struct pending_message_list *pml;
 
-	if (smbd_server_conn->using_smb2) {
-		return open_was_deferred_smb2(smbd_server_conn, mid);
+	if (sconn->using_smb2) {
+		return open_was_deferred_smb2(sconn, mid);
 	}
 
-	for (pml = deferred_open_queue; pml; pml = pml->next) {
+	for (pml = sconn->deferred_open_queue; pml; pml = pml->next) {
 		if (((uint64_t)SVAL(pml->buf.data,smb_mid)) == mid && !pml->processed) {
 			return True;
 		}
@@ -756,11 +786,12 @@ bool open_was_deferred(uint64_t mid)
  Return the message queued by this mid.
 ****************************************************************************/
 
-static struct pending_message_list *get_deferred_open_message_smb(uint64_t mid)
+static struct pending_message_list *get_deferred_open_message_smb(
+	struct smbd_server_connection *sconn, uint64_t mid)
 {
 	struct pending_message_list *pml;
 
-	for (pml = deferred_open_queue; pml; pml = pml->next) {
+	for (pml = sconn->deferred_open_queue; pml; pml = pml->next) {
 		if (((uint64_t)SVAL(pml->buf.data,smb_mid)) == mid) {
 			return pml;
 		}
@@ -778,13 +809,13 @@ bool get_deferred_open_message_state(struct smb_request *smbreq,
 {
 	struct pending_message_list *pml;
 
-	if (smbd_server_conn->using_smb2) {
+	if (smbreq->sconn->using_smb2) {
 		return get_deferred_open_message_state_smb2(smbreq->smb2req,
 					p_request_time,
 					pp_state);
 	}
 
-	pml = get_deferred_open_message_smb(smbreq->mid);
+	pml = get_deferred_open_message_smb(smbreq->sconn, smbreq->mid);
 	if (!pml) {
 		return false;
 	}
@@ -840,86 +871,6 @@ bool push_deferred_open_message_smb(struct smb_request *req,
 				   private_data, priv_len);
 }
 
-struct idle_event {
-	struct timed_event *te;
-	struct timeval interval;
-	char *name;
-	bool (*handler)(const struct timeval *now, void *private_data);
-	void *private_data;
-};
-
-static void smbd_idle_event_handler(struct event_context *ctx,
-				    struct timed_event *te,
-				    struct timeval now,
-				    void *private_data)
-{
-	struct idle_event *event =
-		talloc_get_type_abort(private_data, struct idle_event);
-
-	TALLOC_FREE(event->te);
-
-	DEBUG(10,("smbd_idle_event_handler: %s %p called\n",
-		  event->name, event->te));
-
-	if (!event->handler(&now, event->private_data)) {
-		DEBUG(10,("smbd_idle_event_handler: %s %p stopped\n",
-			  event->name, event->te));
-		/* Don't repeat, delete ourselves */
-		TALLOC_FREE(event);
-		return;
-	}
-
-	DEBUG(10,("smbd_idle_event_handler: %s %p rescheduled\n",
-		  event->name, event->te));
-
-	event->te = event_add_timed(ctx, event,
-				    timeval_sum(&now, &event->interval),
-				    smbd_idle_event_handler, event);
-
-	/* We can't do much but fail here. */
-	SMB_ASSERT(event->te != NULL);
-}
-
-struct idle_event *event_add_idle(struct event_context *event_ctx,
-				  TALLOC_CTX *mem_ctx,
-				  struct timeval interval,
-				  const char *name,
-				  bool (*handler)(const struct timeval *now,
-						  void *private_data),
-				  void *private_data)
-{
-	struct idle_event *result;
-	struct timeval now = timeval_current();
-
-	result = talloc(mem_ctx, struct idle_event);
-	if (result == NULL) {
-		DEBUG(0, ("talloc failed\n"));
-		return NULL;
-	}
-
-	result->interval = interval;
-	result->handler = handler;
-	result->private_data = private_data;
-
-	if (!(result->name = talloc_asprintf(result, "idle_evt(%s)", name))) {
-		DEBUG(0, ("talloc failed\n"));
-		TALLOC_FREE(result);
-		return NULL;
-	}
-
-	result->te = event_add_timed(event_ctx, result,
-				     timeval_sum(&now, &interval),
-				     smbd_idle_event_handler, result);
-	if (result->te == NULL) {
-		DEBUG(0, ("event_add_timed failed\n"));
-		TALLOC_FREE(result);
-		return NULL;
-	}
-
-	DEBUG(10,("event_add_idle: %s %p\n", result->name, result->te));
-	return result;
-}
-
 static void smbd_sig_term_handler(struct tevent_context *ev,
 				  struct tevent_signal *se,
 				  int signum,
@@ -930,15 +881,15 @@ static void smbd_sig_term_handler(struct tevent_context *ev,
 	exit_server_cleanly("termination signal");
 }
 
-void smbd_setup_sig_term_handler(void)
+void smbd_setup_sig_term_handler(struct smbd_server_connection *sconn)
 {
 	struct tevent_signal *se;
 
-	se = tevent_add_signal(server_event_context(),
-			       server_event_context(),
+	se = tevent_add_signal(sconn->ev_ctx,
+			       sconn,
 			       SIGTERM, 0,
 			       smbd_sig_term_handler,
-			       NULL);
+			       sconn);
 	if (!se) {
 		exit_server("failed to setup SIGTERM handler");
 	}
@@ -951,81 +902,43 @@ static void smbd_sig_hup_handler(struct tevent_context *ev,
 				  void *siginfo,
 				  void *private_data)
 {
-	struct messaging_context *msg_ctx = talloc_get_type_abort(
-		private_data, struct messaging_context);
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
+
 	change_to_root_user();
 	DEBUG(1,("Reloading services after SIGHUP\n"));
-	reload_services(msg_ctx, smbd_server_conn->sock, False);
-	if (am_parent) {
-		pcap_cache_reload(ev, msg_ctx, &reload_pcap_change_notify);
-	}
+	reload_services(sconn, conn_snum_used, false);
 }
 
-void smbd_setup_sig_hup_handler(struct tevent_context *ev,
-				struct messaging_context *msg_ctx)
+void smbd_setup_sig_hup_handler(struct smbd_server_connection *sconn)
 {
 	struct tevent_signal *se;
 
-	se = tevent_add_signal(ev, ev, SIGHUP, 0, smbd_sig_hup_handler,
-			       msg_ctx);
+	se = tevent_add_signal(sconn->ev_ctx,
+			       sconn,
+			       SIGHUP, 0,
+			       smbd_sig_hup_handler,
+			       sconn);
 	if (!se) {
 		exit_server("failed to setup SIGHUP handler");
 	}
 }
 
-static NTSTATUS smbd_server_connection_loop_once(struct smbd_server_connection *conn)
+static void smbd_conf_updated(struct messaging_context *msg,
+			      void *private_data,
+			      uint32_t msg_type,
+			      struct server_id server_id,
+			      DATA_BLOB *data)
 {
-	int timeout;
-	int num_pfds = 0;
-	int ret;
-	bool retry;
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
 
-	timeout = SMBD_SELECT_TIMEOUT * 1000;
-
-	/*
-	 * Are there any timed events waiting ? If so, ensure we don't
-	 * select for longer than it would take to wait for them.
-	 */
-
-	event_add_to_poll_args(server_event_context(), conn,
-			       &conn->pfds, &num_pfds, &timeout);
-
-	/* Process a signal and timed events now... */
-	if (run_events_poll(server_event_context(), 0, NULL, 0)) {
-		return NT_STATUS_RETRY;
-	}
-
-	{
-		int sav;
-		START_PROFILE(smbd_idle);
-
-		ret = sys_poll(conn->pfds, num_pfds, timeout);
-		sav = errno;
-
-		END_PROFILE(smbd_idle);
-		errno = sav;
-	}
-
-	if (ret == -1) {
-		if (errno == EINTR) {
-			return NT_STATUS_RETRY;
-		}
-		return map_nt_error_from_unix(errno);
-	}
-
-	retry = run_events_poll(server_event_context(), ret, conn->pfds,
-				num_pfds);
-	if (retry) {
-		return NT_STATUS_RETRY;
-	}
-
-	/* Did we timeout ? */
-	if (ret == 0) {
-		return NT_STATUS_RETRY;
-	}
-
-	/* should not be reached */
-	return NT_STATUS_INTERNAL_ERROR;
+	DEBUG(10,("smbd_conf_updated: Got message saying smb.conf was "
+		  "updated. Reloading.\n"));
+	change_to_root_user();
+	reload_services(sconn, conn_snum_used, false);
 }
 
 /*
@@ -1436,17 +1349,9 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 	uint16 session_tag;
 	connection_struct *conn = NULL;
 	struct smbd_server_connection *sconn = req->sconn;
+	char *raddr;
 
 	errno = 0;
-
-	/* Make sure this is an SMB packet. smb_size contains NetBIOS header
-	 * so subtract 4 from it. */
-	if (!valid_smb_header(req->inbuf)
-	    || (size < (smb_size - 4))) {
-		DEBUG(2,("Non-SMB packet of length %d. Terminating server\n",
-			 smb_len(req->inbuf)));
-		exit_server_cleanly("Non-SMB packet");
-	}
 
 	if (smb_messages[type].fn == NULL) {
 		DEBUG(0,("Unknown message type %d!\n",type));
@@ -1487,9 +1392,9 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 			vuser = get_valid_user_struct(sconn, session_tag);
 			if (vuser) {
 				set_current_user_info(
-					vuser->session_info->sanitized_username,
-					vuser->session_info->unix_name,
-					vuser->session_info->info3->base.domain.string);
+					vuser->session_info->unix_info->sanitized_username,
+					vuser->session_info->unix_info->unix_name,
+					vuser->session_info->info->domain_name);
 			}
 		}
 	}
@@ -1560,12 +1465,19 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 		conn->num_smb_operations++;
 	}
 
+	raddr = tsocket_address_inet_addr_string(sconn->remote_address,
+						 talloc_tos());
+	if (raddr == NULL) {
+		reply_nterror(req, NT_STATUS_NO_MEMORY);
+		return conn;
+	}
+
 	/* does this protocol need to be run as guest? */
 	if ((flags & AS_GUEST)
 	    && (!change_to_guest() ||
 		!allow_access(lp_hostsdeny(-1), lp_hostsallow(-1),
-			      sconn->client_id.name,
-			      sconn->client_id.addr))) {
+			      sconn->remote_hostname,
+			      raddr))) {
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return conn;
 	}
@@ -1660,7 +1572,7 @@ static void process_smb(struct smbd_server_connection *sconn,
 	DEBUG(3, ("Transaction %d of length %d (%u toread)\n",
 		  sconn->trans_num, (int)nread, (unsigned int)unread_bytes));
 
-	if (msg_type != 0) {
+	if (msg_type != NBSSmessage) {
 		/*
 		 * NetBIOS session request, keepalive, etc.
 		 */
@@ -1674,12 +1586,31 @@ static void process_smb(struct smbd_server_connection *sconn,
 		if (smbd_is_smb2_header(inbuf, nread)) {
 			smbd_smb2_first_negprot(sconn, inbuf, nread);
 			return;
-		} else if (nread >= smb_size && valid_smb_header(inbuf)
+		} else if (nread >= smb_size && valid_smb_header(sconn, inbuf)
 				&& CVAL(inbuf, smb_com) != 0x72) {
 			/* This is a non-negprot SMB1 packet.
 			   Disable SMB2 from now on. */
 			sconn->using_smb2 = false;
 		}
+	}
+
+	/* Make sure this is an SMB packet. smb_size contains NetBIOS header
+	 * so subtract 4 from it. */
+	if ((nread < (smb_size - 4)) || !valid_smb_header(sconn, inbuf)) {
+		DEBUG(2,("Non-SMB packet of length %d. Terminating server\n",
+			 smb_len(inbuf)));
+
+		/* special magic for immediate exit */
+		if ((nread == 9) &&
+		    (IVAL(inbuf, 4) == 0x74697865) &&
+		    lp_parm_bool(-1, "smbd", "suicide mode", false)) {
+			uint8_t exitcode = CVAL(inbuf, 8);
+			DEBUG(1, ("Exiting immediately with code %d\n",
+				  (int)exitcode));
+			exit(exitcode);
+		}
+
+		exit_server_cleanly("Non-SMB packet");
 	}
 
 	show_msg((char *)inbuf);
@@ -1689,7 +1620,7 @@ static void process_smb(struct smbd_server_connection *sconn,
 	sconn->trans_num++;
 
 done:
-	sconn->smb1.num_requests++;
+	sconn->num_requests++;
 
 	/* The timeout_processing function isn't run nearly
 	   often enough to implement 'max log size' without
@@ -1698,7 +1629,7 @@ done:
 	   level 10.  Checking every 50 SMBs is a nice
 	   tradeoff of performance vs log file size overrun. */
 
-	if ((sconn->smb1.num_requests % 50) == 0 &&
+	if ((sconn->num_requests % 50) == 0 &&
 	    need_to_check_log_size()) {
 		change_to_root_user();
 		check_log_size();
@@ -1736,15 +1667,21 @@ void remove_from_common_flags2(uint32 v)
 static void construct_reply_common(struct smb_request *req, const char *inbuf,
 				   char *outbuf)
 {
+	uint16_t in_flags2 = SVAL(inbuf,smb_flg2);
+	uint16_t out_flags2 = common_flags2;
+
+	out_flags2 |= in_flags2 & FLAGS2_UNICODE_STRINGS;
+	out_flags2 |= in_flags2 & FLAGS2_SMB_SECURITY_SIGNATURES;
+	out_flags2 |= in_flags2 & FLAGS2_SMB_SECURITY_SIGNATURES_REQUIRED;
+
 	srv_set_message(outbuf,0,0,false);
 
 	SCVAL(outbuf, smb_com, req->cmd);
 	SIVAL(outbuf,smb_rcls,0);
 	SCVAL(outbuf,smb_flg, FLAG_REPLY | (CVAL(inbuf,smb_flg) & FLAG_CASELESS_PATHNAMES)); 
-	SSVAL(outbuf,smb_flg2,
-		(SVAL(inbuf,smb_flg2) & FLAGS2_UNICODE_STRINGS) |
-		common_flags2);
+	SSVAL(outbuf,smb_flg2, out_flags2);
 	memset(outbuf+smb_pidhigh,'\0',(smb_tid-smb_pidhigh));
+	memcpy(outbuf+smb_ss_field, inbuf+smb_ss_field, 8);
 
 	SSVAL(outbuf,smb_tid,SVAL(inbuf,smb_tid));
 	SSVAL(outbuf,smb_pid,SVAL(inbuf,smb_pid));
@@ -2088,15 +2025,24 @@ void chain_reply(struct smb_request *req)
 	SMB_PERFCOUNT_SET_MSGLEN_IN(&req->pcd, smblen);
 
 	/*
-	 * Check if the client tries to fool us. The request so far uses the
-	 * space to the end of the byte buffer in the request just
-	 * processed. The chain_offset can't point into that area. If that was
-	 * the case, we could end up with an endless processing of the chain,
-	 * we would always handle the same request.
+	 * Check if the client tries to fool us. The chain offset
+	 * needs to point beyond the current request in the chain, it
+	 * needs to strictly grow. Otherwise we might be tricked into
+	 * an endless loop always processing the same request over and
+	 * over again. We used to assume that vwv and the byte buffer
+	 * array in a chain are always attached, but OS/2 the
+	 * Write&X/Read&X chain puts the Read&X vwv array right behind
+	 * the Write&X vwv chain. The Write&X bcc array is put behind
+	 * the Read&X vwv array. So now we check whether the chain
+	 * offset points strictly behind the previous vwv
+	 * array. req->buf points right after the vwv array of the
+	 * previous request. See
+	 * https://bugzilla.samba.org/show_bug.cgi?id=8360 for more
+	 * information.
 	 */
 
-	already_used = PTR_DIFF(req->buf+req->buflen, smb_base(req->inbuf));
-	if (chain_offset < already_used) {
+	already_used = PTR_DIFF(req->buf, smb_base(req->inbuf));
+	if (chain_offset <= already_used) {
 		goto error;
 	}
 
@@ -2231,7 +2177,7 @@ static void check_reload(struct smbd_server_connection *sconn, time_t t)
 	}
 
 	if (t >= last_smb_conf_reload_time+SMBD_RELOAD_CHECK) {
-		reload_services(sconn->msg_ctx, sconn->sock, True);
+		reload_services(sconn, conn_snum_used, true);
 		last_smb_conf_reload_time = t;
 	}
 }
@@ -2263,35 +2209,41 @@ static void smbd_server_connection_read_handler(
 	NTSTATUS status;
 	uint32_t seqnum;
 
-	bool from_client = (sconn->sock == fd);
+	bool from_client;
+
+	if (lp_async_smb_echo_handler()
+	    && fd_is_readable(sconn->smb1.echo_handler.trusted_fd)) {
+		/*
+		 * This is the super-ugly hack to prefer the packets
+		 * forwarded by the echo handler over the ones by the
+		 * client directly
+		 */
+		fd = sconn->smb1.echo_handler.trusted_fd;
+	}
+
+	from_client = (sconn->sock == fd);
 
 	if (from_client) {
 		smbd_lock_socket(sconn);
 
-		if (lp_async_smb_echo_handler() && !fd_is_readable(fd)) {
+		if (!fd_is_readable(fd)) {
 			DEBUG(10,("the echo listener was faster\n"));
 			smbd_unlock_socket(sconn);
 			return;
 		}
+	}
 
-		/* TODO: make this completely nonblocking */
-		status = receive_smb_talloc(mem_ctx, sconn, fd,
-					    (char **)(void *)&inbuf,
-					    0, /* timeout */
-					    &unread_bytes,
-					    &encrypted,
-					    &inbuf_len, &seqnum,
-					    false /* trusted channel */);
+	/* TODO: make this completely nonblocking */
+	status = receive_smb_talloc(mem_ctx, sconn, fd,
+				    (char **)(void *)&inbuf,
+				    0, /* timeout */
+				    &unread_bytes,
+				    &encrypted,
+				    &inbuf_len, &seqnum,
+				    false /* trusted channel */);
+
+	if (from_client) {
 		smbd_unlock_socket(sconn);
-	} else {
-		/* TODO: make this completely nonblocking */
-		status = receive_smb_talloc(mem_ctx, sconn, fd,
-					    (char **)(void *)&inbuf,
-					    0, /* timeout */
-					    &unread_bytes,
-					    &encrypted,
-					    &inbuf_len, &seqnum,
-					    true /* trusted channel */);
 	}
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_RETRY)) {
@@ -2397,7 +2349,8 @@ static int client_get_tcp_info(int sock, struct sockaddr_storage *server,
  */
 static bool keepalive_fn(const struct timeval *now, void *private_data)
 {
-	struct smbd_server_connection *sconn = smbd_server_conn;
+	struct smbd_server_connection *sconn = talloc_get_type_abort(
+		private_data, struct smbd_server_connection);
 	bool ret;
 
 	if (sconn->using_smb2) {
@@ -2405,9 +2358,9 @@ static bool keepalive_fn(const struct timeval *now, void *private_data)
 		return false;
 	}
 
-	smbd_lock_socket(smbd_server_conn);
+	smbd_lock_socket(sconn);
 	ret = send_keepalive(sconn->sock);
-	smbd_unlock_socket(smbd_server_conn);
+	smbd_unlock_socket(sconn);
 
 	if (!ret) {
 		char addr[INET6_ADDRSTRLEN];
@@ -2474,30 +2427,158 @@ static bool housekeeping_fn(const struct timeval *now, void *private_data)
 	return true;
 }
 
-static int create_unlink_tmp(const char *dir)
-{
-	char *fname;
-	int fd;
+/*
+ * Read an smb packet in the echo handler child, giving the parent
+ * smbd one second to react once the socket becomes readable.
+ */
 
-	fname = talloc_asprintf(talloc_tos(), "%s/listenerlock_XXXXXX", dir);
-	if (fname == NULL) {
-		errno = ENOMEM;
-		return -1;
+struct smbd_echo_read_state {
+	struct tevent_context *ev;
+	struct smbd_server_connection *sconn;
+
+	char *buf;
+	size_t buflen;
+	uint32_t seqnum;
+};
+
+static void smbd_echo_read_readable(struct tevent_req *subreq);
+static void smbd_echo_read_waited(struct tevent_req *subreq);
+
+static struct tevent_req *smbd_echo_read_send(
+	TALLOC_CTX *mem_ctx, struct tevent_context *ev,
+	struct smbd_server_connection *sconn)
+{
+	struct tevent_req *req, *subreq;
+	struct smbd_echo_read_state *state;
+
+	req = tevent_req_create(mem_ctx, &state,
+				struct smbd_echo_read_state);
+	if (req == NULL) {
+		return NULL;
 	}
-	fd = mkstemp(fname);
-	if (fd == -1) {
-		TALLOC_FREE(fname);
-		return -1;
+	state->ev = ev;
+	state->sconn = sconn;
+
+	subreq = wait_for_read_send(state, ev, sconn->sock);
+	if (tevent_req_nomem(subreq, req)) {
+		return tevent_req_post(req, ev);
 	}
-	if (unlink(fname) == -1) {
-		int sys_errno = errno;
-		close(fd);
-		TALLOC_FREE(fname);
-		errno = sys_errno;
-		return -1;
+	tevent_req_set_callback(subreq, smbd_echo_read_readable, req);
+	return req;
+}
+
+static void smbd_echo_read_readable(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct smbd_echo_read_state *state = tevent_req_data(
+		req, struct smbd_echo_read_state);
+	bool ok;
+	int err;
+
+	ok = wait_for_read_recv(subreq, &err);
+	TALLOC_FREE(subreq);
+	if (!ok) {
+		tevent_req_nterror(req, map_nt_error_from_unix(err));
+		return;
 	}
-	TALLOC_FREE(fname);
-	return fd;
+
+	/*
+	 * Give the parent smbd one second to step in
+	 */
+
+	subreq = tevent_wakeup_send(
+		state, state->ev, timeval_current_ofs(1, 0));
+	if (tevent_req_nomem(subreq, req)) {
+		return;
+	}
+	tevent_req_set_callback(subreq, smbd_echo_read_waited, req);
+}
+
+static void smbd_echo_read_waited(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct smbd_echo_read_state *state = tevent_req_data(
+		req, struct smbd_echo_read_state);
+	struct smbd_server_connection *sconn = state->sconn;
+	bool ok;
+	NTSTATUS status;
+	size_t unread = 0;
+	bool encrypted;
+
+	ok = tevent_wakeup_recv(subreq);
+	TALLOC_FREE(subreq);
+	if (!ok) {
+		tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
+		return;
+	}
+
+	ok = smbd_lock_socket_internal(sconn);
+	if (!ok) {
+		tevent_req_nterror(req, map_nt_error_from_unix(errno));
+		DEBUG(0, ("%s: failed to lock socket\n", __location__));
+		return;
+	}
+
+	if (!fd_is_readable(sconn->sock)) {
+		DEBUG(10,("echo_handler[%d] the parent smbd was faster\n",
+			  (int)sys_getpid()));
+
+		ok = smbd_unlock_socket_internal(sconn);
+		if (!ok) {
+			tevent_req_nterror(req, map_nt_error_from_unix(errno));
+			DEBUG(1, ("%s: failed to unlock socket\n",
+				__location__));
+			return;
+		}
+
+		subreq = wait_for_read_send(state, state->ev, sconn->sock);
+		if (tevent_req_nomem(subreq, req)) {
+			return;
+		}
+		tevent_req_set_callback(subreq, smbd_echo_read_readable, req);
+		return;
+	}
+
+	status = receive_smb_talloc(state, sconn, sconn->sock, &state->buf,
+				    0 /* timeout */,
+				    &unread,
+				    &encrypted,
+				    &state->buflen,
+				    &state->seqnum,
+				    false /* trusted_channel*/);
+
+	if (tevent_req_nterror(req, status)) {
+		tevent_req_nterror(req, status);
+		DEBUG(1, ("echo_handler[%d]: receive_smb_raw_talloc failed: %s\n",
+			  (int)sys_getpid(), nt_errstr(status)));
+		return;
+	}
+
+	ok = smbd_unlock_socket_internal(sconn);
+	if (!ok) {
+		tevent_req_nterror(req, map_nt_error_from_unix(errno));
+		DEBUG(1, ("%s: failed to unlock socket\n", __location__));
+		return;
+	}
+	tevent_req_done(req);
+}
+
+static NTSTATUS smbd_echo_read_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
+				    char **pbuf, size_t *pbuflen, uint32_t *pseqnum)
+{
+	struct smbd_echo_read_state *state = tevent_req_data(
+		req, struct smbd_echo_read_state);
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		return status;
+	}
+	*pbuf = talloc_move(mem_ctx, &state->buf);
+	*pbuflen = state->buflen;
+	*pseqnum = state->seqnum;
+	return NT_STATUS_OK;
 }
 
 struct smbd_echo_state {
@@ -2508,7 +2589,6 @@ struct smbd_echo_state {
 
 	struct tevent_fd *parent_fde;
 
-	struct tevent_fd *read_fde;
 	struct tevent_req *write_req;
 };
 
@@ -2560,16 +2640,16 @@ static void smbd_echo_writer_done(struct tevent_req *req)
 	smbd_echo_activate_writer(state);
 }
 
-static bool smbd_echo_reply(uint8_t *inbuf, size_t inbuf_len,
+static bool smbd_echo_reply(struct smbd_echo_state *state,
+			    uint8_t *inbuf, size_t inbuf_len,
 			    uint32_t seqnum)
 {
 	struct smb_request req;
 	uint16_t num_replies;
-	size_t out_len;
 	char *outbuf;
 	bool ok;
 
-	if ((inbuf_len == 4) && (CVAL(inbuf, 0) == SMBkeepalive)) {
+	if ((inbuf_len == 4) && (CVAL(inbuf, 0) == NBSSkeepalive)) {
 		DEBUG(10, ("Got netbios keepalive\n"));
 		/*
 		 * Just swallow it
@@ -2581,12 +2661,12 @@ static bool smbd_echo_reply(uint8_t *inbuf, size_t inbuf_len,
 		DEBUG(10, ("Got short packet: %d bytes\n", (int)inbuf_len));
 		return false;
 	}
-	if (!valid_smb_header(inbuf)) {
+	if (!valid_smb_header(state->sconn, inbuf)) {
 		DEBUG(10, ("Got invalid SMB header\n"));
 		return false;
 	}
 
-	if (!init_smb_request(&req, smbd_server_conn, inbuf, 0, false,
+	if (!init_smb_request(&req, state->sconn, inbuf, 0, false,
 			      seqnum)) {
 		return false;
 	}
@@ -2622,8 +2702,6 @@ static bool smbd_echo_reply(uint8_t *inbuf, size_t inbuf_len,
 		memcpy(smb_buf(req.outbuf), req.buf, req.buflen);
 	}
 
-	out_len = smb_len(req.outbuf) + 4;
-
 	ok = srv_send_smb(req.sconn,
 			  (char *)outbuf,
 			  true, seqnum+1,
@@ -2644,107 +2722,13 @@ static void smbd_echo_exit(struct tevent_context *ev,
 	exit(0);
 }
 
-static void smbd_echo_reader(struct tevent_context *ev,
-			     struct tevent_fd *fde, uint16_t flags,
-			     void *private_data)
-{
-	struct smbd_echo_state *state = talloc_get_type_abort(
-		private_data, struct smbd_echo_state);
-	struct smbd_server_connection *sconn = state->sconn;
-	size_t unread, num_pending;
-	NTSTATUS status;
-	struct iovec *tmp;
-	size_t iov_len;
-	uint32_t seqnum = 0;
-	bool reply;
-	bool ok;
-	bool encrypted = false;
-
-	smb_msleep(1000);
-
-	ok = smbd_lock_socket_internal(sconn);
-	if (!ok) {
-		DEBUG(0, ("%s: failed to lock socket\n",
-			__location__));
-		exit(1);
-	}
-
-	if (!fd_is_readable(sconn->sock)) {
-		DEBUG(10,("echo_handler[%d] the parent smbd was faster\n",
-			  (int)sys_getpid()));
-		ok = smbd_unlock_socket_internal(sconn);
-		if (!ok) {
-			DEBUG(1, ("%s: failed to unlock socket in\n",
-				__location__));
-			exit(1);
-		}
-		return;
-	}
-
-	num_pending = talloc_array_length(state->pending);
-	tmp = talloc_realloc(state, state->pending, struct iovec,
-			     num_pending+1);
-	if (tmp == NULL) {
-		DEBUG(1, ("talloc_realloc failed\n"));
-		exit(1);
-	}
-	state->pending = tmp;
-
-	DEBUG(10,("echo_handler[%d]: reading pdu\n", (int)sys_getpid()));
-
-	status = receive_smb_talloc(state->pending, sconn, sconn->sock,
-				    (char **)(void *)&state->pending[num_pending].iov_base,
-				    0 /* timeout */,
-				    &unread,
-				    &encrypted,
-				    &iov_len,
-				    &seqnum,
-				    false /* trusted_channel*/);
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("echo_handler[%d]: receive_smb_raw_talloc failed: %s\n",
-			  (int)sys_getpid(), nt_errstr(status)));
-		exit(1);
-	}
-	state->pending[num_pending].iov_len = iov_len;
-
-	ok = smbd_unlock_socket_internal(sconn);
-	if (!ok) {
-		DEBUG(1, ("%s: failed to unlock socket in\n",
-			__location__));
-		exit(1);
-	}
-
-	reply = smbd_echo_reply((uint8_t *)state->pending[num_pending].iov_base,
-				state->pending[num_pending].iov_len,
-				seqnum);
-	if (reply) {
-		DEBUG(10,("echo_handler[%d]: replied to client\n", (int)sys_getpid()));
-		/* no check, shrinking by some bytes does not fail */
-		state->pending = talloc_realloc(state, state->pending,
-						struct iovec,
-						num_pending);
-		return;
-	}
-
-	if (state->pending[num_pending].iov_len >= smb_size) {
-		/*
-		 * place the seqnum in the packet so that the main process
-		 * can reply with signing
-		 */
-		SIVAL((uint8_t *)state->pending[num_pending].iov_base,
-		      smb_ss_field, seqnum);
-		SIVAL((uint8_t *)state->pending[num_pending].iov_base,
-		      smb_ss_field+4, NT_STATUS_V(NT_STATUS_OK));
-	}
-
-	DEBUG(10,("echo_handler[%d]: forward to main\n", (int)sys_getpid()));
-	smbd_echo_activate_writer(state);
-}
+static void smbd_echo_got_packet(struct tevent_req *req);
 
 static void smbd_echo_loop(struct smbd_server_connection *sconn,
 			   int parent_pipe)
 {
 	struct smbd_echo_state *state;
+	struct tevent_req *read_req;
 
 	state = talloc_zero(sconn, struct smbd_echo_state);
 	if (state == NULL) {
@@ -2767,14 +2751,14 @@ static void smbd_echo_loop(struct smbd_server_connection *sconn,
 		TALLOC_FREE(state);
 		return;
 	}
-	state->read_fde = tevent_add_fd(state->ev, state, sconn->sock,
-					TEVENT_FD_READ, smbd_echo_reader,
-					state);
-	if (state->read_fde == NULL) {
-		DEBUG(1, ("tevent_add_fd failed\n"));
+
+	read_req = smbd_echo_read_send(state, state->ev, sconn);
+	if (read_req == NULL) {
+		DEBUG(1, ("smbd_echo_read_send failed\n"));
 		TALLOC_FREE(state);
 		return;
 	}
+	tevent_req_set_callback(read_req, smbd_echo_got_packet, state);
 
 	while (true) {
 		if (tevent_loop_once(state->ev) == -1) {
@@ -2785,6 +2769,66 @@ static void smbd_echo_loop(struct smbd_server_connection *sconn,
 	}
 	TALLOC_FREE(state);
 }
+
+static void smbd_echo_got_packet(struct tevent_req *req)
+{
+	struct smbd_echo_state *state = tevent_req_callback_data(
+		req, struct smbd_echo_state);
+	NTSTATUS status;
+	char *buf = NULL;
+	size_t buflen = 0;
+	uint32_t seqnum = 0;
+	bool reply;
+
+	status = smbd_echo_read_recv(req, state, &buf, &buflen, &seqnum);
+	TALLOC_FREE(req);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(1, ("smbd_echo_read_recv returned %s\n",
+			  nt_errstr(status)));
+		exit(1);
+	}
+
+	reply = smbd_echo_reply(state, (uint8_t *)buf, buflen, seqnum);
+	if (!reply) {
+		size_t num_pending;
+		struct iovec *tmp;
+		struct iovec *iov;
+
+		num_pending = talloc_array_length(state->pending);
+		tmp = talloc_realloc(state, state->pending, struct iovec,
+				     num_pending+1);
+		if (tmp == NULL) {
+			DEBUG(1, ("talloc_realloc failed\n"));
+			exit(1);
+		}
+		state->pending = tmp;
+
+		if (buflen >= smb_size) {
+			/*
+			 * place the seqnum in the packet so that the main process
+			 * can reply with signing
+			 */
+			SIVAL(buf, smb_ss_field, seqnum);
+			SIVAL(buf, smb_ss_field+4, NT_STATUS_V(NT_STATUS_OK));
+		}
+
+		iov = &state->pending[num_pending];
+		iov->iov_base = buf;
+		iov->iov_len = buflen;
+
+		DEBUG(10,("echo_handler[%d]: forward to main\n",
+			  (int)sys_getpid()));
+		smbd_echo_activate_writer(state);
+	}
+
+	req = smbd_echo_read_send(state, state->ev, state->sconn);
+	if (req == NULL) {
+		DEBUG(1, ("smbd_echo_read_send failed\n"));
+		exit(1);
+	}
+	tevent_req_set_callback(req, smbd_echo_got_packet, state);
+}
+
 
 /*
  * Handle SMBecho requests in a forked child process
@@ -2814,8 +2858,8 @@ bool fork_echo_handler(struct smbd_server_connection *sconn)
 		set_blocking(listener_pipe[1], false);
 
 		status = reinit_after_fork(sconn->msg_ctx,
-					   server_event_context(),
-					   procid_self(), false);
+					   sconn->ev_ctx,
+					   false);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1, ("reinit_after_fork failed: %s\n",
 				  nt_errstr(status)));
@@ -2834,10 +2878,10 @@ bool fork_echo_handler(struct smbd_server_connection *sconn)
 	 * Without smb signing this is the same as the normal smbd
 	 * listener. This needs to change once signing comes in.
 	 */
-	sconn->smb1.echo_handler.trusted_fde = event_add_fd(server_event_context(),
+	sconn->smb1.echo_handler.trusted_fde = tevent_add_fd(sconn->ev_ctx,
 					sconn,
 					sconn->smb1.echo_handler.trusted_fd,
-					EVENT_FD_READ,
+					TEVENT_FD_READ,
 					smbd_server_echo_handler,
 					sconn);
 	if (sconn->smb1.echo_handler.trusted_fde == NULL) {
@@ -2888,11 +2932,115 @@ static NTSTATUS smbd_register_ips(struct smbd_server_connection *sconn,
 
 #endif
 
+static bool uid_in_use(const struct user_struct *user, uid_t uid)
+{
+	while (user) {
+		if (user->session_info &&
+		    (user->session_info->unix_token->uid == uid)) {
+			return true;
+		}
+		user = user->next;
+	}
+	return false;
+}
+
+static bool gid_in_use(const struct user_struct *user, gid_t gid)
+{
+	while (user) {
+		if (user->session_info != NULL) {
+			int i;
+			struct security_unix_token *utok;
+
+			utok = user->session_info->unix_token;
+			if (utok->gid == gid) {
+				return true;
+			}
+			for(i=0; i<utok->ngroups; i++) {
+				if (utok->groups[i] == gid) {
+					return true;
+				}
+			}
+		}
+		user = user->next;
+	}
+	return false;
+}
+
+static bool sid_in_use(const struct user_struct *user,
+		       const struct dom_sid *psid)
+{
+	while (user) {
+		struct security_token *tok;
+
+		if (user->session_info == NULL) {
+			continue;
+		}
+		tok = user->session_info->security_token;
+		if (tok == NULL) {
+			/*
+			 * Not sure session_info->security_token can
+			 * ever be NULL. This check might be not
+			 * necessary.
+			 */
+			continue;
+		}
+		if (security_token_has_sid(tok, psid)) {
+			return true;
+		}
+		user = user->next;
+	}
+	return false;
+}
+
+static bool id_in_use(const struct user_struct *user,
+		      const struct id_cache_ref *id)
+{
+	switch(id->type) {
+	case UID:
+		return uid_in_use(user, id->id.uid);
+	case GID:
+		return gid_in_use(user, id->id.gid);
+	case SID:
+		return sid_in_use(user, &id->id.sid);
+	default:
+		break;
+	}
+	return false;
+}
+
+static void smbd_id_cache_kill(struct messaging_context *msg_ctx,
+			       void *private_data,
+			       uint32_t msg_type,
+			       struct server_id server_id,
+			       DATA_BLOB* data)
+{
+	const char *msg = (data && data->data)
+		? (const char *)data->data : "<NULL>";
+	struct user_struct *validated_users;
+	struct id_cache_ref id;
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
+
+	validated_users = sconn->smb1.sessions.validated_users;
+
+	if (!id_cache_ref_parse(msg, &id)) {
+		DEBUG(0, ("Invalid ?ID: %s\n", msg));
+		return;
+	}
+
+	if (id_in_use(validated_users, &id)) {
+		exit_server_cleanly(msg);
+	}
+	id_cache_delete_from_cache(&id);
+}
+
 /****************************************************************************
  Process commands from the client
 ****************************************************************************/
 
-void smbd_process(struct smbd_server_connection *sconn)
+void smbd_process(struct tevent_context *ev_ctx,
+		  struct smbd_server_connection *sconn)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct sockaddr_storage ss;
@@ -2900,10 +3048,12 @@ void smbd_process(struct smbd_server_connection *sconn)
 	socklen_t sa_socklen;
 	struct tsocket_address *local_address = NULL;
 	struct tsocket_address *remote_address = NULL;
+	const char *locaddr = NULL;
 	const char *remaddr = NULL;
+	char *rhost;
 	int ret;
 
-	if (lp_maxprotocol() == PROTOCOL_SMB2) {
+	if (lp_maxprotocol() >= PROTOCOL_SMB2_02) {
 		/*
 		 * We're not making the decision here,
 		 * we're just allowing the client
@@ -2957,12 +3107,27 @@ void smbd_process(struct smbd_server_connection *sconn)
 	sconn->local_address = local_address;
 	sconn->remote_address = remote_address;
 
+	if (tsocket_address_is_inet(local_address, "ip")) {
+		locaddr = tsocket_address_inet_addr_string(
+				sconn->local_address,
+				talloc_tos());
+		if (locaddr == NULL) {
+			DEBUG(0,("%s: tsocket_address_inet_addr_string local failed - %s\n",
+				 __location__, strerror(errno)));
+			exit_server_cleanly("tsocket_address_inet_addr_string local failed.\n");
+		}
+	} else {
+		locaddr = "0.0.0.0";
+	}
+
 	if (tsocket_address_is_inet(remote_address, "ip")) {
 		remaddr = tsocket_address_inet_addr_string(
 				sconn->remote_address,
 				talloc_tos());
 		if (remaddr == NULL) {
-
+			DEBUG(0,("%s: tsocket_address_inet_addr_string remote failed - %s\n",
+				 __location__, strerror(errno)));
+			exit_server_cleanly("tsocket_address_inet_addr_string remote failed.\n");
 		}
 	} else {
 		remaddr = "0.0.0.0";
@@ -2971,7 +3136,7 @@ void smbd_process(struct smbd_server_connection *sconn)
 	/* this is needed so that we get decent entries
 	   in smbstatus for port 445 connects */
 	set_remote_machine_name(remaddr, false);
-	reload_services(sconn->msg_ctx, sconn->sock, true);
+	reload_services(sconn, conn_snum_used, true);
 
 	/*
 	 * Before the first packet, check the global hosts allow/ hosts deny
@@ -2980,9 +3145,26 @@ void smbd_process(struct smbd_server_connection *sconn)
 	 * the hosts allow list.
 	 */
 
+	ret = get_remote_hostname(remote_address,
+				  &rhost,
+				  talloc_tos());
+	if (ret < 0) {
+		DEBUG(0,("%s: get_remote_hostname failed - %s\n",
+			__location__, strerror(errno)));
+		exit_server_cleanly("get_remote_hostname failed.\n");
+	}
+	if (strequal(rhost, "UNKNOWN")) {
+		rhost = talloc_strdup(talloc_tos(), remaddr);
+	}
+	sconn->remote_hostname = talloc_move(sconn, &rhost);
+
+	sub_set_socket_ids(remaddr,
+			   sconn->remote_hostname,
+			   locaddr);
+
 	if (!allow_access(lp_hostsdeny(-1), lp_hostsallow(-1),
-			  sconn->client_id.name,
-			  sconn->client_id.addr)) {
+			  sconn->remote_hostname,
+			  remaddr)) {
 		/*
 		 * send a negative session response "not listening on calling
 		 * name"
@@ -3025,14 +3207,26 @@ void smbd_process(struct smbd_server_connection *sconn)
 	}
 
 	/* Setup oplocks */
-	if (!init_oplocks(sconn->msg_ctx))
+	if (!init_oplocks(sconn))
 		exit_server("Failed to init oplocks");
 
 	/* register our message handlers */
-	messaging_register(sconn->msg_ctx, NULL,
+	messaging_register(sconn->msg_ctx, sconn,
 			   MSG_SMB_FORCE_TDIS, msg_force_tdis);
-	messaging_register(sconn->msg_ctx, NULL,
+	messaging_register(sconn->msg_ctx, sconn,
 			   MSG_SMB_CLOSE_FILE, msg_close_file);
+	messaging_register(sconn->msg_ctx, sconn,
+			   MSG_SMB_FILE_RENAME, msg_file_was_renamed);
+
+	id_cache_register_msgs(sconn->msg_ctx);
+	messaging_deregister(sconn->msg_ctx, ID_CACHE_KILL, NULL);
+	messaging_register(sconn->msg_ctx, sconn,
+			   ID_CACHE_KILL, smbd_id_cache_kill);
+
+	messaging_deregister(sconn->msg_ctx,
+			     MSG_SMB_CONF_UPDATED, sconn->ev_ctx);
+	messaging_register(sconn->msg_ctx, sconn,
+			   MSG_SMB_CONF_UPDATED, smbd_conf_updated);
 
 	/*
 	 * Use the default MSG_DEBUG handler to avoid rebroadcasting
@@ -3044,22 +3238,22 @@ void smbd_process(struct smbd_server_connection *sconn)
 			   MSG_DEBUG, debug_message);
 
 	if ((lp_keepalive() != 0)
-	    && !(event_add_idle(server_event_context(), NULL,
+	    && !(event_add_idle(ev_ctx, NULL,
 				timeval_set(lp_keepalive(), 0),
 				"keepalive", keepalive_fn,
-				NULL))) {
+				sconn))) {
 		DEBUG(0, ("Could not add keepalive event\n"));
 		exit(1);
 	}
 
-	if (!(event_add_idle(server_event_context(), NULL,
+	if (!(event_add_idle(ev_ctx, NULL,
 			     timeval_set(IDLE_CLOSED_TIMEOUT, 0),
 			     "deadtime", deadtime_fn, sconn))) {
 		DEBUG(0, ("Could not add deadtime event\n"));
 		exit(1);
 	}
 
-	if (!(event_add_idle(server_event_context(), NULL,
+	if (!(event_add_idle(ev_ctx, NULL,
 			     timeval_set(SMBD_HOUSEKEEPING_INTERVAL, 0),
 			     "housekeeping", housekeeping_fn, sconn))) {
 		DEBUG(0, ("Could not add housekeeping event\n"));
@@ -3116,7 +3310,7 @@ void smbd_process(struct smbd_server_connection *sconn)
 		exit_server("init_dptrs() failed");
 	}
 
-	sconn->smb1.fde = event_add_fd(server_event_context(),
+	sconn->smb1.fde = event_add_fd(ev_ctx,
 						  sconn,
 						  sconn->sock,
 						  EVENT_FD_READ,
@@ -3129,18 +3323,15 @@ void smbd_process(struct smbd_server_connection *sconn)
 	TALLOC_FREE(frame);
 
 	while (True) {
-		NTSTATUS status;
-
 		frame = talloc_stackframe_pool(8192);
 
 		errno = 0;
-
-		status = smbd_server_connection_loop_once(sconn);
-		if (!NT_STATUS_EQUAL(status, NT_STATUS_RETRY) &&
-		    !NT_STATUS_IS_OK(status)) {
-			DEBUG(3, ("smbd_server_connection_loop_once failed: %s,"
-				  " exiting\n", nt_errstr(status)));
-			break;
+		if (tevent_loop_once(ev_ctx) == -1) {
+			if (errno != EINTR) {
+				DEBUG(3, ("tevent_loop_once failed: %s,"
+					  " exiting\n", strerror(errno) ));
+				break;
+			}
 		}
 
 		TALLOC_FREE(frame);

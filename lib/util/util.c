@@ -3,9 +3,10 @@
    Samba utility functions
    Copyright (C) Andrew Tridgell 1992-1998
    Copyright (C) Jeremy Allison 2001-2002
-   Copyright (C) Simo Sorce 2001
+   Copyright (C) Simo Sorce 2001-2011
    Copyright (C) Jim McDonough (jmcd@us.ibm.com)  2003.
    Copyright (C) James J Myers 2003
+   Copyright (C) Volker Lendecke 2010
    
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,21 +27,13 @@
 #include "system/filesys.h"
 #include "system/locale.h"
 #include "system/shmem.h"
+#include "system/passwd.h"
 
 #undef malloc
 #undef strcasecmp
 #undef strncasecmp
 #undef strdup
 #undef realloc
-
-#if defined(UID_WRAPPER)
-#if !defined(UID_WRAPPER_REPLACE) && !defined(UID_WRAPPER_NOT_REPLACE)
-#define UID_WRAPPER_REPLACE
-#include "../uid_wrapper/uid_wrapper.h"
-#endif
-#else
-#define uwrap_enabled() 0
-#endif
 
 /**
  * @file
@@ -57,6 +50,42 @@ _PUBLIC_ const char *tmpdir(void)
 	if ((p = getenv("TMPDIR")))
 		return p;
 	return "/tmp";
+}
+
+
+/**
+ Create a tmp file, open it and immediately unlink it.
+ If dir is NULL uses tmpdir()
+ Returns the file descriptor or -1 on error.
+**/
+int create_unlink_tmp(const char *dir)
+{
+	char *fname;
+	int fd;
+
+	if (!dir) {
+		dir = tmpdir();
+	}
+
+	fname = talloc_asprintf(talloc_tos(), "%s/listenerlock_XXXXXX", dir);
+	if (fname == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+	fd = mkstemp(fname);
+	if (fd == -1) {
+		TALLOC_FREE(fname);
+		return -1;
+	}
+	if (unlink(fname) == -1) {
+		int sys_errno = errno;
+		close(fd);
+		TALLOC_FREE(fname);
+		errno = sys_errno;
+		return -1;
+	}
+	TALLOC_FREE(fname);
+	return fd;
 }
 
 
@@ -433,6 +462,17 @@ _PUBLIC_ void dump_data_skip_zeros(int level, const uint8_t *buf, int len)
 	dump_data_cb(buf, len, true, debugadd_cb, &level);
 }
 
+static void fprintf_cb(const char *buf, void *private_data)
+{
+	FILE *f = (FILE *)private_data;
+	fprintf(f, "%s", buf);
+}
+
+void dump_data_file(const uint8_t *buf, int len, bool omit_zero_bytes,
+		    FILE *f)
+{
+	dump_data_cb(buf, len, omit_zero_bytes, fprintf_cb, f);
+}
 
 /**
  malloc that aborts with smb_panic on fail or zero size.
@@ -652,15 +692,15 @@ _PUBLIC_ _PURE_ size_t count_chars(const char *s, char c)
 }
 
 /**
- Routine to get hex characters and turn them into a 16 byte array.
- the array can be variable length, and any non-hex-numeric
- characters are skipped.  "0xnn" or "0Xnn" is specially catered
- for.
-
- valid examples: "0A5D15"; "0x15, 0x49, 0xa2"; "59\ta9\te3\n"
-
-
-**/
+ * Routine to get hex characters and turn them into a byte array.
+ * the array can be variable length.
+ * -  "0xnn" or "0Xnn" is specially catered for.
+ * - The first non-hex-digit character (apart from possibly leading "0x"
+ *   finishes the conversion and skips the rest of the input.
+ * - A single hex-digit character at the end of the string is skipped.
+ *
+ * valid examples: "0A5D15"; "0x123456"
+ */
 _PUBLIC_ size_t strhex_to_str(char *p, size_t p_len, const char *strhex, size_t strhex_len)
 {
 	size_t i = 0;
@@ -674,14 +714,18 @@ _PUBLIC_ size_t strhex_to_str(char *p, size_t p_len, const char *strhex, size_t 
 		i += 2; /* skip two chars */
 	}
 
-	for (; i < strhex_len && strhex[i] != 0; i++) {
-		if (!(p1 = strchr(hexchars, toupper((unsigned char)strhex[i]))))
+	for (; i+1 < strhex_len && strhex[i] != 0 && strhex[i+1] != 0; i++) {
+		p1 = strchr(hexchars, toupper((unsigned char)strhex[i]));
+		if (p1 == NULL) {
 			break;
+		}
 
 		i++; /* next hex digit */
 
-		if (!(p2 = strchr(hexchars, toupper((unsigned char)strhex[i]))))
+		p2 = strchr(hexchars, toupper((unsigned char)strhex[i]));
+		if (p2 == NULL) {
 			break;
+		}
 
 		/* get the two nybbles */
 		hinybble = PTR_DIFF(p1, hexchars);
@@ -714,20 +758,31 @@ _PUBLIC_ _PURE_ DATA_BLOB strhex_to_data_blob(TALLOC_CTX *mem_ctx, const char *s
 	return ret_blob;
 }
 
+/**
+ * Print a buf in hex. Assumes dst is at least (srclen*2)+1 large.
+ */
+_PUBLIC_ void hex_encode_buf(char *dst, const uint8_t *src, size_t srclen)
+{
+	size_t i;
+	for (i=0; i<srclen; i++) {
+		snprintf(dst + i*2, 3, "%02X", src[i]);
+	}
+	/*
+	 * Ensure 0-termination for 0-length buffers
+	 */
+	dst[srclen*2] = '\0';
+}
 
 /**
  * Routine to print a buffer as HEX digits, into an allocated string.
  */
 _PUBLIC_ void hex_encode(const unsigned char *buff_in, size_t len, char **out_hex_buffer)
 {
-	int i;
 	char *hex_buffer;
 
 	*out_hex_buffer = malloc_array_p(char, (len*2)+1);
 	hex_buffer = *out_hex_buffer;
-
-	for (i = 0; i < len; i++)
-		slprintf(&hex_buffer[i*2], 3, "%02X", buff_in[i]);
+	hex_encode_buf(hex_buffer, buff_in, len);
 }
 
 /**
@@ -735,17 +790,13 @@ _PUBLIC_ void hex_encode(const unsigned char *buff_in, size_t len, char **out_he
  */
 _PUBLIC_ char *hex_encode_talloc(TALLOC_CTX *mem_ctx, const unsigned char *buff_in, size_t len)
 {
-	int i;
 	char *hex_buffer;
 
 	hex_buffer = talloc_array(mem_ctx, char, (len*2)+1);
 	if (!hex_buffer) {
 		return NULL;
 	}
-
-	for (i = 0; i < len; i++)
-		slprintf(&hex_buffer[i*2], 3, "%02X", buff_in[i]);
-
+	hex_encode_buf(hex_buffer, buff_in, len);
 	talloc_set_name_const(hex_buffer, hex_buffer);
 	return hex_buffer;
 }
@@ -1034,6 +1085,70 @@ void *anonymous_shared_allocate(size_t orig_bufsz)
 	ptr = (void *)(&hdr[1]);
 
 	return ptr;
+}
+
+void *anonymous_shared_resize(void *ptr, size_t new_size, bool maymove)
+{
+#ifdef HAVE_MREMAP
+	void *buf;
+	size_t pagesz = getpagesize();
+	size_t pagecnt;
+	size_t bufsz;
+	struct anonymous_shared_header *hdr;
+	int flags = 0;
+
+	if (ptr == NULL) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	hdr = (struct anonymous_shared_header *)ptr;
+	hdr--;
+	if (hdr->u.length > (new_size + sizeof(*hdr))) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	bufsz = new_size + sizeof(*hdr);
+
+	/* round up to full pages */
+	pagecnt = bufsz / pagesz;
+	if (bufsz % pagesz) {
+		pagecnt += 1;
+	}
+	bufsz = pagesz * pagecnt;
+
+	if (new_size >= bufsz) {
+		/* integer wrap */
+		errno = ENOSPC;
+		return NULL;
+	}
+
+	if (bufsz <= hdr->u.length) {
+		return ptr;
+	}
+
+	if (maymove) {
+		flags = MREMAP_MAYMOVE;
+	}
+
+	buf = mremap(hdr, hdr->u.length, bufsz, flags);
+
+	if (buf == MAP_FAILED) {
+		errno = ENOSPC;
+		return NULL;
+	}
+
+	hdr = (struct anonymous_shared_header *)buf;
+	hdr->u.length = bufsz;
+
+	ptr = (void *)(&hdr[1]);
+
+	return ptr;
+#else
+	errno = ENOSPC;
+	return NULL;
+#endif
 }
 
 void anonymous_shared_free(void *ptr)

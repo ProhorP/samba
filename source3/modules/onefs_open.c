@@ -327,7 +327,7 @@ static NTSTATUS onefs_open_file(files_struct *fsp,
 	fsp->wcp = NULL; /* Write cache pointer. */
 
 	DEBUG(2,("%s opened file %s read=%s write=%s (numopen=%d)\n",
-		 conn->session_info->unix_name,
+		 conn->session_info->unix_info->unix_name,
 		 smb_fname_str_dbg(smb_fname),
 		 BOOLSTR(fsp->can_read), BOOLSTR(fsp->can_write),
 		 conn->num_files_open));
@@ -871,7 +871,8 @@ NTSTATUS onefs_open_file_ntcreate(connection_struct *conn,
 	 */
 	if (req) {
 		SMB_ASSERT(fsp_data);
-		oplock_callback_id = onefs_oplock_wait_record(req->mid);
+		oplock_callback_id = onefs_oplock_wait_record(req->sconn,
+							      req->mid);
 		if (oplock_callback_id == 0) {
 			return NT_STATUS_NO_MEMORY;
 		}
@@ -1042,8 +1043,8 @@ NTSTATUS onefs_open_file_ntcreate(connection_struct *conn,
 
 			if (((can_access_mask & FILE_WRITE_DATA) &&
 				!CAN_WRITE(conn)) ||
-			    !can_access_file_data(conn, smb_fname,
-						  can_access_mask)) {
+				!NT_STATUS_IS_OK(smbd_check_access_rights(conn,
+						smb_fname, can_access_mask))) {
 				can_access = False;
 			}
 

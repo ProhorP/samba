@@ -7,9 +7,6 @@ srcdir = "."
 
 import samba_version
 
-# mark this as a top level build, for source3 rules
-bld.env.toplevel_build = True
-bld.env.use_intree_heimdal = True
 bld.env.suffix3 = "3"
 
 # create separate build groups for building the asn1 and et compiler, then
@@ -22,10 +19,7 @@ bld.env.build_public_headers = 'include/public'
 
 # these are includes which appear in public headers, but with #ifdef conditional
 # compilation, so they are safe
-bld.env.public_headers_skip = ['param/param_proto.h', 'lib/ldb_compat.h']
-
-# force headers to use SAMBA4 rules
-bld.env.public_headers_replace = { '#if _SAMBA_BUILD_ == 4' : '#if 1 /* _SAMBA_BUILD_ == 4 */' }
+bld.env.public_headers_skip = ['param/param_proto.h']
 
 samba_version.load_version(bld.env, is_install=bld.is_install)
 bld.SAMBA_MKVERSION('version.h')
@@ -36,9 +30,11 @@ bld.RECURSE('lib/replace')
 bld.RECURSE('lib/socket')
 bld.RECURSE('lib/talloc')
 bld.RECURSE('lib/tevent')
+bld.RECURSE('lib/addns')
 bld.RECURSE('lib/ccan')
 bld.RECURSE('lib/tdb_compat')
-bld.RECURSE('source4/lib/ldb')
+bld.RECURSE('lib/ldb')
+bld.RECURSE('lib/param')
 bld.RECURSE('dynconfig')
 bld.RECURSE('lib/util/charset')
 bld.RECURSE('source4/scripting/python')
@@ -57,7 +53,7 @@ bld.RECURSE('nsswitch')
 bld.RECURSE('nsswitch/libwbclient')
 bld.RECURSE('source4/lib/samba3')
 bld.RECURSE('source4/lib/socket')
-bld.RECURSE('source4/lib/ldb-samba')
+bld.RECURSE('lib/ldb-samba')
 bld.RECURSE('source4/lib/tls')
 bld.RECURSE('source4/lib/registry')
 bld.RECURSE('source4/lib/messaging')
@@ -87,13 +83,12 @@ bld.RECURSE('source4/nbt_server')
 bld.RECURSE('source4/wrepl_server')
 bld.RECURSE('source4/cldap_server')
 bld.RECURSE('source4/ntp_signd')
-bld.RECURSE('source4/samba_tool')
 bld.RECURSE('source4/utils')
 bld.RECURSE('source4/ntvfs')
 bld.RECURSE('source4/ntptr')
 bld.RECURSE('source4/torture')
 bld.RECURSE('librpc')
-bld.RECURSE('source4/client')
+bld.RECURSE('source4')
 bld.RECURSE('source4/libcli')
 bld.RECURSE('libcli/smb')
 bld.RECURSE('libcli/util')
@@ -107,6 +102,7 @@ bld.RECURSE('libcli/ldap')
 bld.RECURSE('libcli/nbt')
 bld.RECURSE('libcli/netlogon')
 bld.RECURSE('libcli/auth')
+bld.RECURSE('libcli/lsarpc')
 bld.RECURSE('libcli/drsuapi')
 bld.RECURSE('libcli/echo')
 bld.RECURSE('libcli/samsync')
@@ -122,10 +118,10 @@ bld.RECURSE('pidl')
 bld.RECURSE('lib')
 bld.RECURSE('libds/common')
 bld.RECURSE('source3')
+bld.RECURSE('dfs_server')
 
 bld.RECURSE('testsuite/headers')
-
-# install some extra empty directories
-bld.INSTALL_DIRS("", "${LOCKDIR} ${STATEDIR} ${CACHEDIR} ${SWATDIR} ${SYSCONFDIR} ${PIDDIR} ${LOCALSTATEDIR}/lib ${PRIVATEDIR}/smbd.tmp/messaging ${CODEPAGEDIR} ${LOGFILEBASE} ${SETUPDIR}")
+bld.RECURSE('testsuite/libsmbclient/src')
 
 bld.SYMBOL_CHECK()
+bld.DUP_SYMBOL_CHECK()

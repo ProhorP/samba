@@ -40,6 +40,64 @@
 
 #define TEST_MACHINE_NAME "torturetest"
 
+static bool test_netr_broken_binding_handle(struct torture_context *tctx,
+					    struct dcerpc_pipe *p)
+{
+	NTSTATUS status;
+	struct netr_DsRGetSiteName r;
+	const char *site = NULL;
+	struct dcerpc_binding_handle *b = p->binding_handle;
+
+	r.in.computer_name	= talloc_asprintf(tctx, "\\\\%s",
+						  dcerpc_server_name(p));
+	r.out.site		= &site;
+
+	torture_comment(tctx,
+			"Testing netlogon request with correct binding handle: %s\n",
+			r.in.computer_name);
+
+	status = dcerpc_netr_DsRGetSiteName_r(b, tctx, &r);
+	torture_assert_ntstatus_ok(tctx, status,
+				   "Netlogon request with broken binding handle");
+	torture_assert_werr_ok(tctx, r.out.result,
+			       "Netlogon request with broken binding handle");
+
+	if (torture_setting_bool(tctx, "samba3", false) ||
+	    torture_setting_bool(tctx, "samba4", false)) {
+		torture_skip(tctx,
+			     "Skipping broken binding handle check against Samba");
+	}
+
+	r.in.computer_name	= talloc_asprintf(tctx, "\\\\\\\\%s",
+						  dcerpc_server_name(p));
+
+	torture_comment(tctx,
+			"Testing netlogon request with broken binding handle: %s\n",
+			r.in.computer_name);
+
+	status = dcerpc_netr_DsRGetSiteName_r(b, tctx, &r);
+	torture_assert_ntstatus_ok(tctx, status,
+				   "Netlogon request with broken binding handle");
+	torture_assert_werr_equal(tctx, r.out.result,
+				  WERR_INVALID_COMPUTERNAME,
+				  "Netlogon request with broken binding handle");
+
+	r.in.computer_name	= "\\\\\\\\THIS_IS_NOT_VALID";
+
+	torture_comment(tctx,
+			"Testing netlogon request with broken binding handle: %s\n",
+			r.in.computer_name);
+
+	status = dcerpc_netr_DsRGetSiteName_r(b, tctx, &r);
+	torture_assert_ntstatus_ok(tctx, status,
+				   "Netlogon request with broken binding handle");
+	torture_assert_werr_equal(tctx, r.out.result,
+				  WERR_INVALID_COMPUTERNAME,
+				  "Netlogon request with broken binding handle");
+
+	return true;
+}
+
 static bool test_LogonUasLogon(struct torture_context *tctx, 
 			       struct dcerpc_pipe *p)
 {
@@ -882,6 +940,60 @@ bool test_netlogon_ops(struct dcerpc_pipe *p, struct torture_context *tctx,
 		       struct netlogon_creds_CredentialState *creds)
 {
 	return test_netlogon_ops_args(p, tctx, credentials, creds, false);
+}
+
+/*
+  try a netlogon GetCapabilities
+*/
+bool test_netlogon_capabilities(struct dcerpc_pipe *p, struct torture_context *tctx,
+				struct cli_credentials *credentials,
+				struct netlogon_creds_CredentialState *creds)
+{
+	NTSTATUS status;
+	struct netr_LogonGetCapabilities r;
+	union netr_Capabilities capabilities;
+	struct netr_Authenticator auth, return_auth;
+	struct netlogon_creds_CredentialState tmp_creds;
+	struct dcerpc_binding_handle *b = p->binding_handle;
+
+	r.in.server_name = talloc_asprintf(tctx, "\\\\%s", dcerpc_server_name(p));
+	r.in.computer_name = cli_credentials_get_workstation(credentials);
+	r.in.credential = &auth;
+	r.in.return_authenticator = &return_auth;
+	r.in.query_level = 1;
+	r.out.capabilities = &capabilities;
+	r.out.return_authenticator = &return_auth;
+
+	torture_comment(tctx, "Testing LogonGetCapabilities\n");
+
+	ZERO_STRUCT(return_auth);
+
+	/*
+	 * we need to operate on a temporary copy of creds
+	 * because dcerpc_netr_LogonGetCapabilities was
+	 * dcerpc_netr_DummyFunction and returns NT_STATUS_NOT_IMPLEMENTED
+	 * without looking a the authenticator.
+	 */
+	tmp_creds = *creds;
+	netlogon_creds_client_authenticator(&tmp_creds, &auth);
+
+	status = dcerpc_netr_LogonGetCapabilities_r(b, tctx, &r);
+	torture_assert_ntstatus_ok(tctx, status, "LogonGetCapabilities failed");
+	if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_NOT_IMPLEMENTED)) {
+		return true;
+	}
+
+	*creds = tmp_creds;
+
+	torture_assert(tctx, netlogon_creds_client_check(creds,
+							 &r.out.return_authenticator->cred),
+		       "Credential chaining failed");
+
+	torture_assert_int_equal(tctx, creds->negotiate_flags,
+				 capabilities.server_capabilities,
+				 "negotiate flags");
+
+	return true;
 }
 
 /*
@@ -2344,17 +2456,6 @@ static bool test_netr_DsRGetSiteName(struct dcerpc_pipe *p, struct torture_conte
 	torture_assert_werr_ok(tctx, r.out.result, "DsRGetSiteName");
 	torture_assert_str_equal(tctx, expected_site, site, "netr_DsRGetSiteName");
 
-	if (torture_setting_bool(tctx, "samba4", false))
-		torture_skip(tctx, "skipping computer name check against Samba4");
-
-	r.in.computer_name		= talloc_asprintf(tctx, "\\\\%s", computer_name);
-	torture_comment(tctx, 
-			"Testing netr_DsRGetSiteName with broken computer name: %s\n", r.in.computer_name);
-
-	status = dcerpc_netr_DsRGetSiteName_r(b, tctx, &r);
-	torture_assert_ntstatus_ok(tctx, status, "DsRGetSiteName");
-	torture_assert_werr_equal(tctx, r.out.result, WERR_INVALID_COMPUTERNAME, "netr_DsRGetSiteName");
-
 	return true;
 }
 
@@ -2380,11 +2481,43 @@ static bool test_netr_DsRGetDCName(struct torture_context *tctx,
 	torture_assert_ntstatus_ok(tctx, status, "DsRGetDCName");
 	torture_assert_werr_ok(tctx, r.out.result, "DsRGetDCName");
 
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)),
+				 DS_DNS_CONTROLLER,
+				 "DsRGetDCName");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)),
+				 DS_DNS_DOMAIN,
+				 "DsRGetDCName");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCName");
+
 	r.in.domain_name	= lpcfg_workgroup(tctx->lp_ctx);
+	r.in.flags		= 0;
 
 	status = dcerpc_netr_DsRGetDCName_r(b, tctx, &r);
 	torture_assert_ntstatus_ok(tctx, status, "DsRGetDCName");
 	torture_assert_werr_ok(tctx, r.out.result, "DsRGetDCName");
+
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)), 0,
+				 "DsRGetDCName");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)), 0,
+				 "DsRGetDCName");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCName");
+
+	if (strcasecmp(info->dc_site_name, info->client_site_name) == 0) {
+		torture_assert_int_equal(tctx,
+					 (info->dc_flags & (DS_SERVER_CLOSEST)),
+					 DS_SERVER_CLOSEST,
+					 "DsRGetDCName");
+	}
 
 	return test_netr_DsRGetSiteName(p, tctx, 
 				       info->dc_unc,
@@ -2413,11 +2546,43 @@ static bool test_netr_DsRGetDCNameEx(struct torture_context *tctx,
 	torture_assert_ntstatus_ok(tctx, status, "netr_DsRGetDCNameEx");
 	torture_assert_werr_ok(tctx, r.out.result, "netr_DsRGetDCNameEx");
 
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)),
+				 DS_DNS_CONTROLLER,
+				 "DsRGetDCNameEx");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)),
+				 DS_DNS_DOMAIN,
+				 "DsRGetDCNameEx");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCNameEx");
+
 	r.in.domain_name	= lpcfg_workgroup(tctx->lp_ctx);
+	r.in.flags		= 0;
 
 	status = dcerpc_netr_DsRGetDCNameEx_r(b, tctx, &r);
 	torture_assert_ntstatus_ok(tctx, status, "netr_DsRGetDCNameEx");
 	torture_assert_werr_ok(tctx, r.out.result, "netr_DsRGetDCNameEx");
+
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)), 0,
+				 "DsRGetDCNameEx");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)), 0,
+				 "DsRGetDCNameEx");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCNameEx");
+
+	if (strcasecmp(info->dc_site_name, info->client_site_name) == 0) {
+		torture_assert_int_equal(tctx,
+					 (info->dc_flags & (DS_SERVER_CLOSEST)),
+					 DS_SERVER_CLOSEST,
+					 "DsRGetDCNameEx");
+	}
 
 	return test_netr_DsRGetSiteName(p, tctx, info->dc_unc,
 				        info->dc_site_name);
@@ -2443,6 +2608,19 @@ static bool test_netr_DsRGetDCNameEx2(struct torture_context *tctx,
 	torture_assert_ntstatus_ok(tctx, status, "netr_DsRGetDCNameEx2");
 	torture_assert_werr_ok(tctx, r.out.result, "netr_DsRGetDCNameEx2");
 
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)),
+				 DS_DNS_CONTROLLER,
+				 "DsRGetDCNameEx2");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)),
+				 DS_DNS_DOMAIN,
+				 "DsRGetDCNameEx2");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCNameEx2");
+
 	r.in.server_unc		= talloc_asprintf(tctx, "\\\\%s", dcerpc_server_name(p));
 	r.in.client_account	= NULL;
 	r.in.mask		= 0x00000000;
@@ -2459,10 +2637,29 @@ static bool test_netr_DsRGetDCNameEx2(struct torture_context *tctx,
 	torture_assert_werr_ok(tctx, r.out.result, "netr_DsRGetDCNameEx2");
 
 	r.in.domain_name	= lpcfg_workgroup(tctx->lp_ctx);
+	r.in.flags		= 0;
 
 	status = dcerpc_netr_DsRGetDCNameEx2_r(b, tctx, &r);
 	torture_assert_ntstatus_ok(tctx, status, "netr_DsRGetDCNameEx2");
 	torture_assert_werr_ok(tctx, r.out.result, "netr_DsRGetDCNameEx2");
+
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_CONTROLLER)), 0,
+				 "DsRGetDCNameEx2");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_DOMAIN)), 0,
+				 "DsRGetDCNameEx2");
+	torture_assert_int_equal(tctx,
+				 (info->dc_flags & (DS_DNS_FOREST_ROOT)),
+				 DS_DNS_FOREST_ROOT,
+				 "DsRGetDCNameEx2");
+
+	if (strcasecmp(info->dc_site_name, info->client_site_name) == 0) {
+		torture_assert_int_equal(tctx,
+					 (info->dc_flags & (DS_SERVER_CLOSEST)),
+					 DS_SERVER_CLOSEST,
+					 "DsRGetDCNameEx2");
+	}
 
 	torture_comment(tctx, "Testing netr_DsRGetDCNameEx2 with client account\n");
 	r.in.client_account	= TEST_MACHINE_NAME"$";
@@ -3453,8 +3650,8 @@ static bool test_GetDomainInfo_async(struct torture_context *tctx,
 
 		/* even with this flush per request a w2k3 server seems to 
 		   clag with multiple outstanding requests. bleergh. */
-		torture_assert_int_equal(tctx, event_loop_once(dcerpc_event_context(p)), 0, 
-					 "event_loop_once failed");
+		torture_assert_int_equal(tctx, tevent_loop_once(dcerpc_event_context(p)), 0, 
+					 "tevent_loop_once failed");
 	}
 
 	for (i=0;i<ASYNC_COUNT;i++) {
@@ -3597,6 +3794,9 @@ struct torture_suite *torture_rpc_netlogon(TALLOC_CTX *mem_ctx)
 
 	tcase = torture_suite_add_machine_bdc_rpc_iface_tcase(suite, "netlogon",
 						  &ndr_table_netlogon, TEST_MACHINE_NAME);
+
+	torture_rpc_tcase_add_test(tcase, "Broken RPC binding handle",
+				   test_netr_broken_binding_handle);
 
 	torture_rpc_tcase_add_test(tcase, "LogonUasLogon", test_LogonUasLogon);
 	torture_rpc_tcase_add_test(tcase, "LogonUasLogoff", test_LogonUasLogoff);

@@ -1698,7 +1698,12 @@ static bool create_listen_pollfds(struct pollfd **pfds,
 	for (subrec = FIRST_SUBNET;
 	     subrec != NULL;
 	     subrec = NEXT_SUBNET_EXCLUDING_UNICAST(subrec)) {
-		count += 2;	/* nmb_sock and dgram_sock */
+		if (subrec->nmb_sock != -1) {
+			count += 1;
+		}
+		if (subrec->dgram_sock != -1) {
+			count += 1;
+		}
 		if (subrec->nmb_bcast != -1) {
 			count += 1;
 		}
@@ -1718,7 +1723,7 @@ static bool create_listen_pollfds(struct pollfd **pfds,
 	if (fds == NULL) {
 		DEBUG(1, ("create_listen_pollfds: malloc fail for attrs. "
 			  "size %d\n", count));
-		SAFE_FREE(fds);
+		TALLOC_FREE(fds);
 		return true;
 	}
 
@@ -1736,10 +1741,12 @@ static bool create_listen_pollfds(struct pollfd **pfds,
 
 	for (subrec = FIRST_SUBNET; subrec; subrec = NEXT_SUBNET_EXCLUDING_UNICAST(subrec)) {
 
-		fds[num].fd = subrec->nmb_sock;
-		attrs[num].type = NMB_PACKET;
-		attrs[num].broadcast = false;
-		num += 1;
+		if (subrec->nmb_sock != -1) {
+			fds[num].fd = subrec->nmb_sock;
+			attrs[num].type = NMB_PACKET;
+			attrs[num].broadcast = false;
+			num += 1;
+		}
 
 		if (subrec->nmb_bcast != -1) {
 			fds[num].fd = subrec->nmb_bcast;
@@ -1748,10 +1755,12 @@ static bool create_listen_pollfds(struct pollfd **pfds,
 			num += 1;
 		}
 
-		fds[num].fd = subrec->dgram_sock;
-		attrs[num].type = DGRAM_PACKET;
-		attrs[num].broadcast = false;
-		num += 1;
+		if (subrec->dgram_sock != -1) {
+			fds[num].fd = subrec->dgram_sock;
+			attrs[num].type = DGRAM_PACKET;
+			attrs[num].broadcast = false;
+			num += 1;
+		}
 
 		if (subrec->dgram_bcast != -1) {
 			fds[num].fd = subrec->dgram_bcast;
@@ -1855,7 +1864,7 @@ static void free_processed_packet_list(struct processed_packet **pp_processed_pa
   return True if the socket is dead
 ***************************************************************************/
 
-bool listen_for_packets(bool run_election)
+bool listen_for_packets(struct messaging_context *msg, bool run_election)
 {
 	static struct pollfd *fds = NULL;
 	static struct socket_attributes *attrs = NULL;
@@ -1926,7 +1935,7 @@ bool listen_for_packets(bool run_election)
 	event_add_to_poll_args(nmbd_event_context(), NULL,
 			       &fds, &num_sockets, &timeout);
 
-	pollrtn = sys_poll(fds, num_sockets, timeout);
+	pollrtn = poll(fds, num_sockets, timeout);
 
 	if (run_events_poll(nmbd_event_context(), pollrtn, fds, num_sockets)) {
 		return False;
@@ -1939,7 +1948,7 @@ bool listen_for_packets(bool run_election)
 #ifndef SYNC_DNS
 	if ((dns_fd != -1) && (dns_pollidx != -1) &&
 	    (fds[dns_pollidx].revents & (POLLIN|POLLHUP|POLLERR))) {
-		run_dns_queue();
+		run_dns_queue(msg);
 	}
 #endif
 
@@ -1986,21 +1995,23 @@ bool listen_for_packets(bool run_election)
 			continue;
 		}
 
-		if ((is_loopback_ip_v4(packet->ip) || ismyip_v4(packet->ip)) &&
-		    packet->port == client_port)
-		{
-			if (client_port == DGRAM_PORT) {
-				DEBUG(7,("discarding own dgram packet from %s:%d\n",
-					inet_ntoa(packet->ip),packet->port));
-				free_packet(packet);
-				continue;
-			}
+		if (!IS_DC) {
+			if ((is_loopback_ip_v4(packet->ip) || ismyip_v4(packet->ip)) &&
+			packet->port == client_port)
+			{
+				if (client_port == DGRAM_PORT) {
+					DEBUG(7,("discarding own dgram packet from %s:%d\n",
+						inet_ntoa(packet->ip),packet->port));
+					free_packet(packet);
+					continue;
+				}
 
-			if (packet->packet.nmb.header.nm_flags.bcast) {
-				DEBUG(7,("discarding own nmb bcast packet from %s:%d\n",
-					inet_ntoa(packet->ip),packet->port));
-				free_packet(packet);
-				continue;
+				if (packet->packet.nmb.header.nm_flags.bcast) {
+					DEBUG(7,("discarding own nmb bcast packet from %s:%d\n",
+						inet_ntoa(packet->ip),packet->port));
+					free_packet(packet);
+					continue;
+				}
 			}
 		}
 

@@ -130,8 +130,9 @@ static NTSTATUS dns_process(struct dns_server *dns,
 
 		return NT_STATUS_OK;
 	}
-
-	NDR_PRINT_DEBUG(dns_name_packet, in_packet);
+	if (DEBUGLVL(2)) {
+		NDR_PRINT_DEBUG(dns_name_packet, in_packet);
+	}
 	*out_packet = *in_packet;
 	out_packet->operation |= DNS_FLAG_REPLY;
 
@@ -144,9 +145,9 @@ static NTSTATUS dns_process(struct dns_server *dns,
 					       &additional, &num_additional);
 
 		break;
-	case DNS_OPCODE_REGISTER:
+	case DNS_OPCODE_UPDATE:
 		ret = dns_server_process_update(dns, out_packet, in_packet,
-						answers, num_answers,
+						&answers, &num_answers,
 						&nsrecs,  &num_nsrecs,
 						&additional, &num_additional);
 		break;
@@ -168,7 +169,9 @@ static NTSTATUS dns_process(struct dns_server *dns,
 		out_packet->operation |= werr_to_dns_err(ret);
 	}
 
-	NDR_PRINT_DEBUG(dns_name_packet, out_packet);
+	if (DEBUGLVL(2)) {
+		NDR_PRINT_DEBUG(dns_name_packet, out_packet);
+	}
 	ndr_err = ndr_push_struct_blob(out, out_packet, out_packet,
 			(ndr_push_flags_fn_t)ndr_push_dns_name_packet);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
@@ -235,7 +238,7 @@ static void dns_tcp_call_loop(struct tevent_req *subreq)
 		 tsocket_address_string(dns_conn->conn->remote_address, call)));
 
 	/* skip length header */
-	call->in.data +=4;
+	call->in.data += 4;
 	call->in.length -= 4;
 
 	/* Call dns */
@@ -414,11 +417,11 @@ static void dns_udp_call_loop(struct tevent_req *subreq)
 	call->in.data = buf;
 	call->in.length = len;
 
-	DEBUG(10,("Received krb5 UDP packet of length %lu from %s\n",
+	DEBUG(10,("Received DNS UDP packet of length %lu from %s\n",
 		 (long)call->in.length,
 		 tsocket_address_string(call->src, call)));
 
-	/* Call krb5 */
+	/* Call dns_process */
 	status = dns_process(sock->dns_socket->dns, call, &call->in, &call->out);
 	if (!NT_STATUS_IS_OK(status)) {
 		talloc_free(call);
@@ -601,7 +604,6 @@ static void dns_task_init(struct task_server *task)
 	struct interface *ifaces;
 	int ret;
 	struct ldb_result *res;
-	struct ldb_dn *rootdn;
 	static const char * const attrs[] = { "name", NULL};
 	unsigned int i;
 
@@ -641,14 +643,8 @@ static void dns_task_init(struct task_server *task)
 		return;
 	}
 
-	rootdn = ldb_dn_new(dns, dns->samdb, "");
-	if (rootdn == NULL) {
-		task_server_terminate(task, "dns: out of memory", true);
-		return;
-	}
-
 	// TODO: this search does not work against windows
-	ret = dsdb_search(dns->samdb, dns, &res, rootdn, LDB_SCOPE_SUBTREE,
+	ret = dsdb_search(dns->samdb, dns, &res, NULL, LDB_SCOPE_SUBTREE,
 			  attrs, DSDB_SEARCH_SEARCH_ALL_PARTITIONS, "(objectClass=dnsZone)");
 	if (ret != LDB_SUCCESS) {
 		task_server_terminate(task,

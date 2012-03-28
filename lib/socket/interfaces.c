@@ -77,7 +77,7 @@ static void make_bcast_or_net(struct sockaddr_storage *pss_out,
 			bool make_bcast_p)
 {
 	unsigned int i = 0, len = 0;
-	char *pmask = NULL;
+	const char *pmask = NULL;
 	char *p = NULL;
 	*pss_out = *pss_in;
 
@@ -85,13 +85,13 @@ static void make_bcast_or_net(struct sockaddr_storage *pss_out,
 #if defined(HAVE_IPV6)
 	if (pss_in->ss_family == AF_INET6) {
 		p = (char *)&((struct sockaddr_in6 *)pss_out)->sin6_addr;
-		pmask = discard_const_p(char, &((struct sockaddr_in6 *)nmask)->sin6_addr);
+		pmask = (const char *)&((const struct sockaddr_in6 *)nmask)->sin6_addr;
 		len = 16;
 	}
 #endif
 	if (pss_in->ss_family == AF_INET) {
 		p = (char *)&((struct sockaddr_in *)pss_out)->sin_addr;
-		pmask = discard_const_p(char, &((struct sockaddr_in *)nmask)->sin_addr);
+		pmask = (const char *)&((const struct sockaddr_in *)nmask)->sin_addr;
 		len = 4;
 	}
 
@@ -195,6 +195,19 @@ static int _get_interfaces(TALLOC_CTX *mem_ctx, struct iface_struct **pifaces)
 			memcpy(&ifaces[total].bcast,
 				ifptr->ifa_dstaddr,
 				copy_size);
+#if defined(HAVE_IPV6)
+		} else if (ifptr->ifa_addr->sa_family == AF_INET6) {
+			const struct sockaddr_in6 *sin6 =
+				(const struct sockaddr_in6 *)ifptr->ifa_addr;
+			const struct in6_addr *in6 =
+				(const struct in6_addr *)&sin6->sin6_addr;
+
+			if (IN6_IS_ADDR_LINKLOCAL(in6) || IN6_IS_ADDR_V4COMPAT(in6)) {
+				continue;
+			}
+			/* IPv6 does not have broadcast it uses multicast. */
+			memset(&ifaces[total].bcast, '\0', copy_size);
+#endif
 		} else {
 			continue;
 		}

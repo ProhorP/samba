@@ -21,6 +21,12 @@
 #include "includes.h"
 #include "torture/torture.h"
 #include "lib/util/charset/charset.h"
+#include "param/param.h"
+
+struct torture_suite *torture_local_convert_string_handle(TALLOC_CTX *mem_ctx);
+struct torture_suite *torture_local_string_case_handle(TALLOC_CTX *mem_ctx);
+struct torture_suite *torture_local_convert_string(TALLOC_CTX *mem_ctx);
+struct torture_suite *torture_local_string_case(TALLOC_CTX *mem_ctx);
 
 /* The text below is in ancient and a latin charset transliteration of
  * greek, and an english translation.  It from Apology by Plato and sourced from
@@ -105,23 +111,24 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 	talloc_steal(tctx, gd_iso8859_1.data);
 	talloc_steal(tctx, gd_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ISO8859-1", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "ISO-8859-1", "CP850",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 		
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_UTF8, CH_DOS, 
 						    gd_utf8.data, gd_utf8.length, 
 						    (void *)&gd_output.data, &gd_output.length), 
-		       "conversion from UTF8 to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF8 to (dos charset) ISO8859-1 incorrect");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF8 to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_error_handle(iconv_handle,
 							 CH_UTF8, CH_DOS,
 							 gd_utf8.data, gd_utf8.length,
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length),
-		       "conversion from UTF8 to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF8 to (dos charset) ISO8859-1 incorrect");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF8 to (dos charset) ISO-8859-1 incorrect");
 
 	/* Short output handling confirmation */
 	gd_output.length = 1;
@@ -130,10 +137,10 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 							 gd_utf8.data, gd_utf8.length,
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
-		       "conversion from UTF8 to (dos charset) ISO8859-1 should fail due to too short");
-	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF8 to (dos charset) ISO8859-1 should fail E2BIG");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1 should fail due to too short");
+	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF8 to (dos charset) ISO-8859-1 should fail E2BIG");
 	torture_assert_int_equal(tctx, gd_output.length, 1, "Should only get 1 char of output");
-	torture_assert_data_blob_equal(tctx, gd_output, data_blob_string_const("G"), "conversion from UTF8 to (dos charset) ISO8859-1 incorrect");
+	torture_assert_data_blob_equal(tctx, gd_output, data_blob_string_const("G"), "conversion from UTF8 to (dos charset) ISO-8859-1 incorrect");
 
 	/* Short output handling confirmation */
 	gd_output.length = 2;
@@ -142,8 +149,8 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 							 gd_utf8.data, gd_utf8.length,
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
-		       "conversion from UTF8 to (dos charset) ISO8859-1 should fail due to too short");
-	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF8 to (dos charset) ISO8859-1 should fail E2BIG");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1 should fail due to too short");
+	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF8 to (dos charset) ISO-8859-1 should fail E2BIG");
 	torture_assert_int_equal(tctx, gd_output.length, 2, "Should only get 2 char of output");
 
 	/* Short input handling confirmation */
@@ -153,8 +160,8 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 							 gd_utf8.data, 2,
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
-		       "conversion from UTF8 to (dos charset) ISO8859-1 should fail due to too short");
-	torture_assert_errno_equal(tctx, EILSEQ, "conversion from short UTF8 to (dos charset) ISO8859-1 should fail EINVAL");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1 should fail due to too short");
+	torture_assert_errno_equal(tctx, EILSEQ, "conversion from short UTF8 to (dos charset) ISO-8859-1 should fail EINVAL");
 	torture_assert_int_equal(tctx, gd_output.length, 1, "Should only get 1 char of output");
 
 	/* Short output handling confirmation */
@@ -165,7 +172,7 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
 		       "conversion from UTF16 to UTF8 should fail due to too short");
-	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF16 to (utf8 charset) ISO8859-1 should fail E2BIG");
+	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF16 to (utf8 charset) ISO-8859-1 should fail E2BIG");
 	torture_assert_int_equal(tctx, gd_output.length, 1, "Should only get 1 char of output");
 	torture_assert_data_blob_equal(tctx, gd_output, data_blob_string_const("G"), "conversion from UTF16 to UTF8 incorrect");
 
@@ -177,7 +184,7 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
 		       "conversion from UTF16 to UTF8 should fail due to too short");
-	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF16 to (utf8 charset) ISO8859-1 should fail E2BIG");
+	torture_assert_errno_equal(tctx, E2BIG, "conversion from UTF16 to (utf8 charset) ISO-8859-1 should fail E2BIG");
 	torture_assert_int_equal(tctx, gd_output.length, 3, "Should get 3 bytes output for UTF8");
 
 	/* Short input handling confirmation */
@@ -209,15 +216,15 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 						    CH_UTF16LE, CH_DOS, 
 						    gd_utf16le.data, gd_utf16le.length, 
 						    (void *)&gd_output.data, &gd_output.length),
-		       "conversion from UTF16LE to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF16LE to (dos charset) ISO8859-1 incorrect");
+		       "conversion from UTF16LE to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF16LE to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF16LE, 
 						    gd_output.data, gd_output.length, 
 						    (void *)&gd_output2.data, &gd_output2.length),
-		       "round trip conversion from (dos charset) ISO8859-1 back to UTF16LE");
-	torture_assert_data_blob_equal(tctx, gd_output2, gd_utf16le,  "round trip conversion from (dos charset) ISO8859-1 back to UTF16LE");
+		       "round trip conversion from (dos charset) ISO-8859-1 back to UTF16LE");
+	torture_assert_data_blob_equal(tctx, gd_output2, gd_utf16le,  "round trip conversion from (dos charset) ISO-8859-1 back to UTF16LE");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_UTF16LE, CH_UNIX, 
@@ -237,29 +244,29 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 						    CH_DOS, CH_DOS, 
 						    gd_iso8859_1.data, gd_iso8859_1.length, 
 						    (void *)&gd_output.data, &gd_output.length),
-		       "conversion from (dos charset) ISO8859-1 to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF16LE to (dos charset) ISO8859-1 incorrect");
+		       "conversion from (dos charset) ISO-8859-1 to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_iso8859_1, "conversion from UTF16LE to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UNIX, 
 						    gd_iso8859_1.data, gd_iso8859_1.length, 
 						    (void *)&gd_output.data, &gd_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to (unix charset) CP850");
+		       "conversion from (dos charset) ISO-8859-1 to (unix charset) CP850");
 	torture_assert_data_blob_equal(tctx, gd_output, gd_cp850, "conversion from UTF16LE to (unix charset) CP850 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF8, 
 						    gd_iso8859_1.data, gd_iso8859_1.length, 
 						    (void *)&gd_output.data, &gd_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to UTF8");
+		       "conversion from (dos charset) ISO-8859-1 to UTF8");
 	torture_assert_data_blob_equal(tctx, gd_output, gd_utf8, "conversion from UTF16LE to UTF8 incorrect");
 
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF16LE, 
 						    gd_iso8859_1.data, gd_iso8859_1.length, 
 						    (void *)&gd_output.data, &gd_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to UTF16LE");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_utf16le, "conversion from (dos charset) ISO8859-1 to UTF16LE");
+		       "conversion from (dos charset) ISO-8859-1 to UTF16LE");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_utf16le, "conversion from (dos charset) ISO-8859-1 to UTF16LE");
 	torture_assert_int_equal(tctx,
 				 strlen_m_ext_handle(iconv_handle,
 						     (const char *)gd_iso8859_1.data,
@@ -271,14 +278,14 @@ static bool test_gd_iso8859_cp850_handle(struct torture_context *tctx)
 						    CH_DOS, CH_UTF8,
 						    gd_iso8859_1.data, gd_iso8859_1.length,
 						    (void *)&gd_output.data, &gd_output.length),
-		       "conversion from (dos charset) ISO8859-1 to UTF8");
-	torture_assert_data_blob_equal(tctx, gd_output, gd_utf8, "conversion from (dos charset) ISO8859-1 to UTF8");
+		       "conversion from (dos charset) ISO-8859-1 to UTF8");
+	torture_assert_data_blob_equal(tctx, gd_output, gd_utf8, "conversion from (dos charset) ISO-8859-1 to UTF8");
 	torture_assert_int_equal(tctx,
 				 strlen_m_ext_handle(iconv_handle,
 						     (const char *)gd_iso8859_1.data,
 						     CH_DOS, CH_UTF8),
 				 gd_output.length,
-				 "checking strlen_m_ext of conversion from (dos charset) ISO8859-1 to UTF8");
+				 "checking strlen_m_ext of conversion from (dos charset) ISO-8859-1 to UTF8");
 	return true;
 }
 
@@ -297,7 +304,8 @@ static bool test_gd_minus_1_handle(struct torture_context *tctx)
 	talloc_steal(tctx, gd_cp850.data);
 	talloc_steal(tctx, gd_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "CP850", 
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 
 	gd_utf8_terminated = data_blob_talloc(tctx, NULL, gd_utf8.length + 1);
@@ -481,7 +489,8 @@ static bool test_gd_ascii_handle(struct torture_context *tctx)
 	talloc_steal(tctx, gd_iso8859_1.data);
 	talloc_steal(tctx, gd_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8");
+	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8", 
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle,
@@ -498,7 +507,7 @@ static bool test_gd_ascii_handle(struct torture_context *tctx)
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
 		       "conversion from UTF8 to (dos charset) ASCII should fail");
-	torture_assert_errno_equal(tctx, EILSEQ, "conversion from UTF8 to (dos charset) ISO8859-1 should fail E2BIG");
+	torture_assert_errno_equal(tctx, EILSEQ, "conversion from UTF8 to (dos charset) ISO-8859-1 should fail E2BIG");
 	torture_assert_int_equal(tctx, gd_output.length, 1, "Should only get 1 char of output");
 	torture_assert_data_blob_equal(tctx, gd_output, data_blob_string_const("G"), "partial conversion from UTF8 to (dos charset) ASCII incorrect");
 
@@ -522,7 +531,7 @@ static bool test_gd_ascii_handle(struct torture_context *tctx)
 							 (void *)gd_output.data, gd_output.length,
 							 &gd_output.length) == false,
 		       "conversion from UTF8 to (dos charset) ASCII should fail due to too illigal seqence");
-	torture_assert_errno_equal(tctx, EILSEQ, "conversion from UTF8 to (dos charset) ISO8859-1 should fail EILSEQ");
+	torture_assert_errno_equal(tctx, EILSEQ, "conversion from UTF8 to (dos charset) ISO-8859-1 should fail EILSEQ");
 	torture_assert_int_equal(tctx, gd_output.length, 1, "Should only get 2 char of output");
 
 	/* Short input handling confirmation */
@@ -550,15 +559,16 @@ static bool test_plato_english_iso8859_cp850_handle(struct torture_context *tctx
 	
 	talloc_steal(tctx, plato_english_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ISO8859-1", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "ISO-8859-1", "CP850", 
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 		
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_UTF8, CH_DOS, 
 						    plato_english_utf8.data, plato_english_utf8.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length), 
-		       "conversion from UTF8 to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF8 to (dos charset) ISO8859-1 incorrect");
+		       "conversion from UTF8 to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF8 to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_UTF8, CH_UNIX, 
@@ -578,15 +588,15 @@ static bool test_plato_english_iso8859_cp850_handle(struct torture_context *tctx
 						    CH_UTF16LE, CH_DOS, 
 						    plato_english_utf16le.data, plato_english_utf16le.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length),
-		       "conversion from UTF16LE to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF16LE to (dos charset) ISO8859-1 incorrect");
+		       "conversion from UTF16LE to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF16LE to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF16LE, 
 						    plato_english_output.data, plato_english_output.length, 
 						    (void *)&plato_english_output2.data, &plato_english_output2.length),
-		       "round trip conversion from (dos charset) ISO8859-1 back to UTF16LE");
-	torture_assert_data_blob_equal(tctx, plato_english_output2, plato_english_utf16le,  "round trip conversion from (dos charset) ISO8859-1 back to UTF16LE");
+		       "round trip conversion from (dos charset) ISO-8859-1 back to UTF16LE");
+	torture_assert_data_blob_equal(tctx, plato_english_output2, plato_english_utf16le,  "round trip conversion from (dos charset) ISO-8859-1 back to UTF16LE");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_UTF16LE, CH_UTF8,
@@ -631,29 +641,29 @@ static bool test_plato_english_iso8859_cp850_handle(struct torture_context *tctx
 						    CH_DOS, CH_DOS, 
 						    plato_english_iso8859_1.data, plato_english_iso8859_1.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length),
-		       "conversion from (dos charset) ISO8859-1 to (dos charset) ISO8859-1");
-	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF16LE to (dos charset) ISO8859-1 incorrect");
+		       "conversion from (dos charset) ISO-8859-1 to (dos charset) ISO-8859-1");
+	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_iso8859_1, "conversion from UTF16LE to (dos charset) ISO-8859-1 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UNIX, 
 						    plato_english_iso8859_1.data, plato_english_iso8859_1.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to (unix charset) CP850");
+		       "conversion from (dos charset) ISO-8859-1 to (unix charset) CP850");
 	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_cp850, "conversion from UTF16LE to (unix charset) CP850 incorrect");
 	
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF8, 
 						    plato_english_iso8859_1.data, plato_english_iso8859_1.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to UTF8");
+		       "conversion from (dos charset) ISO-8859-1 to UTF8");
 	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_utf8, "conversion from UTF16LE to UTF8 incorrect");
 
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
 						    CH_DOS, CH_UTF16LE, 
 						    plato_english_iso8859_1.data, plato_english_iso8859_1.length, 
 						    (void *)&plato_english_output.data, &plato_english_output.length), 
-		       "conversion from (dos charset) ISO8859-1 to UTF16LE");
-	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_utf16le, "conversion from (dos charset) ISO8859-1 to UTF16LE");
+		       "conversion from (dos charset) ISO-8859-1 to UTF16LE");
+	torture_assert_data_blob_equal(tctx, plato_english_output, plato_english_utf16le, "conversion from (dos charset) ISO-8859-1 to UTF16LE");
 	return true;
 }
 
@@ -668,7 +678,8 @@ static bool test_plato_english_minus_1_handle(struct torture_context *tctx)
 	
 	talloc_steal(tctx, plato_english_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ISO8859-1", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "ISO-8859-1", "CP850", 
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 
 	plato_english_utf8_terminated = data_blob_talloc(tctx, NULL, plato_english_utf8.length + 1);
@@ -809,7 +820,8 @@ static bool test_plato_minus_1_handle(struct torture_context *tctx)
 	talloc_steal(tctx, plato_utf8.data);
 	talloc_steal(tctx, plato_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ISO8859-1", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "ISO-8859-1", "CP850",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting iconv handle");
 
 	plato_utf8_terminated = data_blob_talloc(tctx, NULL, plato_utf8.length + 1);
@@ -923,7 +935,8 @@ static bool test_plato_cp850_utf8_handle(struct torture_context *tctx)
 	talloc_steal(tctx, plato_utf8.data);
 	talloc_steal(tctx, plato_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "UTF8");
+	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "UTF8", 
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "creating iconv handle");
 		
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
@@ -1114,7 +1127,8 @@ static bool test_plato_latin_cp850_utf8_handle(struct torture_context *tctx)
 	talloc_steal(tctx, plato_latin_utf8.data);
 	talloc_steal(tctx, plato_latin_utf16le.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "UTF8");
+	iconv_handle = get_iconv_testing_handle(tctx, "CP850", "UTF8",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "creating iconv handle");
 		
 	torture_assert(tctx, convert_string_talloc_handle(tctx, iconv_handle, 
@@ -1182,7 +1196,8 @@ static bool test_gd_case_utf8_handle(struct torture_context *tctx)
 	char *gd_lower, *gd_upper;
 	talloc_steal(tctx, gd_utf8.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8");
+	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting utf8 iconv handle");
 
 	torture_assert(tctx,
@@ -1245,7 +1260,8 @@ static bool test_gd_case_cp850_handle(struct torture_context *tctx)
 	char *gd_lower, *gd_upper;
 	talloc_steal(tctx, gd_cp850.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "CP850");
+	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "CP850",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting cp850 iconv handle");
 
 	torture_assert(tctx,
@@ -1306,7 +1322,8 @@ static bool test_plato_case_utf8_handle(struct torture_context *tctx)
 	char *plato_lower, *plato_upper;
 	talloc_steal(tctx, plato_utf8.data);
 
-	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8");
+	iconv_handle = get_iconv_testing_handle(tctx, "ASCII", "UTF8",
+						lpcfg_parm_bool(tctx->lp_ctx, NULL, "iconv", "use_builtin_handlers", true));
 	torture_assert(tctx, iconv_handle, "getting utf8 iconv handle");
 
 	torture_assert(tctx,

@@ -30,6 +30,7 @@
 #include "auth/credentials/pycredentials.h"
 #include <tevent.h>
 #include "librpc/rpc/pyrpc_util.h"
+#include "lib/events/events.h"
 
 void initauth(void);
 
@@ -146,12 +147,12 @@ static PyObject *py_user_session(PyObject *module, PyObject *args, PyObject *kwa
 		return NULL;
 	}
 
-	ldb_ctx = PyLdb_AsLdbContext(py_ldb);
+	ldb_ctx = pyldb_Ldb_AsLdbContext(py_ldb);
 
 	if (py_dn == Py_None) {
 		user_dn = NULL;
 	} else {
-		if (!PyObject_AsDn(ldb_ctx, py_dn, ldb_ctx, &user_dn)) {
+		if (!pyldb_Object_AsDn(ldb_ctx, py_dn, ldb_ctx, &user_dn)) {
 			talloc_free(mem_ctx);
 			return NULL;
 		}
@@ -207,7 +208,7 @@ static const char **PyList_AsStringList(TALLOC_CTX *mem_ctx, PyObject *list,
 
 static PyObject *PyAuthContext_FromContext(struct auth4_context *auth_context)
 {
-	return py_talloc_reference(&PyAuthContext, auth_context);
+	return pytalloc_reference(&PyAuthContext, auth_context);
 }
 
 static PyObject *py_auth_context_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
@@ -240,19 +241,19 @@ static PyObject *py_auth_context_new(PyTypeObject *type, PyObject *args, PyObjec
 	}
 
 	if (py_ldb != Py_None) {
-		ldb = PyLdb_AsLdbContext(py_ldb);
+		ldb = pyldb_Ldb_AsLdbContext(py_ldb);
 	}
 
 	lp_ctx = lpcfg_from_py_object(mem_ctx, py_lp_ctx);
 
-	ev = tevent_context_init(mem_ctx);
+	ev = s4_event_context_init(mem_ctx);
 	if (ev == NULL) {
 		PyErr_NoMemory();
 		return NULL;
 	}
 
 	if (py_imessaging_ctx != Py_None) {
-		imessaging_context = py_talloc_get_type(py_imessaging_ctx, struct imessaging_context);
+		imessaging_context = pytalloc_get_type(py_imessaging_ctx, struct imessaging_context);
 	}
 
 	if (py_methods == Py_None && py_ldb == Py_None) {
@@ -298,10 +299,9 @@ static PyObject *py_auth_context_new(PyTypeObject *type, PyObject *args, PyObjec
 
 static PyTypeObject PyAuthContext = {
 	.tp_name = "AuthContext",
-	.tp_basicsize = sizeof(py_talloc_Object),
+	.tp_basicsize = sizeof(pytalloc_Object),
 	.tp_flags = Py_TPFLAGS_DEFAULT,
 	.tp_new = py_auth_context_new,
-	.tp_basicsize = sizeof(py_talloc_Object),
 };
 
 static PyMethodDef py_auth_methods[] = {
@@ -315,7 +315,7 @@ void initauth(void)
 {
 	PyObject *m;
 
-	PyAuthContext.tp_base = PyTalloc_GetObjectType();
+	PyAuthContext.tp_base = pytalloc_GetObjectType();
 	if (PyAuthContext.tp_base == NULL)
 		return;
 

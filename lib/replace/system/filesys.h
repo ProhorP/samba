@@ -100,6 +100,10 @@
 #include <sys/ioctl.h>
 #endif
 
+#ifdef HAVE_SYS_UIO_H
+#include <sys/uio.h>
+#endif
+
 /*
  * Veritas File System.  Often in addition to native.
  * Quotas different.
@@ -184,5 +188,16 @@
 #ifdef _WIN32
 #define mkdir(d,m) _mkdir(d)
 #endif
+
+#ifdef UID_WRAPPER
+# ifndef UID_WRAPPER_DISABLE
+#  ifndef UID_WRAPPER_NOT_REPLACE
+#   define UID_WRAPPER_REPLACE
+#  endif /* UID_WRAPPER_NOT_REPLACE */
+#  include "../uid_wrapper/uid_wrapper.h"
+# endif /* UID_WRAPPER_DISABLE */
+#else /* UID_WRAPPER */
+# define uwrap_enabled() 0
+#endif /* UID_WRAPPER */
 
 #endif

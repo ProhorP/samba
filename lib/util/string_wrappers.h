@@ -23,24 +23,6 @@
 #ifndef _STRING_WRAPPERS_H
 #define _STRING_WRAPPERS_H
 
-/* We need a number of different prototypes for our
-   non-existant fuctions */
-char * __unsafe_string_function_usage_here__(void);
-
-size_t __unsafe_string_function_usage_here_size_t__(void);
-
-#ifdef HAVE_COMPILER_WILL_OPTIMIZE_OUT_FNS
-
-/* if the compiler will optimize out function calls, then use this to tell if we are
-   have the correct types (this works only where sizeof() returns the size of the buffer, not
-   the size of the pointer). */
-
-#define CHECK_STRING_SIZE(d, len) (sizeof(d) != (len) && sizeof(d) != sizeof(char *))
-
-#else /* HAVE_COMPILER_WILL_OPTIMIZE_OUT_FNS */
-
-#endif /* HAVE_COMPILER_WILL_OPTIMIZE_OUT_FNS */
-
 #define strlcpy_base(dest, src, base, size) \
 do { \
 	const char *_strlcpy_base_src = (const char *)src; \
@@ -74,6 +56,14 @@ do { \
 
 #ifdef HAVE_COMPILER_WILL_OPTIMIZE_OUT_FNS
 
+/* We need a number of different prototypes for our
+   non-existant fuctions */
+char * __unsafe_string_function_usage_here__(void);
+
+size_t __unsafe_string_function_usage_here_size_t__(void);
+
+#define CHECK_STRING_SIZE(d, len) (sizeof(d) != (len) && sizeof(d) != sizeof(char *))
+
 /* if the compiler will optimize out function calls, then use this to tell if we are
    have the correct types (this works only where sizeof() returns the size of the buffer, not
    the size of the pointer). */
@@ -82,16 +72,6 @@ do { \
     (CHECK_STRING_SIZE(dest, dest_len) \
     ? __unsafe_string_function_usage_here_size_t__() \
     : push_string_check_fn(dest, src, dest_len, flags))
-
-#define clistr_push(cli, dest, src, dest_len, flags) \
-    (CHECK_STRING_SIZE(dest, dest_len) \
-    ? __unsafe_string_function_usage_here_size_t__() \
-    : clistr_push_fn(cli, dest, src, dest_len, flags))
-
-#define clistr_pull(inbuf, dest, src, dest_len, srclen, flags) \
-    (CHECK_STRING_SIZE(dest, dest_len) \
-    ? __unsafe_string_function_usage_here_size_t__() \
-    : clistr_pull_fn(inbuf, dest, src, dest_len, srclen, flags))
 
 #define srvstr_push(base_ptr, smb_flags2, dest, src, dest_len, flags) \
     (CHECK_STRING_SIZE(dest, dest_len) \
@@ -112,8 +92,6 @@ do { \
 #else
 
 #define push_string_check push_string_check_fn
-#define clistr_push clistr_push_fn
-#define clistr_pull clistr_pull_fn
 #define srvstr_push srvstr_push_fn
 #define checked_strlcpy strlcpy
 

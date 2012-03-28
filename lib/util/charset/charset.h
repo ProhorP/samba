@@ -59,25 +59,13 @@ struct charset_functions {
 				   char **outbuf, size_t *outbytesleft);
 	size_t (*push)(void *, const char **inbuf, size_t *inbytesleft,
 				   char **outbuf, size_t *outbytesleft);
-	struct charset_functions *prev, *next;
+	bool samba_internal_charset;
 };
 
 /* this type is used for manipulating unicode codepoints */
 typedef uint32_t codepoint_t;
 
 #define INVALID_CODEPOINT ((codepoint_t)-1)
-
-/*
- * This is auxiliary struct used by source/script/gen-8-bit-gap.sh script
- * during generation of an encoding table for charset module
- *     */
-
-struct charset_gap_table {
-  uint16_t start;
-  uint16_t end;
-  int32_t idx;
-};
-
 
 /* generic iconv conversion structure */
 typedef struct smb_iconv_s {
@@ -173,16 +161,12 @@ bool convert_string_error(charset_t from, charset_t to,
 			  void *dest, size_t destlen,
 			  size_t *converted_size);
 
-ssize_t iconv_talloc(TALLOC_CTX *mem_ctx, 
-				       smb_iconv_t cd,
-				       void const *src, size_t srclen, 
-				       void *dest);
-
 extern struct smb_iconv_handle *global_iconv_handle;
 struct smb_iconv_handle *get_iconv_handle(void);
 struct smb_iconv_handle *get_iconv_testing_handle(TALLOC_CTX *mem_ctx, 
 						  const char *dos_charset, 
-						  const char *unix_charset);
+						  const char *unix_charset,
+						  bool use_builtin_handlers);
 smb_iconv_t get_conv_handle(struct smb_iconv_handle *ic,
 			    charset_t from, charset_t to);
 const char *charset_name(struct smb_iconv_handle *ic, charset_t ch);
@@ -211,7 +195,7 @@ int codepoint_cmpi(codepoint_t c1, codepoint_t c2);
 struct smb_iconv_handle *smb_iconv_handle_reinit(TALLOC_CTX *mem_ctx,
 							   const char *dos_charset,
 							   const char *unix_charset,
-							   bool native_iconv,
+							   bool use_builtin_handlers,
 							   struct smb_iconv_handle *old_ic);
 
 bool convert_string_handle(struct smb_iconv_handle *ic,
@@ -236,11 +220,10 @@ size_t smb_iconv(smb_iconv_t cd,
 		 const char **inbuf, size_t *inbytesleft,
 		 char **outbuf, size_t *outbytesleft);
 smb_iconv_t smb_iconv_open_ex(TALLOC_CTX *mem_ctx, const char *tocode, 
-			      const char *fromcode, bool native_iconv);
+			      const char *fromcode, bool use_builtin_handlers);
 
 void load_case_tables(void);
 void load_case_tables_library(void);
-bool smb_register_charset(const struct charset_functions *funcs_in);
 
 /* The following definitions come from util_unistr_w.c  */
 
@@ -253,93 +236,9 @@ smb_ucs2_t *strnrchr_w(const smb_ucs2_t *s, smb_ucs2_t c, unsigned int n);
 smb_ucs2_t *strstr_w(const smb_ucs2_t *s, const smb_ucs2_t *ins);
 bool strlower_w(smb_ucs2_t *s);
 bool strupper_w(smb_ucs2_t *s);
-int strcmp_w(const smb_ucs2_t *a, const smb_ucs2_t *b);
 int strcasecmp_w(const smb_ucs2_t *a, const smb_ucs2_t *b);
 int strncasecmp_w(const smb_ucs2_t *a, const smb_ucs2_t *b, size_t len);
 int strcmp_wa(const smb_ucs2_t *a, const char *b);
-int toupper_ascii(int c);
-int tolower_ascii(int c);
-int isupper_ascii(int c);
-int islower_ascii(int c);
-
-/*
- *   Define stub for charset module which implements 8-bit encoding with gaps.
- *   Encoding tables for such module should be produced from glibc's CHARMAPs
- *   using script source/script/gen-8bit-gap.sh
- *   CHARSETNAME is CAPITALIZED charset name
- *
- *     */
-#define SMB_GENERATE_CHARSET_MODULE_8_BIT_GAP(CHARSETNAME) 					\
-static size_t CHARSETNAME ## _push(void *cd, const char **inbuf, size_t *inbytesleft,			\
-			 char **outbuf, size_t *outbytesleft) 					\
-{ 												\
-	while (*inbytesleft >= 2 && *outbytesleft >= 1) { 					\
-		int i; 										\
-		int done = 0; 									\
-												\
-		uint16_t ch = SVAL(*inbuf,0); 							\
-												\
-		for (i=0; from_idx[i].start != 0xffff; i++) {					\
-			if ((from_idx[i].start <= ch) && (from_idx[i].end >= ch)) {		\
-				((unsigned char*)(*outbuf))[0] = from_ucs2[from_idx[i].idx+ch];	\
-				(*inbytesleft) -= 2;						\
-				(*outbytesleft) -= 1;						\
-				(*inbuf)  += 2;							\
-				(*outbuf) += 1;							\
-				done = 1;							\
-				break;								\
-			}									\
-		}										\
-		if (!done) {									\
-			errno = EINVAL;								\
-			return -1;								\
-		}										\
-												\
-	}											\
-												\
-	if (*inbytesleft == 1) {								\
-		errno = EINVAL;									\
-		return -1;									\
-	}											\
-												\
-	if (*inbytesleft > 1) {									\
-		errno = E2BIG;									\
-		return -1;									\
-	}											\
-												\
-	return 0;										\
-}												\
-												\
-static size_t CHARSETNAME ## _pull(void *cd, const char **inbuf, size_t *inbytesleft,				\
-			 char **outbuf, size_t *outbytesleft)					\
-{												\
-	while (*inbytesleft >= 1 && *outbytesleft >= 2) {					\
-		SSVAL(*outbuf, 0, to_ucs2[((unsigned char*)(*inbuf))[0]]);			\
-		(*inbytesleft)  -= 1;								\
-		(*outbytesleft) -= 2;								\
-		(*inbuf)  += 1;									\
-		(*outbuf) += 2;									\
-	}											\
-												\
-	if (*inbytesleft > 0) {									\
-		errno = E2BIG;									\
-		return -1;									\
-	}											\
-												\
-	return 0;										\
-}												\
-												\
-struct charset_functions CHARSETNAME ## _functions = 						\
-		{#CHARSETNAME, CHARSETNAME ## _pull, CHARSETNAME ## _push};			\
-												\
-NTSTATUS charset_ ## CHARSETNAME ## _init(void);							\
-NTSTATUS charset_ ## CHARSETNAME ## _init(void)							\
-{												\
-	if (!smb_register_charset(& CHARSETNAME ## _functions)) {	\
-	        return NT_STATUS_INTERNAL_ERROR;			\
-	}								\
-	return NT_STATUS_OK; \
-}						\
-
+smb_ucs2_t toupper_w(smb_ucs2_t v);
 
 #endif /* __CHARSET_H__ */

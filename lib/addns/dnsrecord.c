@@ -27,8 +27,8 @@ DNS_ERROR dns_create_query( TALLOC_CTX *mem_ctx, const char *name,
 			    uint16 q_type, uint16 q_class,
 			    struct dns_request **preq )
 {
-	struct dns_request *req;
-	struct dns_question *q;
+	struct dns_request *req = NULL;
+	struct dns_question *q = NULL;
 	DNS_ERROR err;
 
 	if (!(req = talloc_zero(mem_ctx, struct dns_request)) ||
@@ -60,8 +60,8 @@ DNS_ERROR dns_create_query( TALLOC_CTX *mem_ctx, const char *name,
 DNS_ERROR dns_create_update( TALLOC_CTX *mem_ctx, const char *name,
 			     struct dns_update_request **preq )
 {
-	struct dns_update_request *req;
-	struct dns_zone *z;
+	struct dns_update_request *req = NULL;
+	struct dns_zone *z = NULL;
 	DNS_ERROR err;
 
 	if (!(req = talloc_zero(mem_ctx, struct dns_update_request)) ||
@@ -95,7 +95,7 @@ DNS_ERROR dns_create_rrec(TALLOC_CTX *mem_ctx, const char *name,
 			  uint16 data_length, uint8 *data,
 			  struct dns_rrec **prec)
 {
-	struct dns_rrec *rec;
+	struct dns_rrec *rec = NULL;
 	DNS_ERROR err;
 
 	if (!(rec = talloc(mem_ctx, struct dns_rrec))) {
@@ -127,8 +127,7 @@ DNS_ERROR dns_create_a_record(TALLOC_CTX *mem_ctx, const char *host,
 	struct in_addr ip;
 
 	if (pss->ss_family != AF_INET) {
-		/* Silently ignore this. */
-		return ERROR_DNS_SUCCESS;
+		return ERROR_DNS_INVALID_PARAMETER;
 	}
 
 	ip = ((const struct sockaddr_in *)pss)->sin_addr;
@@ -147,13 +146,54 @@ DNS_ERROR dns_create_a_record(TALLOC_CTX *mem_ctx, const char *host,
 	return err;
 }
 
+DNS_ERROR dns_create_aaaa_record(TALLOC_CTX *mem_ctx, const char *host,
+				 uint32 ttl, const struct sockaddr_storage *pss,
+				 struct dns_rrec **prec)
+{
+#ifdef HAVE_IPV6
+	uint8 *data;
+	DNS_ERROR err;
+	struct in6_addr ip6;
+
+	if (pss->ss_family != AF_INET6) {
+		return ERROR_DNS_INVALID_PARAMETER;
+	}
+
+	ip6 = ((const struct sockaddr_in6 *)pss)->sin6_addr;
+	if (!(data = (uint8 *)talloc_memdup(mem_ctx, (const void *)&ip6.s6_addr,
+					    sizeof(ip6.s6_addr)))) {
+		return ERROR_DNS_NO_MEMORY;
+	}
+
+	err = dns_create_rrec(mem_ctx, host, QTYPE_AAAA, DNS_CLASS_IN, ttl,
+			      sizeof(ip6.s6_addr), data, prec);
+
+	if (!ERR_DNS_IS_OK(err)) {
+		TALLOC_FREE(data);
+	}
+
+	return err;
+#else
+	return ERROR_DNS_INVALID_PARAMETER;
+#endif
+}
+
 DNS_ERROR dns_create_name_in_use_record(TALLOC_CTX *mem_ctx,
 					const char *name,
 					const struct sockaddr_storage *ss,
 					struct dns_rrec **prec)
 {
 	if (ss != NULL) {
-		return dns_create_a_record(mem_ctx, name, 0, ss, prec);
+		switch (ss->ss_family) {
+		case AF_INET:
+			return dns_create_a_record(mem_ctx, name, 0, ss, prec);
+#ifdef HAVE_IPV6
+		case AF_INET6:
+			return dns_create_aaaa_record(mem_ctx, name, 0, ss, prec);
+#endif
+		default:
+			return ERROR_DNS_INVALID_PARAMETER;
+		}
 	}
 
 	return dns_create_rrec(mem_ctx, name, QTYPE_ANY, DNS_CLASS_IN, 0, 0,
@@ -181,8 +221,8 @@ DNS_ERROR dns_create_tkey_record(TALLOC_CTX *mem_ctx, const char *keyname,
 				 uint16 key_length, const uint8 *key,
 				 struct dns_rrec **prec)
 {
-	struct dns_buffer *buf;
-	struct dns_domain_name *algorithm;
+	struct dns_buffer *buf = NULL;
+	struct dns_domain_name *algorithm = NULL;
 	DNS_ERROR err;
 
 	if (!(buf = dns_create_buffer(mem_ctx))) {
@@ -269,8 +309,8 @@ DNS_ERROR dns_create_tsig_record(TALLOC_CTX *mem_ctx, const char *keyname,
 				 uint16 original_id, uint16 error,
 				 struct dns_rrec **prec)
 {
-	struct dns_buffer *buf;
-	struct dns_domain_name *algorithm;
+	struct dns_buffer *buf = NULL;
+	struct dns_domain_name *algorithm = NULL;
 	DNS_ERROR err;
 
 	if (!(buf = dns_create_buffer(mem_ctx))) {
@@ -331,13 +371,13 @@ DNS_ERROR dns_create_probe(TALLOC_CTX *mem_ctx, const char *zone,
 			   const struct sockaddr_storage *sslist,
 			   struct dns_update_request **preq)
 {
-	struct dns_update_request *req;
-	struct dns_rrec *rec;
+	struct dns_update_request *req = NULL;
+	struct dns_rrec *rec = NULL;
 	DNS_ERROR err;
 	uint16 i;
 
 	err = dns_create_update(mem_ctx, zone, &req);
-	if (!ERR_DNS_IS_OK(err)) goto error;
+	if (!ERR_DNS_IS_OK(err)) return err;
 
 	err = dns_create_name_not_in_use_record(req, host, QTYPE_CNAME,	&rec);
 	if (!ERR_DNS_IS_OK(err)) goto error;
@@ -369,8 +409,8 @@ DNS_ERROR dns_create_update_request(TALLOC_CTX *mem_ctx,
 				    size_t num_addrs,
 				    struct dns_update_request **preq)
 {
-	struct dns_update_request *req;
-	struct dns_rrec *rec;
+	struct dns_update_request *req = NULL;
+	struct dns_rrec *rec = NULL;
 	DNS_ERROR err;
 	size_t i;
 
@@ -404,7 +444,19 @@ DNS_ERROR dns_create_update_request(TALLOC_CTX *mem_ctx,
 	 */
 
 	for ( i=0; i<num_addrs; i++ ) {
-		err = dns_create_a_record(req, hostname, 3600, &ss_addrs[i], &rec);
+
+		switch(ss_addrs[i].ss_family) {
+		case AF_INET:
+			err = dns_create_a_record(req, hostname, 3600, &ss_addrs[i], &rec);
+			break;
+#ifdef HAVE_IPV6
+		case AF_INET6:
+			err = dns_create_aaaa_record(req, hostname, 3600, &ss_addrs[i], &rec);
+			break;
+#endif
+		default:
+			continue;
+		}
 		if (!ERR_DNS_IS_OK(err))
 			goto error;
 

@@ -19,6 +19,7 @@
 
 #include "includes.h"
 #include "system/filesys.h"
+#include "system/passwd.h" /* uid_wrapper */
 #include "../lib/tsocket/tsocket.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
@@ -27,6 +28,8 @@
 #include "printing/pcap.h"
 #include "passdb/lookup_sid.h"
 #include "auth.h"
+#include "lib/param/loadparm.h"
+#include "messages.h"
 
 extern userdom_struct current_user_info;
 
@@ -227,12 +230,22 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir)
  This function modifies dev, ecode.
 ****************************************************************************/
 
-static NTSTATUS share_sanity_checks(struct client_address *client_id, int snum,
+static NTSTATUS share_sanity_checks(const struct tsocket_address *remote_address,
+				    const char *rhost,
+				    int snum,
 				    fstring dev)
 {
-	if (!lp_snum_ok(snum) || 
+	char *raddr;
+
+	raddr = tsocket_address_inet_addr_string(remote_address,
+						 talloc_tos());
+	if (raddr == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	if (!lp_snum_ok(snum) ||
 	    !allow_access(lp_hostsdeny(snum), lp_hostsallow(snum),
-			  client_id->name, client_id->addr)) {
+			  rhost, raddr)) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -362,48 +375,48 @@ static NTSTATUS find_forced_group(bool force_user,
 }
 
 /****************************************************************************
-  Create an auth_serversupplied_info structure for a connection_struct
+  Create an auth_session_info structure for a connection_struct
 ****************************************************************************/
 
 static NTSTATUS create_connection_session_info(struct smbd_server_connection *sconn,
 					      TALLOC_CTX *mem_ctx, int snum,
-                                              struct auth_serversupplied_info *vuid_serverinfo,
+                                              struct auth_session_info *vuid_serverinfo,
 					      DATA_BLOB password,
-                                              struct auth_serversupplied_info **presult)
+                                              struct auth_session_info **presult)
 {
         if (lp_guest_only(snum)) {
-                return make_server_info_guest(mem_ctx, presult);
+                return make_session_info_guest(mem_ctx, presult);
         }
 
         if (vuid_serverinfo != NULL) {
 
-		struct auth_serversupplied_info *result;
+		struct auth_session_info *result;
 
                 /*
                  * This is the normal security != share case where we have a
                  * valid vuid from the session setup.                 */
 
-                if (vuid_serverinfo->guest) {
-                        if (!lp_guest_ok(snum)) {
+		if (security_session_user_level(vuid_serverinfo, NULL) < SECURITY_USER) {
+                      if (!lp_guest_ok(snum)) {
                                 DEBUG(2, ("guest user (from session setup) "
                                           "not permitted to access this share "
                                           "(%s)\n", lp_servicename(snum)));
                                 return NT_STATUS_ACCESS_DENIED;
                         }
                 } else {
-                        if (!user_ok_token(vuid_serverinfo->unix_name,
-					   vuid_serverinfo->info3->base.domain.string,
+                        if (!user_ok_token(vuid_serverinfo->unix_info->unix_name,
+					   vuid_serverinfo->info->domain_name,
                                            vuid_serverinfo->security_token, snum)) {
                                 DEBUG(2, ("user '%s' (from session setup) not "
                                           "permitted to access this share "
                                           "(%s)\n",
-                                          vuid_serverinfo->unix_name,
+                                          vuid_serverinfo->unix_info->unix_name,
                                           lp_servicename(snum)));
                                 return NT_STATUS_ACCESS_DENIED;
                         }
                 }
 
-                result = copy_serverinfo(mem_ctx, vuid_serverinfo);
+                result = copy_session_info(mem_ctx, vuid_serverinfo);
 		if (result == NULL) {
 			return NT_STATUS_NO_MEMORY;
 		}
@@ -455,7 +468,8 @@ NTSTATUS set_conn_force_user_group(connection_struct *conn, int snum)
 		 */
 
 		char *fuser;
-		struct auth_serversupplied_info *forced_serverinfo;
+		struct auth_session_info *forced_serverinfo;
+		bool guest;
 
 		fuser = talloc_string_sub(conn, lp_force_user(snum), "%S",
 					  lp_const_servicename(snum));
@@ -463,8 +477,11 @@ NTSTATUS set_conn_force_user_group(connection_struct *conn, int snum)
 			return NT_STATUS_NO_MEMORY;
 		}
 
+		guest = security_session_user_level(conn->session_info, NULL) < SECURITY_USER;
+
 		status = make_session_info_from_username(
-			conn, fuser, conn->session_info->guest,
+			conn, fuser,
+			guest,
 			&forced_serverinfo);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
@@ -485,9 +502,9 @@ NTSTATUS set_conn_force_user_group(connection_struct *conn, int snum)
 	if (*lp_force_group(snum)) {
 
 		status = find_forced_group(
-			conn->force_user, snum, conn->session_info->unix_name,
+			conn->force_user, snum, conn->session_info->unix_info->unix_name,
 			&conn->session_info->security_token->sids[1],
-			&conn->session_info->utok.gid);
+			&conn->session_info->unix_token->gid);
 
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
@@ -499,7 +516,7 @@ NTSTATUS set_conn_force_user_group(connection_struct *conn, int snum)
 		 * struct. We only use conn->session_info directly if
 		 * "force_user" was set.
 		 */
-		conn->force_group_gid = conn->session_info->utok.gid;
+		conn->force_group_gid = conn->session_info->unix_token->gid;
 	}
 
 	return NT_STATUS_OK;
@@ -510,13 +527,12 @@ NTSTATUS set_conn_force_user_group(connection_struct *conn, int snum)
   connecting user if appropriate.
 ****************************************************************************/
 
-connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
+static NTSTATUS make_connection_snum(struct smbd_server_connection *sconn,
+					connection_struct *conn,
 					int snum, user_struct *vuser,
 					DATA_BLOB password,
-					const char *pdev,
-					NTSTATUS *pstatus)
+					const char *pdev)
 {
-	connection_struct *conn = NULL;
 	struct smb_filename *smb_fname_cpath = NULL;
 	fstring dev;
 	int ret;
@@ -528,15 +544,11 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	fstrcpy(dev, pdev);
 
-	*pstatus = share_sanity_checks(&sconn->client_id, snum, dev);
-	if (NT_STATUS_IS_ERR(*pstatus)) {
-		goto err_root_exit;
-	}
-
-	conn = conn_new(sconn);
-	if (!conn) {
-		DEBUG(0,("Couldn't find free connection.\n"));
-		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
+	status = share_sanity_checks(sconn->remote_address,
+				       sconn->remote_hostname,
+				       snum,
+				       dev);
+	if (NT_STATUS_IS_ERR(status)) {
 		goto err_root_exit;
 	}
 
@@ -549,7 +561,6 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("create_connection_session_info failed: %s\n",
 			  nt_errstr(status)));
-		*pstatus = status;
 		goto err_root_exit;
 	}
 
@@ -557,7 +568,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		conn->force_user = true;
 	}
 
-	add_session_user(sconn, conn->session_info->unix_name);
+	add_session_user(sconn, conn->session_info->unix_info->unix_name);
 
 	conn->num_files_open = 0;
 	conn->lastused = conn->lastused_count = time(NULL);
@@ -589,9 +600,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	status = set_conn_force_user_group(conn, snum);
 	if (!NT_STATUS_IS_OK(status)) {
-		conn_free(conn);
-		*pstatus = status;
-		return NULL;
+		goto err_root_exit;
 	}
 
 	conn->vuid = (vuser != NULL) ? vuser->vuid : UID_FIELD_INVALID;
@@ -599,20 +608,20 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	{
 		char *s = talloc_sub_advanced(talloc_tos(),
 					lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					lp_pathname(snum));
 		if (!s) {
-			*pstatus = NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
 			goto err_root_exit;
 		}
 
 		if (!set_conn_connectpath(conn,s)) {
 			TALLOC_FREE(s);
-			*pstatus = NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
 			goto err_root_exit;
 		}
 		DEBUG(3,("Connect path is '%s' for service [%s]\n",s,
@@ -627,27 +636,21 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	 *
 	 */
 
-	{
-		bool can_write = False;
+	share_access_check(conn->session_info->security_token,
+			   lp_servicename(snum), MAXIMUM_ALLOWED_ACCESS,
+			   &conn->share_access);
 
-		can_write = share_access_check(conn->session_info->security_token,
-					       lp_servicename(snum),
-					       FILE_WRITE_DATA);
-
-		if (!can_write) {
-			if (!share_access_check(conn->session_info->security_token,
-						lp_servicename(snum),
-						FILE_READ_DATA)) {
-				/* No access, read or write. */
-				DEBUG(0,("make_connection: connection to %s "
-					 "denied due to security "
-					 "descriptor.\n",
-					  lp_servicename(snum)));
-				*pstatus = NT_STATUS_ACCESS_DENIED;
-				goto err_root_exit;
-			} else {
-				conn->read_only = True;
-			}
+	if ((conn->share_access & FILE_WRITE_DATA) == 0) {
+		if ((conn->share_access & FILE_READ_DATA) == 0) {
+			/* No access, read or write. */
+			DEBUG(0,("make_connection: connection to %s "
+				 "denied due to security "
+				 "descriptor.\n",
+				 lp_servicename(snum)));
+			status = NT_STATUS_ACCESS_DENIED;
+			goto err_root_exit;
+		} else {
+			conn->read_only = True;
 		}
 	}
 	/* Initialise VFS function pointers */
@@ -655,7 +658,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (!smbd_vfs_init(conn)) {
 		DEBUG(0, ("vfs_init failed for service %s\n",
 			  lp_servicename(snum)));
-		*pstatus = NT_STATUS_BAD_NETWORK_NAME;
+		status = NT_STATUS_BAD_NETWORK_NAME;
 		goto err_root_exit;
 	}
 
@@ -674,7 +677,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 		DEBUG(1, ("Max connections (%d) exceeded for %s\n",
 			  lp_max_connections(snum), lp_servicename(snum)));
-		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
+		status = NT_STATUS_INSUFFICIENT_RESOURCES;
 		goto err_root_exit;
 	}
 
@@ -683,7 +686,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	 */
 	if (!claim_connection(conn, lp_servicename(snum))) {
 		DEBUG(1, ("Could not store connections entry\n"));
-		*pstatus = NT_STATUS_INTERNAL_DB_ERROR;
+		status = NT_STATUS_INTERNAL_DB_ERROR;
 		goto err_root_exit;
 	}
 	claimed_connection = true;
@@ -692,9 +695,9 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	   filesystem operation that we do. */
 
 	if (SMB_VFS_CONNECT(conn, lp_servicename(snum),
-			    conn->session_info->unix_name) < 0) {
+			    conn->session_info->unix_info->unix_name) < 0) {
 		DEBUG(0,("make_connection: VFS make connection failed!\n"));
-		*pstatus = NT_STATUS_UNSUCCESSFUL;
+		status = NT_STATUS_UNSUCCESSFUL;
 		goto err_root_exit;
 	}
 
@@ -703,9 +706,9 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	if ((!conn->printer) && (!conn->ipc)) {
 		conn->notify_ctx = notify_init(conn,
-					       sconn_server_id(sconn),
+					       messaging_server_id(sconn->msg_ctx),
 					       sconn->msg_ctx,
-					       server_event_context(),
+					       sconn->ev_ctx,
 					       conn);
 	}
 
@@ -727,11 +730,11 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (*lp_rootpreexec(snum)) {
 		char *cmd = talloc_sub_advanced(talloc_tos(),
 					lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					lp_rootpreexec(snum));
 		DEBUG(5,("cmd=%s\n",cmd));
 		ret = smbrun(cmd,NULL);
@@ -739,7 +742,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 		if (ret != 0 && lp_rootpreexec_close(snum)) {
 			DEBUG(1,("root preexec gave %d - failing "
 				 "connection\n", ret));
-			*pstatus = NT_STATUS_ACCESS_DENIED;
+			status = NT_STATUS_ACCESS_DENIED;
 			goto err_root_exit;
 		}
 	}
@@ -748,7 +751,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (!change_to_user(conn, conn->vuid)) {
 		/* No point continuing if they fail the basic checks */
 		DEBUG(0,("Can't become connected user!\n"));
-		*pstatus = NT_STATUS_LOGON_FAILURE;
+		status = NT_STATUS_LOGON_FAILURE;
 		goto err_root_exit;
 	}
 
@@ -765,18 +768,18 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (*lp_preexec(snum)) {
 		char *cmd = talloc_sub_advanced(talloc_tos(),
 					lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					lp_preexec(snum));
 		ret = smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);
 		if (ret != 0 && lp_preexec_close(snum)) {
 			DEBUG(1,("preexec gave %d - failing connection\n",
 				 ret));
-			*pstatus = NT_STATUS_ACCESS_DENIED;
+			status = NT_STATUS_ACCESS_DENIED;
 			goto err_root_exit;
 		}
 	}
@@ -808,7 +811,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 			"for service %s, path %s\n",
 				lp_servicename(snum),
 				conn->connectpath));
-			*pstatus = NT_STATUS_BAD_NETWORK_NAME;
+			status = NT_STATUS_BAD_NETWORK_NAME;
 			goto err_root_exit;
 		}
 	}
@@ -824,7 +827,6 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	status = create_synthetic_smb_fname(talloc_tos(), conn->connectpath,
 					    NULL, NULL, &smb_fname_cpath);
 	if (!NT_STATUS_IS_OK(status)) {
-		*pstatus = status;
 		goto err_root_exit;
 	}
 
@@ -846,7 +848,7 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 				 conn->connectpath, lp_servicename(snum),
 				 strerror(errno) ));
 		}
-		*pstatus = NT_STATUS_BAD_NETWORK_NAME;
+		status = NT_STATUS_BAD_NETWORK_NAME;
 		goto err_root_exit;
 	}
 	conn->base_share_dev = smb_fname_cpath->st.st_ex_dev;
@@ -868,18 +870,20 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 
 	if( DEBUGLVL( IS_IPC(conn) ? 3 : 1 ) ) {
 		dbgtext( "%s (%s) ", get_remote_machine_name(),
-			 conn->sconn->client_id.addr );
+			 tsocket_address_string(conn->sconn->remote_address,
+						talloc_tos()) );
 		dbgtext( "%s", srv_is_signing_active(sconn) ? "signed " : "");
 		dbgtext( "connect to service %s ", lp_servicename(snum) );
 		dbgtext( "initially as user %s ",
-			 conn->session_info->unix_name );
+			 conn->session_info->unix_info->unix_name );
 		dbgtext( "(uid=%d, gid=%d) ", (int)effuid, (int)effgid );
 		dbgtext( "(pid %d)\n", (int)sys_getpid() );
 	}
 
-	return(conn);
+	return status;
 
   err_root_exit:
+
 	TALLOC_FREE(smb_fname_cpath);
 	/* We must exit this function as root. */
 	if (geteuid() != 0) {
@@ -892,14 +896,72 @@ connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 	if (claimed_connection) {
 		yield_connection(conn, lp_servicename(snum));
 	}
-	if (conn) {
-		conn_free(conn);
-	}
-	return NULL;
+	return status;
 }
 
 /****************************************************************************
- Make a connection to a service.
+ Make a connection to a service from SMB1. Internal interface.
+****************************************************************************/
+
+static connection_struct *make_connection_smb1(struct smbd_server_connection *sconn,
+					int snum, user_struct *vuser,
+					DATA_BLOB password,
+					const char *pdev,
+					NTSTATUS *pstatus)
+{
+	connection_struct *conn = conn_new(sconn);
+	if (!conn) {
+		DEBUG(0,("make_connection_smb1: Couldn't find free connection.\n"));
+		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
+		return NULL;
+	}
+	*pstatus = make_connection_snum(sconn,
+					conn,
+					snum,
+					vuser,
+                                        password,
+					pdev);
+	if (!NT_STATUS_IS_OK(*pstatus)) {
+		conn_free(conn);
+		return NULL;
+	}
+	return conn;
+}
+
+/****************************************************************************
+ Make a connection to a service from SMB2. External SMB2 interface.
+ We must set cnum before claiming connection.
+****************************************************************************/
+
+connection_struct *make_connection_smb2(struct smbd_server_connection *sconn,
+					struct smbd_smb2_tcon *tcon,
+					user_struct *vuser,
+					DATA_BLOB password,
+					const char *pdev,
+					NTSTATUS *pstatus)
+{
+	connection_struct *conn = conn_new(sconn);
+	if (!conn) {
+		DEBUG(0,("make_connection_smb2: Couldn't find free connection.\n"));
+		*pstatus = NT_STATUS_INSUFFICIENT_RESOURCES;
+		return NULL;
+	}
+	conn->cnum = tcon->tid;
+	*pstatus = make_connection_snum(sconn,
+					conn,
+					tcon->snum,
+					vuser,
+                                        password,
+					pdev);
+	if (!NT_STATUS_IS_OK(*pstatus)) {
+		conn_free(conn);
+		return NULL;
+	}
+	return conn;
+}
+
+/****************************************************************************
+ Make a connection to a service. External SMB1 interface.
  *
  * @param service 
 ****************************************************************************/
@@ -962,7 +1024,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 			}
 			DEBUG(5, ("making a connection to [homes] service "
 				  "created at session setup time\n"));
-			return make_connection_snum(sconn,
+			return make_connection_smb1(sconn,
 						    vuser->homes_snum,
 						    vuser, no_pw, 
 						    dev, status);
@@ -986,7 +1048,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 				DEBUG(5, ("making a connection to 'homes' "
 					  "service %s based on "
 					  "security=share\n", service_in));
-				return make_connection_snum(sconn,
+				return make_connection_smb1(sconn,
 							    snum, NULL,
 							    password,
 							    dev, status);
@@ -998,7 +1060,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 		DATA_BLOB no_pw = data_blob_null;
 		DEBUG(5, ("making a connection to 'homes' service [%s] "
 			  "created at session setup time\n", service_in));
-		return make_connection_snum(sconn,
+		return make_connection_smb1(sconn,
 					    vuser->homes_snum,
 					    vuser, no_pw, 
 					    dev, status);
@@ -1046,7 +1108,7 @@ connection_struct *make_connection(struct smbd_server_connection *sconn,
 
 	DEBUG(5, ("making a connection to 'normal' service %s\n", service));
 
-	return make_connection_snum(sconn, snum, vuser,
+	return make_connection_smb1(sconn, snum, vuser,
 				    password,
 				    dev, status);
 }
@@ -1067,7 +1129,8 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 
 	DEBUG(IS_IPC(conn)?3:1, ("%s (%s) closed connection to service %s\n",
 				 get_remote_machine_name(),
-				 conn->sconn->client_id.addr,
+				 tsocket_address_string(conn->sconn->remote_address,
+							talloc_tos()),
 				 lp_servicename(SNUM(conn))));
 
 	/* Call VFS disconnect hook */    
@@ -1083,11 +1146,11 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 	    change_to_user(conn, vuid))  {
 		char *cmd = talloc_sub_advanced(talloc_tos(),
 					lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					lp_postexec(SNUM(conn)));
 		smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);
@@ -1099,11 +1162,11 @@ void close_cnum(connection_struct *conn, uint16 vuid)
 	if (*lp_rootpostexec(SNUM(conn)))  {
 		char *cmd = talloc_sub_advanced(talloc_tos(),
 					lp_servicename(SNUM(conn)),
-					conn->session_info->unix_name,
+					conn->session_info->unix_info->unix_name,
 					conn->connectpath,
-					conn->session_info->utok.gid,
-					conn->session_info->sanitized_username,
-					conn->session_info->info3->base.domain.string,
+					conn->session_info->unix_token->gid,
+					conn->session_info->unix_info->sanitized_username,
+					conn->session_info->info->domain_name,
 					lp_rootpostexec(SNUM(conn)));
 		smbrun(cmd,NULL);
 		TALLOC_FREE(cmd);

@@ -281,11 +281,11 @@ static void unbecomeDC_send_cldap(struct libnet_UnbecomeDC_state *s)
 		if (!composite_is_ok(c)) return;
 	}
 
-	c->status = cldap_socket_init(s, s->libnet->event_ctx,
-				      NULL, dest_address, &s->cldap.sock);
+	c->status = cldap_socket_init(s, NULL, dest_address, &s->cldap.sock);
 	if (!composite_is_ok(c)) return;
 
-	req = cldap_netlogon_send(s, s->cldap.sock, &s->cldap.io);
+	req = cldap_netlogon_send(s, s->libnet->event_ctx,
+				  s->cldap.sock, &s->cldap.io);
 	if (composite_nomem(req, c)) return;
 	tevent_req_set_callback(req, unbecomeDC_recv_cldap, s);
 }

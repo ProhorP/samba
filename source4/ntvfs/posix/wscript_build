@@ -3,7 +3,7 @@
 bld.SAMBA_SUBSYSTEM('pvfs_acl',
 	source='pvfs_acl.c',
 	autoproto='vfs_acl_proto.h',
-	deps='events',
+	deps='events samba-modules',
 	)
 
 
@@ -42,7 +42,7 @@ bld.SAMBA_MODULE('ntvfs_posix',
 
 bld.SAMBA_PYTHON('python_xattr_native',
 	source='python/pyxattr_native.c',
-	deps='ndr ldb samdb credentials pyparam_util wrap_xattr attr',
+	deps='ndr ldb samdb samba-credentials pyparam_util wrap_xattr attr',
 	realname='samba/xattr_native.so'
 	)
 

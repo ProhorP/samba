@@ -1,3 +1,4 @@
+/* Licensed under LGPLv2.1+ - see LICENSE file for details */
 #ifndef CCAN_CAST_H
 #define CCAN_CAST_H
 #include "config.h"
@@ -105,11 +106,11 @@
 	  )
 
 #define cast_const_strip1(expr)			\
-	__typeof__(*(struct { int z; __typeof__(expr) x; }){0}.x)
+	__typeof__(*(union { int z; __typeof__(expr) x; }){0}.x)
 #define cast_const_strip2(expr) \
-	__typeof__(**(struct { int z; __typeof__(expr) x; }){0}.x)
+	__typeof__(**(union { int z; __typeof__(expr) x; }){0}.x)
 #define cast_const_strip3(expr) \
-	__typeof__(***(struct { int z; __typeof__(expr) x; }){0}.x)
+	__typeof__(***(union { int z; __typeof__(expr) x; }){0}.x)
 #define cast_const_compat1(expr, type)					\
 	__builtin_types_compatible_p(cast_const_strip1(expr),		\
 				     cast_const_strip1(type))

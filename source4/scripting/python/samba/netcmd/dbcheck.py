@@ -32,7 +32,7 @@ from samba.dbchecker import dbcheck
 
 class cmd_dbcheck(Command):
     """check local AD database for errors"""
-    synopsis = "dbcheck <DN> [options]"
+    synopsis = "%prog [<DN>] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -56,31 +56,42 @@ class cmd_dbcheck(Command):
         Option("--quiet", dest="quiet", action="store_true", default=False,
             help="don't print details of checking"),
         Option("--attrs", dest="attrs", default=None, help="list of attributes to check (space separated)"),
-        Option("-H", help="LDB URL for database or target server (defaults to local SAM database)", type=str),
+        Option("--reindex", dest="reindex", default=False, action="store_true", help="force database re-index"),
+        Option("-H", "--URL", help="LDB URL for database or target server (defaults to local SAM database)",
+               type=str, metavar="URL", dest="H"),
         ]
 
-    def run(self, DN=None, H=None, verbose=False, fix=False, yes=False, cross_ncs=False, quiet=False,
-            scope="SUB", credopts=None, sambaopts=None, versionopts=None, attrs=None):
+    def run(self, DN=None, H=None, verbose=False, fix=False, yes=False,
+            cross_ncs=False, quiet=False,
+            scope="SUB", credopts=None, sambaopts=None, versionopts=None,
+            attrs=None, reindex=False):
 
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp, fallback_machine=True)
+
+        over_ldap = H is not None and H.startswith('ldap')
+
+        if over_ldap:
+            creds = credopts.get_credentials(lp, fallback_machine=True)
+        else:
+            creds = None
 
         samdb = SamDB(session_info=system_session(), url=H,
                       credentials=creds, lp=lp)
-        if H is None:
+
+        if H is None or not over_ldap:
             samdb_schema = samdb
         else:
             samdb_schema = SamDB(session_info=system_session(), url=None,
                                  credentials=creds, lp=lp)
 
-        scope_map = { "SUB": ldb.SCOPE_SUBTREE, "BASE":ldb.SCOPE_BASE, "ONE":ldb.SCOPE_ONELEVEL }
+        scope_map = { "SUB": ldb.SCOPE_SUBTREE, "BASE": ldb.SCOPE_BASE, "ONE":ldb.SCOPE_ONELEVEL }
         scope = scope.upper()
         if not scope in scope_map:
             raise CommandError("Unknown scope %s" % scope)
         search_scope = scope_map[scope]
 
-        controls = []
-        if H is not None:
+        controls = ['show_deleted:1']
+        if over_ldap:
             controls.append('paged_results:1:1000')
         if cross_ncs:
             controls.append("search_options:1:2")
@@ -90,15 +101,29 @@ class cmd_dbcheck(Command):
         else:
             attrs = attrs.split()
 
+        started_transaction = False
         if yes and fix:
             samdb.transaction_start()
+            started_transaction = True
+        try:
+            chk = dbcheck(samdb, samdb_schema=samdb_schema, verbose=verbose,
+                    fix=fix, yes=yes, quiet=quiet, in_transaction=started_transaction)
 
-        chk = dbcheck(samdb, samdb_schema=samdb_schema, verbose=verbose, fix=fix, yes=yes, quiet=quiet)
-        error_count = chk.check_database(DN=DN, scope=search_scope, controls=controls, attrs=attrs)
+            if reindex:
+                self.outf.write("Re-indexing...\n")
+                error_count = 0
+                if chk.reindex_database():
+                    self.outf.write("completed re-index OK\n")
+            else:
+                error_count = chk.check_database(DN=DN, scope=search_scope,
+                        controls=controls, attrs=attrs)
+        except Exception:
+            if started_transaction:
+                samdb.transaction_cancel()
+            raise
 
-        if yes and fix:
+        if started_transaction:
             samdb.transaction_commit()
 
         if error_count != 0:
             sys.exit(1)
-

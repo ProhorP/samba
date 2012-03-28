@@ -35,6 +35,13 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
+static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
+				      struct winbindd_domain *domain,
+				      uint32_t num_names,
+				      const char **names,
+				      const char ***domains,
+				      struct dom_sid **sids,
+				      enum lsa_SidType **types);
 
 /* Query display info for a domain.  This returns enough information plus a
    bit extra to give an overview of domain users for the User Manager
@@ -247,7 +254,7 @@ static NTSTATUS msrpc_name_to_sid(struct winbindd_domain *domain,
 	name_map_status = normalize_name_unmap(mem_ctx, full_name,
 					       &mapped_name);
 
-	/* Reset the full_name pointer if we mapped anytthing */
+	/* Reset the full_name pointer if we mapped anything */
 
 	if (NT_STATUS_IS_OK(name_map_status) ||
 	    NT_STATUS_EQUAL(name_map_status, NT_STATUS_FILE_RENAMED))
@@ -762,7 +769,7 @@ static NTSTATUS msrpc_lookup_groupmem(struct winbindd_domain *domain,
 
 #ifdef HAVE_LDAP
 
-#include <ldap.h>
+#include "ads.h"
 
 static int get_ldap_seq(const char *server, struct sockaddr_storage *ss, int port, uint32 *seq)
 {
@@ -1156,13 +1163,13 @@ typedef NTSTATUS (*lookup_names_fn_t)(struct dcerpc_binding_handle *h,
 				      enum lsa_SidType **types,
 				      NTSTATUS *result);
 
-NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
-			       struct winbindd_domain *domain,
-			       uint32_t num_names,
-			       const char **names,
-			       const char ***domains,
-			       struct dom_sid **sids,
-			       enum lsa_SidType **types)
+static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
+				      struct winbindd_domain *domain,
+				      uint32_t num_names,
+				      const char **names,
+				      const char ***domains,
+				      struct dom_sid **sids,
+				      enum lsa_SidType **types)
 {
 	NTSTATUS status;
 	NTSTATUS result;

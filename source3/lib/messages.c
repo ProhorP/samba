@@ -5,17 +5,17 @@
    Copyright (C) 2001 by Martin Pool
    Copyright (C) 2002 by Jeremy Allison
    Copyright (C) 2007 by Volker Lendecke
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -24,7 +24,7 @@
   @defgroup messages Internal messaging framework
   @{
   @file messages.c
-  
+
   @brief  Module for internal messaging between Samba daemons. 
 
    The idea is that if a part of Samba wants to do communication with
@@ -46,7 +46,7 @@
 */
 
 #include "includes.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
 #include "serverid.h"
 #include "messages.h"
 
@@ -115,12 +115,15 @@ static int traverse_fn(struct db_record *rec, const struct server_id *id,
 				    (const uint8 *)msg_all->buf, msg_all->len);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_INVALID_HANDLE)) {
-		
-		/* If the pid was not found delete the entry from connections.tdb */
+
+		/*
+		 * If the pid was not found delete the entry from
+		 * serverid.tdb
+		 */
 
 		DEBUG(2, ("pid %s doesn't exist\n", procid_str_static(id)));
 
-		rec->delete_rec(rec);
+		dbwrap_record_delete(rec);
 	}
 	msg_all->n_sent++;
 	return 0;
@@ -146,20 +149,21 @@ bool message_send_all(struct messaging_context *msg_ctx,
 	struct msg_all msg_all;
 
 	msg_all.msg_type = msg_type;
-	if (msg_type < 1000)
+	if (msg_type < 0x100) {
 		msg_all.msg_flag = FLAG_MSG_GENERAL;
-	else if (msg_type > 1000 && msg_type < 2000)
+	} else if (msg_type > 0x100 && msg_type < 0x200) {
 		msg_all.msg_flag = FLAG_MSG_NMBD;
-	else if (msg_type > 2000 && msg_type < 2100)
-		msg_all.msg_flag = FLAG_MSG_PRINT_NOTIFY;
-	else if (msg_type > 2100 && msg_type < 3000)
+	} else if (msg_type > 0x200 && msg_type < 0x300) {
 		msg_all.msg_flag = FLAG_MSG_PRINT_GENERAL;
-	else if (msg_type > 3000 && msg_type < 4000)
+	} else if (msg_type > 0x300 && msg_type < 0x400) {
 		msg_all.msg_flag = FLAG_MSG_SMBD;
-	else if (msg_type > 4000 && msg_type < 5000)
+	} else if (msg_type > 0x400 && msg_type < 0x600) {
+		msg_all.msg_flag = FLAG_MSG_WINBIND;
+	} else if (msg_type > 4000 && msg_type < 5000) {
 		msg_all.msg_flag = FLAG_MSG_DBWRAP;
-	else
-		return False;
+	} else {
+		return false;
+	}
 
 	msg_all.buf = buf;
 	msg_all.len = len;
@@ -169,16 +173,10 @@ bool message_send_all(struct messaging_context *msg_ctx,
 	serverid_traverse(traverse_fn, &msg_all);
 	if (n_sent)
 		*n_sent = msg_all.n_sent;
-	return True;
-}
-
-struct event_context *messaging_event_context(struct messaging_context *msg_ctx)
-{
-	return msg_ctx->event_ctx;
+	return true;
 }
 
 struct messaging_context *messaging_init(TALLOC_CTX *mem_ctx, 
-					 struct server_id server_id, 
 					 struct event_context *ev)
 {
 	struct messaging_context *ctx;
@@ -188,7 +186,7 @@ struct messaging_context *messaging_init(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	ctx->id = server_id;
+	ctx->id = procid_self();
 	ctx->event_ctx = ev;
 
 	status = messaging_tdb_init(ctx, ctx, &ctx->local);
@@ -233,14 +231,13 @@ struct server_id messaging_server_id(const struct messaging_context *msg_ctx)
 /*
  * re-init after a fork
  */
-NTSTATUS messaging_reinit(struct messaging_context *msg_ctx,
-			  struct server_id id)
+NTSTATUS messaging_reinit(struct messaging_context *msg_ctx)
 {
 	NTSTATUS status;
 
 	TALLOC_FREE(msg_ctx->local);
 
-	msg_ctx->id = id;
+	msg_ctx->id = procid_self();
 
 	status = messaging_tdb_init(msg_ctx, msg_ctx, &msg_ctx->local);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -283,6 +280,10 @@ NTSTATUS messaging_register(struct messaging_context *msg_ctx,
 				       DATA_BLOB *data))
 {
 	struct messaging_callback *cb;
+
+	DEBUG(5, ("Registering messaging pointer for type %u - "
+		  "private_data=%p\n",
+		  (unsigned)msg_type, private_data));
 
 	/*
 	 * Only one callback per type

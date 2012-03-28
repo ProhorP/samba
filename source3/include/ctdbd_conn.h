@@ -2,17 +2,17 @@
    Unix SMB/CIFS implementation.
    Samba3 ctdb connection handling
    Copyright (C) Volker Lendecke 2007
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -43,6 +43,12 @@ NTSTATUS ctdbd_messaging_send(struct ctdbd_connection *conn,
 
 bool ctdbd_process_exists(struct ctdbd_connection *conn, uint32 vnn,
 			  pid_t pid);
+bool ctdb_processes_exist(struct ctdbd_connection *conn,
+			  const struct server_id *pids, int num_pids,
+			  bool *results);
+bool ctdb_serverids_exist(struct ctdbd_connection *conn,
+			  const struct server_id *pids, unsigned num_pids,
+			  bool *results);
 
 char *ctdbd_dbpath(struct ctdbd_connection *conn,
 		   TALLOC_CTX *mem_ctx, uint32_t db_id);
@@ -76,5 +82,6 @@ NTSTATUS ctdbd_control_local(struct ctdbd_connection *conn, uint32 opcode,
 			     int *cstatus);
 NTSTATUS ctdb_watch_us(struct ctdbd_connection *conn);
 NTSTATUS ctdb_unwatch(struct ctdbd_connection *conn);
+NTSTATUS register_with_ctdbd(struct ctdbd_connection *conn, uint64_t srvid);
 
 #endif /* _CTDBD_CONN_H */

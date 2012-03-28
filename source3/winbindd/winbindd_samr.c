@@ -43,20 +43,20 @@ static NTSTATUS open_internal_samr_pipe(TALLOC_CTX *mem_ctx,
 					struct rpc_pipe_client **samr_pipe)
 {
 	struct rpc_pipe_client *cli = NULL;
-	struct auth_serversupplied_info *session_info = NULL;
+	struct auth_session_info *session_info = NULL;
 	NTSTATUS status;
 
 	if (session_info == NULL) {
 		status = make_session_info_system(mem_ctx, &session_info);
 		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("open_samr_pipe: Could not create auth_serversupplied_info: %s\n",
+			DEBUG(0, ("open_samr_pipe: Could not create auth_session_info: %s\n",
 				  nt_errstr(status)));
 			return status;
 		}
 	}
 
 	/* create a samr connection */
-	status = rpc_pipe_open_interface(mem_ctx,
+	status = rpc_pipe_open_internal(mem_ctx,
 					&ndr_table_samr.syntax_id,
 					session_info,
 					NULL,
@@ -120,20 +120,20 @@ static NTSTATUS open_internal_lsa_pipe(TALLOC_CTX *mem_ctx,
 				       struct rpc_pipe_client **lsa_pipe)
 {
 	struct rpc_pipe_client *cli = NULL;
-	struct auth_serversupplied_info *session_info = NULL;
+	struct auth_session_info *session_info = NULL;
 	NTSTATUS status;
 
 	if (session_info == NULL) {
 		status = make_session_info_system(mem_ctx, &session_info);
 		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("open_lsa_pipe: Could not create auth_serversupplied_info: %s\n",
+			DEBUG(0, ("open_lsa_pipe: Could not create auth_session_info: %s\n",
 				  nt_errstr(status)));
 			return status;
 		}
 	}
 
 	/* create a lsa connection */
-	status = rpc_pipe_open_interface(mem_ctx,
+	status = rpc_pipe_open_internal(mem_ctx,
 					&ndr_table_lsarpc.syntax_id,
 					session_info,
 					NULL,
@@ -849,7 +849,7 @@ static NTSTATUS sam_lockout_policy(struct winbindd_domain *domain,
 	status = dcerpc_samr_QueryDomainInfo(b,
 					     mem_ctx,
 					     &dom_pol,
-					     12,
+					     DomainLockoutInformation,
 					     &info,
 					     &result);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -901,7 +901,7 @@ static NTSTATUS sam_password_policy(struct winbindd_domain *domain,
 	status = dcerpc_samr_QueryDomainInfo(b,
 					     mem_ctx,
 					     &dom_pol,
-					     1,
+					     DomainPasswordInformation,
 					     &info,
 					     &result);
 	if (!NT_STATUS_IS_OK(status)) {

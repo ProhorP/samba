@@ -95,10 +95,13 @@ def CHECK_HEADER(conf, h, add_headers=False, lib=None):
     (ccflags, ldflags) = library_flags(conf, lib)
 
     hdrs = hlist_to_string(conf, headers=h)
+    if lib is None:
+        lib = ""
     ret = conf.check(fragment='%s\nint main(void) { return 0; }' % hdrs,
                      type='nolink',
                      execute=0,
                      ccflags=ccflags,
+                     uselib=lib.upper(),
                      msg="Checking for header %s" % h)
     if not ret:
         missing_headers.add(h)
@@ -370,6 +373,8 @@ def CHECK_CODE(conf, code, define,
 
     (ccflags, ldflags) = library_flags(conf, uselib)
 
+    uselib = [l.upper() for l in uselib]
+
     cflags.extend(ccflags)
 
     if on_target:
@@ -468,10 +473,9 @@ def library_flags(self, libs):
     ccflags = []
     ldflags = []
     for lib in TO_LIST(libs):
-        inc_path = getattr(self.env, 'CPPPATH_%s' % lib.upper(), [])
-        lib_path = getattr(self.env, 'LIBPATH_%s' % lib.upper(), [])
-        ccflags.extend(['-I%s' % i for i in inc_path])
-        ldflags.extend(['-L%s' % l for l in lib_path])
+        # note that we do not add the -I and -L in here, as that is added by the waf
+        # core. Adding it here would just change the order that it is put on the link line
+        # which can cause system paths to be added before internal libraries
         extra_ccflags = TO_LIST(getattr(self.env, 'CCFLAGS_%s' % lib.upper(), []))
         extra_ldflags = TO_LIST(getattr(self.env, 'LDFLAGS_%s' % lib.upper(), []))
         ccflags.extend(extra_ccflags)
@@ -507,9 +511,9 @@ int foo()
 
         (ccflags, ldflags) = library_flags(conf, lib)
         if shlib:
-            res = conf.check(features='cc cshlib', fragment=fragment, lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags)
+            res = conf.check(features='cc cshlib', fragment=fragment, lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper())
         else:
-            res = conf.check(lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags)
+            res = conf.check(lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper())
 
         if not res:
             if mandatory:
@@ -599,8 +603,7 @@ def SAMBA_CONFIG_H(conf, path=None):
         # we add these here to ensure that -Wstrict-prototypes is not set during configure
         conf.ADD_CFLAGS('-Wall -g -Wshadow -Wstrict-prototypes -Wpointer-arith -Wcast-align -Wwrite-strings -Werror-implicit-function-declaration -Wformat=2 -Wno-format-y2k -Wmissing-prototypes -fno-common',
                         testflags=True)
-        if os.getenv('TOPLEVEL_BUILD'):
-            conf.ADD_CFLAGS('-Wcast-qual', testflags=True)
+        conf.ADD_CFLAGS('-Wcast-qual', testflags=True)
         conf.env.DEVELOPER_MODE = True
 
     if Options.options.picky_developer:
@@ -713,3 +716,15 @@ def SETUP_CONFIGURE_CACHE(conf, enable):
         preproc.recursion_limit = 1
     # in either case we don't need to scan system includes
     preproc.go_absolute = False
+
+
+@conf
+def SAMBA_CHECK_UNDEFINED_SYMBOL_FLAGS(conf):
+    # we don't want any libraries or modules to rely on runtime
+    # resolution of symbols
+    if sys.platform != "openbsd4":
+        conf.env.undefined_ldflags = conf.ADD_LDFLAGS('-Wl,-no-undefined', testflags=True)
+
+    if sys.platform != "openbsd4" and conf.env.undefined_ignore_ldflags == []:
+        if conf.CHECK_LDFLAGS(['-undefined', 'dynamic_lookup']):
+            conf.env.undefined_ignore_ldflags = ['-undefined', 'dynamic_lookup']

@@ -51,14 +51,23 @@ static bool test_read_eof(struct torture_context *torture, struct smb2_tree *tre
 	bool ret = true;
 	NTSTATUS status;
 	struct smb2_handle h;
-	uint8_t buf[70000];
+	uint8_t buf[64*1024];
 	struct smb2_read rd;
 	TALLOC_CTX *tmp_ctx = talloc_new(tree);
 
 	ZERO_STRUCT(buf);
 
+	smb2_util_unlink(tree, FNAME);
+
 	status = torture_smb2_testfile(tree, FNAME, &h);
 	CHECK_STATUS(status, NT_STATUS_OK);
+
+	ZERO_STRUCT(rd);
+	rd.in.file.handle = h;
+	rd.in.length      = 5;
+	rd.in.offset      = 0;
+	status = smb2_read(tree, tree, &rd);
+	CHECK_STATUS(status, NT_STATUS_END_OF_FILE);
 
 	status = smb2_util_write(tree, h, buf, 0, ARRAY_SIZE(buf));
 	CHECK_STATUS(status, NT_STATUS_OK);
@@ -134,7 +143,7 @@ static bool test_read_position(struct torture_context *torture, struct smb2_tree
 	bool ret = true;
 	NTSTATUS status;
 	struct smb2_handle h;
-	uint8_t buf[70000];
+	uint8_t buf[64*1024];
 	struct smb2_read rd;
 	TALLOC_CTX *tmp_ctx = talloc_new(tree);
 	union smb_fileinfo info;

@@ -34,6 +34,7 @@
 #include "../lib/util/util_tdb.h"
 #include "cluster/cluster.h"
 #include "../lib/util/tevent_ntstatus.h"
+#include "lib/param/param.h"
 
 /* change the message version with any incompatible changes in the protocol */
 #define IMESSAGING_VERSION 1
@@ -55,6 +56,7 @@ struct imessaging_context {
 	struct socket_context *sock;
 	const char *base_path;
 	const char *path;
+	struct loadparm_context *lp_ctx;
 	struct dispatch_fn **dispatch;
 	uint32_t num_types;
 	struct idr_context *dispatch_tree;
@@ -251,7 +253,7 @@ static void msg_retry_timer(struct tevent_context *ev, struct tevent_timer *te,
 		DLIST_ADD_END(msg->pending, rec, struct imessaging_rec *);
 	}
 
-	EVENT_FD_WRITEABLE(msg->event.fde);	
+	TEVENT_FD_WRITEABLE(msg->event.fde);
 }
 
 /*
@@ -273,7 +275,7 @@ static void imessaging_send_handler(struct imessaging_context *msg)
 					      struct imessaging_rec *);
 				if (msg->retry_te == NULL) {
 					msg->retry_te = 
-						event_add_timed(msg->event.ev, msg, 
+						tevent_add_timer(msg->event.ev, msg,
 								timeval_current_ofs(1, 0), 
 								msg_retry_timer, msg);
 				}
@@ -294,7 +296,7 @@ static void imessaging_send_handler(struct imessaging_context *msg)
 		talloc_free(rec);
 	}
 	if (msg->pending == NULL) {
-		EVENT_FD_NOT_WRITEABLE(msg->event.fde);
+		TEVENT_FD_NOT_WRITEABLE(msg->event.fde);
 	}
 }
 
@@ -366,10 +368,10 @@ static void imessaging_handler(struct tevent_context *ev, struct tevent_fd *fde,
 {
 	struct imessaging_context *msg = talloc_get_type(private_data,
 							struct imessaging_context);
-	if (flags & EVENT_FD_WRITE) {
+	if (flags & TEVENT_FD_WRITE) {
 		imessaging_send_handler(msg);
 	}
-	if (flags & EVENT_FD_READ) {
+	if (flags & TEVENT_FD_READ) {
 		imessaging_recv_handler(msg);
 	}
 }
@@ -514,7 +516,7 @@ NTSTATUS imessaging_send(struct imessaging_context *msg, struct server_id server
 
 	if (NT_STATUS_EQUAL(status, STATUS_MORE_ENTRIES)) {
 		if (msg->pending == NULL) {
-			EVENT_FD_WRITEABLE(msg->event.fde);
+			TEVENT_FD_WRITEABLE(msg->event.fde);
 		}
 		DLIST_ADD_END(msg->pending, rec, struct imessaging_rec *);
 		return NT_STATUS_OK;
@@ -541,10 +543,15 @@ NTSTATUS imessaging_send_ptr(struct imessaging_context *msg, struct server_id se
 
 
 /*
-  destroy the messaging context
+  remove our messaging socket and database entry
 */
-static int imessaging_destructor(struct imessaging_context *msg)
+int imessaging_cleanup(struct imessaging_context *msg)
 {
+	if (!msg) {
+		return 0;
+	}
+
+	DEBUG(5,("imessaging: cleaning up %s\n", msg->path));
 	unlink(msg->path);
 	while (msg->names && msg->names[0]) {
 		irpc_remove_name(msg, msg->names[0]);
@@ -554,11 +561,17 @@ static int imessaging_destructor(struct imessaging_context *msg)
 
 /*
   create the listening socket and setup the dispatcher
+
+  use temporary=true when you want a destructor to remove the
+  associated messaging socket and database entry on talloc free. Don't
+  use this in processes that may fork and a child may talloc free this
+  memory
 */
 struct imessaging_context *imessaging_init(TALLOC_CTX *mem_ctx,
-					 const char *dir,
-					 struct server_id server_id, 
-					 struct tevent_context *ev)
+					   struct loadparm_context *lp_ctx,
+					   struct server_id server_id,
+					   struct tevent_context *ev,
+					   bool auto_remove)
 {
 	struct imessaging_context *msg;
 	NTSTATUS status;
@@ -581,9 +594,17 @@ struct imessaging_context *imessaging_init(TALLOC_CTX *mem_ctx,
 	}
 
 	/* create the messaging directory if needed */
-	mkdir(dir, 0700);
 
-	msg->base_path     = talloc_reference(msg, dir);
+	msg->lp_ctx = talloc_reference(msg, lp_ctx);
+	if (!msg->lp_ctx) {
+		talloc_free(msg);
+		return NULL;
+	}
+
+	msg->base_path     = lpcfg_imessaging_path(msg, lp_ctx);
+
+	mkdir(msg->base_path, 0700);
+
 	msg->path          = imessaging_path(msg, server_id);
 	msg->server_id     = server_id;
 	msg->idr           = idr_init(msg);
@@ -618,11 +639,13 @@ struct imessaging_context *imessaging_init(TALLOC_CTX *mem_ctx,
 	set_blocking(socket_get_fd(msg->sock), false);
 
 	msg->event.ev   = ev;
-	msg->event.fde	= event_add_fd(ev, msg, socket_get_fd(msg->sock), 
-				       EVENT_FD_READ, imessaging_handler, msg);
+	msg->event.fde	= tevent_add_fd(ev, msg, socket_get_fd(msg->sock),
+				        TEVENT_FD_READ, imessaging_handler, msg);
 	tevent_fd_set_auto_close(msg->event.fde);
 
-	talloc_set_destructor(msg, imessaging_destructor);
+	if (auto_remove) {
+		talloc_set_destructor(msg, imessaging_cleanup);
+	}
 	
 	imessaging_register(msg, NULL, MSG_PING, ping_message);
 	imessaging_register(msg, NULL, MSG_IRPC, irpc_handler);
@@ -635,13 +658,13 @@ struct imessaging_context *imessaging_init(TALLOC_CTX *mem_ctx,
    A hack, for the short term until we get 'client only' messaging in place 
 */
 struct imessaging_context *imessaging_client_init(TALLOC_CTX *mem_ctx,
-						const char *dir,
+						  struct loadparm_context *lp_ctx,
 						struct tevent_context *ev)
 {
 	struct server_id id;
 	ZERO_STRUCT(id);
 	id.pid = random() % 0x10000000;
-	return imessaging_init(mem_ctx, dir, id, ev);
+	return imessaging_init(mem_ctx, lp_ctx, id, ev, true);
 }
 /*
   a list of registered irpc server functions
@@ -865,7 +888,7 @@ static struct tdb_wrap *irpc_namedb_open(struct imessaging_context *msg_ctx)
 	if (path == NULL) {
 		return NULL;
 	}
-	t = tdb_wrap_open(msg_ctx, path, 0, 0, O_RDWR|O_CREAT, 0660);
+	t = tdb_wrap_open(msg_ctx, path, 0, 0, O_RDWR|O_CREAT, 0660, msg_ctx->lp_ctx);
 	talloc_free(path);
 	return t;
 }
@@ -1086,7 +1109,7 @@ static struct tevent_req *irpc_bh_raw_call_send(TALLOC_CTX *mem_ctx,
 
 	ok = irpc_bh_is_connected(h);
 	if (!ok) {
-		tevent_req_nterror(req, NT_STATUS_INVALID_CONNECTION);
+		tevent_req_nterror(req, NT_STATUS_CONNECTION_DISCONNECTED);
 		return tevent_req_post(req, ev);
 	}
 
@@ -1230,7 +1253,7 @@ static struct tevent_req *irpc_bh_disconnect_send(TALLOC_CTX *mem_ctx,
 
 	ok = irpc_bh_is_connected(h);
 	if (!ok) {
-		tevent_req_nterror(req, NT_STATUS_INVALID_CONNECTION);
+		tevent_req_nterror(req, NT_STATUS_CONNECTION_DISCONNECTED);
 		return tevent_req_post(req, ev);
 	}
 

@@ -34,6 +34,7 @@
 
 struct onefs_oplocks_context {
 	struct kernel_oplocks *ctx;
+	struct smbd_server_connection *sconn;
 	const struct oplocks_event_ops *onefs_ops;
 	int onefs_event_fd;
 	struct fd_event *read_fde;
@@ -46,6 +47,7 @@ enum onefs_callback_state {
 
 struct onefs_callback_record {
 	struct onefs_callback_record *prev, *next;
+	struct smbd_server_connection *sconn;
 	uint64_t id;
 	enum onefs_callback_state state;
 	union {
@@ -197,7 +199,8 @@ void destroy_onefs_callback_record(uint64_t id)
  *   2. OPEN_FILE: Once ifs_createfile completes, the callback record is
  *   transitioned to this state via onefs_set_oplock_callback.
  */
-uint64_t onefs_oplock_wait_record(uint64_t mid)
+uint64_t onefs_oplock_wait_record(struct smbd_server_connection *sconn,
+				  uint64_t mid)
 {
 	struct onefs_callback_record *result;
 	static uint64_t id_generator = 0;
@@ -215,6 +218,7 @@ uint64_t onefs_oplock_wait_record(uint64_t mid)
 		id_generator += 1;
 	}
 
+	result->sconn = sconn;
 	result->id = id_generator;
 
 	result->state = ONEFS_WAITING_FOR_OPLOCK;
@@ -305,7 +309,7 @@ static void oplock_break_to_none_handler(uint64_t id)
 
 	init_share_mode_entry(&sme, cb, FORCE_OPLOCK_BREAK_TO_NONE);
 	share_mode_entry_to_message(msg, &sme);
-	messaging_send_buf(smbd_messaging_context(),
+	messaging_send_buf(cb->sconn->msg_ctx,
 			   sme.pid,
 			   MSG_SMB_ASYNC_LEVEL2_BREAK,
 			   (uint8_t *)msg,
@@ -342,7 +346,7 @@ static void oplock_break_to_level_two_handler(uint64_t id)
 
 	init_share_mode_entry(&sme, cb, LEVEL_II_OPLOCK);
 	share_mode_entry_to_message(msg, &sme);
-	messaging_send_buf(smbd_messaging_context(),
+	messaging_send_buf(cb->sconn->msg_ctx,
 			  sme.pid,
 			  MSG_SMB_BREAK_REQUEST,
 			  (uint8_t *)msg,
@@ -663,7 +667,7 @@ static const struct oplocks_event_ops onefs_dispatch_ops = {
 	.semlock_async_failure = semlock_async_failure_handler,
 };
 
-struct kernel_oplocks *onefs_init_kernel_oplocks(TALLOC_CTX *mem_ctx)
+struct kernel_oplocks *onefs_init_kernel_oplocks(struct smbd_server_connection *sconn)
 {
 	struct kernel_oplocks *_ctx = NULL;
 	struct onefs_oplocks_context *ctx = NULL;
@@ -688,6 +692,7 @@ struct kernel_oplocks *onefs_init_kernel_oplocks(TALLOC_CTX *mem_ctx)
 	if (!ctx) {
 		goto err_out;
 	}
+	ctx->sconn = sconn;
 
 	_ctx->ops = &onefs_koplocks_ops;
 	_ctx->flags = (KOPLOCKS_LEVEL2_SUPPORTED |
@@ -709,7 +714,7 @@ struct kernel_oplocks *onefs_init_kernel_oplocks(TALLOC_CTX *mem_ctx)
 	DEBUG(10, ("oplock event_fd = %d\n", ctx->onefs_event_fd));
 
 	/* Register the oplock event_fd with samba's event system */
-	ctx->read_fde = event_add_fd(server_event_context(),
+	ctx->read_fde = event_add_fd(sconn->ev_ctx,
 				     ctx,
 				     ctx->onefs_event_fd,
 				     EVENT_FD_READ,

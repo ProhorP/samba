@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "utils/net.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
 #include "serverid.h"
 #include "session.h"
 
@@ -37,7 +37,7 @@ static int net_serverid_list(struct net_context *c, int argc,
 			     const char **argv)
 {
 	d_printf("pid unique_id msg_flags\n");
-	return serverid_traverse_read(net_serverid_list_fn, NULL) > 0 ? 0 : -1;
+	return serverid_traverse_read(net_serverid_list_fn, NULL) ? 0 : -1;
 }
 
 static int net_serverid_wipe_fn(struct db_record *rec,
@@ -49,7 +49,7 @@ static int net_serverid_wipe_fn(struct db_record *rec,
 	if (id->vnn != get_my_vnn()) {
 		return 0;
 	}
-	status = rec->delete_rec(rec);
+	status = dbwrap_record_delete(rec);
 	if (!NT_STATUS_IS_OK(status)) {
 		char *str = server_id_str(talloc_tos(), id);
 		DEBUG(1, ("Could not delete serverid.tdb record %s: %s\n",
@@ -62,7 +62,7 @@ static int net_serverid_wipe_fn(struct db_record *rec,
 static int net_serverid_wipe(struct net_context *c, int argc,
 			     const char **argv)
 {
-	return serverid_traverse(net_serverid_wipe_fn, NULL) > 0 ? 0 : -1;
+	return serverid_traverse(net_serverid_wipe_fn, NULL) ? 0 : -1;
 }
 
 static int net_serverid_wipedbs_conn(
@@ -77,7 +77,7 @@ static int net_serverid_wipedbs_conn(
 		DEBUG(10, ("Deleting connections.tdb record for pid %s\n",
 			   server_id_str(talloc_tos(), &key->pid)));
 
-		status = rec->delete_rec(rec);
+		status = dbwrap_record_delete(rec);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1, ("Could not delete connections.tdb record "
 				  "for pid %s: %s\n",
@@ -99,7 +99,7 @@ static int net_serverid_wipedbs_sessionid(struct db_record *rec,
 		DEBUG(10, ("Deleting sessionid.tdb record for pid %s\n",
 			   server_id_str(talloc_tos(), &session->pid)));
 
-		status = rec->delete_rec(rec);
+		status = dbwrap_record_delete(rec);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1, ("Could not delete session.tdb record "
 				  "for pid %s: %s\n",

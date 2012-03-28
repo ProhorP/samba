@@ -16,9 +16,8 @@ cleanup_list = []
 
 builddirs = {
     "samba3"  : "source3",
-    "samba3-waf": "source3",
     "samba4"  : ".",
-    "ldb"     : "source4/lib/ldb",
+    "ldb"     : "lib/ldb",
     "tdb"     : "lib/tdb",
     "talloc"  : "lib/talloc",
     "replace" : "lib/replace",
@@ -29,22 +28,20 @@ builddirs = {
     "retry"   : "."
     }
 
-defaulttasks = [ "samba3", "samba3-waf", "samba4", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
+defaulttasks = [ "samba3", "samba4", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
 
 tasks = {
     "samba3" : [ ("autogen", "./autogen.sh", "text/plain"),
                  ("configure", "./configure.developer ${PREFIX}", "text/plain"),
                  ("make basics", "make basics", "text/plain"),
-                 ("make", "make -j 4 everything", "text/plain"), # don't use too many processes
+                 # we split 'make -j 4', 'make bin/smbtorture4' and 'make -j 4 everything'
+                 # because it makes it much easier to find errors.
+                 ("make", "make -j 4", "text/plain"), # don't use too many processes
+                 ("make bin/smbtorture4", "make -j 4 bin/smbtorture4", "text/plain"),
+                 ("make everything", "make -j 4 everything", "text/plain"),
                  ("install", "make install", "text/plain"),
                  ("test", "TDB_NO_FSYNC=1 make test FAIL_IMMEDIATELY=1", "text/plain"),
                  ("check-clean-tree", "../script/clean-source-tree.sh", "text/plain"),
-                 ("clean", "make clean", "text/plain") ],
-
-    "samba3-waf" : [ ("autogen", "./autogen-waf.sh", "text/plain"),
-                 ("configure", "./configure.developer ${PREFIX}", "text/plain"),
-                 ("make", "make -j", "text/plain"),
-                 ("install", "make install", "text/plain"),
                  ("clean", "make clean", "text/plain") ],
 
     # We have 'test' before 'install' because, 'test' should work without 'install'
@@ -59,7 +56,7 @@ tasks = {
               ("make", "make -j", "text/plain"),
               ("install", "make install", "text/plain"),
               ("test", "TDB_NO_FSYNC=1 make test", "text/plain"),
-              ("check-clean-tree", "../../../script/clean-source-tree.sh", "text/plain"),
+              ("check-clean-tree", "../../script/clean-source-tree.sh", "text/plain"),
               ("distcheck", "make distcheck", "text/plain"),
               ("clean", "make clean", "text/plain") ],
 
@@ -496,7 +493,7 @@ while True:
         run_cmd("rm -rf %s" % test_master)
         cleanup_list.append(test_master)
         run_cmd("git clone --shared %s %s" % (gitroot, test_master), show=True, dir=gitroot)
-    except:
+    except Exception:
         cleanup()
         raise
 
@@ -506,7 +503,9 @@ while True:
                 rebase_tree(options.rebase)
             elif options.rebase_master:
                 rebase_tree(samba_master)
-        except:
+        except Exception:
+            cleanup_list.append(gitroot + "/autobuild.pid")
+            cleanup()
             email_failure(-1, 'rebase', 'rebase', 'rebase', 'rebase on master failed')
             sys.exit(1)
         blist = buildlist(tasks, args)
@@ -516,7 +515,7 @@ while True:
         if status != 0 or errstr != "retry":
             break
         cleanup()
-    except:
+    except Exception:
         cleanup()
         raise
 

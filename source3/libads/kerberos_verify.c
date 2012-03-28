@@ -58,7 +58,7 @@ static bool ads_dedicated_keytab_verify_ticket(krb5_context context,
 
 	ZERO_STRUCT(kt_entry);
 
-	ret = smb_krb5_open_keytab(context, lp_dedicated_keytab_file(), true,
+	ret = smb_krb5_open_keytab(context, lp_dedicated_keytab_file(), false,
 	    &keytab);
 	if (ret) {
 		DEBUG(1, ("smb_krb5_open_keytab failed (%s)\n",
@@ -298,7 +298,7 @@ out:
 		}
 	}
 
-	SAFE_FREE(entry_princ_s);
+	TALLOC_FREE(entry_princ_s);
 
 	{
 		krb5_keytab_entry zero_kt_entry;

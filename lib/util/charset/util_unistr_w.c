@@ -130,7 +130,7 @@ smb_ucs2_t *strnrchr_w(const smb_ucs2_t *s, smb_ucs2_t c, unsigned int n)
 		}
 
 		if (!n) {
-			return (smb_ucs2_t *)p;
+			return discard_const_p(smb_ucs2_t, p);
 		}
 	} while (p-- != s);
 	return NULL;
@@ -142,7 +142,7 @@ smb_ucs2_t *strnrchr_w(const smb_ucs2_t *s, smb_ucs2_t c, unsigned int n)
 
 smb_ucs2_t *strstr_w(const smb_ucs2_t *s, const smb_ucs2_t *ins)
 {
-	smb_ucs2_t *r;
+	const smb_ucs2_t *r;
 	size_t inslen;
 
 	if (!s || !*s || !ins || !*ins) {
@@ -150,11 +150,11 @@ smb_ucs2_t *strstr_w(const smb_ucs2_t *s, const smb_ucs2_t *ins)
 	}
 
 	inslen = strlen_w(ins);
-	r = (smb_ucs2_t *)s;
+	r = s;
 
 	while ((r = strchr_w(r, *ins))) {
 		if (strncmp_w(r, ins, inslen) == 0) {
-			return r;
+			return discard_const_p(smb_ucs2_t, r);
 		}
 		r++;
 	}
@@ -207,20 +207,6 @@ bool strupper_w(smb_ucs2_t *s)
 	return ret;
 }
 
-int strcmp_w(const smb_ucs2_t *a, const smb_ucs2_t *b)
-{
-	smb_ucs2_t cpa, cpb;
-
-	while ((*(COPY_UCS2_CHAR(&cpb,b))) && (*(COPY_UCS2_CHAR(&cpa,a)) == cpb)) {
-		a++;
-		b++;
-	}
-	return (*(COPY_UCS2_CHAR(&cpa,a)) - *(COPY_UCS2_CHAR(&cpb,b)));
-	/* warning: if *a != *b and both are not 0 we return a random
-		greater or lesser than 0 number not realted to which
-		string is longer */
-}
-
 static int strncmp_w(const smb_ucs2_t *a, const smb_ucs2_t *b, size_t len)
 {
 	smb_ucs2_t cpa, cpb;
@@ -253,40 +239,13 @@ int strcmp_wa(const smb_ucs2_t *a, const char *b)
 	return (*(COPY_UCS2_CHAR(&cp,a)) - UCS2_CHAR(*b));
 }
 
-/*************************************************************
- ascii only toupper - saves the need for smbd to be in C locale.
-*************************************************************/
-
-int toupper_ascii(int c)
+smb_ucs2_t toupper_w(smb_ucs2_t v)
 {
-	smb_ucs2_t uc = toupper_m(UCS2_CHAR(c));
-	return UCS2_TO_CHAR(uc);
-}
-
-/*************************************************************
- ascii only tolower - saves the need for smbd to be in C locale.
-*************************************************************/
-
-int tolower_ascii(int c)
-{
-	smb_ucs2_t uc = tolower_m(UCS2_CHAR(c));
-	return UCS2_TO_CHAR(uc);
-}
-
-/*************************************************************
- ascii only isupper - saves the need for smbd to be in C locale.
-*************************************************************/
-
-int isupper_ascii(int c)
-{
-	return isupper_m(UCS2_CHAR(c));
-}
-
-/*************************************************************
- ascii only islower - saves the need for smbd to be in C locale.
-*************************************************************/
-
-int islower_ascii(int c)
-{
-	return islower_m(UCS2_CHAR(c));
+	smb_ucs2_t ret;
+	/* LE to native. */
+	codepoint_t cp = SVAL(&v,0);
+	cp = toupper_m(cp);
+	/* native to LE. */
+	SSVAL(&ret,0,cp);
+	return ret;
 }

@@ -37,16 +37,10 @@ import common
 
 def drsuapi_connect(ctx):
     '''make a DRSUAPI connection to the server'''
-    binding_options = "seal"
-    if int(ctx.lp.get("log level")) >= 5:
-        binding_options += ",print"
-    binding_string = "ncacn_ip_tcp:%s[%s]" % (ctx.server, binding_options)
     try:
-        ctx.drsuapi = drsuapi.drsuapi(binding_string, ctx.lp, ctx.creds)
-        (ctx.drsuapi_handle, ctx.bind_supported_extensions) = drs_utils.drs_DsBind(ctx.drsuapi)
+        (ctx.drsuapi, ctx.drsuapi_handle, ctx.bind_supported_extensions) = drs_utils.drsuapi_connect(ctx.server, ctx.lp, ctx.creds)
     except Exception, e:
         raise CommandError("DRS connection to %s failed" % ctx.server, e)
-
 
 def samdb_connect(ctx):
     '''make a ldap connection to the server'''
@@ -57,7 +51,6 @@ def samdb_connect(ctx):
     except Exception, e:
         raise CommandError("LDAP connection to %s failed" % ctx.server, e)
 
-
 def drs_errmsg(werr):
     '''return "was successful" or an error string'''
     (ecode, estring) = werr
@@ -66,11 +59,13 @@ def drs_errmsg(werr):
     return "failed, result %u (%s)" % (ecode, estring)
 
 
+
 def attr_default(msg, attrname, default):
     '''get an attribute from a ldap msg with a default'''
     if attrname in msg:
         return msg[attrname][0]
     return default
+
 
 
 def drs_parse_ntds_dn(ntds_dn):
@@ -83,16 +78,13 @@ def drs_parse_ntds_dn(ntds_dn):
     return (site, server)
 
 
-def get_dsServiceName(samdb):
-    '''get the NTDS DN from the rootDSE'''
-    res = samdb.search(base="", scope=ldb.SCOPE_BASE, attrs=["dsServiceName"])
-    return res[0]["dsServiceName"][0]
+
 
 
 class cmd_drs_showrepl(Command):
     """show replication status"""
 
-    synopsis = "%prog drs showrepl <DC>"
+    synopsis = "%prog [<DC>] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -128,7 +120,6 @@ class cmd_drs_showrepl(Command):
             raise CommandError("DsReplicaGetInfo of type %u failed" % info_type, e)
         return (info_type, info)
 
-
     def run(self, DC=None, sambaopts=None,
             credopts=None, versionopts=None, server=None):
 
@@ -142,7 +133,7 @@ class cmd_drs_showrepl(Command):
         samdb_connect(self)
 
         # show domain information
-        ntds_dn = get_dsServiceName(self.samdb)
+        ntds_dn = self.samdb.get_dsServiceName()
         server_dns = self.samdb.search(base="", scope=ldb.SCOPE_BASE, attrs=["dnsHostName"])[0]['dnsHostName'][0]
 
         (site, server) = drs_parse_ntds_dn(ntds_dn)
@@ -200,10 +191,11 @@ class cmd_drs_showrepl(Command):
                         self.message("\t\t\t%s" % s)
 
 
+
 class cmd_drs_kcc(Command):
     """trigger knowledge consistency center run"""
 
-    synopsis = "%prog drs kcc <DC>"
+    synopsis = "%prog [<DC>] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -233,8 +225,10 @@ class cmd_drs_kcc(Command):
         self.message("Consistency check on %s successful." % DC)
 
 
+
 def drs_local_replicate(self, SOURCE_DC, NC):
     '''replicate from a source DC to the local SAM'''
+
     self.server = SOURCE_DC
     drsuapi_connect(self)
 
@@ -270,7 +264,7 @@ def drs_local_replicate(self, SOURCE_DC, NC):
 class cmd_drs_replicate(Command):
     """replicate a naming context between two DCs"""
 
-    synopsis = "%prog drs replicate <DEST_DC> <SOURCE_DC> <NC>"
+    synopsis = "%prog <destinationDC> <sourceDC> <NC> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -283,12 +277,14 @@ class cmd_drs_replicate(Command):
     takes_options = [
         Option("--add-ref", help="use ADD_REF to add to repsTo on source", action="store_true"),
         Option("--sync-forced", help="use SYNC_FORCED to force inbound replication", action="store_true"),
+        Option("--sync-all", help="use SYNC_ALL to replicate from all DCs", action="store_true"),
+        Option("--full-sync", help="resync all objects", action="store_true"),
         Option("--local", help="pull changes directly into the local database (destination DC is ignored)", action="store_true"),
         ]
 
-    def run(self, DEST_DC, SOURCE_DC, NC, add_ref=False, sync_forced=False, local=False,
-            sambaopts=None,
-            credopts=None, versionopts=None, server=None):
+    def run(self, DEST_DC, SOURCE_DC, NC,
+            add_ref=False, sync_forced=False, sync_all=False, full_sync=False,
+            local=False, sambaopts=None, credopts=None, versionopts=None, server=None):
 
         self.server = DEST_DC
         self.lp = sambaopts.get_loadparm()
@@ -304,8 +300,9 @@ class cmd_drs_replicate(Command):
 
         # we need to find the NTDS GUID of the source DC
         msg = self.samdb.search(base=self.samdb.get_config_basedn(),
-                                expression="(&(objectCategory=server)(|(name=%s)(dNSHostName=%s)))" % (SOURCE_DC,
-                                                                                                       SOURCE_DC),
+                                expression="(&(objectCategory=server)(|(name=%s)(dNSHostName=%s)))" % (
+            ldb.binary_encode(SOURCE_DC),
+            ldb.binary_encode(SOURCE_DC)),
                                 attrs=[])
         if len(msg) == 0:
             raise CommandError("Failed to find source DC %s" % SOURCE_DC)
@@ -317,25 +314,24 @@ class cmd_drs_replicate(Command):
         if len(msg) == 0:
             raise CommandError("Failed to find source NTDS DN %s" % SOURCE_DC)
         source_dsa_guid = msg[0]['objectGUID'][0]
-        options = int(attr_default(msg, 'options', 0))
+        dsa_options = int(attr_default(msg, 'options', 0))
 
-        nc = drsuapi.DsReplicaObjectIdentifier()
-        nc.dn = NC
 
-        req1 = drsuapi.DsReplicaSyncRequest1()
-        req1.naming_context = nc;
-        req1.options = 0
-        if not (options & dsdb.DS_NTDSDSA_OPT_DISABLE_OUTBOUND_REPL):
-            req1.options |= drsuapi.DRSUAPI_DRS_WRIT_REP
+        req_options = 0
+        if not (dsa_options & dsdb.DS_NTDSDSA_OPT_DISABLE_OUTBOUND_REPL):
+            req_options |= drsuapi.DRSUAPI_DRS_WRIT_REP
         if add_ref:
-            req1.options |= drsuapi.DRSUAPI_DRS_ADD_REF
+            req_options |= drsuapi.DRSUAPI_DRS_ADD_REF
         if sync_forced:
-            req1.options |= drsuapi.DRSUAPI_DRS_SYNC_FORCED
-        req1.source_dsa_guid = misc.GUID(source_dsa_guid)
+            req_options |= drsuapi.DRSUAPI_DRS_SYNC_FORCED
+        if sync_all:
+            req_options |= drsuapi.DRSUAPI_DRS_SYNC_ALL
+        if full_sync:
+            req_options |= drsuapi.DRSUAPI_DRS_FULL_SYNC_NOW
 
         try:
-            self.drsuapi.DsReplicaSync(self.drsuapi_handle, 1, req1)
-        except Exception, estr:
+            drs_utils.sendDsReplicaSync(self.drsuapi, self.drsuapi_handle, source_dsa_guid, NC, req_options)
+        except drs_utils.drsException, estr:
             raise CommandError("DsReplicaSync failed", estr)
         self.message("Replicate from %s to %s was successful." % (SOURCE_DC, DEST_DC))
 
@@ -344,7 +340,7 @@ class cmd_drs_replicate(Command):
 class cmd_drs_bind(Command):
     """show DRS capabilities of a server"""
 
-    synopsis = "%prog drs bind <DC>"
+    synopsis = "%prog [<DC>] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -372,46 +368,46 @@ class cmd_drs_bind(Command):
         (info, handle) = self.drsuapi.DsBind(misc.GUID(drsuapi.DRSUAPI_DS_BIND_GUID), bind_info)
 
         optmap = [
-            ("DRSUAPI_SUPPORTED_EXTENSION_BASE" ,  			"DRS_EXT_BASE"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_ASYNC_REPLICATION" ,  	"DRS_EXT_ASYNCREPL"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_REMOVEAPI" ,  		"DRS_EXT_REMOVEAPI"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_MOVEREQ_V2" , 		"DRS_EXT_MOVEREQ_V2"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHG_COMPRESS" , 		"DRS_EXT_GETCHG_DEFLATE"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V1" , 			"DRS_EXT_DCINFO_V1"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_RESTORE_USN_OPTIMIZATION" ,  	"DRS_EXT_RESTORE_USN_OPTIMIZATION"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY" , 			"DRS_EXT_ADDENTRY"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_KCC_EXECUTE" , 		"DRS_EXT_KCC_EXECUTE"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY_V2" , 		"DRS_EXT_ADDENTRY_V2"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_LINKED_VALUE_REPLICATION" ,  	"DRS_EXT_LINKED_VALUE_REPLICATION"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V2" , 			"DRS_EXT_DCINFO_V2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_BASE",     "DRS_EXT_BASE"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_ASYNC_REPLICATION",   "DRS_EXT_ASYNCREPL"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_REMOVEAPI",    "DRS_EXT_REMOVEAPI"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_MOVEREQ_V2",   "DRS_EXT_MOVEREQ_V2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHG_COMPRESS",   "DRS_EXT_GETCHG_DEFLATE"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V1",    "DRS_EXT_DCINFO_V1"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_RESTORE_USN_OPTIMIZATION",   "DRS_EXT_RESTORE_USN_OPTIMIZATION"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY",    "DRS_EXT_ADDENTRY"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_KCC_EXECUTE",   "DRS_EXT_KCC_EXECUTE"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRY_V2",   "DRS_EXT_ADDENTRY_V2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_LINKED_VALUE_REPLICATION",   "DRS_EXT_LINKED_VALUE_REPLICATION"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V2",    "DRS_EXT_DCINFO_V2"),
             ("DRSUAPI_SUPPORTED_EXTENSION_INSTANCE_TYPE_NOT_REQ_ON_MOD","DRS_EXT_INSTANCE_TYPE_NOT_REQ_ON_MOD"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_CRYPTO_BIND" , 		"DRS_EXT_CRYPTO_BIND"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GET_REPL_INFO" , 		"DRS_EXT_GET_REPL_INFO"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_STRONG_ENCRYPTION" , 		"DRS_EXT_STRONG_ENCRYPTION"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V01" , 		"DRS_EXT_DCINFO_VFFFFFFFF"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_TRANSITIVE_MEMBERSHIP" , 	"DRS_EXT_TRANSITIVE_MEMBERSHIP"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_ADD_SID_HISTORY" , 		"DRS_EXT_ADD_SID_HISTORY"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_POST_BETA3" , 		"DRS_EXT_POST_BETA3"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V5" , 		"DRS_EXT_GETCHGREQ_V5"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GET_MEMBERSHIPS2" , 		"DRS_EXT_GETMEMBERSHIPS2"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V6" , 		"DRS_EXT_GETCHGREQ_V6"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_NONDOMAIN_NCS" , 		"DRS_EXT_NONDOMAIN_NCS"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8" , 		"DRS_EXT_GETCHGREQ_V8"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V5" , 		"DRS_EXT_GETCHGREPLY_V5"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V6" , 		"DRS_EXT_GETCHGREPLY_V6"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRYREPLY_V3" , 		"DRS_EXT_WHISTLER_BETA3"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V7" , 		"DRS_EXT_WHISTLER_BETA3"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_VERIFY_OBJECT" , 		"DRS_EXT_WHISTLER_BETA3"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_XPRESS_COMPRESS" , 		"DRS_EXT_W2K3_DEFLATE"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V10" , 		"DRS_EXT_GETCHGREQ_V10"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_RESERVED_PART2" , 		"DRS_EXT_RESERVED_FOR_WIN2K_OR_DOTNET_PART2"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_RESERVED_PART3" , 		"DRS_EXT_RESERVED_FOR_WIN2K_OR_DOTNET_PART3")
+            ("DRSUAPI_SUPPORTED_EXTENSION_CRYPTO_BIND",   "DRS_EXT_CRYPTO_BIND"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GET_REPL_INFO",   "DRS_EXT_GET_REPL_INFO"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_STRONG_ENCRYPTION",   "DRS_EXT_STRONG_ENCRYPTION"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_DCINFO_V01",   "DRS_EXT_DCINFO_VFFFFFFFF"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_TRANSITIVE_MEMBERSHIP",  "DRS_EXT_TRANSITIVE_MEMBERSHIP"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_ADD_SID_HISTORY",   "DRS_EXT_ADD_SID_HISTORY"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_POST_BETA3",   "DRS_EXT_POST_BETA3"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V5",   "DRS_EXT_GETCHGREQ_V5"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GET_MEMBERSHIPS2",   "DRS_EXT_GETMEMBERSHIPS2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V6",   "DRS_EXT_GETCHGREQ_V6"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_NONDOMAIN_NCS",   "DRS_EXT_NONDOMAIN_NCS"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V8",   "DRS_EXT_GETCHGREQ_V8"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V5",   "DRS_EXT_GETCHGREPLY_V5"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V6",   "DRS_EXT_GETCHGREPLY_V6"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_ADDENTRYREPLY_V3",   "DRS_EXT_WHISTLER_BETA3"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREPLY_V7",   "DRS_EXT_WHISTLER_BETA3"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_VERIFY_OBJECT",   "DRS_EXT_WHISTLER_BETA3"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_XPRESS_COMPRESS",   "DRS_EXT_W2K3_DEFLATE"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_GETCHGREQ_V10",   "DRS_EXT_GETCHGREQ_V10"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_RESERVED_PART2",   "DRS_EXT_RESERVED_FOR_WIN2K_OR_DOTNET_PART2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_RESERVED_PART3", "DRS_EXT_RESERVED_FOR_WIN2K_OR_DOTNET_PART3")
             ]
 
         optmap_ext = [
-            ("DRSUAPI_SUPPORTED_EXTENSION_ADAM",			"DRS_EXT_ADAM"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_LH_BETA2",			"DRS_EXT_LH_BETA2"),
-            ("DRSUAPI_SUPPORTED_EXTENSION_RECYCLE_BIN",			"DRS_EXT_RECYCLE_BIN")]
+            ("DRSUAPI_SUPPORTED_EXTENSION_ADAM", "DRS_EXT_ADAM"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_LH_BETA2", "DRS_EXT_LH_BETA2"),
+            ("DRSUAPI_SUPPORTED_EXTENSION_RECYCLE_BIN", "DRS_EXT_RECYCLE_BIN")]
 
         self.message("Bind to %s succeeded." % DC)
         self.message("Extensions supported:")
@@ -443,9 +439,7 @@ class cmd_drs_bind(Command):
 class cmd_drs_options(Command):
     """query or change 'options' for NTDS Settings object of a domain controller"""
 
-    synopsis = ("%prog drs options <DC>"
-                " [--dsa-option={+|-}IS_GC | {+|-}DISABLE_INBOUND_REPL"
-                " |{+|-}DISABLE_OUTBOUND_REPL | {+|-}DISABLE_NTDSCONN_XLATE]")
+    synopsis = "%prog [<DC>] [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -456,7 +450,8 @@ class cmd_drs_options(Command):
     takes_args = ["DC?"]
 
     takes_options = [
-        Option("--dsa-option", help="DSA option to enable/disable", type="str"),
+        Option("--dsa-option", help="DSA option to enable/disable", type="str",
+               metavar="{+|-}IS_GC | {+|-}DISABLE_INBOUND_REPL | {+|-}DISABLE_OUTBOUND_REPL | {+|-}DISABLE_NTDSCONN_XLATE" ),
         ]
 
     option_map = {"IS_GC": 0x00000001,
@@ -475,7 +470,7 @@ class cmd_drs_options(Command):
 
         samdb_connect(self)
 
-        ntds_dn = get_dsServiceName(self.samdb)
+        ntds_dn = self.samdb.get_dsServiceName()
         res = self.samdb.search(base=ntds_dn, scope=ldb.SCOPE_BASE, attrs=["options"])
         dsa_opts = int(res[0]["options"][0])
 
@@ -505,7 +500,7 @@ class cmd_drs_options(Command):
 
 
 class cmd_drs(SuperCommand):
-    """DRS commands"""
+    """Directory Replication Services (DRS) management"""
 
     subcommands = {}
     subcommands["bind"] = cmd_drs_bind()

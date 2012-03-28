@@ -26,6 +26,8 @@
 #include "auth.h"
 #include "messages.h"
 #include "smbprofile.h"
+#include "auth/gensec/gensec.h"
+#include "../libcli/smb/smb_signing.h"
 
 extern fstring remote_proto;
 
@@ -187,16 +189,33 @@ DATA_BLOB negprot_spnego(TALLOC_CTX *ctx, struct smbd_server_connection *sconn)
 	DATA_BLOB blob_out = data_blob_null;
 	nstring dos_name;
 	fstring unix_name;
+	NTSTATUS status;
 #ifdef DEVELOPER
 	size_t slen;
 #endif
-	const char *OIDs_krb5[] = {OID_KERBEROS5,
-				   OID_KERBEROS5_OLD,
-				   OID_NTLMSSP,
-				   NULL};
-	const char *OIDs_ntlm[] = {OID_NTLMSSP, NULL};
+	struct gensec_security *gensec_security;
+
+	/* See if we can get an SPNEGO blob */
+	status = auth_generic_prepare(talloc_tos(),
+				      sconn->remote_address,
+				      &gensec_security);
+	if (NT_STATUS_IS_OK(status)) {
+		status = gensec_start_mech_by_oid(gensec_security, GENSEC_OID_SPNEGO);
+		if (NT_STATUS_IS_OK(status)) {
+			status = gensec_update(gensec_security, ctx,
+					       NULL, data_blob_null, &blob);
+			/* If we get the list of OIDs, the 'OK' answer
+			 * is NT_STATUS_MORE_PROCESSING_REQUIRED */
+			if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
+				DEBUG(0, ("Failed to start SPNEGO handler for negprot OID list!\n"));
+				blob = data_blob_null;
+			}
+		}
+		TALLOC_FREE(gensec_security);
+	}
 
 	sconn->smb1.negprot.spnego = true;
+
 	/* strangely enough, NT does not sent the single OID NTLMSSP when
 	   not a ADS member, it sends no OIDs at all
 
@@ -209,30 +228,6 @@ DATA_BLOB negprot_spnego(TALLOC_CTX *ctx, struct smbd_server_connection *sconn)
 	   for details. JRA.
 
 	*/
-
-	if (lp_security() != SEC_ADS && !USE_KERBEROS_KEYTAB) {
-#if 0
-		/* Code for PocketPC client */
-		blob = data_blob(guid, 16);
-#else
-		/* Code for standalone WXP client */
-		blob = spnego_gen_negTokenInit(ctx, OIDs_ntlm, NULL, "NONE");
-#endif
-	} else if (!lp_send_spnego_principal()) {
-		/* By default, Windows 2008 and later sends not_defined_in_RFC4178@please_ignore */
-		blob = spnego_gen_negTokenInit(ctx, OIDs_krb5, NULL, ADS_IGNORE_PRINCIPAL);
-	} else {
-		fstring myname;
-		char *host_princ_s = NULL;
-		name_to_fqdn(myname, lp_netbios_name());
-		strlower_m(myname);
-		if (asprintf(&host_princ_s, "cifs/%s@%s", myname, lp_realm())
-		    == -1) {
-			return data_blob_null;
-		}
-		blob = spnego_gen_negTokenInit(ctx, OIDs_krb5, NULL, host_princ_s);
-		SAFE_FREE(host_princ_s);
-	}
 
 	if (blob.length == 0 || blob.data == NULL) {
 		return data_blob_null;
@@ -281,6 +276,8 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 	struct timespec ts;
 	ssize_t ret;
 	struct smbd_server_connection *sconn = req->sconn;
+	bool signing_enabled = false;
+	bool signing_required = false;
 
 	sconn->smb1.negprot.encrypted_passwords = lp_encrypted_passwords();
 
@@ -289,7 +286,7 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 	   distinguish from NT which doesn't set it either. */
 
 	if ( (req->flags2 & FLAGS2_EXTENDED_SECURITY) &&
-		((req->flags2 & FLAGS2_UNKNOWN_BIT4) == 0) )
+		((req->flags2 & FLAGS2_SMB_SECURITY_SIGNATURES_REQUIRED) == 0) )
 	{
 		if (get_remote_arch() != RA_SAMBA) {
 			set_remote_arch( RA_VISTA );
@@ -342,17 +339,20 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 	}
 
-	if (lp_server_signing()) {
+	signing_enabled = smb_signing_is_allowed(req->sconn->smb1.signing_state);
+	signing_required = smb_signing_is_mandatory(req->sconn->smb1.signing_state);
+
+	if (signing_enabled) {
 	       	if (lp_security() >= SEC_USER) {
 			secword |= NEGOTIATE_SECURITY_SIGNATURES_ENABLED;
 			/* No raw mode with smb signing. */
 			capabilities &= ~CAP_RAW_MODE;
-			if (lp_server_signing() == Required)
+			if (signing_required) {
 				secword |=NEGOTIATE_SECURITY_SIGNATURES_REQUIRED;
-			srv_set_signing_negotiated(sconn);
+			}
 		} else {
 			DEBUG(0,("reply_nt1: smb signing is incompatible with share level security !\n"));
-			if (lp_server_signing() == Required) {
+			if (signing_required) {
 				exit_server_cleanly("reply_nt1: smb signing required and share level security selected.");
 			}
 		}
@@ -395,6 +395,14 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 					  |STR_NOALIGN);
 		if (ret == -1) {
 			DEBUG(0, ("Could not push workgroup string\n"));
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			return;
+		}
+		ret = message_push_string(&req->outbuf, lp_netbios_name(),
+					  STR_UNICODE|STR_TERMINATE
+					  |STR_NOALIGN);
+		if (ret == -1) {
+			DEBUG(0, ("Could not push netbios name string\n"));
 			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			return;
 		}
@@ -510,7 +518,8 @@ static const struct {
 	void (*proto_reply_fn)(struct smb_request *req, uint16 choice);
 	int protocol_level;
 } supported_protocols[] = {
-	{"SMB 2.002",               "SMB2",     reply_smb2002,  PROTOCOL_SMB2},
+	{"SMB 2.???",               "SMB2_FF",  reply_smb20ff,  PROTOCOL_SMB2_10},
+	{"SMB 2.002",               "SMB2_02",  reply_smb2002,  PROTOCOL_SMB2_02},
 	{"NT LANMAN 1.0",           "NT1",      reply_nt1,      PROTOCOL_NT1},
 	{"NT LM 0.12",              "NT1",      reply_nt1,      PROTOCOL_NT1},
 	{"POSIX 2",                 "NT1",      reply_nt1,      PROTOCOL_NT1},
@@ -673,13 +682,13 @@ void reply_negprot(struct smb_request *req)
 	}
 
 	/* possibly reload - change of architecture */
-	reload_services(sconn->msg_ctx, sconn->sock, True);
+	reload_services(sconn, conn_snum_used, true);
 
 	/* moved from the netbios session setup code since we don't have that 
 	   when the client connects to port 445.  Of course there is a small
 	   window where we are listening to messages   -- jerry */
 
-	serverid_register(sconn_server_id(sconn),
+	serverid_register(messaging_server_id(sconn->msg_ctx),
 			  FLAG_MSG_GENERAL|FLAG_MSG_SMBD
 			  |FLAG_MSG_PRINT_GENERAL);
 
@@ -699,7 +708,7 @@ void reply_negprot(struct smb_request *req)
 
 	if(choice != -1) {
 		fstrcpy(remote_proto,supported_protocols[protocol].short_name);
-		reload_services(sconn->msg_ctx, sconn->sock, True);
+		reload_services(sconn, conn_snum_used, true);
 		supported_protocols[protocol].proto_reply_fn(req, choice);
 		DEBUG(3,("Selected protocol %s\n",supported_protocols[protocol].proto_name));
 	} else {
@@ -710,14 +719,16 @@ void reply_negprot(struct smb_request *req)
 
 	DEBUG( 5, ( "negprot index=%d\n", choice ) );
 
-	if ((lp_server_signing() == Required) && (get_Protocol() < PROTOCOL_NT1)) {
+	if ((lp_server_signing() == SMB_SIGNING_REQUIRED)
+	    && (get_Protocol() < PROTOCOL_NT1)) {
 		exit_server_cleanly("SMB signing is required and "
 			"client negotiated a downlevel protocol");
 	}
 
 	TALLOC_FREE(cliprotos);
 
-	if (lp_async_smb_echo_handler() && !fork_echo_handler(sconn)) {
+	if (lp_async_smb_echo_handler() && (get_Protocol() < PROTOCOL_SMB2_02) &&
+	    !fork_echo_handler(sconn)) {
 		exit_server("Failed to fork echo handler");
 	}
 

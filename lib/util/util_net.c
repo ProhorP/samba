@@ -8,17 +8,17 @@
    Copyright (C) Jim McDonough (jmcd@us.ibm.com)  2003.
    Copyright (C) James J Myers 2003
    Copyright (C) Tim Potter      2000-2001
-    
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -73,10 +73,9 @@ bool interpret_string_addr_internal(struct addrinfo **ppres,
 			ppres);
 
 	if (ret) {
-		DEBUG(3,("interpret_string_addr_internal: getaddrinfo failed "
-			"for name %s [%s]\n",
-			str,
-			gai_strerror(ret) ));
+		DEBUG(3, ("interpret_string_addr_internal: "
+			  "getaddrinfo failed for name %s (flags %d) [%s]\n",
+			  str, flags, gai_strerror(ret)));
 		return false;
 	}
 	return true;
@@ -97,6 +96,7 @@ static bool interpret_string_addr_pref(struct sockaddr_storage *pss,
 #if defined(HAVE_IPV6)
 	char addr[INET6_ADDRSTRLEN];
 	unsigned int scope_id = 0;
+	int int_flags;
 
 	if (strchr_m(str, ':')) {
 		char *p = strchr_m(str, '%');
@@ -117,7 +117,13 @@ static bool interpret_string_addr_pref(struct sockaddr_storage *pss,
 
 	zero_sockaddr(pss);
 
-	if (!interpret_string_addr_internal(&res, str, flags|AI_ADDRCONFIG)) {
+	if (flags & AI_NUMERICHOST) {
+		int_flags = flags;
+	} else {
+		int_flags = flags|AI_ADDRCONFIG;
+	}
+
+	if (!interpret_string_addr_internal(&res, str, int_flags)) {
 		return false;
 	}
 	if (!res) {
@@ -424,6 +430,29 @@ bool is_zero_addr(const struct sockaddr_storage *pss)
 void zero_ip_v4(struct in_addr *ip)
 {
 	ZERO_STRUCTP(ip);
+}
+
+bool is_linklocal_addr(const struct sockaddr_storage *pss)
+{
+#ifdef HAVE_IPV6
+	if (pss->ss_family == AF_INET6) {
+		const struct in6_addr *pin6 =
+			&((const struct sockaddr_in6 *)pss)->sin6_addr;
+		return IN6_IS_ADDR_LINKLOCAL(pin6);
+	}
+#endif
+	if (pss->ss_family == AF_INET) {
+		const struct in_addr *pin =
+			&((const struct sockaddr_in *)pss)->sin_addr;
+		struct in_addr ll_addr;
+		struct in_addr mask_addr;
+
+		/* 169.254.0.0/16, is link local, see RFC 3927 */
+		ll_addr.s_addr = 0xa9fe0000;
+		mask_addr.s_addr = 0xffff0000;
+		return same_net_v4(*pin, ll_addr, mask_addr);
+	}
+	return false;
 }
 
 /**
@@ -774,11 +803,17 @@ static const smb_socket_option socket_options[] = {
 #ifdef TCP_QUICKACK
   {"TCP_QUICKACK", IPPROTO_TCP, TCP_QUICKACK, 0, OPT_BOOL},
 #endif
+#ifdef TCP_NODELAYACK
+  {"TCP_NODELAYACK", IPPROTO_TCP, TCP_NODELAYACK, 0, OPT_BOOL},
+#endif
 #ifdef TCP_KEEPALIVE_THRESHOLD
   {"TCP_KEEPALIVE_THRESHOLD", IPPROTO_TCP, TCP_KEEPALIVE_THRESHOLD, 0, OPT_INT},
 #endif
 #ifdef TCP_KEEPALIVE_ABORT_THRESHOLD
   {"TCP_KEEPALIVE_ABORT_THRESHOLD", IPPROTO_TCP, TCP_KEEPALIVE_ABORT_THRESHOLD, 0, OPT_INT},
+#endif
+#ifdef TCP_DEFER_ACCEPT
+  {"TCP_DEFER_ACCEPT", IPPROTO_TCP, TCP_DEFER_ACCEPT, 0, OPT_INT},
 #endif
   {NULL,0,0,0,0}};
 

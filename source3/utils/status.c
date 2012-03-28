@@ -33,11 +33,13 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "popt_common.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "../libcli/security/security.h"
 #include "session.h"
 #include "locking/proto.h"
 #include "messages.h"
+#include "librpc/gen_ndr/open_files.h"
 
 #define SMB_MAXPIDS		2048
 static uid_t 		Ucrit_uid = 0;               /* added by OH */
@@ -210,11 +212,13 @@ static void print_brl(struct file_id id,
 
 	share_mode = fetch_share_mode_unlocked(NULL, id);
 	if (share_mode) {
-		bool has_stream = share_mode->stream_name != NULL;
+		bool has_stream = share_mode->data->stream_name != NULL;
 
-		fname = talloc_asprintf(NULL, "%s%s%s", share_mode->base_name,
+		fname = talloc_asprintf(NULL, "%s%s%s",
+					share_mode->data->base_name,
 					has_stream ? ":" : "",
-					has_stream ? share_mode->stream_name :
+					has_stream ?
+					share_mode->data->stream_name :
 					"");
 	} else {
 		fname = talloc_strdup(NULL, "");
@@ -384,8 +388,7 @@ static int traverse_sessionid(const char *key, struct sessionid *session,
 		 * connection, usable by the db_open() calls further
 		 * down.
 		 */
-		msg_ctx = messaging_init(NULL, procid_self(),
-					 event_context_init(NULL));
+		msg_ctx = messaging_init(NULL, event_context_init(NULL));
 		if (msg_ctx == NULL) {
 			fprintf(stderr, "messaging_init failed\n");
 			ret = -1;
@@ -393,7 +396,7 @@ static int traverse_sessionid(const char *key, struct sessionid *session,
 		}
 	}
 
-	if (!lp_load(get_dyn_CONFIGFILE(),False,False,False,True)) {
+	if (!lp_load_global(get_dyn_CONFIGFILE())) {
 		fprintf(stderr, "Can't load %s - run testparm to debug it\n",
 			get_dyn_CONFIGFILE());
 		ret = -1;
@@ -452,7 +455,8 @@ static int traverse_sessionid(const char *key, struct sessionid *session,
 		int result;
 		struct db_context *db;
 		db = db_open(NULL, lock_path("locking.tdb"), 0,
-			     TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDONLY, 0);
+			     TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDONLY, 0,
+			     DBWRAP_LOCK_ORDER_1);
 
 		if (!db) {
 			d_printf("%s not initialised\n",

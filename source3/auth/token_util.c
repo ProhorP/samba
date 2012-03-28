@@ -25,6 +25,7 @@
 /* functions moved from auth/auth_util.c to minimize linker deps */
 
 #include "includes.h"
+#include "system/passwd.h"
 #include "auth.h"
 #include "secrets.h"
 #include "memcache.h"
@@ -211,8 +212,8 @@ static NTSTATUS finalize_local_nt_token(struct security_token *result,
 
 NTSTATUS create_local_nt_token_from_info3(TALLOC_CTX *mem_ctx,
 					  bool is_guest,
-					  struct netr_SamInfo3 *info3,
-					  struct extra_auth_info *extra,
+					  const struct netr_SamInfo3 *info3,
+					  const struct extra_auth_info *extra,
 					  struct security_token **ntok)
 {
 	struct security_token *usrtok = NULL;

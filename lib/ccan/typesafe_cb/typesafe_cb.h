@@ -1,3 +1,4 @@
+/* Licensed under LGPLv2.1+ - see LICENSE file for details */
 #ifndef CCAN_TYPESAFE_CB_H
 #define CCAN_TYPESAFE_CB_H
 #include "config.h"
@@ -100,8 +101,8 @@
  * Example:
  *	void _register_callback(void (*fn)(int, void *arg), void *arg);
  *	#define register_callback(fn, arg)				   \
- *		_register_callback(typesafe_cb_preargs(void, (fn), void *, \
- *				   (arg), int),				   \
+ *		_register_callback(typesafe_cb_preargs(void, void *,	   \
+ *				   (fn), (arg), int),			   \
  *				   (arg))
  */
 #define typesafe_cb_preargs(rtype, atype, fn, arg, ...)			\

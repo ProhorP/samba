@@ -36,9 +36,12 @@ from samba.netcmd import (
     Option,
     )
 
-class cmd_acl_set(Command):
+
+
+class cmd_ntacl_set(Command):
     """Set ACLs on a file"""
-    synopsis = "%prog set <acl> <file> [--xattr-backend=native|tdb] [--eadb-file=file] [options]"
+
+    synopsis = "%prog <acl> <file> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -58,7 +61,6 @@ class cmd_acl_set(Command):
     def run(self, acl, file, quiet=False,xattr_backend=None,eadb_file=None,
             credopts=None, sambaopts=None, versionopts=None):
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp)
         path = os.path.join(lp.get("private dir"), lp.get("secrets database") or "secrets.ldb")
         creds = credopts.get_credentials(lp)
         creds.set_kerberos_state(DONT_USE_KERBEROS)
@@ -68,7 +70,6 @@ class cmd_acl_set(Command):
         except Exception, e:
             raise CommandError("Unable to read domain SID from configuration files", e)
         attrs = ["objectSid"]
-        print lp.get("realm")
         res = ldb.search(expression="(objectClass=*)",
             base="flatname=%s,cn=Primary Domains" % lp.get("workgroup"),
             scope=SCOPE_BASE, attrs=attrs)
@@ -79,9 +80,10 @@ class cmd_acl_set(Command):
             raise CommandError("Unable to read domain SID from configuration files")
 
 
-class cmd_acl_get(Command):
+
+class cmd_ntacl_get(Command):
     """Set ACLs on a file"""
-    synopsis = "%prog get <file> [--as-sddl] [--xattr-backend=native|tdb] [--eadb-file=file] [options]"
+    synopsis = "%prog <file> [options]"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -101,19 +103,18 @@ class cmd_acl_get(Command):
     def run(self, file, as_sddl=False, xattr_backend=None, eadb_file=None,
             credopts=None, sambaopts=None, versionopts=None):
         lp = sambaopts.get_loadparm()
-        creds = credopts.get_credentials(lp)
         acl = getntacl(lp, file, xattr_backend, eadb_file)
         if as_sddl:
             anysid = security.dom_sid(security.SID_NT_SELF)
-            print acl.info.as_sddl(anysid)
+            self.outf.write(acl.info.as_sddl(anysid)+"\n")
         else:
             acl.dump()
 
 
-class cmd_nt_acl(SuperCommand):
+class cmd_ntacl(SuperCommand):
     """NT ACLs manipulation"""
 
     subcommands = {}
-    subcommands["set"] = cmd_acl_set()
-    subcommands["get"] = cmd_acl_get()
+    subcommands["set"] = cmd_ntacl_set()
+    subcommands["get"] = cmd_ntacl_get()
 

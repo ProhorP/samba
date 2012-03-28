@@ -1,5 +1,6 @@
 /*
    Copyright (C) Andrew Tridgell 2009
+   Copyright (c) 2011      Andreas Schneider <asn@samba.org>
  
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +19,9 @@
 #ifdef _SAMBA_BUILD_
 
 #define UID_WRAPPER_NOT_REPLACE
-#include "../replace/replace.h"
-#include <talloc.h>
+#include "replace.h"
 #include "system/passwd.h"
+#include <talloc.h>
 
 #else /* _SAMBA_BUILD_ */
 
@@ -38,9 +39,10 @@
 static struct {
 	bool initialised;
 	bool enabled;
+	uid_t myuid;
 	uid_t euid;
+	uid_t mygid;
 	gid_t egid;
-	unsigned ngroups;
 	gid_t *groups;
 } uwrap;
 
@@ -51,7 +53,8 @@ static void uwrap_init(void)
 	if (getenv("UID_WRAPPER")) {
 		uwrap.enabled = true;
 		/* put us in one group */
-		uwrap.ngroups = 1;
+		uwrap.myuid = uwrap.euid = geteuid();
+		uwrap.mygid = uwrap.egid = getegid();
 		uwrap.groups = talloc_array(NULL, gid_t, 1);
 		uwrap.groups[0] = 0;
 	}
@@ -64,6 +67,7 @@ _PUBLIC_ int uwrap_enabled(void)
 	return uwrap.enabled?1:0;
 }
 
+#ifdef HAVE_SETEUID
 _PUBLIC_ int uwrap_seteuid(uid_t euid)
 {
 	uwrap_init();
@@ -71,9 +75,48 @@ _PUBLIC_ int uwrap_seteuid(uid_t euid)
 		return seteuid(euid);
 	}
 	/* assume for now that the ruid stays as root */
-	uwrap.euid = euid;
+	if (euid == 0) {
+		uwrap.euid = uwrap.myuid;
+	} else {
+		uwrap.euid = euid;
+	}
 	return 0;
 }
+#endif
+
+#ifdef HAVE_SETREUID
+_PUBLIC_ int uwrap_setreuid(uid_t ruid, uid_t euid)
+{
+	uwrap_init();
+	if (!uwrap.enabled) {
+		return setreuid(ruid, euid);
+	}
+	/* assume for now that the ruid stays as root */
+	if (euid == 0) {
+		uwrap.euid = uwrap.myuid;
+	} else {
+		uwrap.euid = euid;
+	}
+	return 0;
+}
+#endif
+
+#ifdef HAVE_SETRESUID
+_PUBLIC_ int uwrap_setresuid(uid_t ruid, uid_t euid, uid_t suid)
+{
+	uwrap_init();
+	if (!uwrap.enabled) {
+		return setresuid(ruid, euid, suid);
+	}
+	/* assume for now that the ruid stays as root */
+	if (euid == 0) {
+		uwrap.euid = uwrap.myuid;
+	} else {
+		uwrap.euid = euid;
+	}
+	return 0;
+}
+#endif
 
 _PUBLIC_ uid_t uwrap_geteuid(void)
 {
@@ -84,6 +127,7 @@ _PUBLIC_ uid_t uwrap_geteuid(void)
 	return uwrap.euid;
 }
 
+#ifdef HAVE_SETEGID
 _PUBLIC_ int uwrap_setegid(gid_t egid)
 {
 	uwrap_init();
@@ -91,9 +135,48 @@ _PUBLIC_ int uwrap_setegid(gid_t egid)
 		return setegid(egid);
 	}
 	/* assume for now that the ruid stays as root */
-	uwrap.egid = egid;
+	if (egid == 0) {
+		uwrap.egid = uwrap.mygid;
+	} else {
+		uwrap.egid = egid;
+	}
 	return 0;
 }
+#endif
+
+#ifdef HAVE_SETREGID
+_PUBLIC_ int uwrap_setregid(gid_t rgid, gid_t egid)
+{
+	uwrap_init();
+	if (!uwrap.enabled) {
+		return setregid(rgid, egid);
+	}
+	/* assume for now that the ruid stays as root */
+	if (egid == 0) {
+		uwrap.egid = uwrap.mygid;
+	} else {
+		uwrap.egid = egid;
+	}
+	return 0;
+}
+#endif
+
+#ifdef HAVE_SETRESGID
+_PUBLIC_ int uwrap_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
+{
+	uwrap_init();
+	if (!uwrap.enabled) {
+		return setresgid(rgid, egid, sgid);
+	}
+	/* assume for now that the ruid stays as root */
+	if (egid == 0) {
+		uwrap.egid = uwrap.mygid;
+	} else {
+		uwrap.egid = egid;
+	}
+	return 0;
+}
+#endif
 
 _PUBLIC_ uid_t uwrap_getegid(void)
 {
@@ -112,7 +195,6 @@ _PUBLIC_ int uwrap_setgroups(size_t size, const gid_t *list)
 	}
 
 	talloc_free(uwrap.groups);
-	uwrap.ngroups = 0;
 	uwrap.groups = NULL;
 
 	if (size != 0) {
@@ -122,30 +204,33 @@ _PUBLIC_ int uwrap_setgroups(size_t size, const gid_t *list)
 			return -1;
 		}
 		memcpy(uwrap.groups, list, size*sizeof(gid_t));
-		uwrap.ngroups = size;
 	}
 	return 0;
 }
 
 _PUBLIC_ int uwrap_getgroups(int size, gid_t *list)
 {
+	size_t ngroups;
+
 	uwrap_init();
 	if (!uwrap.enabled) {
 		return getgroups(size, list);
 	}
 
-	if (size > uwrap.ngroups) {
-		size = uwrap.ngroups;
+	ngroups = talloc_array_length(uwrap.groups);
+
+	if (size > ngroups) {
+		size = ngroups;
 	}
 	if (size == 0) {
-		return uwrap.ngroups;
+		return ngroups;
 	}
-	if (size < uwrap.ngroups) {
+	if (size < ngroups) {
 		errno = EINVAL;
 		return -1;
 	}
 	memcpy(list, uwrap.groups, size*sizeof(gid_t));
-	return uwrap.ngroups;
+	return ngroups;
 }
 
 _PUBLIC_ uid_t uwrap_getuid(void)

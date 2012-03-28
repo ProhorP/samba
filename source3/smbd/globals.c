@@ -60,15 +60,16 @@ bool logged_ioctl_message = false;
 
 time_t last_smb_conf_reload_time = 0;
 time_t last_printer_reload_time = 0;
+pid_t background_lpq_updater_pid = -1;
+
 /****************************************************************************
  structure to hold a linked list of queued messages.
  for processing.
 ****************************************************************************/
-struct pending_message_list *deferred_open_queue = NULL;
 uint32_t common_flags2 = FLAGS2_LONG_PATH_COMPONENTS|FLAGS2_32_BIT_ERROR_CODES|FLAGS2_EXTENDED_ATTRIBUTES;
 
-struct smb_srv_trans_enc_ctx *partial_srv_trans_enc_ctx = NULL;
-struct smb_srv_trans_enc_ctx *srv_trans_enc_ctx = NULL;
+struct smb_trans_enc_state *partial_srv_trans_enc_ctx = NULL;
+struct smb_trans_enc_state *srv_trans_enc_ctx = NULL;
 
 /* A stack of security contexts.  We include the current context as being
    the first one, so there is room for another MAX_SEC_CTX_DEPTH more. */
@@ -97,36 +98,11 @@ int32_t exclusive_oplocks_open = 0;
 int32_t level_II_oplocks_open = 0;
 struct kernel_oplocks *koplocks = NULL;
 
-int am_parent = 1;
+struct smbd_parent_context *am_parent = NULL;
 struct memcache *smbd_memcache_ctx = NULL;
 bool exit_firsttime = true;
-struct child_pid *children = 0;
-int num_children = 0;
 
 struct smbd_server_connection *smbd_server_conn = NULL;
-
-struct smbd_server_connection *msg_ctx_to_sconn(struct messaging_context *msg_ctx)
-{
-	struct server_id my_id, msg_id;
-
-	my_id = messaging_server_id(smbd_server_conn->msg_ctx);
-	msg_id = messaging_server_id(msg_ctx);
-
-	if (!procid_equal(&my_id, &msg_id)) {
-		return NULL;
-	}
-	return smbd_server_conn;
-}
-
-struct messaging_context *smbd_messaging_context(void)
-{
-	struct messaging_context *msg_ctx = server_messaging_context();
-	if (likely(msg_ctx != NULL)) {
-		return msg_ctx;
-	}
-	smb_panic("Could not init smbd's messaging context.\n");
-	return NULL;
-}
 
 struct memcache *smbd_memcache(void)
 {
@@ -150,9 +126,8 @@ static const struct smbd_shim smbd_shim_fns =
 {
 	.cancel_pending_lock_requests_by_fid = smbd_cancel_pending_lock_requests_by_fid,
 	.send_stat_cache_delete_message = smbd_send_stat_cache_delete_message,
-	.can_delete_directory = smbd_can_delete_directory,
 	.change_to_root_user = smbd_change_to_root_user,
-	
+
 	.contend_level2_oplocks_begin = smbd_contend_level2_oplocks_begin,
 	.contend_level2_oplocks_end = smbd_contend_level2_oplocks_end,
 
@@ -173,35 +148,7 @@ void smbd_init_globals(void)
 		exit_server("failed to create smbd_server_connection");
 	}
 
+	smbd_server_conn->ev_ctx = server_event_context();
 	smbd_server_conn->smb1.echo_handler.trusted_fd = -1;
 	smbd_server_conn->smb1.echo_handler.socket_lock_fd = -1;
-}
-
-void smbd_set_server_fd(int fd)
-{
-	struct smbd_server_connection *sconn = smbd_server_conn;
-	char addr[INET6_ADDRSTRLEN];
-	const char *name;
-
-	sconn->sock = fd;
-
-	/*
-	 * Initialize sconn->client_id: If we can't find the client's
-	 * name, default to its address.
-	 */
-
-	client_addr(fd, sconn->client_id.addr, sizeof(sconn->client_id.addr));
-
-	name = client_name(sconn->sock);
-	if (strcmp(name, "UNKNOWN") != 0) {
-		name = talloc_strdup(sconn, name);
-	} else {
-		name = NULL;
-	}
-	sconn->client_id.name =
-		(name != NULL) ? name : sconn->client_id.addr;
-
-	sub_set_socket_ids(sconn->client_id.addr, sconn->client_id.name,
-			   client_socket_addr(sconn->sock, addr,
-					      sizeof(addr)));
 }

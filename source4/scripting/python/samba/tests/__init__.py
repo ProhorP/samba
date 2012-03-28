@@ -28,6 +28,8 @@ from samba.samdb import SamDB
 import subprocess
 import tempfile
 
+samba.ensure_external_module("testtools", "testtools")
+
 # Other modules import these two classes from here, for convenience:
 from testtools.testcase import (
     TestCase as TesttoolsTestCase,
@@ -121,15 +123,20 @@ class ValidNetbiosNameTests(TestCase):
         self.assertFalse(samba.valid_netbios_name("*BLA"))
 
 
-class BlackboxProcessError(subprocess.CalledProcessError):
-    """This exception is raised when a process run by check_output() returns
-    a non-zero exit status. Exception instance should contain
-    the exact exit code (S.returncode), command line (S.cmd),
-    process output (S.stdout) and process error stream (S.stderr)"""
+class BlackboxProcessError(Exception):
+    """This is raised when check_output() process returns a non-zero exit status
+
+    Exception instance should contain the exact exit code (S.returncode),
+    command line (S.cmd), process output (S.stdout) and process error stream
+    (S.stderr)
+    """
+
     def __init__(self, returncode, cmd, stdout, stderr):
-        super(BlackboxProcessError, self).__init__(returncode, cmd)
+        self.returncode = returncode
+        self.cmd = cmd
         self.stdout = stdout
         self.stderr = stderr
+
     def __str__(self):
         return "Command '%s'; exit status %d; stdout: '%s'; stderr: '%s'" % (self.cmd, self.returncode,
                                                                              self.stdout, self.stderr)
@@ -147,7 +154,10 @@ class BlackboxTestCase(TestCase):
 
     def check_run(self, line):
         line = self._make_cmdline(line)
-        subprocess.check_call(line, shell=True)
+        p = subprocess.Popen(line, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+        retcode = p.wait()
+        if retcode:
+            raise BlackboxProcessError(retcode, line, p.stdout.read(), p.stderr.read())
 
     def check_output(self, line):
         line = self._make_cmdline(line)

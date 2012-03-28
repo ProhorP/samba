@@ -44,11 +44,10 @@ static NTSTATUS smbd_smb2_read_recv(struct tevent_req *req,
 static void smbd_smb2_request_read_done(struct tevent_req *subreq);
 NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 {
+	NTSTATUS status;
 	const uint8_t *inhdr;
 	const uint8_t *inbody;
 	int i = req->current_idx;
-	size_t expected_body_size = 0x31;
-	size_t body_size;
 	uint32_t in_smbpid;
 	uint32_t in_length;
 	uint64_t in_offset;
@@ -58,17 +57,12 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	uint32_t in_remaining_bytes;
 	struct tevent_req *subreq;
 
+	status = smbd_smb2_request_verify_sizes(req, 0x31);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(req, status);
+	}
 	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
-	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
-
 	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_smbpid = IVAL(inhdr, SMB2_HDR_PID);
 
@@ -80,9 +74,9 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	in_remaining_bytes	= IVAL(inbody, 0x28);
 
 	/* check the max read size */
-	if (in_length > lp_smb2_max_read()) {
+	if (in_length > req->sconn->smb2.max_read) {
 		DEBUG(0,("here:%s: 0x%08X: 0x%08X\n",
-			__location__, in_length, lp_smb2_max_read()));
+			__location__, in_length, req->sconn->smb2.max_read));
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -93,7 +87,7 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	}
 
 	subreq = smbd_smb2_read_send(req,
-				     req->sconn->smb2.event_ctx,
+				     req->sconn->ev_ctx,
 				     req,
 				     in_smbpid,
 				     in_file_id_volatile,
@@ -106,15 +100,13 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	}
 	tevent_req_set_callback(subreq, smbd_smb2_request_read_done, req);
 
-	return smbd_smb2_request_pending_queue(req, subreq);
+	return smbd_smb2_request_pending_queue(req, subreq, 500);
 }
 
 static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 {
 	struct smbd_smb2_request *req = tevent_req_callback_data(subreq,
 					struct smbd_smb2_request);
-	int i = req->current_idx;
-	uint8_t *outhdr;
 	DATA_BLOB outbody;
 	DATA_BLOB outdyn;
 	uint8_t out_data_offset;
@@ -139,8 +131,6 @@ static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 	}
 
 	out_data_offset = SMB2_HDR_BODY + 0x10;
-
-	outhdr = (uint8_t *)req->out.vector[i].iov_base;
 
 	outbody = data_blob_talloc(req->out.vector, NULL, 0x10);
 	if (outbody.data == NULL) {
@@ -175,6 +165,7 @@ static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 
 struct smbd_smb2_read_state {
 	struct smbd_smb2_request *smb2req;
+	struct smb_request *smbreq;
 	files_struct *fsp;
 	uint64_t in_file_id_volatile;
 	uint32_t in_length;
@@ -288,7 +279,7 @@ static NTSTATUS schedule_smb2_sendfile_read(struct smbd_smb2_request *smb2req,
 	 * reads on most normal files. JRA.
 	*/
 
-	if (!_lp_use_sendfile(SNUM(fsp->conn)) ||
+	if (!lp__use_sendfile(SNUM(fsp->conn)) ||
 			smb2req->do_signing ||
 			smb2req->in.vector_count != 4 ||
 			(fsp->base_fsp != NULL) ||
@@ -370,6 +361,17 @@ NTSTATUS smb2_read_complete(struct tevent_req *req, ssize_t nread, int err)
 	return NT_STATUS_OK;
 }
 
+static bool smbd_smb2_read_cancel(struct tevent_req *req)
+{
+	struct smbd_smb2_read_state *state =
+		tevent_req_data(req,
+		struct smbd_smb2_read_state);
+
+	state->smb2req->cancelled = true;
+
+	return cancel_smb2_aio(state->smbreq);
+}
+
 static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
 					      struct smbd_smb2_request *smb2req,
@@ -409,6 +411,7 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 	if (tevent_req_nomem(smbreq, req)) {
 		return tevent_req_post(req, ev);
 	}
+	state->smbreq = smbreq;
 
 	fsp = file_fsp(smbreq, (uint16_t)in_file_id_volatile);
 	if (fsp == NULL) {
@@ -444,7 +447,7 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 			return tevent_req_post(req, ev);
 		}
 
-		subreq = np_read_send(state, server_event_context(),
+		subreq = np_read_send(state, ev,
 				      fsp->fake_file_handle,
 				      state->out_data.data,
 				      state->out_data.length);
@@ -472,14 +475,10 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 
 	if (NT_STATUS_IS_OK(status)) {
 		/*
-		 * Doing an async read. Don't
-		 * send a "gone async" message
-		 * as we expect this to be less
-		 * than the client timeout period.
-		 * JRA. FIXME for offline files..
-		 * FIXME. Add cancel code..
+		 * Doing an async read, allow this
+		 * request to be canceled
 		 */
-		smb2req->async = true;
+		tevent_req_set_cancel_fn(req, smbd_smb2_read_cancel);
 		return req;
 	}
 
@@ -574,6 +573,11 @@ static void smbd_smb2_read_pipe_done(struct tevent_req *subreq)
 
 	state->out_data.length = nread;
 	state->out_remaining = 0;
+
+	/*
+	 * TODO: add STATUS_BUFFER_OVERFLOW handling, once we also
+	 * handle it in SMB1 pipe_read_andx_done().
+	 */
 
 	tevent_req_done(req);
 }

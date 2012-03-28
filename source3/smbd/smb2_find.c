@@ -41,11 +41,9 @@ static NTSTATUS smbd_smb2_find_recv(struct tevent_req *req,
 static void smbd_smb2_request_find_done(struct tevent_req *subreq);
 NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 {
-	const uint8_t *inhdr;
+	NTSTATUS status;
 	const uint8_t *inbody;
 	int i = req->current_idx;
-	size_t expected_body_size = 0x21;
-	size_t body_size;
 	uint8_t in_file_info_class;
 	uint8_t in_flags;
 	uint32_t in_file_index;
@@ -60,17 +58,11 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	struct tevent_req *subreq;
 	bool ok;
 
-	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
-	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
+	status = smbd_smb2_request_verify_sizes(req, 0x21);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(req, status);
 	}
-
 	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_file_info_class		= CVAL(inbody, 0x02);
 	in_flags			= CVAL(inbody, 0x03);
@@ -84,7 +76,7 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	if (in_file_name_offset == 0 && in_file_name_length == 0) {
 		/* This is ok */
 	} else if (in_file_name_offset !=
-		   (SMB2_HDR_BODY + (body_size & 0xFFFFFFFE))) {
+		   (SMB2_HDR_BODY + req->in.vector[i+1].iov_len)) {
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -115,6 +107,14 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 		return smbd_smb2_request_error(req, NT_STATUS_ILLEGAL_CHARACTER);
 	}
 
+	if (in_file_name_buffer.length == 0) {
+		in_file_name_string_size = 0;
+	}
+
+	if (strlen(in_file_name_string) != in_file_name_string_size) {
+		return smbd_smb2_request_error(req, NT_STATUS_OBJECT_NAME_INVALID);
+	}
+
 	if (req->compat_chain_fsp) {
 		/* skip check */
 	} else if (in_file_id_persistent != in_file_id_volatile) {
@@ -122,7 +122,7 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	}
 
 	subreq = smbd_smb2_find_send(req,
-				     req->sconn->smb2.event_ctx,
+				     req->sconn->ev_ctx,
 				     req,
 				     in_file_info_class,
 				     in_flags,
@@ -135,15 +135,13 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	}
 	tevent_req_set_callback(subreq, smbd_smb2_request_find_done, req);
 
-	return smbd_smb2_request_pending_queue(req, subreq);
+	return smbd_smb2_request_pending_queue(req, subreq, 500);
 }
 
 static void smbd_smb2_request_find_done(struct tevent_req *subreq)
 {
 	struct smbd_smb2_request *req = tevent_req_callback_data(subreq,
 					struct smbd_smb2_request);
-	int i = req->current_idx;
-	uint8_t *outhdr;
 	DATA_BLOB outbody;
 	DATA_BLOB outdyn;
 	uint16_t out_output_buffer_offset;
@@ -166,8 +164,6 @@ static void smbd_smb2_request_find_done(struct tevent_req *subreq)
 	}
 
 	out_output_buffer_offset = SMB2_HDR_BODY + 0x08;
-
-	outhdr = (uint8_t *)req->out.vector[i].iov_base;
 
 	outbody = data_blob_talloc(req->out.vector, NULL, 0x08);
 	if (outbody.data == NULL) {
@@ -281,7 +277,7 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 
-	if (in_output_buffer_length > 0x10000) {
+	if (in_output_buffer_length > smb2req->sconn->smb2.max_trans) {
 		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 		return tevent_req_post(req, ev);
 	}
@@ -322,11 +318,6 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 
 	if (fsp->dptr == NULL) {
 		bool wcard_has_wild;
-
-		if (!(fsp->access_mask & SEC_DIR_LIST)) {
-			tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
-			return tevent_req_post(req, ev);
-		}
 
 		wcard_has_wild = ms_has_wild(in_file_name);
 

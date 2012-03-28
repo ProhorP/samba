@@ -5,17 +5,17 @@
    Copyright (C) John H Terpstra 1996-1999
    Copyright (C) Luke Kenneth Casson Leighton 1996-1999
    Copyright (C) Paul Ashton 1998 - 1999
-   
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
    (at your option) any later version.
-   
+
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
-   
+
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -104,9 +104,7 @@
 #define SMB_LARGE_LKLEN_OFFSET_HIGH(indx) (12 + (20 * (indx)))
 #define SMB_LARGE_LKLEN_OFFSET_LOW(indx) (16 + (20 * (indx)))
 
-#define ERROR_DOS(class,code) error_packet(outbuf,class,code,NT_STATUS_OK,__LINE__,__FILE__)
 #define ERROR_NT(status) error_packet(outbuf,0,0,status,__LINE__,__FILE__)
-#define ERROR_FORCE_NT(status) error_packet(outbuf,-1,-1,status,__LINE__,__FILE__)
 #define ERROR_BOTH(status,class,code) error_packet(outbuf,class,code,status,__LINE__,__FILE__)
 
 #define reply_nterror(req,status) reply_nt_error(req,status,__LINE__,__FILE__)
@@ -134,13 +132,12 @@
 /* Note that chain_size must be available as an extern int to this macro. */
 #define smb_offset(p,buf) (PTR_DIFF(p,buf+4))
 
-#define smb_len(buf) (PVAL(buf,3)|(PVAL(buf,2)<<8)|((PVAL(buf,1)&1)<<16))
-#define _smb_setlen(buf,len) do { buf[0] = 0; buf[1] = ((len)&0x10000)>>16; \
-        buf[2] = ((len)&0xFF00)>>8; buf[3] = (len)&0xFF; } while (0)
+#define smb_len(buf) smb_len_nbt(buf)
+#define _smb_setlen(buf, len) _smb_setlen_nbt(buf, len)
+#define smb_setlen(buf, len) smb_setlen_nbt(buf, len)
 
-#define smb_len_large(buf) (PVAL(buf,3)|(PVAL(buf,2)<<8)|(PVAL(buf,1)<<16))
-#define _smb_setlen_large(buf,len) do { buf[0] = 0; buf[1] = ((len)&0xFF0000)>>16; \
-        buf[2] = ((len)&0xFF00)>>8; buf[3] = (len)&0xFF; } while (0)
+#define smb_len_large(buf) smb_len_tcp(buf)
+#define _smb_setlen_large(buf, len) _smb_setlen_tcp(buf, len)
 
 #define ENCRYPTION_REQUIRED(conn) ((conn) ? ((conn)->encrypt_level == Required) : false)
 #define IS_CONN_ENCRYPTED(conn) ((conn) ? (conn)->encrypted_tid : false)
@@ -174,7 +171,7 @@ copy an IP address from one buffer to another
  Return True if a server has CIFS UNIX capabilities.
 ********************************************************************/
 
-#define SERVER_HAS_UNIX_CIFS(c) ((c)->capabilities & CAP_UNIX)
+#define SERVER_HAS_UNIX_CIFS(c) (cli_state_capabilities(c) & CAP_UNIX)
 
 /****************************************************************************
  Make a filename into unix format.
@@ -303,5 +300,8 @@ do { \
 extern const char toupper_ascii_fast_table[];
 #define toupper_ascii_fast(c) toupper_ascii_fast_table[(unsigned int)(c)];
 #endif
+
+#define trans_oob(bufsize, offset, length) \
+	smb_buffer_oob(bufsize, offset, length)
 
 #endif /* _SMB_MACROS_H */

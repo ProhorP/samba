@@ -48,14 +48,14 @@
 
 /* The following definitions come from smbd/signing.c  */
 
-struct smbd_server_connection;
 bool srv_check_sign_mac(struct smbd_server_connection *conn,
 			const char *inbuf, uint32_t *seqnum, bool trusted_channel);
 void srv_calculate_sign_mac(struct smbd_server_connection *conn,
 			    char *outbuf, uint32_t seqnum);
 void srv_cancel_sign_response(struct smbd_server_connection *conn);
 bool srv_init_signing(struct smbd_server_connection *conn);
-void srv_set_signing_negotiated(struct smbd_server_connection *conn);
+void srv_set_signing_negotiated(struct smbd_server_connection *conn,
+			        bool allowed, bool mandatory);
 bool srv_is_signing_active(struct smbd_server_connection *conn);
 bool srv_is_signing_negotiated(struct smbd_server_connection *conn);
 void srv_set_signing(struct smbd_server_connection *conn,
@@ -86,6 +86,7 @@ NTSTATUS schedule_aio_smb2_write(connection_struct *conn,
 				uint64_t in_offset,
 				DATA_BLOB in_data,
 				bool write_through);
+bool cancel_smb2_aio(struct smb_request *smbreq);
 int wait_for_aio_completion(files_struct *fsp);
 void cancel_aio_by_fsp(files_struct *fsp);
 void smbd_aio_complete_aio_ex(struct aio_extra *aio_ex);
@@ -163,6 +164,7 @@ void msg_force_tdis(struct messaging_context *msg,
 
 bool yield_connection(connection_struct *conn, const char *name);
 int count_current_connections( const char *sharename, bool clear  );
+bool connections_snum_used(struct smbd_server_connection *unused, int snum);
 bool claim_connection(connection_struct *conn, const char *name);
 
 /* The following definitions come from smbd/dfree.c  */
@@ -239,8 +241,6 @@ void DirCacheAdd(struct smb_Dir *dirp, const char *name, long offset);
 bool SearchDir(struct smb_Dir *dirp, const char *name, long *poffset);
 NTSTATUS can_delete_directory(struct connection_struct *conn,
 				const char *dirname);
-NTSTATUS smbd_can_delete_directory(struct connection_struct *conn,
-				const char *dirname);
 
 /* The following definitions come from smbd/dmapi.c  */
 
@@ -303,17 +303,12 @@ void reply_openerror(struct smb_request *req, NTSTATUS status);
 
 /* The following definitions come from smbd/file_access.c  */
 
-bool can_access_file_acl(struct connection_struct *conn,
-			 const struct smb_filename *smb_fname,
-			 uint32_t access_mask);
 bool can_delete_file_in_directory(connection_struct *conn,
-				  struct smb_filename *smb_fname);
-bool can_access_file_data(connection_struct *conn,
-			  const struct smb_filename *smb_fname,
-			  uint32 access_mask);
+				  const struct smb_filename *smb_fname);
 bool can_write_to_file(connection_struct *conn,
 		       const struct smb_filename *smb_fname);
 bool directory_has_default_acl(connection_struct *conn, const char *fname);
+NTSTATUS can_set_delete_on_close(files_struct *fsp, uint32 dosmode);
 
 /* The following definitions come from smbd/fileio.c  */
 
@@ -342,6 +337,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		      const char *orig_path,
 		      struct smb_filename **smb_fname,
 		      uint32_t ucf_flags);
+NTSTATUS check_veto_path(connection_struct *conn, const char *name);
 NTSTATUS check_name(connection_struct *conn, const char *name);
 int get_real_filename(connection_struct *conn, const char *path,
 		      const char *name, TALLOC_CTX *mem_ctx,
@@ -448,6 +444,7 @@ bool is_msdfs_link(connection_struct *conn,
 struct junction_map;
 NTSTATUS get_referred_path(TALLOC_CTX *ctx,
 			const char *dfs_path,
+			struct smbd_server_connection *sconn,
 			struct junction_map *jucn,
 			int *consumedcntp,
 			bool *self_referralp);
@@ -457,11 +454,11 @@ int setup_dfs_referral(connection_struct *orig_conn,
 			char **ppdata, NTSTATUS *pstatus);
 bool create_junction(TALLOC_CTX *ctx,
 		const char *dfs_path,
+		bool allow_broken_path,
 		struct junction_map *jucn);
 bool create_msdfs_link(const struct junction_map *jucn);
 bool remove_msdfs_link(const struct junction_map *jucn);
-struct junction_map *enum_msdfs_links(struct smbd_server_connection *sconn,
-				      TALLOC_CTX *ctx, size_t *p_num_jn);
+struct junction_map *enum_msdfs_links(TALLOC_CTX *ctx, size_t *p_num_jn);
 NTSTATUS resolve_dfspath(TALLOC_CTX *ctx,
 			connection_struct *conn,
 			bool dfs_pathnames,
@@ -475,10 +472,11 @@ NTSTATUS resolve_dfspath_wcard(TALLOC_CTX *ctx,
 				char **pp_name_out,
 				bool *ppath_contains_wcard);
 NTSTATUS create_conn_struct(TALLOC_CTX *ctx,
+				struct smbd_server_connection *sconn,
 				connection_struct **pconn,
 				int snum,
 				const char *path,
-				const struct auth_serversupplied_info *session_info,
+				const struct auth_session_info *session_info,
 				char **poldcwd);
 
 /* The following definitions come from smbd/negprot.c  */
@@ -576,11 +574,9 @@ void reply_nttranss(struct smb_request *req);
 
 /* The following definitions come from smbd/open.c  */
 
-NTSTATUS smb1_file_se_access_check(connection_struct *conn,
-				const struct security_descriptor *sd,
-				const struct security_token *token,
-				uint32_t access_desired,
-				uint32_t *access_granted);
+NTSTATUS smbd_check_access_rights(struct connection_struct *conn,
+				const struct smb_filename *smb_fname,
+				uint32_t access_mask);
 NTSTATUS fd_close(files_struct *fsp);
 void change_file_owner_to_parent(connection_struct *conn,
 				 const char *inherit_from_dir,
@@ -589,7 +585,6 @@ NTSTATUS change_dir_owner_to_parent(connection_struct *conn,
 				    const char *inherit_from_dir,
 				    const char *fname,
 				    SMB_STRUCT_STAT *psbuf);
-bool is_executable(const char *fname);
 bool is_stat_open(uint32 access_mask);
 bool request_timed_out(struct timeval request_time,
 		       struct timeval timeout);
@@ -609,13 +604,6 @@ NTSTATUS fcb_or_dos_open(struct smb_request *req,
 			 uint32 access_mask,
 			 uint32 share_access,
 			 uint32 create_options);
-bool map_open_params_to_ntcreate(const struct smb_filename *smb_fname,
-				 int deny_mode, int open_func,
-				 uint32 *paccess_mask,
-				 uint32 *pshare_mode,
-				 uint32 *pcreate_disposition,
-				 uint32 *pcreate_options,
-				 uint32_t *pprivate_flags);
 void remove_deferred_open_entry(struct file_id id, uint64_t mid,
 				struct server_id pid);
 NTSTATUS open_file_fchmod(connection_struct *conn,
@@ -666,11 +654,6 @@ bool downgrade_oplock(files_struct *fsp);
 bool should_notify_deferred_opens(void);
 void break_level2_to_none_async(files_struct *fsp);
 void reply_to_oplock_break_requests(files_struct *fsp);
-void process_oplock_async_level2_break_message(struct messaging_context *msg_ctx,
-						      void *private_data,
-						      uint32_t msg_type,
-						      struct server_id src,
-						      DATA_BLOB *data);
 void contend_level2_oplocks_begin(files_struct *fsp,
 				  enum level2_contention_type type);
 void contend_level2_oplocks_end(files_struct *fsp,
@@ -681,22 +664,22 @@ void smbd_contend_level2_oplocks_end(files_struct *fsp,
 				enum level2_contention_type type);
 void share_mode_entry_to_message(char *msg, const struct share_mode_entry *e);
 void message_to_share_mode_entry(struct share_mode_entry *e, char *msg);
-bool init_oplocks(struct messaging_context *msg_ctx);
+bool init_oplocks(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/oplock_irix.c  */
 
-struct kernel_oplocks *irix_init_kernel_oplocks(TALLOC_CTX *mem_ctx) ;
+struct kernel_oplocks *irix_init_kernel_oplocks(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/oplock_linux.c  */
 
 void linux_set_lease_capability(void);
 int linux_set_lease_sighandler(int fd);
 int linux_setlease(int fd, int leasetype);
-struct kernel_oplocks *linux_init_kernel_oplocks(TALLOC_CTX *mem_ctx) ;
+struct kernel_oplocks *linux_init_kernel_oplocks(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/oplock_onefs.c  */
 
-struct kernel_oplocks *onefs_init_kernel_oplocks(TALLOC_CTX *mem_ctx);
+struct kernel_oplocks *onefs_init_kernel_oplocks(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/password.c  */
 
@@ -711,9 +694,8 @@ int register_initial_vuid(struct smbd_server_connection *sconn);
 int register_homes_share(const char *username);
 int register_existing_vuid(struct smbd_server_connection *sconn,
 			uint16 vuid,
-			struct auth_serversupplied_info *session_info,
-			DATA_BLOB response_blob,
-			const char *smb_name);
+			struct auth_session_info *session_info,
+			DATA_BLOB response_blob);
 void add_session_user(struct smbd_server_connection *sconn, const char *user);
 void add_session_workgroup(struct smbd_server_connection *sconn,
 			   const char *workgroup);
@@ -768,9 +750,8 @@ NTSTATUS make_default_filesystem_acl(TALLOC_CTX *ctx,
 
 /* The following definitions come from smbd/process.c  */
 
-void smbd_setup_sig_term_handler(void);
-void smbd_setup_sig_hup_handler(struct tevent_context *ev,
-				struct messaging_context *msg_ctx);
+void smbd_setup_sig_term_handler(struct smbd_server_connection *sconn);
+void smbd_setup_sig_hup_handler(struct smbd_server_connection *sconn);
 bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 		  bool no_signing, uint32_t seqnum,
 		  bool do_encrypt,
@@ -779,9 +760,11 @@ int srv_set_message(char *buf,
                         int num_words,
                         int num_bytes,
                         bool zero);
-void remove_deferred_open_message_smb(uint64_t mid);
-void schedule_deferred_open_message_smb(uint64_t mid);
-bool open_was_deferred(uint64_t mid);
+void remove_deferred_open_message_smb(struct smbd_server_connection *sconn,
+				      uint64_t mid);
+void schedule_deferred_open_message_smb(struct smbd_server_connection *sconn,
+					uint64_t mid);
+bool open_was_deferred(struct smbd_server_connection *sconn, uint64_t mid);
 bool get_deferred_open_message_state(struct smb_request *smbreq,
 				struct timeval *p_request_time,
 				void **pp_state);
@@ -791,13 +774,6 @@ bool push_deferred_open_message_smb(struct smb_request *req,
 				struct file_id id,
 				char *private_data,
 				size_t priv_len);
-struct idle_event *event_add_idle(struct event_context *event_ctx,
-				  TALLOC_CTX *mem_ctx,
-				  struct timeval interval,
-				  const char *name,
-				  bool (*handler)(const struct timeval *now,
-						  void *private_data),
-				  void *private_data);
 NTSTATUS allow_new_trans(struct trans_state *list, uint64_t mid);
 void reply_outbuf(struct smb_request *req, uint8 num_words, uint32 num_bytes);
 const char *smb_fn_name(int type);
@@ -807,7 +783,8 @@ void construct_reply_common_req(struct smb_request *req, char *outbuf);
 size_t req_wct_ofs(struct smb_request *req);
 void chain_reply(struct smb_request *req);
 bool req_is_in_chain(struct smb_request *req);
-void smbd_process(struct smbd_server_connection *sconn);
+void smbd_process(struct tevent_context *ev_ctx,
+		  struct smbd_server_connection *sconn);
 bool fork_echo_handler(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/quotas.c  */
@@ -950,18 +927,19 @@ void reply_getattrE(struct smb_request *req);
 
 /* The following definitions come from smbd/seal.c  */
 
-uint16_t srv_enc_ctx(void);
-bool is_encrypted_packet(const uint8_t *inbuf);
-void srv_free_enc_buffer(char *buf);
-NTSTATUS srv_decrypt_buffer(char *buf);
-NTSTATUS srv_encrypt_buffer(char *buf, char **buf_out);
+bool is_encrypted_packet(struct smbd_server_connection *sconn,
+			 const uint8_t *inbuf);
+void srv_free_enc_buffer(struct smbd_server_connection *sconn, char *buf);
+NTSTATUS srv_decrypt_buffer(struct smbd_server_connection *sconn, char *buf);
+NTSTATUS srv_encrypt_buffer(struct smbd_server_connection *sconn, char *buf,
+			    char **buf_out);
 NTSTATUS srv_request_encryption_setup(connection_struct *conn,
 					unsigned char **ppdata,
 					size_t *p_data_size,
 					unsigned char **pparam,
 					size_t *p_param_size);
 NTSTATUS srv_encryption_start(connection_struct *conn);
-void server_encryption_shutdown(void);
+void server_encryption_shutdown(struct smbd_server_connection *sconn);
 
 /* The following definitions come from smbd/sec_ctx.c  */
 
@@ -974,18 +952,16 @@ void init_sec_ctx(void);
 
 /* The following definitions come from smbd/server.c  */
 
-struct event_context *smbd_event_context(void);
-struct messaging_context *smbd_messaging_context(void);
 struct memcache *smbd_memcache(void);
-void reload_printers(struct tevent_context *ev,
-		     struct messaging_context *msg_ctx);
-bool reload_services(struct messaging_context *msg_ctx, int smb_sock,
+void delete_and_reload_printers(struct tevent_context *ev,
+				struct messaging_context *msg_ctx);
+bool reload_services(struct smbd_server_connection *sconn,
+		     bool (*snumused) (struct smbd_server_connection *, int),
 		     bool test);
-void reload_pcap_change_notify(struct tevent_context *ev,
-			       struct messaging_context *msg_ctx);
 void exit_server(const char *const explanation);
 void exit_server_cleanly(const char *const explanation);
-void exit_server_fault(void);
+NTSTATUS messaging_send_to_children(struct messaging_context *msg_ctx,
+				    uint32_t msg_type, DATA_BLOB* data);
 
 /* The following definitions come from smbd/service.c  */
 
@@ -995,8 +971,10 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir);
 void load_registry_shares(void);
 int add_home_service(const char *service, const char *username, const char *homedir);
 int find_service(TALLOC_CTX *ctx, const char *service, char **p_service_out);
-connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
-					int snum, user_struct *vuser,
+struct smbd_smb2_tcon;
+connection_struct *make_connection_smb2(struct smbd_server_connection *sconn,
+					struct smbd_smb2_tcon *tcon,
+					user_struct *vuser,
 					DATA_BLOB password,
 					const char *pdev,
 					NTSTATUS *pstatus);
@@ -1015,14 +993,6 @@ int list_sessions(TALLOC_CTX *mem_ctx, struct sessionid **session_list);
 
 /* The following definitions come from smbd/sesssetup.c  */
 
-NTSTATUS do_map_to_guest(NTSTATUS status,
-		struct auth_serversupplied_info **session_info,
-		const char *user, const char *domain);
-
-NTSTATUS parse_spnego_mechanisms(TALLOC_CTX *ctx,
-		DATA_BLOB blob_in,
-		DATA_BLOB *pblob_out,
-		char **kerb_mechOID);
 void reply_sesssetup_and_X(struct smb_request *req);
 
 /* The following definitions come from smbd/share_access.c  */
@@ -1051,6 +1021,7 @@ void stat_cache_add( const char *full_orig_name,
 		char *translated_path,
 		bool case_sensitive);
 bool stat_cache_lookup(connection_struct *conn,
+			bool posix_paths,
 			char **pp_name,
 			char **pp_dirpath,
 			char **pp_start,
@@ -1075,6 +1046,10 @@ int sys_statvfs(const char *path, vfs_statvfs_struct *statbuf);
 
 /* The following definitions come from smbd/trans2.c  */
 
+NTSTATUS check_access(connection_struct *conn,
+				files_struct *fsp,
+				const struct smb_filename *smb_fname,
+				uint32_t access_mask);
 uint64_t smb_roundup(connection_struct *conn, uint64_t val);
 uint64_t get_FileIndex(connection_struct *conn, const SMB_STRUCT_STAT *psbuf);
 NTSTATUS get_ea_value(TALLOC_CTX *mem_ctx, connection_struct *conn,
@@ -1115,10 +1090,10 @@ void reply_transs2(struct smb_request *req);
 bool change_to_guest(void);
 bool change_to_user(connection_struct *conn, uint16 vuid);
 bool change_to_user_by_session(connection_struct *conn,
-			       const struct auth_serversupplied_info *session_info);
+			       const struct auth_session_info *session_info);
 bool change_to_root_user(void);
 bool smbd_change_to_root_user(void);
-bool become_authenticated_pipe_user(struct auth_serversupplied_info *session_info);
+bool become_authenticated_pipe_user(struct auth_session_info *session_info);
 bool unbecome_authenticated_pipe_user(void);
 void become_root(void);
 void unbecome_root(void);
@@ -1126,7 +1101,7 @@ void smbd_become_root(void);
 void smbd_unbecome_root(void);
 bool become_user(connection_struct *conn, uint16 vuid);
 bool become_user_by_session(connection_struct *conn,
-			    const struct auth_serversupplied_info *session_info);
+			    const struct auth_session_info *session_info);
 bool unbecome_user(void);
 uid_t get_current_uid(connection_struct *conn);
 gid_t get_current_gid(connection_struct *conn);
@@ -1190,14 +1165,16 @@ int vfs_lstat_smb_fname(struct connection_struct *conn, const char *fname,
 			SMB_STRUCT_STAT *psbuf);
 NTSTATUS vfs_stat_fsp(files_struct *fsp);
 NTSTATUS vfs_chown_fsp(files_struct *fsp, uid_t uid, gid_t gid);
+NTSTATUS vfs_streaminfo(connection_struct *conn,
+			struct files_struct *fsp,
+			const char *fname,
+			TALLOC_CTX *mem_ctx,
+			unsigned int *num_streams,
+			struct stream_struct **streams);
 
 /* The following definitions come from smbd/avahi_register.c */
 
 void *avahi_start_register(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
 			   uint16_t port);
-
-/* The following definitions come from smbd/msg_idmap.c */
-
-void msg_idmap_register_msgs(struct messaging_context *ctx);
 
 #endif /* _SMBD_PROTO_H_ */

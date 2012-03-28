@@ -31,6 +31,7 @@
 #include "../libcli/auth/libcli_auth.h"
 #include "../librpc/gen_ndr/xattr.h"
 #include "../librpc/gen_ndr/ndr_security.h"
+#include "../librpc/gen_ndr/open_files.h"
 #include "libcli/security/security.h"
 #include "trans2.h"
 #include "auth.h"
@@ -48,6 +49,30 @@ static char *store_file_unix_basic_info2(connection_struct *conn,
 				char *pdata,
 				files_struct *fsp,
 				const SMB_STRUCT_STAT *psbuf);
+
+/********************************************************************
+ The canonical "check access" based on object handle or path function.
+********************************************************************/
+
+NTSTATUS check_access(connection_struct *conn,
+				files_struct *fsp,
+				const struct smb_filename *smb_fname,
+				uint32_t access_mask)
+{
+	if (fsp) {
+		if (!(fsp->access_mask & access_mask)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+	} else {
+		NTSTATUS status = smbd_check_access_rights(conn,
+					smb_fname,
+					access_mask);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+	}
+	return NT_STATUS_OK;
+}
 
 /********************************************************************
  Roundup a value to the nearest allocation roundup size boundary.
@@ -504,14 +529,16 @@ static void canonicalize_ea_name(connection_struct *conn, files_struct *fsp, con
 NTSTATUS set_ea(connection_struct *conn, files_struct *fsp,
 		const struct smb_filename *smb_fname, struct ea_list *ea_list)
 {
+	NTSTATUS status;
 	char *fname = NULL;
 
 	if (!lp_ea_support(SNUM(conn))) {
 		return NT_STATUS_EAS_NOT_SUPPORTED;
 	}
 
-	if (fsp && !(fsp->access_mask & FILE_WRITE_EA)) {
-		return NT_STATUS_ACCESS_DENIED;
+	status = check_access(conn, fsp, smb_fname, FILE_WRITE_EA);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	/* For now setting EAs on streams isn't supported. */
@@ -1082,7 +1109,8 @@ static void call_trans2open(connection_struct *conn,
 		goto out;
 	}
 
-	if (!map_open_params_to_ntcreate(smb_fname, deny_mode, open_ofun,
+	if (!map_open_params_to_ntcreate(smb_fname->base_name, deny_mode,
+					 open_ofun,
 					 &access_mask, &share_mode,
 					 &create_disposition,
 					 &create_options,
@@ -1137,7 +1165,7 @@ static void call_trans2open(connection_struct *conn,
 		&smb_action);				/* psbuf */
 
 	if (!NT_STATUS_IS_OK(status)) {
-		if (open_was_deferred(req->mid)) {
+		if (open_was_deferred(req->sconn, req->mid)) {
 			/* We have re-scheduled this call. */
 			goto out;
 		}
@@ -1511,7 +1539,6 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	uint32_t len;
 	struct timespec mdate_ts, adate_ts, cdate_ts, create_date_ts;
 	time_t mdate = (time_t)0, adate = (time_t)0, create_date = (time_t)0;
-	time_t c_date = (time_t)0;
 	char *nameptr;
 	char *last_entry_ptr;
 	bool was_8_3;
@@ -1547,7 +1574,6 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	create_date = convert_timespec_to_time_t(create_date_ts);
 	mdate = convert_timespec_to_time_t(mdate_ts);
 	adate = convert_timespec_to_time_t(adate_ts);
-	c_date = convert_timespec_to_time_t(cdate_ts);
 
 	/* align the record */
 	SMB_ASSERT(align >= 1);
@@ -2269,6 +2295,7 @@ static void call_trans2findfirst(connection_struct *conn,
 	TALLOC_CTX *ctx = talloc_tos();
 	struct dptr_struct *dirptr = NULL;
 	struct smbd_server_connection *sconn = req->sconn;
+	uint32_t ucf_flags = (UCF_SAVE_LCOMP | UCF_ALWAYS_ALLOW_WCARD_LCOMP);
 
 	if (total_params < 13) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2312,6 +2339,7 @@ close_if_end = %d requires_resume_key = %d level = 0x%x, max_data_bytes = %d\n",
 				reply_nterror(req, NT_STATUS_INVALID_LEVEL);
 				goto out;
 			}
+			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
 			break;
 		default:
 			reply_nterror(req, NT_STATUS_INVALID_LEVEL);
@@ -2329,8 +2357,7 @@ close_if_end = %d requires_resume_key = %d level = 0x%x, max_data_bytes = %d\n",
 	ntstatus = filename_convert(ctx, conn,
 				    req->flags2 & FLAGS2_DFS_PATHNAMES,
 				    directory,
-				    (UCF_SAVE_LCOMP |
-					UCF_ALWAYS_ALLOW_WCARD_LCOMP),
+				    ucf_flags,
 				    &mask_contains_wcard,
 				    &smb_dname);
 	if (!NT_STATUS_IS_OK(ntstatus)) {
@@ -3209,7 +3236,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 				DEBUG(0,("set_user_quota: access_denied "
 					 "service [%s] user [%s]\n",
 					 lp_servicename(SNUM(conn)),
-					 conn->session_info->unix_name));
+					 conn->session_info->unix_info->unix_name));
 				return NT_STATUS_ACCESS_DENIED;
 			}
 
@@ -3386,7 +3413,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			    + 4 /* num_sids */
 			    + 4 /* SID bytes */
 			    + 4 /* pad/reserved */
-			    + (conn->session_info->utok.ngroups * 8)
+			    + (conn->session_info->unix_token->ngroups * 8)
 				/* groups list */
 			    + (conn->session_info->security_token->num_sids *
 				    SID_MAX_SIZE)
@@ -3395,9 +3422,9 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			SIVAL(pdata, 0, flags);
 			SIVAL(pdata, 4, SMB_WHOAMI_MASK);
 			SBIG_UINT(pdata, 8,
-				  (uint64_t)conn->session_info->utok.uid);
+				  (uint64_t)conn->session_info->unix_token->uid);
 			SBIG_UINT(pdata, 16,
-				  (uint64_t)conn->session_info->utok.gid);
+				  (uint64_t)conn->session_info->unix_token->gid);
 
 
 			if (data_len >= max_data_bytes) {
@@ -3412,7 +3439,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 				break;
 			}
 
-			SIVAL(pdata, 24, conn->session_info->utok.ngroups);
+			SIVAL(pdata, 24, conn->session_info->unix_token->ngroups);
 			SIVAL(pdata, 28, conn->session_info->security_token->num_sids);
 
 			/* We walk the SID list twice, but this call is fairly
@@ -3434,9 +3461,9 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			data_len = 40;
 
 			/* GID list */
-			for (i = 0; i < conn->session_info->utok.ngroups; ++i) {
+			for (i = 0; i < conn->session_info->unix_token->ngroups; ++i) {
 				SBIG_UINT(pdata, data_len,
-					  (uint64_t)conn->session_info->utok.groups[i]);
+					  (uint64_t)conn->session_info->unix_token->groups[i]);
 				data_len += 8;
 			}
 
@@ -3538,6 +3565,7 @@ static void call_trans2setfsinfo(connection_struct *conn,
 				 char **ppdata, int total_data,
 				 unsigned int max_data_bytes)
 {
+	struct smbd_server_connection *sconn = req->sconn;
 	char *pdata = *ppdata;
 	char *params = *pparams;
 	uint16 info_level;
@@ -3578,54 +3606,52 @@ static void call_trans2setfsinfo(connection_struct *conn,
 
 	switch(info_level) {
 		case SMB_SET_CIFS_UNIX_INFO:
-			{
-				uint16 client_unix_major;
-				uint16 client_unix_minor;
-				uint32 client_unix_cap_low;
-				uint32 client_unix_cap_high;
-
-				if (!lp_unix_extensions()) {
-					reply_nterror(req,
-						      NT_STATUS_INVALID_LEVEL);
-					return;
-				}
-
-				/* There should be 12 bytes of capabilities set. */
-				if (total_data < 8) {
-					reply_nterror(
-						req,
-						NT_STATUS_INVALID_PARAMETER);
-					return;
-				}
-				client_unix_major = SVAL(pdata,0);
-				client_unix_minor = SVAL(pdata,2);
-				client_unix_cap_low = IVAL(pdata,4);
-				client_unix_cap_high = IVAL(pdata,8);
-				/* Just print these values for now. */
-				DEBUG(10,("call_trans2setfsinfo: set unix info. major = %u, minor = %u \
-cap_low = 0x%x, cap_high = 0x%x\n",
-					(unsigned int)client_unix_major,
-					(unsigned int)client_unix_minor,
-					(unsigned int)client_unix_cap_low,
-					(unsigned int)client_unix_cap_high ));
-
-				/* Here is where we must switch to posix pathname processing... */
-				if (client_unix_cap_low & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
-					lp_set_posix_pathnames();
-					mangle_change_to_posix();
-				}
-
-				if ((client_unix_cap_low & CIFS_UNIX_FCNTL_LOCKS_CAP) &&
-				    !(client_unix_cap_low & CIFS_UNIX_POSIX_PATH_OPERATIONS_CAP)) {
-					/* Client that knows how to do posix locks,
-					 * but not posix open/mkdir operations. Set a
-					 * default type for read/write checks. */
-
-					lp_set_posix_default_cifsx_readwrite_locktype(POSIX_LOCK);
-
-				}
-				break;
+			if (!lp_unix_extensions()) {
+				reply_nterror(req,
+					      NT_STATUS_INVALID_LEVEL);
+				return;
 			}
+
+			/* There should be 12 bytes of capabilities set. */
+			if (total_data < 8) {
+				reply_nterror(
+					req,
+					NT_STATUS_INVALID_PARAMETER);
+				return;
+			}
+			sconn->smb1.unix_info.client_major = SVAL(pdata,0);
+			sconn->smb1.unix_info.client_minor = SVAL(pdata,2);
+			sconn->smb1.unix_info.client_cap_low = IVAL(pdata,4);
+			sconn->smb1.unix_info.client_cap_high = IVAL(pdata,8);
+			/* Just print these values for now. */
+			DEBUG(10, ("call_trans2setfsinfo: set unix_info info. "
+				   "major = %u, minor = %u cap_low = 0x%x, "
+				   "cap_high = 0x%xn",
+				   (unsigned int)sconn->
+				   smb1.unix_info.client_major,
+				   (unsigned int)sconn->
+				   smb1.unix_info.client_minor,
+				   (unsigned int)sconn->
+				   smb1.unix_info.client_cap_low,
+				   (unsigned int)sconn->
+				   smb1.unix_info.client_cap_high));
+
+			/* Here is where we must switch to posix pathname processing... */
+			if (sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
+				lp_set_posix_pathnames();
+				mangle_change_to_posix();
+			}
+
+			if ((sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_FCNTL_LOCKS_CAP) &&
+			    !(sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATH_OPERATIONS_CAP)) {
+				/* Client that knows how to do posix locks,
+				 * but not posix open/mkdir operations. Set a
+				 * default type for read/write checks. */
+
+				lp_set_posix_default_cifsx_readwrite_locktype(POSIX_LOCK);
+
+			}
+			break;
 
 		case SMB_REQUEST_TRANSPORT_ENCRYPTION:
 			{
@@ -3684,9 +3710,11 @@ cap_low = 0x%x, cap_high = 0x%x\n",
 					 * encryption is now *on*. */
 					status = srv_encryption_start(conn);
 					if (!NT_STATUS_IS_OK(status)) {
-						exit_server_cleanly(
-							"Failure in setting "
-							"up encrypted transport");
+						char *reason = talloc_asprintf(talloc_tos(),
+									       "Failure in setting "
+									       "up encrypted transport: %s",
+									       nt_errstr(status));
+						exit_server_cleanly(reason);
 					}
 				}
 				return;
@@ -3703,7 +3731,7 @@ cap_low = 0x%x, cap_high = 0x%x\n",
 				if ((get_current_uid(conn) != 0) || !CAN_WRITE(conn)) {
 					DEBUG(0,("set_user_quota: access_denied service [%s] user [%s]\n",
 						 lp_servicename(SNUM(conn)),
-						 conn->session_info->unix_name));
+						 conn->session_info->unix_info->unix_name));
 					reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 					return;
 				}
@@ -4671,8 +4699,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 		 */
 		case SMB_QUERY_FILE_STREAM_INFO:
 		case SMB_FILE_STREAM_INFORMATION: {
-			unsigned int num_streams;
-			struct stream_struct *streams;
+			unsigned int num_streams = 0;
+			struct stream_struct *streams = NULL;
 
 			DEBUG(10,("smbd_do_qfilepathinfo: "
 				  "SMB_FILE_STREAM_INFORMATION\n"));
@@ -4681,9 +4709,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 				return NT_STATUS_INVALID_PARAMETER;
 			}
 
-			status = SMB_VFS_STREAMINFO(
-				conn, fsp, smb_fname->base_name, talloc_tos(),
-				&num_streams, &streams);
+			status = vfs_streaminfo(conn, fsp, smb_fname->base_name,
+						talloc_tos(), &num_streams, &streams);
 
 			if (!NT_STATUS_IS_OK(status)) {
 				DEBUG(10, ("could not get stream info: %s\n",
@@ -5102,6 +5129,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 	} else {
 		uint32_t name_hash;
 		char *fname = NULL;
+		uint32_t ucf_flags = 0;
 
 		/* qpathinfo */
 		if (total_params < 7) {
@@ -5113,9 +5141,16 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 
 		DEBUG(3,("call_trans2qfilepathinfo: TRANSACT2_QPATHINFO: level = %d\n", info_level));
 
-		if (INFO_LEVEL_IS_UNIX(info_level) && !lp_unix_extensions()) {
-			reply_nterror(req, NT_STATUS_INVALID_LEVEL);
-			return;
+		if (INFO_LEVEL_IS_UNIX(info_level)) {
+			if (!lp_unix_extensions()) {
+				reply_nterror(req, NT_STATUS_INVALID_LEVEL);
+				return;
+			}
+			if (info_level == SMB_QUERY_FILE_UNIX_BASIC ||
+					info_level == SMB_QUERY_FILE_UNIX_INFO2 ||
+					info_level == SMB_QUERY_FILE_UNIX_LINK) {
+				ucf_flags |= UCF_UNIX_NAME_LOOKUP;
+			}
 		}
 
 		srvstr_get_path(req, params, req->flags2, &fname, &params[6],
@@ -5130,7 +5165,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 					conn,
 					req->flags2 & FLAGS2_DFS_PATHNAMES,
 					fname,
-					0,
+					ucf_flags,
 					NULL,
 					&smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -5430,6 +5465,8 @@ NTSTATUS hardlink_internals(TALLOC_CTX *ctx,
 
 /****************************************************************************
  Deal with setting the time from any of the setfilepathinfo functions.
+ NOTE !!!! The check for FILE_WRITE_ATTRIBUTES access must be done *before*
+ calling this function.
 ****************************************************************************/
 
 NTSTATUS smb_set_file_time(connection_struct *conn,
@@ -5446,10 +5483,6 @@ NTSTATUS smb_set_file_time(connection_struct *conn,
 
 	if (!VALID_STAT(smb_fname->st)) {
 		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
-	}
-
-	if (fsp && !(fsp->access_mask & FILE_WRITE_ATTRIBUTES)) {
-		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	/* get some defaults (no modifications) if any info is zero or -1. */
@@ -5532,6 +5565,8 @@ NTSTATUS smb_set_file_time(connection_struct *conn,
 
 /****************************************************************************
  Deal with setting the dosmode from any of the setfilepathinfo functions.
+ NB. The check for FILE_WRITE_ATTRIBUTES access on this path must have been
+ done before calling this function.
 ****************************************************************************/
 
 static NTSTATUS smb_set_file_dosmode(connection_struct *conn,
@@ -5605,10 +5640,6 @@ static NTSTATUS smb_set_file_size(connection_struct *conn,
 		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
 
-	if (fsp && !(fsp->access_mask & FILE_WRITE_DATA)) {
-		return NT_STATUS_ACCESS_DENIED;
-	}
-
 	DEBUG(6,("smb_set_file_size: size: %.0f ", (double)size));
 
 	if (size == get_file_size_stat(psbuf)) {
@@ -5620,6 +5651,10 @@ static NTSTATUS smb_set_file_size(connection_struct *conn,
 
 	if (fsp && fsp->fh->fd != -1) {
 		/* Handle based call. */
+		if (!(fsp->access_mask & FILE_WRITE_DATA)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+
 		if (vfs_set_filelen(fsp, size) == -1) {
 			return map_nt_error_from_unix(errno);
 		}
@@ -5716,10 +5751,6 @@ static NTSTATUS smb_info_set_ea(connection_struct *conn,
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	if (fsp && !(fsp->access_mask & FILE_WRITE_EA)) {
-		return NT_STATUS_ACCESS_DENIED;
-	}
-
 	status = set_ea(conn, fsp, smb_fname, ea_list);
 
 	return status;
@@ -5761,10 +5792,6 @@ static NTSTATUS smb_set_file_full_ea_info(connection_struct *conn,
 
 	if (!ea_list) {
 		return NT_STATUS_INVALID_PARAMETER;
-	}
-
-	if (fsp && !(fsp->access_mask & FILE_WRITE_EA)) {
-		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	status = set_ea(conn, fsp, fsp->fsp_name, ea_list);
@@ -5817,7 +5844,7 @@ static NTSTATUS smb_set_file_disposition_info(connection_struct *conn,
 
 	/* The set is across all open files on this dev/inode pair. */
 	if (!set_delete_on_close(fsp, delete_on_close,
-				 &conn->session_info->utok)) {
+				 conn->session_info->unix_token)) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 	return NT_STATUS_OK;
@@ -6506,8 +6533,9 @@ static NTSTATUS smb_set_file_basic_info(connection_struct *conn,
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	if (fsp && !(fsp->access_mask & FILE_WRITE_ATTRIBUTES)) {
-		return NT_STATUS_ACCESS_DENIED;
+	status = check_access(conn, fsp, smb_fname, FILE_WRITE_ATTRIBUTES);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	/* Set the attributes */
@@ -6546,16 +6574,13 @@ static NTSTATUS smb_set_info_standard(connection_struct *conn,
 					files_struct *fsp,
 					const struct smb_filename *smb_fname)
 {
+	NTSTATUS status;
 	struct smb_file_time ft;
 
 	ZERO_STRUCT(ft);
 
 	if (total_data < 12) {
 		return NT_STATUS_INVALID_PARAMETER;
-	}
-
-	if (fsp && !(fsp->access_mask & FILE_WRITE_ATTRIBUTES)) {
-		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	/* create time */
@@ -6567,6 +6592,11 @@ static NTSTATUS smb_set_info_standard(connection_struct *conn,
 
 	DEBUG(10,("smb_set_info_standard: file %s\n",
 		smb_fname_str_dbg(smb_fname)));
+
+	status = check_access(conn, fsp, smb_fname, FILE_WRITE_ATTRIBUTES);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
 
         return smb_set_file_time(conn,
                                 fsp,
@@ -6616,16 +6646,16 @@ static NTSTATUS smb_set_file_allocation_info(connection_struct *conn,
 		allocation_size = smb_roundup(conn, allocation_size);
 	}
 
-	if (fsp && !(fsp->access_mask & FILE_WRITE_DATA)) {
-		return NT_STATUS_ACCESS_DENIED;
-	}
-
 	DEBUG(10,("smb_set_file_allocation_info: file %s : setting new "
 		  "allocation size to %.0f\n", smb_fname_str_dbg(smb_fname),
 		  (double)allocation_size));
 
 	if (fsp && fsp->fh->fd != -1) {
 		/* Open file handle. */
+		if (!(fsp->access_mask & FILE_WRITE_DATA)) {
+			return NT_STATUS_ACCESS_DENIED;
+		}
+
 		/* Only change if needed. */
 		if (allocation_size != get_file_size_stat(&smb_fname->st)) {
 			if (vfs_allocate_file_space(fsp, allocation_size) == -1) {
@@ -6716,10 +6746,6 @@ static NTSTATUS smb_set_file_end_of_file_info(connection_struct *conn,
 	DEBUG(10,("smb_set_file_end_of_file_info: Set end of file info for "
 		  "file %s to %.0f\n", smb_fname_str_dbg(smb_fname),
 		  (double)size));
-
-	if (fsp && !(fsp->access_mask & FILE_WRITE_DATA)) {
-		return NT_STATUS_ACCESS_DENIED;
-	}
 
 	return smb_set_file_size(conn, req,
 				fsp,
@@ -7539,8 +7565,7 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 	 * non-POSIX opens return SHARING_VIOLATION.
 	 */
 
-	lck = get_share_mode_lock(talloc_tos(), fsp->file_id, NULL, NULL,
-				  NULL);
+	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 	if (lck == NULL) {
 		DEBUG(0, ("smb_posix_unlink: Could not get share mode "
 			  "lock for file %s\n", fsp_str_dbg(fsp)));
@@ -7553,8 +7578,8 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 	 * don't delete. If all opens are POSIX delete we can set the delete
 	 * on close disposition.
 	 */
-	for (i=0; i<lck->num_share_modes; i++) {
-		struct share_mode_entry *e = &lck->share_modes[i];
+	for (i=0; i<lck->data->num_share_modes; i++) {
+		struct share_mode_entry *e = &lck->data->share_modes[i];
 		if (is_valid_share_mode_entry(e)) {
 			if (e->flags & SHARE_MODE_FLAG_POSIX_OPEN) {
 				continue;
@@ -7974,6 +7999,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		}
 	} else {
 		char *fname = NULL;
+		uint32_t ucf_flags = 0;
 
 		/* set path info */
 		if (total_params < 7) {
@@ -7990,10 +8016,17 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 			return;
 		}
 
+		if (info_level == SMB_SET_FILE_UNIX_BASIC ||
+				info_level == SMB_SET_FILE_UNIX_INFO2 ||
+				info_level == SMB_FILE_RENAME_INFORMATION ||
+				info_level == SMB_POSIX_PATH_UNLINK) {
+			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
+		}
+
 		status = filename_convert(req, conn,
 					 req->flags2 & FLAGS2_DFS_PATHNAMES,
 					 fname,
-					 0,
+					 ucf_flags,
 					 NULL,
 					 &smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -8047,7 +8080,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 					 ppdata, total_data,
 					 &data_return_size);
 	if (!NT_STATUS_IS_OK(status)) {
-		if (open_was_deferred(req->mid)) {
+		if (open_was_deferred(req->sconn, req->mid)) {
 			/* We have re-scheduled this call. */
 			return;
 		}

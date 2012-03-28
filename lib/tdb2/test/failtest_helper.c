@@ -3,6 +3,8 @@
 #include <string.h>
 #include <ccan/tap/tap.h>
 
+bool failtest_suppress = false;
+
 /* FIXME: From ccan/str */
 static inline bool strends(const char *str, const char *postfix)
 {
@@ -23,19 +25,6 @@ bool failmatch(const struct failtest_call *call,
 			    == '/')));
 }
 
-static const struct failtest_call *
-find_repeat(const struct failtest_call *start, const struct failtest_call *end,
-	    const struct failtest_call *call)
-{
-	const struct failtest_call *i;
-
-	for (i = start; i < end; i++) {
-		if (failmatch(i, call->file, call->line, call->type))
-			return i;
-	}
-	return NULL;
-}
-
 static bool is_nonblocking_lock(const struct failtest_call *call)
 {
 	return call->type == FAILTEST_FCNTL && call->u.fcntl.cmd == F_SETLK;
@@ -47,32 +36,31 @@ static bool is_unlock(const struct failtest_call *call)
 		&& call->u.fcntl.arg.fl.l_type == F_UNLCK;
 }
 
-bool exit_check_log(struct failtest_call *history, unsigned num)
+bool exit_check_log(struct tlist_calls *history)
 {
-	unsigned int i;
+	const struct failtest_call *i;
 
-	for (i = 0; i < num; i++) {
-		if (!history[i].fail)
+	tlist_for_each(history, i, list) {
+		if (!i->fail)
 			continue;
 		/* Failing the /dev/urandom open doesn't count: we fall back. */
-		if (failmatch(&history[i], URANDOM_OPEN))
+		if (failmatch(i, URANDOM_OPEN))
 			continue;
 
 		/* Similarly with read fail. */
-		if (failmatch(&history[i], URANDOM_READ))
+		if (failmatch(i, URANDOM_READ))
 			continue;
 
 		/* Initial allocation of tdb doesn't log. */
-		if (failmatch(&history[i], INITIAL_TDB_MALLOC))
+		if (failmatch(i, INITIAL_TDB_MALLOC))
 			continue;
 
 		/* We don't block "failures" on non-blocking locks. */
-		if (is_nonblocking_lock(&history[i]))
+		if (is_nonblocking_lock(i))
 			continue;
 
 		if (!tap_log_messages)
-			diag("We didn't log for %u (%s:%u)",
-			     i, history[i].file, history[i].line);
+			diag("We didn't log for %s:%u", i->file, i->line);
 		return tap_log_messages != 0;
 	}
 	return true;
@@ -80,38 +68,29 @@ bool exit_check_log(struct failtest_call *history, unsigned num)
 
 /* Some places we soldier on despite errors: only fail them once. */
 enum failtest_result
-block_repeat_failures(struct failtest_call *history, unsigned num)
+block_repeat_failures(struct tlist_calls *history)
 {
-	const struct failtest_call *i, *last = &history[num-1];
+	const struct failtest_call *last;
+
+	last = tlist_tail(history, list);
+
+	if (failtest_suppress)
+		return FAIL_DONT_FAIL;
 
 	if (failmatch(last, INITIAL_TDB_MALLOC)
 	    || failmatch(last, URANDOM_OPEN)
 	    || failmatch(last, URANDOM_READ)) {
-		if (find_repeat(history, last, last))
-			return FAIL_DONT_FAIL;
 		return FAIL_PROBE;
 	}
 
+	/* We handle mmap failing, by falling back to read/write, so
+	 * don't try all possible paths. */
+	if (last->type == FAILTEST_MMAP)
+		return FAIL_PROBE;
+
 	/* Unlock or non-blocking lock is fail-once. */
-	if (is_unlock(last)) {
-		/* Find a previous unlock at this point? */
-		for (i = find_repeat(history, last, last);
-		     i;
-		     i = find_repeat(history, i, last)) {
-			if (is_unlock(i))
-				return FAIL_DONT_FAIL;
-		}
+	if (is_unlock(last) || is_nonblocking_lock(last))
 		return FAIL_PROBE;
-	} else if (is_nonblocking_lock(last)) {
-		/* Find a previous non-blocking lock at this point? */
-		for (i = find_repeat(history, last, last);
-		     i;
-		     i = find_repeat(history, i, last)) {
-			if (is_nonblocking_lock(i))
-				return FAIL_DONT_FAIL;
-		}
-		return FAIL_PROBE;
-	}
 
 	return FAIL_OK;
 }

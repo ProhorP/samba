@@ -22,13 +22,10 @@
 #include "../lib/util/dlinklist.h"
 #include "system/iconv.h"
 #include "system/filesys.h"
+#include "charset_proto.h"
 
 #ifdef strcasecmp
 #undef strcasecmp
-#endif
-
-#ifdef static_decl_charset
-static_decl_charset;
 #endif
 
 /**
@@ -78,66 +75,20 @@ static const struct charset_functions builtin_functions[] = {
 	{"UTF-8",   utf8_pull,  utf8_push},
 
 	/* this handles the munging needed for String2Key */
-	{"UTF16_MUNGED",   utf16_munged_pull,  iconv_copy},
+	{"UTF16_MUNGED",   utf16_munged_pull,  iconv_copy, true},
 
 	{"ASCII", ascii_pull, ascii_push},
 	{"646", ascii_pull, ascii_push},
 	{"ISO-8859-1", latin1_pull, latin1_push},
-	{"UCS2-HEX", ucs2hex_pull, ucs2hex_push}
-};
-
-static struct charset_functions *charsets = NULL;
-
-static struct charset_functions *find_charset_functions(const char *name)
-{
-	struct charset_functions *c;
-
-	/* Check whether we already have this charset... */
-	for (c = charsets; c != NULL; c = c->next) {
-		if(strcasecmp(c->name, name) == 0) { 
-			return c;
-		}
-		c = c->next;
-	}
-
-	return NULL;
-}
-
-bool smb_register_charset(const struct charset_functions *funcs_in)
-{
-	struct charset_functions *funcs;
-
-	DEBUG(5, ("Attempting to register new charset %s\n", funcs_in->name));
-	/* Check whether we already have this charset... */
-	if (find_charset_functions(funcs_in->name)) {
-		DEBUG(0, ("Duplicate charset %s, not registering\n", funcs_in->name));
-		return false;
-	}
-
-	funcs = talloc(NULL, struct charset_functions);
-	if (!funcs) {
-		DEBUG(0, ("Out of memory duplicating charset %s\n", funcs_in->name));
-		return false;
-	}
-	*funcs = *funcs_in;
-
-	funcs->next = funcs->prev = NULL;
-	DEBUG(5, ("Registered charset %s\n", funcs->name));
-	DLIST_ADD(charsets, funcs);
-	return true;
-}
-
-static void lazy_initialize_iconv(void)
-{
-#ifdef static_init_charset
-	static bool initialized = false;
-
-	if (!initialized) {
-		static_init_charset;
-		initialized = true;
-	}
+#ifdef DEVELOPER	
+	{"WEIRD", weird_pull, weird_push, true},
 #endif
-}
+#ifdef DARWINOS
+	{"MACOSXFS", macosxfs_encoding_pull, macosxfs_encoding_push, true},
+#endif
+	{"UCS2-HEX", ucs2hex_pull, ucs2hex_push, true}
+
+};
 
 #ifdef HAVE_NATIVE_ICONV
 /* if there was an error then reset the internal state,
@@ -245,13 +196,11 @@ static int smb_iconv_t_destructor(smb_iconv_t hwd)
 }
 
 _PUBLIC_ smb_iconv_t smb_iconv_open_ex(TALLOC_CTX *mem_ctx, const char *tocode, 
-			      const char *fromcode, bool native_iconv)
+			      const char *fromcode, bool use_builtin_handlers)
 {
 	smb_iconv_t ret;
 	const struct charset_functions *from=NULL, *to=NULL;
 	int i;
-
-	lazy_initialize_iconv();
 
 	ret = (smb_iconv_t)talloc_named(mem_ctx,
 					sizeof(*ret), 
@@ -269,51 +218,52 @@ _PUBLIC_ smb_iconv_t smb_iconv_open_ex(TALLOC_CTX *mem_ctx, const char *tocode,
 		return ret;
 	}
 
+	/* check if we have a builtin function for this conversion */
 	for (i=0;i<ARRAY_SIZE(builtin_functions);i++) {
 		if (strcasecmp(fromcode, builtin_functions[i].name) == 0) {
-			from = &builtin_functions[i];
+			if (use_builtin_handlers || builtin_functions[i].samba_internal_charset) {
+				from = &builtin_functions[i];
+			}
 		}
-		if (strcasecmp(tocode, builtin_functions[i].name) == 0) {
-			to = &builtin_functions[i];
-		}
-	}
-
-	if (from == NULL) {
-		for (from=charsets; from; from=from->next) {
-			if (strcasecmp(from->name, fromcode) == 0) break;
-		}
-	}
-
-	if (to == NULL) {
-		for (to=charsets; to; to=to->next) {
-			if (strcasecmp(to->name, tocode) == 0) break;
+		if (strcasecmp(tocode, builtin_functions[i].name) == 0) { 
+			if (use_builtin_handlers || builtin_functions[i].samba_internal_charset) {
+				to = &builtin_functions[i];
+			}
 		}
 	}
 
 #ifdef HAVE_NATIVE_ICONV
-	if ((!from || !to) && !native_iconv) {
-		goto failed;
-	}
-	if (!from) {
-		ret->pull = sys_iconv;
+	/* the from and to varaibles indicate a samba module or
+	 * internal conversion, ret->pull and ret->push are
+	 * initialised only in this block for iconv based
+	 * conversions */
+
+	if (from == NULL) {
 		ret->cd_pull = iconv_open("UTF-16LE", fromcode);
 		if (ret->cd_pull == (iconv_t)-1)
 			ret->cd_pull = iconv_open("UCS-2LE", fromcode);
-		if (ret->cd_pull == (iconv_t)-1) goto failed;
+		if (ret->cd_pull != (iconv_t)-1) {
+			ret->pull = sys_iconv;
+		}
 	}
-
-	if (!to) {
-		ret->push = sys_iconv;
+	
+	if (to == NULL) {
 		ret->cd_push = iconv_open(tocode, "UTF-16LE");
 		if (ret->cd_push == (iconv_t)-1)
 			ret->cd_push = iconv_open(tocode, "UCS-2LE");
-		if (ret->cd_push == (iconv_t)-1) goto failed;
-	}
-#else
-	if (!from || !to) {
-		goto failed;
+		if (ret->cd_push != (iconv_t)-1) {
+			ret->push = sys_iconv;
+		}
 	}
 #endif
+
+	if (ret->pull == NULL && from == NULL) {
+		goto failed;
+	}
+	
+	if (ret->push == NULL && to == NULL) {
+		goto failed;
+	}
 
 	/* check for conversion to/from ucs2 */
 	if (is_utf16(fromcode) && to) {

@@ -119,7 +119,8 @@ static WERROR get_nc_changes_build_object(struct drsuapi_DsReplicaObjectListItem
 					  uint32_t replica_flags,
 					  struct drsuapi_DsPartialAttributeSet *partial_attribute_set,
 					  struct drsuapi_DsReplicaCursorCtrEx *uptodateness_vector,
-					  enum drsuapi_DsExtendedOperation extended_op)
+					  enum drsuapi_DsExtendedOperation extended_op,
+					  bool force_object_return)
 {
 	const struct ldb_val *md_value;
 	uint32_t i, n;
@@ -260,9 +261,17 @@ static WERROR get_nc_changes_build_object(struct drsuapi_DsReplicaObjectListItem
 
 	/* ignore it if its an empty change. Note that renames always
 	 * change the 'name' attribute, so they won't be ignored by
-	 * this */
+	 * this
+
+	 * the force_object_return check is used to force an empty
+	 * object return when we timeout in the getncchanges loop.
+	 * This allows us to return an empty object, which keeps the
+	 * client happy while preventing timeouts
+	 */
 	if (n == 0 ||
-	    (n == 1 && attids[0] == DRSUAPI_ATTID_instanceType)) {
+	    (n == 1 &&
+	     attids[0] == DRSUAPI_ATTID_instanceType &&
+	     !force_object_return)) {
 		talloc_free(obj->meta_data_ctr);
 		obj->meta_data_ctr = NULL;
 		return WERR_OK;
@@ -274,6 +283,9 @@ static WERROR get_nc_changes_build_object(struct drsuapi_DsReplicaObjectListItem
 	obj->object.attribute_ctr.num_attributes = obj->meta_data_ctr->count;
 	obj->object.attribute_ctr.attributes = talloc_array(obj, struct drsuapi_DsReplicaAttribute,
 							    obj->object.attribute_ctr.num_attributes);
+	if (obj->object.attribute_ctr.attributes == NULL) {
+		return WERR_NOMEM;
+	}
 
 	/*
 	 * Note that the meta_data array and the attributes array must
@@ -328,7 +340,6 @@ static WERROR get_nc_changes_build_object(struct drsuapi_DsReplicaObjectListItem
 	return WERR_OK;
 }
 
-
 /*
   add one linked attribute from an object to the list of linked
   attributes in a getncchanges request
@@ -357,6 +368,61 @@ static WERROR get_nc_changes_add_la(TALLOC_CTX *mem_ctx,
 
 	active = (dsdb_dn_rmd_flags(dsdb_dn->dn) & DSDB_RMD_FLAG_DELETED) == 0;
 
+	if (!active) {
+		/* We have to check that the inactive link still point to an existing object */
+		struct GUID guid;
+		struct ldb_dn *tdn;
+		int ret;
+		const char *v;
+
+		v = ldb_msg_find_attr_as_string(msg, "isDeleted", "FALSE");
+		if (strncmp(v, "TRUE", 4) == 0) {
+			/*
+			  * Note: we skip the transmition of the deleted link even if the other part used to
+			  * know about it because when we transmit the deletion of the object, the link will
+			  * be deleted too due to deletion of object where link points and Windows do so.
+			  */
+			if (dsdb_functional_level(sam_ctx) >= DS_DOMAIN_FUNCTION_2008_R2) {
+				v = ldb_msg_find_attr_as_string(msg, "isRecycled", "FALSE");
+				/*
+				 * On Windows 2008R2 isRecycled is always present even if FL or DL are < FL 2K8R2
+				 * if it join an existing domain with deleted objets, it firsts impose to have a
+				 * schema with the is-Recycled object and for all deleted objects it adds the isRecycled
+				 * either during initial replication or after the getNCChanges.
+				 * Behavior of samba has been changed to always have this attribute if it's present in the schema.
+				 *
+				 * So if FL <2K8R2 isRecycled might be here or not but we don't care, it's meaning less.
+				 * If FL >=2K8R2 we are sure that this attribute will be here.
+				 * For this kind of forest level we do not return the link if the object is recycled
+				 * (isRecycled = true).
+				 */
+				if (strncmp(v, "TRUE", 4) == 0) {
+					DEBUG(2, (" object %s is recycled, not returning linked attribute !\n",
+								ldb_dn_get_linearized(msg->dn)));
+					return WERR_OK;
+				}
+			} else {
+				return WERR_OK;
+			}
+		}
+		status = dsdb_get_extended_dn_guid(dsdb_dn->dn, &guid, "GUID");
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0,(__location__ " Unable to extract GUID in linked attribute '%s' in '%s'\n",
+				sa->lDAPDisplayName, ldb_dn_get_linearized(msg->dn)));
+			return ntstatus_to_werror(status);
+		}
+		ret = dsdb_find_dn_by_guid(sam_ctx, mem_ctx, &guid, &tdn);
+		if (ret == LDB_ERR_NO_SUCH_OBJECT) {
+			DEBUG(2, (" Search of guid %s returned 0 objects, skipping it !\n",
+						GUID_string(mem_ctx, &guid)));
+			return WERR_OK;
+		} else if (ret != LDB_SUCCESS) {
+			DEBUG(0, (__location__ " Search of guid %s failed with error code %d\n",
+						GUID_string(mem_ctx, &guid),
+						ret));
+			return WERR_OK;
+		}
+	}
 	la->attid = sa->attributeID_id;
 	la->flags = active?DRSUAPI_DS_LINKED_ATTRIBUTE_FLAG_ACTIVE:0;
 
@@ -572,29 +638,37 @@ static int linked_attribute_compare(const struct drsuapi_DsReplicaLinkedAttribut
 	return GUID_compare(&guid1, &guid2);
 }
 
+struct drsuapi_changed_objects {
+	struct ldb_dn *dn;
+	struct GUID guid;
+	uint64_t usn;
+};
 
 /*
   sort the objects we send by tree order
  */
-static int site_res_cmp_parent_order(struct ldb_message **m1, struct ldb_message **m2)
+static int site_res_cmp_parent_order(struct drsuapi_changed_objects *m1,
+					struct drsuapi_changed_objects *m2)
 {
-	return ldb_dn_compare((*m2)->dn, (*m1)->dn);
+	return ldb_dn_compare(m2->dn, m1->dn);
 }
 
 /*
   sort the objects we send first by uSNChanged
  */
-static int site_res_cmp_usn_order(struct ldb_message **m1, struct ldb_message **m2)
+static int site_res_cmp_dn_usn_order(struct drsuapi_changed_objects *m1,
+					struct drsuapi_changed_objects *m2)
 {
 	unsigned usnchanged1, usnchanged2;
 	unsigned cn1, cn2;
-	cn1 = ldb_dn_get_comp_num((*m1)->dn);
-	cn2 = ldb_dn_get_comp_num((*m2)->dn);
+
+	cn1 = ldb_dn_get_comp_num(m1->dn);
+	cn2 = ldb_dn_get_comp_num(m2->dn);
 	if (cn1 != cn2) {
 		return cn1 > cn2 ? 1 : -1;
 	}
-	usnchanged1 = ldb_msg_find_attr_as_uint(*m1, "uSNChanged", 0);
-	usnchanged2 = ldb_msg_find_attr_as_uint(*m2, "uSNChanged", 0);
+	usnchanged1 = m1->usn;
+	usnchanged2 = m2->usn;
 	if (usnchanged1 == usnchanged2) {
 		return 0;
 	}
@@ -1124,20 +1198,90 @@ static WERROR dcesrv_drsuapi_is_reveal_secrets_request(struct drsuapi_bind_state
 		}
 	}
 
-	/* check the attributes they asked for */
-	for (i=0; i<req10->partial_attribute_set_ex->num_attids; i++) {
-		const struct dsdb_attribute *sa;
-		sa = dsdb_attribute_by_attributeID_id(schema, req10->partial_attribute_set_ex->attids[i]);
-		if (sa == NULL) {
-			return WERR_DS_DRA_SCHEMA_MISMATCH;
-		}
-		if (!dsdb_attr_in_rodc_fas(sa)) {
-			*is_secret_request = true;
-			return WERR_OK;
+	if (req10->partial_attribute_set_ex) {
+		/* check the extended attributes they asked for */
+		for (i=0; i<req10->partial_attribute_set_ex->num_attids; i++) {
+			const struct dsdb_attribute *sa;
+			sa = dsdb_attribute_by_attributeID_id(schema, req10->partial_attribute_set_ex->attids[i]);
+			if (sa == NULL) {
+				return WERR_DS_DRA_SCHEMA_MISMATCH;
+			}
+			if (!dsdb_attr_in_rodc_fas(sa)) {
+				*is_secret_request = true;
+				return WERR_OK;
+			}
 		}
 	}
 
 	*is_secret_request = false;
+	return WERR_OK;
+}
+
+/*
+  see if this getncchanges request is only for attributes in the GC
+  partial attribute set
+ */
+static WERROR dcesrv_drsuapi_is_gc_pas_request(struct drsuapi_bind_state *b_state,
+					       struct drsuapi_DsGetNCChangesRequest10 *req10,
+					       bool *is_gc_pas_request)
+{
+	enum drsuapi_DsExtendedOperation exop;
+	uint32_t i;
+	struct dsdb_schema *schema;
+
+	exop = req10->extended_op;
+
+	switch (exop) {
+	case DRSUAPI_EXOP_FSMO_REQ_ROLE:
+	case DRSUAPI_EXOP_FSMO_RID_ALLOC:
+	case DRSUAPI_EXOP_FSMO_RID_REQ_ROLE:
+	case DRSUAPI_EXOP_FSMO_REQ_PDC:
+	case DRSUAPI_EXOP_FSMO_ABANDON_ROLE:
+	case DRSUAPI_EXOP_REPL_SECRET:
+		*is_gc_pas_request = false;
+		return WERR_OK;
+	case DRSUAPI_EXOP_REPL_OBJ:
+	case DRSUAPI_EXOP_NONE:
+		break;
+	}
+
+	if (req10->partial_attribute_set == NULL) {
+		/* they want it all */
+		*is_gc_pas_request = false;
+		return WERR_OK;
+	}
+
+	schema = dsdb_get_schema(b_state->sam_ctx, NULL);
+
+	/* check the attributes they asked for */
+	for (i=0; i<req10->partial_attribute_set->num_attids; i++) {
+		const struct dsdb_attribute *sa;
+		sa = dsdb_attribute_by_attributeID_id(schema, req10->partial_attribute_set->attids[i]);
+		if (sa == NULL) {
+			return WERR_DS_DRA_SCHEMA_MISMATCH;
+		}
+		if (!sa->isMemberOfPartialAttributeSet) {
+			*is_gc_pas_request = false;
+			return WERR_OK;
+		}
+	}
+
+	if (req10->partial_attribute_set_ex) {
+		/* check the extended attributes they asked for */
+		for (i=0; i<req10->partial_attribute_set_ex->num_attids; i++) {
+			const struct dsdb_attribute *sa;
+			sa = dsdb_attribute_by_attributeID_id(schema, req10->partial_attribute_set_ex->attids[i]);
+			if (sa == NULL) {
+				return WERR_DS_DRA_SCHEMA_MISMATCH;
+			}
+			if (!sa->isMemberOfPartialAttributeSet) {
+				*is_gc_pas_request = false;
+				return WERR_OK;
+			}
+		}
+	}
+
+	*is_gc_pas_request = true;
 	return WERR_OK;
 }
 
@@ -1291,6 +1435,11 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 	struct ldb_context *sam_ctx;
 	struct dom_sid *user_sid;
 	bool is_secret_request;
+	bool is_gc_pas_request;
+	struct drsuapi_changed_objects *changes;
+	time_t max_wait;
+	time_t start = time(NULL);
+	bool max_wait_reached = false;
 
 	DCESRV_PULL_HANDLE_WERR(h, r->in.bind_handle, DRSUAPI_BIND_HANDLE);
 	b_state = h->data;
@@ -1353,6 +1502,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 
 	user_sid = &dce_call->conn->auth_state.session_info->security_token->sids[PRIMARY_USER_SID_INDEX];
 
+	/* all clients must have GUID_DRS_GET_CHANGES */
 	werr = drs_security_access_check_nc_root(b_state->sam_ctx,
 						 mem_ctx,
 						 dce_call->conn->auth_state.session_info->security_token,
@@ -1360,6 +1510,23 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 						 GUID_DRS_GET_CHANGES);
 	if (!W_ERROR_IS_OK(werr)) {
 		return werr;
+	}
+
+	/* allowed if the GC PAS and client has
+	   GUID_DRS_GET_FILTERED_ATTRIBUTES */
+	werr = dcesrv_drsuapi_is_gc_pas_request(b_state, req10, &is_gc_pas_request);
+	if (!W_ERROR_IS_OK(werr)) {
+		return werr;
+	}
+	if (is_gc_pas_request) {
+		werr = drs_security_access_check_nc_root(b_state->sam_ctx,
+							 mem_ctx,
+							 dce_call->conn->auth_state.session_info->security_token,
+							 req10->naming_context,
+							 GUID_DRS_GET_FILTERED_ATTRIBUTES);
+		if (W_ERROR_IS_OK(werr)) {
+			goto allowed;
+		}
 	}
 
 	werr = dcesrv_drsuapi_is_reveal_secrets_request(b_state, req10, &is_secret_request);
@@ -1377,6 +1544,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 		}
 	}
 
+allowed:
 	/* for non-administrator replications, check that they have
 	   given the correct source_dsa_invocation_id */
 	security_level = security_session_user_level(dce_call->conn->auth_state.session_info,
@@ -1508,33 +1676,31 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 		}
 		W_ERROR_NOT_OK_RETURN(werr);
 
-		if (search_res) {
-			if (req10->replica_flags & DRSUAPI_DRS_GET_ANC) {
-				TYPESAFE_QSORT(search_res->msgs,
-					       search_res->count,
-					       site_res_cmp_parent_order);
-			} else {
-				TYPESAFE_QSORT(search_res->msgs,
-					       search_res->count,
-					       site_res_cmp_usn_order);
-			}
-		}
-
 		/* extract out the GUIDs list */
 		getnc_state->num_records = search_res ? search_res->count : 0;
 		getnc_state->guids = talloc_array(getnc_state, struct GUID, getnc_state->num_records);
 		W_ERROR_HAVE_NO_MEMORY(getnc_state->guids);
 
+		changes = talloc_array(getnc_state,
+				       struct drsuapi_changed_objects,
+				       getnc_state->num_records);
+		W_ERROR_HAVE_NO_MEMORY(changes);
+
 		for (i=0; i<getnc_state->num_records; i++) {
-			getnc_state->guids[i] = samdb_result_guid(search_res->msgs[i], "objectGUID");
-			if (GUID_all_zero(&getnc_state->guids[i])) {
-				DEBUG(2,("getncchanges: bad objectGUID from %s\n", ldb_dn_get_linearized(search_res->msgs[i]->dn)));
-				return WERR_DS_DRA_INTERNAL_ERROR;
-			}
+			changes[i].dn = search_res->msgs[i]->dn;
+			changes[i].guid = samdb_result_guid(search_res->msgs[i], "objectGUID");
+			changes[i].usn = ldb_msg_find_attr_as_uint64(search_res->msgs[i], "uSNChanged", 0);
 		}
 
-
-		talloc_free(search_res);
+		if (req10->replica_flags & DRSUAPI_DRS_GET_ANC) {
+			TYPESAFE_QSORT(changes,
+				       getnc_state->num_records,
+				       site_res_cmp_parent_order);
+		} else {
+			TYPESAFE_QSORT(changes,
+				       getnc_state->num_records,
+				       site_res_cmp_dn_usn_order);
+		}
 
 		getnc_state->uptodateness_vector = talloc_steal(getnc_state, req10->uptodateness_vector);
 		if (getnc_state->uptodateness_vector) {
@@ -1543,6 +1709,18 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 				       getnc_state->uptodateness_vector->count,
 				       drsuapi_DsReplicaCursor_compare);
 		}
+
+		for (i=0; i < getnc_state->num_records; i++) {
+			getnc_state->guids[i] = changes[i].guid;
+			if (GUID_all_zero(&getnc_state->guids[i])) {
+				DEBUG(2,("getncchanges: bad objectGUID from %s\n",
+					 ldb_dn_get_linearized(search_res->msgs[i]->dn)));
+				return WERR_DS_DRA_INTERNAL_ERROR;
+			}
+		}
+
+		talloc_free(search_res);
+		talloc_free(changes);
 	}
 
 	/* Prefix mapping */
@@ -1589,10 +1767,17 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 	 */
 	max_links = lpcfg_parm_int(dce_call->conn->dce_ctx->lp_ctx, NULL, "drs", "max link sync", 1500);
 
+	/*
+	 * Maximum time that we can spend in a getncchanges
+	 * in order to avoid timeout of the other part.
+	 * 10 seconds by default.
+	 */
+	max_wait = lpcfg_parm_int(dce_call->conn->dce_ctx->lp_ctx, NULL, "drs", "max work time", 10);
 	for (i=getnc_state->num_processed;
 	     i<getnc_state->num_records &&
 		     !null_scope &&
-		     (r->out.ctr->ctr6.object_count < max_objects);
+		     (r->out.ctr->ctr6.object_count < max_objects)
+		     && !max_wait_reached;
 	    i++) {
 		int uSN;
 		struct drsuapi_DsReplicaObjectListItemEx *obj;
@@ -1631,6 +1816,8 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 
 		msg = msg_res->msgs[0];
 
+		max_wait_reached = (time(NULL) - start > max_wait);
+
 		werr = get_nc_changes_build_object(obj, msg,
 						   sam_ctx, getnc_state->ncRoot_dn,
 						   getnc_state->is_schema_nc,
@@ -1638,7 +1825,8 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 						   req10->replica_flags,
 						   req10->partial_attribute_set,
 						   getnc_state->uptodateness_vector,
-						   req10->extended_op);
+						   req10->extended_op,
+						   max_wait_reached);
 		if (!W_ERROR_IS_OK(werr)) {
 			return werr;
 		}
@@ -1697,9 +1885,8 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 		DEBUG(3,("UpdateRefs on getncchanges for %s\n",
 			 GUID_string(mem_ctx, &req10->destination_dsa_guid)));
 		ureq.naming_context = ncRoot;
-		ureq.dest_dsa_dns_name = talloc_asprintf(mem_ctx, "%s._msdcs.%s",
-							 GUID_string(mem_ctx, &req10->destination_dsa_guid),
-							 lpcfg_dnsdomain(dce_call->conn->dce_ctx->lp_ctx));
+		ureq.dest_dsa_dns_name = samdb_ntds_msdcs_dns_name(b_state->sam_ctx, mem_ctx,
+								   &req10->destination_dsa_guid);
 		if (!ureq.dest_dsa_dns_name) {
 			return WERR_NOMEM;
 		}

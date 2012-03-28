@@ -24,7 +24,8 @@
 #define _PASSDB_LOOKUP_SID_H_
 
 #include "../librpc/gen_ndr/lsa.h"
-#include "../nsswitch/libwbclient/wbclient.h"
+
+struct passwd;
 
 #define LOOKUP_NAME_NONE		0x00000000
 #define LOOKUP_NAME_ISOLATED             0x00000001  /* Look up unqualified names */
@@ -56,7 +57,7 @@ struct lsa_dom_info {
 };
 
 struct lsa_name_info {
-	uint32 rid;
+	uint32_t rid;
 	enum lsa_SidType type;
 	const char *name;
 	int dom_idx;
@@ -85,16 +86,12 @@ void uid_to_sid(struct dom_sid *psid, uid_t uid);
 void gid_to_sid(struct dom_sid *psid, gid_t gid);
 bool sid_to_uid(const struct dom_sid *psid, uid_t *puid);
 bool sid_to_gid(const struct dom_sid *psid, gid_t *pgid);
+struct wbcUnixId;
 bool sids_to_unix_ids(const struct dom_sid *sids, uint32_t num_sids,
 		      struct wbcUnixId *ids);
 NTSTATUS get_primary_group_sid(TALLOC_CTX *mem_ctx,
 				const char *username,
 				struct passwd **_pwd,
 				struct dom_sid **_group_sid);
-bool delete_uid_cache(uid_t uid);
-bool delete_gid_cache(gid_t gid);
-bool delete_sid_cache(const struct dom_sid* psid);
-void flush_uid_cache(void);
-void flush_gid_cache(void);
 
 #endif /* _PASSDB_LOOKUP_SID_H_ */

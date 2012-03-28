@@ -202,6 +202,8 @@ def get_paths(param, targetdir=None, smbconf=None):
     :param smbconf: Path to the smb.conf file
     :return: A list with the path of important provision objects"""
     if targetdir is not None:
+        if not os.path.exists(targetdir):
+            os.mkdir(targetdir)
         etcdir = os.path.join(targetdir, "etc")
         if not os.path.exists(etcdir):
             os.makedirs(etcdir)
@@ -256,6 +258,7 @@ def newprovision(names, creds, session, smbconf, provdir, logger):
         shutil.rmtree(provdir)
     os.mkdir(provdir)
     logger.info("Provision stored in %s", provdir)
+    dns_backend="BIND9_DLZ"
     provision(logger, session, creds, smbconf=smbconf,
             targetdir=provdir, samdb_fill=FILL_FULL, realm=names.realm,
             domain=names.domain, domainguid=names.domainguid,
@@ -265,11 +268,11 @@ def newprovision(names, creds, session, smbconf, provdir, logger):
             invocationid=names.invocation, adminpass=names.adminpass,
             krbtgtpass=None, machinepass=None, dnspass=None, root=None,
             nobody=None, wheel=None, users=None,
-            serverrole="domain controller", ldap_backend_extra_port=None,
+            serverrole="domain controller", 
             backend_type=None, ldapadminpass=None, ol_mmr_urls=None,
-            slapd_path=None, setup_ds_path=None, nosync=None,
-            dom_for_fun_level=names.domainlevel,
-            ldap_dryrun_mode=None, useeadb=True)
+            slapd_path=None, 
+            dom_for_fun_level=names.domainlevel, dns_backend=dns_backend,
+            useeadb=True)
 
 
 def dn_sort(x, y):
@@ -441,10 +444,8 @@ def update_secrets(newsecrets_ldb, secrets_ldb, messagefunc):
     """
 
     messagefunc(SIMPLE, "Update of secrets.ldb")
-    reference = newsecrets_ldb.search(expression="dn=@MODULES", base="",
-                                        scope=SCOPE_SUBTREE)
-    current = secrets_ldb.search(expression="dn=@MODULES", base="",
-                                        scope=SCOPE_SUBTREE)
+    reference = newsecrets_ldb.search(base="@MODULES", scope=SCOPE_BASE)
+    current = secrets_ldb.search(base="@MODULES", scope=SCOPE_BASE)
     assert reference, "Reference modules list can not be empty"
     if len(current) == 0:
         # No modules present
@@ -611,22 +612,30 @@ def update_gpo(paths, samdb, names, lp, message, force=0):
     dir = getpolicypath(paths.sysvol, names.dnsdomain, names.policyid_dc)
     if not os.path.isdir(dir):
         create_gpo_struct(dir)
+
+    def acl_error(e):
+        if os.geteuid() == 0:
+            message(ERROR, "Unable to set ACLs on policies related objects: %s" % e)
+        else:
+            message(ERROR, "Unable to set ACLs on policies related objects. "
+                    "ACLs must be set as root if file system ACLs "
+                    "(rather than posix:eadb) are used.")
+
     # We always reinforce acls on GPO folder because they have to be in sync
     # with the one in DS
     try:
         set_gpos_acl(paths.sysvol, names.dnsdomain, names.domainsid,
             names.domaindn, samdb, lp)
     except TypeError, e:
-        message(ERROR, "Unable to set ACLs on policies related objects,"
-                       " if not using posix:eadb, you must be root to do it")
+        acl_error(e)
 
     if resetacls:
        try:
             setsysvolacl(samdb, paths.netlogon, paths.sysvol, names.wheel_gid,
                         names.domainsid, names.dnsdomain, names.domaindn, lp)
        except TypeError, e:
-            message(ERROR, "Unable to set ACLs on sysvol share, if not using"
-                           "posix:eadb, you must be root to do it")
+           acl_error(e)
+
 
 def increment_calculated_keyversion_number(samdb, rootdn, hashDns):
     """For a given hash associating dn and a number, this function will

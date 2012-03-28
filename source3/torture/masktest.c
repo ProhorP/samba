@@ -144,7 +144,7 @@ static bool reg_match_one(struct cli_state *cli, const char *pattern, const char
 
 	if (strcmp(file,"..") == 0) file = ".";
 
-	return ms_fnmatch(pattern, file, cli->protocol, False) == 0;
+	return ms_fnmatch(pattern, file, cli_state_protocol(cli), False) == 0;
 }
 
 static char *reg_test(struct cli_state *cli, const char *pattern, const char *long_name, const char *short_name)
@@ -179,17 +179,15 @@ static struct cli_state *connect_one(char *share)
 
 	server_n = server;
 
-	status = cli_connect_nb(server, NULL, 0, 0x20, "masktest", Undefined,
-				&c);
+	status = cli_connect_nb(server, NULL, 0, 0x20, "masktest",
+				SMB_SIGNING_DEFAULT, 0, &c);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("Connection to %s failed. Error %s\n", server_n,
 			 nt_errstr(status)));
 		return NULL;
 	}
 
-	c->protocol = max_protocol;
-
-	status = cli_negprot(c);
+	status = cli_negprot(c, max_protocol);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("protocol negotiation failed: %s\n",
 			  nt_errstr(status)));
@@ -227,8 +225,8 @@ static struct cli_state *connect_one(char *share)
 
 	DEBUG(4,(" session setup ok\n"));
 
-	status = cli_tcon_andx(c, share, "?????", password,
-			       strlen(password)+1);
+	status = cli_tree_connect(c, share, "?????", password,
+				  strlen(password)+1);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("tree connect failed: %s\n", nt_errstr(status)));
 		cli_shutdown(c);
@@ -267,7 +265,8 @@ static NTSTATUS listfn(const char *mnt, struct file_info *f, const char *s,
 		return NT_STATUS_OK;
 	}
 
-	fstrcpy(state->short_name, f->short_name);
+
+	fstrcpy(state->short_name, f->short_name ? f->short_name : "");
 	strlower_m(state->short_name);
 	*state->pp_long_name = SMB_STRDUP(f->name);
 	if (!*state->pp_long_name) {
@@ -321,7 +320,7 @@ static void testpair(struct cli_state *cli, const char *mask, const char *file)
 
 	fstrcpy(res1, "---");
 
-	if (!NT_STATUS_IS_OK(cli_open(cli, file, O_CREAT|O_TRUNC|O_RDWR, 0, &fnum))) {
+	if (!NT_STATUS_IS_OK(cli_openx(cli, file, O_CREAT|O_TRUNC|O_RDWR, 0, &fnum))) {
 		DEBUG(0,("Can't create %s\n", file));
 		return;
 	}
@@ -479,7 +478,7 @@ static void usage(void)
 	argv += 1;
 
 	load_case_tables();
-	lp_load(get_dyn_CONFIGFILE(),True,False,False,True);
+	lp_load_global(get_dyn_CONFIGFILE());
 	load_interfaces();
 
 	if (getenv("USER")) {

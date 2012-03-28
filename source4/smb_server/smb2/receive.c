@@ -69,6 +69,9 @@ struct smb2srv_request *smb2srv_init_request(struct smbsrv_connection *smb_conn)
 
 	req->smb_conn = smb_conn;
 
+	req->chained_session_id = UINT64_MAX;
+	req->chained_tree_id = UINT32_MAX;
+
 	talloc_set_destructor(req, smb2srv_request_destructor);
 
 	return req;
@@ -77,14 +80,22 @@ struct smb2srv_request *smb2srv_init_request(struct smbsrv_connection *smb_conn)
 NTSTATUS smb2srv_setup_reply(struct smb2srv_request *req, uint16_t body_fixed_size,
 			     bool body_dynamic_present, uint32_t body_dynamic_size)
 {
-	uint32_t flags = SMB2_HDR_FLAG_REDIRECT;
+	uint32_t flags = IVAL(req->in.hdr, SMB2_HDR_FLAGS);
 	uint32_t pid = IVAL(req->in.hdr, SMB2_HDR_PID);
 	uint32_t tid = IVAL(req->in.hdr, SMB2_HDR_TID);
+	uint16_t credits = SVAL(req->in.hdr, SMB2_HDR_CREDIT);
+
+	if (credits == 0) {
+		credits = 1;
+	}
+
+	flags |= SMB2_HDR_FLAG_REDIRECT;
 
 	if (req->pending_id) {
 		flags |= SMB2_HDR_FLAG_ASYNC;
 		pid = req->pending_id;
 		tid = 0;
+		credits = 0;
 	}
 
 	if (body_dynamic_present) {
@@ -110,17 +121,19 @@ NTSTATUS smb2srv_setup_reply(struct smb2srv_request *req, uint16_t body_fixed_si
 
 	SIVAL(req->out.hdr, 0,				SMB2_MAGIC);
 	SSVAL(req->out.hdr, SMB2_HDR_LENGTH,		SMB2_HDR_BODY);
-	SSVAL(req->out.hdr, SMB2_HDR_EPOCH,		0);
+	SSVAL(req->out.hdr, SMB2_HDR_CREDIT_CHARGE,
+	      SVAL(req->in.hdr, SMB2_HDR_CREDIT_CHARGE));
 	SIVAL(req->out.hdr, SMB2_HDR_STATUS,		NT_STATUS_V(req->status));
 	SSVAL(req->out.hdr, SMB2_HDR_OPCODE,		SVAL(req->in.hdr, SMB2_HDR_OPCODE));
-	SSVAL(req->out.hdr, SMB2_HDR_CREDIT,		0x0001);
+	SSVAL(req->out.hdr, SMB2_HDR_CREDIT,		credits);
 	SIVAL(req->out.hdr, SMB2_HDR_FLAGS,		flags);
 	SIVAL(req->out.hdr, SMB2_HDR_NEXT_COMMAND,	0);
 	SBVAL(req->out.hdr, SMB2_HDR_MESSAGE_ID,	req->seqnum);
 	SIVAL(req->out.hdr, SMB2_HDR_PID,		pid);
 	SIVAL(req->out.hdr, SMB2_HDR_TID,		tid);
 	SBVAL(req->out.hdr, SMB2_HDR_SESSION_ID,	BVAL(req->in.hdr, SMB2_HDR_SESSION_ID));
-	memset(req->out.hdr+SMB2_HDR_SIGNATURE, 0, 16);
+	memcpy(req->out.hdr+SMB2_HDR_SIGNATURE,
+	       req->in.hdr+SMB2_HDR_SIGNATURE, 16);
 
 	/* set the length of the fixed body part and +1 if there's a dynamic part also */
 	SSVAL(req->out.body, 0, body_fixed_size + (body_dynamic_size?1:0));
@@ -223,6 +236,8 @@ static void smb2srv_chain_reply(struct smb2srv_request *p_req)
 			       sizeof(req->_chained_file_handle));
 			req->chained_file_handle = req->_chained_file_handle;
 		}
+		req->chained_session_id = p_req->chained_session_id;
+		req->chained_tree_id = p_req->chained_tree_id;
 		req->chain_status = p_req->chain_status;
 	}
 
@@ -251,7 +266,7 @@ void smb2srv_send_reply(struct smb2srv_request *req)
 	}
 
 	if (req->out.size > NBT_HDR_SIZE) {
-		_smb2_setlen(req->out.buffer, req->out.size - NBT_HDR_SIZE);
+		_smb_setlen_tcp(req->out.buffer, req->out.size - NBT_HDR_SIZE);
 	}
 
 	/* if signing is active on the session then sign the packet */
@@ -332,8 +347,16 @@ static NTSTATUS smb2srv_reply(struct smb2srv_request *req)
 		req->smb_conn->highest_smb2_seqnum = req->seqnum;
 	}
 
+	if (flags & SMB2_HDR_FLAG_CHAINED) {
+		uid = req->chained_session_id;
+		tid = req->chained_tree_id;
+	}
+
 	req->session	= smbsrv_session_find(req->smb_conn, uid, req->request_time);
 	req->tcon	= smbsrv_smb2_tcon_find(req->session, tid, req->request_time);
+
+	req->chained_session_id = uid;
+	req->chained_tree_id = tid;
 
 	errno = 0;
 
@@ -569,9 +592,19 @@ NTSTATUS smb2srv_queue_pending(struct smb2srv_request *req)
 	NTSTATUS status;
 	bool signing_used = false;
 	int id;
+	uint16_t credits = SVAL(req->in.hdr, SMB2_HDR_CREDIT);
+
+	if (credits == 0) {
+		credits = 1;
+	}
 
 	if (req->pending_id) {
 		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	if (req->smb_conn->connection->event.fde == NULL) {
+		/* the socket has been destroyed - no point trying to send an error! */
+		return NT_STATUS_REMOTE_DISCONNECT;
 	}
 
 	id = idr_get_new_above(req->smb_conn->requests2.idtree_req, req, 
@@ -583,11 +616,6 @@ NTSTATUS smb2srv_queue_pending(struct smb2srv_request *req)
 	DLIST_ADD_END(req->smb_conn->requests2.list, req, struct smb2srv_request *);
 	req->pending_id = id;
 
-	if (req->smb_conn->connection->event.fde == NULL) {
-		/* the socket has been destroyed - no point trying to send an error! */
-		return NT_STATUS_REMOTE_DISCONNECT;
-	}
-
 	talloc_set_destructor(req, smb2srv_request_deny_destructor);
 
 	status = smb2srv_setup_reply(req, 8, true, 0);
@@ -596,6 +624,7 @@ NTSTATUS smb2srv_queue_pending(struct smb2srv_request *req)
 	}
 
 	SIVAL(req->out.hdr, SMB2_HDR_STATUS, NT_STATUS_V(STATUS_PENDING));
+	SSVAL(req->out.hdr, SMB2_HDR_CREDIT, credits);
 
 	SSVAL(req->out.body, 0x02, 0);
 	SIVAL(req->out.body, 0x04, 0);
@@ -663,7 +692,6 @@ NTSTATUS smbsrv_init_smb2_connection(struct smbsrv_connection *smb_conn)
 
 	smb_conn->negotiate.zone_offset = get_time_zone(time(NULL));
 
-	smb_conn->config.security = SEC_USER;
 	smb_conn->config.nt_status_support = true;
 
 	status = smbsrv_init_sessions(smb_conn, UINT64_MAX);

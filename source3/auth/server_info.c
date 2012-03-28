@@ -29,14 +29,6 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
 
-/* FIXME: do we really still need this ? */
-static int server_info_dtor(struct auth_serversupplied_info *server_info)
-{
-	TALLOC_FREE(server_info->info3);
-	ZERO_STRUCTP(server_info);
-	return 0;
-}
-
 /***************************************************************************
  Make a server_info struct. Free with TALLOC_FREE().
 ***************************************************************************/
@@ -50,8 +42,6 @@ struct auth_serversupplied_info *make_server_info(TALLOC_CTX *mem_ctx)
 		DEBUG(0, ("talloc failed\n"));
 		return NULL;
 	}
-
-	talloc_set_destructor(result, server_info_dtor);
 
 	/* Initialise the uid and gid values to something non-zero
 	   which may save us from giving away root access if there
@@ -279,8 +269,8 @@ static NTSTATUS group_sids_to_info3(struct netr_SamInfo3 *info3,
 			if (info3->base.primary_gid == rid) continue;
 
 			/* store domain group rid */
-			groups->rids[i].rid = rid;
-			groups->rids[i].attributes = attributes;
+			groups->rids[groups->count].rid = rid;
+			groups->rids[groups->count].attributes = attributes;
 			groups->count++;
 			continue;
 		}
@@ -394,9 +384,9 @@ NTSTATUS samu_to_SamInfo3(TALLOC_CTX *mem_ctx,
 		}
 	}
 
-	unix_to_nt_time(&info3->base.last_logon, pdb_get_logon_time(samu));
-	unix_to_nt_time(&info3->base.last_logoff, get_time_t_max());
-	unix_to_nt_time(&info3->base.acct_expiry, get_time_t_max());
+	unix_to_nt_time(&info3->base.logon_time, pdb_get_logon_time(samu));
+	unix_to_nt_time(&info3->base.logoff_time, get_time_t_max());
+	unix_to_nt_time(&info3->base.kickoff_time, get_time_t_max());
 	unix_to_nt_time(&info3->base.last_password_change,
 			pdb_get_pass_last_set_time(samu));
 	unix_to_nt_time(&info3->base.allow_password_change,
@@ -438,6 +428,13 @@ NTSTATUS samu_to_SamInfo3(TALLOC_CTX *mem_ctx,
 	info3->base.logon_count	= pdb_get_logon_count(samu);
 	info3->base.bad_password_count = pdb_get_bad_password_count(samu);
 
+	info3->base.logon_domain.string = talloc_strdup(info3,
+						  pdb_get_domain(samu));
+	RET_NOMEM(info3->base.logon_domain.string);
+
+	info3->base.domain_sid = dom_sid_dup(info3, &domain_sid);
+	RET_NOMEM(info3->base.domain_sid);
+
 	status = pdb_enum_group_memberships(mem_ctx, samu,
 					    &group_sids, &gids,
 					    &num_group_sids);
@@ -467,13 +464,6 @@ NTSTATUS samu_to_SamInfo3(TALLOC_CTX *mem_ctx,
 		info3->base.logon_server.string = talloc_strdup(info3, login_server);
 		RET_NOMEM(info3->base.logon_server.string);
 	}
-
-	info3->base.domain.string = talloc_strdup(info3,
-						  pdb_get_domain(samu));
-	RET_NOMEM(info3->base.domain.string);
-
-	info3->base.domain_sid = dom_sid_dup(info3, &domain_sid);
-	RET_NOMEM(info3->base.domain_sid);
 
 	info3->base.acct_flags = pdb_get_acct_ctrl(samu);
 
@@ -529,7 +519,7 @@ static NTSTATUS wbcsids_to_samr_RidWithAttributeArray(
 				const struct wbcSidWithAttr *sids,
 				size_t num_sids)
 {
-	unsigned int i;
+	unsigned int i, j = 0;
 	bool ok;
 
 	groups->rids = talloc_array(mem_ctx,
@@ -542,15 +532,58 @@ static NTSTATUS wbcsids_to_samr_RidWithAttributeArray(
 	for (i = 0; i < num_sids; i++) {
 		ok = sid_peek_check_rid(domain_sid,
 					(const struct dom_sid *)&sids[i].sid,
-					&groups->rids[i].rid);
+					&groups->rids[j].rid);
 		if (!ok) continue;
 
-		groups->rids[i].attributes = SE_GROUP_MANDATORY |
+		groups->rids[j].attributes = SE_GROUP_MANDATORY |
 					     SE_GROUP_ENABLED_BY_DEFAULT |
 					     SE_GROUP_ENABLED;
-		groups->count++;
+		j++;
 	}
 
+	groups->count = j;
+	return NT_STATUS_OK;
+}
+
+static NTSTATUS wbcsids_to_netr_SidAttrArray(
+				const struct dom_sid *domain_sid,
+				const struct wbcSidWithAttr *sids,
+				size_t num_sids,
+				TALLOC_CTX *mem_ctx,
+				struct netr_SidAttr **_info3_sids,
+				uint32_t *info3_num_sids)
+{
+	unsigned int i, j = 0;
+	struct netr_SidAttr *info3_sids;
+
+	info3_sids = talloc_array(mem_ctx, struct netr_SidAttr, num_sids);
+	if (info3_sids == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	/* a wbcDomainSid is the same as a dom_sid */
+	for (i = 0; i < num_sids; i++) {
+		const struct dom_sid *sid;
+
+		sid = (const struct dom_sid *)&sids[i].sid;
+
+		if (dom_sid_in_domain(domain_sid, sid)) {
+			continue;
+		}
+
+		info3_sids[j].sid = dom_sid_dup(info3_sids, sid);
+		if (info3_sids[j].sid == NULL) {
+			talloc_free(info3_sids);
+			return NT_STATUS_NO_MEMORY;
+		}
+		info3_sids[j].attributes = SE_GROUP_MANDATORY |
+					   SE_GROUP_ENABLED_BY_DEFAULT |
+					   SE_GROUP_ENABLED;
+		j++;
+	}
+
+	*info3_num_sids = j;
+	*_info3_sids = info3_sids;
 	return NT_STATUS_OK;
 }
 
@@ -570,9 +603,9 @@ struct netr_SamInfo3 *wbcAuthUserInfo_to_netr_SamInfo3(TALLOC_CTX *mem_ctx,
 	info3 = talloc_zero(mem_ctx, struct netr_SamInfo3);
 	if (!info3) return NULL;
 
-	info3->base.last_logon = info->logon_time;
-	info3->base.last_logoff = info->logoff_time;
-	info3->base.acct_expiry = info->kickoff_time;
+	info3->base.logon_time = info->logon_time;
+	info3->base.logoff_time = info->logoff_time;
+	info3->base.kickoff_time = info->kickoff_time;
 	unix_to_nt_time(&info3->base.last_password_change, info->pass_last_set_time);
 	unix_to_nt_time(&info3->base.allow_password_change,
 			info->pass_can_change_time);
@@ -636,6 +669,17 @@ struct netr_SamInfo3 *wbcAuthUserInfo_to_netr_SamInfo3(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
+	status = wbcsids_to_netr_SidAttrArray(&domain_sid,
+					      &info->sids[1],
+					      info->num_sids - 1,
+					      info3,
+					      &info3->sids,
+					      &info3->sidcount);
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(info3);
+		return NULL;
+	}
+
 	info3->base.user_flags = info->user_flags;
 	memcpy(info3->base.key.key, info->user_session_key, 16);
 
@@ -645,9 +689,9 @@ struct netr_SamInfo3 *wbcAuthUserInfo_to_netr_SamInfo3(TALLOC_CTX *mem_ctx,
 		RET_NOMEM(info3->base.logon_server.string);
 	}
 	if (info->domain_name) {
-		info3->base.domain.string =
+		info3->base.logon_domain.string =
 				talloc_strdup(info3, info->domain_name);
-		RET_NOMEM(info3->base.domain.string);
+		RET_NOMEM(info3->base.logon_domain.string);
 	}
 
 	info3->base.domain_sid = dom_sid_dup(info3, &domain_sid);

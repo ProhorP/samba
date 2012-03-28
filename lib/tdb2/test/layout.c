@@ -6,10 +6,9 @@
 #include <err.h>
 #include "logging.h"
 
-struct tdb_layout *new_tdb_layout(const char *filename)
+struct tdb_layout *new_tdb_layout(void)
 {
 	struct tdb_layout *layout = malloc(sizeof(*layout));
-	layout->filename = filename;
 	layout->num_elems = 0;
 	layout->elem = NULL;
 	return layout;
@@ -37,6 +36,26 @@ void tdb_layout_add_free(struct tdb_layout *layout, tdb_len_t len,
 	elem.base.type = FREE;
 	elem.free.len = len;
 	elem.free.ftable_num = ftable;
+	add(layout, elem);
+}
+
+void tdb_layout_add_capability(struct tdb_layout *layout,
+			       uint64_t type,
+			       bool write_breaks,
+			       bool check_breaks,
+			       bool open_breaks,
+			       tdb_len_t extra)
+{
+	union tdb_layout_elem elem;
+	elem.base.type = CAPABILITY;
+	elem.capability.type = type;
+	if (write_breaks)
+		elem.capability.type |= TDB_CAP_NOWRITE;
+	if (open_breaks)
+		elem.capability.type |= TDB_CAP_NOOPEN;
+	if (check_breaks)
+		elem.capability.type |= TDB_CAP_NOCHECK;
+	elem.capability.extra = extra;
 	add(layout, elem);
 }
 
@@ -82,6 +101,11 @@ static tdb_len_t hashtable_len(struct tle_hashtable *htable)
 		+ htable->extra;
 }
 
+static tdb_len_t capability_len(struct tle_capability *cap)
+{
+	return sizeof(struct tdb_capability) + cap->extra;
+}
+
 static tdb_len_t freetable_len(struct tle_freetable *ftable)
 {
 	return sizeof(struct tdb_freetable);
@@ -123,6 +147,26 @@ static void set_hashtable(void *mem, struct tdb_context *tdb,
 	add_zero_pad(u, len, htable->extra);
 }
 
+static void set_capability(void *mem, struct tdb_context *tdb,
+			   struct tle_capability *cap, struct tdb_header *hdr,
+			   tdb_off_t last_cap)
+{
+	struct tdb_capability *c = mem;
+	tdb_len_t len = sizeof(*c) - sizeof(struct tdb_used_record) + cap->extra;
+
+	c->type = cap->type;
+	c->next = 0;
+	set_header(tdb, &c->hdr, TDB_CAP_MAGIC, 0, len, len, 0);
+
+	/* Append to capability list. */
+	if (!last_cap) {
+		hdr->capabilities = cap->base.off;
+	} else {
+		c = (struct tdb_capability *)((char *)hdr + last_cap);
+		c->next = cap->base.off;
+	}
+}
+
 static void set_freetable(void *mem, struct tdb_context *tdb,
 			 struct tle_freetable *freetable, struct tdb_header *hdr,
 			 tdb_off_t last_ftable)
@@ -147,8 +191,8 @@ static void add_to_freetable(struct tdb_context *tdb,
 			     unsigned ftable,
 			     struct tle_freetable *freetable)
 {
-	tdb->ftable_off = freetable->base.off;
-	tdb->ftable = ftable;
+	tdb->tdb2.ftable_off = freetable->base.off;
+	tdb->tdb2.ftable = ftable;
 	add_free_record(tdb, eoff, sizeof(struct tdb_used_record) + elen,
 			TDB_LOCK_WAIT, false);
 }
@@ -206,7 +250,7 @@ static void add_to_hashtable(struct tdb_context *tdb,
 		b_off = hbucket_off(group_start, bucket);
 		if (tdb_read_off(tdb, b_off) == 0) {
 			tdb_write_off(tdb, b_off,
-				      encode_offset(eoff, bucket, h));
+				      encode_offset(eoff, in_group, h));
 			return;
 		}
 	}
@@ -228,10 +272,12 @@ static struct tle_freetable *find_ftable(struct tdb_layout *layout, unsigned num
 }
 
 /* FIXME: Support TDB_CONVERT */
-struct tdb_context *tdb_layout_get(struct tdb_layout *layout)
+struct tdb_context *tdb_layout_get(struct tdb_layout *layout,
+				   void (*freefn)(void *),
+				   union tdb_attribute *attr)
 {
 	unsigned int i;
-	tdb_off_t off, len, last_ftable;
+	tdb_off_t off, len, last_ftable, last_cap;
 	char *mem;
 	struct tdb_context *tdb;
 
@@ -254,6 +300,9 @@ struct tdb_context *tdb_layout_get(struct tdb_layout *layout)
 		case HASHTABLE:
 			len = hashtable_len(&e->hashtable);
 			break;
+		case CAPABILITY:
+			len = capability_len(&e->capability);
+			break;
 		default:
 			abort();
 		}
@@ -264,15 +313,16 @@ struct tdb_context *tdb_layout_get(struct tdb_layout *layout)
 	/* Fill with some weird pattern. */
 	memset(mem, 0x99, off);
 	/* Now populate our header, cribbing from a real TDB header. */
-	tdb = tdb_open(NULL, TDB_INTERNAL, O_RDWR, 0, &tap_log_attr);
+	tdb = tdb_open(NULL, TDB_INTERNAL, O_RDWR, 0, attr);
 	memcpy(mem, tdb->file->map_ptr, sizeof(struct tdb_header));
 
 	/* Mug the tdb we have to make it use this. */
-	free(tdb->file->map_ptr);
+	freefn(tdb->file->map_ptr);
 	tdb->file->map_ptr = mem;
 	tdb->file->map_size = off;
 
 	last_ftable = 0;
+	last_cap = 0;
 	for (i = 0; i < layout->num_elems; i++) {
 		union tdb_layout_elem *e = &layout->elem[i];
 		switch (e->base.type) {
@@ -289,6 +339,11 @@ struct tdb_context *tdb_layout_get(struct tdb_layout *layout)
 			break;
 		case HASHTABLE:
 			set_hashtable(mem + e->base.off, tdb, &e->hashtable);
+			break;
+		case CAPABILITY:
+			set_capability(mem + e->base.off, tdb, &e->capability,
+				       (struct tdb_header *)mem, last_cap);
+			last_cap = e->base.off;
 			break;
 		}
 	}
@@ -312,25 +367,24 @@ struct tdb_context *tdb_layout_get(struct tdb_layout *layout)
 		}
 	}
 
-	tdb->ftable_off = find_ftable(layout, 0)->base.off;
-
-	/* Get physical if they asked for it. */
-	if (layout->filename) {
-		int fd = open(layout->filename, O_WRONLY|O_TRUNC|O_CREAT,
-			      0600);
-		if (fd < 0)
-			err(1, "opening %s for writing", layout->filename);
-		if (write(fd, tdb->file->map_ptr, tdb->file->map_size)
-		    != tdb->file->map_size)
-			err(1, "writing %s", layout->filename);
-		close(fd);
-		tdb_close(tdb);
-		/* NOMMAP is for lockcheck. */
-		tdb = tdb_open(layout->filename, TDB_NOMMAP, O_RDWR, 0,
-			       &tap_log_attr);
-	}
-
+	tdb->tdb2.ftable_off = find_ftable(layout, 0)->base.off;
 	return tdb;
+}
+
+void tdb_layout_write(struct tdb_layout *layout, void (*freefn)(void *),
+		       union tdb_attribute *attr, const char *filename)
+{
+	struct tdb_context *tdb = tdb_layout_get(layout, freefn, attr);
+	int fd;
+
+	fd = open(filename, O_WRONLY|O_TRUNC|O_CREAT,  0600);
+	if (fd < 0)
+		err(1, "opening %s for writing", filename);
+	if (write(fd, tdb->file->map_ptr, tdb->file->map_size)
+	    != tdb->file->map_size)
+		err(1, "writing %s", filename);
+	close(fd);
+	tdb_close(tdb);
 }
 
 void tdb_layout_free(struct tdb_layout *layout)

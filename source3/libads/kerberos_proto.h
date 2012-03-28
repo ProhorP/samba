@@ -62,8 +62,11 @@ int ads_kdestroy(const char *cc_name);
 char* kerberos_standard_des_salt( void );
 bool kerberos_secrets_store_des_salt( const char* salt );
 char* kerberos_secrets_fetch_des_salt( void );
-char *kerberos_get_default_realm_from_ccache( void );
-char *kerberos_get_realm_from_hostname(const char *hostname);
+char *kerberos_get_default_realm_from_ccache(TALLOC_CTX *mem_ctx);
+char *kerberos_get_realm_from_hostname(TALLOC_CTX *mem_ctx, const char *hostname);
+char *kerberos_get_principal_from_service_hostname(TALLOC_CTX *mem_ctx,
+						   const char *service,
+						   const char *remote_name);
 
 bool kerberos_secrets_store_salting_principal(const char *service,
 					      int enctype,
@@ -75,7 +78,7 @@ int kerberos_kinit_password(const char *principal,
 bool create_local_private_krb5_conf_for_domain(const char *realm,
 						const char *domain,
 						const char *sitename,
-						struct sockaddr_storage *pss,
+					        const struct sockaddr_storage *pss,
 						const char *kdc_name);
 
 /* The following definitions come from libads/authdata.c  */

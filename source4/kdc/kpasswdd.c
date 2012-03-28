@@ -30,6 +30,7 @@
 #include "libcli/security/security.h"
 #include "param/param.h"
 #include "kdc/kdc-glue.h"
+#include "dsdb/common/util.h"
 
 /* Return true if there is a valid error packet formed in the error_blob */
 static bool kpasswdd_make_error_reply(struct kdc_server *kdc,
@@ -160,24 +161,27 @@ static bool kpasswdd_change_password(struct kdc_server *kdc,
 	struct samr_Password *oldLmHash, *oldNtHash;
 	struct ldb_context *samdb;
 	const char * const attrs[] = { "dBCSPwd", "unicodePwd", NULL };
-	struct ldb_message **res;
+	struct ldb_message *msg;
 	int ret;
 
 	/* Fetch the old hashes to get the old password in order to perform
 	 * the password change operation. Naturally it would be much better to
 	 * have a password hash from an authentication around but this doesn't
 	 * seem to be the case here. */
-	ret = gendb_search(kdc->samdb, mem_ctx, NULL, &res, attrs,
-			   "(&(objectClass=user)(sAMAccountName=%s))",
-			   session_info->info->account_name);
-	if (ret != 1) {
+	ret = dsdb_search_one(kdc->samdb, mem_ctx, &msg, ldb_get_default_basedn(kdc->samdb),
+			      LDB_SCOPE_SUBTREE,
+			      attrs,
+			      DSDB_SEARCH_NO_GLOBAL_CATALOG,
+			      "(&(objectClass=user)(sAMAccountName=%s))",
+			      session_info->info->account_name);
+	if (ret != LDB_SUCCESS) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
 						KRB5_KPASSWD_ACCESSDENIED,
 						"No such user when changing password",
 						reply);
 	}
 
-	status = samdb_result_passwords(mem_ctx, kdc->task->lp_ctx, res[0],
+	status = samdb_result_passwords(mem_ctx, kdc->task->lp_ctx, msg,
 					&oldLmHash, &oldNtHash);
 	if (!NT_STATUS_IS_OK(status)) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
@@ -227,6 +231,7 @@ static bool kpasswd_process_request(struct kdc_server *kdc,
 	size_t pw_len;
 
 	if (!NT_STATUS_IS_OK(gensec_session_info(gensec_security,
+						 mem_ctx,
 						 &session_info))) {
 		return kpasswdd_make_error_reply(kdc, mem_ctx,
 						KRB5_KPASSWD_HARDERROR,
@@ -566,7 +571,7 @@ enum kdc_process_ret kpasswdd_process(struct kdc_server *kdc,
 	}
 
 	/* Accept the AP-REQ and generate teh AP-REP we need for the reply */
-	nt_status = gensec_update(gensec_security, tmp_ctx, ap_req, &ap_rep);
+	nt_status = gensec_update(gensec_security, tmp_ctx, kdc->task->event_ctx, ap_req, &ap_rep);
 	if (!NT_STATUS_IS_OK(nt_status) && !NT_STATUS_EQUAL(nt_status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
 
 		ret = kpasswdd_make_unauth_error_reply(kdc, mem_ctx,

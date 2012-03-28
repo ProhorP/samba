@@ -25,6 +25,7 @@
 #include "../libcli/netlogon/netlogon.h"
 #include "lib/async_req/async_sock.h"
 #include "libsmb/nmblib.h"
+#include "../libcli/nbt/libnbt.h"
 
 /* nmbd.c sets this to True. */
 bool global_in_nmbd = False;
@@ -43,22 +44,14 @@ bool global_in_nmbd = False;
 #define SAFJOINKEY_FMT	"SAFJOIN/DOMAIN/%s"
 #define SAFJOIN_TTL	3600
 
-static char *saf_key(const char *domain)
+static char *saf_key(TALLOC_CTX *mem_ctx, const char *domain)
 {
-	char *keystr;
-
-	asprintf_strupper_m(&keystr, SAFKEY_FMT, domain);
-
-	return keystr;
+	return talloc_asprintf_strupper_m(mem_ctx, SAFKEY_FMT, domain);
 }
 
-static char *saf_join_key(const char *domain)
+static char *saf_join_key(TALLOC_CTX *mem_ctx, const char *domain)
 {
-	char *keystr;
-
-	asprintf_strupper_m(&keystr, SAFJOINKEY_FMT, domain);
-
-	return keystr;
+	return talloc_asprintf_strupper_m(mem_ctx, SAFJOINKEY_FMT, domain);
 }
 
 /****************************************************************************
@@ -82,7 +75,11 @@ bool saf_store( const char *domain, const char *servername )
 		return False;
 	}
 
-	key = saf_key( domain );
+	key = saf_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_key() failed\n"));
+		return false;
+	}
 	expire = time( NULL ) + lp_parm_int(-1, "saf","ttl", SAF_TTL);
 
 	DEBUG(10,("saf_store: domain = [%s], server = [%s], expire = [%u]\n",
@@ -90,7 +87,7 @@ bool saf_store( const char *domain, const char *servername )
 
 	ret = gencache_set( key, servername, expire );
 
-	SAFE_FREE( key );
+	TALLOC_FREE( key );
 
 	return ret;
 }
@@ -111,7 +108,11 @@ bool saf_join_store( const char *domain, const char *servername )
 		return False;
 	}
 
-	key = saf_join_key( domain );
+	key = saf_join_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_join_key() failed\n"));
+		return false;
+	}
 	expire = time( NULL ) + lp_parm_int(-1, "saf","join ttl", SAFJOIN_TTL);
 
 	DEBUG(10,("saf_join_store: domain = [%s], server = [%s], expire = [%u]\n",
@@ -119,7 +120,7 @@ bool saf_join_store( const char *domain, const char *servername )
 
 	ret = gencache_set( key, servername, expire );
 
-	SAFE_FREE( key );
+	TALLOC_FREE( key );
 
 	return ret;
 }
@@ -134,17 +135,25 @@ bool saf_delete( const char *domain )
 		return False;
 	}
 
-	key = saf_join_key(domain);
+	key = saf_join_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_join_key() failed\n"));
+		return false;
+	}
 	ret = gencache_del(key);
-	SAFE_FREE(key);
+	TALLOC_FREE(key);
 
 	if (ret) {
 		DEBUG(10,("saf_delete[join]: domain = [%s]\n", domain ));
 	}
 
-	key = saf_key(domain);
+	key = saf_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_key() failed\n"));
+		return false;
+	}
 	ret = gencache_del(key);
-	SAFE_FREE(key);
+	TALLOC_FREE(key);
 
 	if (ret) {
 		DEBUG(10,("saf_delete: domain = [%s]\n", domain ));
@@ -168,11 +177,15 @@ char *saf_fetch( const char *domain )
 		return NULL;
 	}
 
-	key = saf_join_key( domain );
+	key = saf_join_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_join_key() failed\n"));
+		return NULL;
+	}
 
 	ret = gencache_get( key, &server, &timeout );
 
-	SAFE_FREE( key );
+	TALLOC_FREE( key );
 
 	if ( ret ) {
 		DEBUG(5,("saf_fetch[join]: Returning \"%s\" for \"%s\" domain\n",
@@ -180,11 +193,15 @@ char *saf_fetch( const char *domain )
 		return server;
 	}
 
-	key = saf_key( domain );
+	key = saf_key(talloc_tos(), domain);
+	if (key == NULL) {
+		DEBUG(1, ("saf_key() failed\n"));
+		return NULL;
+	}
 
 	ret = gencache_get( key, &server, &timeout );
 
-	SAFE_FREE( key );
+	TALLOC_FREE( key );
 
 	if ( !ret ) {
 		DEBUG(5,("saf_fetch: failed to find server for \"%s\" domain\n",
@@ -2699,6 +2716,7 @@ bool resolve_name(const char *name,
 	struct ip_service *ss_list = NULL;
 	char *sitename = NULL;
 	int count = 0;
+	NTSTATUS status;
 
 	if (is_ipaddress(name)) {
 		return interpret_string_addr(return_ss, name, AI_NUMERICHOST);
@@ -2706,9 +2724,10 @@ bool resolve_name(const char *name,
 
 	sitename = sitename_fetch(lp_realm()); /* wild guess */
 
-	if (NT_STATUS_IS_OK(internal_resolve_name(name, name_type, sitename,
-						  &ss_list, &count,
-						  lp_name_resolve_order()))) {
+	status = internal_resolve_name(name, name_type, sitename,
+				       &ss_list, &count,
+				       lp_name_resolve_order());
+	if (NT_STATUS_IS_OK(status)) {
 		int i;
 
 		if (prefer_ipv4) {

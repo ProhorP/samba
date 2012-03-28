@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "auth.h"
-#include "smbd/globals.h"
+#include "../lib/tsocket/tsocket.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -284,11 +284,22 @@ static NTSTATUS check_ntlm_password(const struct auth_context *auth_context,
 	if (NT_STATUS_IS_OK(nt_status)) {
 		unix_username = (*server_info)->unix_name;
 		if (!(*server_info)->guest) {
+			const char *rhost;
+
+			if (tsocket_address_is_inet(user_info->remote_host, "ip")) {
+				rhost = tsocket_address_inet_addr_string(user_info->remote_host,
+									 talloc_tos());
+				if (rhost == NULL) {
+					return NT_STATUS_NO_MEMORY;
+				}
+			} else {
+				rhost = "127.0.0.1";
+			}
+
 			/* We might not be root if we are an RPC call */
 			become_root();
-			nt_status = smb_pam_accountcheck(
-				unix_username,
-				smbd_server_conn->client_id.name);
+			nt_status = smb_pam_accountcheck(unix_username,
+							 rhost);
 			unbecome_root();
 
 			if (NT_STATUS_IS_OK(nt_status)) {
@@ -427,7 +438,7 @@ static NTSTATUS make_auth_context_text_list(TALLOC_CTX *mem_ctx,
 					    char **text_list)
 {
 	auth_methods *list = NULL;
-	auth_methods *t = NULL;
+	auth_methods *t, *method = NULL;
 	NTSTATUS nt_status;
 
 	if (!text_list) {
@@ -449,7 +460,16 @@ static NTSTATUS make_auth_context_text_list(TALLOC_CTX *mem_ctx,
 
 	(*auth_context)->auth_method_list = list;
 
-	return nt_status;
+	/* Look for the first module to provide a prepare_gensec and
+	 * make_auth4_context hook, and set that if provided */
+	for (method = (*auth_context)->auth_method_list; method; method = method->next) {
+		if (method->prepare_gensec && method->make_auth4_context) {
+			(*auth_context)->prepare_gensec = method->prepare_gensec;
+			(*auth_context)->make_auth4_context = method->make_auth4_context;
+			break;
+		}
+	}
+	return NT_STATUS_OK;
 }
 
 /***************************************************************************

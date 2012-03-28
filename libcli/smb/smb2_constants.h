@@ -25,7 +25,8 @@
 /* offsets into header elements for a sync SMB2 request */
 #define SMB2_HDR_PROTOCOL_ID    0x00
 #define SMB2_HDR_LENGTH		0x04
-#define SMB2_HDR_EPOCH		0x06
+#define SMB2_HDR_CREDIT_CHARGE	0x06
+#define SMB2_HDR_EPOCH		SMB2_HDR_CREDIT_CHARGE /* TODO: remove this */
 #define SMB2_HDR_STATUS		0x08
 #define SMB2_HDR_OPCODE		0x0c
 #define SMB2_HDR_CREDIT		0x0e
@@ -75,6 +76,8 @@
 #define SMB2_DIALECT_REVISION_000       0x0000 /* early beta dialect */
 #define SMB2_DIALECT_REVISION_202       0x0202
 #define SMB2_DIALECT_REVISION_210       0x0210
+#define SMB2_DIALECT_REVISION_222       0x0222
+#define SMB2_DIALECT_REVISION_224       0x0224
 #define SMB2_DIALECT_REVISION_2FF       0x02FF
 
 /* SMB2 negotiate security_mode */
@@ -185,5 +188,7 @@
 #define SMB2_GETINFO_QUOTA              0x04
 
 #define SMB2_CLOSE_FLAGS_FULL_INFORMATION (0x01)
+
+#define SMB2_WRITEFLAG_WRITE_THROUGH	0x00000001
 
 #endif

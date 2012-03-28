@@ -26,7 +26,7 @@ selftest - Samba test runner
 
 selftest --help
 
-selftest [--srcdir=DIR] [--bindir=DIR] [--exeext=EXT][--target=samba4|samba3|win|kvm] [--socket-wrapper] [--quick] [--exclude=FILE] [--include=FILE] [--one] [--prefix=prefix] [--testlist=FILE] [TESTS]
+selftest [--srcdir=DIR] [--bindir=DIR] [--target=samba|samba3|win] [--socket-wrapper] [--quick] [--exclude=FILE] [--include=FILE] [--one] [--prefix=prefix] [--testlist=FILE] [TESTS]
 
 =head1 DESCRIPTION
 
@@ -48,15 +48,11 @@ Source directory.
 
 Built binaries directory.
 
-=item I<--exeext=EXT>
-
-Executable extention
-
 =item I<--prefix=DIR>
 
 Change directory to run tests in. Default is 'st'.
 
-=item I<--target samba4|samba3|win|kvm>
+=item I<--target samba|samba3|win>
 
 Specify test target against which to run. Default is 'samba4'.
 
@@ -142,7 +138,7 @@ if ($@) {
 }
 
 my $opt_help = 0;
-my $opt_target = "samba4";
+my $opt_target = "samba";
 my $opt_quick = 0;
 my $opt_socket_wrapper = 0;
 my $opt_socket_wrapper_pcap = undef;
@@ -151,7 +147,6 @@ my $opt_one = 0;
 my @opt_exclude = ();
 my @opt_include = ();
 my $opt_verbose = 0;
-my $opt_image = undef;
 my $opt_testenv = 0;
 my $opt_list = 0;
 my $ldap = undef;
@@ -162,7 +157,6 @@ my @testlists = ();
 
 my $srcdir = ".";
 my $bindir = "./bin";
-my $exeext = "";
 my $prefix = "./st";
 
 my @includes = ();
@@ -300,26 +294,22 @@ Usage: $Script [OPTIONS] TESTNAME-REGEX
 
 Generic options:
  --help                     this help page
- --target=samba[34]|win|kvm Samba version to target
- --testlist=FILE	    file to read available tests from
+ --target=samba[3]|win      Samba version to target
+ --testlist=FILE            file to read available tests from
 
 Paths:
  --prefix=DIR               prefix to run tests in [st]
  --srcdir=DIR               source directory [.]
  --bindir=DIR               binaries directory [./bin]
- --exeext=EXT               executable extention []
 
 Target Specific:
- --socket-wrapper-pcap	    save traffic to pcap directories
+ --socket-wrapper-pcap      save traffic to pcap directories
  --socket-wrapper-keep-pcap keep all pcap files, not just those for tests that 
                             failed
  --socket-wrapper           enable socket wrapper
 
 Samba4 Specific:
  --ldap=openldap|fedora-ds  back samba onto specified ldap server
-
-Kvm Specific:
- --image=PATH               path to KVM image
 
 Behaviour:
  --quick                    run quick overall test
@@ -344,13 +334,11 @@ my $result = GetOptions (
 		'include=s' => \@opt_include,
 		'srcdir=s' => \$srcdir,
 		'bindir=s' => \$bindir,
-		'exeext=s' => \$exeext,
 		'verbose' => \$opt_verbose,
 		'testenv' => \$opt_testenv,
 		'list' => \$opt_list,
 		'ldap:s' => \$ldap,
 		'resetup-environment' => \$opt_resetup_env,
-		'image=s' => \$opt_image,
 		'testlist=s' => \@testlists,
 		'load-list=s' => \$opt_load_list,
                 'binary-mapping=s' => \$opt_binary_mapping
@@ -423,7 +411,6 @@ $ENV{PREFIX_ABS} = $prefix_abs;
 $ENV{SRCDIR} = $srcdir;
 $ENV{SRCDIR_ABS} = $srcdir_abs;
 $ENV{BINDIR} = $bindir_abs;
-$ENV{EXEEXT} = $exeext;
 
 my $tls_enabled = not $opt_quick;
 $ENV{TLS_ENABLED} = ($tls_enabled?"yes":"no");
@@ -454,16 +441,16 @@ my $socket_wrapper_dir;
 if ($opt_socket_wrapper) {
 	$socket_wrapper_dir = SocketWrapper::setup_dir("$prefix_abs/w", $opt_socket_wrapper_pcap);
 	print "SOCKET_WRAPPER_DIR=$socket_wrapper_dir\n";
-} else {
+} elsif (not $opt_list) {
 	 unless ($< == 0) { 
-		 print "WARNING: Not using socket wrapper, but also not running as root. Will not be able to listen on proper ports\n";
+		 warn("not using socket wrapper, but also not running as root. Will not be able to listen on proper ports");
 	 }
 }
 
 my $target;
 my $testenv_default = "none";
 
-my %binary_mapping = {};
+my %binary_mapping = ();
 if ($opt_binary_mapping) {
     my @binmapping_list = split(/,/, $opt_binary_mapping);
     foreach my $mapping (@binmapping_list) {
@@ -483,36 +470,28 @@ if (defined($ENV{SMBD_MAXTIME}) and $ENV{SMBD_MAXTIME} ne "") {
     $server_maxtime = $ENV{SMBD_MAXTIME};
 }
 
-if ($opt_target eq "samba") {
-	if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
-		die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
+unless ($opt_list) {
+	if ($opt_target eq "samba") {
+		if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
+			die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
+		}
+		$testenv_default = "dc";
+		require target::Samba;
+		$target = new Samba($bindir, \%binary_mapping, $ldap, $srcdir, $server_maxtime);
+	} elsif ($opt_target eq "samba3") {
+		if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
+			die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
+		}
+		$testenv_default = "member";
+		require target::Samba3;
+		$target = new Samba3($bindir, \%binary_mapping, $srcdir_abs, $server_maxtime);
+	} elsif ($opt_target eq "win") {
+		die("Windows tests will not run with socket wrapper enabled.") 
+			if ($opt_socket_wrapper);
+		$testenv_default = "dc";
+		require target::Windows;
+		$target = new Windows();
 	}
-	$testenv_default = "all";
-	require target::Samba;
-	$target = new Samba($bindir, \%binary_mapping, $ldap, $srcdir, $exeext, $server_maxtime);
-} elsif ($opt_target eq "samba4") {
-	$testenv_default = "all";
-	require target::Samba4;
-	$target = new Samba4($bindir, \%binary_mapping, $ldap, $srcdir, $exeext, $server_maxtime);
-} elsif ($opt_target eq "samba3") {
-	if ($opt_socket_wrapper and `$bindir/smbd -b | grep SOCKET_WRAPPER` eq "") {
-		die("You must include --enable-socket-wrapper when compiling Samba in order to execute 'make test'.  Exiting....");
-	}
-	$testenv_default = "member";
-	require target::Samba3;
-	$target = new Samba3($bindir, \%binary_mapping, $srcdir_abs, $exeext, $server_maxtime);
-} elsif ($opt_target eq "win") {
-	die("Windows tests will not run with socket wrapper enabled.") 
-		if ($opt_socket_wrapper);
-	$testenv_default = "dc";
-	require target::Windows;
-	$target = new Windows();
-} elsif ($opt_target eq "kvm") {
-	die("Kvm tests will not run with socket wrapper enabled.") 
-		if ($opt_socket_wrapper);
-	require target::Kvm;
-	die("No image specified") unless ($opt_image);
-	$target = new Kvm($opt_image, undef);
 }
 
 #
@@ -597,17 +576,29 @@ sub write_clientconf($$$)
 	        mkdir("$clientdir/lockdir", 0777);
 	}
 
+	if ( -d "$clientdir/statedir" ) {
+	        unlink <$clientdir/statedir/*>;
+	} else {
+	        mkdir("$clientdir/statedir", 0777);
+	}
+
+	if ( -d "$clientdir/cachedir" ) {
+	        unlink <$clientdir/cachedir/*>;
+	} else {
+	        mkdir("$clientdir/cachedir", 0777);
+	}
+
 	# this is ugly, but the ncalrpcdir needs exactly 0755
 	# otherwise tests fail.
 	my $mask = umask;
 	umask 0022;
 	if ( -d "$clientdir/ncalrpcdir/np" ) {
 	        unlink <$clientdir/ncalrpcdir/np/*>;
-		rmdir <$clientdir/ncalrpcdir/np>;
+		rmdir "$clientdir/ncalrpcdir/np";
 	}
 	if ( -d "$clientdir/ncalrpcdir" ) {
 	        unlink <$clientdir/ncalrpcdir/*>;
-		rmdir <$clientdir/ncalrpcdir>;
+		rmdir "$clientdir/ncalrpcdir";
 	}
 	mkdir("$clientdir/ncalrpcdir", 0755);
 	umask $mask;
@@ -627,9 +618,11 @@ sub write_clientconf($$$)
 	print CF "
 	private dir = $clientdir/private
 	lock dir = $clientdir/lockdir
+	state directory = $clientdir/statedir
+	cache directory = $clientdir/cachedir
 	ncalrpc dir = $clientdir/ncalrpcdir
 	name resolve order = file bcast
-	panic action = $RealBin/gdb_backtrace \%PID\% \%PROG\%
+	panic action = $RealBin/gdb_backtrace \%d
 	max xmit = 32K
 	notify:inotify = false
 	ldb:nosync = true
@@ -758,13 +751,17 @@ foreach my $testsuite (@available) {
 		}
 		if ($match) {
 			if (defined($skipreason)) {
+				if (not $opt_list) {
 					Subunit::skip_testsuite($name, $skipreason);
+				}
 			} else {
 				push(@todo, $testsuite);
 			}
 		}
 	} elsif (defined($skipreason)) {
-		Subunit::skip_testsuite($name, $skipreason);
+		if (not $opt_list) {
+			Subunit::skip_testsuite($name, $skipreason);
+		}
 	} else {
 		push(@todo, $testsuite);
 	}
@@ -783,8 +780,10 @@ if (defined($restricted)) {
 
 my $suitestotal = $#todo + 1;
 
-Subunit::progress($suitestotal);
-Subunit::report_time(time());
+unless ($opt_list) {
+	Subunit::progress($suitestotal);
+	Subunit::report_time(time());
+}
 
 my $i = 0;
 $| = 1;
@@ -883,11 +882,13 @@ sub setup_env($$)
 		}
 	} else {
 		$testenv_vars = $target->setup_env($envname, $prefix);
-		if (defined($testenv_vars) && not defined($testenv_vars->{target})) {
+		if (defined($testenv_vars) and $testenv_vars eq "UNKNOWN") {
+		    return $testenv_vars;
+		} elsif (defined($testenv_vars) && not defined($testenv_vars->{target})) {
 		        $testenv_vars->{target} = $target;
 		}
 		if (not defined($testenv_vars)) {
-		        warn("$opt_target can't provide environment '$envname'");
+			warn("$opt_target can't start up known environment '$envname'");
 		}
 	}
 
@@ -1024,6 +1025,11 @@ $envvarstr
 			Subunit::start_testsuite($name);
 			Subunit::end_testsuite($name, "error",
 				"unable to set up environment $envname - exiting");
+			next;
+		} elsif ($envvars eq "UNKNOWN") {
+			Subunit::start_testsuite($name);
+			Subunit::end_testsuite($name, "skip",
+				"environment $envname is unknown in this test backend - skipping");
 			next;
 		}
 

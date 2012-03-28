@@ -1,12 +1,5 @@
 #include <ccan/failtest/failtest_override.h>
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/transaction.c>
-#include <ccan/tdb2/check.c>
+#include "tdb2-source.h"
 #include <ccan/tap/tap.h>
 #include <ccan/failtest/failtest.h>
 #include "logging.h"
@@ -18,7 +11,12 @@ int main(int argc, char *argv[])
 	struct tdb_context *tdb;
 	int flags[] = { TDB_INTERNAL, TDB_DEFAULT, TDB_NOMMAP,
 			TDB_INTERNAL|TDB_CONVERT, TDB_CONVERT,
-			TDB_NOMMAP|TDB_CONVERT };
+			TDB_NOMMAP|TDB_CONVERT,
+			TDB_INTERNAL|TDB_VERSION1, TDB_VERSION1,
+			TDB_NOMMAP|TDB_VERSION1,
+			TDB_INTERNAL|TDB_CONVERT|TDB_VERSION1,
+			TDB_CONVERT|TDB_VERSION1,
+			TDB_NOMMAP|TDB_CONVERT|TDB_VERSION1 };
 
 	failtest_init(argc, argv);
 	failtest_hook = block_repeat_failures;
@@ -29,12 +27,11 @@ int main(int argc, char *argv[])
 			       O_RDWR|O_CREAT|O_TRUNC, 0600, &tap_log_attr);
 		if (!ok1(tdb))
 			failtest_exit(exit_status());
-		if (tdb) {
-			bool ok = ok1(tdb_check(tdb, NULL, NULL) == 0);
-			tdb_close(tdb);
-			if (!ok)
-				failtest_exit(exit_status());
-		}
+
+		failtest_suppress = true;
+		ok1(tdb_check(tdb, NULL, NULL) == 0);
+		failtest_suppress = false;
+		tdb_close(tdb);
 		if (!ok1(tap_log_messages == 0))
 			break;
 	}

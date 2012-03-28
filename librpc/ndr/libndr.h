@@ -27,10 +27,8 @@
 
 #include <talloc.h>
 #include <sys/time.h>
-#if _SAMBA_BUILD_ == 4
-#include "../lib/util/util.h" /* for discard_const */
+#include "../lib/util/samba_util.h" /* for discard_const */
 #include "../lib/util/charset/charset.h"
-#endif
 
 /*
   this provides definitions for the libcli/rpc/ MSRPC library
@@ -194,7 +192,8 @@ enum ndr_err_code {
 	NDR_ERR_IPV6ADDRESS,
 	NDR_ERR_INVALID_POINTER,
 	NDR_ERR_UNREAD_BYTES,
-	NDR_ERR_NDR64
+	NDR_ERR_NDR64,
+	NDR_ERR_FLAGS
 };
 
 #define NDR_ERR_CODE_IS_SUCCESS(x) (x == NDR_ERR_SUCCESS)
@@ -212,17 +211,44 @@ enum ndr_compression_alg {
 
 /*
   flags passed to control parse flow
+  These are deliberately in a different range to the NDR_IN/NDR_OUT
+  flags to catch mixups
 */
-#define NDR_SCALARS 1
-#define NDR_BUFFERS 2
+#define NDR_SCALARS    0x100
+#define NDR_BUFFERS    0x200
 
 /*
-  flags passed to ndr_print_*()
+  flags passed to ndr_print_*() and ndr pull/push for functions
+  These are deliberately in a different range to the NDR_SCALARS/NDR_BUFFERS
+  flags to catch mixups
 */
-#define NDR_IN 1
-#define NDR_OUT 2
-#define NDR_BOTH 3
-#define NDR_SET_VALUES 4
+#define NDR_IN         0x10
+#define NDR_OUT        0x20
+#define NDR_BOTH       0x30
+#define NDR_SET_VALUES 0x40
+
+
+#define NDR_PULL_CHECK_FLAGS(ndr, ndr_flags) do { \
+	if ((ndr_flags) & ~(NDR_SCALARS|NDR_BUFFERS)) { \
+		return ndr_pull_error(ndr, NDR_ERR_FLAGS, "Invalid pull struct ndr_flags 0x%x", ndr_flags); \
+	} \
+} while (0)
+
+#define NDR_PUSH_CHECK_FLAGS(ndr, ndr_flags) do { \
+	if ((ndr_flags) & ~(NDR_SCALARS|NDR_BUFFERS)) \
+		return ndr_push_error(ndr, NDR_ERR_FLAGS, "Invalid push struct ndr_flags 0x%x", ndr_flags); \
+} while (0)
+
+#define NDR_PULL_CHECK_FN_FLAGS(ndr, flags) do { \
+	if ((flags) & ~(NDR_BOTH|NDR_SET_VALUES)) { \
+		return ndr_pull_error(ndr, NDR_ERR_FLAGS, "Invalid fn pull flags 0x%x", flags); \
+	} \
+} while (0)
+
+#define NDR_PUSH_CHECK_FN_FLAGS(ndr, flags) do { \
+	if ((flags) & ~(NDR_BOTH|NDR_SET_VALUES)) \
+		return ndr_push_error(ndr, NDR_ERR_FLAGS, "Invalid fn push flags 0x%x", flags); \
+} while (0)
 
 #define NDR_PULL_NEED_BYTES(ndr, n) do { \
 	if (unlikely((n) > ndr->data_size || ndr->offset + (n) > ndr->data_size)) { \
@@ -381,6 +407,7 @@ struct sockaddr_storage;
  Map an NT error code from a NDR error code.
 *********************************************************************/
 NTSTATUS ndr_map_error2ntstatus(enum ndr_err_code ndr_err);
+int ndr_map_error2errno(enum ndr_err_code ndr_err);
 const char *ndr_map_error2string(enum ndr_err_code ndr_err);
 #define ndr_errstr ndr_map_error2string
 
@@ -572,6 +599,7 @@ size_t ndr_size_string_array(const char **a, uint32_t count, int flags);
 uint32_t ndr_string_length(const void *_var, uint32_t element_size);
 enum ndr_err_code ndr_check_string_terminator(struct ndr_pull *ndr, uint32_t count, uint32_t element_size);
 enum ndr_err_code ndr_pull_charset(struct ndr_pull *ndr, int ndr_flags, const char **var, uint32_t length, uint8_t byte_mul, charset_t chset);
+enum ndr_err_code ndr_pull_charset_to_null(struct ndr_pull *ndr, int ndr_flags, const char **var, uint32_t length, uint8_t byte_mul, charset_t chset);
 enum ndr_err_code ndr_push_charset(struct ndr_push *ndr, int ndr_flags, const char *var, uint32_t length, uint8_t byte_mul, charset_t chset);
 
 /* GUIDs */
@@ -600,5 +628,25 @@ _PUBLIC_ enum ndr_err_code ndr_push_enum_uint32(struct ndr_push *ndr, int ndr_fl
 _PUBLIC_ enum ndr_err_code ndr_push_enum_uint1632(struct ndr_push *ndr, int ndr_flags, uint16_t v);
 
 _PUBLIC_ void ndr_print_bool(struct ndr_print *ndr, const char *name, const bool b);
+
+_PUBLIC_ enum ndr_err_code ndr_push_timespec(struct ndr_push *ndr,
+					     int ndr_flags,
+					     const struct timespec *t);
+_PUBLIC_ enum ndr_err_code ndr_pull_timespec(struct ndr_pull *ndr,
+					     int ndr_flags,
+					     struct timespec *t);
+_PUBLIC_ void ndr_print_timespec(struct ndr_print *ndr, const char *name,
+				 const struct timespec *t);
+
+_PUBLIC_ enum ndr_err_code ndr_push_timeval(struct ndr_push *ndr,
+					    int ndr_flags,
+					    const struct timeval *t);
+_PUBLIC_ enum ndr_err_code ndr_pull_timeval(struct ndr_pull *ndr,
+					    int ndr_flags,
+					    struct timeval *t);
+_PUBLIC_ void ndr_print_timeval(struct ndr_print *ndr, const char *name,
+				const struct timeval *t);
+
+
 
 #endif /* __LIBNDR_H__ */

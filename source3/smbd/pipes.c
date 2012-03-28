@@ -72,7 +72,6 @@ NTSTATUS open_np_file(struct smb_request *smb_req, const char *name,
 	status = np_open(fsp, name,
 			 conn->sconn->local_address,
 			 conn->sconn->remote_address,
-			 &conn->sconn->client_id,
 			 conn->session_info,
 			 conn->sconn->msg_ctx,
 			 &fsp->fake_file_handle);
@@ -203,7 +202,7 @@ void reply_pipe_write(struct smb_request *req)
 	DEBUG(6, ("reply_pipe_write: %x name: %s len: %d\n", (int)fsp->fnum,
 		  fsp_str_dbg(fsp), (int)state->numtowrite));
 
-	subreq = np_write_send(state, server_event_context(),
+	subreq = np_write_send(state, req->sconn->ev_ctx,
 			       fsp->fake_file_handle, data, state->numtowrite);
 	if (subreq == NULL) {
 		TALLOC_FREE(state);
@@ -319,7 +318,7 @@ void reply_pipe_write_and_X(struct smb_request *req)
 		state->numtowrite -= 2;
 	}
 
-	subreq = np_write_send(state, server_event_context(),
+	subreq = np_write_send(state, req->sconn->ev_ctx,
 			       fsp->fake_file_handle, data, state->numtowrite);
 	if (subreq == NULL) {
 		TALLOC_FREE(state);
@@ -426,7 +425,7 @@ void reply_pipe_read_and_X(struct smb_request *req)
 	state->outbuf = req->outbuf;
 	req->outbuf = NULL;
 
-	subreq = np_read_send(state, server_event_context(),
+	subreq = np_read_send(state, req->sconn->ev_ctx,
 			      fsp->fake_file_handle, data,
 			      state->smb_maxcnt);
 	if (subreq == NULL) {

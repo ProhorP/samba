@@ -491,8 +491,22 @@ options {
 
     def port_wait(self, hostname, port, retries=200, delay=3, wait_for_fail=False):
         '''wait for a host to come up on the network'''
-        self.retry_cmd("nc -v -z -w 1 %s %u" % (hostname, port), ['succeeded'],
-                       retries=retries, delay=delay, wait_for_fail=wait_for_fail)
+
+        while retries > 0:
+            child = self.pexpect_spawn("nc -v -z -w 1 %s %u" % (hostname, port), crlf=False, timeout=1)
+            i = child.expect(['succeeded', 'failed', pexpect.EOF, pexpect.TIMEOUT])
+            if wait_for_fail:
+                if i > 0:
+                    return
+            else:
+                if i == 0:
+                    return
+
+            time.sleep(delay)
+            retries -= 1
+            self.info("retrying (retries=%u delay=%u)" % (retries, delay))
+
+        raise RuntimeError("gave up waiting for %s:%d" % (hostname, port))
 
     def run_net_time(self, child):
         '''run net time on windows'''
@@ -531,9 +545,10 @@ options {
         child.expect('\d+.\d+.\d+.\d+')
         self.setvar('WIN_SUBNET_MASK', child.after)
         child.expect('Default Gateway')
-        child.expect('\d+.\d+.\d+.\d+')
-        self.setvar('WIN_DEFAULT_GATEWAY', child.after)
-        child.expect("C:")
+        i = child.expect(['\d+.\d+.\d+.\d+', "C:"])
+        if i == 0:
+            self.setvar('WIN_DEFAULT_GATEWAY', child.after)
+            child.expect("C:")
 
     def get_is_dc(self, child):
         '''check if a windows machine is a domain controller'''
@@ -577,11 +592,11 @@ options {
     def disable_firewall(self, child):
         '''remove the annoying firewall'''
         child.sendline('netsh advfirewall set allprofiles state off')
-        i = child.expect(["Ok", "The following command was not found: advfirewall set allprofiles state off", "The requested operation requires elevation"])
+        i = child.expect(["Ok", "The following command was not found: advfirewall set allprofiles state off", "The requested operation requires elevation", "Access is denied"])
         child.expect("C:")
         if i == 1:
             child.sendline('netsh firewall set opmode mode = DISABLE profile = ALL')
-            i = child.expect(["Ok", "The following command was not found"])
+            i = child.expect(["Ok", "The following command was not found", "Access is denied"])
             if i != 0:
                 self.info("Firewall disable failed - ignoring")
             child.expect("C:")
@@ -643,6 +658,7 @@ options {
         '''open a telnet connection to a windows server, return the pexpect child'''
         set_route = False
         set_dns = False
+        set_telnetclients = True
         if self.getvar('WIN_IP'):
             ip = self.getvar('WIN_IP')
         else:
@@ -666,12 +682,24 @@ options {
             child.expect("password:")
             child.sendline(password)
             i = child.expect(["C:",
+                              "TelnetClients",
                               "Denying new connections due to the limit on number of connections",
                               "No more connections are allowed to telnet server",
                               "Unable to connect to remote host",
                               "No route to host",
                               "Connection refused",
                               pexpect.EOF])
+            if i == 1:
+                if set_telnetclients:
+                    self.run_cmd('bin/net rpc group addmem TelnetClients "authenticated users" -S $WIN_IP -U$WIN_USER%$WIN_PASS')
+                    child.close()
+                    retries -= 1
+                    set_telnetclients = False
+                    self.info("retrying (retries=%u delay=%u)" % (retries, delay))
+                    continue
+                else:
+                    raise RuntimeError("Failed to connect with telnet due to missing TelnetClients membership")
+
             if i != 0:
                 child.close()
                 time.sleep(delay)
@@ -810,7 +838,7 @@ RebootOnCompletion=No
         child.sendline("shutdown -r -t 0")
         self.port_wait("${WIN_IP}", 139, wait_for_fail=True)
         self.port_wait("${WIN_IP}", 139)
-        self.retry_cmd("host -t SRV _ldap._tcp.${WIN_REALM} ${WIN_IP}", ['has SRV record'] )
+        self.retry_cmd("host -t SRV _ldap._tcp.${WIN_REALM} ${WIN_IP}", ['has SRV record'], retries=60, delay=5 )
 
 
     def start_winvm(self, vm):
@@ -824,10 +852,18 @@ RebootOnCompletion=No
     def run_winjoin(self, vm, domain, username="administrator", password="${PASSWORD1}"):
         '''join a windows box to a domain'''
         child = self.open_telnet("${WIN_HOSTNAME}", "${WIN_USER}", "${WIN_PASS}", set_time=True, set_ip=True, set_noexpire=True)
-        child.sendline("ipconfig /flushdns")
-        child.expect("C:")
-        child.sendline("netdom join ${WIN_HOSTNAME} /Domain:%s /UserD:%s /PasswordD:%s" % (domain, username, password))
-        child.expect("The command completed successfully")
+        retries = 5
+        while retries > 0:
+            child.sendline("ipconfig /flushdns")
+            child.expect("C:")
+            child.sendline("netdom join ${WIN_HOSTNAME} /Domain:%s /UserD:%s /PasswordD:%s" % (domain, username, password))
+            i = child.expect(["The command completed successfully", 
+                             "The specified domain either does not exist or could not be contacted."])
+            if i == 0:
+                break
+            time.sleep(10)
+            retries -= 1
+
         child.expect("C:")
         child.sendline("shutdown /r -t 0")
         self.wait_reboot()
@@ -843,13 +879,13 @@ RebootOnCompletion=No
         self.info('Testing smbclient')
         self.chdir('${PREFIX}')
         self.cmd_contains("bin/smbclient --version", ["${SAMBA_VERSION}"])
-        self.retry_cmd('bin/smbclient -L ${WIN_HOSTNAME} -U%s%%%s %s' % (username, password, args), ["IPC"])
+        self.retry_cmd('bin/smbclient -L ${WIN_HOSTNAME} -U%s%%%s %s' % (username, password, args), ["IPC"], retries=60, delay=5)
 
-    def test_net_use(self, vm, domain, username, password):
+    def test_net_use(self, vm, realm, domain, username, password):
         self.setwinvars(vm)
         self.info('Testing net use against Samba3 member')
         child = self.open_telnet("${WIN_HOSTNAME}", "%s\\%s" % (domain, username), password)
-        child.sendline("net use t: \\\\${HOSTNAME}.${LCREALM}\\test")
+        child.sendline("net use t: \\\\${HOSTNAME}.%s\\test" % realm)
         child.expect("The command completed successfully")
 
 

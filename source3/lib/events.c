@@ -2,7 +2,7 @@
    Unix SMB/CIFS implementation.
    Timed event library.
    Copyright (C) Andrew Tridgell 1992-1998
-   Copyright (C) Volker Lendecke 2005
+   Copyright (C) Volker Lendecke 2005-2007
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -101,14 +101,9 @@ bool event_add_to_poll_args(struct tevent_context *ev, TALLOC_CTX *mem_ctx,
 	fds = *pfds;
 	num_pollfds = *pnum_pfds;
 
-	/*
-	 * The +1 is for the sys_poll calling convention. It expects
-	 * an array 1 longer for the signal pipe
-	 */
-
-	if (talloc_array_length(fds) < num_pollfds + num_fds + 1) {
+	if (talloc_array_length(fds) < num_pollfds + num_fds) {
 		fds = talloc_realloc(mem_ctx, fds, struct pollfd,
-					   num_pollfds + num_fds + 1);
+					   num_pollfds + num_fds);
 		if (fds == NULL) {
 			DEBUG(10, ("talloc_realloc failed\n"));
 			return false;
@@ -243,6 +238,10 @@ bool run_events_poll(struct tevent_context *ev, int pollrtn,
 		struct pollfd *pfd;
 		uint16 flags = 0;
 
+		if ((fde->flags & (EVENT_FD_READ|EVENT_FD_WRITE)) == 0) {
+			continue;
+		}
+
 		if (pollfd_idx[fde->fd] >= num_pfds) {
 			DEBUG(1, ("internal error: pollfd_idx[fde->fd] (%d) "
 				  ">= num_pfds (%d)\n", pollfd_idx[fde->fd],
@@ -334,7 +333,7 @@ static int s3_event_loop_once(struct tevent_context *ev, const char *location)
 		return -1;
 	}
 
-	ret = sys_poll(state->pfds, num_pfds, timeout);
+	ret = poll(state->pfds, num_pfds, timeout);
 	if (ret == -1 && errno != EINTR) {
 		tevent_debug(ev, TEVENT_DEBUG_FATAL,
 			     "poll() failed: %d:%s\n",
@@ -454,5 +453,85 @@ struct tevent_context *s3_tevent_context_init(TALLOC_CTX *mem_ctx)
 	}
 
 	return ev;
+}
+
+struct idle_event {
+	struct timed_event *te;
+	struct timeval interval;
+	char *name;
+	bool (*handler)(const struct timeval *now, void *private_data);
+	void *private_data;
+};
+
+static void smbd_idle_event_handler(struct event_context *ctx,
+				    struct timed_event *te,
+				    struct timeval now,
+				    void *private_data)
+{
+	struct idle_event *event =
+		talloc_get_type_abort(private_data, struct idle_event);
+
+	TALLOC_FREE(event->te);
+
+	DEBUG(10,("smbd_idle_event_handler: %s %p called\n",
+		  event->name, event->te));
+
+	if (!event->handler(&now, event->private_data)) {
+		DEBUG(10,("smbd_idle_event_handler: %s %p stopped\n",
+			  event->name, event->te));
+		/* Don't repeat, delete ourselves */
+		TALLOC_FREE(event);
+		return;
+	}
+
+	DEBUG(10,("smbd_idle_event_handler: %s %p rescheduled\n",
+		  event->name, event->te));
+
+	event->te = event_add_timed(ctx, event,
+				    timeval_sum(&now, &event->interval),
+				    smbd_idle_event_handler, event);
+
+	/* We can't do much but fail here. */
+	SMB_ASSERT(event->te != NULL);
+}
+
+struct idle_event *event_add_idle(struct event_context *event_ctx,
+				  TALLOC_CTX *mem_ctx,
+				  struct timeval interval,
+				  const char *name,
+				  bool (*handler)(const struct timeval *now,
+						  void *private_data),
+				  void *private_data)
+{
+	struct idle_event *result;
+	struct timeval now = timeval_current();
+
+	result = talloc(mem_ctx, struct idle_event);
+	if (result == NULL) {
+		DEBUG(0, ("talloc failed\n"));
+		return NULL;
+	}
+
+	result->interval = interval;
+	result->handler = handler;
+	result->private_data = private_data;
+
+	if (!(result->name = talloc_asprintf(result, "idle_evt(%s)", name))) {
+		DEBUG(0, ("talloc failed\n"));
+		TALLOC_FREE(result);
+		return NULL;
+	}
+
+	result->te = event_add_timed(event_ctx, result,
+				     timeval_sum(&now, &interval),
+				     smbd_idle_event_handler, result);
+	if (result->te == NULL) {
+		DEBUG(0, ("event_add_timed failed\n"));
+		TALLOC_FREE(result);
+		return NULL;
+	}
+
+	DEBUG(10,("event_add_idle: %s %p\n", result->name, result->te));
+	return result;
 }
 

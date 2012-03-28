@@ -126,7 +126,12 @@ bool spnego_parse_negTokenInit(TALLOC_CTX *ctx,
 	asn1_start_tag(data,ASN1_CONTEXT(0));
 	asn1_start_tag(data,ASN1_SEQUENCE(0));
 	for (i=0; asn1_tag_remaining(data) > 0 && i < ASN1_MAX_OIDS-1; i++) {
-		asn1_read_OID(data,ctx, &OIDs[i]);
+		if (!asn1_read_OID(data,ctx, &OIDs[i])) {
+			break;
+		}
+		if (data->has_error) {
+			break;
+		}
 	}
 	OIDs[i] = NULL;
 	asn1_end_tag(data);
@@ -407,118 +412,6 @@ DATA_BLOB spnego_gen_auth(TALLOC_CTX *ctx, DATA_BLOB blob)
 /*
  parse a SPNEGO auth packet. This contains the encrypted passwords
 */
-bool spnego_parse_auth_and_mic(TALLOC_CTX *ctx, DATA_BLOB blob,
-				DATA_BLOB *auth, DATA_BLOB *signature)
-{
-	ssize_t len;
-	struct spnego_data token;
-
-	len = spnego_read_data(talloc_tos(), blob, &token);
-	if (len == -1) {
-		DEBUG(3,("spnego_parse_auth: spnego_read_data failed\n"));
-		return false;
-	}
-
-	if (token.type != SPNEGO_NEG_TOKEN_TARG) {
-		DEBUG(3,("spnego_parse_auth: wrong token type: %d\n",
-			token.type));
-		spnego_free_data(&token);
-		return false;
-	}
-
-	*auth = data_blob_talloc(ctx,
-				 token.negTokenTarg.responseToken.data,
-				 token.negTokenTarg.responseToken.length);
-
-	if (!signature) {
-		goto done;
-	}
-
-	*signature = data_blob_talloc(ctx,
-				 token.negTokenTarg.mechListMIC.data,
-				 token.negTokenTarg.mechListMIC.length);
-
-done:
-	spnego_free_data(&token);
-
-	return true;
-}
-
-bool spnego_parse_auth(TALLOC_CTX *ctx, DATA_BLOB blob, DATA_BLOB *auth)
-{
-	return spnego_parse_auth_and_mic(ctx, blob, auth, NULL);
-}
-
-/*
-  generate a minimal SPNEGO response packet.  Doesn't contain much.
-*/
-DATA_BLOB spnego_gen_auth_response_and_mic(TALLOC_CTX *ctx,
-					   NTSTATUS nt_status,
-					   const char *mechOID,
-					   DATA_BLOB *reply,
-					   DATA_BLOB *mechlistMIC)
-{
-	ASN1_DATA *data;
-	DATA_BLOB ret;
-	uint8 negResult;
-
-	if (NT_STATUS_IS_OK(nt_status)) {
-		negResult = SPNEGO_ACCEPT_COMPLETED;
-	} else if (NT_STATUS_EQUAL(nt_status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
-		negResult = SPNEGO_ACCEPT_INCOMPLETE;
-	} else {
-		negResult = SPNEGO_REJECT;
-	}
-
-	data = asn1_init(talloc_tos());
-	if (data == NULL) {
-		return data_blob_null;
-	}
-
-	asn1_push_tag(data, ASN1_CONTEXT(1));
-	asn1_push_tag(data, ASN1_SEQUENCE(0));
-	asn1_push_tag(data, ASN1_CONTEXT(0));
-	asn1_write_enumerated(data, negResult);
-	asn1_pop_tag(data);
-
-	if (mechOID) {
-		asn1_push_tag(data,ASN1_CONTEXT(1));
-		asn1_write_OID(data, mechOID);
-		asn1_pop_tag(data);
-	}
-
-	if (reply && reply->data != NULL) {
-		asn1_push_tag(data,ASN1_CONTEXT(2));
-		asn1_write_OctetString(data, reply->data, reply->length);
-		asn1_pop_tag(data);
-	}
-
-	if (mechlistMIC && mechlistMIC->data != NULL) {
-		asn1_push_tag(data, ASN1_CONTEXT(3));
-		asn1_write_OctetString(data,
-					mechlistMIC->data,
-					mechlistMIC->length);
-		asn1_pop_tag(data);
-	}
-
-	asn1_pop_tag(data);
-	asn1_pop_tag(data);
-
-	ret = data_blob_talloc(ctx, data->data, data->length);
-	asn1_free(data);
-	return ret;
-}
-
-DATA_BLOB spnego_gen_auth_response(TALLOC_CTX *ctx, DATA_BLOB *reply,
-				   NTSTATUS nt_status, const char *mechOID)
-{
-	return spnego_gen_auth_response_and_mic(ctx, nt_status,
-						mechOID, reply, NULL);
-}
-
-/*
- parse a SPNEGO auth packet. This contains the encrypted passwords
-*/
 bool spnego_parse_auth_response(TALLOC_CTX *ctx,
 			        DATA_BLOB blob, NTSTATUS nt_status,
 				const char *mechOID,
@@ -591,40 +484,3 @@ bool spnego_parse_auth_response(TALLOC_CTX *ctx,
 	return True;
 }
 
-bool spnego_mech_list_blob(TALLOC_CTX *mem_ctx,
-			   char **oid_list, DATA_BLOB *raw_data)
-{
-	ASN1_DATA *data;
-	unsigned int idx;
-
-	if (!oid_list || !oid_list[0] || !raw_data) {
-		return false;
-	}
-
-	data = asn1_init(talloc_tos());
-	if (data == NULL) {
-		return false;
-	}
-
-	asn1_push_tag(data, ASN1_SEQUENCE(0));
-	for (idx = 0; oid_list[idx]; idx++) {
-		asn1_write_OID(data, oid_list[idx]);
-	}
-	asn1_pop_tag(data);
-
-	if (data->has_error) {
-		DEBUG(3, (__location__ " failed at %d\n", (int)data->ofs));
-		asn1_free(data);
-		return false;
-	}
-
-	*raw_data = data_blob_talloc(mem_ctx, data->data, data->length);
-	if (!raw_data->data) {
-		DEBUG(3, (__location__": data_blob_talloc() failed!\n"));
-		asn1_free(data);
-		return false;
-	}
-
-	asn1_free(data);
-	return true;
-}

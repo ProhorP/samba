@@ -221,7 +221,7 @@ static struct tevent_req *dcerpc_bh_raw_call_send(TALLOC_CTX *mem_ctx,
 
 	ok = dcerpc_bh_is_connected(h);
 	if (!ok) {
-		tevent_req_nterror(req, NT_STATUS_INVALID_CONNECTION);
+		tevent_req_nterror(req, NT_STATUS_CONNECTION_DISCONNECTED);
 		return tevent_req_post(req, ev);
 	}
 
@@ -313,7 +313,7 @@ static struct tevent_req *dcerpc_bh_disconnect_send(TALLOC_CTX *mem_ctx,
 
 	ok = dcerpc_bh_is_connected(h);
 	if (!ok) {
-		tevent_req_nterror(req, NT_STATUS_INVALID_CONNECTION);
+		tevent_req_nterror(req, NT_STATUS_CONNECTION_DISCONNECTED);
 		return tevent_req_post(req, ev);
 	}
 
@@ -708,7 +708,6 @@ static NTSTATUS ncacn_pull_request_auth(struct dcecli_connection *c, TALLOC_CTX 
 	switch (c->security_state.auth_info->auth_level) {
 	case DCERPC_AUTH_LEVEL_PRIVACY:
 		status = gensec_unseal_packet(c->security_state.generic_state, 
-					      mem_ctx, 
 					      raw_packet->data + DCERPC_REQUEST_LENGTH,
 					      pkt->u.response.stub_and_verifier.length, 
 					      raw_packet->data,
@@ -721,7 +720,6 @@ static NTSTATUS ncacn_pull_request_auth(struct dcecli_connection *c, TALLOC_CTX 
 		
 	case DCERPC_AUTH_LEVEL_INTEGRITY:
 		status = gensec_check_packet(c->security_state.generic_state, 
-					     mem_ctx, 
 					     pkt->u.response.stub_and_verifier.data, 
 					     pkt->u.response.stub_and_verifier.length, 
 					     raw_packet->data,
@@ -1182,7 +1180,7 @@ struct composite_context *dcerpc_bind_send(struct dcerpc_pipe *p,
 						    true);
 	if (!composite_is_ok(c)) return c;
 
-	event_add_timed(c->event_ctx, req,
+	tevent_add_timer(c->event_ctx, req,
 			timeval_current_ofs(DCERPC_REQUEST_TIMEOUT, 0),
 			dcerpc_timeout_handler, req);
 
@@ -1415,7 +1413,7 @@ static struct rpc_request *dcerpc_request_send(struct dcerpc_pipe *p,
 	dcerpc_ship_next_request(p->conn);
 
 	if (p->request_timeout) {
-		event_add_timed(dcerpc_event_context(p), req, 
+		tevent_add_timer(dcerpc_event_context(p), req,
 				timeval_current_ofs(p->request_timeout, 0), 
 				dcerpc_timeout_handler, req);
 	}
@@ -1562,7 +1560,7 @@ static NTSTATUS dcerpc_request_recv(struct rpc_request *req,
 
 	while (req->state != RPC_REQUEST_DONE) {
 		struct tevent_context *ctx = dcerpc_event_context(req->p);
-		if (event_loop_once(ctx) != 0) {
+		if (tevent_loop_once(ctx) != 0) {
 			return NT_STATUS_CONNECTION_DISCONNECTED;
 		}
 	}
@@ -1933,7 +1931,7 @@ struct composite_context *dcerpc_alter_context_send(struct dcerpc_pipe *p,
 	c->status = p->conn->transport.send_request(p->conn, &blob, true);
 	if (!composite_is_ok(c)) return c;
 
-	event_add_timed(c->event_ctx, req,
+	tevent_add_timer(c->event_ctx, req,
 			timeval_current_ofs(DCERPC_REQUEST_TIMEOUT, 0),
 			dcerpc_timeout_handler, req);
 

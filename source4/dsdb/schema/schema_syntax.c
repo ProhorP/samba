@@ -229,9 +229,11 @@ static WERROR dsdb_syntax_BOOL_ldb_to_drsuapi(const struct dsdb_syntax_ctx *ctx,
 		blobs[i] = data_blob_talloc(blobs, NULL, 4);
 		W_ERROR_HAVE_NO_MEMORY(blobs[i].data);
 
-		if (strcmp("TRUE", (const char *)in->values[i].data) == 0) {
+		if (in->values[i].length >= 4 &&
+		    strncmp("TRUE", (const char *)in->values[i].data, in->values[i].length) == 0) {
 			SIVAL(blobs[i].data, 0, 0x00000001);
-		} else if (strcmp("FALSE", (const char *)in->values[i].data) == 0) {
+		} else if (in->values[i].length >= 5 &&
+			   strncmp("FALSE", (const char *)in->values[i].data, in->values[i].length) == 0) {
 			SIVAL(blobs[i].data, 0, 0x00000000);
 		} else {
 			return WERR_FOOBAR;
@@ -252,22 +254,23 @@ static WERROR dsdb_syntax_BOOL_validate_ldb(const struct dsdb_syntax_ctx *ctx,
 	}
 
 	for (i=0; i < in->num_values; i++) {
-		int t, f;
-
 		if (in->values[i].length == 0) {
 			return WERR_DS_INVALID_ATTRIBUTE_SYNTAX;
 		}
 
-		t = strncmp("TRUE",
+		if (in->values[i].length >= 4 &&
+		    strncmp("TRUE",
 			    (const char *)in->values[i].data,
-			    in->values[i].length);
-		f = strncmp("FALSE",
-			    (const char *)in->values[i].data,
-			    in->values[i].length);
-
-		if (t != 0 && f != 0) {
-			return WERR_DS_INVALID_ATTRIBUTE_SYNTAX;
+			    in->values[i].length) == 0) {
+			continue;
 		}
+		if (in->values[i].length >= 5 &&
+		    strncmp("FALSE",
+			    (const char *)in->values[i].data,
+			    in->values[i].length) == 0) {
+			continue;
+		}
+		return WERR_DS_INVALID_ATTRIBUTE_SYNTAX;
 	}
 
 	return WERR_OK;
@@ -554,6 +557,11 @@ static WERROR dsdb_syntax_NTTIME_UTC_drsuapi_to_ldb(const struct dsdb_syntax_ctx
 		}
 
 		v = BVAL(in->value_ctr.values[i].blob->data, 0);
+		if (v == 0) {
+			/* special case for 1601 zero timestamp */
+			out->values[i] = data_blob_string_const("16010101000000.0Z");
+			continue;
+		}
 		v *= 10000000;
 		t = nt_time_to_unix(v);
 
@@ -606,6 +614,11 @@ static WERROR dsdb_syntax_NTTIME_UTC_ldb_to_drsuapi(const struct dsdb_syntax_ctx
 
 		blobs[i] = data_blob_talloc(blobs, NULL, 8);
 		W_ERROR_HAVE_NO_MEMORY(blobs[i].data);
+
+		if (ldb_val_string_cmp(&in->values[i], "16010101000000.0Z") == 0) {
+			SBVALS(blobs[i].data, 0, 0);
+			continue;
+		}
 
 		t = ldb_string_utc_to_time((const char *)in->values[i].data);
 		unix_to_nt_time(&v, t);
@@ -693,6 +706,11 @@ static WERROR dsdb_syntax_NTTIME_drsuapi_to_ldb(const struct dsdb_syntax_ctx *ct
 		}
 
 		v = BVAL(in->value_ctr.values[i].blob->data, 0);
+		if (v == 0) {
+			/* special case for 1601 zero timestamp */
+			out->values[i] = data_blob_string_const("16010101000000.0Z");
+			continue;
+		}
 		v *= 10000000;
 		t = nt_time_to_unix(v);
 
@@ -738,6 +756,11 @@ static WERROR dsdb_syntax_NTTIME_ldb_to_drsuapi(const struct dsdb_syntax_ctx *ct
 
 		blobs[i] = data_blob_talloc(blobs, NULL, 8);
 		W_ERROR_HAVE_NO_MEMORY(blobs[i].data);
+
+		if (ldb_val_string_cmp(&in->values[i], "16010101000000.0Z") == 0) {
+			SBVALS(blobs[i].data, 0, 0);
+			continue;
+		}
 
 		ret = ldb_val_to_time(&in->values[i], &t);
 		if (ret != LDB_SUCCESS) {
@@ -813,7 +836,7 @@ static WERROR dsdb_syntax_DATA_BLOB_drsuapi_to_ldb(const struct dsdb_syntax_ctx 
 		}
 
 		out->values[i] = data_blob_dup_talloc(out->values,
-						      in->value_ctr.values[i].blob);
+						      *in->value_ctr.values[i].blob);
 		W_ERROR_HAVE_NO_MEMORY(out->values[i].data);
 	}
 
@@ -847,7 +870,7 @@ static WERROR dsdb_syntax_DATA_BLOB_ldb_to_drsuapi(const struct dsdb_syntax_ctx 
 	for (i=0; i < in->num_values; i++) {
 		out->value_ctr.values[i].blob	= &blobs[i];
 
-		blobs[i] = data_blob_dup_talloc(blobs, &in->values[i]);
+		blobs[i] = data_blob_dup_talloc(blobs, in->values[i]);
 		W_ERROR_HAVE_NO_MEMORY(blobs[i].data);
 	}
 
@@ -2345,7 +2368,8 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.ldb_to_drsuapi		= dsdb_syntax_BOOL_ldb_to_drsuapi,
 		.validate_ldb		= dsdb_syntax_BOOL_validate_ldb,
 		.equality               = "booleanMatch",
-		.comment                = "Boolean"
+		.comment                = "Boolean",
+		.auto_normalise		= true
 	},{
 		.name			= "Integer",
 		.ldap_oid		= LDB_SYNTAX_INTEGER,
@@ -2356,7 +2380,8 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.validate_ldb		= dsdb_syntax_INT32_validate_ldb,
 		.equality               = "integerMatch",
 		.comment                = "Integer",
-		.ldb_syntax		= LDB_SYNTAX_SAMBA_INT32
+		.ldb_syntax		= LDB_SYNTAX_SAMBA_INT32,
+		.auto_normalise		= true
 	},{
 		.name			= "String(Octet)",
 		.ldap_oid		= LDB_SYNTAX_OCTET_STRING,
@@ -2397,7 +2422,8 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.drsuapi_to_ldb		= dsdb_syntax_INT32_drsuapi_to_ldb,
 		.ldb_to_drsuapi		= dsdb_syntax_INT32_ldb_to_drsuapi,
 		.validate_ldb		= dsdb_syntax_INT32_validate_ldb,
-		.ldb_syntax		= LDB_SYNTAX_SAMBA_INT32
+		.ldb_syntax		= LDB_SYNTAX_SAMBA_INT32,
+		.auto_normalise		= true
 	},{
 	/* not used in w2k3 forest */
 		.name			= "String(Numeric)",
@@ -2453,6 +2479,7 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.validate_ldb		= dsdb_syntax_NTTIME_UTC_validate_ldb,
 		.equality               = "generalizedTimeMatch",
 		.comment                = "UTC Time",
+		.auto_normalise		= true
 	},{
 		.name			= "String(Generalized-Time)",
 		.ldap_oid		= "1.3.6.1.4.1.1466.115.121.1.24",
@@ -2464,6 +2491,7 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.equality               = "generalizedTimeMatch",
 		.comment                = "Generalized Time",
 		.ldb_syntax             = LDB_SYNTAX_UTC_TIME,
+		.auto_normalise		= true
 	},{
 	/* not used in w2k3 schema */
 		.name			= "String(Case Sensitive)",
@@ -2502,6 +2530,7 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 		.equality               = "integerMatch",
 		.comment                = "Large Integer",
 		.ldb_syntax             = LDB_SYNTAX_INTEGER,
+		.auto_normalise		= true
 	},{
 		.name			= "String(NT-Sec-Desc)",
 		.ldap_oid		= LDB_SYNTAX_SAMBA_SECURITY_DESCRIPTOR,

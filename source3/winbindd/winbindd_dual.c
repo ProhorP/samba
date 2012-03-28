@@ -43,6 +43,8 @@
 extern bool override_logfile;
 extern struct winbindd_methods cache_methods;
 
+static struct winbindd_child *winbindd_children = NULL;
+
 /* Read some data from a client connection */
 
 static NTSTATUS child_read_request(struct winbindd_cli_state *state)
@@ -171,6 +173,7 @@ static void wb_child_request_done(struct tevent_req *subreq)
 		 */
 		close(state->child->sock);
 		state->child->sock = -1;
+		DLIST_REMOVE(winbindd_children, state->child);
 		tevent_req_error(req, err);
 		return;
 	}
@@ -488,8 +491,6 @@ void setup_child(struct winbindd_domain *domain, struct winbindd_child *child,
 	child->binding_handle = wbint_binding_handle(NULL, domain, child);
 	SMB_ASSERT(child->binding_handle != NULL);
 }
-
-static struct winbindd_child *winbindd_children = NULL;
 
 void winbind_child_died(pid_t pid)
 {
@@ -1181,7 +1182,6 @@ NTSTATUS winbindd_reinit_after_fork(const struct winbindd_child *myself,
 	status = reinit_after_fork(
 		winbind_messaging_context(),
 		winbind_event_context(),
-		procid_self(),
 		true);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
@@ -1329,7 +1329,7 @@ static bool fork_domain_child(struct winbindd_child *child)
 
 		close(fdpair[0]);
 
-		nread = read(fdpair[1], &status, sizeof(status));
+		nread = sys_read(fdpair[1], &status, sizeof(status));
 		if (nread != sizeof(status)) {
 			DEBUG(1, ("fork_domain_child: Could not read child status: "
 				  "nread=%d, error=%s\n", (int)nread,
@@ -1360,7 +1360,7 @@ static bool fork_domain_child(struct winbindd_child *child)
 
 	status = winbindd_reinit_after_fork(child, child->logfilename);
 
-	nwritten = write(state.sock, &status, sizeof(status));
+	nwritten = sys_write(state.sock, &status, sizeof(status));
 	if (nwritten != sizeof(status)) {
 		DEBUG(1, ("fork_domain_child: Could not write status: "
 			  "nwritten=%d, error=%s\n", (int)nwritten,
@@ -1507,7 +1507,7 @@ static bool fork_domain_child(struct winbindd_child *child)
 				(unsigned int)tp->tv_sec, (unsigned int)tp->tv_usec ));
 		}
 
-		ret = sys_poll(pfds, num_pfds, timeout);
+		ret = poll(pfds, num_pfds, timeout);
 
 		if (run_events_poll(winbind_event_context(), ret,
 				    pfds, num_pfds)) {

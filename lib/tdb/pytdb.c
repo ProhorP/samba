@@ -539,7 +539,7 @@ static PyMappingMethods tdb_object_mapping = {
 	.mp_ass_subscript = (objobjargproc)obj_setitem,
 };
 static PyTypeObject PyTdb = {
-	.tp_name = "Tdb",
+	.tp_name = "tdb.Tdb",
 	.tp_basicsize = sizeof(PyTdbObject),
 	.tp_methods = tdb_object_methods,
 	.tp_getset = tdb_object_getsetters,
@@ -569,7 +569,8 @@ void inittdb(void)
 	if (PyType_Ready(&PyTdbIterator) < 0)
 		return;
 
-	m = Py_InitModule3("tdb", tdb_methods, "TDB is a simple key-value database similar to GDBM that supports multiple writers.");
+	m = Py_InitModule3("tdb", tdb_methods,
+		"simple key-value database that supports multiple writers.");
 	if (m == NULL)
 		return;
 

@@ -22,6 +22,7 @@
 #include "includes.h"
 #include "ntdomain.h"
 #include "../libcli/security/security.h"
+#include "../lib/tsocket/tsocket.h"
 #include "librpc/gen_ndr/srv_epmapper.h"
 #include "srv_epmapper.h"
 #include "auth.h"
@@ -141,6 +142,14 @@ static bool endpoints_match(const struct dcerpc_binding *ep1,
 		return false;
 	}
 
+	if (!ep1->host || !ep2->host) {
+		return ep1->endpoint == ep2->endpoint;
+	}
+
+	if (!strequal(ep1->host, ep2->host)) {
+		return false;
+	}
+
 	return true;
 }
 
@@ -223,9 +232,9 @@ static uint32_t build_ep_list(TALLOC_CTX *mem_ctx,
 	return total;
 }
 
-static bool is_priviledged_pipe(struct auth_serversupplied_info *info) {
+static bool is_priviledged_pipe(struct auth_session_info *info) {
 	/* If the user is not root, or has the system token, fail */
-	if ((info->utok.uid != sec_initial_uid()) &&
+	if ((info->unix_token->uid != sec_initial_uid()) &&
 	    !security_token_is_system(info->security_token)) {
 		return false;
 	}
@@ -297,6 +306,7 @@ error_status_t _epm_Insert(struct pipes_struct *p,
 	/* If this is not a priviledged users, return */
 	if (p->transport != NCALRPC ||
 	    !is_priviledged_pipe(p->session_info)) {
+		p->rng_fault_state = true;
 		return EPMAPPER_STATUS_CANT_PERFORM_OP;
 	}
 
@@ -433,6 +443,7 @@ error_status_t _epm_Delete(struct pipes_struct *p,
 	/* If this is not a priviledged users, return */
 	if (p->transport != NCALRPC ||
 	    !is_priviledged_pipe(p->session_info)) {
+		p->rng_fault_state = true;
 		return EPMAPPER_STATUS_CANT_PERFORM_OP;
 	}
 
@@ -528,6 +539,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 	if (r->in.entry_handle == NULL ||
 	    policy_handle_empty(r->in.entry_handle)) {
 		struct GUID *obj;
+		char *srv_addr = NULL;
 
 		DEBUG(7, ("_epm_Lookup: No entry_handle found, creating it.\n"));
 
@@ -543,6 +555,11 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 			obj = r->in.object;
 		}
 
+		if (p->local_address != NULL) {
+			srv_addr = tsocket_address_inet_addr_string(p->local_address,
+								    tmp_ctx);
+		}
+
 		switch (r->in.inquiry_type) {
 		case RPC_C_EP_ALL_ELTS:
 			/*
@@ -553,7 +570,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 			eps->count = build_ep_list(eps,
 						   endpoint_table,
 						   NULL,
-						   p->server_id == NULL ? NULL : p->server_id->addr,
+						   srv_addr,
 						   &eps->e);
 			break;
 		case RPC_C_EP_MATCH_BY_IF:
@@ -576,7 +593,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 			eps->count = build_ep_list(eps,
 						   endpoint_table,
 						   &r->in.interface_id->uuid,
-						   p->server_id == NULL ? NULL : p->server_id->addr,
+						   srv_addr,
 						   &eps->e);
 			break;
 		case RPC_C_EP_MATCH_BY_OBJ:
@@ -587,7 +604,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 			eps->count = build_ep_list(eps,
 						   endpoint_table,
 						   r->in.object,
-						   p->server_id == NULL ? NULL : p->server_id->addr,
+						   srv_addr,
 						   &eps->e);
 			break;
 		default:
@@ -909,6 +926,7 @@ error_status_t _epm_Map(struct pipes_struct *p,
 	if (r->in.entry_handle == NULL ||
 	    policy_handle_empty(r->in.entry_handle)) {
 		struct GUID *obj;
+		char *srv_addr = NULL;
 
 		DEBUG(7, ("_epm_Map: No entry_handle found, creating it.\n"));
 
@@ -936,10 +954,15 @@ error_status_t _epm_Map(struct pipes_struct *p,
 			obj = r->in.object;
 		}
 
+		if (p->local_address != NULL) {
+			srv_addr = tsocket_address_inet_addr_string(p->local_address,
+								    tmp_ctx);
+		}
+
 		eps->count = build_ep_list(eps,
 					   endpoint_table,
 					   obj,
-					   p->server_id == NULL ? NULL : p->server_id->addr,
+					   srv_addr,
 					   &eps->e);
 		if (eps->count == 0) {
 			rc = EPMAPPER_STATUS_NO_MORE_ENTRIES;

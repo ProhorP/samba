@@ -36,7 +36,8 @@
 #include "winbindd.h"
 #include "idmap.h"
 #include "idmap_rw.h"
-#include "dbwrap.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "../libcli/security/dom_sid.h"
 #include "util_tdb.h"
 
@@ -67,10 +68,10 @@ static NTSTATUS idmap_tdb2_init_hwm(struct idmap_domain *dom)
 
 	/* Create high water marks for group and user id */
 
-	low_id = dbwrap_fetch_int32(ctx->db, HWM_USER);
-	if ((low_id == -1) || (low_id < dom->low_id)) {
-		status = dbwrap_trans_store_int32(ctx->db, HWM_USER,
-						  dom->low_id);
+	status = dbwrap_fetch_uint32(ctx->db, HWM_USER, &low_id);
+	if (!NT_STATUS_IS_OK(status) || (low_id < dom->low_id)) {
+		status = dbwrap_trans_store_uint32(ctx->db, HWM_USER,
+						   dom->low_id);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Unable to initialise user hwm in idmap "
 				  "database: %s\n", nt_errstr(status)));
@@ -78,10 +79,10 @@ static NTSTATUS idmap_tdb2_init_hwm(struct idmap_domain *dom)
 		}
 	}
 
-	low_id = dbwrap_fetch_int32(ctx->db, HWM_GROUP);
-	if ((low_id == -1) || (low_id < dom->low_id)) {
-		status = dbwrap_trans_store_int32(ctx->db, HWM_GROUP,
-						  dom->low_id);
+	status = dbwrap_fetch_uint32(ctx->db, HWM_GROUP, &low_id);
+	if (!NT_STATUS_IS_OK(status) || (low_id < dom->low_id)) {
+		status = dbwrap_trans_store_uint32(ctx->db, HWM_GROUP,
+						   dom->low_id);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Unable to initialise group hwm in idmap "
 				  "database: %s\n", nt_errstr(status)));
@@ -108,16 +109,12 @@ static NTSTATUS idmap_tdb2_open_db(struct idmap_domain *dom)
 		return NT_STATUS_OK;
 	}
 
-	db_path = lp_parm_talloc_string(-1, "tdb", "idmap2.tdb", NULL);
-	if (db_path == NULL) {
-		/* fall back to the private directory, which, despite
-		   its name, is usually on shared storage */
-		db_path = talloc_asprintf(NULL, "%s/idmap2.tdb", lp_private_dir());
-	}
+	db_path = talloc_asprintf(NULL, "%s/idmap2.tdb", lp_private_dir());
 	NT_STATUS_HAVE_NO_MEMORY(db_path);
 
 	/* Open idmap repository */
-	ctx->db = db_open(ctx, db_path, 0, TDB_DEFAULT, O_RDWR|O_CREAT, 0644);
+	ctx->db = db_open(ctx, db_path, 0, TDB_DEFAULT, O_RDWR|O_CREAT, 0644,
+			  DBWRAP_LOCK_ORDER_1);
 	TALLOC_FREE(db_path);
 
 	if (ctx->db == NULL) {
@@ -150,8 +147,8 @@ static NTSTATUS idmap_tdb2_allocate_id_action(struct db_context *db,
 
 	state = (struct idmap_tdb2_allocate_id_context *)private_data;
 
-	hwm = dbwrap_fetch_int32(db, state->hwmkey);
-	if (hwm == -1) {
+	ret = dbwrap_fetch_uint32(db, state->hwmkey, &hwm);
+	if (!NT_STATUS_IS_OK(ret)) {
 		ret = NT_STATUS_INTERNAL_DB_ERROR;
 		goto done;
 	}
@@ -279,6 +276,8 @@ static NTSTATUS idmap_tdb2_db_init(struct idmap_domain *dom)
 {
 	NTSTATUS ret;
 	struct idmap_tdb2_context *ctx;
+	char *config_option = NULL;
+	const char * idmap_script = NULL;
 
 	ctx = talloc_zero(dom, struct idmap_tdb2_context);
 	if ( ! ctx) {
@@ -286,27 +285,28 @@ static NTSTATUS idmap_tdb2_db_init(struct idmap_domain *dom)
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (strequal(dom->name, "*")) {
-		ctx->script = lp_parm_const_string(-1, "idmap", "script", NULL);
-		if (ctx->script) {
-			DEBUG(1, ("using idmap script '%s'\n", ctx->script));
-		}
-	} else {
-		char *config_option = NULL;
+	config_option = talloc_asprintf(ctx, "idmap config %s", dom->name);
+	if (config_option == NULL) {
+		DEBUG(0, ("Out of memory!\n"));
+		ret = NT_STATUS_NO_MEMORY;
+		goto failed;
+	}
+	ctx->script = lp_parm_const_string(-1, config_option, "script", NULL);
+	talloc_free(config_option);
 
-		config_option = talloc_asprintf(ctx, "idmap config %s", dom->name);
-		if ( ! config_option) {
-			DEBUG(0, ("Out of memory!\n"));
-			ret = NT_STATUS_NO_MEMORY;
-			goto failed;
-		}
+	idmap_script = lp_parm_const_string(-1, "idmap", "script", NULL);
+	if (idmap_script != NULL) {
+		DEBUG(0, ("Warning: 'idmap:script' is deprecated. "
+			  " Please use 'idmap config * : script' instead!\n"));
+	}
 
-		ctx->script = lp_parm_const_string(-1, config_option, "script", NULL);
-		if (ctx->script) {
-			DEBUG(1, ("using idmap script '%s'\n", ctx->script));
-		}
+	if (strequal(dom->name, "*") && ctx->script == NULL) {
+		/* fall back to idmap:script for backwards compatibility */
+		ctx->script = idmap_script;
+	}
 
-		talloc_free(config_option);
+	if (ctx->script) {
+		DEBUG(1, ("using idmap script '%s'\n", ctx->script));
 	}
 
 	ctx->rw_ops = talloc_zero(ctx, struct idmap_rw_ops);
@@ -356,8 +356,8 @@ static NTSTATUS idmap_tdb2_set_mapping_action(struct db_context *db,
 	DEBUG(10, ("Storing %s <-> %s map\n", state->ksidstr, state->kidstr));
 
 	/* check wheter sid mapping is already present in db */
-	data = dbwrap_fetch_bystring(db, tmp_ctx, state->ksidstr);
-	if (data.dptr) {
+	ret = dbwrap_fetch_bystring(db, tmp_ctx, state->ksidstr, &data);
+	if (!NT_STATUS_IS_OK(ret)) {
 		ret = NT_STATUS_OBJECT_NAME_COLLISION;
 		goto done;
 	}
@@ -577,9 +577,6 @@ static NTSTATUS idmap_tdb2_id_to_sid(struct idmap_domain *dom, struct id_map *ma
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	/* final SAFE_FREE safe */
-	data.dptr = NULL;
-
 	if (keystr == NULL) {
 		DEBUG(0, ("Out of memory!\n"));
 		ret = NT_STATUS_NO_MEMORY;
@@ -589,9 +586,9 @@ static NTSTATUS idmap_tdb2_id_to_sid(struct idmap_domain *dom, struct id_map *ma
 	DEBUG(10,("Fetching record %s\n", keystr));
 
 	/* Check if the mapping exists */
-	data = dbwrap_fetch_bystring(ctx->db, keystr, keystr);
+	status = dbwrap_fetch_bystring(ctx->db, keystr, keystr, &data);
 
-	if (!data.dptr) {
+	if (!NT_STATUS_IS_OK(status)) {
 		char *sidstr;
 		struct idmap_tdb2_set_mapping_context store_state;
 
@@ -602,8 +599,6 @@ static NTSTATUS idmap_tdb2_id_to_sid(struct idmap_domain *dom, struct id_map *ma
 		}
 
 		ret = idmap_tdb2_script(ctx, map, "IDTOSID %s", keystr);
-
-		/* store it on shared storage */
 		if (!NT_STATUS_IS_OK(ret)) {
 			goto done;
 		}
@@ -665,8 +660,8 @@ static NTSTATUS idmap_tdb2_sid_to_id(struct idmap_domain *dom, struct id_map *ma
 	DEBUG(10,("Fetching record %s\n", keystr));
 
 	/* Check if sid is present in database */
-	data = dbwrap_fetch_bystring(ctx->db, tmp_ctx, keystr);
-	if (!data.dptr) {
+	ret = dbwrap_fetch_bystring(ctx->db, tmp_ctx, keystr, &data);
+	if (!NT_STATUS_IS_OK(ret)) {
 		char *idstr;
 		struct idmap_tdb2_set_mapping_context store_state;
 
@@ -678,7 +673,6 @@ static NTSTATUS idmap_tdb2_sid_to_id(struct idmap_domain *dom, struct id_map *ma
 		}
 
 		ret = idmap_tdb2_script(ctx, map, "SIDTOID %s", keystr);
-		/* store it on shared storage */
 		if (!NT_STATUS_IS_OK(ret)) {
 			goto done;
 		}
@@ -881,7 +875,7 @@ static struct idmap_methods db_methods = {
 	.allocate_id     = idmap_tdb2_get_new_id
 };
 
-NTSTATUS idmap_tdb2_init(void)
+NTSTATUS samba_init_module(void)
 {
 	return smb_register_idmap(SMB_IDMAP_INTERFACE_VERSION, "tdb2", &db_methods);
 }

@@ -24,6 +24,7 @@
 #include "torture/torture.h"
 #include <tevent.h>
 #include "system/time.h"
+#include "system/network.h"
 #include "librpc/gen_ndr/lsa.h"
 #include "librpc/gen_ndr/ndr_netlogon.h"
 #include "librpc/gen_ndr/ndr_netlogon_c.h"
@@ -35,10 +36,9 @@
 #include "torture/rpc/torture_rpc.h"
 #include "param/param.h"
 #include "auth/gensec/gensec.h"
+#include "auth/gensec/schannel.h"
 #include "auth/gensec/gensec_proto.h"
 #include "../libcli/auth/schannel.h"
-
-#include <unistd.h>
 
 #define TEST_ACCOUNT_NAME "samrtorturetest"
 #define TEST_ACCOUNT_NAME_PWD "samrpwdlastset"
@@ -7827,7 +7827,7 @@ static bool test_Connect(struct dcerpc_binding_handle *b,
 
 	torture_comment(tctx, "Testing samr_Connect\n");
 
-	r.in.system_name = 0;
+	r.in.system_name = NULL;
 	r.in.access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	r.out.connect_handle = &h;
 

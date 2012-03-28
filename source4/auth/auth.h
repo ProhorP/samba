@@ -45,15 +45,12 @@ struct loadparm_context;
 /* version 0 - till samba4 is stable - metze */
 #define AUTH4_INTERFACE_VERSION 0
 
-#define AUTH_SESSION_INFO_DEFAULT_GROUPS     0x01 /* Add the user to the default world and network groups */
-#define AUTH_SESSION_INFO_AUTHENTICATED      0x02 /* Add the user to the 'authenticated users' group */
-#define AUTH_SESSION_INFO_SIMPLE_PRIVILEGES  0x04 /* Use a trivial map between users and privilages, rather than a DB */
-
 struct auth_method_context;
 struct auth_check_password_request;
 struct auth4_context;
 struct auth_session_info;
 struct ldb_dn;
+struct smb_krb5_context;
 
 struct auth_operations {
 	const char *name;
@@ -92,55 +89,6 @@ struct auth_method_context {
 	void *private_data;
 };
 
-struct auth4_context {
-	struct {
-		/* Who set this up in the first place? */
-		const char *set_by;
-
-		bool may_be_modified;
-
-		DATA_BLOB data;
-	} challenge;
-
-	/* methods, in the order they should be called */
-	struct auth_method_context *methods;
-
-	/* the event context to use for calls that can block */
-	struct tevent_context *event_ctx;
-
-	/* the messaging context which can be used by backends */
-	struct imessaging_context *msg_ctx;
-
-	/* loadparm context */
-	struct loadparm_context *lp_ctx;
-
-	/* SAM database for this local machine - to fill in local groups, or to authenticate local NTLM users */
-	struct ldb_context *sam_ctx;
-
-	NTSTATUS (*check_password)(struct auth4_context *auth_ctx,
-				   TALLOC_CTX *mem_ctx,
-				   const struct auth_usersupplied_info *user_info,
-				   struct auth_user_info_dc **user_info_dc);
-
-	NTSTATUS (*get_challenge)(struct auth4_context *auth_ctx, uint8_t chal[8]);
-
-	bool (*challenge_may_be_modified)(struct auth4_context *auth_ctx);
-
-	NTSTATUS (*set_challenge)(struct auth4_context *auth_ctx, const uint8_t chal[8], const char *set_by);
-
-	NTSTATUS (*get_user_info_dc_principal)(TALLOC_CTX *mem_ctx,
-						       struct auth4_context *auth_ctx,
-						       const char *principal,
-						       struct ldb_dn *user_dn,
-						       struct auth_user_info_dc **user_info_dc);
-
-	NTSTATUS (*generate_session_info)(TALLOC_CTX *mem_ctx,
-					  struct auth4_context *auth_context,
-					  struct auth_user_info_dc *user_info_dc,
-					  uint32_t session_info_flags,
-					  struct auth_session_info **session_info);
-};
-
 /* this structure is used by backends to determine the size of some critical types */
 struct auth_critical_sizes {
 	int interface_version;
@@ -156,7 +104,9 @@ struct auth_critical_sizes {
 			   const struct auth_usersupplied_info *user_info_in,
 			   const struct auth_usersupplied_info **user_info_encrypted);
 
+struct wbc_context;
 #include "auth/session.h"
+#include "auth/unix_token_proto.h"
 #include "auth/system_session_proto.h"
 #include "libcli/security/security.h"
 
@@ -201,11 +151,16 @@ NTSTATUS auth_context_create(TALLOC_CTX *mem_ctx,
 			     struct imessaging_context *msg,
 			     struct loadparm_context *lp_ctx,
 			     struct auth4_context **auth_ctx);
-NTSTATUS auth_context_create_from_ldb(TALLOC_CTX *mem_ctx, struct ldb_context *ldb, struct auth4_context **auth_ctx);
+
+NTSTATUS auth_check_password_wrapper(struct auth4_context *auth_ctx,
+			     TALLOC_CTX *mem_ctx,
+			     const struct auth_usersupplied_info *user_info, 
+			     void **server_returned_info,
+			     DATA_BLOB *user_session_key, DATA_BLOB *lm_session_key);
 
 NTSTATUS auth_check_password(struct auth4_context *auth_ctx,
 			     TALLOC_CTX *mem_ctx,
-			     const struct auth_usersupplied_info *user_info,
+			     const struct auth_usersupplied_info *user_info, 
 			     struct auth_user_info_dc **user_info_dc);
 NTSTATUS auth4_init(void);
 NTSTATUS auth_register(const struct auth_operations *ops);

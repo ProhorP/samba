@@ -2,9 +2,13 @@
    writers - that stresses the locking code.
 */
 
+#include "config.h"
 #include "tdb2.h"
-#include <stdlib.h>
 #include <err.h>
+#ifdef HAVE_LIBREPLACE
+#include <replace.h>
+#else
+#include <stdlib.h>
 #include <getopt.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,6 +19,10 @@
 #include <fcntl.h>
 #include <time.h>
 #include <sys/wait.h>
+#endif
+
+/* Currently we default to creating a tdb1.  This will change! */
+#define TDB2_IS_DEFAULT false
 
 //#define REOPEN_PROB 30
 #define DELETE_PROB 8
@@ -42,10 +50,14 @@ static int count_pipe;
 static union tdb_attribute log_attr;
 static union tdb_attribute seed_attr;
 
-static void tdb_log(struct tdb_context *tdb, enum tdb_log_level level,
-		    const char *message, void *data)
+static void tdb_log(struct tdb_context *tdb,
+		    enum tdb_log_level level,
+		    enum TDB_ERROR ecode,
+		    const char *message,
+		    void *data)
 {
-	fputs(message, stdout);
+	printf("tdb:%s:%s:%s\n",
+	       tdb_name(tdb), tdb_errorstr(ecode), message);
 	fflush(stdout);
 #if 0
 	{
@@ -253,14 +265,14 @@ static void send_count_and_suicide(int sig)
 	kill(getpid(), SIGUSR2);
 }
 
-static int run_child(int i, int seed, unsigned num_loops, unsigned start,
-		     int tdb_flags)
+static int run_child(const char *filename, int i, int seed, unsigned num_loops,
+		     unsigned start, int tdb_flags)
 {
 	struct sigaction act = { .sa_sigaction = segv_handler,
 				 .sa_flags = SA_SIGINFO };
 	sigaction(11, &act, NULL);
 
-	db = tdb_open("torture.tdb", tdb_flags, O_RDWR | O_CREAT, 0600,
+	db = tdb_open(filename, tdb_flags, O_RDWR | O_CREAT, 0600,
 		      &log_attr);
 	if (!db) {
 		fatal(NULL, "db open failed");
@@ -313,6 +325,24 @@ static int run_child(int i, int seed, unsigned num_loops, unsigned start,
 	return (error_count < 100 ? error_count : 100);
 }
 
+static char *test_path(const char *filename)
+{
+	const char *prefix = getenv("TEST_DATA_PREFIX");
+
+	if (prefix) {
+		char *path = NULL;
+		int ret;
+
+		ret = asprintf(&path, "%s/%s", prefix, filename);
+		if (ret == -1) {
+			return NULL;
+		}
+		return path;
+	}
+
+	return strdup(filename);
+}
+
 int main(int argc, char * const *argv)
 {
 	int i, seed = -1;
@@ -324,13 +354,16 @@ int main(int argc, char * const *argv)
 	int kill_random = 0;
 	int *done;
 	int tdb_flags = TDB_DEFAULT;
+	bool tdb2 = TDB2_IS_DEFAULT;
+	char *test_tdb;
 
 	log_attr.base.attr = TDB_ATTRIBUTE_LOG;
 	log_attr.base.next = &seed_attr;
 	log_attr.log.fn = tdb_log;
 	seed_attr.base.attr = TDB_ATTRIBUTE_SEED;
+	seed_attr.base.next = NULL;
 
-	while ((c = getopt(argc, argv, "n:l:s:thkS")) != -1) {
+	while ((c = getopt(argc, argv, "n:l:s:thkS12")) != -1) {
 		switch (c) {
 		case 'n':
 			num_procs = strtol(optarg, NULL, 0);
@@ -355,12 +388,26 @@ int main(int argc, char * const *argv)
 		case 'k':
 			kill_random = 1;
 			break;
+		case '1':
+			tdb2 = false;
+			break;
+		case '2':
+			tdb2 = true;
+			break;
 		default:
 			usage();
 		}
 	}
 
-	unlink("torture.tdb");
+	if (!tdb2) {
+		tdb_flags |= TDB_VERSION1;
+		/* TDB1 tdbs don't use seed. */
+		log_attr.base.next = NULL;
+	}
+
+	test_tdb = test_path("torture.tdb");
+
+	unlink(test_tdb);
 
 	if (seed == -1) {
 		seed = (getpid() + time(NULL)) & 0x7FFFFFFF;
@@ -369,7 +416,8 @@ int main(int argc, char * const *argv)
 
 	if (num_procs == 1 && !kill_random) {
 		/* Don't fork for this case, makes debugging easier. */
-		error_count = run_child(0, seed, num_loops, 0, tdb_flags);
+		error_count = run_child(test_tdb, 0, seed, num_loops, 0,
+					tdb_flags);
 		goto done;
 	}
 
@@ -395,7 +443,8 @@ int main(int argc, char * const *argv)
 #endif
 					);
 			}
-			exit(run_child(i, seed, num_loops, 0, tdb_flags));
+			exit(run_child(test_tdb, i, seed, num_loops, 0,
+				       tdb_flags));
 		}
 	}
 
@@ -451,8 +500,9 @@ int main(int argc, char * const *argv)
 				}
 				pids[j] = fork();
 				if (pids[j] == 0)
-					exit(run_child(j, seed, num_loops,
-						       done[j], tdb_flags));
+					exit(run_child(test_tdb, j, seed,
+						       num_loops, done[j],
+						       tdb_flags));
 				printf("Restarting child %i for %u-%u\n",
 				       j, done[j], num_loops);
 				continue;
@@ -476,7 +526,7 @@ int main(int argc, char * const *argv)
 
 done:
 	if (error_count == 0) {
-		db = tdb_open("torture.tdb", TDB_DEFAULT, O_RDWR | O_CREAT,
+		db = tdb_open(test_tdb, TDB_DEFAULT, O_RDWR | O_CREAT,
 			      0600, &log_attr);
 		if (!db) {
 			fatal(db, "db open failed");
@@ -490,5 +540,6 @@ done:
 		printf("OK\n");
 	}
 
+	free(test_tdb);
 	return error_count;
 }

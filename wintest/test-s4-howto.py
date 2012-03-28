@@ -39,8 +39,8 @@ def provision_s4(t, func_level="2008"):
     if t.getvar('INTERFACE_IPV6'):
         provision.append('--host-ip6=${INTERFACE_IPV6}')
     t.run_cmd(provision)
-    t.run_cmd('bin/samba-tool newuser testallowed ${PASSWORD1}')
-    t.run_cmd('bin/samba-tool newuser testdenied ${PASSWORD1}')
+    t.run_cmd('bin/samba-tool user add testallowed ${PASSWORD1}')
+    t.run_cmd('bin/samba-tool user add testdenied ${PASSWORD1}')
     t.run_cmd('bin/samba-tool group addmembers "Allowed RODC Password Replication Group" testallowed')
 
 
@@ -50,7 +50,7 @@ def start_s4(t):
     t.chdir("${PREFIX}")
     t.run_cmd('killall -9 -q samba smbd nmbd winbindd', checkfail=False)
     t.run_cmd(['sbin/samba',
-             '--option', 'panic action=gnome-terminal -e "gdb --pid %PID%"'])
+             '--option', 'panic action=gnome-terminal -e "gdb --pid %d"'])
     t.port_wait("${INTERFACE_IP}", 139)
 
 def test_smbclient(t):
@@ -259,7 +259,7 @@ def test_dcpromo(t, vm):
     child.expect("was successful")
 
     t.info("Checking if new users propogate to windows")
-    t.retry_cmd('bin/samba-tool newuser test2 ${PASSWORD2}', ["created successfully"])
+    t.retry_cmd('bin/samba-tool user add test2 ${PASSWORD2}', ["created successfully"])
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${LCREALM} -Utest2%${PASSWORD2} -k no", ['Sharename', 'Remote IPC'])
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${LCREALM} -Utest2%${PASSWORD2} -k yes", ['Sharename', 'Remote IPC'])
 
@@ -373,7 +373,7 @@ def test_dcpromo_rodc(t, vm):
                    regex=True)
 
     t.info("Checking if new users are available on windows")
-    t.run_cmd('bin/samba-tool newuser test2 ${PASSWORD2}')
+    t.run_cmd('bin/samba-tool user add test2 ${PASSWORD2}')
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${LCREALM} -Utest2%${PASSWORD2} -k yes", ['Sharename', 'Remote IPC'])
     t.retry_cmd("bin/samba-tool drs replicate ${WIN_HOSTNAME}.${LCREALM} ${HOSTNAME}.${LCREALM} ${BASEDN}", ["was successful"])
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${LCREALM} -Utest2%${PASSWORD2} -k no", ['Sharename', 'Remote IPC'])
@@ -385,7 +385,7 @@ def test_dcpromo_rodc(t, vm):
 
 def prep_join_as_dc(t, vm):
     '''start VM and shutdown Samba in preperation to join a windows domain as a DC'''
-    t.info("Starting VMs for joining ${WIN_VM} as a second DC using samba-tool join DC")
+    t.info("Starting VMs for joining ${WIN_VM} as a second DC using samba-tool domain join DC")
     t.chdir('${PREFIX}')
     t.run_cmd('killall -9 -q samba smbd nmbd winbindd', checkfail=False)
     t.rndc_cmd('flush')
@@ -396,12 +396,12 @@ def prep_join_as_dc(t, vm):
 def join_as_dc(t, vm):
     '''join a windows domain as a DC'''
     t.setwinvars(vm)
-    t.info("Joining ${WIN_VM} as a second DC using samba-tool join DC")
+    t.info("Joining ${WIN_VM} as a second DC using samba-tool domain join DC")
     t.port_wait("${WIN_IP}", 389)
     t.retry_cmd("host -t SRV _ldap._tcp.${WIN_REALM} ${WIN_IP}", ['has SRV record'] )
 
     t.retry_cmd("bin/samba-tool drs showrepl ${WIN_HOSTNAME}.${WIN_REALM} -Uadministrator%${WIN_PASS}", ['INBOUND NEIGHBORS'] )
-    t.run_cmd('bin/samba-tool join ${WIN_REALM} DC -Uadministrator%${WIN_PASS} -d${DEBUGLEVEL} --option=interfaces=${INTERFACE}')
+    t.run_cmd('bin/samba-tool domain join ${WIN_REALM} DC -Uadministrator%${WIN_PASS} -d${DEBUGLEVEL} --option=interfaces=${INTERFACE}')
     t.run_cmd('bin/samba-tool drs kcc ${WIN_HOSTNAME}.${WIN_REALM} -Uadministrator@${WIN_REALM}%${WIN_PASS}')
 
 
@@ -445,7 +445,7 @@ def test_join_as_dc(t, vm):
     child.expect("was successful")
 
     t.info("Checking if new users propogate to windows")
-    t.retry_cmd('bin/samba-tool newuser test2 ${PASSWORD2}', ["created successfully"])
+    t.retry_cmd('bin/samba-tool user add test2 ${PASSWORD2}', ["created successfully"])
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${WIN_REALM} -Utest2%${PASSWORD2} -k no", ['Sharename', 'Remote IPC'])
     t.retry_cmd("bin/smbclient -L ${WIN_HOSTNAME}.${WIN_REALM} -Utest2%${PASSWORD2} -k yes", ['Sharename', 'Remote IPC'])
 
@@ -470,11 +470,11 @@ def test_join_as_dc(t, vm):
 def join_as_rodc(t, vm):
     '''join a windows domain as a RODC'''
     t.setwinvars(vm)
-    t.info("Joining ${WIN_VM} as a RODC using samba-tool join DC")
+    t.info("Joining ${WIN_VM} as a RODC using samba-tool domain join DC")
     t.port_wait("${WIN_IP}", 389)
     t.retry_cmd("host -t SRV _ldap._tcp.${WIN_REALM} ${WIN_IP}", ['has SRV record'] )
     t.retry_cmd("bin/samba-tool drs showrepl ${WIN_HOSTNAME}.${WIN_REALM} -Uadministrator%${WIN_PASS}", ['INBOUND NEIGHBORS'] )
-    t.run_cmd('bin/samba-tool join ${WIN_REALM} RODC -Uadministrator%${WIN_PASS} -d${DEBUGLEVEL} --option=interfaces=${INTERFACE}')
+    t.run_cmd('bin/samba-tool domain join ${WIN_REALM} RODC -Uadministrator%${WIN_PASS} -d${DEBUGLEVEL} --option=interfaces=${INTERFACE}')
     t.run_cmd('bin/samba-tool drs kcc ${WIN_HOSTNAME}.${WIN_REALM} -Uadministrator@${WIN_REALM}%${WIN_PASS}')
 
 
@@ -528,7 +528,7 @@ def test_join_as_rodc(t, vm):
 
     # should this work?
     t.info("Checking if new users propogate to windows")
-    t.cmd_contains('bin/samba-tool newuser test2 ${PASSWORD2}', ['No RID Set DN'])
+    t.cmd_contains('bin/samba-tool user add test2 ${PASSWORD2}', ['No RID Set DN'])
 
     t.info("Checking propogation of user deletion")
     child.sendline("net user test3 /del")

@@ -22,6 +22,9 @@
 
 #include "includes.h"
 
+/** Don't verify this unique id */
+#define SERVERID_UNIQUE_ID_NOT_TO_VERIFY 0xFFFFFFFFFFFFFFFFULL
+
 /*
  * Register a server with its unique id
  */
@@ -44,6 +47,11 @@ bool serverid_register_msg_flags(const struct server_id id, bool do_reg,
 bool serverid_exists(const struct server_id *id);
 
 /*
+ * Check existence of a list of server ids
+ */
+bool serverids_exist(const struct server_id *ids, int num_ids, bool *results);
+
+/*
  * Walk the list of server_ids registered
  */
 bool serverid_traverse(int (*fn)(struct db_record *rec,
@@ -63,5 +71,11 @@ bool serverid_traverse_read(int (*fn)(const struct server_id *id,
  * Ensure CLEAR_IF_FIRST works fine, to be called from the parent smbd
  */
 bool serverid_parent_init(TALLOC_CTX *mem_ctx);
+
+/*
+ * Get a random unique_id and make sure that it is not
+ * SERVERID_UNIQUE_ID_NOT_TO_VERIFY
+ */
+uint64_t serverid_get_random_unique_id(void);
 
 #endif

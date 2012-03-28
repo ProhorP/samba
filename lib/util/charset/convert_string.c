@@ -179,7 +179,9 @@ bool convert_string_error_handle(struct smb_iconv_handle *ic,
 		size_t slen = srclen;
 		size_t dlen = destlen;
 		unsigned char lastp = '\0';
+#ifndef BROKEN_UNICODE_COMPOSE_CHARACTERS
 		bool ret;
+#endif
 
 		if (slen == (size_t)-1) {
 			while (dlen &&
@@ -376,7 +378,9 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 			errno = ENOMEM;
 			return false;
 		}
-		*converted_size = destlen;
+		if (converted_size != NULL) {
+			*converted_size = destlen;
+		}
 		*dest = ob;
 		return true;
 	}
@@ -470,7 +474,9 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 		}
 	}
 
-	*converted_size = destlen;
+	if (converted_size != NULL) {
+		*converted_size = destlen;
+	}
 	return true;
 }
 

@@ -134,22 +134,11 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 						 "(&(objectCategory=DomainDNS)(objectGUID=%s))", 
 						 ldb_binary_encode(mem_ctx, guid_val));
 		} else { /* domain_sid case */
-			struct dom_sid *sid;
-			struct ldb_val sid_val;
-			enum ndr_err_code ndr_err;
-			
-			/* Rather than go via the string, just push into the NDR form */
-			ndr_err = ndr_push_struct_blob(&sid_val, mem_ctx, &sid,
-						       (ndr_push_flags_fn_t)ndr_push_dom_sid);
-			if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-				return NT_STATUS_INVALID_PARAMETER;
-			}
-
 			ret = ldb_search(sam_ctx, mem_ctx, &dom_res,
-						 NULL, LDB_SCOPE_SUBTREE, 
-						 dom_attrs, 
-						 "(&(objectCategory=DomainDNS)(objectSid=%s))",
-						 ldb_binary_encode(mem_ctx, sid_val));
+					 NULL, LDB_SCOPE_SUBTREE,
+					 dom_attrs,
+					 "(&(objectCategory=DomainDNS)(objectSid=%s))",
+					 dom_sid_string(mem_ctx, domain_sid));
 		}
 		
 		if (ret != LDB_SUCCESS) {
@@ -235,13 +224,7 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		
 	server_type      = 
 		DS_SERVER_DS | DS_SERVER_TIMESERV |
-		DS_SERVER_CLOSEST |
 		DS_SERVER_GOOD_TIMESERV;
-
-#if 0
-	/* w2k8-r2 as a DC does not claim these */
-	server_type |= DS_DNS_CONTROLLER | DS_DNS_DOMAIN;
-#endif
 
 	if (samdb_is_pdc(sam_ctx)) {
 		server_type |= DS_SERVER_PDC;
@@ -267,16 +250,13 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 		server_type |= DS_SERVER_WRITABLE;
 	}
 
-#if 0
-	/* w2k8-r2 as a sole DC does not claim this */
-	if (ldb_dn_compare(ldb_get_root_basedn(sam_ctx), ldb_get_default_basedn(sam_ctx)) == 0) {
-		server_type |= DS_DNS_FOREST_ROOT;
-	}
-#endif
-
-	pdc_name         = talloc_asprintf(mem_ctx, "\\\\%s",
+	if (version & (NETLOGON_NT_VERSION_5EX|NETLOGON_NT_VERSION_5EX_WITH_IP)) {
+		pdc_name = lpcfg_netbios_name(lp_ctx);
+	} else {
+		pdc_name = talloc_asprintf(mem_ctx, "\\\\%s",
 					   lpcfg_netbios_name(lp_ctx));
-	NT_STATUS_HAVE_NO_MEMORY(pdc_name);
+		NT_STATUS_HAVE_NO_MEMORY(pdc_name);
+	}
 	domain_uuid      = samdb_result_guid(dom_res->msgs[0], "objectGUID");
 	dns_domain       = lpcfg_dnsdomain(lp_ctx);
 	forest_domain    = samdb_forest_name(sam_ctx, mem_ctx);
@@ -287,13 +267,17 @@ NTSTATUS fill_netlogon_samlogon_response(struct ldb_context *sam_ctx,
 					   dns_domain);
 	NT_STATUS_HAVE_NO_MEMORY(pdc_dns_name);
 	flatname         = lpcfg_workgroup(lp_ctx);
+
 	server_site      = samdb_server_site_name(sam_ctx, mem_ctx);
 	NT_STATUS_HAVE_NO_MEMORY(server_site);
 	client_site      = samdb_client_site_name(sam_ctx, mem_ctx,
 						  src_address, NULL);
 	NT_STATUS_HAVE_NO_MEMORY(client_site);
-	load_interface_list(mem_ctx, lp_ctx, &ifaces);
+	if (strcasecmp(server_site, client_site) == 0) {
+		server_type |= DS_SERVER_CLOSEST;
+	}
 
+	load_interface_list(mem_ctx, lp_ctx, &ifaces);
 	if (src_address) {
 		pdc_ip = iface_list_best_ip(ifaces, src_address);
 	} else {

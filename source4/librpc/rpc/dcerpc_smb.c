@@ -26,6 +26,7 @@
 #include "librpc/rpc/dcerpc.h"
 #include "librpc/rpc/dcerpc_proto.h"
 #include "librpc/rpc/rpc_common.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /* transport private information used by SMB pipe transport */
 struct smb_private {
@@ -79,6 +80,7 @@ struct smb_read_state {
 */
 static void smb_read_callback(struct smbcli_request *req)
 {
+	struct dcecli_connection *c;
 	struct smb_private *smb;
 	struct smb_read_state *state;
 	union smb_read *io;
@@ -88,11 +90,12 @@ static void smb_read_callback(struct smbcli_request *req)
 	state = talloc_get_type(req->async.private_data, struct smb_read_state);
 	smb = talloc_get_type(state->c->transport.private_data, struct smb_private);
 	io = state->io;
+	c = state->c;
 
 	status = smb_raw_read_recv(state->req, io);
 	if (NT_STATUS_IS_ERR(status)) {
-		pipe_dead(state->c, status);
 		talloc_free(state);
+		pipe_dead(c, status);
 		return;
 	}
 
@@ -101,8 +104,8 @@ static void smb_read_callback(struct smbcli_request *req)
 	if (state->received < 16) {
 		DEBUG(0,("dcerpc_smb: short packet (length %d) in read callback!\n",
 			 (int)state->received));
-		pipe_dead(state->c, NT_STATUS_INFO_LENGTH_MISMATCH);
 		talloc_free(state);
+		pipe_dead(c, NT_STATUS_INFO_LENGTH_MISMATCH);
 		return;
 	}
 
@@ -110,7 +113,6 @@ static void smb_read_callback(struct smbcli_request *req)
 
 	if (frag_length <= state->received) {
 		DATA_BLOB data = state->data;
-		struct dcecli_connection *c = state->c;
 		data.length = state->received;
 		talloc_steal(state->c, data.data);
 		talloc_free(state);
@@ -128,8 +130,8 @@ static void smb_read_callback(struct smbcli_request *req)
 
 	state->req = smb_raw_read_send(smb->tree, io);
 	if (state->req == NULL) {
-		pipe_dead(state->c, NT_STATUS_NO_MEMORY);
 		talloc_free(state);
+		pipe_dead(c, NT_STATUS_NO_MEMORY);
 		return;
 	}
 
@@ -257,7 +259,7 @@ static NTSTATUS smb_send_trans_request(struct dcecli_connection *c, DATA_BLOB *b
 	struct smb_trans_state *state;
 	uint16_t max_data;
 
-	state = talloc(smb, struct smb_trans_state);
+	state = talloc(c, struct smb_trans_state);
 	if (state == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -307,13 +309,18 @@ static NTSTATUS smb_send_trans_request(struct dcecli_connection *c, DATA_BLOB *b
 static void smb_write_callback(struct smbcli_request *req)
 {
 	struct dcecli_connection *c = (struct dcecli_connection *)req->async.private_data;
+	union smb_write io;
+	NTSTATUS status;
 
-	if (!NT_STATUS_IS_OK(req->status)) {
-		DEBUG(0,("dcerpc_smb: write callback error\n"));
-		pipe_dead(c, req->status);
+	ZERO_STRUCT(io);
+	io.generic.level = RAW_WRITE_WRITEX;
+
+	status = smb_raw_write_recv(req, &io);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0,("dcerpc_smb: write callback error: %s\n",
+			nt_errstr(status)));
+		pipe_dead(c, status);
 	}
-
-	smbcli_request_destroy(req);
 }
 
 /* 
@@ -411,7 +418,7 @@ static const char *smb_target_hostname(struct dcecli_connection *c)
 {
 	struct smb_private *smb = talloc_get_type(c->transport.private_data, struct smb_private);
 	if (smb == NULL) return "";
-	return smb->tree->session->transport->socket->hostname;
+	return smbXcli_conn_remote_name(smb->tree->session->transport->conn);
 }
 
 /*
@@ -450,9 +457,10 @@ struct composite_context *dcerpc_pipe_open_smb_send(struct dcerpc_pipe *p,
 	/* if we don't have a binding on this pipe yet, then create one */
 	if (p->binding == NULL) {
 		NTSTATUS status;
+		const char *r = smbXcli_conn_remote_name(tree->session->transport->conn);
 		char *s;
-		SMB_ASSERT(tree->session->transport->socket->hostname != NULL);
-		s = talloc_asprintf(p, "ncacn_np:%s", tree->session->transport->socket->hostname);
+		SMB_ASSERT(r != NULL);
+		s = talloc_asprintf(p, "ncacn_np:%s", r);
 		if (s == NULL) return NULL;
 		status = dcerpc_parse_binding(p, s, &p->binding);
 		talloc_free(s);
@@ -543,7 +551,7 @@ static void pipe_open_recv(struct smbcli_request *req)
 	smb->fnum	= state->open->ntcreatex.out.file.fnum;
 	smb->tree	= talloc_reference(smb, state->tree);
 	smb->server_name= strupper_talloc(smb,
-			  state->tree->session->transport->called.name);
+		smbXcli_conn_remote_name(state->tree->session->transport->conn));
 	if (composite_nomem(smb->server_name, ctx)) return;
 	smb->dead	= false;
 

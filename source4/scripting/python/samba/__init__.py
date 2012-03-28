@@ -28,17 +28,19 @@ import os
 import sys
 import samba.param
 
+
 def source_tree_topdir():
-    '''return the top level directory (the one containing the source4 directory)'''
-    paths = [ "../../..", "../../../.." ]
+    """Return the top level source directory."""
+    paths = ["../../..", "../../../.."]
     for p in paths:
         topdir = os.path.normpath(os.path.join(os.path.dirname(__file__), p))
         if os.path.exists(os.path.join(topdir, 'source4')):
             return topdir
     raise RuntimeError("unable to find top level source directory")
 
+
 def in_source_tree():
-    '''return True if we are running from within the samba source tree'''
+    """Return True if we are running from within the samba source tree"""
     try:
         topdir = source_tree_topdir()
     except RuntimeError:
@@ -46,9 +48,9 @@ def in_source_tree():
     return True
 
 
-
 import ldb
 from samba._ldb import Ldb as _Ldb
+
 
 class Ldb(_Ldb):
     """Simple Samba-specific LDB subclass that takes care
@@ -167,7 +169,8 @@ class Ldb(_Ldb):
         # Try to delete user/computer accounts to allow deletion of groups
         self.erase_users_computers(basedn)
 
-        # Delete the 'visible' records, and the invisble 'deleted' records (if this DB supports it)
+        # Delete the 'visible' records, and the invisble 'deleted' records (if
+        # this DB supports it)
         for msg in self.search(basedn, ldb.SCOPE_SUBTREE,
                        "(&(|(objectclass=*)(distinguishedName=*))(!(distinguishedName=@BASEINFO)))",
                        [], controls=["show_deleted:0", "show_recycled:0"]):
@@ -179,7 +182,8 @@ class Ldb(_Ldb):
                     raise
 
         res = self.search(basedn, ldb.SCOPE_SUBTREE,
-            "(&(|(objectclass=*)(distinguishedName=*))(!(distinguishedName=@BASEINFO)))", [], controls=["show_deleted:0", "show_recycled:0"])
+            "(&(|(objectclass=*)(distinguishedName=*))(!(distinguishedName=@BASEINFO)))",
+            [], controls=["show_deleted:0", "show_recycled:0"])
         assert len(res) == 0
 
         # delete the specials
@@ -338,6 +342,10 @@ def ensure_external_module(modulename, location):
     except ImportError:
         import_bundled_package(modulename, location)
 
+
+def dn_from_dns_name(dnsdomain):
+    """return a DN from a DNS name domain/forest root"""
+    return "DC=" + ",DC=".join(dnsdomain.split("."))
 
 from samba import _glue
 version = _glue.version

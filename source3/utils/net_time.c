@@ -24,29 +24,31 @@
 /*
   return the time on a server. This does not require any authentication
 */
-static time_t cli_servertime(const char *host, struct sockaddr_storage *pss, int *zone)
+static time_t cli_servertime(const char *host,
+			     const struct sockaddr_storage *dest_ss,
+			     int *zone)
 {
 	time_t ret = 0;
 	struct cli_state *cli = NULL;
 	NTSTATUS status;
 
-	status = cli_connect_nb(host, pss, 0, 0x20, lp_netbios_name(),
-				Undefined, &cli);
+	status = cli_connect_nb(host, dest_ss, 0, 0x20, lp_netbios_name(),
+				SMB_SIGNING_DEFAULT, 0, &cli);
 	if (!NT_STATUS_IS_OK(status)) {
 		fprintf(stderr, _("Can't contact server %s. Error %s\n"),
 			host, nt_errstr(status));
 		goto done;
 	}
 
-	status = cli_negprot(cli);
+	status = cli_negprot(cli, PROTOCOL_NT1);
 	if (!NT_STATUS_IS_OK(status)) {
 		fprintf(stderr, _("Protocol negotiation failed: %s\n"),
 			nt_errstr(status));
 		goto done;
 	}
 
-	ret = cli->servertime;
-	if (zone) *zone = cli->serverzone;
+	ret = cli_state_server_time(cli);
+	if (zone) *zone = cli_state_server_time_zone(cli);
 
 done:
 	if (cli) {

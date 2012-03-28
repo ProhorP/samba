@@ -30,7 +30,7 @@
 #include "libds/common/roles.h"
 
 /* logged when starting the various Samba daemons */
-#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2011"
+#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2012"
 
 
 #if defined(LARGE_SMB_OFF_T)
@@ -44,8 +44,8 @@
 
 #define NMB_PORT 137
 #define DGRAM_PORT 138
-#define SMB_PORT1 445
-#define SMB_PORT2 139
+#define NBT_SMB_PORT  139   /* Port for SMB over NBT transport (IETF STD#19). */
+#define TCP_SMB_PORT  445   /* Port for SMB over naked TCP transport.         */
 #define SMB_PORTS "445 139"
 
 #define Undefined (-1)
@@ -70,19 +70,6 @@
 
 /* how long to wait for secondary SMB packets (milli-seconds) */
 #define SMB_SECONDARY_WAIT (60*1000)
-
-/* this defines the error codes that receive_smb can put in smb_read_error */
-enum smb_read_errors {
-	SMB_READ_OK = 0,
-	SMB_READ_TIMEOUT,
-	SMB_READ_EOF,
-	SMB_READ_ERROR,
-	SMB_WRITE_ERROR, /* This error code can go into the client smb_rw_error. */
-	SMB_READ_BAD_SIG,
-	SMB_NO_MEMORY,
-	SMB_DO_NOT_DO_TDIS, /* cli_close_connection() check for this when smbfs wants to keep tree connected */
-	SMB_READ_BAD_DECRYPT
-};
 
 #define DIR_STRUCT_SIZE 43
 
@@ -144,19 +131,6 @@ typedef union unid_t {
 
 #include "librpc/gen_ndr/security.h"
 
-/*
- * The complete list of SIDS belonging to this user.
- * Created when a vuid is registered.
- * The definition of the user_sids array is as follows :
- *
- * token->user_sids[0] = primary user SID.
- * token->user_sids[1] = primary group SID.
- * token->user_sids[2..num_sids] = supplementary group SIDS.
- */
-
-#define PRIMARY_USER_SID_INDEX 0
-#define PRIMARY_GROUP_SID_INDEX 1
-
 typedef struct write_cache {
 	SMB_OFF_T file_size;
 	SMB_OFF_T offset;
@@ -188,6 +162,10 @@ struct named_mutex;
 struct wb_context;
 struct rpc_cli_smbd_conn;
 struct fncall_context;
+
+struct share_mode_lock {
+	struct share_mode_data *data;
+};
 
 struct vfs_fsp_data {
     struct vfs_fsp_data *next;
@@ -255,7 +233,6 @@ typedef struct files_struct {
 	unsigned int num_smb_operations;
 	struct file_id file_id;
 	uint64_t initial_allocation_size; /* Faked up initial allocation on disk. */
-	mode_t mode;
 	uint16 file_pid;
 	uint16 vuid;
 	write_cache *wcp;
@@ -317,13 +294,8 @@ typedef struct files_struct {
 #include "ntquotas.h"
 #include "sysquotas.h"
 
-struct client_address {
-	char addr[INET6_ADDRSTRLEN];
-	const char *name;
-};
-
 struct vuid_cache_entry {
-	struct auth_serversupplied_info *session_info;
+	struct auth_session_info *session_info;
 	uint16_t vuid;
 	bool read_only;
 };
@@ -407,6 +379,7 @@ typedef struct connection_struct {
 	bool printer;
 	bool ipc;
 	bool read_only; /* Attributes for the current user of the share. */
+	uint32_t share_access;
 	/* Does this filesystem honor
 	   sub second timestamps on files
 	   and directories when setting time ? */
@@ -420,7 +393,7 @@ typedef struct connection_struct {
 	 * This represents the user information on this connection. Depending
 	 * on the vuid using this tid, this might change per SMB request.
 	 */
-	struct auth_serversupplied_info *session_info;
+	struct auth_session_info *session_info;
 
 	/*
 	 * If the "force group" parameter is set, this is the primary gid that
@@ -479,7 +452,7 @@ struct smb_request {
 	uint16 vuid;
 	uint16 tid;
 	uint8  wct;
-	uint16_t *vwv;
+	const uint16_t *vwv;
 	uint16_t buflen;
 	const uint8_t *buf;
 	const uint8 *inbuf;
@@ -535,15 +508,6 @@ typedef struct {
 	fstring domain; /* domain that the client specified */
 } userdom_struct;
 
-/* used for server information: client, nameserv and ipc */
-struct server_info_struct {
-	fstring name;
-	uint32 type;
-	fstring comment;
-	fstring domain; /* used ONLY in ipc.c NOT namework.c */
-	bool server_added; /* used ONLY in ipc.c NOT namework.c */
-};
-
 /* used for network interfaces */
 struct interface {
 	struct interface *next, *prev;
@@ -554,41 +518,9 @@ struct interface {
 	struct sockaddr_storage bcast;
 };
 
-/* Internal message queue for deferred opens. */
-struct pending_message_list {
-	struct pending_message_list *next, *prev;
-	struct timeval request_time; /* When was this first issued? */
-	struct timed_event *te;
-	struct smb_perfcount_data pcd;
-	uint32_t seqnum;
-	bool encrypted;
-	bool processed;
-	DATA_BLOB buf;
-	DATA_BLOB private_data;
-};
-
 #define SHARE_MODE_FLAG_POSIX_OPEN	0x1
 
 #include "librpc/gen_ndr/server_id.h"
-
-/* struct returned by get_share_modes */
-struct share_mode_entry {
-	struct server_id pid;
-	uint64_t op_mid;	/* For compatibility with SMB2 opens. */
-	uint16 op_type;
-	uint32 access_mask;		/* NTCreateX access bits (FILE_READ_DATA etc.) */
-	uint32 share_access;		/* NTCreateX share constants (FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE). */
-	uint32 private_options;	/* NT Create options, but we only look at
-				 * NTCREATEX_OPTIONS_PRIVATE_DENY_DOS and
-				 * NTCREATEX_OPTIONS_PRIVATE_DENY_FCB for
-				 * smbstatus and swat */
-	struct timeval time;
-	struct file_id id;
-	unsigned long share_file_id;
-	uint32 uid;		/* uid of file opener. */
-	uint16 flags;		/* See SHARE_MODE_XX above. */
-	uint32_t name_hash;		/* Jenkins hash of full pathname. */
-};
 
 /* oplock break message definition - linearization of share_mode_entry.
 
@@ -631,56 +563,6 @@ Offset  Data			length.
 #define OP_BREAK_MSG_VNN_OFFSET 72
 #define MSG_SMB_SHARE_MODE_ENTRY_SIZE 76
 
-struct delete_token_list {
-	struct delete_token_list *next, *prev;
-	uint32_t name_hash;
-	struct security_unix_token *delete_token;
-};
-
-struct share_mode_lock {
-	const char *servicepath; /* canonicalized. */
-	const char *base_name;
-	const char *stream_name;
-	struct file_id id;
-	int num_share_modes;
-	struct share_mode_entry *share_modes;
-	struct delete_token_list *delete_tokens;
-	struct timespec old_write_time;
-	struct timespec changed_write_time;
-	bool fresh;
-	bool modified;
-	struct db_record *record;
-};
-
-/*
- * Internal structure of locking.tdb share mode db.
- * Used by locking.c and libsmbsharemodes.c
- */
-
-struct locking_data {
-	union {
-		struct {
-			int num_share_mode_entries;
-			struct timespec old_write_time;
-			struct timespec changed_write_time;
-			uint32 num_delete_token_entries;
-		} s;
-		struct share_mode_entry dummy; /* Needed for alignment. */
-	} u;
-	/* The following four entries are implicit
-
-	   (1) struct share_mode_entry modes[num_share_mode_entries];
-
-	   (2) A num_delete_token_entries of structs {
-		uint32_t len_delete_token;
-		char unix_token[len_delete_token] (divisible by 4).
-	   };
-
-	   (3) char share_name[];
-	   (4) char file_name[];
-        */
-};
-
 #define NT_HASH_LEN 16
 #define LM_HASH_LEN 16
 
@@ -709,190 +591,39 @@ struct connections_data {
 	uint32 unused_compatitibility_field;
 };
 
-
-/* the following are used by loadparm for option lists */
-typedef enum {
-	P_BOOL,P_BOOLREV,P_CHAR,P_INTEGER,P_OCTAL,P_LIST,
-	P_STRING,P_USTRING,P_ENUM,P_SEP
-} parm_type;
-
-typedef enum {
-	P_LOCAL,P_GLOBAL,P_SEPARATOR,P_NONE
-} parm_class;
-
-struct enum_list {
-	int value;
-	const char *name;
-};
-
-struct parm_struct {
-	const char *label;
-	parm_type type;
-	parm_class p_class;
-	void *ptr;
-	bool (*special)(int snum, const char *, char **);
-	const struct enum_list *enum_list;
-	unsigned flags;
-	union {
-		bool bvalue;
-		int ivalue;
-		char *svalue;
-		char cvalue;
-		char **lvalue;
-	} def;
-};
-
-/* The following flags are used in SWAT */
-#define FLAG_BASIC 	0x0001 /* Display only in BASIC view */
-#define FLAG_SHARE 	0x0002 /* file sharing options */
-#define FLAG_PRINT 	0x0004 /* printing options */
-#define FLAG_GLOBAL 	0x0008 /* local options that should be globally settable in SWAT */
-#define FLAG_WIZARD 	0x0010 /* Parameters that the wizard will operate on */
-#define FLAG_ADVANCED 	0x0020 /* Parameters that will be visible in advanced view */
-#define FLAG_DEVELOPER 	0x0040 /* No longer used */
-#define FLAG_DEPRECATED 0x1000 /* options that should no longer be used */
-#define FLAG_HIDE  	0x2000 /* options that should be hidden in SWAT */
-#define FLAG_DOS_STRING 0x4000 /* convert from UNIX to DOS codepage when reading this string. */
-#define FLAG_META	0x8000 /* A meta directive - not a real parameter */
-#define FLAG_CMDLINE	0x10000 /* option has been overridden */
-
-struct bitmap {
-	uint32 *b;
-	unsigned int n;
-};
-
 /* offsets into message for common items */
-#define smb_com 8
-#define smb_rcls 9
-#define smb_reh 10
-#define smb_err 11
-#define smb_flg 13
-#define smb_flg2 14
-#define smb_pidhigh 16
-#define smb_ss_field 18
-#define smb_tid 28
-#define smb_pid 30
-#define smb_uid 32
-#define smb_mid 34
-#define smb_wct 36
-#define smb_vwv 37
-#define smb_vwv0 37
-#define smb_vwv1 39
-#define smb_vwv2 41
-#define smb_vwv3 43
-#define smb_vwv4 45
-#define smb_vwv5 47
-#define smb_vwv6 49
-#define smb_vwv7 51
-#define smb_vwv8 53
-#define smb_vwv9 55
-#define smb_vwv10 57
-#define smb_vwv11 59
-#define smb_vwv12 61
-#define smb_vwv13 63
-#define smb_vwv14 65
-#define smb_vwv15 67
-#define smb_vwv16 69
-#define smb_vwv17 71
-
-/* flag defines. CIFS spec 3.1.1 */
-#define FLAG_SUPPORT_LOCKREAD       0x01
-#define FLAG_CLIENT_BUF_AVAIL       0x02
-#define FLAG_RESERVED               0x04
-#define FLAG_CASELESS_PATHNAMES     0x08
-#define FLAG_CANONICAL_PATHNAMES    0x10
-#define FLAG_REQUEST_OPLOCK         0x20
-#define FLAG_REQUEST_BATCH_OPLOCK   0x40
-#define FLAG_REPLY                  0x80
-
-/* the complete */
-#define SMBmkdir      0x00   /* create directory */
-#define SMBrmdir      0x01   /* delete directory */
-#define SMBopen       0x02   /* open file */
-#define SMBcreate     0x03   /* create file */
-#define SMBclose      0x04   /* close file */
-#define SMBflush      0x05   /* flush file */
-#define SMBunlink     0x06   /* delete file */
-#define SMBmv         0x07   /* rename file */
-#define SMBgetatr     0x08   /* get file attributes */
-#define SMBsetatr     0x09   /* set file attributes */
-#define SMBread       0x0A   /* read from file */
-#define SMBwrite      0x0B   /* write to file */
-#define SMBlock       0x0C   /* lock byte range */
-#define SMBunlock     0x0D   /* unlock byte range */
-#define SMBctemp      0x0E   /* create temporary file */
-#define SMBmknew      0x0F   /* make new file */
-#define SMBcheckpath  0x10   /* check directory path */
-#define SMBexit       0x11   /* process exit */
-#define SMBlseek      0x12   /* seek */
-#define SMBtcon       0x70   /* tree connect */
-#define SMBtconX      0x75   /* tree connect and X*/
-#define SMBtdis       0x71   /* tree disconnect */
-#define SMBnegprot    0x72   /* negotiate protocol */
-#define SMBdskattr    0x80   /* get disk attributes */
-#define SMBsearch     0x81   /* search directory */
-#define SMBsplopen    0xC0   /* open print spool file */
-#define SMBsplwr      0xC1   /* write to print spool file */
-#define SMBsplclose   0xC2   /* close print spool file */
-#define SMBsplretq    0xC3   /* return print queue */
-#define SMBsends      0xD0   /* send single block message */
-#define SMBsendb      0xD1   /* send broadcast message */
-#define SMBfwdname    0xD2   /* forward user name */
-#define SMBcancelf    0xD3   /* cancel forward */
-#define SMBgetmac     0xD4   /* get machine name */
-#define SMBsendstrt   0xD5   /* send start of multi-block message */
-#define SMBsendend    0xD6   /* send end of multi-block message */
-#define SMBsendtxt    0xD7   /* send text of multi-block message */
-
-/* Core+ protocol */
-#define SMBlockread	  0x13   /* Lock a range and read */
-#define SMBwriteunlock 0x14 /* Unlock a range then write */
-#define SMBreadbraw   0x1a  /* read a block of data with no smb header */
-#define SMBwritebraw  0x1d  /* write a block of data with no smb header */
-#define SMBwritec     0x20  /* secondary write request */
-#define SMBwriteclose 0x2c  /* write a file then close it */
-
-/* dos extended protocol */
-#define SMBreadBraw      0x1A   /* read block raw */
-#define SMBreadBmpx      0x1B   /* read block multiplexed */
-#define SMBreadBs        0x1C   /* read block (secondary response) */
-#define SMBwriteBraw     0x1D   /* write block raw */
-#define SMBwriteBmpx     0x1E   /* write block multiplexed */
-#define SMBwriteBs       0x1F   /* write block (secondary request) */
-#define SMBwriteC        0x20   /* write complete response */
-#define SMBsetattrE      0x22   /* set file attributes expanded */
-#define SMBgetattrE      0x23   /* get file attributes expanded */
-#define SMBlockingX      0x24   /* lock/unlock byte ranges and X */
-#define SMBtrans         0x25   /* transaction - name, bytes in/out */
-#define SMBtranss        0x26   /* transaction (secondary request/response) */
-#define SMBioctl         0x27   /* IOCTL */
-#define SMBioctls        0x28   /* IOCTL  (secondary request/response) */
-#define SMBcopy          0x29   /* copy */
-#define SMBmove          0x2A   /* move */
-#define SMBecho          0x2B   /* echo */
-#define SMBopenX         0x2D   /* open and X */
-#define SMBreadX         0x2E   /* read and X */
-#define SMBwriteX        0x2F   /* write and X */
-#define SMBsesssetupX    0x73   /* Session Set Up & X (including User Logon) */
-#define SMBffirst        0x82   /* find first */
-#define SMBfunique       0x83   /* find unique */
-#define SMBfclose        0x84   /* find close */
-#define SMBkeepalive     0x85   /* keepalive */
-#define SMBinvalid       0xFE   /* invalid command */
-
-/* Extended 2.0 protocol */
-#define SMBtrans2        0x32   /* TRANS2 protocol set */
-#define SMBtranss2       0x33   /* TRANS2 protocol set, secondary command */
-#define SMBfindclose     0x34   /* Terminate a TRANSACT2_FINDFIRST */
-#define SMBfindnclose    0x35   /* Terminate a TRANSACT2_FINDNOTIFYFIRST */
-#define SMBulogoffX      0x74   /* user logoff */
-
-/* NT SMB extensions. */
-#define SMBnttrans       0xA0   /* NT transact */
-#define SMBnttranss      0xA1   /* NT transact secondary */
-#define SMBntcreateX     0xA2   /* NT create and X */
-#define SMBntcancel      0xA4   /* NT cancel */
-#define SMBntrename      0xA5   /* NT rename */
+#define smb_com		(NBT_HDR_SIZE+HDR_COM)
+#define smb_rcls	(NBT_HDR_SIZE+HDR_RCLS)
+#define smb_reh		(NBT_HDR_SIZE+HDR_REH)
+#define smb_err		(NBT_HDR_SIZE+HDR_ERR)
+#define smb_flg		(NBT_HDR_SIZE+HDR_FLG)
+#define smb_flg2	(NBT_HDR_SIZE+HDR_FLG2)
+#define smb_pidhigh	(NBT_HDR_SIZE+HDR_PIDHIGH)
+#define smb_ss_field	(NBT_HDR_SIZE+HDR_SS_FIELD)
+#define smb_tid		(NBT_HDR_SIZE+HDR_TID)
+#define smb_pid		(NBT_HDR_SIZE+HDR_PID)
+#define smb_uid		(NBT_HDR_SIZE+HDR_UID)
+#define smb_mid		(NBT_HDR_SIZE+HDR_MID)
+#define smb_wct		(NBT_HDR_SIZE+HDR_WCT)
+#define smb_vwv		(NBT_HDR_SIZE+HDR_VWV)
+#define smb_vwv0	(smb_vwv+( 0*2))
+#define smb_vwv1	(smb_vwv+( 1*2))
+#define smb_vwv2	(smb_vwv+( 2*2))
+#define smb_vwv3	(smb_vwv+( 3*2))
+#define smb_vwv4	(smb_vwv+( 4*2))
+#define smb_vwv5	(smb_vwv+( 5*2))
+#define smb_vwv6	(smb_vwv+( 6*2))
+#define smb_vwv7	(smb_vwv+( 7*2))
+#define smb_vwv8	(smb_vwv+( 8*2))
+#define smb_vwv9	(smb_vwv+( 9*2))
+#define smb_vwv10	(smb_vwv+(10*2))
+#define smb_vwv11	(smb_vwv+(11*2))
+#define smb_vwv12	(smb_vwv+(12*2))
+#define smb_vwv13	(smb_vwv+(13*2))
+#define smb_vwv14	(smb_vwv+(14*2))
+#define smb_vwv15	(smb_vwv+(15*2))
+#define smb_vwv16	(smb_vwv+(16*2))
+#define smb_vwv17	(smb_vwv+(17*2))
 
 /* These are the trans subcommands */
 #define TRANSACT_SETNAMEDPIPEHANDLESTATE  0x01 
@@ -1136,14 +867,6 @@ struct bitmap {
 #define FILE_WAS_CREATED 2
 #define FILE_WAS_OVERWRITTEN 3
 
-/* File type flags */
-#define FILE_TYPE_DISK  0
-#define FILE_TYPE_BYTE_MODE_PIPE 1
-#define FILE_TYPE_MESSAGE_MODE_PIPE 2
-#define FILE_TYPE_PRINTER 3
-#define FILE_TYPE_COMM_DEVICE 4
-#define FILE_TYPE_UNKNOWN 0xFFFF
-
 /* Flag for NT transact rename call. */
 #define RENAME_REPLACE_IF_EXISTS 1
 
@@ -1243,12 +966,6 @@ char *strdup(char *s);
 #define BROWSER_ELECTION_VERSION	0x010f
 #define BROWSER_CONSTANT	0xaa55
 
-/* Sercurity mode bits. */
-#define NEGOTIATE_SECURITY_USER_LEVEL		0x01
-#define NEGOTIATE_SECURITY_CHALLENGE_RESPONSE	0x02
-#define NEGOTIATE_SECURITY_SIGNATURES_ENABLED	0x04
-#define NEGOTIATE_SECURITY_SIGNATURES_REQUIRED	0x08
-
 /* TCONX Flag (smb_vwv2). */
 #define TCONX_FLAG_EXTENDED_RESPONSE	0x8
 
@@ -1260,37 +977,6 @@ http://msdn.microsoft.com/en-us/library/cc246334(PROT.13).aspx
 #define NO_EAS			0x1
 #define NO_SUBSTREAMS		0x2
 #define NO_REPARSETAG		0x4
-
-/* Capabilities.  see ftp.microsoft.com/developr/drg/cifs/cifs/cifs4.txt */
-
-#define CAP_RAW_MODE         0x0001
-#define CAP_MPX_MODE         0x0002
-#define CAP_UNICODE          0x0004
-#define CAP_LARGE_FILES      0x0008
-#define CAP_NT_SMBS          0x0010
-#define CAP_RPC_REMOTE_APIS  0x0020
-#define CAP_STATUS32         0x0040
-#define CAP_LEVEL_II_OPLOCKS 0x0080
-#define CAP_LOCK_AND_READ    0x0100
-#define CAP_NT_FIND          0x0200
-#define CAP_DFS              0x1000
-#define CAP_W2K_SMBS         0x2000
-#define CAP_LARGE_READX      0x4000
-#define CAP_LARGE_WRITEX     0x8000
-#define CAP_UNIX             0x800000 /* Capabilities for UNIX extensions. Created by HP. */
-#define CAP_EXTENDED_SECURITY 0x80000000
-
-/* protocol types. It assumes that higher protocols include lower protocols
-   as subsets */
-enum protocol_types {
-	PROTOCOL_NONE,
-	PROTOCOL_CORE,
-	PROTOCOL_COREPLUS,
-	PROTOCOL_LANMAN1,
-	PROTOCOL_LANMAN2,
-	PROTOCOL_NT1,
-	PROTOCOL_SMB2
-};
 
 /* printing types */
 enum printing_types {PRINT_BSD,PRINT_SYSV,PRINT_AIX,PRINT_HPUX,
@@ -1358,22 +1044,15 @@ enum acl_compatibility {ACL_COMPAT_AUTO, ACL_COMPAT_WINNT, ACL_COMPAT_WIN2K};
  */
 #define EXTENDED_OPLOCK_REQUEST(inbuf) ((SVAL(inbuf,smb_vwv2)&((1<<1)|(1<<2)))>>1)
 
-/* Lock types. */
-#define LOCKING_ANDX_SHARED_LOCK 0x1
-#define LOCKING_ANDX_OPLOCK_RELEASE 0x2
-#define LOCKING_ANDX_CHANGE_LOCKTYPE 0x4
-#define LOCKING_ANDX_CANCEL_LOCK 0x8
-#define LOCKING_ANDX_LARGE_FILES 0x10
-
 /*
  * Bits we test with.
  * Note these must fit into 16-bits.
  */
 
-#define NO_OPLOCK 			0x0
-#define EXCLUSIVE_OPLOCK 		0x1
-#define BATCH_OPLOCK 			0x2
-#define LEVEL_II_OPLOCK 		0x4
+#define NO_OPLOCK 			OPLOCK_NONE
+#define EXCLUSIVE_OPLOCK 		OPLOCK_EXCLUSIVE
+#define BATCH_OPLOCK 			OPLOCK_BATCH
+#define LEVEL_II_OPLOCK 		OPLOCK_LEVEL_II
 
 /* The following are Samba-private. */
 #define INTERNAL_OPEN_ONLY 		0x8
@@ -1381,11 +1060,11 @@ enum acl_compatibility {ACL_COMPAT_AUTO, ACL_COMPAT_WINNT, ACL_COMPAT_WIN2K};
 				 * inform potential level2 holders on
 				 * write. */
 #define DEFERRED_OPEN_ENTRY 		0x20
-#define UNUSED_SHARE_MODE_ENTRY 	0x40
+/* #define UNUSED_SHARE_MODE_ENTRY 	0x40 */   /* Not used anymore */
 #define FORCE_OPLOCK_BREAK_TO_NONE 	0x80
 
 /* None of the following should ever appear in fsp->oplock_request. */
-#define SAMBA_PRIVATE_OPLOCK_MASK (INTERNAL_OPEN_ONLY|DEFERRED_OPEN_ENTRY|UNUSED_SHARE_MODE_ENTRY|FORCE_OPLOCK_BREAK_TO_NONE)
+#define SAMBA_PRIVATE_OPLOCK_MASK (INTERNAL_OPEN_ONLY|DEFERRED_OPEN_ENTRY|FORCE_OPLOCK_BREAK_TO_NONE)
 
 #define EXCLUSIVE_OPLOCK_TYPE(lck) ((lck) & ((unsigned int)EXCLUSIVE_OPLOCK|(unsigned int)BATCH_OPLOCK))
 #define BATCH_OPLOCK_TYPE(lck) ((lck) & (unsigned int)BATCH_OPLOCK)
@@ -1537,9 +1216,9 @@ typedef struct user_struct {
 				 TDB key string */
 	int homes_snum;
 
-	struct auth_serversupplied_info *session_info;
+	struct auth_session_info *session_info;
 
-	struct auth_ntlmssp_state *auth_ntlmssp_state;
+	struct gensec_security *gensec_security;
 } user_struct;
 
 /*
@@ -1658,6 +1337,7 @@ struct smb_file_time {
 #define UCF_ALWAYS_ALLOW_WCARD_LCOMP	0x00000002
 #define UCF_COND_ALLOW_WCARD_LCOMP	0x00000004
 #define UCF_POSIX_PATHNAMES		0x00000008
+#define UCF_UNIX_NAME_LOOKUP		0x00000010
 
 /*
  * smb_filename
@@ -1669,20 +1349,8 @@ struct smb_filename {
 	SMB_STRUCT_STAT st;
 };
 
-/* struct for maintaining the child processes that get spawned from smbd */
-struct child_pid {
-	struct child_pid *prev, *next;
-	pid_t pid;
-};
-
 /* Used to keep track of deferred opens. */
 struct deferred_open_record;
-
-/* Client-side offline caching policy types */
-#define CSC_POLICY_MANUAL 0
-#define CSC_POLICY_DOCUMENTS 1
-#define CSC_POLICY_PROGRAMS 2
-#define CSC_POLICY_DISABLE 3
 
 /* Used inside aio code. */
 struct aio_extra;

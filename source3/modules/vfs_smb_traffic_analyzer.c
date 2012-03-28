@@ -28,6 +28,7 @@
 #include "secrets.h"
 #include "../librpc/gen_ndr/ndr_netlogon.h"
 #include "auth.h"
+#include "../lib/tsocket/tsocket.h"
 
 /* abstraction for the send_over_network function */
 enum sock_type {INTERNET_SOCKET = 0, UNIX_DOMAIN_SOCKET};
@@ -168,28 +169,27 @@ struct refcounted_sock {
 static char *smb_traffic_analyzer_encrypt( TALLOC_CTX *ctx,
 	const char *akey, const char *str, size_t *len)
 {
-	int s1,s2,h,d;
+	int s1,s2,h;
 	AES_KEY key;
 	unsigned char filler[17]= "................";
 	char *output;
-	unsigned char crypted[18];
 	if (akey == NULL) return NULL;
 	samba_AES_set_encrypt_key((const unsigned char *) akey, 128, &key);
 	s1 = strlen(str) / 16;
 	s2 = strlen(str) % 16;
-	for (h = 0; h < s2; h++) *(filler+h)=*(str+(s1*16)+h);
+	memcpy(filler, str + (s1*16), s2);
 	DEBUG(10, ("smb_traffic_analyzer_send_data_socket: created %s"
 		" as filling block.\n", filler));
-	output = talloc_array(ctx, char, (s1*16)+17 );
-	d=0;
+
+	*len = ((s1 + 1)*16);
+	output = talloc_array(ctx, char, *len);
 	for (h = 0; h < s1; h++) {
-		samba_AES_encrypt((const unsigned char *) str+(16*h), crypted, &key);
-		for (d = 0; d<16; d++) output[d+(16*h)]=crypted[d];
+		samba_AES_encrypt((unsigned char *) str+(16*h), output+16*h,
+			&key);
 	}
-	samba_AES_encrypt( (const unsigned char *) str+(16*h), filler, &key );
-	for (d = 0;d < 16; d++) output[d+(16*h)]=*(filler+d);
+	samba_AES_encrypt(filler, (const unsigned char *)(output+(16*h)), &key);
 	*len = (s1*16)+16;
-	return output;	
+	return output;
 }
 
 /**
@@ -302,6 +302,7 @@ static char *smb_traffic_analyzer_create_string( TALLOC_CTX *ctx,
 	char *timestr = NULL;
 	char *sidstr = NULL;
 	char *usersid = NULL;
+	char *raddr = NULL;
 	char *buf = NULL;
 	char *vfs_operation_str = NULL;
 	const char *service_name = lp_const_servicename(handle->conn->params->service);
@@ -340,7 +341,13 @@ static char *smb_traffic_analyzer_create_string( TALLOC_CTX *ctx,
 		common_data_count_str,
 		usersid,
 		handle);
-	
+
+	raddr = tsocket_address_inet_addr_string(handle->conn->sconn->remote_address,
+						 ctx);
+	if (raddr == NULL) {
+		return NULL;
+	}
+
 	/* time stamp */
 	timestr = talloc_asprintf( common_data_count_str, \
 		"%04d-%02d-%02d %02d:%02d:%02d.%03d", \
@@ -365,12 +372,12 @@ static char *smb_traffic_analyzer_create_string( TALLOC_CTX *ctx,
 		(unsigned int) strlen(service_name),
 		service_name,
 		(unsigned int)
-		strlen(handle->conn->session_info->info3->base.domain.string),
-		handle->conn->session_info->info3->base.domain.string,
+		strlen(handle->conn->session_info->info->domain_name),
+		handle->conn->session_info->info->domain_name,
 		(unsigned int) strlen(timestr),
 		timestr,
-		(unsigned int) strlen(handle->conn->sconn->client_id.addr),
-		handle->conn->sconn->client_id.addr);
+		(unsigned int) strlen(raddr),
+		raddr);
 
 	talloc_free(common_data_count_str);
 
@@ -451,7 +458,7 @@ static void smb_traffic_analyzer_send_data(vfs_handle_struct *handle,
 	 * function.
 	 */
 	username = smb_traffic_analyzer_anonymize( talloc_tos(),
-			handle->conn->session_info->sanitized_username,
+			handle->conn->session_info->unix_info->sanitized_username,
 			handle);
 
 	if (!username) {
@@ -482,7 +489,7 @@ static void smb_traffic_analyzer_send_data(vfs_handle_struct *handle,
 			"\"%04d-%02d-%02d %02d:%02d:%02d.%03d\"\n",
 			(unsigned int) s_data->len,
 			username,
-			handle->conn->session_info->info3->base.domain.string,
+			handle->conn->session_info->info->domain_name,
 			Write ? 'W' : 'R',
 			handle->conn->connectpath,
 			s_data->filename,
@@ -895,19 +902,19 @@ static int smb_traffic_analyzer_close(vfs_handle_struct *handle, \
 
 	
 static struct vfs_fn_pointers vfs_smb_traffic_analyzer_fns = {
-        .connect_fn = smb_traffic_analyzer_connect,
-	.vfs_read = smb_traffic_analyzer_read,
-	.pread = smb_traffic_analyzer_pread,
-	.write = smb_traffic_analyzer_write,
-	.pwrite = smb_traffic_analyzer_pwrite,
-	.mkdir = smb_traffic_analyzer_mkdir,
-	.rename = smb_traffic_analyzer_rename,
-	.chdir = smb_traffic_analyzer_chdir,
+	.connect_fn = smb_traffic_analyzer_connect,
+	.read_fn = smb_traffic_analyzer_read,
+	.pread_fn = smb_traffic_analyzer_pread,
+	.write_fn = smb_traffic_analyzer_write,
+	.pwrite_fn = smb_traffic_analyzer_pwrite,
+	.mkdir_fn = smb_traffic_analyzer_mkdir,
+	.rename_fn = smb_traffic_analyzer_rename,
+	.chdir_fn = smb_traffic_analyzer_chdir,
 	.open_fn = smb_traffic_analyzer_open,
-	.rmdir = smb_traffic_analyzer_rmdir,
+	.rmdir_fn = smb_traffic_analyzer_rmdir,
 	.close_fn = smb_traffic_analyzer_close,
-	.sendfile = smb_traffic_analyzer_sendfile,
-	.recvfile = smb_traffic_analyzer_recvfile
+	.sendfile_fn = smb_traffic_analyzer_sendfile,
+	.recvfile_fn = smb_traffic_analyzer_recvfile
 };
 
 /* Module initialization */

@@ -71,6 +71,8 @@ AC_CHECK_HEADERS(setjmp.h utime.h)
 LIBREPLACE_PROVIDE_HEADER([stdint.h])
 LIBREPLACE_PROVIDE_HEADER([stdbool.h])
 
+AC_DEFINE(HAVE_LIBREPLACE, 1, [We have libreplace])
+
 AC_CHECK_TYPE(bool, 
 [AC_DEFINE(HAVE_BOOL, 1, [Whether the bool type is available])],,
 [
@@ -98,6 +100,13 @@ if test x"$libreplace_cv_HAVE_MMAP" = x"yes"; then
     AC_DEFINE(HAVE_MMAP,1,[Whether mmap works])
 fi
 
+AC_CACHE_CHECK([for working mremap],libreplace_cv_HAVE_MREMAP,[
+AC_TRY_RUN([#include "$libreplacedir/test/shared_mremap.c"],
+           libreplace_cv_HAVE_MREMAP=yes,libreplace_cv_HAVE_MREMAP=no,libreplace_cv_HAVE_MREMAP=cross)])
+if test x"$libreplace_cv_HAVE_MREMAP" = x"yes"; then
+    AC_DEFINE(HAVE_MREMAP,1,[Whether mremap works])
+fi
+
 
 AC_CHECK_HEADERS(sys/syslog.h syslog.h)
 AC_CHECK_HEADERS(sys/time.h time.h)
@@ -106,7 +115,8 @@ AC_CHECK_HEADERS(sys/mount.h mntent.h)
 AC_CHECK_HEADERS(stropts.h)
 AC_CHECK_HEADERS(unix.h)
 
-AC_CHECK_FUNCS(seteuid setresuid setegid setresgid chroot bzero strerror strerror_r)
+AC_CHECK_FUNCS(seteuid setreuid setresuid setegid setregid setresgid)
+AC_CHECK_FUNCS(chroot bzero strerror strerror_r)
 AC_CHECK_FUNCS(vsyslog setlinebuf mktime ftruncate chsize rename)
 AC_CHECK_FUNCS(waitpid wait4 strlcpy strlcat initgroups memmove strdup)
 AC_CHECK_FUNCS(pread pwrite strndup strcasestr strtok_r mkdtemp dup2 dprintf vdprintf)

@@ -22,13 +22,14 @@
 */
 
 #include "includes.h"
-#include "popt_common.h"
 #include "winbind_client.h"
 #include "libwbclient/wbclient.h"
 #include "lib/popt/popt.h"
 #include "../libcli/auth/libcli_auth.h"
 #if (_SAMBA_BUILD_) >= 4
 #include "lib/cmdline/popt_common.h"
+#else
+#include "popt_common.h"
 #endif
 
 #ifdef DBGC_CLASS
@@ -1017,6 +1018,9 @@ static bool wbinfo_sids_to_unix_ids(const char *arg)
 			break;
 		case WBC_ID_TYPE_GID:
 			d_printf("%s -> gid %d\n", sidstr, unix_ids[i].id.gid);
+			break;
+		case WBC_ID_TYPE_BOTH:
+			d_printf("%s -> uid/gid %d\n", sidstr, unix_ids[i].id.uid);
 			break;
 		default:
 			d_printf("%s -> unmapped\n", sidstr);

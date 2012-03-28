@@ -22,8 +22,8 @@ failed=0
 
 samba4bindir="$BINDIR"
 samba4srcdir="$SRCDIR/source4"
-smbclient="$samba4bindir/smbclient$EXEEXT"
-samba4kinit="$samba4bindir/samba4kinit$EXEEXT"
+smbclient="$samba4bindir/smbclient"
+samba4kinit="$samba4bindir/samba4kinit"
 
 machineaccountccache="$samba4srcdir/scripting/bin/machineaccountccache"
 
@@ -35,7 +35,7 @@ test_smbclient() {
 	shift
 	shift
 	echo "test: $name"
-	$VALGRIND $smbclient $CONFIGURATION //$SERVER/tmp -c "$cmd" -W "$DOMAIN" $@
+	$VALGRIND $smbclient $CONFIGURATION //$SERVER/tmp -c "$cmd" $@
 	status=$?
 	if [ x$status = x0 ]; then
 		echo "success: $name"

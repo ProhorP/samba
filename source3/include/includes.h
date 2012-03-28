@@ -22,11 +22,6 @@
 
 #include "../replace/replace.h"
 
-#if _SAMBA_BUILD_ == 4
-# undef _SAMBA_BUILD_
-# define _SAMBA_BUILD_ 3
-#endif
-
 /* make sure we have included the correct config.h */
 #ifndef NO_CONFIG_H /* for some tests */
 #ifndef CONFIG_H_IS_FROM_SAMBA
@@ -503,7 +498,7 @@ typedef char fstring[FSTRING_LEN];
 #endif
 
 /* Lists, trees, caching, database... */
-#include "../lib/util/util.h"
+#include "../lib/util/samba_util.h"
 #include "../lib/util/util_net.h"
 #include "../lib/util/xfile.h"
 #include "../lib/util/memory.h"
@@ -529,7 +524,7 @@ typedef char fstring[FSTRING_LEN];
 #include "smb.h"
 #include "../lib/util/byteorder.h"
 
-#include "module.h"
+#include "../lib/util/samba_modules.h"
 #include "../lib/util/talloc_stack.h"
 #include "../lib/util/smb_threads.h"
 #include "../lib/util/smb_threads_internal.h"
@@ -649,10 +644,6 @@ char *talloc_asprintf_strupper_m(TALLOC_CTX *t, const char *fmt, ...) PRINTF_ATT
 void dump_core(void) _NORETURN_;
 void exit_server(const char *const reason) _NORETURN_;
 void exit_server_cleanly(const char *const reason) _NORETURN_;
-void exit_server_fault(void) _NORETURN_;
-
-/* samba3 doesn't use uwrap yet */
-#define uwrap_enabled() 0
 
 #define BASE_RID (0x000003E8L)
 

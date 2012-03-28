@@ -68,6 +68,15 @@
 #define SMB_VFS_NEXT_FS_CAPABILITIES(handle, p_ts_res) \
 	smb_vfs_call_fs_capabilities((handle)->next, (p_ts_res))
 
+/*
+ * Note: that "struct dfs_GetDFSReferral *r"
+ * needs to be a valid TALLOC_CTX
+ */
+#define SMB_VFS_GET_DFS_REFERRALS(conn, r) \
+	smb_vfs_call_get_dfs_referrals((conn)->vfs_handles, (r))
+#define SMB_VFS_NEXT_GET_DFS_REFERRALS(handle, r) \
+	smb_vfs_call_get_dfs_referrals((handle)->next, (r))
+
 /* Directory operations */
 #define SMB_VFS_OPENDIR(conn, fname, mask, attr) \
 	smb_vfs_call_opendir((conn)->vfs_handles, (fname), (mask), (attr))
@@ -135,14 +144,14 @@
         (create_options), (file_attributes), (oplock_request), (allocation_size), (private_flags), (sd), (ea_list), (result), (pinfo))
 
 #define SMB_VFS_CLOSE(fsp) \
-	smb_vfs_call_close_fn((fsp)->conn->vfs_handles, (fsp))
+	smb_vfs_call_close((fsp)->conn->vfs_handles, (fsp))
 #define SMB_VFS_NEXT_CLOSE(handle, fsp) \
-	smb_vfs_call_close_fn((handle)->next, (fsp))
+	smb_vfs_call_close((handle)->next, (fsp))
 
 #define SMB_VFS_READ(fsp, data, n) \
-	smb_vfs_call_vfs_read((fsp)->conn->vfs_handles, (fsp), (data), (n))
+	smb_vfs_call_read((fsp)->conn->vfs_handles, (fsp), (data), (n))
 #define SMB_VFS_NEXT_READ(handle, fsp, data, n) \
-	smb_vfs_call_vfs_read((handle)->next, (fsp), (data), (n))
+	smb_vfs_call_read((handle)->next, (fsp), (data), (n))
 
 #define SMB_VFS_PREAD(fsp, data, n, off) \
 	smb_vfs_call_pread((fsp)->conn->vfs_handles, (fsp), (data), (n), (off))
@@ -285,9 +294,9 @@
 	smb_vfs_call_symlink((handle)->next, (oldpath), (newpath))
 
 #define SMB_VFS_READLINK(conn, path, buf, bufsiz) \
-	smb_vfs_call_vfs_readlink((conn)->vfs_handles, (path), (buf), (bufsiz))
+	smb_vfs_call_readlink((conn)->vfs_handles, (path), (buf), (bufsiz))
 #define SMB_VFS_NEXT_READLINK(handle, path, buf, bufsiz) \
-	smb_vfs_call_vfs_readlink((handle)->next, (path), (buf), (bufsiz))
+	smb_vfs_call_readlink((handle)->next, (path), (buf), (bufsiz))
 
 #define SMB_VFS_LINK(conn, oldpath, newpath) \
 	smb_vfs_call_link((conn)->vfs_handles, (oldpath), (newpath))
@@ -363,6 +372,12 @@
 	smb_vfs_call_translate_name((conn)->vfs_handles, (name), (direction), (mem_ctx), (mapped_name))
 #define SMB_VFS_NEXT_TRANSLATE_NAME(handle, name, direction, mem_ctx, mapped_name) \
 	smb_vfs_call_translate_name((handle)->next, (name), (direction), (mem_ctx), (mapped_name))
+
+#define SMB_VFS_FSCTL(fsp, ctx, function, req_flags, in_data, in_len, out_data, max_out_len, out_len) \
+	smb_vfs_call_fsctl((fsp)->conn->vfs_handles, (fsp), (ctx), (function), (req_flags), (in_data), (in_len), (out_data), (max_out_len), (out_len))
+
+#define SMB_VFS_NEXT_FSCTL(handle, fsp, ctx, function, req_flags, in_data, in_len, out_data, max_out_len, out_len) \
+	smb_vfs_call_fsctl((handle)->next, (fsp), (ctx), (function), (req_flags), (in_data), (in_len), (out_data), (max_out_len), (out_len))
 
 #define SMB_VFS_FGET_NT_ACL(fsp, security_info, ppdesc) \
 	smb_vfs_call_fget_nt_acl((fsp)->conn->vfs_handles, (fsp), (security_info), (ppdesc))
@@ -570,9 +585,9 @@
 	smb_vfs_call_aio_write((handle)->next,(fsp),(aiocb))
 
 #define SMB_VFS_AIO_RETURN(fsp,aiocb) \
-	smb_vfs_call_aio_return_fn((fsp)->conn->vfs_handles, (fsp), (aiocb))
+	smb_vfs_call_aio_return((fsp)->conn->vfs_handles, (fsp), (aiocb))
 #define SMB_VFS_NEXT_AIO_RETURN(handle,fsp,aiocb) \
-	smb_vfs_call_aio_return_fn((handle)->next,(fsp),(aiocb))
+	smb_vfs_call_aio_return((handle)->next,(fsp),(aiocb))
 
 #define SMB_VFS_AIO_CANCEL(fsp,aiocb) \
 	smb_vfs_call_aio_cancel((fsp)->conn->vfs_handles, (fsp), (aiocb))
@@ -580,9 +595,9 @@
 	smb_vfs_call_aio_cancel((handle)->next,(fsp),(aiocb))
 
 #define SMB_VFS_AIO_ERROR(fsp,aiocb) \
-	smb_vfs_call_aio_error_fn((fsp)->conn->vfs_handles, (fsp),(aiocb))
+	smb_vfs_call_aio_error((fsp)->conn->vfs_handles, (fsp),(aiocb))
 #define SMB_VFS_NEXT_AIO_ERROR(handle,fsp,aiocb) \
-	smb_vfs_call_aio_error_fn((handle)->next,(fsp),(aiocb))
+	smb_vfs_call_aio_error((handle)->next,(fsp),(aiocb))
 
 #define SMB_VFS_AIO_FSYNC(fsp,op,aiocb) \
 	smb_vfs_call_aio_fsync((fsp)->conn->vfs_handles, (fsp), (op),(aiocb))

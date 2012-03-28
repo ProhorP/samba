@@ -87,7 +87,7 @@ static void free_conn_session_info_if_unused(connection_struct *conn)
 
 static bool check_user_ok(connection_struct *conn,
 			uint16_t vuid,
-			const struct auth_serversupplied_info *session_info,
+			const struct auth_session_info *session_info,
 			int snum)
 {
 	bool valid_vuid = (vuid != UID_FIELD_INVALID);
@@ -109,20 +109,21 @@ static bool check_user_ok(connection_struct *conn,
 		}
 	}
 
-	if (!user_ok_token(session_info->unix_name,
-			   session_info->info3->base.domain.string,
+	if (!user_ok_token(session_info->unix_info->unix_name,
+			   session_info->info->domain_name,
 			   session_info->security_token, snum))
 		return(False);
 
 	readonly_share = is_share_read_only_for_token(
-		session_info->unix_name,
-		session_info->info3->base.domain.string,
+		session_info->unix_info->unix_name,
+		session_info->info->domain_name,
 		session_info->security_token,
 		conn);
 
 	if (!readonly_share &&
-	    !share_access_check(session_info->security_token, lp_servicename(snum),
-				FILE_WRITE_DATA)) {
+	    !share_access_check(session_info->security_token,
+				lp_servicename(snum), FILE_WRITE_DATA,
+				NULL)) {
 		/* smb.conf allows r/w, but the security descriptor denies
 		 * write. Fall back to looking at readonly. */
 		readonly_share = True;
@@ -130,15 +131,17 @@ static bool check_user_ok(connection_struct *conn,
 			 "security descriptor\n"));
 	}
 
-	if (!share_access_check(session_info->security_token, lp_servicename(snum),
+	if (!share_access_check(session_info->security_token,
+				lp_servicename(snum),
 				readonly_share ?
-				FILE_READ_DATA : FILE_WRITE_DATA)) {
+				FILE_READ_DATA : FILE_WRITE_DATA,
+				NULL)) {
 		return False;
 	}
 
 	admin_user = token_contains_name_in_list(
-		session_info->unix_name,
-		session_info->info3->base.domain.string,
+		session_info->unix_info->unix_name,
+		session_info->info->domain_name,
 		NULL, session_info->security_token, lp_admin_users(snum));
 
 	if (valid_vuid) {
@@ -155,7 +158,7 @@ static bool check_user_ok(connection_struct *conn,
 		 * username-based faked one.
 		 */
 
-		ent->session_info = copy_serverinfo(
+		ent->session_info = copy_session_info(
 			conn, conn->force_user ? conn->session_info : session_info);
 
 		if (ent->session_info == NULL) {
@@ -173,9 +176,9 @@ static bool check_user_ok(connection_struct *conn,
 	if (admin_user) {
 		DEBUG(2,("check_user_ok: user %s is an admin user. "
 			"Setting uid as %d\n",
-			conn->session_info->unix_name,
+			conn->session_info->unix_info->unix_name,
 			sec_initial_uid() ));
-		conn->session_info->utok.uid = sec_initial_uid();
+		conn->session_info->unix_token->uid = sec_initial_uid();
 	}
 
 	return(True);
@@ -187,7 +190,7 @@ static bool check_user_ok(connection_struct *conn,
 ****************************************************************************/
 
 static bool change_to_user_internal(connection_struct *conn,
-				    const struct auth_serversupplied_info *session_info,
+				    const struct auth_session_info *session_info,
 				    uint16_t vuid)
 {
 	int snum;
@@ -204,16 +207,16 @@ static bool change_to_user_internal(connection_struct *conn,
 	if (!ok) {
 		DEBUG(2,("SMB user %s (unix user %s) "
 			 "not permitted access to share %s.\n",
-			 session_info->sanitized_username,
-			 session_info->unix_name,
+			 session_info->unix_info->sanitized_username,
+			 session_info->unix_info->unix_name,
 			 lp_servicename(snum)));
 		return false;
 	}
 
-	uid = conn->session_info->utok.uid;
-	gid = conn->session_info->utok.gid;
-	num_groups = conn->session_info->utok.ngroups;
-	group_list  = conn->session_info->utok.groups;
+	uid = conn->session_info->unix_token->uid;
+	gid = conn->session_info->unix_token->gid;
+	num_groups = conn->session_info->unix_token->ngroups;
+	group_list  = conn->session_info->unix_token->groups;
 
 	/*
 	 * See if we should force group for this service. If so this overrides
@@ -234,7 +237,7 @@ static bool change_to_user_internal(connection_struct *conn,
 			 */
 			for (i = 0; i < num_groups; i++) {
 				if (group_list[i] == conn->force_group_gid) {
-					conn->session_info->utok.gid =
+					conn->session_info->unix_token->gid =
 						conn->force_group_gid;
 					gid = conn->force_group_gid;
 					gid_to_sid(&conn->session_info->security_token
@@ -243,7 +246,7 @@ static bool change_to_user_internal(connection_struct *conn,
 				}
 			}
 		} else {
-			conn->session_info->utok.gid = conn->force_group_gid;
+			conn->session_info->unix_token->gid = conn->force_group_gid;
 			gid = conn->force_group_gid;
 			gid_to_sid(&conn->session_info->security_token->sids[1],
 				   gid);
@@ -274,7 +277,7 @@ static bool change_to_user_internal(connection_struct *conn,
 
 bool change_to_user(connection_struct *conn, uint16_t vuid)
 {
-	const struct auth_serversupplied_info *session_info = NULL;
+	const struct auth_session_info *session_info = NULL;
 	user_struct *vuser;
 	int snum = SNUM(conn);
 
@@ -293,13 +296,13 @@ bool change_to_user(connection_struct *conn, uint16_t vuid)
 	 */
 
 	if((lp_security() == SEC_SHARE) && (current_user.conn == conn) &&
-	   (current_user.ut.uid == conn->session_info->utok.uid)) {
+	   (current_user.ut.uid == conn->session_info->unix_token->uid)) {
 		DEBUG(4,("Skipping user change - already "
 			 "user\n"));
 		return(True);
 	} else if ((current_user.conn == conn) &&
 		   (vuser != NULL) && (current_user.vuid == vuid) &&
-		   (current_user.ut.uid == vuser->session_info->utok.uid)) {
+		   (current_user.ut.uid == vuser->session_info->unix_token->uid)) {
 		DEBUG(4,("Skipping user change - already "
 			 "user\n"));
 		return(True);
@@ -325,13 +328,13 @@ bool change_to_user(connection_struct *conn, uint16_t vuid)
 }
 
 bool change_to_user_by_session(connection_struct *conn,
-			       const struct auth_serversupplied_info *session_info)
+			       const struct auth_session_info *session_info)
 {
 	SMB_ASSERT(conn != NULL);
 	SMB_ASSERT(session_info != NULL);
 
 	if ((current_user.conn == conn) &&
-	    (current_user.ut.uid == session_info->utok.uid)) {
+	    (current_user.ut.uid == session_info->unix_token->uid)) {
 		DEBUG(7, ("Skipping user change - already user\n"));
 
 		return true;
@@ -364,13 +367,13 @@ bool smbd_change_to_root_user(void)
  user. Doesn't modify current_user.
 ****************************************************************************/
 
-bool become_authenticated_pipe_user(struct auth_serversupplied_info *session_info)
+bool become_authenticated_pipe_user(struct auth_session_info *session_info)
 {
 	if (!push_sec_ctx())
 		return False;
 
-	set_sec_ctx(session_info->utok.uid, session_info->utok.gid,
-		    session_info->utok.ngroups, session_info->utok.groups,
+	set_sec_ctx(session_info->unix_token->uid, session_info->unix_token->gid,
+		    session_info->unix_token->ngroups, session_info->unix_token->groups,
 		    session_info->security_token);
 
 	return True;
@@ -484,7 +487,7 @@ bool become_user(connection_struct *conn, uint16 vuid)
 }
 
 bool become_user_by_session(connection_struct *conn,
-			    const struct auth_serversupplied_info *session_info)
+			    const struct auth_session_info *session_info)
 {
 	if (!push_sec_ctx())
 		return false;
@@ -509,7 +512,7 @@ bool unbecome_user(void)
 
 /****************************************************************************
  Return the current user we are running effectively as on this connection.
- I'd like to make this return conn->session_info->utok.uid, but become_root()
+ I'd like to make this return conn->session_info->unix_token->uid, but become_root()
  doesn't alter this value.
 ****************************************************************************/
 
@@ -520,7 +523,7 @@ uid_t get_current_uid(connection_struct *conn)
 
 /****************************************************************************
  Return the current group we are running effectively as on this connection.
- I'd like to make this return conn->session_info->utok.gid, but become_root()
+ I'd like to make this return conn->session_info->unix_token->gid, but become_root()
  doesn't alter this value.
 ****************************************************************************/
 
@@ -531,7 +534,7 @@ gid_t get_current_gid(connection_struct *conn)
 
 /****************************************************************************
  Return the UNIX token we are running effectively as on this connection.
- I'd like to make this return &conn->session_info->utok, but become_root()
+ I'd like to make this return &conn->session_info->unix_token-> but become_root()
  doesn't alter this value.
 ****************************************************************************/
 

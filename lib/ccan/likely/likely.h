@@ -1,3 +1,4 @@
+/* Licensed under LGPLv2.1+ - see LICENSE file for details */
 #ifndef CCAN_LIKELY_H
 #define CCAN_LIKELY_H
 #include "config.h"
@@ -29,7 +30,9 @@
  *		return false;
  *	}
  */
+#ifndef likely
 #define likely(cond) __builtin_expect(!!(cond), 1)
+#endif
 
 /**
  * unlikely - indicate that a condition is unlikely to be true.
@@ -50,10 +53,16 @@
  *			fprintf(stderr, "Overflow!");
  *	}
  */
+#ifndef unlikely
 #define unlikely(cond) __builtin_expect(!!(cond), 0)
+#endif
 #else
+#ifndef likely
 #define likely(cond) (!!(cond))
+#endif
+#ifndef unlikely
 #define unlikely(cond) (!!(cond))
+#endif
 #endif
 #else /* CCAN_LIKELY_DEBUG versions */
 #define likely(cond) \
@@ -100,6 +109,13 @@ long _likely_trace(bool cond, bool expect,
  *	#endif
  *	}
  */
-const char *likely_stats(unsigned int min_hits, unsigned int percent);
+char *likely_stats(unsigned int min_hits, unsigned int percent);
+
+/**
+ * likely_stats_reset - free up memory of likely()/unlikely() branches.
+ *
+ * This can also plug memory leaks.
+ */
+void likely_stats_reset(void);
 #endif /* CCAN_LIKELY_DEBUG */
 #endif /* CCAN_LIKELY_H */

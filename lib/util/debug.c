@@ -514,6 +514,11 @@ bool debug_get_output_is_stderr(void)
 	return (state.logtype == DEBUG_DEFAULT_STDERR) || (state.logtype == DEBUG_STDERR);
 }
 
+bool debug_get_output_is_stdout(void)
+{
+	return (state.logtype == DEBUG_DEFAULT_STDOUT) || (state.logtype == DEBUG_STDOUT);
+}
+
 /**************************************************************************
  reopen the log files
  note that we now do this unconditionally
@@ -542,6 +547,7 @@ bool reopen_logs_internal(void)
 
 	switch (state.logtype) {
 	case DEBUG_STDOUT:
+	case DEBUG_DEFAULT_STDOUT:
 		debug_close_fd(state.fd);
 		state.fd = 1;
 		return true;
@@ -938,14 +944,19 @@ bool dbghdrclass(int level, int cls, const char *location, const char *func)
 	 * not yet loaded, then default to timestamps on.
 	 */
 	if( state.settings.timestamp_logs || state.settings.debug_prefix_timestamp) {
+		bool verbose = false;
 		char header_str[200];
 
 		header_str[0] = '\0';
 
-		if( state.settings.debug_pid)
+		if (unlikely(DEBUGLEVEL_CLASS[ cls ] >= 10)) {
+			verbose = true;
+		}
+
+		if (verbose || state.settings.debug_pid)
 			slprintf(header_str,sizeof(header_str)-1,", pid=%u",(unsigned int)getpid());
 
-		if( state.settings.debug_uid) {
+		if (verbose || state.settings.debug_uid) {
 			size_t hs_len = strlen(header_str);
 			slprintf(header_str + hs_len,
 			sizeof(header_str) - 1 - hs_len,
@@ -954,7 +965,8 @@ bool dbghdrclass(int level, int cls, const char *location, const char *func)
 				(unsigned int)getuid(), (unsigned int)getgid());
 		}
 
-		if (state.settings.debug_class && (cls != DBGC_ALL)) {
+		if ((verbose || state.settings.debug_class)
+		    && (cls != DBGC_ALL)) {
 			size_t hs_len = strlen(header_str);
 			slprintf(header_str + hs_len,
 				 sizeof(header_str) -1 - hs_len,

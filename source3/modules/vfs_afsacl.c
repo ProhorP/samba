@@ -1,4 +1,4 @@
-/* 
+/*
  * Convert AFS acls to NT acls and vice versa.
  *
  * Copyright (C) Volker Lendecke, 2003
@@ -7,12 +7,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
- *  
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *  
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
@@ -20,6 +20,10 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "smbd/smbd.h"
+#include "../librpc/gen_ndr/lsa.h"
+#include "../libcli/security/security.h"
+#include "../libcli/security/dom_sid.h"
+#include "passdb.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_VFS
@@ -43,7 +47,7 @@ static char space_replacement = '%';
 /* Do we expect SIDs as pts names? */
 static bool sidpts;
 
-extern int afs_syscall(int, char *, int, char *, int);
+extern int afs_syscall(int, const char *, int, char *, int);
 
 struct afs_ace {
 	bool positive;
@@ -73,9 +77,9 @@ static bool init_afs_acl(struct afs_acl *acl)
 	acl->ctx = talloc_init("afs_acl");
 	if (acl->ctx == NULL) {
 		DEBUG(10, ("Could not init afs_acl"));
-		return False;
+		return false;
 	}
-	return True;
+	return true;
 }
 
 static void free_afs_acl(struct afs_acl *acl)
@@ -240,21 +244,21 @@ static bool parse_afs_acl(struct afs_acl *acl, const char *acl_str)
 	strlcpy(str, acl_str, MAXSIZE);
 
 	if (sscanf(p, "%d", &nplus) != 1)
-		return False;
+		return false;
 
 	DEBUG(10, ("Found %d positive entries\n", nplus));
 
 	if ((p = strchr(p, '\n')) == NULL)
-		return False;
+		return false;
 	p += 1;
 
 	if (sscanf(p, "%d", &nminus) != 1)
-		return False;
+		return false;
 	
 	DEBUG(10, ("Found %d negative entries\n", nminus));
 
 	if ((p = strchr(p, '\n')) == NULL)
-		return False;
+		return false;
 	p += 1;
 
 	for (aces = nplus+nminus; aces > 0; aces--)
@@ -268,15 +272,15 @@ static bool parse_afs_acl(struct afs_acl *acl, const char *acl_str)
 		namep = p;
 
 		if ((p = strchr(p, '\t')) == NULL)
-			return False;
+			return false;
 		*p = '\0';
 		p += 1;
 
 		if (sscanf(p, "%d", &rights) != 1)
-			return False;
+			return false;
 
 		if ((p = strchr(p, '\n')) == NULL)
-			return False;
+			return false;
 		p += 1;
 
 		fstrcpy(name, namep);
@@ -289,7 +293,7 @@ static bool parse_afs_acl(struct afs_acl *acl, const char *acl_str)
 		nplus -= 1;
 	}
 
-	return True;
+	return true;
 }
 
 static bool unparse_afs_acl(struct afs_acl *acl, char *acl_str)
@@ -299,10 +303,9 @@ static bool unparse_afs_acl(struct afs_acl *acl, char *acl_str)
 	int positives = 0;
 	int negatives = 0;
 	fstring line;
+	struct afs_ace *ace = acl->acelist;
 
 	*acl_str = 0;
-
-	struct afs_ace *ace = acl->acelist;
 
 	while (ace != NULL) {
 		if (ace->positive)
@@ -325,7 +328,7 @@ static bool unparse_afs_acl(struct afs_acl *acl, char *acl_str)
 		strlcat(acl_str, line, MAXSIZE);
 		ace = ace->next;
 	}
-	return True;
+	return true;
 }
 
 static uint32 afs_to_nt_file_rights(uint32 rights)
@@ -432,7 +435,7 @@ static void merge_afs_acls(struct afs_acl *dir_acl,
 
 	for (ace = dir_acl->acelist; ace != NULL; ace = ace->next) {
 		struct afs_ace *file_ace;
-		bool found = False;
+		bool found = false;
 
 		for (file_ace = file_acl->acelist;
 		     file_ace != NULL;
@@ -442,7 +445,7 @@ static void merge_afs_acls(struct afs_acl *dir_acl,
 
 			add_afs_ace(target, ace->positive, ace->name,
 				    ace->rights | file_ace->rights);
-			found = True;
+			found = true;
 			break;
 		}
 		if (!found)
@@ -452,14 +455,14 @@ static void merge_afs_acls(struct afs_acl *dir_acl,
 
 	for (ace = file_acl->acelist; ace != NULL; ace = ace->next) {
 		struct afs_ace *dir_ace;
-		bool already_seen = False;
+		bool already_seen = false;
 
 		for (dir_ace = dir_acl->acelist;
 		     dir_ace != NULL;
 		     dir_ace = dir_ace->next) {
 			if (!same_principal(ace, dir_ace))
 				continue;
-			already_seen = True;
+			already_seen = true;
 			break;
 		}
 		if (!already_seen)
@@ -702,23 +705,23 @@ static bool mappable_sid(const struct dom_sid *sid)
 	struct dom_sid domain_sid;
 	
 	if (dom_sid_compare(sid, &global_sid_Builtin_Administrators) == 0)
-		return True;
+		return true;
 
 	if (dom_sid_compare(sid, &global_sid_World) == 0)
-		return True;
+		return true;
 
 	if (dom_sid_compare(sid, &global_sid_Authenticated_Users) == 0)
-		return True;
+		return true;
 
 	if (dom_sid_compare(sid, &global_sid_Builtin_Backup_Operators) == 0)
-		return True;
+		return true;
 
 	string_to_sid(&domain_sid, "S-1-5-21");
 
 	if (sid_compare_domain(sid, &domain_sid) == 0)
-		return True;
+		return true;
 
-	return False;
+	return false;
 }
 
 static bool nt_to_afs_acl(const char *filename,
@@ -735,10 +738,10 @@ static bool nt_to_afs_acl(const char *filename,
 
 	if (((security_info_sent & SECINFO_DACL) == 0) ||
 	    (psd->dacl == NULL))
-		return True;
+		return true;
 
 	if (!init_afs_acl(afs_acl))
-		return False;
+		return false;
 
 	dacl = psd->dacl;
 
@@ -750,7 +753,7 @@ static bool nt_to_afs_acl(const char *filename,
 
 		if (ace->type != SEC_ACE_TYPE_ACCESS_ALLOWED) {
 			/* First cut: Only positive ACEs */
-			return False;
+			return false;
 		}
 
 		if (!mappable_sid(&ace->trustee)) {
@@ -798,7 +801,7 @@ static bool nt_to_afs_acl(const char *filename,
 						       dom_name, lp_winbind_separator(),
 						       name);
 				if (tmp == NULL) {
-					return False;
+					return false;
 				}
 				strlower_m(tmp);
 				name = tmp;
@@ -810,7 +813,7 @@ static bool nt_to_afs_acl(const char *filename,
 					talloc_tos(),
 					sid_string_tos(&ace->trustee));
 				if (name == NULL) {
-					return False;
+					return false;
 				}
 			}
 		}
@@ -818,14 +821,14 @@ static bool nt_to_afs_acl(const char *filename,
 		while ((p = strchr_m(name, ' ')) != NULL)
 			*p = space_replacement;
 
-		add_afs_ace(afs_acl, True, name,
+		add_afs_ace(afs_acl, true, name,
 			    nt_to_afs_rights(filename, ace));
 	}
 
-	return True;
+	return true;
 }
 
-static bool afs_get_afs_acl(char *filename, struct afs_acl *acl)
+static bool afs_get_afs_acl(const char *filename, struct afs_acl *acl)
 {
 	struct afs_iob iob;
 
@@ -844,19 +847,19 @@ static bool afs_get_afs_acl(char *filename, struct afs_acl *acl)
 
 	if (ret) {
 		DEBUG(1, ("got error from PIOCTL: %d\n", ret));
-		return False;
+		return false;
 	}
 
 	if (!init_afs_acl(acl))
-		return False;
+		return false;
 
 	if (!parse_afs_acl(acl, space)) {
 		DEBUG(1, ("Could not parse AFS acl\n"));
 		free_afs_acl(acl);
-		return False;
+		return false;
 	}
 
-	return True;
+	return true;
 }
 
 /* For setting an AFS ACL we have to take care of the ACEs we could
@@ -906,7 +909,7 @@ static NTSTATUS afs_set_nt_acl(vfs_handle_struct *handle, files_struct *fsp,
 	fileacls = lp_parm_const_string(SNUM(handle->conn), "afsacl", "fileacls",
 					"yes");
 
-	sidpts = lp_parm_bool(SNUM(handle->conn), "afsacl", "sidpts", False);
+	sidpts = lp_parm_bool(SNUM(handle->conn), "afsacl", "sidpts", false);
 
 	ZERO_STRUCT(old_afs_acl);
 	ZERO_STRUCT(new_afs_acl);
@@ -1009,7 +1012,7 @@ static NTSTATUS afsacl_fget_nt_acl(struct vfs_handle_struct *handle,
 
 	DEBUG(5, ("afsacl_fget_nt_acl: %s\n", fsp_str_dbg(fsp)));
 
-	sidpts = lp_parm_bool(SNUM(fsp->conn), "afsacl", "sidpts", False);
+	sidpts = lp_parm_bool(SNUM(fsp->conn), "afsacl", "sidpts", false);
 
 	if (!afs_get_afs_acl(fsp->fsp_name->base_name, &acl)) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -1033,7 +1036,7 @@ static NTSTATUS afsacl_get_nt_acl(struct vfs_handle_struct *handle,
 
 	DEBUG(5, ("afsacl_get_nt_acl: %s\n", name));
 
-	sidpts = lp_parm_bool(SNUM(handle->conn), "afsacl", "sidpts", False);
+	sidpts = lp_parm_bool(SNUM(handle->conn), "afsacl", "sidpts", false);
 
 	if (!afs_get_afs_acl(name, &acl)) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -1084,9 +1087,9 @@ static int afsacl_connect(vfs_handle_struct *handle,
 
 static struct vfs_fn_pointers vfs_afsacl_fns = {
 	.connect_fn = afsacl_connect,
-	.fget_nt_acl = afsacl_fget_nt_acl,
-	.get_nt_acl = afsacl_get_nt_acl,
-	.fset_nt_acl = afsacl_fset_nt_acl
+	.fget_nt_acl_fn = afsacl_fget_nt_acl,
+	.get_nt_acl_fn = afsacl_get_nt_acl,
+	.fset_nt_acl_fn = afsacl_fset_nt_acl
 };
 
 NTSTATUS vfs_afsacl_init(void);

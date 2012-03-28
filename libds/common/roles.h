@@ -29,7 +29,10 @@ enum server_role {
 	ROLE_STANDALONE    = 0,
 	ROLE_DOMAIN_MEMBER = 1,
 	ROLE_DOMAIN_BDC    = 2,
-	ROLE_DOMAIN_PDC    = 3
+	ROLE_DOMAIN_PDC    = 3,
+
+	/* To determine the role automatically, this is not a valid role */
+	ROLE_AUTO          = 100
 };
 
 /* keep compatibility with the s4 'ROLE_DOMAIN_CONTROLLER' by mapping
@@ -40,6 +43,11 @@ enum server_role {
 #define ROLE_DOMAIN_CONTROLLER ROLE_DOMAIN_BDC
 
 /* security levels for 'security =' option */
-enum security_types {SEC_SHARE,SEC_USER,SEC_SERVER,SEC_DOMAIN,SEC_ADS};
+enum security_types {SEC_AUTO = 0, 
+		     SEC_SHARE = 1,
+		     SEC_USER = 2, 
+		     SEC_SERVER = 3,
+		     SEC_DOMAIN = 4,
+		     SEC_ADS = 5};
 
 #endif /* _LIBDS_ROLES_H_ */

@@ -16,12 +16,12 @@ shift 1
 samba_tool="$BINDIR/samba-tool"
 samba4bindir="$BINDIR"
 samba4srcdir="$SRCDIR/source4"
-samba4kinit="$samba4bindir/samba4kinit$EXEEXT"
+samba4kinit="$samba4bindir/samba4kinit"
 CONFIG="--configfile=$PREFIX/dc/etc/smb.conf"
 
 TESTUSER="ktpassUser"
 
-testit "newuser" $samba_tool newuser $CONFIG $TESTUSER testp@ssw0Rd || failed=`expr $failed + 1`
+testit "user add" $samba_tool user add $CONFIG $TESTUSER testp@ssw0Rd || failed=`expr $failed + 1`
 
 KRB5CCNAME="$PREFIX/tmpccache"
 export KRB5CCNAME

@@ -52,13 +52,11 @@ SMBC_module_init(void * punused)
 
     /* Here we would open the smb.conf file if needed ... */
 
-    lp_set_in_client(True);
-
     home = getenv("HOME");
     if (home) {
         char *conf = NULL;
         if (asprintf(&conf, "%s/.smb/smb.conf", home) > 0) {
-            if (lp_load(conf, True, False, False, True)) {
+            if (lp_load_client(conf)) {
                 conf_loaded = True;
             } else {
                 DEBUG(5, ("Could not load config file: %s\n",
@@ -76,7 +74,7 @@ SMBC_module_init(void * punused)
          * defaults ...
          */
 
-        if (!lp_load(get_dyn_CONFIGFILE(), True, False, False, False)) {
+        if (!lp_load_client(get_dyn_CONFIGFILE())) {
             DEBUG(5, ("Could not load config file: %s\n",
                       get_dyn_CONFIGFILE()));
         } else if (home) {
@@ -89,7 +87,7 @@ SMBC_module_init(void * punused)
             if (asprintf(&conf,
                          "%s/.smb/smb.conf.append",
                          home) > 0) {
-                if (!lp_load(conf, True, False, False, False)) {
+                if (!lp_load_client_no_reinit(conf)) {
                     DEBUG(10,
                           ("Could not append config file: "
                            "%s\n",
@@ -261,8 +259,8 @@ smbc_free_context(SMBCCTX *context,
                                   "Nice way shutdown failed.\n"));
                         s = context->internal->servers;
                         while (s) {
-                                DEBUG(1, ("Forced shutdown: %p (fd=%d)\n",
-                                          s, s->cli->fd));
+                                DEBUG(1, ("Forced shutdown: %p (cli=%p)\n",
+                                          s, s->cli));
                                 cli_shutdown(s->cli);
                                 smbc_getFunctionRemoveCachedServer(context)(context,
                                                                          s);
@@ -470,7 +468,7 @@ smbc_option_get(SMBCCTX *context,
 
                 for (s = context->internal->servers; s; s = s->next) {
                         num_servers++;
-                        if (s->cli->trans_enc_state == NULL) {
+                        if (!cli_state_encryption_on(s->cli)) {
                                 return (void *)false;
                         }
                 }
@@ -741,12 +739,12 @@ void smbc_set_credentials_with_fallback(SMBCCTX *context,
 		use_kerberos = True;
 	}
 
-	if (lp_client_signing()) {
-		signing_state = "on";
+	if (lp_client_signing() != SMB_SIGNING_OFF) {
+		signing_state = "if_required";
 	}
 
-	if (lp_client_signing() == Required) {
-		signing_state = "force";
+	if (lp_client_signing() == SMB_SIGNING_REQUIRED) {
+		signing_state = "required";
 	}
 
         set_cmdline_auth_info_username(auth_info, user);

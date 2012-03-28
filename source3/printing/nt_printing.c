@@ -29,9 +29,11 @@
 #include "../libcli/security/security.h"
 #include "passdb/machine_sid.h"
 #include "smbd/smbd.h"
+#include "smbd/globals.h"
 #include "auth.h"
 #include "messages.h"
 #include "rpc_server/spoolss/srv_spoolss_nt.h"
+#include "rpc_client/cli_winreg_spoolss.h"
 
 /* Map generic permissions to printer object specific permissions */
 
@@ -573,7 +575,7 @@ static int file_version_is_newer(connection_struct *conn, fstring new_file, fstr
 /****************************************************************************
 Determine the correct cVersion associated with an architecture and driver
 ****************************************************************************/
-static uint32 get_correct_cversion(struct auth_serversupplied_info *session_info,
+static uint32 get_correct_cversion(struct auth_session_info *session_info,
 				   const char *architecture,
 				   const char *driverpath_in,
 				   WERROR *perr)
@@ -614,7 +616,8 @@ static uint32 get_correct_cversion(struct auth_serversupplied_info *session_info
 		return -1;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
+	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+				       printdollar_snum,
 				       lp_pathname(printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -743,7 +746,7 @@ static uint32 get_correct_cversion(struct auth_serversupplied_info *session_info
 		SMB_VFS_DISCONNECT(conn);
 		conn_free(conn);
 	}
-	if (!NT_STATUS_IS_OK(*perr)) {
+	if (!W_ERROR_IS_OK(*perr)) {
 		cversion = -1;
 	}
 
@@ -761,7 +764,7 @@ static uint32 get_correct_cversion(struct auth_serversupplied_info *session_info
 } while (0);
 
 static WERROR clean_up_driver_struct_level(TALLOC_CTX *mem_ctx,
-					   struct auth_serversupplied_info *session_info,
+					   struct auth_session_info *session_info,
 					   const char *architecture,
 					   const char **driver_path,
 					   const char **data_file,
@@ -834,7 +837,7 @@ static WERROR clean_up_driver_struct_level(TALLOC_CTX *mem_ctx,
 ****************************************************************************/
 
 WERROR clean_up_driver_struct(TALLOC_CTX *mem_ctx,
-			      struct auth_serversupplied_info *session_info,
+			      struct auth_session_info *session_info,
 			      struct spoolss_AddDriverInfoCtr *r)
 {
 	switch (r->level) {
@@ -953,7 +956,7 @@ static WERROR move_driver_file_to_download_area(TALLOC_CTX *mem_ctx,
 	return ret;
 }
 
-WERROR move_driver_to_download_area(struct auth_serversupplied_info *session_info,
+WERROR move_driver_to_download_area(struct auth_session_info *session_info,
 				    struct spoolss_AddDriverInfoCtr *r)
 {
 	struct spoolss_AddDriverInfo3 *driver;
@@ -997,7 +1000,8 @@ WERROR move_driver_to_download_area(struct auth_serversupplied_info *session_inf
 		return WERR_NO_SUCH_SHARE;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
+	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+				       printdollar_snum,
 				       lp_pathname(printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -1168,418 +1172,13 @@ WERROR move_driver_to_download_area(struct auth_serversupplied_info *session_inf
 }
 
 /****************************************************************************
- Create and allocate a default devicemode.
-****************************************************************************/
-
-WERROR spoolss_create_default_devmode(TALLOC_CTX *mem_ctx,
-				      const char *devicename,
-				      struct spoolss_DeviceMode **devmode)
-{
-	struct spoolss_DeviceMode *dm;
-	char *dname;
-
-	dm = talloc_zero(mem_ctx, struct spoolss_DeviceMode);
-	if (dm == NULL) {
-		return WERR_NOMEM;
-	}
-
-	dname = talloc_asprintf(dm, "%s", devicename);
-	if (dname == NULL) {
-		return WERR_NOMEM;
-	}
-	if (strlen(dname) > MAXDEVICENAME) {
-		dname[MAXDEVICENAME] = '\0';
-	}
-	dm->devicename = dname;
-
-	dm->formname = talloc_strdup(dm, "Letter");
-	if (dm->formname == NULL) {
-		return WERR_NOMEM;
-	}
-
-	dm->specversion          = DMSPEC_NT4_AND_ABOVE;
-	dm->driverversion        = 0x0400;
-	dm->size                 = 0x00DC;
-	dm->__driverextra_length = 0;
-	dm->fields               = DEVMODE_FORMNAME |
-				   DEVMODE_TTOPTION |
-				   DEVMODE_PRINTQUALITY |
-				   DEVMODE_DEFAULTSOURCE |
-				   DEVMODE_COPIES |
-				   DEVMODE_SCALE |
-				   DEVMODE_PAPERSIZE |
-				   DEVMODE_ORIENTATION;
-	dm->orientation          = DMORIENT_PORTRAIT;
-	dm->papersize            = DMPAPER_LETTER;
-	dm->paperlength          = 0;
-	dm->paperwidth           = 0;
-	dm->scale                = 0x64;
-	dm->copies               = 1;
-	dm->defaultsource        = DMBIN_FORMSOURCE;
-	dm->printquality         = DMRES_HIGH;           /* 0x0258 */
-	dm->color                = DMRES_MONOCHROME;
-	dm->duplex               = DMDUP_SIMPLEX;
-	dm->yresolution          = 0;
-	dm->ttoption             = DMTT_SUBDEV;
-	dm->collate              = DMCOLLATE_FALSE;
-	dm->icmmethod            = 0;
-	dm->icmintent            = 0;
-	dm->mediatype            = 0;
-	dm->dithertype           = 0;
-
-	dm->logpixels            = 0;
-	dm->bitsperpel           = 0;
-	dm->pelswidth            = 0;
-	dm->pelsheight           = 0;
-	dm->displayflags         = 0;
-	dm->displayfrequency     = 0;
-	dm->reserved1            = 0;
-	dm->reserved2            = 0;
-	dm->panningwidth         = 0;
-	dm->panningheight        = 0;
-
-	dm->driverextra_data.data = NULL;
-	dm->driverextra_data.length = 0;
-
-        *devmode = dm;
-	return WERR_OK;
-}
-
-WERROR spoolss_create_default_secdesc(TALLOC_CTX *mem_ctx,
-				      struct spoolss_security_descriptor **secdesc)
-{
-	struct security_ace ace[7];	/* max number of ace entries */
-	int i = 0;
-	uint32_t sa;
-	struct security_acl *psa = NULL;
-	struct security_descriptor *psd = NULL;
-	struct dom_sid adm_sid;
-	size_t sd_size;
-
-	/* Create an ACE where Everyone is allowed to print */
-
-	sa = PRINTER_ACE_PRINT;
-	init_sec_ace(&ace[i++], &global_sid_World, SEC_ACE_TYPE_ACCESS_ALLOWED,
-		     sa, SEC_ACE_FLAG_CONTAINER_INHERIT);
-
-	/* Add the domain admins group if we are a DC */
-
-	if ( IS_DC ) {
-		struct dom_sid domadmins_sid;
-
-		sid_compose(&domadmins_sid, get_global_sam_sid(),
-			    DOMAIN_RID_ADMINS);
-
-		sa = PRINTER_ACE_FULL_CONTROL;
-		init_sec_ace(&ace[i++], &domadmins_sid,
-			SEC_ACE_TYPE_ACCESS_ALLOWED, sa,
-			SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_INHERIT_ONLY);
-		init_sec_ace(&ace[i++], &domadmins_sid, SEC_ACE_TYPE_ACCESS_ALLOWED,
-			sa, SEC_ACE_FLAG_CONTAINER_INHERIT);
-	}
-	else if (secrets_fetch_domain_sid(lp_workgroup(), &adm_sid)) {
-		sid_append_rid(&adm_sid, DOMAIN_RID_ADMINISTRATOR);
-
-		sa = PRINTER_ACE_FULL_CONTROL;
-		init_sec_ace(&ace[i++], &adm_sid,
-			SEC_ACE_TYPE_ACCESS_ALLOWED, sa,
-			SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_INHERIT_ONLY);
-		init_sec_ace(&ace[i++], &adm_sid, SEC_ACE_TYPE_ACCESS_ALLOWED,
-			sa, SEC_ACE_FLAG_CONTAINER_INHERIT);
-	}
-
-	/* add BUILTIN\Administrators as FULL CONTROL */
-
-	sa = PRINTER_ACE_FULL_CONTROL;
-	init_sec_ace(&ace[i++], &global_sid_Builtin_Administrators,
-		SEC_ACE_TYPE_ACCESS_ALLOWED, sa,
-		SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_INHERIT_ONLY);
-	init_sec_ace(&ace[i++], &global_sid_Builtin_Administrators,
-		SEC_ACE_TYPE_ACCESS_ALLOWED,
-		sa, SEC_ACE_FLAG_CONTAINER_INHERIT);
-
-	/* add BUILTIN\Print Operators as FULL CONTROL */
-
-	sa = PRINTER_ACE_FULL_CONTROL;
-	init_sec_ace(&ace[i++], &global_sid_Builtin_Print_Operators,
-		SEC_ACE_TYPE_ACCESS_ALLOWED, sa,
-		SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_INHERIT_ONLY);
-	init_sec_ace(&ace[i++], &global_sid_Builtin_Print_Operators,
-		SEC_ACE_TYPE_ACCESS_ALLOWED,
-		sa, SEC_ACE_FLAG_CONTAINER_INHERIT);
-
-	/* Make the security descriptor owned by the BUILTIN\Administrators */
-
-	/* The ACL revision number in rpc_secdesc.h differs from the one
-	   created by NT when setting ACE entries in printer
-	   descriptors.  NT4 complains about the property being edited by a
-	   NT5 machine. */
-
-	if ((psa = make_sec_acl(mem_ctx, NT4_ACL_REVISION, i, ace)) != NULL) {
-		psd = make_sec_desc(mem_ctx,
-				    SD_REVISION,
-				    SEC_DESC_SELF_RELATIVE,
-				    &global_sid_Builtin_Administrators,
-				    &global_sid_Builtin_Administrators,
-				    NULL,
-				    psa,
-				    &sd_size);
-	}
-
-	if (psd == NULL) {
-		DEBUG(0,("construct_default_printer_sd: Failed to make SEC_DESC.\n"));
-		return WERR_NOMEM;
-	}
-
-	DEBUG(4,("construct_default_printer_sdb: size = %u.\n",
-		 (unsigned int)sd_size));
-
-	*secdesc = psd;
-
-	return WERR_OK;
-}
-
-/****************************************************************************
- ***************************************************************************/
-
-static char *win_driver;
-static char *os2_driver;
-
-static const char *get_win_driver(void)
-{
-	if (win_driver == NULL) {
-		return "";
-	}
-	return win_driver;
-}
-
-static const char *get_os2_driver(void)
-{
-	if (os2_driver == NULL) {
-		return "";
-	}
-	return os2_driver;
-}
-
-static bool set_driver_mapping(const char *from, const char *to)
-{
-	SAFE_FREE(win_driver);
-	SAFE_FREE(os2_driver);
-
-	win_driver = SMB_STRDUP(from);
-	os2_driver = SMB_STRDUP(to);
-
-	if (win_driver == NULL || os2_driver == NULL) {
-		SAFE_FREE(win_driver);
-		SAFE_FREE(os2_driver);
-		return false;
-	}
-	return true;
-}
-
-/**
- * @internal
- *
- * @brief Map a Windows driver to a OS/2 driver.
- *
- * @param[in]  mem_ctx  The memory context to use.
- *
- * @param[in,out] pdrivername The drivername of Windows to remap.
- *
- * @return              WERR_OK on success, a corresponding WERROR on failure.
- */
-WERROR spoolss_map_to_os2_driver(TALLOC_CTX *mem_ctx, const char **pdrivername)
-{
-	const char *mapfile = lp_os2_driver_map();
-	char **lines = NULL;
-	const char *drivername;
-	int numlines = 0;
-	int i;
-
-	if (pdrivername == NULL || *pdrivername == NULL || *pdrivername[0] == '\0') {
-		return WERR_INVALID_PARAMETER;
-	}
-
-	drivername = *pdrivername;
-
-	if (mapfile[0] == '\0') {
-		return WERR_BADFILE;
-	}
-
-	if (strequal(drivername, get_win_driver())) {
-		DEBUG(3,("Mapped Windows driver %s to OS/2 driver %s\n",
-			drivername, get_os2_driver()));
-		drivername = talloc_strdup(mem_ctx, get_os2_driver());
-		if (drivername == NULL) {
-			return WERR_NOMEM;
-		}
-		*pdrivername = drivername;
-		return WERR_OK;
-	}
-
-	lines = file_lines_load(mapfile, &numlines, 0, NULL);
-	if (numlines == 0 || lines == NULL) {
-		DEBUG(0,("No entries in OS/2 driver map %s\n", mapfile));
-		TALLOC_FREE(lines);
-		return WERR_EMPTY;
-	}
-
-	DEBUG(4,("Scanning OS/2 driver map %s\n",mapfile));
-
-	for( i = 0; i < numlines; i++) {
-		char *nt_name = lines[i];
-		char *os2_name = strchr(nt_name, '=');
-
-		if (os2_name == NULL) {
-			continue;
-		}
-
-		*os2_name++ = '\0';
-
-		while (isspace(*nt_name)) {
-			nt_name++;
-		}
-
-		if (*nt_name == '\0' || strchr("#;", *nt_name)) {
-			continue;
-		}
-
-		{
-			int l = strlen(nt_name);
-			while (l && isspace(nt_name[l - 1])) {
-				nt_name[l - 1] = 0;
-				l--;
-			}
-		}
-
-		while (isspace(*os2_name)) {
-			os2_name++;
-		}
-
-		{
-			int l = strlen(os2_name);
-			while (l && isspace(os2_name[l-1])) {
-				os2_name[l-1] = 0;
-				l--;
-			}
-		}
-
-		if (strequal(nt_name, drivername)) {
-			DEBUG(3,("Mapped Windows driver %s to OS/2 driver %s\n",drivername,os2_name));
-			set_driver_mapping(drivername, os2_name);
-			drivername = talloc_strdup(mem_ctx, os2_name);
-			TALLOC_FREE(lines);
-			if (drivername == NULL) {
-				return WERR_NOMEM;
-			}
-			*pdrivername = drivername;
-			return WERR_OK;
-		}
-	}
-
-	TALLOC_FREE(lines);
-	return WERR_OK;
-}
-
-/****************************************************************************
-****************************************************************************/
-
-bool driver_info_ctr_to_info8(struct spoolss_AddDriverInfoCtr *r,
-			      struct spoolss_DriverInfo8 *_info8)
-{
-	struct spoolss_DriverInfo8 info8;
-
-	ZERO_STRUCT(info8);
-
-	switch (r->level) {
-	case 3:
-		info8.version		= r->info.info3->version;
-		info8.driver_name	= r->info.info3->driver_name;
-		info8.architecture	= r->info.info3->architecture;
-		info8.driver_path	= r->info.info3->driver_path;
-		info8.data_file		= r->info.info3->data_file;
-		info8.config_file	= r->info.info3->config_file;
-		info8.help_file		= r->info.info3->help_file;
-		info8.monitor_name	= r->info.info3->monitor_name;
-		info8.default_datatype	= r->info.info3->default_datatype;
-		if (r->info.info3->dependent_files && r->info.info3->dependent_files->string) {
-			info8.dependent_files	= r->info.info3->dependent_files->string;
-		}
-		break;
-	case 6:
-		info8.version		= r->info.info6->version;
-		info8.driver_name	= r->info.info6->driver_name;
-		info8.architecture	= r->info.info6->architecture;
-		info8.driver_path	= r->info.info6->driver_path;
-		info8.data_file		= r->info.info6->data_file;
-		info8.config_file	= r->info.info6->config_file;
-		info8.help_file		= r->info.info6->help_file;
-		info8.monitor_name	= r->info.info6->monitor_name;
-		info8.default_datatype	= r->info.info6->default_datatype;
-		if (r->info.info6->dependent_files && r->info.info6->dependent_files->string) {
-			info8.dependent_files	= r->info.info6->dependent_files->string;
-		}
-		info8.driver_date	= r->info.info6->driver_date;
-		info8.driver_version	= r->info.info6->driver_version;
-		info8.manufacturer_name = r->info.info6->manufacturer_name;
-		info8.manufacturer_url	= r->info.info6->manufacturer_url;
-		info8.hardware_id	= r->info.info6->hardware_id;
-		info8.provider		= r->info.info6->provider;
-		break;
-	case 8:
-		info8.version		= r->info.info8->version;
-		info8.driver_name	= r->info.info8->driver_name;
-		info8.architecture	= r->info.info8->architecture;
-		info8.driver_path	= r->info.info8->driver_path;
-		info8.data_file		= r->info.info8->data_file;
-		info8.config_file	= r->info.info8->config_file;
-		info8.help_file		= r->info.info8->help_file;
-		info8.monitor_name	= r->info.info8->monitor_name;
-		info8.default_datatype	= r->info.info8->default_datatype;
-		if (r->info.info8->dependent_files && r->info.info8->dependent_files->string) {
-			info8.dependent_files	= r->info.info8->dependent_files->string;
-		}
-		if (r->info.info8->previous_names && r->info.info8->previous_names->string) {
-			info8.previous_names	= r->info.info8->previous_names->string;
-		}
-		info8.driver_date	= r->info.info8->driver_date;
-		info8.driver_version	= r->info.info8->driver_version;
-		info8.manufacturer_name = r->info.info8->manufacturer_name;
-		info8.manufacturer_url	= r->info.info8->manufacturer_url;
-		info8.hardware_id	= r->info.info8->hardware_id;
-		info8.provider		= r->info.info8->provider;
-		info8.print_processor	= r->info.info8->print_processor;
-		info8.vendor_setup	= r->info.info8->vendor_setup;
-		if (r->info.info8->color_profiles && r->info.info8->color_profiles->string) {
-			info8.color_profiles = r->info.info8->color_profiles->string;
-		}
-		info8.inf_path		= r->info.info8->inf_path;
-		info8.printer_driver_attributes = r->info.info8->printer_driver_attributes;
-		if (r->info.info8->core_driver_dependencies && r->info.info8->core_driver_dependencies->string) {
-			info8.core_driver_dependencies = r->info.info8->core_driver_dependencies->string;
-		}
-		info8.min_inbox_driver_ver_date = r->info.info8->min_inbox_driver_ver_date;
-		info8.min_inbox_driver_ver_version = r->info.info8->min_inbox_driver_ver_version;
-		break;
-	default:
-		return false;
-	}
-
-	*_info8 = info8;
-
-	return true;
-}
-
-
-/****************************************************************************
   Determine whether or not a particular driver is currently assigned
   to a printer
 ****************************************************************************/
 
 bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
-			   const struct auth_serversupplied_info *session_info,
-			   struct messaging_context *msg_ctx,
-                           const struct spoolss_DriverInfo8 *r)
+			   struct dcerpc_binding_handle *b,
+			   const struct spoolss_DriverInfo8 *r)
 {
 	int snum;
 	int n_services = lp_numservices();
@@ -1600,7 +1199,7 @@ bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
 			continue;
 		}
 
-		result = winreg_get_printer(mem_ctx, session_info, msg_ctx,
+		result = winreg_get_printer(mem_ctx, b,
 					    lp_servicename(snum),
 					    &pinfo2);
 		if (!W_ERROR_IS_OK(result)) {
@@ -1626,18 +1225,18 @@ bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
 		   "Windows NT x86" version 2 or 3 left */
 
 		if (!strequal("Windows NT x86", r->architecture)) {
-			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, b,
 						 "Windows NT x86",
 						 r->driver_name,
 						 DRIVER_ANY_VERSION,
 						 &driver);
 		} else if (r->version == 2) {
-			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, b,
 						 "Windows NT x86",
 						 r->driver_name,
 						 3, &driver);
 		} else if (r->version == 3) {
-			werr = winreg_get_driver(mem_ctx, session_info, msg_ctx,
+			werr = winreg_get_driver(mem_ctx, b,
 						 "Windows NT x86",
 						 r->driver_name,
 						 2, &driver);
@@ -1805,8 +1404,7 @@ static bool trim_overlap_drv_files(TALLOC_CTX *mem_ctx,
 ****************************************************************************/
 
 bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
-				 const struct auth_serversupplied_info *session_info,
-				 struct messaging_context *msg_ctx,
+				 struct dcerpc_binding_handle *b,
 				 struct spoolss_DriverInfo8 *info)
 {
 	int 				i;
@@ -1828,7 +1426,7 @@ bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
 
 	/* get the list of drivers */
 
-	result = winreg_get_driver_list(mem_ctx, session_info, msg_ctx,
+	result = winreg_get_driver_list(mem_ctx, b,
 					info->architecture, version,
 					&num_drivers, &drivers);
 	if (!W_ERROR_IS_OK(result)) {
@@ -1845,7 +1443,7 @@ bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
 
 		driver = NULL;
 
-		result = winreg_get_driver(mem_ctx, session_info, msg_ctx,
+		result = winreg_get_driver(mem_ctx, b,
 					   info->architecture, drivers[i],
 					   version, &driver);
 		if (!W_ERROR_IS_OK(result)) {
@@ -1876,20 +1474,30 @@ bool printer_driver_files_in_use(TALLOC_CTX *mem_ctx,
 }
 
 static NTSTATUS driver_unlink_internals(connection_struct *conn,
-					const char *name)
+					const char *short_arch,
+					int vers,
+					const char *fname)
 {
+	TALLOC_CTX *tmp_ctx = talloc_new(conn);
 	struct smb_filename *smb_fname = NULL;
-	NTSTATUS status;
+	char *print_dlr_path;
+	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	status = create_synthetic_smb_fname(talloc_tos(), name, NULL, NULL,
-	    &smb_fname);
+	print_dlr_path = talloc_asprintf(tmp_ctx, "%s/%d/%s",
+					 short_arch, vers, fname);
+	if (print_dlr_path == NULL) {
+		goto err_out;
+	}
+
+	status = create_synthetic_smb_fname(tmp_ctx, print_dlr_path,
+					    NULL, NULL, &smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+		goto err_out;
 	}
 
 	status = unlink_internals(conn, NULL, 0, smb_fname, false);
-
-	TALLOC_FREE(smb_fname);
+err_out:
+	talloc_free(tmp_ctx);
 	return status;
 }
 
@@ -1899,12 +1507,10 @@ static NTSTATUS driver_unlink_internals(connection_struct *conn,
   this.
 ****************************************************************************/
 
-bool delete_driver_files(const struct auth_serversupplied_info *session_info,
+bool delete_driver_files(const struct auth_session_info *session_info,
 			 const struct spoolss_DriverInfo8 *r)
 {
-	int i = 0;
-	char *s;
-	const char *file;
+	const char *short_arch;
 	connection_struct *conn;
 	NTSTATUS nt_status;
 	char *oldcwd;
@@ -1927,7 +1533,8 @@ bool delete_driver_files(const struct auth_serversupplied_info *session_info,
 		return false;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), &conn, printdollar_snum,
+	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+				       printdollar_snum,
 				       lp_pathname(printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -1955,55 +1562,40 @@ bool delete_driver_files(const struct auth_serversupplied_info *session_info,
 		goto err_out;
 	}
 
-	/* now delete the files; must strip the '\print$' string from
-	   fron of path                                                */
+	short_arch = get_short_archi(r->architecture);
+	if (short_arch == NULL) {
+		DEBUG(0, ("bad architecture %s\n", r->architecture));
+		ret = false;
+		goto err_out;
+	}
+
+	/* now delete the files */
 
 	if (r->driver_path && r->driver_path[0]) {
-		if ((s = strchr(&r->driver_path[1], '\\')) != NULL) {
-			file = s;
-			DEBUG(10,("deleting driverfile [%s]\n", s));
-			driver_unlink_internals(conn, file);
-		}
+		DEBUG(10,("deleting driverfile [%s]\n", r->driver_path));
+		driver_unlink_internals(conn, short_arch, r->version, r->driver_path);
 	}
 
 	if (r->config_file && r->config_file[0]) {
-		if ((s = strchr(&r->config_file[1], '\\')) != NULL) {
-			file = s;
-			DEBUG(10,("deleting configfile [%s]\n", s));
-			driver_unlink_internals(conn, file);
-		}
+		DEBUG(10,("deleting configfile [%s]\n", r->config_file));
+		driver_unlink_internals(conn, short_arch, r->version, r->config_file);
 	}
 
 	if (r->data_file && r->data_file[0]) {
-		if ((s = strchr(&r->data_file[1], '\\')) != NULL) {
-			file = s;
-			DEBUG(10,("deleting datafile [%s]\n", s));
-			driver_unlink_internals(conn, file);
-		}
+		DEBUG(10,("deleting datafile [%s]\n", r->data_file));
+		driver_unlink_internals(conn, short_arch, r->version, r->data_file);
 	}
 
 	if (r->help_file && r->help_file[0]) {
-		if ((s = strchr(&r->help_file[1], '\\')) != NULL) {
-			file = s;
-			DEBUG(10,("deleting helpfile [%s]\n", s));
-			driver_unlink_internals(conn, file);
-		}
+		DEBUG(10,("deleting helpfile [%s]\n", r->help_file));
+		driver_unlink_internals(conn, short_arch, r->version, r->help_file);
 	}
 
-	/* check if we are done removing files */
-
 	if (r->dependent_files) {
+		int i = 0;
 		while (r->dependent_files[i] && r->dependent_files[i][0]) {
-			char *p;
-
-			/* bypass the "\print$" portion of the path */
-
-			if ((p = strchr(r->dependent_files[i]+1, '\\')) != NULL) {
-				file = p;
-				DEBUG(10,("deleting dependent file [%s]\n", file));
-				driver_unlink_internals(conn, file);
-			}
-
+			DEBUG(10,("deleting dependent file [%s]\n", r->dependent_files[i]));
+			driver_unlink_internals(conn, short_arch, r->version, r->dependent_files[i]);
 			i++;
 		}
 	}
@@ -2104,7 +1696,7 @@ void map_job_permissions(struct security_descriptor *sd)
     3)  "printer admins" (may result in numerous calls to winbind)
 
  ****************************************************************************/
-bool print_access_check(const struct auth_serversupplied_info *session_info,
+bool print_access_check(const struct auth_session_info *session_info,
 			struct messaging_context *msg_ctx, int snum,
 			int access_type)
 {
@@ -2120,7 +1712,7 @@ bool print_access_check(const struct auth_serversupplied_info *session_info,
 
 	/* Always allow root or SE_PRINT_OPERATROR to do anything */
 
-	if (session_info->utok.uid == sec_initial_uid()
+	if (session_info->unix_token->uid == sec_initial_uid()
 	    || security_token_has_privilege(session_info->security_token, SEC_PRIV_PRINT_OPERATOR)) {
 		return True;
 	}
@@ -2141,7 +1733,7 @@ bool print_access_check(const struct auth_serversupplied_info *session_info,
 		return False;
 	}
 
-	result = winreg_get_printer_secdesc(mem_ctx,
+	result = winreg_get_printer_secdesc_internal(mem_ctx,
 					    get_session_info_system(),
 					    msg_ctx,
 					    pname,
@@ -2185,8 +1777,8 @@ bool print_access_check(const struct auth_serversupplied_info *session_info,
         /* see if we need to try the printer admin list */
 
         if (!NT_STATUS_IS_OK(status) &&
-	    (token_contains_name_in_list(uidtoname(session_info->utok.uid),
-					 session_info->info3->base.domain.string,
+	    (token_contains_name_in_list(uidtoname(session_info->unix_token->uid),
+					 session_info->info->domain_name,
 					 NULL, session_info->security_token,
 					 lp_printer_admin(snum)))) {
 		talloc_destroy(mem_ctx);
@@ -2206,7 +1798,7 @@ bool print_access_check(const struct auth_serversupplied_info *session_info,
  Check the time parameters allow a print operation.
 *****************************************************************************/
 
-bool print_time_access_check(const struct auth_serversupplied_info *session_info,
+bool print_time_access_check(const struct auth_session_info *session_info,
 			     struct messaging_context *msg_ctx,
 			     const char *servicename)
 {
@@ -2217,7 +1809,7 @@ bool print_time_access_check(const struct auth_serversupplied_info *session_info
 	struct tm *t;
 	uint32 mins;
 
-	result = winreg_get_printer(NULL, session_info, msg_ctx,
+	result = winreg_get_printer_internal(NULL, session_info, msg_ctx,
 				    servicename, &pinfo2);
 	if (!W_ERROR_IS_OK(result)) {
 		return False;
@@ -2244,16 +1836,31 @@ bool print_time_access_check(const struct auth_serversupplied_info *session_info
 }
 
 void nt_printer_remove(TALLOC_CTX *mem_ctx,
-			const struct auth_serversupplied_info *session_info,
+			const struct auth_session_info *session_info,
 			struct messaging_context *msg_ctx,
 			const char *printer)
 {
 	WERROR result;
 
-	result = winreg_delete_printer_key(mem_ctx, session_info, msg_ctx,
+	result = winreg_delete_printer_key_internal(mem_ctx, session_info, msg_ctx,
 					   printer, "");
 	if (!W_ERROR_IS_OK(result)) {
-		DEBUG(0, ("nt_printer_remove: failed to remove rpinter %s",
-			  printer));
+		DEBUG(0, ("nt_printer_remove: failed to remove printer %s: "
+		"%s\n", printer, win_errstr(result)));
+	}
+}
+
+void nt_printer_add(TALLOC_CTX *mem_ctx,
+		    const struct auth_session_info *session_info,
+		    struct messaging_context *msg_ctx,
+		    const char *printer)
+{
+	WERROR result;
+
+	result = winreg_create_printer_internal(mem_ctx, session_info, msg_ctx,
+						printer);
+	if (!W_ERROR_IS_OK(result)) {
+		DEBUG(0, ("nt_printer_add: failed to add printer %s: %s\n",
+			  printer, win_errstr(result)));
 	}
 }

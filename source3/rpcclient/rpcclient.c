@@ -31,6 +31,7 @@
 #include "../libcli/security/security.h"
 #include "passdb.h"
 #include "libsmb/libsmb.h"
+#include "auth/gensec/gensec.h"
 
 enum pipe_auth_type_spnego {
 	PIPE_AUTH_TYPE_SPNEGO_NONE = 0,
@@ -681,44 +682,46 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 
 	/* Open pipe */
 
-	if ((cmd_entry->interface != NULL) && (cmd_entry->rpc_pipe == NULL)) {
+	if ((cmd_entry->table != NULL) && (cmd_entry->rpc_pipe == NULL)) {
 		switch (pipe_default_auth_type) {
 		case DCERPC_AUTH_TYPE_NONE:
 			ntresult = cli_rpc_pipe_open_noauth_transport(
 				cli, default_transport,
-				cmd_entry->interface,
+				&cmd_entry->table->syntax_id,
 				&cmd_entry->rpc_pipe);
 			break;
 		case DCERPC_AUTH_TYPE_SPNEGO:
+		{
+			/* won't happen, but if it does it will fail in cli_rpc_pipe_open_spnego() eventually */
+			const char *oid = "INVALID";
 			switch (pipe_default_auth_spnego_type) {
 			case PIPE_AUTH_TYPE_SPNEGO_NTLMSSP:
-				ntresult = cli_rpc_pipe_open_spnego_ntlmssp(
-						cli, cmd_entry->interface,
-						default_transport,
-						pipe_default_auth_level,
-						get_cmdline_auth_info_domain(auth_info),
-						get_cmdline_auth_info_username(auth_info),
-						get_cmdline_auth_info_password(auth_info),
-						&cmd_entry->rpc_pipe);
+				oid = GENSEC_OID_NTLMSSP;
 				break;
 			case PIPE_AUTH_TYPE_SPNEGO_KRB5:
-				ntresult = cli_rpc_pipe_open_spnego_krb5(
-						cli, cmd_entry->interface,
-						default_transport,
-						pipe_default_auth_level,
-						cli->desthost,
-						NULL, NULL,
-						&cmd_entry->rpc_pipe);
+				oid = GENSEC_OID_KERBEROS5;
 				break;
-			default:
-				ntresult = NT_STATUS_INTERNAL_ERROR;
 			}
-			break;
-		case DCERPC_AUTH_TYPE_NTLMSSP:
-			ntresult = cli_rpc_pipe_open_ntlmssp(
-				cli, cmd_entry->interface,
+			ntresult = cli_rpc_pipe_open_spnego(
+				cli, cmd_entry->table,
 				default_transport,
+				oid,
 				pipe_default_auth_level,
+				cli_state_remote_name(cli),
+				get_cmdline_auth_info_domain(auth_info),
+				get_cmdline_auth_info_username(auth_info),
+				get_cmdline_auth_info_password(auth_info),
+				&cmd_entry->rpc_pipe);
+			break;
+		}
+		case DCERPC_AUTH_TYPE_NTLMSSP:
+		case DCERPC_AUTH_TYPE_KRB5:
+			ntresult = cli_rpc_pipe_open_generic_auth(
+				cli, cmd_entry->table,
+				default_transport,
+				pipe_default_auth_type,
+				pipe_default_auth_level,
+				cli_state_remote_name(cli),
 				get_cmdline_auth_info_domain(auth_info),
 				get_cmdline_auth_info_username(auth_info),
 				get_cmdline_auth_info_password(auth_info),
@@ -726,39 +729,27 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 			break;
 		case DCERPC_AUTH_TYPE_SCHANNEL:
 			ntresult = cli_rpc_pipe_open_schannel(
-				cli, cmd_entry->interface,
+				cli, &cmd_entry->table->syntax_id,
 				default_transport,
 				pipe_default_auth_level,
 				get_cmdline_auth_info_domain(auth_info),
 				&cmd_entry->rpc_pipe);
 			break;
-		case DCERPC_AUTH_TYPE_KRB5:
-			ntresult = cli_rpc_pipe_open_krb5(
-				cli, cmd_entry->interface,
-				default_transport,
-				pipe_default_auth_level,
-				cli->desthost,
-				NULL, NULL,
-				&cmd_entry->rpc_pipe);
-			break;
 		default:
 			DEBUG(0, ("Could not initialise %s. Invalid "
 				  "auth type %u\n",
-				  get_pipe_name_from_syntax(
-					  talloc_tos(),
-					  cmd_entry->interface),
+				  cmd_entry->table->name,
 				  pipe_default_auth_type ));
 			return NT_STATUS_UNSUCCESSFUL;
 		}
 		if (!NT_STATUS_IS_OK(ntresult)) {
 			DEBUG(0, ("Could not initialise %s. Error was %s\n",
-				  get_pipe_name_from_syntax(
-					  talloc_tos(), cmd_entry->interface),
+				  cmd_entry->table->name,
 				  nt_errstr(ntresult) ));
 			return ntresult;
 		}
 
-		if (ndr_syntax_id_equal(cmd_entry->interface,
+		if (ndr_syntax_id_equal(&cmd_entry->table->syntax_id,
 					&ndr_table_netlogon.syntax_id)) {
 			uint32_t neg_flags = NETLOGON_NEG_AUTH2_ADS_FLAGS;
 			enum netr_SchannelType sec_channel_type;
@@ -773,7 +764,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 			}
 
 			ntresult = rpccli_netlogon_setup_creds(cmd_entry->rpc_pipe,
-						cli->desthost,   /* server name */
+						cmd_entry->rpc_pipe->desthost,   /* server name */
 						get_cmdline_auth_info_domain(auth_info),  /* domain */
 						lp_netbios_name(), /* client name */
 						machine_account, /* machine account name */
@@ -783,9 +774,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 
 			if (!NT_STATUS_IS_OK(ntresult)) {
 				DEBUG(0, ("Could not initialise credentials for %s.\n",
-					  get_pipe_name_from_syntax(
-						  talloc_tos(),
-						  cmd_entry->interface)));
+					  cmd_entry->table->name));
 				return ntresult;
 			}
 		}
@@ -976,7 +965,7 @@ out_free:
 
 	/* Load smb.conf file */
 
-	if (!lp_load(get_dyn_CONFIGFILE(),True,False,False,True))
+	if (!lp_load_global(get_dyn_CONFIGFILE()))
 		fprintf(stderr, "Can't load %s\n", get_dyn_CONFIGFILE());
 
 	/*

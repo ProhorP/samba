@@ -197,7 +197,7 @@ extern int  *DEBUGLEVEL_CLASS;
  * for example.  This makes it easy to override for debug to stderr on
  * the command line, as the smb.conf cannot reset it back to
  * file-based logging */
-enum debug_logtype {DEBUG_DEFAULT_STDERR = 0, DEBUG_STDOUT = 1, DEBUG_FILE = 2, DEBUG_STDERR = 3};
+enum debug_logtype {DEBUG_DEFAULT_STDERR = 0, DEBUG_DEFAULT_STDOUT = 1, DEBUG_FILE = 2, DEBUG_STDOUT = 3, DEBUG_STDERR = 4};
 
 struct debug_settings {
 	size_t max_log_size;
@@ -229,6 +229,7 @@ void dbgflush( void );
 bool dbghdrclass(int level, int cls, const char *location, const char *func);
 bool dbghdr(int level, const char *location, const char *func);
 bool debug_get_output_is_stderr(void);
+bool debug_get_output_is_stdout(void);
 void debug_schedule_reopen_logs(void);
 char *debug_list_class_names_and_levels(void);
 

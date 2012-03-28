@@ -18,11 +18,42 @@
 */
 
 #include "includes.h"
-#include "../source4/param/s3_param.h"
+#include "lib/param/s3_param.h"
 
-static const char *get_parametric(const char *type, const char *option)
+static struct loadparm_service *lp_service_for_s4_ctx(const char *servicename)
 {
-	return lp_parm_const_string(-1, type, option, NULL);
+	TALLOC_CTX *mem_ctx;
+	struct loadparm_service *service;
+
+	mem_ctx = talloc_stackframe();
+	service = lp_service(servicename);
+	talloc_free(mem_ctx);
+
+	return service;
+}
+
+static struct loadparm_service *lp_servicebynum_for_s4_ctx(int servicenum)
+{
+	TALLOC_CTX *mem_ctx;
+	struct loadparm_service *service;
+
+	mem_ctx = talloc_stackframe();
+	service = lp_servicebynum(servicenum);
+	talloc_free(mem_ctx);
+
+	return service;
+}
+
+static bool lp_load_for_s4_ctx(const char *filename)
+{
+	TALLOC_CTX *mem_ctx;
+	bool status;
+
+	mem_ctx = talloc_stackframe();
+	status =  lp_load(filename, false, false, false, false);
+	talloc_free(mem_ctx);
+
+	return status;
 }
 
 /* These are in the order that they appear in the s4 loadparm file.
@@ -31,9 +62,19 @@ static const char *get_parametric(const char *type, const char *option)
  * values in particular) and defaults. */
 static const struct loadparm_s3_context s3_fns = 
 {
-	.get_parametric = get_parametric,
+	.get_parametric = lp_parm_const_string_service,
+	.get_parm_struct = lp_get_parameter,
+	.get_parm_ptr = lp_parm_ptr,
+	.get_service = lp_service_for_s4_ctx,
+	.get_servicebynum = lp_servicebynum_for_s4_ctx,
+	.get_default_loadparm_service = lp_default_loadparm_service,
+	.get_numservices = lp_numservices,
+	.load = lp_load_for_s4_ctx,
+	.set_cmdline = lp_set_cmdline,
+	.dump = lp_dump,
 
 	.server_role = lp_server_role,
+	.security = lp_security,
 
 	.winbind_separator = lp_winbind_separator,
 	.template_homedir = lp_template_homedir,
@@ -49,6 +90,7 @@ static const struct loadparm_s3_context s3_fns =
 
 	.netbios_name = lp_netbios_name,
 	.netbios_scope = lp_netbios_scope,
+	.netbios_aliases = lp_netbios_aliases,
 
 	.lanman_auth = lp_lanman_auth,
 	.ntlm_auth = lp_ntlm_auth,
@@ -56,10 +98,18 @@ static const struct loadparm_s3_context s3_fns =
 	.client_plaintext_auth = lp_client_plaintext_auth,
 	.client_lanman_auth = lp_client_lanman_auth,
 	.client_ntlmv2_auth = lp_client_ntlmv2_auth,
+	.client_use_spnego_principal = lp_client_use_spnego_principal,
 
 	.private_dir = lp_private_dir,
 	.ncalrpc_dir = lp_ncalrpc_dir,
-	.lockdir = lp_lockdir
+	.lockdir = lp_lockdir,
+
+	.passdb_backend = lp_passdb_backend,
+
+	.host_msdfs = lp_host_msdfs,
+	.unix_extensions = lp_unix_extensions,
+	.use_spnego = lp_use_spnego,
+	.use_mmap = lp_use_mmap,
 };
 
 const struct loadparm_s3_context *loadparm_s3_context(void)

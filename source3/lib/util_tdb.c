@@ -102,7 +102,7 @@ static int tdb_chainlock_with_timeout_internal(struct tdb_context *tdb,
 		locking.base.attr = TDB_ATTRIBUTE_FLOCK;
 		ecode = tdb_get_attribute(tdb, &locking);
 		if (ecode != TDB_SUCCESS)
-			return ecode;
+			return -1;
 
 		/* Replace locking function with our own. */
 		locking.flock.data = &timeout;
@@ -110,7 +110,7 @@ static int tdb_chainlock_with_timeout_internal(struct tdb_context *tdb,
 
 		ecode = tdb_set_attribute(tdb, &locking);
 		if (ecode != TDB_SUCCESS)
-			return ecode;
+			return -1;
 	}
 	if (rw_type == F_RDLCK)
 		ecode = tdb_chainlock_read(tdb, key);
@@ -388,7 +388,7 @@ int tdb_unpack(const uint8 *buf, int bufsize, const char *fmt, ...)
 				goto no_space;
 			*w = SVAL(buf, 0);
 			break;
-		case 'd': /* signed 32-bit integer (standard int in most systems) */
+		case 'd': /* unsigned 32-bit integer (standard int in most systems) */
 			len = 4;
 			d = va_arg(ap, uint32 *);
 			if (bufsize < len)
@@ -410,12 +410,14 @@ int tdb_unpack(const uint8 *buf, int bufsize, const char *fmt, ...)
 		case 'P': /* null-terminated string */
 			/* Return malloc'ed string. */
 			ps = va_arg(ap,char **);
-			len = strlen((const char *)buf) + 1;
+			len = strnlen((const char *)buf, bufsize) + 1;
+			if (bufsize < len)
+				goto no_space;
 			*ps = SMB_STRDUP((const char *)buf);
 			break;
 		case 'f': /* null-terminated string */
 			s = va_arg(ap,char *);
-			len = strlen((const char *)buf) + 1;
+			len = strnlen((const char *)buf, bufsize) + 1;
 			if (bufsize < len || len > sizeof(fstring))
 				goto no_space;
 			memcpy(s, buf, len);
@@ -470,10 +472,11 @@ int tdb_unpack(const uint8 *buf, int bufsize, const char *fmt, ...)
 
 #ifdef BUILD_TDB2
 static void tdb_log(TDB_CONTEXT *tdb, enum tdb_log_level level,
-		    const char *message, void *unused)
+		    enum TDB_ERROR ecode, const char *message, void *unused)
 {
-	DEBUG((int)level, ("tdb(%s): %s",
-			   tdb_name(tdb) ? tdb_name(tdb) : "unnamed", message));
+	DEBUG((int)level, ("tdb(%s):%s: %s",
+			   tdb_name(tdb) ? tdb_name(tdb) : "unnamed",
+			   tdb_errorstr(ecode), message));
 }
 #else
 static void tdb_log(TDB_CONTEXT *tdb, enum tdb_debug_level level, const char *format, ...)

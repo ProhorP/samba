@@ -33,6 +33,7 @@
 #include "lib/smbconf/smbconf.h"
 #include "lib/smbconf/smbconf_init.h"
 #include "lib/smbconf/smbconf_reg.h"
+#include "lib/param/loadparm.h"
 
 /**********************************************************************
  *
@@ -90,7 +91,7 @@ static int net_conf_addshare_usage(struct net_context *c, int argc,
 	d_printf("%s\n%s",
 		 _("Usage:"),
 		 _(" net conf addshare <sharename> <path> "
-		   "[writeable={y|N} [guest_ok={y|N} [<comment>]]\n"
+		   "[writeable={y|N} [guest_ok={y|N} [<comment>]]]\n"
 		   "\t<sharename>      the new share name.\n"
 		   "\t<path>           the path on the filesystem to export.\n"
 		   "\twriteable={y|N}  set \"writeable to \"yes\" or "
@@ -1299,7 +1300,7 @@ int net_conf(struct net_context *c, int argc, const char **argv)
 			net_conf_delincludes,
 			NET_TRANSPORT_LOCAL,
 			N_("Delete includes from a share definition."),
-			N_("net conf setincludes\n"
+			N_("net conf delincludes\n"
 			   "    Delete includes from a share definition.")
 		},
 		{NULL, NULL, 0, NULL, NULL}

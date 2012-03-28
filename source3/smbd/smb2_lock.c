@@ -58,8 +58,6 @@ NTSTATUS smbd_smb2_request_process_lock(struct smbd_smb2_request *req)
 	const uint8_t *inhdr;
 	const uint8_t *inbody;
 	const int i = req->current_idx;
-	size_t expected_body_size = 0x30;
-	size_t body_size;
 	uint32_t in_smbpid;
 	uint16_t in_lock_count;
 	uint64_t in_file_id_persistent;
@@ -68,18 +66,14 @@ NTSTATUS smbd_smb2_request_process_lock(struct smbd_smb2_request *req)
 	struct tevent_req *subreq;
 	const uint8_t *lock_buffer;
 	uint16_t l;
+	NTSTATUS status;
 
+	status = smbd_smb2_request_verify_sizes(req, 0x30);
+	if (!NT_STATUS_IS_OK(status)) {
+		return smbd_smb2_request_error(req, status);
+	}
 	inhdr = (const uint8_t *)req->in.vector[i+0].iov_base;
-	if (req->in.vector[i+1].iov_len != (expected_body_size & 0xFFFFFFFE)) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
-
 	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
-
-	body_size = SVAL(inbody, 0x00);
-	if (body_size != expected_body_size) {
-		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
-	}
 
 	in_smbpid			= IVAL(inhdr, SMB2_HDR_PID);
 
@@ -128,7 +122,7 @@ NTSTATUS smbd_smb2_request_process_lock(struct smbd_smb2_request *req)
 	}
 
 	subreq = smbd_smb2_lock_send(req,
-				     req->sconn->smb2.event_ctx,
+				     req->sconn->ev_ctx,
 				     req,
 				     in_smbpid,
 				     in_file_id_volatile,
@@ -139,7 +133,7 @@ NTSTATUS smbd_smb2_request_process_lock(struct smbd_smb2_request *req)
 	}
 	tevent_req_set_callback(subreq, smbd_smb2_request_lock_done, req);
 
-	return smbd_smb2_request_pending_queue(req, subreq);
+	return smbd_smb2_request_pending_queue(req, subreq, 500);
 }
 
 static void smbd_smb2_request_lock_done(struct tevent_req *subreq)
@@ -456,15 +450,12 @@ static void received_unlock_msg(struct messaging_context *msg,
 				struct server_id server_id,
 				DATA_BLOB *data)
 {
-	struct smbd_server_connection *sconn;
+	struct smbd_server_connection *sconn =
+		talloc_get_type_abort(private_data,
+		struct smbd_server_connection);
 
 	DEBUG(10,("received_unlock_msg (SMB2)\n"));
 
-	sconn = msg_ctx_to_sconn(msg);
-	if (sconn == NULL) {
-		DEBUG(1, ("could not find sconn\n"));
-		return;
-	}
 	process_blocking_lock_queue_smb2(sconn, timeval_current());
 }
 
@@ -567,8 +558,8 @@ static bool recalc_smb2_brl_timeout(struct smbd_server_connection *sconn)
 			(int)from_now.tv_sec, (int)from_now.tv_usec));
 	}
 
-	sconn->smb2.locks.brl_timeout = event_add_timed(
-				server_event_context(),
+	sconn->smb2.locks.brl_timeout = tevent_add_timer(
+				sconn->ev_ctx,
 				NULL,
 				next_timeout,
 				brl_timeout_fn,
@@ -646,7 +637,7 @@ bool push_blocking_lock_request_smb2( struct byte_range_lock *br_lck,
 	status = brl_lock(sconn->msg_ctx,
 			br_lck,
 			smblctx,
-			sconn_server_id(sconn),
+			messaging_server_id(sconn->msg_ctx),
 			offset,
 			count,
 			lock_type == READ_LOCK ? PENDING_READ_LOCK : PENDING_WRITE_LOCK,
@@ -671,7 +662,7 @@ bool push_blocking_lock_request_smb2( struct byte_range_lock *br_lck,
 
 	/* Ensure we'll receive messages when this is unlocked. */
 	if (!sconn->smb2.locks.blocking_lock_unlock_state) {
-		messaging_register(sconn->msg_ctx, NULL,
+		messaging_register(sconn->msg_ctx, sconn,
 				MSG_SMB_UNLOCK, received_unlock_msg);
 		sconn->smb2.locks.blocking_lock_unlock_state = true;
         }
@@ -698,7 +689,7 @@ static void remove_pending_lock(struct smbd_smb2_lock_state *state,
 	if (br_lck) {
 		brl_lock_cancel(br_lck,
 				blr->smblctx,
-				sconn_server_id(blr->fsp->conn->sconn),
+				messaging_server_id(blr->fsp->conn->sconn->msg_ctx),
 				blr->offset,
 				blr->count,
 				blr->lock_flav,
@@ -918,7 +909,7 @@ void cancel_pending_lock_requests_by_fid_smb2(files_struct *fsp,
 		/* Remove the entries from the lock db. */
 		brl_lock_cancel(br_lck,
 				blr->smblctx,
-				sconn_server_id(sconn),
+				messaging_server_id(sconn->msg_ctx),
 				blr->offset,
 				blr->count,
 				blr->lock_flav,

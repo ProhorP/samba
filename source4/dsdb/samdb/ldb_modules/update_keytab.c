@@ -34,7 +34,7 @@
 #include "auth/credentials/credentials_krb5.h"
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
-#include "util.h"
+#include "dsdb/samdb/ldb_modules/util.h"
 
 struct dn_list {
 	struct ldb_message *msg;
@@ -89,8 +89,8 @@ static int add_modified(struct ldb_module *module, struct ldb_dn *dn, bool do_de
 	struct ldb_result *res;
 	int ret;
 
-	filter = talloc_asprintf(data, "(&(dn=%s)(&(objectClass=kerberosSecret)(privateKeytab=*)))",
-				 ldb_dn_get_linearized(dn));
+	filter = talloc_asprintf(data,
+				 "(&(objectClass=kerberosSecret)(privateKeytab=*))");
 	if (!filter) {
 		return ldb_oom(ldb);
 	}

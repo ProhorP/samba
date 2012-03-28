@@ -60,12 +60,17 @@
 		</para></listitem>
 		</varlistentry>
 		<varlistentry>
-		<term>schema_mode = &lt;rfc2307 | sfu &gt;</term>
+		<term>schema_mode = &lt;rfc2307 | sfu | sfu20&gt;</term>
 		<listitem><para>
 			Defines the schema that idmap_ad should use when querying
 			Active Directory regarding user and group information.
 			This can be either the RFC2307 schema support included
 			in Windows 2003 R2 or the Service for Unix (SFU) schema.
+			For SFU 3.0 or 3.5 please choose "sfu", for SFU 2.0
+			please choose "sfu20".
+
+			Please note that primary group membership is currently always calculated
+			via the "primaryGroupID" LDAP attribute.
 		</para></listitem>
 		</varlistentry>
 	</variablelist>
@@ -85,6 +90,8 @@
 
 	<programlisting>
 	[global]
+	workgroup = CORP
+
 	idmap config * : backend = tdb
 	idmap config * : range = 1000000-1999999
 

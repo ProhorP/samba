@@ -22,6 +22,7 @@
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "lib/util/bitmap.h"
 
 /* The connections bitmap is expanded in increments of BITMAP_BLOCK_SZ. The
  * maximum size of the bitmap is the largest positive integer, but you will hit
@@ -65,7 +66,7 @@ bool conn_snum_used(struct smbd_server_connection *sconn,
 			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
 				if (ptcon->compat_conn &&
 						ptcon->compat_conn->params &&
-						(ptcon->compat_conn->params->service = snum)) {
+						(ptcon->compat_conn->params->service == snum)) {
 					return true;
 				}
 			}

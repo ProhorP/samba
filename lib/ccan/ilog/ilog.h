@@ -1,3 +1,4 @@
+/* Licensed under LGPLv2.1+ - see LICENSE file for details */
 #if !defined(_ilog_H)
 # define _ilog_H (1)
 # include "config.h"
@@ -24,7 +25,7 @@
  *		return 1U << ilog32(i-1);
  *	}
  */
-int ilog32(uint32_t _v) IDEMPOTENT;
+int ilog32(uint32_t _v) CONST_FUNCTION;
 
 /**
  * ilog32_nz - Integer binary logarithm of a non-zero 32-bit value.
@@ -43,7 +44,7 @@ int ilog32(uint32_t _v) IDEMPOTENT;
  *		return ilog32_nz(i) - 1;
  *	}
  */
-int ilog32_nz(uint32_t _v) IDEMPOTENT;
+int ilog32_nz(uint32_t _v) CONST_FUNCTION;
 
 /**
  * ilog64 - Integer binary logarithm of a 64-bit value.
@@ -55,7 +56,7 @@ int ilog32_nz(uint32_t _v) IDEMPOTENT;
  * See Also:
  *	ilog64_nz(), ilog32()
  */
-int ilog64(uint64_t _v) IDEMPOTENT;
+int ilog64(uint64_t _v) CONST_FUNCTION;
 
 /**
  * ilog64_nz - Integer binary logarithm of a non-zero 64-bit value.
@@ -67,7 +68,7 @@ int ilog64(uint64_t _v) IDEMPOTENT;
  * See Also:
  *	ilog64(), ilog32_nz()
  */
-int ilog64_nz(uint64_t _v) IDEMPOTENT;
+int ilog64_nz(uint64_t _v) CONST_FUNCTION;
 
 /**
  * STATIC_ILOG_32 - The integer logarithm of an (unsigned, 32-bit) constant.

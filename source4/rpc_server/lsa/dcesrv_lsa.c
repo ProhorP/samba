@@ -32,6 +32,7 @@
 #include "dsdb/common/util.h"
 #include "libcli/security/session.h"
 #include "kdc/kdc-policy.h"
+#include "libcli/lsarpc/util_lsarpc.h"
 
 /*
   this type allows us to distinguish handle types
@@ -874,7 +875,8 @@ static NTSTATUS add_trust_user(TALLOC_CTX *mem_ctx,
 static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dce_call,
 						    TALLOC_CTX *mem_ctx,
 						    struct lsa_CreateTrustedDomainEx2 *r,
-						    int op)
+						    int op,
+						    struct lsa_TrustDomainInfoAuthInfo *unencrypted_auth_info)
 {
 	struct dcesrv_handle *policy_handle;
 	struct lsa_policy_state *policy_state;
@@ -931,20 +933,26 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 		/* No secrets are created at this time, for this function */
 		auth_struct.outgoing.count = 0;
 		auth_struct.incoming.count = 0;
-	} else {
-		auth_blob = data_blob_const(r->in.auth_info->auth_blob.data,
-					    r->in.auth_info->auth_blob.size);
+	} else if (op == NDR_LSA_CREATETRUSTEDDOMAINEX2) {
+		auth_blob = data_blob_const(r->in.auth_info_internal->auth_blob.data,
+					    r->in.auth_info_internal->auth_blob.size);
 		nt_status = get_trustdom_auth_blob(dce_call, mem_ctx,
 						   &auth_blob, &auth_struct);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			return nt_status;
 		}
+	} else if (op == NDR_LSA_CREATETRUSTEDDOMAINEX) {
 
-		if (op == NDR_LSA_CREATETRUSTEDDOMAINEX) {
-			if (auth_struct.incoming.count > 1) {
-				return NT_STATUS_INVALID_PARAMETER;
-			}
+		if (unencrypted_auth_info->incoming_count > 1) {
+			return NT_STATUS_INVALID_PARAMETER;
 		}
+
+		/* more investigation required here, do not create secrets for
+		 * now */
+		auth_struct.outgoing.count = 0;
+		auth_struct.incoming.count = 0;
+	} else {
+		return NT_STATUS_INVALID_PARAMETER;
 	}
 
 	if (auth_struct.incoming.count) {
@@ -975,7 +983,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain_base(struct dcesrv_call_state *dc
 	}
 
 	if (dns_name) {
-		char *dns_encoded = ldb_binary_encode_string(mem_ctx, netbios_name);
+		char *dns_encoded = ldb_binary_encode_string(mem_ctx, dns_name);
 		char *netbios_encoded = ldb_binary_encode_string(mem_ctx, netbios_name);
 		/* search for the trusted_domain record */
 		ret = gendb_search(sam_ldb,
@@ -1126,7 +1134,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomainEx2(struct dcesrv_call_state *dce_
 					   TALLOC_CTX *mem_ctx,
 					   struct lsa_CreateTrustedDomainEx2 *r)
 {
-	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, r, NDR_LSA_CREATETRUSTEDDOMAINEX2);
+	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, r, NDR_LSA_CREATETRUSTEDDOMAINEX2, NULL);
 }
 /*
   lsa_CreateTrustedDomainEx
@@ -1139,9 +1147,8 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomainEx(struct dcesrv_call_state *dce_c
 
 	r2.in.policy_handle = r->in.policy_handle;
 	r2.in.info = r->in.info;
-	r2.in.auth_info = r->in.auth_info;
 	r2.out.trustdom_handle = r->out.trustdom_handle;
-	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, &r2, NDR_LSA_CREATETRUSTEDDOMAINEX);
+	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, &r2, NDR_LSA_CREATETRUSTEDDOMAINEX, r->in.auth_info);
 }
 
 /* 
@@ -1168,7 +1175,7 @@ static NTSTATUS dcesrv_lsa_CreateTrustedDomain(struct dcesrv_call_state *dce_cal
 	r2.in.access_mask = r->in.access_mask;
 	r2.out.trustdom_handle = r->out.trustdom_handle;
 
-	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, &r2, NDR_LSA_CREATETRUSTEDDOMAIN);
+	return dcesrv_lsa_CreateTrustedDomain_base(dce_call, mem_ctx, &r2, NDR_LSA_CREATETRUSTEDDOMAIN, NULL);
 			 
 }
 
@@ -1519,7 +1526,7 @@ static NTSTATUS update_trust_user(TALLOC_CTX *mem_ctx,
 	}
 
 	/* entry exists, just modify secret if any */
-	if (in->count == 0) {
+	if (in == NULL || in->count == 0) {
 		return NT_STATUS_OK;
 	}
 
@@ -1595,6 +1602,7 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	uint32_t *enc_types = NULL;
 	DATA_BLOB trustAuthIncoming, trustAuthOutgoing, auth_blob;
 	struct trustDomainPasswords auth_struct;
+	struct trustAuthInOutBlob *current_passwords = NULL;
 	NTSTATUS nt_status;
 	struct ldb_message **msgs;
 	struct ldb_message *msg;
@@ -1637,8 +1645,23 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	}
 
 	if (auth_info) {
-		/* FIXME: not handled yet */
-		return NT_STATUS_INVALID_PARAMETER;
+		nt_status = auth_info_2_auth_blob(mem_ctx, auth_info,
+						  &trustAuthIncoming,
+						  &trustAuthOutgoing);
+		if (!NT_STATUS_IS_OK(nt_status)) {
+			return nt_status;
+		}
+		if (trustAuthIncoming.data) {
+			/* This does the decode of some of this twice, but it is easier that way */
+			nt_status = auth_info_2_trustauth_inout(mem_ctx,
+								auth_info->incoming_count,
+								auth_info->incoming_current_auth_info,
+								NULL,
+								&current_passwords);
+			if (!NT_STATUS_IS_OK(nt_status)) {
+				return nt_status;
+			}
+		}
 	}
 
 	/* decode auth_info_int if set */
@@ -1689,18 +1712,21 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 
 	/* TODO: should we fetch previous values from the existing entry
 	 * and append them ? */
-	if (auth_struct.incoming.count) {
+	if (auth_info_int && auth_struct.incoming.count) {
 		nt_status = get_trustauth_inout_blob(dce_call, mem_ctx,
 						     &auth_struct.incoming,
 						     &trustAuthIncoming);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			return nt_status;
 		}
+
+		current_passwords = &auth_struct.incoming;
+
 	} else {
 		trustAuthIncoming = data_blob(NULL, 0);
 	}
 
-	if (auth_struct.outgoing.count) {
+	if (auth_info_int && auth_struct.outgoing.count) {
 		nt_status = get_trustauth_inout_blob(dce_call, mem_ctx,
 						     &auth_struct.outgoing,
 						     &trustAuthOutgoing);
@@ -1730,7 +1756,6 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	if (info_ex) {
 		uint32_t origattrs;
 		uint32_t origdir;
-		uint32_t tmp;
 		int origtype;
 
 		nt_status = update_uint32_t_value(mem_ctx, p_state->sam_ldb,
@@ -1742,20 +1767,20 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 			return nt_status;
 		}
 
-		tmp = info_ex->trust_direction ^ origdir;
-		if (tmp & LSA_TRUST_DIRECTION_INBOUND) {
-			if (origdir & LSA_TRUST_DIRECTION_INBOUND) {
-				del_incoming = true;
-			} else {
-				add_incoming = true;
-			}
+		if (info_ex->trust_direction & LSA_TRUST_DIRECTION_INBOUND) {
+			add_incoming = true;
 		}
-		if (tmp & LSA_TRUST_DIRECTION_OUTBOUND) {
-			if (origdir & LSA_TRUST_DIRECTION_OUTBOUND) {
-				del_outgoing = true;
-			} else {
-				add_outgoing = true;
-			}
+		if (info_ex->trust_direction & LSA_TRUST_DIRECTION_OUTBOUND) {
+			add_outgoing = true;
+		}
+
+		if ((origdir & LSA_TRUST_DIRECTION_INBOUND) &&
+		    !(info_ex->trust_direction & LSA_TRUST_DIRECTION_INBOUND)) {
+			del_incoming = true;
+		}
+		if ((origdir & LSA_TRUST_DIRECTION_OUTBOUND) &&
+		    !(info_ex->trust_direction & LSA_TRUST_DIRECTION_OUTBOUND)) {
+			del_outgoing = true;
 		}
 
 		origtype = ldb_msg_find_attr_as_int(dom_msg, "trustType", -1);
@@ -1807,7 +1832,7 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 		}
 	}
 	if (add_outgoing && trustAuthOutgoing.data) {
-		ret = ldb_msg_add_empty(msg, "trustAuthIncoming",
+		ret = ldb_msg_add_empty(msg, "trustAuthOutgoing",
 					LDB_FLAG_MOD_REPLACE, NULL);
 		if (ret != LDB_SUCCESS) {
 			return NT_STATUS_NO_MEMORY;
@@ -1826,17 +1851,15 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 	}
 	in_transaction = true;
 
-	ret = ldb_modify(p_state->sam_ldb, msg);
-	if (ret != LDB_SUCCESS) {
-		DEBUG(1,("Failed to modify trusted domain record %s: %s\n",
-			 ldb_dn_get_linearized(msg->dn),
-			 ldb_errstring(p_state->sam_ldb)));
-		if (ret == LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS) {
-			nt_status = NT_STATUS_ACCESS_DENIED;
-		} else {
-			nt_status = NT_STATUS_INTERNAL_DB_CORRUPTION;
+	if (msg->num_elements) {
+		ret = ldb_modify(p_state->sam_ldb, msg);
+		if (ret != LDB_SUCCESS) {
+			DEBUG(1,("Failed to modify trusted domain record %s: %s\n",
+				 ldb_dn_get_linearized(msg->dn),
+				 ldb_errstring(p_state->sam_ldb)));
+			nt_status = dsdb_ldb_err_to_ntstatus(ret);
+			goto done;
 		}
-		goto done;
 	}
 
 	if (add_incoming || del_incoming) {
@@ -1849,12 +1872,13 @@ static NTSTATUS setInfoTrustedDomain_base(struct dcesrv_call_state *dce_call,
 			goto done;
 		}
 
+		/* We use trustAuthIncoming.data to incidate that auth_struct.incoming is valid */
 		nt_status = update_trust_user(mem_ctx,
 					      p_state->sam_ldb,
 					      p_state->domain_dn,
 					      del_incoming,
 					      netbios_name,
-					      &auth_struct.incoming);
+					      current_passwords);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			goto done;
 		}

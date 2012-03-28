@@ -140,7 +140,10 @@ bool cli_NetWkstaUserLogon(struct cli_state *cli,char *user, char *workstation)
 
 		if (cli->rap_error == 0) {
 			DEBUG(4,("NetWkstaUserLogon success\n"));
-			cli->privileges = SVAL(p, 24);
+			/*
+			 * The cli->privileges = SVAL(p, 24); field was set here
+			 * but it was not use anywhere else.
+			 */
 			/* The cli->eff_name field used to be set here
 	                   but it wasn't used anywhere else. */
 		} else {
@@ -587,7 +590,7 @@ struct tevent_req *cli_qpathinfo1_send(TALLOC_CTX *mem_ctx,
 	}
 	state->cli = cli;
 	subreq = cli_qpathinfo_send(state, ev, cli, fname, SMB_INFO_STANDARD,
-				    22, cli->max_xmit);
+				    22, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -637,13 +640,13 @@ NTSTATUS cli_qpathinfo1_recv(struct tevent_req *req,
 	}
 
 	if (change_time) {
-		*change_time = date_fn(state->data+0, state->cli->serverzone);
+		*change_time = date_fn(state->data+0, cli_state_server_time_zone(state->cli));
 	}
 	if (access_time) {
-		*access_time = date_fn(state->data+4, state->cli->serverzone);
+		*access_time = date_fn(state->data+4, cli_state_server_time_zone(state->cli));
 	}
 	if (write_time) {
-		*write_time = date_fn(state->data+8, state->cli->serverzone);
+		*write_time = date_fn(state->data+8, cli_state_server_time_zone(state->cli));
 	}
 	if (size) {
 		*size = IVAL(state->data, 12);
@@ -763,7 +766,7 @@ struct tevent_req *cli_qpathinfo2_send(TALLOC_CTX *mem_ctx,
 	}
 	subreq = cli_qpathinfo_send(state, ev, cli, fname,
 				    SMB_QUERY_FILE_ALL_INFO,
-				    68, cli->max_xmit);
+				    68, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -898,7 +901,7 @@ struct tevent_req *cli_qpathinfo_streams_send(TALLOC_CTX *mem_ctx,
 	}
 	subreq = cli_qpathinfo_send(state, ev, cli, fname,
 				    SMB_FILE_STREAM_INFORMATION,
-				    0, cli->max_xmit);
+				    0, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -1064,23 +1067,44 @@ static bool parse_streams_blob(TALLOC_CTX *mem_ctx, const uint8_t *rdata,
  Send a qfileinfo QUERY_FILE_NAME_INFO call.
 ****************************************************************************/
 
-NTSTATUS cli_qfilename(struct cli_state *cli, uint16_t fnum, char *name,
-		       size_t namelen)
+NTSTATUS cli_qfilename(struct cli_state *cli, uint16_t fnum,
+		       TALLOC_CTX *mem_ctx, char **_name)
 {
+	uint16_t recv_flags2;
 	uint8_t *rdata;
 	uint32_t num_rdata;
 	NTSTATUS status;
+	char *name = NULL;
+	uint32_t namelen;
 
 	status = cli_qfileinfo(talloc_tos(), cli, fnum,
 			       SMB_QUERY_FILE_NAME_INFO,
-			       4, cli->max_xmit,
+			       4, CLI_BUFFER_SIZE, &recv_flags2,
 			       &rdata, &num_rdata);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
 
-	clistr_pull((const char *)rdata, name, rdata+4, namelen, IVAL(rdata, 0),
-		    STR_UNICODE);
+	namelen = IVAL(rdata, 0);
+	if (namelen > (num_rdata - 4)) {
+		TALLOC_FREE(rdata);
+		return NT_STATUS_INVALID_NETWORK_RESPONSE;
+	}
+
+	clistr_pull_talloc(mem_ctx,
+			   (const char *)rdata,
+			   recv_flags2,
+			   &name,
+			   rdata + 4,
+			   namelen,
+			   STR_UNICODE);
+	if (name == NULL) {
+		status = map_nt_error_from_unix(errno);
+		TALLOC_FREE(rdata);
+		return status;
+	}
+
+	*_name = name;
 	TALLOC_FREE(rdata);
 	return NT_STATUS_OK;
 }
@@ -1109,7 +1133,8 @@ NTSTATUS cli_qfileinfo_basic(struct cli_state *cli, uint16_t fnum,
 
 	status = cli_qfileinfo(talloc_tos(), cli, fnum,
 			       SMB_QUERY_FILE_ALL_INFO,
-			       68, MIN(cli->max_xmit, 0xffff),
+			       68, CLI_BUFFER_SIZE,
+			       NULL,
 			       &rdata, &num_rdata);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -1167,7 +1192,7 @@ struct tevent_req *cli_qpathinfo_basic_send(TALLOC_CTX *mem_ctx,
 	}
 	subreq = cli_qpathinfo_send(state, ev, cli, fname,
 				    SMB_QUERY_FILE_BASIC_INFO,
-				    36, cli->max_xmit);
+				    36, CLI_BUFFER_SIZE);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -1258,7 +1283,7 @@ NTSTATUS cli_qpathinfo_alt_name(struct cli_state *cli, const char *fname, fstrin
 
 	status = cli_qpathinfo(talloc_tos(), cli, fname,
 			       SMB_QUERY_FILE_ALT_NAME_INFO,
-			       4, cli->max_xmit, &rdata, &num_rdata);
+			       4, CLI_BUFFER_SIZE, &rdata, &num_rdata);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}

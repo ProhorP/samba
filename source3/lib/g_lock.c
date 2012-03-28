@@ -19,6 +19,8 @@
 
 #include "includes.h"
 #include "system/filesys.h"
+#include "dbwrap/dbwrap.h"
+#include "dbwrap/dbwrap_open.h"
 #include "g_lock.h"
 #include "util_tdb.h"
 #include "ctdbd_conn.h"
@@ -57,9 +59,11 @@ struct g_lock_ctx *g_lock_ctx_init(TALLOC_CTX *mem_ctx,
 	result->msg = msg;
 
 	result->db = db_open(result, lock_path("g_lock.tdb"), 0,
-			     TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT, 0700);
+			     TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
+			     O_RDWR|O_CREAT, 0600,
+			     DBWRAP_LOCK_ORDER_2);
 	if (result->db == NULL) {
-		DEBUG(1, ("g_lock_init: Could not open g_lock.tdb"));
+		DEBUG(1, ("g_lock_init: Could not open g_lock.tdb\n"));
 		TALLOC_FREE(result);
 		return NULL;
 	}
@@ -195,17 +199,19 @@ static NTSTATUS g_lock_trylock(struct g_lock_ctx *ctx, const char *name,
 	TDB_DATA data;
 	NTSTATUS status = NT_STATUS_OK;
 	NTSTATUS store_status;
+	TDB_DATA value;
 
 again:
-	rec = ctx->db->fetch_locked(ctx->db, talloc_tos(),
-				    string_term_tdb_data(name));
+	rec = dbwrap_fetch_locked(ctx->db, talloc_tos(),
+				  string_term_tdb_data(name));
 	if (rec == NULL) {
 		DEBUG(10, ("fetch_locked(\"%s\") failed\n", name));
 		status = NT_STATUS_LOCK_NOT_GRANTED;
 		goto done;
 	}
 
-	if (!g_lock_parse(talloc_tos(), rec->value, &num_locks, &locks)) {
+	value = dbwrap_record_get_value(rec);
+	if (!g_lock_parse(talloc_tos(), value, &num_locks, &locks)) {
 		DEBUG(10, ("g_lock_parse for %s failed\n", name));
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto done;
@@ -279,7 +285,7 @@ again:
 	}
 
 	data = make_tdb_data((uint8_t *)locks, num_locks * sizeof(*locks));
-	store_status = rec->store(rec, data, 0);
+	store_status = dbwrap_record_store(rec, data, 0);
 	if (!NT_STATUS_IS_OK(store_status)) {
 		DEBUG(1, ("rec->store failed: %s\n",
 			  nt_errstr(store_status)));
@@ -389,11 +395,11 @@ NTSTATUS g_lock_lock(struct g_lock_ctx *ctx, const char *name,
 		 */
 
 		/*
-		 * We allocate 2 entries here. One is needed anyway for
-		 * sys_poll and in the clustering case we might have to add
-		 * the ctdb fd. This avoids the realloc then.
+		 * We allocate 1 entries here. In the clustering case
+		 * we might have to add the ctdb fd. This avoids the
+		 * realloc then.
 		 */
-		pollfds = talloc_array(talloc_tos(), struct pollfd, 2);
+		pollfds = talloc_array(talloc_tos(), struct pollfd, 1);
 		if (pollfds == NULL) {
 			status = NT_STATUS_NO_MEMORY;
 			break;
@@ -419,8 +425,8 @@ NTSTATUS g_lock_lock(struct g_lock_ctx *ctx, const char *name,
 		select_timeout = timeval_min(&select_timeout,
 					     &timeout_remaining);
 
-		ret = sys_poll(pollfds, num_pollfds,
-			       timeval_to_msec(select_timeout));
+		ret = poll(pollfds, num_pollfds,
+			   timeval_to_msec(select_timeout));
 
 		/*
 		 * We're not *really interested in the actual flags. We just
@@ -509,18 +515,21 @@ static NTSTATUS g_lock_force_unlock(struct g_lock_ctx *ctx, const char *name,
 	int i, num_locks;
 	enum g_lock_type lock_type;
 	NTSTATUS status;
+	TDB_DATA value;
 
-	rec = ctx->db->fetch_locked(ctx->db, talloc_tos(),
-				    string_term_tdb_data(name));
+	rec = dbwrap_fetch_locked(ctx->db, talloc_tos(),
+				  string_term_tdb_data(name));
 	if (rec == NULL) {
 		DEBUG(10, ("fetch_locked(\"%s\") failed\n", name));
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto done;
 	}
 
-	if (!g_lock_parse(talloc_tos(), rec->value, &num_locks, &locks)) {
+	value = dbwrap_record_get_value(rec);
+
+	if (!g_lock_parse(talloc_tos(), value, &num_locks, &locks)) {
 		DEBUG(10, ("g_lock_parse for %s failed\n", name));
-		status = NT_STATUS_INTERNAL_ERROR;
+		status = NT_STATUS_FILE_INVALID;
 		goto done;
 	}
 
@@ -532,7 +541,7 @@ static NTSTATUS g_lock_force_unlock(struct g_lock_ctx *ctx, const char *name,
 
 	if (i == num_locks) {
 		DEBUG(10, ("g_lock_force_unlock: Lock not found\n"));
-		status = NT_STATUS_INTERNAL_ERROR;
+		status = NT_STATUS_NOT_FOUND;
 		goto done;
 	}
 
@@ -544,12 +553,12 @@ static NTSTATUS g_lock_force_unlock(struct g_lock_ctx *ctx, const char *name,
 	num_locks -= 1;
 
 	if (num_locks == 0) {
-		status = rec->delete_rec(rec);
+		status = dbwrap_record_delete(rec);
 	} else {
 		TDB_DATA data;
 		data = make_tdb_data((uint8_t *)locks,
 				     sizeof(struct g_lock_rec) * num_locks);
-		status = rec->store(rec, data, 0);
+		status = dbwrap_record_store(rec, data, 0);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -630,13 +639,15 @@ struct g_lock_locks_state {
 
 static int g_lock_locks_fn(struct db_record *rec, void *priv)
 {
+	TDB_DATA key;
 	struct g_lock_locks_state *state = (struct g_lock_locks_state *)priv;
 
-	if ((rec->key.dsize == 0) || (rec->key.dptr[rec->key.dsize-1] != 0)) {
+	key = dbwrap_record_get_key(rec);
+	if ((key.dsize == 0) || (key.dptr[key.dsize-1] != 0)) {
 		DEBUG(1, ("invalid key in g_lock.tdb, ignoring\n"));
 		return 0;
 	}
-	return state->fn((char *)rec->key.dptr, state->private_data);
+	return state->fn((char *)key.dptr, state->private_data);
 }
 
 int g_lock_locks(struct g_lock_ctx *ctx,
@@ -644,11 +655,18 @@ int g_lock_locks(struct g_lock_ctx *ctx,
 		 void *private_data)
 {
 	struct g_lock_locks_state state;
+	NTSTATUS status;
+	int count;
 
 	state.fn = fn;
 	state.private_data = private_data;
 
-	return ctx->db->traverse_read(ctx->db, g_lock_locks_fn, &state);
+	status = dbwrap_traverse_read(ctx->db, g_lock_locks_fn, &state, &count);
+	if (!NT_STATUS_IS_OK(status)) {
+		return -1;
+	} else {
+		return count;
+	}
 }
 
 NTSTATUS g_lock_dump(struct g_lock_ctx *ctx, const char *name,
@@ -661,10 +679,11 @@ NTSTATUS g_lock_dump(struct g_lock_ctx *ctx, const char *name,
 	int i, num_locks;
 	struct g_lock_rec *locks = NULL;
 	bool ret;
+	NTSTATUS status;
 
-	if (ctx->db->fetch(ctx->db, talloc_tos(), string_term_tdb_data(name),
-			   &data) != 0) {
-		return NT_STATUS_NOT_FOUND;
+	status = dbwrap_fetch_bystring(ctx->db, talloc_tos(), name, &data);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	if ((data.dsize == 0) || (data.dptr == NULL)) {
@@ -730,7 +749,6 @@ NTSTATUS g_lock_get(struct g_lock_ctx *ctx, const char *name,
 static bool g_lock_init_all(TALLOC_CTX *mem_ctx,
 			    struct tevent_context **pev,
 			    struct messaging_context **pmsg,
-			    const struct server_id self,
 			    struct g_lock_ctx **pg_ctx)
 {
 	struct tevent_context *ev = NULL;
@@ -742,7 +760,7 @@ static bool g_lock_init_all(TALLOC_CTX *mem_ctx,
 		d_fprintf(stderr, "ERROR: could not init event context\n");
 		goto fail;
 	}
-	msg = messaging_init(mem_ctx, self, ev);
+	msg = messaging_init(mem_ctx, ev);
 	if (msg == NULL) {
 		d_fprintf(stderr, "ERROR: could not init messaging context\n");
 		goto fail;
@@ -765,7 +783,7 @@ fail:
 }
 
 NTSTATUS g_lock_do(const char *name, enum g_lock_type lock_type,
-		   struct timeval timeout, const struct server_id self,
+		   struct timeval timeout,
 		   void (*fn)(void *private_data), void *private_data)
 {
 	struct tevent_context *ev = NULL;
@@ -773,7 +791,7 @@ NTSTATUS g_lock_do(const char *name, enum g_lock_type lock_type,
 	struct g_lock_ctx *g_ctx = NULL;
 	NTSTATUS status;
 
-	if (!g_lock_init_all(talloc_tos(), &ev, &msg, self, &g_ctx)) {
+	if (!g_lock_init_all(talloc_tos(), &ev, &msg, &g_ctx)) {
 		status = NT_STATUS_ACCESS_DENIED;
 		goto done;
 	}

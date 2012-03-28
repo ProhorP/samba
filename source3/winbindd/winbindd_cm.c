@@ -76,6 +76,7 @@
 #include "../libcli/security/security.h"
 #include "passdb.h"
 #include "messages.h"
+#include "auth/gensec/gensec.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -787,16 +788,12 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 	char *ipc_username = NULL;
 	char *ipc_domain = NULL;
 	char *ipc_password = NULL;
+	int flags = 0;
+	uint16_t sec_mode = 0;
 
 	struct named_mutex *mutex;
 
 	NTSTATUS result = NT_STATUS_UNSUCCESSFUL;
-
-	struct sockaddr peeraddr;
-	socklen_t peeraddr_len;
-
-	struct sockaddr_in *peeraddr_in =
-		(struct sockaddr_in *)(void *)&peeraddr;
 
 	DEBUG(10,("cm_prepare_connection: connecting to DC %s for domain %s\n",
 		controller, domain->name ));
@@ -806,60 +803,28 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 	mutex = grab_named_mutex(talloc_tos(), controller,
 				 WINBIND_SERVER_MUTEX_WAIT_TIME);
 	if (mutex == NULL) {
+		close(sockfd);
 		DEBUG(0,("cm_prepare_connection: mutex grab failed for %s\n",
 			 controller));
 		result = NT_STATUS_POSSIBLE_DEADLOCK;
 		goto done;
 	}
 
-	if ((*cli = cli_initialise()) == NULL) {
+	flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
+
+	*cli = cli_state_create(NULL, sockfd,
+				controller, domain->alt_name,
+				SMB_SIGNING_DEFAULT, flags);
+	if (*cli == NULL) {
+		close(sockfd);
 		DEBUG(1, ("Could not cli_initialize\n"));
 		result = NT_STATUS_NO_MEMORY;
 		goto done;
 	}
 
-	(*cli)->timeout = 10000; 	/* 10 seconds */
-	(*cli)->fd = sockfd;
-	(*cli)->desthost = talloc_strdup((*cli), controller);
-	if ((*cli)->desthost == NULL) {
-		result = NT_STATUS_NO_MEMORY;
-		goto done;
-	}
+	cli_set_timeout(*cli, 10000); /* 10 seconds */
 
-	(*cli)->use_kerberos = True;
-
-	peeraddr_len = sizeof(peeraddr);
-
-	if ((getpeername((*cli)->fd, &peeraddr, &peeraddr_len) != 0)) {
-		DEBUG(0,("cm_prepare_connection: getpeername failed with: %s\n",
-			strerror(errno)));
-		result = NT_STATUS_UNSUCCESSFUL;
-		goto done;
-	}
-
-	if ((peeraddr_len != sizeof(struct sockaddr_in))
-#ifdef HAVE_IPV6
-	    && (peeraddr_len != sizeof(struct sockaddr_in6))
-#endif
-	    ) {
-		DEBUG(0,("cm_prepare_connection: got unexpected peeraddr len %d\n",
-			peeraddr_len));
-		result = NT_STATUS_UNSUCCESSFUL;
-		goto done;
-	}
-
-	if ((peeraddr_in->sin_family != PF_INET)
-#ifdef HAVE_IPV6
-	    && (peeraddr_in->sin_family != PF_INET6)
-#endif
-	    ) {
-		DEBUG(0,("cm_prepare_connection: got unexpected family %d\n",
-			peeraddr_in->sin_family));
-		result = NT_STATUS_UNSUCCESSFUL;
-		goto done;
-	}
-
-	result = cli_negprot(*cli);
+	result = cli_negprot(*cli, PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		DEBUG(1, ("cli_negprot failed: %s\n", nt_errstr(result)));
@@ -867,11 +832,9 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 	}
 
 	if (!is_dc_trusted_domain_situation(domain->name) &&
-	    (*cli)->protocol >= PROTOCOL_NT1 &&
-	    (*cli)->capabilities & CAP_EXTENDED_SECURITY)
+	    cli_state_protocol(*cli) >= PROTOCOL_NT1 &&
+	    cli_state_capabilities(*cli) & CAP_EXTENDED_SECURITY)
 	{
-		ADS_STATUS ads_status;
-
 		result = get_trust_creds(domain, &machine_password,
 					 &machine_account,
 					 &machine_krb5_principal);
@@ -890,18 +853,19 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 
 			winbindd_set_locator_kdc_envs(domain);
 
-			ads_status = cli_session_setup_spnego(*cli,
-							      machine_krb5_principal, 
-							      machine_password,
-							      lp_workgroup(),
-							      domain->alt_name);
+			result = cli_session_setup(*cli,
+						   machine_krb5_principal,
+						   machine_password,
+						   strlen(machine_password)+1,
+						   machine_password,
+						   strlen(machine_password)+1,
+						   lp_workgroup());
 
-			if (!ADS_ERR_OK(ads_status)) {
+			if (!NT_STATUS_IS_OK(result)) {
 				DEBUG(4,("failed kerberos session setup with %s\n",
-					 ads_errstr(ads_status)));
+					nt_errstr(result)));
 			}
 
-			result = ads_ntstatus(ads_status);
 			if (NT_STATUS_IS_OK(result)) {
 				/* Ensure creds are stored for NTLMSSP authenticated pipe access. */
 				result = cli_init_creds(*cli, machine_account, lp_workgroup(), machine_password);
@@ -919,17 +883,18 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 			  "[%s]\\[%s]\n",  controller, lp_netbios_name(),
 			  lp_workgroup(), machine_account));
 
-		ads_status = cli_session_setup_spnego(*cli,
-						      machine_account, 
-						      machine_password, 
-						      lp_workgroup(),
-						      NULL);
-		if (!ADS_ERR_OK(ads_status)) {
+		result = cli_session_setup(*cli,
+					   machine_account,
+					   machine_password,
+					   strlen(machine_password)+1,
+					   machine_password,
+					   strlen(machine_password)+1,
+					   lp_workgroup());
+		if (!NT_STATUS_IS_OK(result)) {
 			DEBUG(4, ("authenticated session setup failed with %s\n",
-				ads_errstr(ads_status)));
+				nt_errstr(result)));
 		}
 
-		result = ads_ntstatus(ads_status);
 		if (NT_STATUS_IS_OK(result)) {
 			/* Ensure creds are stored for NTLMSSP authenticated pipe access. */
 			result = cli_init_creds(*cli, machine_account, lp_workgroup(), machine_password);
@@ -946,7 +911,8 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 
 	cm_get_ipc_userpass(&ipc_username, &ipc_domain, &ipc_password);
 
-	if ((((*cli)->sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) != 0) &&
+	sec_mode = cli_state_security_mode(*cli);
+	if (((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) != 0) &&
 	    (strlen(ipc_username) > 0)) {
 
 		/* Only try authenticated if we have a username */
@@ -979,8 +945,8 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 		"connection for DC %s\n",
 		controller ));
 
-	if (NT_STATUS_IS_OK(cli_session_setup(*cli, "", NULL, 0,
-					      NULL, 0, ""))) {
+	result = cli_session_setup(*cli, "", NULL, 0, NULL, 0, "");
+	if (NT_STATUS_IS_OK(result)) {
 		DEBUG(5, ("Connected anonymously\n"));
 		result = cli_init_creds(*cli, "", "", "");
 		if (!NT_STATUS_IS_OK(result)) {
@@ -989,27 +955,21 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 		goto session_setup_done;
 	}
 
-	result = cli_nt_error(*cli);
-
-	if (NT_STATUS_IS_OK(result))
-		result = NT_STATUS_UNSUCCESSFUL;
-
 	/* We can't session setup */
-
 	goto done;
 
  session_setup_done:
 
 	/* cache the server name for later connections */
 
-	saf_store( domain->name, (*cli)->desthost );
+	saf_store(domain->name, controller);
 	if (domain->alt_name && (*cli)->use_kerberos) {
-		saf_store( domain->alt_name, (*cli)->desthost );
+		saf_store(domain->alt_name, controller);
 	}
 
 	winbindd_set_locator_kdc_envs(domain);
 
-	result = cli_tcon_andx(*cli, "IPC$", "IPC", "", 0);
+	result = cli_tree_connect(*cli, "IPC$", "IPC", "", 0);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		DEBUG(1,("failed tcon_X with %s\n", nt_errstr(result)));
@@ -1371,7 +1331,7 @@ static bool find_new_dc(TALLOC_CTX *mem_ctx,
 				    &dcnames, &num_dcnames)) {
 			return False;
 		}
-		if (!add_sockaddr_to_array(mem_ctx, &dcs[i].ss, 445,
+		if (!add_sockaddr_to_array(mem_ctx, &dcs[i].ss, TCP_SMB_PORT,
 				      &addrs, &num_addrs)) {
 			return False;
 		}
@@ -1445,13 +1405,12 @@ static void store_current_dc_in_gencache(const char *domain_name,
 	char *key = NULL;
 	char *value = NULL;
 
-	if (cli == NULL) {
+	if (!cli_state_is_connected(cli)) {
 		return;
 	}
-	if (cli->fd == -1) {
-		return;
-	}
-	get_peer_addr(cli->fd, addr, sizeof(addr));
+
+	print_sockaddr(addr, sizeof(addr),
+		       cli_state_remote_sockaddr(cli));
 
 	key = current_dc_key(talloc_tos(), domain_name);
 	if (key == NULL) {
@@ -1711,16 +1670,13 @@ void close_conns_after_fork(void)
 	struct winbindd_cli_state *cli_state;
 
 	for (domain = domain_list(); domain; domain = domain->next) {
-		struct cli_state *cli = domain->conn.cli;
-
 		/*
 		 * first close the low level SMB TCP connection
 		 * so that we don't generate any SMBclose
 		 * requests in invalidate_cm_connection()
 		 */
-		if (cli && cli->fd != -1) {
-			close(domain->conn.cli->fd);
-			domain->conn.cli->fd = -1;
+		if (cli_state_is_connected(domain->conn.cli)) {
+			cli_state_disconnect(domain->conn.cli);
 		}
 
 		invalidate_cm_connection(&domain->conn);
@@ -1926,6 +1882,8 @@ static bool set_dc_type_and_flags_trustinfo( struct winbindd_domain *domain )
 				 "running active directory.\n", domain->name, 
 				 domain->active_directory ? "" : "NOT "));
 
+			domain->can_do_ncacn_ip_tcp = domain->active_directory;
+			domain->can_do_validation6 = domain->active_directory;
 
 			domain->initialized = True;
 
@@ -2234,14 +2192,16 @@ NTSTATUS cm_connect_sam(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 
 	/* We have an authenticated connection. Use a NTLMSSP SPNEGO
 	   authenticated SAMR pipe with sign & seal. */
-	status = cli_rpc_pipe_open_spnego_ntlmssp(conn->cli,
-						  &ndr_table_samr.syntax_id,
-						  NCACN_NP,
-						  DCERPC_AUTH_LEVEL_PRIVACY,
-						  domain_name,
-						  machine_account,
-						  machine_password,
-						  &conn->samr_pipe);
+	status = cli_rpc_pipe_open_spnego(conn->cli,
+					  &ndr_table_samr,
+					  NCACN_NP,
+					  GENSEC_OID_NTLMSSP,
+					  DCERPC_AUTH_LEVEL_PRIVACY,
+					  cli_state_remote_name(conn->cli),
+					  domain_name,
+					  machine_account,
+					  machine_password,
+					  &conn->samr_pipe);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10,("cm_connect_sam: failed to connect to SAMR "
@@ -2472,9 +2432,11 @@ NTSTATUS cm_connect_lsa(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 
 	/* We have an authenticated connection. Use a NTLMSSP SPNEGO
 	 * authenticated LSA pipe with sign & seal. */
-	result = cli_rpc_pipe_open_spnego_ntlmssp
-		(conn->cli, &ndr_table_lsarpc.syntax_id, NCACN_NP,
+	result = cli_rpc_pipe_open_spnego
+		(conn->cli, &ndr_table_lsarpc, NCACN_NP,
+		 GENSEC_OID_NTLMSSP,
 		 DCERPC_AUTH_LEVEL_PRIVACY,
+		 cli_state_remote_name(conn->cli),
 		 conn->cli->domain, conn->cli->user_name, conn->cli->password,
 		 &conn->lsa_pipe);
 
@@ -2739,17 +2701,16 @@ void winbind_msg_ip_dropped(struct messaging_context *msg_ctx,
 
 	for (domain = domain_list(); domain != NULL; domain = domain->next) {
 		char sockaddr[INET6_ADDRSTRLEN];
-		if (domain->conn.cli == NULL) {
+
+		if (!cli_state_is_connected(domain->conn.cli)) {
 			continue;
 		}
-		if (domain->conn.cli->fd == -1) {
-			continue;
-		}
-		client_socket_addr(domain->conn.cli->fd, sockaddr,
-				   sizeof(sockaddr));
+
+		print_sockaddr(sockaddr, sizeof(sockaddr),
+			       cli_state_local_sockaddr(domain->conn.cli));
+
 		if (strequal(sockaddr, addr)) {
-			close(domain->conn.cli->fd);
-			domain->conn.cli->fd = -1;
+			cli_state_disconnect(domain->conn.cli);
 		}
 	}
 	TALLOC_FREE(freeit);

@@ -26,6 +26,8 @@
 #include <wchar.h>
 
 #include "smbldap.h"
+#include "passdb/pdb_ldap.h"
+#include "passdb/pdb_nds.h"
 
 #define NMASLDAP_GET_LOGIN_CONFIG_REQUEST	"2.16.840.1.113719.1.39.42.100.3"
 #define NMASLDAP_GET_LOGIN_CONFIG_RESPONSE	"2.16.840.1.113719.1.39.42.100.4"

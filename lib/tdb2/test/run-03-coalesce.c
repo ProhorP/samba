@@ -1,11 +1,4 @@
-#include <ccan/tdb2/tdb.c>
-#include <ccan/tdb2/open.c>
-#include <ccan/tdb2/free.c>
-#include <ccan/tdb2/lock.c>
-#include <ccan/tdb2/io.c>
-#include <ccan/tdb2/hash.c>
-#include <ccan/tdb2/check.c>
-#include <ccan/tdb2/transaction.c>
+#include "tdb2-source.h"
 #include <ccan/tap/tap.h>
 #include "logging.h"
 #include "layout.h"
@@ -39,16 +32,19 @@ int main(int argc, char *argv[])
 	key = tdb_mkdata("hello", 5);
 
 	/* No coalescing can be done due to EOF */
-	layout = new_tdb_layout("run-03-coalesce.tdb");
+	layout = new_tdb_layout();
 	tdb_layout_add_freetable(layout);
 	len = 1024;
 	tdb_layout_add_free(layout, len, 0);
-	tdb = tdb_layout_get(layout);
+	tdb_layout_write(layout, free, &tap_log_attr, "run-03-coalesce.tdb");
+	/* NOMMAP is for lockcheck. */
+	tdb = tdb_open("run-03-coalesce.tdb", TDB_NOMMAP, O_RDWR, 0,
+		       &tap_log_attr);
 	ok1(tdb_check(tdb, NULL, NULL) == 0);
 	ok1(free_record_length(tdb, layout->elem[1].base.off) == len);
 
 	/* Figure out which bucket free entry is. */
-	b_off = bucket_off(tdb->ftable_off, size_to_bucket(len));
+	b_off = bucket_off(tdb->tdb2.ftable_off, size_to_bucket(len));
 	/* Lock and fail to coalesce. */
 	ok1(tdb_lock_free_bucket(tdb, b_off, TDB_LOCK_WAIT) == 0);
 	test = layout->elem[1].base.off;
@@ -62,16 +58,19 @@ int main(int argc, char *argv[])
 	tdb_layout_free(layout);
 
 	/* No coalescing can be done due to used record */
-	layout = new_tdb_layout("run-03-coalesce.tdb");
+	layout = new_tdb_layout();
 	tdb_layout_add_freetable(layout);
 	tdb_layout_add_free(layout, 1024, 0);
 	tdb_layout_add_used(layout, key, data, 6);
-	tdb = tdb_layout_get(layout);
+	tdb_layout_write(layout, free, &tap_log_attr, "run-03-coalesce.tdb");
+	/* NOMMAP is for lockcheck. */
+	tdb = tdb_open("run-03-coalesce.tdb", TDB_NOMMAP, O_RDWR, 0,
+		       &tap_log_attr);
 	ok1(free_record_length(tdb, layout->elem[1].base.off) == 1024);
 	ok1(tdb_check(tdb, NULL, NULL) == 0);
 
 	/* Figure out which bucket free entry is. */
-	b_off = bucket_off(tdb->ftable_off, size_to_bucket(1024));
+	b_off = bucket_off(tdb->tdb2.ftable_off, size_to_bucket(1024));
 	/* Lock and fail to coalesce. */
 	ok1(tdb_lock_free_bucket(tdb, b_off, TDB_LOCK_WAIT) == 0);
 	test = layout->elem[1].base.off;
@@ -85,17 +84,20 @@ int main(int argc, char *argv[])
 	tdb_layout_free(layout);
 
 	/* Coalescing can be done due to two free records, then EOF */
-	layout = new_tdb_layout("run-03-coalesce.tdb");
+	layout = new_tdb_layout();
 	tdb_layout_add_freetable(layout);
 	tdb_layout_add_free(layout, 1024, 0);
 	tdb_layout_add_free(layout, 2048, 0);
-	tdb = tdb_layout_get(layout);
+	tdb_layout_write(layout, free, &tap_log_attr, "run-03-coalesce.tdb");
+	/* NOMMAP is for lockcheck. */
+	tdb = tdb_open("run-03-coalesce.tdb", TDB_NOMMAP, O_RDWR, 0,
+		       &tap_log_attr);
 	ok1(free_record_length(tdb, layout->elem[1].base.off) == 1024);
 	ok1(free_record_length(tdb, layout->elem[2].base.off) == 2048);
 	ok1(tdb_check(tdb, NULL, NULL) == 0);
 
 	/* Figure out which bucket (first) free entry is. */
-	b_off = bucket_off(tdb->ftable_off, size_to_bucket(1024));
+	b_off = bucket_off(tdb->tdb2.ftable_off, size_to_bucket(1024));
 	/* Lock and coalesce. */
 	ok1(tdb_lock_free_bucket(tdb, b_off, TDB_LOCK_WAIT) == 0);
 	test = layout->elem[2].base.off;
@@ -111,18 +113,21 @@ int main(int argc, char *argv[])
 	tdb_layout_free(layout);
 
 	/* Coalescing can be done due to two free records, then data */
-	layout = new_tdb_layout("run-03-coalesce.tdb");
+	layout = new_tdb_layout();
 	tdb_layout_add_freetable(layout);
 	tdb_layout_add_free(layout, 1024, 0);
 	tdb_layout_add_free(layout, 512, 0);
 	tdb_layout_add_used(layout, key, data, 6);
-	tdb = tdb_layout_get(layout);
+	tdb_layout_write(layout, free, &tap_log_attr, "run-03-coalesce.tdb");
+	/* NOMMAP is for lockcheck. */
+	tdb = tdb_open("run-03-coalesce.tdb", TDB_NOMMAP, O_RDWR, 0,
+		       &tap_log_attr);
 	ok1(free_record_length(tdb, layout->elem[1].base.off) == 1024);
 	ok1(free_record_length(tdb, layout->elem[2].base.off) == 512);
 	ok1(tdb_check(tdb, NULL, NULL) == 0);
 
 	/* Figure out which bucket free entry is. */
-	b_off = bucket_off(tdb->ftable_off, size_to_bucket(1024));
+	b_off = bucket_off(tdb->tdb2.ftable_off, size_to_bucket(1024));
 	/* Lock and coalesce. */
 	ok1(tdb_lock_free_bucket(tdb, b_off, TDB_LOCK_WAIT) == 0);
 	test = layout->elem[2].base.off;
@@ -137,19 +142,22 @@ int main(int argc, char *argv[])
 	tdb_layout_free(layout);
 
 	/* Coalescing can be done due to three free records, then EOF */
-	layout = new_tdb_layout("run-03-coalesce.tdb");
+	layout = new_tdb_layout();
 	tdb_layout_add_freetable(layout);
 	tdb_layout_add_free(layout, 1024, 0);
 	tdb_layout_add_free(layout, 512, 0);
 	tdb_layout_add_free(layout, 256, 0);
-	tdb = tdb_layout_get(layout);
+	tdb_layout_write(layout, free, &tap_log_attr, "run-03-coalesce.tdb");
+	/* NOMMAP is for lockcheck. */
+	tdb = tdb_open("run-03-coalesce.tdb", TDB_NOMMAP, O_RDWR, 0,
+		       &tap_log_attr);
 	ok1(free_record_length(tdb, layout->elem[1].base.off) == 1024);
 	ok1(free_record_length(tdb, layout->elem[2].base.off) == 512);
 	ok1(free_record_length(tdb, layout->elem[3].base.off) == 256);
 	ok1(tdb_check(tdb, NULL, NULL) == 0);
 
 	/* Figure out which bucket free entry is. */
-	b_off = bucket_off(tdb->ftable_off, size_to_bucket(1024));
+	b_off = bucket_off(tdb->tdb2.ftable_off, size_to_bucket(1024));
 	/* Lock and coalesce. */
 	ok1(tdb_lock_free_bucket(tdb, b_off, TDB_LOCK_WAIT) == 0);
 	test = layout->elem[2].base.off;

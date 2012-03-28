@@ -38,6 +38,7 @@
 #include "dynconfig/dynconfig.h"
 #include "libcli/security/security.h"
 #include "libcli/raw/raw_proto.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #define NSERVERS 2
 #define NINSTANCES 2
@@ -279,13 +280,21 @@ static bool connect_servers(struct tevent_context *ev,
 static unsigned int time_skew(void)
 {
 	unsigned int ret;
+	NTTIME nt0, nt1;
+
 	if (options.smb2) {
-		ret = labs(servers[0].smb2_tree[0]->session->transport->negotiate.system_time -
-			   servers[1].smb2_tree[0]->session->transport->negotiate.system_time);
+		struct smbXcli_conn *c0, *c1;
+
+		c0 = servers[0].smb2_tree[0]->session->transport->conn;
+		c1 = servers[1].smb2_tree[0]->session->transport->conn;
+
+		nt0 = smbXcli_conn_server_system_time(c0);
+		nt1 = smbXcli_conn_server_system_time(c1);
 	} else {
-		ret = labs(servers[0].smb_tree[0]->session->transport->negotiate.server_time -
-			   servers[1].smb_tree[0]->session->transport->negotiate.server_time);
+		nt0 = servers[0].smb_tree[0]->session->transport->negotiate.server_time;
+		nt1 = servers[1].smb_tree[0]->session->transport->negotiate.server_time;
 	}
+	ret = labs(nt0 - nt1);
 	return ret + 300;
 }
 
@@ -2458,10 +2467,12 @@ static void async_notify_smb(struct smbcli_request *req)
 	union smb_notify notify;
 	NTSTATUS status;
 	int i, j;
-	uint16_t tid;
+	uint16_t tid = 0;
 	struct smbcli_transport *transport = req->transport;
 
-	tid = SVAL(req->in.hdr, HDR_TID);
+	if (req->tree) {
+		tid = req->tree->tid;
+	}
 
 	notify.nttrans.level = RAW_NOTIFY_NTTRANS;
 	status = smb_raw_changenotify_recv(req, current_op.mem_ctx, &notify);
