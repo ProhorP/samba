@@ -1,6 +1,5 @@
 %define samba4_version 4.0.0
-%define pre_release alpha16
-%define main_release 35
+%define pre_release alpha18
 %define _localstatedir /var
 
 # Most of these subpackages are disabled because they are not
@@ -13,7 +12,7 @@
 
 Name: samba4
 Version: %samba4_version
-Release: alt1.%pre_release.1
+Release: alt1.%pre_release
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -131,18 +130,18 @@ domains and to use Windows user and group accounts on Linux.
 
 %prep
 %setup -q
-%patch01 -p1 -b .buildfix
+# %patch01 -p1 -b .buildfix
 
 %build
 %undefine _configure_gettext
 %configure \
-	--with-modulesdir=%_libdir/samba \
+	--enable-fhs \
+	--disable-tdb2 \
 	--with-lockdir=/var/lib/%name \
 	--with-piddir=/var/run \
 	--with-privatedir=/var/lib/%name/private \
 	--with-sockets-dir=/var/run \
-	--sysconfdir=%_sysconfdir/%name \
-	--datadir=%_datadir/samba \
+	--with-configdir=%_sysconfdir/%name \
 	--disable-gnutls \
 	--disable-rpath-install \
 	--builtin-libraries=ccan,wbclient \
@@ -345,7 +344,7 @@ rm -f %buildroot%_libdir/samba/vfs/streams_xattr.so
 rm -f %buildroot%_libdir/samba/vfs/syncops.so
 rm -f %buildroot%_libdir/samba/vfs/time_audit.so
 rm -f %buildroot%_libdir/samba/vfs/xattr_tdb.so
-rm -f %buildroot%_libdir/libsmb/libsmbclient.so*
+rm -f %buildroot%_libdir/libsmbclient.so*
 rm -f %buildroot%_libdir/libnss_wins.so.2
 rm -f %buildroot%_sbindir/nmbd
 rm -f %buildroot%_sbindir/smbd
@@ -454,13 +453,18 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libndr-krb5pac.so.*
 %_libdir/libndr.so.*
 %_libdir/libndr-standard.so.*
-%_libdir/libpolicy.so.*
+%_libdir/libsamba-policy.so.*
 %_libdir/libregistry.so.*
 %_libdir/libsamba-hostconfig.so.*
 %_libdir/libsamba-util.so.*
 %_libdir/libsamdb.so.*
 %_libdir/libtorture.so.*
 %_libdir/libsmbconf.so.*
+%_libdir/libdcerpc-binding.so.*
+%_libdir/libndr-nbt.so.*
+%_libdir/libsamba-credentials.so.*
+%_libdir/libsmbclient-raw.so.*
+%_libdir/libtevent-util.so.*
 
 # internal ldb modules
 %_libdir/samba/ldb/*.so
@@ -512,11 +516,16 @@ find source4/heimdal -type f | xargs chmod -x
 %_libdir/libdcerpc-server.so
 %_libdir/libgensec.so
 %_libdir/libndr-krb5pac.so
-%_libdir/libpolicy.so
+%_libdir/libsamba-policy.so
 %_libdir/libregistry.so
 %_libdir/libsamdb.so
 %_libdir/libtorture.so
 %_libdir/libsmbconf.so
+%_libdir/libdcerpc-binding.so
+%_libdir/libndr-nbt.so
+%_libdir/libsamba-credentials.so
+%_libdir/libsmbclient-raw.so
+%_libdir/libtevent-util.so
 
 %_pkgconfigdir/dcerpc.pc
 %_pkgconfigdir/dcerpc_samr.pc
@@ -528,10 +537,13 @@ find source4/heimdal -type f | xargs chmod -x
 %_pkgconfigdir/dcerpc_server.pc
 %_pkgconfigdir/gensec.pc
 %_pkgconfigdir/ndr_krb5pac.pc
-%_pkgconfigdir/policy.pc
+%_pkgconfigdir/samba-policy.pc
 %_pkgconfigdir/registry.pc
 %_pkgconfigdir/samdb.pc
 %_pkgconfigdir/torture.pc
+%_pkgconfigdir/ndr_nbt.pc
+%_pkgconfigdir/samba-credentials.pc
+%_pkgconfigdir/smbclient-raw.pc
 
 %files pidl
 %attr(755,root,root) %_bindir/pidl
@@ -567,6 +579,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Wed Mar 28 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha18
+- alpha18
+
 * Sat Oct 22 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 4.0.0-alt1.alpha16.1
 - Rebuild with Python-2.7
 
