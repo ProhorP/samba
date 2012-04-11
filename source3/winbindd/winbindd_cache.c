@@ -32,7 +32,10 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
-#define WINBINDD_CACHE_VERSION 1
+#define WINBINDD_CACHE_VER1 1 /* initial db version */
+#define WINBINDD_CACHE_VER2 2 /* second version with timeouts for NDR entries */
+
+#define WINBINDD_CACHE_VERSION WINBINDD_CACHE_VER2
 #define WINBINDD_CACHE_VERSION_KEYSTR "WINBINDD_CACHE_VERSION"
 
 extern struct winbindd_methods reconnect_methods;
@@ -92,6 +95,7 @@ struct winbind_cache {
 struct cache_entry {
 	NTSTATUS status;
 	uint32 sequence_number;
+	uint64 timeout;
 	uint8 *data;
 	uint32 len, ofs;
 };
@@ -220,6 +224,21 @@ static bool centry_check_bytes(struct cache_entry *centry, size_t nbytes)
 		return false;
 	}
 	return true;
+}
+
+/*
+  pull a uint64 from a cache entry
+*/
+static uint64 centry_uint64(struct cache_entry *centry)
+{
+	uint64 ret;
+
+	if (!centry_check_bytes(centry, 8)) {
+		smb_panic_fn("centry_uint64");
+	}
+	ret = BVAL(centry->data, centry->ofs);
+	centry->ofs += 8;
+	return ret;
 }
 
 /*
@@ -614,9 +633,10 @@ static bool centry_expired(struct winbindd_domain *domain, const char *keystr, s
 	}
 
 	/* if the server is down or the cache entry is not older than the
-	   current sequence number then it is OK */
-	if (wcache_server_down(domain) || 
-	    centry->sequence_number == domain->sequence_number) {
+	   current sequence number or it did not timeout then it is OK */
+	if (wcache_server_down(domain)
+	    || (centry->sequence_number == domain->sequence_number
+		&& centry->timeout > time(NULL))) {
 		DEBUG(10,("centry_expired: Key %s for domain %s is good.\n",
 			keystr, domain->name ));
 		return false;
@@ -647,15 +667,17 @@ static struct cache_entry *wcache_fetch_raw(char *kstr)
 	centry->len = data.dsize;
 	centry->ofs = 0;
 
-	if (centry->len < 8) {
+	if (centry->len < 16) {
 		/* huh? corrupt cache? */
-		DEBUG(10,("wcache_fetch_raw: Corrupt cache for key %s (len < 8) ?\n", kstr));
+		DEBUG(10,("wcache_fetch_raw: Corrupt cache for key %s "
+			  "(len < 16)?\n", kstr));
 		centry_free(centry);
 		return NULL;
 	}
 
 	centry->status = centry_ntstatus(centry);
 	centry->sequence_number = centry_uint32(centry);
+	centry->timeout = centry_uint64(centry);
 
 	return centry;
 }
@@ -739,6 +761,16 @@ static void centry_expand(struct cache_entry *centry, uint32 len)
 		DEBUG(0,("out of memory: needed %d bytes in centry_expand\n", centry->len));
 		smb_panic_fn("out of memory in centry_expand");
 	}
+}
+
+/*
+  push a uint64 into a centry
+*/
+static void centry_put_uint64(struct cache_entry *centry, uint64 v)
+{
+	centry_expand(centry, 8);
+	SBVAL(centry->data, centry->ofs, v);
+	centry->ofs += 8;
 }
 
 /*
@@ -862,8 +894,10 @@ struct cache_entry *centry_start(struct winbindd_domain *domain, NTSTATUS status
 	centry->data = SMB_XMALLOC_ARRAY(uint8, centry->len);
 	centry->ofs = 0;
 	centry->sequence_number = domain->sequence_number;
+	centry->timeout = lp_winbind_cache_time() + time(NULL);
 	centry_put_ntstatus(centry, status);
 	centry_put_uint32(centry, centry->sequence_number);
+	centry_put_uint64(centry, centry->timeout);
 	return centry;
 }
 
@@ -3448,9 +3482,10 @@ static struct cache_entry *create_centry_validate(const char *kstr, TDB_DATA dat
 	centry->len = data.dsize;
 	centry->ofs = 0;
 
-	if (centry->len < 8) {
+	if (centry->len < 16) {
 		/* huh? corrupt cache? */
-		DEBUG(0,("create_centry_validate: Corrupt cache for key %s (len < 8) ?\n", kstr));
+		DEBUG(0,("create_centry_validate: Corrupt cache for key %s "
+			 "(len < 16) ?\n", kstr));
 		centry_free(centry);
 		state->bad_entry = true;
 		state->success = false;
@@ -3459,6 +3494,7 @@ static struct cache_entry *create_centry_validate(const char *kstr, TDB_DATA dat
 
 	centry->status = NT_STATUS(centry_uint32(centry));
 	centry->sequence_number = centry_uint32(centry);
+	centry->timeout = centry_uint64(centry);
 	return centry;
 }
 
@@ -4011,6 +4047,70 @@ static void validate_panic(const char *const why)
 	exit(47);
 }
 
+static int wbcache_update_centry_fn(TDB_CONTEXT *tdb,
+				    TDB_DATA key,
+				    TDB_DATA data,
+				    void *state)
+{
+	uint64_t ctimeout;
+	TDB_DATA blob;
+
+	if (is_non_centry_key(key)) {
+		return 0;
+	}
+
+	if (data.dptr == NULL || data.dsize == 0) {
+		if (tdb_delete(tdb, key) < 0) {
+			DEBUG(0, ("tdb_delete for [%s] failed!\n",
+				  key.dptr));
+			return 1;
+		}
+	}
+
+	/* add timeout to blob (uint64_t) */
+	blob.dsize = data.dsize + 8;
+
+	blob.dptr = SMB_XMALLOC_ARRAY(uint8_t, blob.dsize);
+	if (blob.dptr == NULL) {
+		return 1;
+	}
+	memset(blob.dptr, 0, blob.dsize);
+
+	/* copy status and seqnum */
+	memcpy(blob.dptr, data.dptr, 8);
+
+	/* add timeout */
+	ctimeout = lp_winbind_cache_time() + time(NULL);
+	SBVAL(blob.dptr, 8, ctimeout);
+
+	/* copy the rest */
+	memcpy(blob.dptr + 16, data.dptr + 8, data.dsize - 8);
+
+	if (tdb_store(tdb, key, blob, TDB_REPLACE) < 0) {
+		DEBUG(0, ("tdb_store to update [%s] failed!\n",
+			  key.dptr));
+		SAFE_FREE(blob.dptr);
+		return 1;
+	}
+
+	SAFE_FREE(blob.dptr);
+	return 0;
+}
+
+static bool wbcache_upgrade_v1_to_v2(TDB_CONTEXT *tdb)
+{
+	int rc;
+
+	DEBUG(1, ("Upgrade to version 2 of the winbindd_cache.tdb\n"));
+
+	rc = tdb_traverse(tdb, wbcache_update_centry_fn, NULL);
+	if (rc < 0) {
+		return false;
+	}
+
+	return true;
+}
+
 /***********************************************************************
  Try and validate every entry in the winbindd cache. If we fail here,
  delete the cache tdb and return non-zero.
@@ -4021,10 +4121,11 @@ int winbindd_validate_cache(void)
 	int ret = -1;
 	const char *tdb_path = cache_path("winbindd_cache.tdb");
 	TDB_CONTEXT *tdb = NULL;
+	uint32_t vers_id;
+	bool ok;
 
 	DEBUG(10, ("winbindd_validate_cache: replacing panic function\n"));
 	smb_panic_fn = validate_panic;
-
 
 	tdb = tdb_open_log(tdb_path, 
 			   WINBINDD_CACHE_TDB_DEFAULT_HASH_SIZE,
@@ -4038,6 +4139,30 @@ int winbindd_validate_cache(void)
 			  "error opening/initializing tdb\n"));
 		goto done;
 	}
+
+	/* Version check and upgrade code. */
+	if (!tdb_fetch_uint32(tdb, WINBINDD_CACHE_VERSION_KEYSTR, &vers_id)) {
+		DEBUG(10, ("Fresh database\n"));
+		tdb_store_uint32(tdb, WINBINDD_CACHE_VERSION_KEYSTR, WINBINDD_CACHE_VERSION);
+		vers_id = WINBINDD_CACHE_VERSION;
+	}
+
+	if (vers_id != WINBINDD_CACHE_VERSION) {
+		if (vers_id == WINBINDD_CACHE_VER1) {
+			ok = wbcache_upgrade_v1_to_v2(tdb);
+			if (!ok) {
+				DEBUG(10, ("winbindd_validate_cache: upgrade to version 2 failed.\n"));
+				unlink(tdb_path);
+				goto done;
+			}
+
+			tdb_store_uint32(tdb,
+					 WINBINDD_CACHE_VERSION_KEYSTR,
+					 WINBINDD_CACHE_VERSION);
+			vers_id = WINBINDD_CACHE_VER2;
+		}
+	}
+
 	tdb_close(tdb);
 
 	ret = tdb_validate_and_backup(tdb_path, cache_traverse_validate_fn);
@@ -4657,12 +4782,13 @@ bool wcache_fetch_ndr(TALLOC_CTX *mem_ctx, struct winbindd_domain *domain,
 	if (data.dptr == NULL) {
 		return false;
 	}
-	if (data.dsize < 4) {
+	if (data.dsize < 12) {
 		goto fail;
 	}
 
 	if (!is_domain_offline(domain)) {
 		uint32_t entry_seqnum, dom_seqnum, last_check;
+		uint64_t entry_timeout;
 
 		if (!wcache_fetch_seqnum(domain->name, &dom_seqnum,
 					 &last_check)) {
@@ -4674,15 +4800,20 @@ bool wcache_fetch_ndr(TALLOC_CTX *mem_ctx, struct winbindd_domain *domain,
 				   (int)entry_seqnum));
 			goto fail;
 		}
+		entry_timeout = BVAL(data.dptr, 4);
+		if (time(NULL) > entry_timeout) {
+			DEBUG(10, ("Entry has timed out\n"));
+			goto fail;
+		}
 	}
 
-	resp->data = (uint8_t *)talloc_memdup(mem_ctx, data.dptr + 4,
-					      data.dsize - 4);
+	resp->data = (uint8_t *)talloc_memdup(mem_ctx, data.dptr + 12,
+					      data.dsize - 12);
 	if (resp->data == NULL) {
 		DEBUG(10, ("talloc failed\n"));
 		goto fail;
 	}
-	resp->length = data.dsize - 4;
+	resp->length = data.dsize - 12;
 
 	ret = true;
 fail:
@@ -4695,6 +4826,7 @@ void wcache_store_ndr(struct winbindd_domain *domain, uint32_t opnum,
 {
 	TDB_DATA key, data;
 	uint32_t dom_seqnum, last_check;
+	uint64_t timeout;
 
 	if (!wcache_opnum_cacheable(opnum)) {
 		return;
@@ -4714,14 +4846,17 @@ void wcache_store_ndr(struct winbindd_domain *domain, uint32_t opnum,
 		return;
 	}
 
-	data.dsize = resp->length + 4;
+	timeout = time(NULL) + lp_winbind_cache_time();
+
+	data.dsize = resp->length + 12;
 	data.dptr = talloc_array(key.dptr, uint8_t, data.dsize);
 	if (data.dptr == NULL) {
 		goto done;
 	}
 
 	SIVAL(data.dptr, 0, dom_seqnum);
-	memcpy(data.dptr+4, resp->data, resp->length);
+	SBVAL(data.dptr, 4, timeout);
+	memcpy(data.dptr + 12, resp->data, resp->length);
 
 	tdb_store(wcache->tdb, key, data, 0);
 

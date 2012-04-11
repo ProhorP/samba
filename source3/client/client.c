@@ -1668,6 +1668,7 @@ static int do_put(const char *rname, const char *lname, bool reput)
 			  &state);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, "cli_push returned %s\n", nt_errstr(status));
+		rc = 1;
 	}
 
 	if (!NT_STATUS_IS_OK(cli_close(targetcli, fnum))) {
@@ -1700,7 +1701,7 @@ static int do_put(const char *rname, const char *lname, bool reput)
 
 	if (f == x_stdin) {
 		cli_shutdown(cli);
-		exit(0);
+		exit(rc);
 	}
 
 	return rc;
@@ -2304,8 +2305,8 @@ static int cmd_posix_open(void)
 	}
 
 	if (!NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDWR, mode, &fnum))) {
-		if (!NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDONLY, mode, &fnum))) {
-			d_printf("posix_open file %s: for read/write fnum %d\n", targetname, fnum);
+		if (NT_STATUS_IS_OK(cli_posix_open(targetcli, targetname, O_CREAT|O_RDONLY, mode, &fnum))) {
+			d_printf("posix_open file %s: for readonly fnum %d\n", targetname, fnum);
 		} else {
 			d_printf("Failed to open file %s. %s\n", targetname, cli_errstr(cli));
 		}
@@ -4481,9 +4482,13 @@ static void readline_callback(void)
 		memset(garbage, 0xf0, sizeof(garbage));
 		status = cli_echo(cli, 1, data_blob_const(garbage, sizeof(garbage)));
 
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("SMBecho failed. Maybe server has closed "
-				"the connection\n"));
+		if (NT_STATUS_IS_OK(status)) {
+			return;
+		}
+
+		if (!cli_state_is_connected(cli)) {
+			DEBUG(0, ("SMBecho failed (%s). The connection is "
+				"disconnected now\n", nt_errstr(status)));
 			finished = true;
 			smb_readline_done();
 		}

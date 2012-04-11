@@ -199,7 +199,7 @@ static void cli_read_andx_done(struct tevent_req *subreq)
 	inbuf = cli_smb_inbuf(subreq);
 	state->buf = (uint8_t *)smb_base(inbuf) + SVAL(vwv+6, 0);
 
-	if (trans_oob(smb_len(inbuf), SVAL(vwv+6, 0), state->received)
+	if (trans_oob(smb_len_large(inbuf), SVAL(vwv+6, 0), state->received)
 	    || ((state->received != 0) && (state->buf < bytes))) {
 		DEBUG(5, ("server returned invalid read&x data offset\n"));
 		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
@@ -944,7 +944,7 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	size = MIN(size, max_write);
+	state->size = MIN(size, max_write);
 
 	vwv = state->vwv;
 
@@ -956,8 +956,8 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 	SIVAL(vwv+5, 0, 0);
 	SSVAL(vwv+7, 0, mode);
 	SSVAL(vwv+8, 0, 0);
-	SSVAL(vwv+9, 0, (size>>16));
-	SSVAL(vwv+10, 0, size);
+	SSVAL(vwv+9, 0, (state->size>>16));
+	SSVAL(vwv+10, 0, state->size);
 
 	SSVAL(vwv+11, 0,
 	      cli_smb_wct_ofs(reqs_before, num_reqs_before)
@@ -974,7 +974,7 @@ struct tevent_req *cli_write_andx_create(TALLOC_CTX *mem_ctx,
 	state->iov[0].iov_base = (void *)&state->pad;
 	state->iov[0].iov_len = 1;
 	state->iov[1].iov_base = CONST_DISCARD(void *, buf);
-	state->iov[1].iov_len = size;
+	state->iov[1].iov_len = state->size;
 
 	subreq = cli_smb_req_create(state, ev, cli, SMBwriteX, 0, wct, vwv,
 				    2, state->iov);
@@ -1026,7 +1026,18 @@ static void cli_write_andx_done(struct tevent_req *subreq)
 		return;
 	}
 	state->written = SVAL(vwv+2, 0);
-	state->written |= SVAL(vwv+4, 0)<<16;
+	if (state->size > UINT16_MAX) {
+		/*
+		 * It is important that we only set the
+		 * high bits only if we asked for a large write.
+		 *
+		 * OS/2 print shares get this wrong and may send
+		 * invalid values.
+		 *
+		 * See bug #5326.
+		 */
+		state->written |= SVAL(vwv+4, 0)<<16;
+	}
 	tevent_req_done(req);
 }
 

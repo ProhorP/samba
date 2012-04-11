@@ -1242,6 +1242,13 @@ const char *strip_hostname(const char *s);
 bool tevent_req_poll_ntstatus(struct tevent_req *req,
 			      struct tevent_context *ev,
 			      NTSTATUS *status);
+bool is_executable(const char *fname);
+bool map_open_params_to_ntcreate(const char *smb_base_fname,
+				 int deny_mode, int open_func,
+				 uint32 *paccess_mask,
+				 uint32 *pshare_mode,
+				 uint32 *pcreate_disposition,
+				 uint32 *pcreate_options);
 
 /* The following definitions come from lib/util_file.c  */
 
@@ -4257,6 +4264,7 @@ int lp_smb_encrypt(int );
 char lp_magicchar(const struct share_params *p );
 int lp_winbind_cache_time(void);
 int lp_winbind_reconnect_delay(void);
+int lp_winbind_max_clients(void);
 const char **lp_winbind_nss_info(void);
 int lp_algorithmic_rid_base(void);
 int lp_name_cache_timeout(void);
@@ -4484,6 +4492,7 @@ bool pdb_set_group_sid_from_rid (struct samu *sampass, uint32 grid, enum pdb_val
 
 /* The following definitions come from passdb/pdb_get_set.c  */
 
+bool pdb_is_password_change_time_max(time_t test_time);
 uint32 pdb_get_acct_ctrl(const struct samu *sampass);
 time_t pdb_get_logon_time(const struct samu *sampass);
 time_t pdb_get_logoff_time(const struct samu *sampass);
@@ -6346,6 +6355,7 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		      const char *orig_path,
 		      struct smb_filename **smb_fname,
 		      uint32_t ucf_flags);
+NTSTATUS check_veto_path(connection_struct *conn, const char *name);
 NTSTATUS check_name(connection_struct *conn, const char *name);
 int get_real_filename(connection_struct *conn, const char *path,
 		      const char *name, TALLOC_CTX *mem_ctx,
@@ -6608,7 +6618,6 @@ NTSTATUS change_dir_owner_to_parent(connection_struct *conn,
 				    const char *inherit_from_dir,
 				    const char *fname,
 				    SMB_STRUCT_STAT *psbuf);
-bool is_executable(const char *fname);
 bool is_stat_open(uint32 access_mask);
 bool request_timed_out(struct timeval request_time,
 		       struct timeval timeout);
@@ -6628,12 +6637,6 @@ NTSTATUS fcb_or_dos_open(struct smb_request *req,
 			 uint32 access_mask,
 			 uint32 share_access,
 			 uint32 create_options);
-bool map_open_params_to_ntcreate(const struct smb_filename *smb_fname,
-				 int deny_mode, int open_func,
-				 uint32 *paccess_mask,
-				 uint32 *pshare_mode,
-				 uint32 *pcreate_disposition,
-				 uint32 *pcreate_options);
 NTSTATUS open_file_fchmod(connection_struct *conn,
 			  struct smb_filename *smb_fname,
 			  files_struct **result);
@@ -7053,6 +7056,7 @@ void stat_cache_add( const char *full_orig_name,
 		char *translated_path,
 		bool case_sensitive);
 bool stat_cache_lookup(connection_struct *conn,
+			bool posix_paths,
 			char **pp_name,
 			char **pp_dirpath,
 			char **pp_start,

@@ -1068,7 +1068,8 @@ static void call_trans2open(connection_struct *conn,
 		goto out;
 	}
 
-	if (!map_open_params_to_ntcreate(smb_fname, deny_mode, open_ofun,
+	if (!map_open_params_to_ntcreate(smb_fname->base_name, deny_mode,
+					 open_ofun,
 					 &access_mask, &share_mode,
 					 &create_disposition,
 					 &create_options)) {
@@ -2232,6 +2233,7 @@ static void call_trans2findfirst(connection_struct *conn,
 	TALLOC_CTX *ctx = talloc_tos();
 	struct dptr_struct *dirptr = NULL;
 	struct smbd_server_connection *sconn = smbd_server_conn;
+	uint32_t ucf_flags = (UCF_SAVE_LCOMP | UCF_ALWAYS_ALLOW_WCARD_LCOMP);
 
 	if (total_params < 13) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2275,6 +2277,7 @@ close_if_end = %d requires_resume_key = %d level = 0x%x, max_data_bytes = %d\n",
 				reply_nterror(req, NT_STATUS_INVALID_LEVEL);
 				goto out;
 			}
+			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
 			break;
 		default:
 			reply_nterror(req, NT_STATUS_INVALID_LEVEL);
@@ -2292,8 +2295,7 @@ close_if_end = %d requires_resume_key = %d level = 0x%x, max_data_bytes = %d\n",
 	ntstatus = filename_convert(ctx, conn,
 				    req->flags2 & FLAGS2_DFS_PATHNAMES,
 				    directory,
-				    (UCF_SAVE_LCOMP |
-					UCF_ALWAYS_ALLOW_WCARD_LCOMP),
+				    ucf_flags,
 				    &mask_contains_wcard,
 				    &smb_dname);
 	if (!NT_STATUS_IS_OK(ntstatus)) {
@@ -5088,6 +5090,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 
 	} else {
 		char *fname = NULL;
+		uint32_t ucf_flags = 0;
 
 		/* qpathinfo */
 		if (total_params < 7) {
@@ -5099,9 +5102,16 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 
 		DEBUG(3,("call_trans2qfilepathinfo: TRANSACT2_QPATHINFO: level = %d\n", info_level));
 
-		if (INFO_LEVEL_IS_UNIX(info_level) && !lp_unix_extensions()) {
-			reply_nterror(req, NT_STATUS_INVALID_LEVEL);
-			return;
+		if (INFO_LEVEL_IS_UNIX(info_level)) {
+			if (!lp_unix_extensions()) {
+				reply_nterror(req, NT_STATUS_INVALID_LEVEL);
+				return;
+			}
+			if (info_level == SMB_QUERY_FILE_UNIX_BASIC ||
+					info_level == SMB_QUERY_FILE_UNIX_INFO2 ||
+					info_level == SMB_QUERY_FILE_UNIX_LINK) {
+				ucf_flags |= UCF_UNIX_NAME_LOOKUP;
+			}
 		}
 
 		srvstr_get_path(req, params, req->flags2, &fname, &params[6],
@@ -5116,7 +5126,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 					conn,
 					req->flags2 & FLAGS2_DFS_PATHNAMES,
 					fname,
-					0,
+					ucf_flags,
 					NULL,
 					&smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -7703,6 +7713,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		}
 	} else {
 		char *fname = NULL;
+		uint32_t ucf_flags = 0;
 
 		/* set path info */
 		if (total_params < 7) {
@@ -7719,10 +7730,17 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 			return;
 		}
 
+		if (info_level == SMB_SET_FILE_UNIX_BASIC ||
+				info_level == SMB_SET_FILE_UNIX_INFO2 ||
+				info_level == SMB_FILE_RENAME_INFORMATION ||
+				info_level == SMB_POSIX_PATH_UNLINK) {
+			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
+		}
+
 		status = filename_convert(req, conn,
 					 req->flags2 & FLAGS2_DFS_PATHNAMES,
 					 fname,
-					 0,
+					 ucf_flags,
 					 NULL,
 					 &smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
