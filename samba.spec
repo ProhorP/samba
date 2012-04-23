@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.6.4
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -593,6 +593,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Mon Apr 23 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.4-alt2
+- rebuild with krb5-1.10
+
 * Wed Apr 11 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.4-alt1
 - 3.6.4 (CVE-2012-1182)
 
