@@ -2,7 +2,7 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.5.14
+Version: 3.5.15
 Release: alt1.M60P.1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
@@ -657,6 +657,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Wed May 02 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.15-alt1.M60P.1
+- 3.5.15 (CVE-2012-2111)
+
 * Wed Apr 11 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.14-alt1.M60P.1
 - 3.5.14 (CVE-2012-1182)
 
