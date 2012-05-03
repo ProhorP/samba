@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.6.5
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -406,6 +406,11 @@ ln -sf ../../doc/samba-doc-%version/htmldocs/Samba3-ByExample/
 ln -sf ../../doc/samba-doc-%version/htmldocs/Samba3-Developers-Guide/
 popd
 
+mkdir -p %buildroot/%systemd_unitdir
+install -m644 smb.service %buildroot/%systemd_unitdir/
+install -m644 nmb.service %buildroot/%systemd_unitdir/
+install -m644 winbind.service %buildroot/%systemd_unitdir/
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -443,6 +448,8 @@ true
 %config(noreplace) %_sysconfdir/samba/smbusers
 %attr(755,root,root) %_initdir/smb
 %attr(755,root,root) %_initdir/nmb
+%systemd_unitdir/smb.service
+%systemd_unitdir/nmb.service
 %config(noreplace) %_sysconfdir/logrotate.d/samba
 %config(noreplace) %_sysconfdir/pam.d/samba
 %_man7dir/samba.7*
@@ -548,6 +555,7 @@ true
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %config(noreplace) %_sysconfdir/security/pam_winbind.conf
 %_initdir/winbind
+%systemd_unitdir/winbind.service
 %_man1dir/ntlm_auth.1*
 %_man1dir/wbinfo.1*
 %_man8dir/pam_winbind.8*
@@ -593,6 +601,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu May 03 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.5-alt2
+- add systemd unit files
+
 * Wed May 02 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.5-alt1
 - 3.6.5 (CVE-2012-2111)
 
