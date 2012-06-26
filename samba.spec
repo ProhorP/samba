@@ -2,8 +2,8 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.6.5
-Release: alt2
+Version: 3.6.6
+Release: alt1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -601,6 +601,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Tue Jun 26 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.6-alt1
+- 3.6.6
+
 * Thu May 03 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.6.5-alt2
 - add systemd unit files
 
