@@ -144,11 +144,6 @@ void send_nt_replies(connection_struct *conn,
 			     + data_alignment_offset);
 
 		/*
-		 * We might have had SMBnttranss in req->inbuf, fix that.
-		 */
-		SCVAL(req->outbuf, smb_com, SMBnttrans);
-
-		/*
 		 * Set total params and data to be sent.
 		 */
 
@@ -831,19 +826,47 @@ static void do_nt_transact_create_pipe(connection_struct *conn,
 	return;
 }
 
+/*********************************************************************
+ Windows seems to do canonicalization of inheritance bits. Do the
+ same.
+*********************************************************************/
+
+static void canonicalize_inheritance_bits(struct security_descriptor *psd)
+{
+	bool set_auto_inherited = false;
+
+	/*
+	 * We need to filter out the
+	 * SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ
+	 * bits. If both are set we store SEC_DESC_DACL_AUTO_INHERITED
+	 * as this alters whether SEC_ACE_FLAG_INHERITED_ACE is set
+	 * when an ACE is inherited. Otherwise we zero these bits out.
+	 * See:
+	 *
+	 * http://social.msdn.microsoft.com/Forums/eu/os_fileservices/thread/11f77b68-731e-407d-b1b3-064750716531
+	 *
+	 * for details.
+	 */
+
+	if ((psd->type & (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ))
+			== (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ)) {
+		set_auto_inherited = true;
+	}
+
+	psd->type &= ~(SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ);
+	if (set_auto_inherited) {
+		psd->type |= SEC_DESC_DACL_AUTO_INHERITED;
+	}
+}
+
 /****************************************************************************
  Internal fn to set security descriptors.
 ****************************************************************************/
 
-NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
+NTSTATUS set_sd(files_struct *fsp, struct security_descriptor *psd,
 		       uint32_t security_info_sent)
 {
-	struct security_descriptor *psd = NULL;
 	NTSTATUS status;
-
-	if (sd_len == 0) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
 
 	if (!CAN_WRITE(fsp->conn)) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -851,12 +874,6 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 
 	if (!lp_nt_acl_support(SNUM(fsp->conn))) {
 		return NT_STATUS_OK;
-	}
-
-	status = unmarshall_sec_desc(talloc_tos(), data, sd_len, &psd);
-
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
 	}
 
 	if (psd->owner_sid == NULL) {
@@ -910,6 +927,8 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 		}
 	}
 
+	canonicalize_inheritance_bits(psd);
+
 	if (DEBUGLEVEL >= 10) {
 		DEBUG(10,("set_sd for file %s\n", fsp_str_dbg(fsp)));
 		NDR_PRINT_DEBUG(security_descriptor, psd);
@@ -920,6 +939,29 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 	TALLOC_FREE(psd);
 
 	return status;
+}
+
+/****************************************************************************
+ Internal fn to set security descriptors from a data blob.
+****************************************************************************/
+
+NTSTATUS set_sd_blob(files_struct *fsp, uint8_t *data, uint32_t sd_len,
+		       uint32_t security_info_sent)
+{
+	struct security_descriptor *psd = NULL;
+	NTSTATUS status;
+
+	if (sd_len == 0) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = unmarshall_sec_desc(talloc_tos(), data, sd_len, &psd);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	return set_sd(fsp, psd, security_info_sent);
 }
 
 /****************************************************************************
@@ -2100,7 +2142,7 @@ static void call_nt_transact_set_security_desc(connection_struct *conn,
 		return;
 	}
 
-	status = set_sd(fsp, (uint8 *)data, data_count, security_info_sent);
+	status = set_sd_blob(fsp, (uint8 *)data, data_count, security_info_sent);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		reply_nterror(req, status);
@@ -3254,6 +3296,12 @@ void reply_nttranss(struct smb_request *req)
 	START_PROFILE(SMBnttranss);
 
 	show_msg((char *)req->inbuf);
+
+	/* Windows clients expect all replies to
+	   an NT transact secondary (SMBnttranss 0xA1)
+	   to have a command code of NT transact
+	   (SMBnttrans 0xA0). See bug #8989 for details. */
+	req->cmd = SMBnttrans;
 
 	if (req->wct < 18) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
