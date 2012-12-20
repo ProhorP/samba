@@ -31,88 +31,7 @@
 #include <ldb.h>
 #include "auth/auth_sam_reply.h"
 #include "auth/kerberos/kerberos_util.h"
-
-_PUBLIC_  NTSTATUS kerberos_pac_logon_info(TALLOC_CTX *mem_ctx,
-					   DATA_BLOB blob,
-					   krb5_context context,
-					   const krb5_keyblock *krbtgt_keyblock,
-					   const krb5_keyblock *service_keyblock,
-					   krb5_const_principal client_principal,
-					   time_t tgs_authtime,
-					   struct PAC_LOGON_INFO **logon_info)
-{
-	NTSTATUS nt_status;
-	struct PAC_DATA *pac_data;
-	int i;
-	nt_status = kerberos_decode_pac(mem_ctx,
-					blob,
-					context,
-					krbtgt_keyblock,
-					service_keyblock,
-					client_principal,
-					tgs_authtime,
-					&pac_data);
-	if (!NT_STATUS_IS_OK(nt_status)) {
-		return nt_status;
-	}
-
-	*logon_info = NULL;
-	for (i=0; i < pac_data->num_buffers; i++) {
-		if (pac_data->buffers[i].type != PAC_TYPE_LOGON_INFO) {
-			continue;
-		}
-		*logon_info = pac_data->buffers[i].info->logon_info.info;
-	}
-	if (!*logon_info) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-	return NT_STATUS_OK;
-}
-
-static krb5_error_code make_pac_checksum(TALLOC_CTX *mem_ctx,
-					 DATA_BLOB *pac_data,
-					 struct PAC_SIGNATURE_DATA *sig,
-					 krb5_context context,
-					 const krb5_keyblock *keyblock)
-{
-	krb5_error_code ret;
-	krb5_crypto crypto;
-	Checksum cksum;
-
-
-	ret = krb5_crypto_init(context,
-			       keyblock,
-			       0,
-			       &crypto);
-	if (ret) {
-		DEBUG(0,("krb5_crypto_init() failed: %s\n",
-			  smb_get_krb5_error_message(context, ret, mem_ctx)));
-		return ret;
-	}
-	ret = krb5_create_checksum(context,
-				   crypto,
-				   KRB5_KU_OTHER_CKSUM,
-				   0,
-				   pac_data->data,
-				   pac_data->length,
-				   &cksum);
-	if (ret) {
-		DEBUG(2, ("PAC Verification failed: %s\n",
-			  smb_get_krb5_error_message(context, ret, mem_ctx)));
-	}
-
-	krb5_crypto_destroy(context, crypto);
-
-	if (ret) {
-		return ret;
-	}
-
-	sig->type = cksum.cksumtype;
-	sig->signature = data_blob_talloc(mem_ctx, cksum.checksum.data, cksum.checksum.length);
-	free_Checksum(&cksum);
-
-	return 0;
-}
+#include "auth/kerberos/pac_utils.h"
 
  krb5_error_code kerberos_encode_pac(TALLOC_CTX *mem_ctx,
 				    struct PAC_DATA *pac_data,
@@ -136,9 +55,12 @@ static krb5_error_code make_pac_checksum(TALLOC_CTX *mem_ctx,
 			continue;
 		}
 		kdc_checksum = &pac_data->buffers[i].info->kdc_cksum,
-		ret = make_pac_checksum(mem_ctx, &zero_blob,
-					kdc_checksum,
-					context, krbtgt_keyblock);
+		ret = smb_krb5_make_pac_checksum(mem_ctx,
+						 &zero_blob,
+						 context,
+						 krbtgt_keyblock,
+						 &kdc_checksum->type,
+						 &kdc_checksum->signature);
 		if (ret) {
 			DEBUG(2, ("making krbtgt PAC checksum failed: %s\n",
 				  smb_get_krb5_error_message(context, ret, mem_ctx)));
@@ -152,9 +74,12 @@ static krb5_error_code make_pac_checksum(TALLOC_CTX *mem_ctx,
 			continue;
 		}
 		srv_checksum = &pac_data->buffers[i].info->srv_cksum;
-		ret = make_pac_checksum(mem_ctx, &zero_blob,
-					srv_checksum,
-					context, service_keyblock);
+		ret = smb_krb5_make_pac_checksum(mem_ctx,
+						 &zero_blob,
+						 context,
+						 service_keyblock,
+						 &srv_checksum->type,
+						 &srv_checksum->signature);
 		if (ret) {
 			DEBUG(2, ("making service PAC checksum failed: %s\n",
 				  smb_get_krb5_error_message(context, ret, mem_ctx)));
@@ -187,11 +112,20 @@ static krb5_error_code make_pac_checksum(TALLOC_CTX *mem_ctx,
 	}
 
 	/* Then sign the result of the previous push, where the sig was zero'ed out */
-	ret = make_pac_checksum(mem_ctx, &tmp_blob, srv_checksum,
-				context, service_keyblock);
+	ret = smb_krb5_make_pac_checksum(mem_ctx,
+					 &tmp_blob,
+					 context,
+					 service_keyblock,
+					 &srv_checksum->type,
+					 &srv_checksum->signature);
 
 	/* Then sign Server checksum */
-	ret = make_pac_checksum(mem_ctx, &srv_checksum->signature, kdc_checksum, context, krbtgt_keyblock);
+	ret = smb_krb5_make_pac_checksum(mem_ctx,
+					 &srv_checksum->signature,
+					 context,
+					 krbtgt_keyblock,
+					 &kdc_checksum->type,
+					 &kdc_checksum->signature);
 	if (ret) {
 		DEBUG(2, ("making krbtgt PAC checksum failed: %s\n",
 			  smb_get_krb5_error_message(context, ret, mem_ctx)));
@@ -372,7 +306,7 @@ krb5_error_code kerberos_pac_to_user_info_dc(TALLOC_CTX *mem_ctx,
 	ndr_err = ndr_pull_union_blob(&pac_logon_info_in, tmp_ctx, &info,
 				      PAC_TYPE_LOGON_INFO,
 				      (ndr_pull_flags_fn_t)ndr_pull_PAC_INFO);
-	krb5_data_free(&k5pac_logon_info_in);
+	kerberos_free_data_contents(context, &k5pac_logon_info_in);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err) || !info.logon_info.info) {
 		nt_status = ndr_map_error2ntstatus(ndr_err);
 		DEBUG(0,("can't parse the PAC LOGON_INFO: %s\n", nt_errstr(nt_status)));
@@ -401,7 +335,7 @@ krb5_error_code kerberos_pac_to_user_info_dc(TALLOC_CTX *mem_ctx,
 		ndr_err = ndr_pull_struct_blob(&pac_srv_checksum_in, pac_srv_sig,
 					       pac_srv_sig,
 					       (ndr_pull_flags_fn_t)ndr_pull_PAC_SIGNATURE_DATA);
-		krb5_data_free(&k5pac_srv_checksum_in);
+		kerberos_free_data_contents(context, &k5pac_srv_checksum_in);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 			nt_status = ndr_map_error2ntstatus(ndr_err);
 			DEBUG(0,("can't parse the KDC signature: %s\n",
@@ -422,7 +356,7 @@ krb5_error_code kerberos_pac_to_user_info_dc(TALLOC_CTX *mem_ctx,
 		ndr_err = ndr_pull_struct_blob(&pac_kdc_checksum_in, pac_kdc_sig,
 					       pac_kdc_sig,
 					       (ndr_pull_flags_fn_t)ndr_pull_PAC_SIGNATURE_DATA);
-		krb5_data_free(&k5pac_kdc_checksum_in);
+		kerberos_free_data_contents(context, &k5pac_kdc_checksum_in);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 			nt_status = ndr_map_error2ntstatus(ndr_err);
 			DEBUG(0,("can't parse the KDC signature: %s\n",

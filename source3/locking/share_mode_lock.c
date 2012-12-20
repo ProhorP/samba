@@ -118,13 +118,10 @@ static struct share_mode_data *parse_share_modes(TALLOC_CTX *mem_ctx,
 						 const TDB_DATA dbuf)
 {
 	struct share_mode_data *d;
-	int i;
-	struct server_id *pids;
-	bool *pid_exists;
 	enum ndr_err_code ndr_err;
 	DATA_BLOB blob;
 
-	d = talloc_zero(mem_ctx, struct share_mode_data);
+	d = talloc(mem_ctx, struct share_mode_data);
 	if (d == NULL) {
 		DEBUG(0, ("talloc failed\n"));
 		goto fail;
@@ -148,45 +145,6 @@ static struct share_mode_data *parse_share_modes(TALLOC_CTX *mem_ctx,
 		NDR_PRINT_DEBUG(share_mode_data, d);
 	}
 
-	/*
-	 * Ensure that each entry has a real process attached.
-	 */
-
-	pids = talloc_array(talloc_tos(), struct server_id,
-			    d->num_share_modes);
-	if (pids == NULL) {
-		DEBUG(0, ("talloc failed\n"));
-		goto fail;
-	}
-	pid_exists = talloc_array(talloc_tos(), bool, d->num_share_modes);
-	if (pid_exists == NULL) {
-		DEBUG(0, ("talloc failed\n"));
-		goto fail;
-	}
-
-	for (i=0; i<d->num_share_modes; i++) {
-		pids[i] = d->share_modes[i].pid;
-	}
-	if (!serverids_exist(pids, d->num_share_modes, pid_exists)) {
-		DEBUG(0, ("serverid_exists failed\n"));
-		goto fail;
-	}
-
-	i = 0;
-	while (i < d->num_share_modes) {
-		struct share_mode_entry *e = &d->share_modes[i];
-		if (!pid_exists[i]) {
-			DEBUG(10, ("wipe non-existent pid %s\n",
-				   procid_str_static(&e->pid)));
-			*e = d->share_modes[d->num_share_modes-1];
-			d->num_share_modes -= 1;
-			d->modified = True;
-			continue;
-		}
-		i += 1;
-	}
-	TALLOC_FREE(pid_exists);
-	TALLOC_FREE(pids);
 	return d;
 fail:
 	TALLOC_FREE(d);
@@ -355,7 +313,8 @@ static struct share_mode_lock *get_share_mode_lock_internal(
 	}
 
 	if (d == NULL) {
-		DEBUG(1, ("Could not get share mode lock\n"));
+		DEBUG(5, ("get_share_mode_lock_internal: "
+			"Could not get share mode lock\n"));
 		TALLOC_FREE(rec);
 		return NULL;
 	}
@@ -387,7 +346,7 @@ static int the_lock_destructor(struct share_mode_lock *l)
 }
 
 /*******************************************************************
- Get a share_mode_lock, Reference counted to allow nexted calls.
+ Get a share_mode_lock, Reference counted to allow nested calls.
 ********************************************************************/
 
 struct share_mode_lock *get_share_mode_lock(

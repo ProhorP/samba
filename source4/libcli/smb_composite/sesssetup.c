@@ -65,17 +65,6 @@ static NTSTATUS session_setup_spnego(struct composite_context *c,
 				     struct smbcli_request **req);
 
 /*
-  store the user session key for a transport
-*/
-static void set_user_session_key(struct smbcli_session *session,
-				 const DATA_BLOB *session_key)
-{
-	session->user_session_key = data_blob_talloc(session, 
-						     session_key->data, 
-						     session_key->length);
-}
-
-/*
   handler for completion of a smbcli_request sub-request
 */
 static void request_handler(struct smbcli_request *req)
@@ -195,15 +184,24 @@ static void request_handler(struct smbcli_request *req)
 		}
 
 		if (NT_STATUS_IS_OK(state->remote_status)) {
+			DATA_BLOB session_key;
+
 			if (state->setup.spnego.in.secblob.length) {
 				c->status = NT_STATUS_INTERNAL_ERROR;
 				break;
 			}
-			session_key_err = gensec_session_key(session->gensec, session, &session->user_session_key);
+			session_key_err = gensec_session_key(session->gensec, session, &session_key);
 			if (NT_STATUS_IS_OK(session_key_err)) {
 				smb1cli_conn_activate_signing(session->transport->conn,
-							      session->user_session_key,
+							      session_key,
 							      null_data_blob);
+			}
+
+			c->status = smb1cli_session_set_session_key(session->smbXcli,
+								    session_key);
+			data_blob_free(&session_key);
+			if (!NT_STATUS_IS_OK(c->status)) {
+				break;
 			}
 		}
 
@@ -340,9 +338,13 @@ static NTSTATUS session_setup_nt1(struct composite_context *c,
 		smb1cli_conn_activate_signing(session->transport->conn,
 					      session_key,
 					      state->setup.nt1.in.password2);
-		set_user_session_key(session, &session_key);
 
+		nt_status = smb1cli_session_set_session_key(session->smbXcli,
+							    session_key);
 		data_blob_free(&session_key);
+		if (!NT_STATUS_IS_OK(nt_status)) {
+			return nt_status;
+		}
 	}
 
 	return (*req)->status;
@@ -400,9 +402,13 @@ static NTSTATUS session_setup_old(struct composite_context *c,
 							      NULL,
 							      NULL, &session_key);
 		NT_STATUS_NOT_OK_RETURN(nt_status);
-		set_user_session_key(session, &session_key);
-		
+
+		nt_status = smb1cli_session_set_session_key(session->smbXcli,
+							    session_key);
 		data_blob_free(&session_key);
+		if (!NT_STATUS_IS_OK(nt_status)) {
+			return nt_status;
+		}
 	} else if (session->options.plaintext_auth) {
 		state->setup.old.in.password = data_blob_talloc(state, password, strlen(password));
 	} else {

@@ -25,6 +25,7 @@
 #include "../libcli/smb/smb_seal.h"
 #include "async_smb.h"
 #include "../libcli/smb/smbXcli_base.h"
+#include "../librpc/ndr/libndr.h"
 
 /*******************************************************************
  Setup the word count and byte count for a client smb message.
@@ -61,15 +62,6 @@ bool cli_set_backup_intent(struct cli_state *cli, bool flag)
 	bool old_state = cli->backup_intent;
 	cli->backup_intent = flag;
 	return old_state;
-}
-
-/****************************************************************************
- convenience routine to find if we negotiated ucs2
-****************************************************************************/
-
-bool cli_ucs2(struct cli_state *cli)
-{
-	return smbXcli_conn_use_unicode(cli->conn);
 }
 
 /****************************************************************************
@@ -150,6 +142,8 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 	bool force_ascii = false;
 	bool use_level_II_oplocks = false;
 	uint32_t smb1_capabilities = 0;
+	uint32_t smb2_capabilities = 0;
+	struct GUID client_guid = GUID_random();
 
 	/* Check the effective uid - make sure we are not setuid */
 	if (is_setuid_root()) {
@@ -197,6 +191,9 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 	if (getenv("CLI_FORCE_ASCII")) {
 		force_ascii = true;
 	}
+	if (!lp_unicode()) {
+		force_ascii = true;
+	}
 	if (flags & CLI_FULL_CONNECTION_FORCE_ASCII) {
 		force_ascii = true;
 	}
@@ -213,6 +210,10 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 
 	if (flags & CLI_FULL_CONNECTION_USE_CCACHE) {
 		cli->use_ccache = true;
+	}
+
+	if (flags & CLI_FULL_CONNECTION_USE_NT_HASH) {
+		cli->pw_nt_hash = true;
 	}
 
 	if (flags & CLI_FULL_CONNECTION_OPLOCKS) {
@@ -250,6 +251,8 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 		smb1_capabilities |= CAP_LEVEL_II_OPLOCKS;
 	}
 
+	smb2_capabilities = SMB2_CAP_ALL;
+
 	if (remote_realm) {
 		cli->remote_realm = talloc_strdup(cli, remote_realm);
 		if (cli->remote_realm == NULL) {
@@ -260,15 +263,23 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 	cli->conn = smbXcli_conn_create(cli, fd, remote_name,
 					signing_state,
 					smb1_capabilities,
-					NULL); /* client_guid */
+					&client_guid,
+					smb2_capabilities);
 	if (cli->conn == NULL) {
 		goto error;
 	}
 
-	cli->smb1.pid = (uint16_t)sys_getpid();
+	cli->smb1.pid = (uint16_t)getpid();
 	cli->smb1.vc_num = cli->smb1.pid;
-	cli->smb1.tid = UINT16_MAX;
-	cli->smb1.uid = UID_FIELD_INVALID;
+	cli->smb1.tcon = smbXcli_tcon_create(cli);
+	if (cli->smb1.tcon == NULL) {
+		goto error;
+	}
+	smb1cli_tcon_set_id(cli->smb1.tcon, UINT16_MAX);
+	cli->smb1.session = smbXcli_session_create(cli, cli->conn);
+	if (cli->smb1.session == NULL) {
+		goto error;
+	}
 
 	cli->initialised = 1;
 	return cli;
@@ -280,12 +291,6 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 	TALLOC_FREE(cli);
         return NULL;
 }
-
-bool cli_state_encryption_on(struct cli_state *cli)
-{
-	return smb1cli_conn_encryption_on(cli->conn);
-}
-
 
 /****************************************************************************
  Close all pipes open on this session.
@@ -320,10 +325,8 @@ static void _cli_shutdown(struct cli_state *cli)
 	if (cli_state_has_tcon(cli)) {
 		cli_tdis(cli);
 	}
-        
-	data_blob_free(&cli->user_session_key);
 
-	cli_state_disconnect(cli);
+	smbXcli_conn_disconnect(cli->conn, NT_STATUS_OK);
 
 	TALLOC_FREE(cli);
 }
@@ -354,30 +357,6 @@ void cli_shutdown(struct cli_state *cli)
 	_cli_shutdown(cli);
 }
 
-/****************************************************************************
- Set socket options on a open connection.
-****************************************************************************/
-
-void cli_sockopt(struct cli_state *cli, const char *options)
-{
-	smbXcli_conn_set_sockopt(cli->conn, options);
-}
-
-const struct sockaddr_storage *cli_state_local_sockaddr(struct cli_state *cli)
-{
-	return smbXcli_conn_local_sockaddr(cli->conn);
-}
-
-const struct sockaddr_storage *cli_state_remote_sockaddr(struct cli_state *cli)
-{
-	return smbXcli_conn_remote_sockaddr(cli->conn);
-}
-
-const char *cli_state_remote_name(struct cli_state *cli)
-{
-	return smbXcli_conn_remote_name(cli->conn);
-}
-
 const char *cli_state_remote_realm(struct cli_state *cli)
 {
 	return cli->remote_realm;
@@ -386,11 +365,6 @@ const char *cli_state_remote_realm(struct cli_state *cli)
 uint16_t cli_state_get_vc_num(struct cli_state *cli)
 {
 	return cli->smb1.vc_num;
-}
-
-uint32_t cli_state_server_session_key(struct cli_state *cli)
-{
-	return smb1cli_conn_server_session_key(cli->conn);
 }
 
 /****************************************************************************
@@ -411,7 +385,9 @@ uint16_t cli_getpid(struct cli_state *cli)
 
 bool cli_state_has_tcon(struct cli_state *cli)
 {
-	if (cli->smb1.tid == UINT16_MAX) {
+	uint16_t tid = cli_state_get_tid(cli);
+
+	if (tid == UINT16_MAX) {
 		return false;
 	}
 
@@ -420,25 +396,25 @@ bool cli_state_has_tcon(struct cli_state *cli)
 
 uint16_t cli_state_get_tid(struct cli_state *cli)
 {
-	return cli->smb1.tid;
+	return smb1cli_tcon_current_id(cli->smb1.tcon);
 }
 
 uint16_t cli_state_set_tid(struct cli_state *cli, uint16_t tid)
 {
-	uint16_t ret = cli->smb1.tid;
-	cli->smb1.tid = tid;
+	uint16_t ret = smb1cli_tcon_current_id(cli->smb1.tcon);
+	smb1cli_tcon_set_id(cli->smb1.tcon, tid);
 	return ret;
 }
 
 uint16_t cli_state_get_uid(struct cli_state *cli)
 {
-	return cli->smb1.uid;
+	return smb1cli_session_current_id(cli->smb1.session);
 }
 
 uint16_t cli_state_set_uid(struct cli_state *cli, uint16_t uid)
 {
-	uint16_t ret = cli->smb1.uid;
-	cli->smb1.uid = uid;
+	uint16_t ret = smb1cli_session_current_id(cli->smb1.session);
+	smb1cli_session_set_id(cli->smb1.session, uid);
 	return ret;
 }
 
@@ -453,16 +429,6 @@ bool cli_set_case_sensitive(struct cli_state *cli, bool case_sensitive)
 	return ret;
 }
 
-enum protocol_types cli_state_protocol(struct cli_state *cli)
-{
-	return smbXcli_conn_protocol(cli->conn);
-}
-
-uint32_t cli_state_capabilities(struct cli_state *cli)
-{
-	return smb1cli_conn_capabilities(cli->conn);
-}
-
 uint32_t cli_state_available_size(struct cli_state *cli, uint32_t ofs)
 {
 	uint32_t ret = smb1cli_conn_max_xmit(cli->conn);
@@ -474,31 +440,6 @@ uint32_t cli_state_available_size(struct cli_state *cli, uint32_t ofs)
 	ret -= ofs;
 
 	return ret;
-}
-
-uint16_t cli_state_max_requests(struct cli_state *cli)
-{
-	return smbXcli_conn_max_requests(cli->conn);
-}
-
-const uint8_t *cli_state_server_challenge(struct cli_state *cli)
-{
-	return smb1cli_conn_server_challenge(cli->conn);
-}
-
-const DATA_BLOB *cli_state_server_gss_blob(struct cli_state *cli)
-{
-	return smbXcli_conn_server_gss_blob(cli->conn);
-}
-
-uint16_t cli_state_security_mode(struct cli_state *cli)
-{
-	return smb1cli_conn_server_security_mode(cli->conn);
-}
-
-int cli_state_server_time_zone(struct cli_state *cli)
-{
-	return smb1cli_conn_server_time_zone(cli->conn);
 }
 
 time_t cli_state_server_time(struct cli_state *cli)
@@ -556,9 +497,8 @@ static void cli_echo_done(struct tevent_req *subreq)
 	NTSTATUS status;
 	uint32_t num_bytes;
 	uint8_t *bytes;
-	uint8_t *inbuf;
 
-	status = cli_smb_recv(subreq, state, &inbuf, 0, NULL, NULL,
+	status = cli_smb_recv(subreq, state, NULL, 0, NULL, NULL,
 			      &num_bytes, &bytes);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
@@ -576,7 +516,7 @@ static void cli_echo_done(struct tevent_req *subreq)
 		return;
 	}
 
-	if (!cli_smb_req_set_pending(subreq)) {
+	if (!smbXcli_req_set_pending(subreq)) {
 		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
 		return;
 	}
@@ -610,7 +550,7 @@ NTSTATUS cli_echo(struct cli_state *cli, uint16_t num_echos, DATA_BLOB data)
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -678,7 +618,7 @@ NTSTATUS cli_smb(TALLOC_CTX *mem_ctx, struct cli_state *cli,
         struct tevent_req *req = NULL;
         NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-        if (cli_has_async_calls(cli)) {
+        if (smbXcli_conn_has_async_calls(cli->conn)) {
                 return NT_STATUS_INVALID_PARAMETER;
         }
         ev = tevent_context_init(mem_ctx);

@@ -506,7 +506,8 @@ static NTSTATUS samr_find_machine_account(TALLOC_CTX *mem_ctx,
 {
 	NTSTATUS status;
 	NTSTATUS result = NT_STATUS_OK;
-	struct policy_handle connect_handle, domain_handle;
+	struct policy_handle connect_handle;
+	struct policy_handle domain_handle = { 0, };
 	struct lsa_String domain_name;
 	struct dom_sid2 *domain_sid;
 	struct lsa_String names;
@@ -908,6 +909,10 @@ NTSTATUS _netr_ServerAuthenticate3(struct pipes_struct *p,
 		srv_flgs |= NETLOGON_NEG_STRONG_KEYS;
 	}
 
+	if (in_neg_flags & NETLOGON_NEG_SUPPORTS_AES) {
+		srv_flgs |= NETLOGON_NEG_SUPPORTS_AES;
+	}
+
 	if (lp_server_schannel() != false) {
 		srv_flgs |= NETLOGON_NEG_SCHANNEL;
 	}
@@ -1000,7 +1005,7 @@ NTSTATUS _netr_ServerAuthenticate3(struct pipes_struct *p,
 		goto out;
 	}
 
-	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(10, ("loadparm_init_s3 failed\n"));
 		status = NT_STATUS_INTERNAL_ERROR;
@@ -1105,7 +1110,7 @@ static NTSTATUS netr_creds_server_step_check(struct pipes_struct *p,
 		}
 	}
 
-	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return NT_STATUS_INTERNAL_ERROR;
@@ -1137,8 +1142,16 @@ static NTSTATUS netr_set_machine_account_password(TALLOC_CTX *mem_ctx,
 	struct samr_UserInfo18 info18;
 	DATA_BLOB in,out;
 	int rc;
+	DATA_BLOB session_key;
 
 	ZERO_STRUCT(user_handle);
+
+	status = session_extract_session_key(session_info,
+					     &session_key,
+					     KEY_USE_16BYTES);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto out;
+	}
 
 	rc = tsocket_address_inet_from_strings(mem_ctx,
 					       "ip",
@@ -1205,7 +1218,7 @@ static NTSTATUS netr_set_machine_account_password(TALLOC_CTX *mem_ctx,
 
 	in = data_blob_const(nt_hash->hash, 16);
 	out = data_blob_talloc_zero(mem_ctx, 16);
-	sess_crypt_blob(&out, &in, &session_info->session_key, true);
+	sess_crypt_blob(&out, &in, &session_key, true);
 	memcpy(info18.nt_pwd.hash, out.data, out.length);
 
 	info18.nt_pwd_active = true;
@@ -1319,7 +1332,12 @@ NTSTATUS _netr_ServerPasswordSet2(struct pipes_struct *p,
 
 	memcpy(password_buf.data, r->in.new_password->data, 512);
 	SIVAL(password_buf.data, 512, r->in.new_password->length);
-	netlogon_creds_arcfour_crypt(creds, password_buf.data, 516);
+
+	if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+		netlogon_creds_aes_decrypt(creds, password_buf.data, 516);
+	} else {
+		netlogon_creds_arcfour_crypt(creds, password_buf.data, 516);
+	}
 
 	if (!extract_pw_from_buffer(p->mem_ctx, password_buf.data, &plaintext)) {
 		TALLOC_FREE(creds);
@@ -1447,21 +1465,17 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 	struct auth_usersupplied_info *user_info = NULL;
 	struct auth_serversupplied_info *server_info = NULL;
 	struct auth_context *auth_context = NULL;
-	uint8_t pipe_session_key[16];
-	bool process_creds = true;
 	const char *fn;
+	struct netr_SamBaseInfo *base;
 
 	switch (p->opnum) {
 		case NDR_NETR_LOGONSAMLOGON:
-			process_creds = true;
 			fn = "_netr_LogonSamLogon";
 			break;
 		case NDR_NETR_LOGONSAMLOGONWITHFLAGS:
-			process_creds = true;
 			fn = "_netr_LogonSamLogonWithFlags";
 			break;
 		case NDR_NETR_LOGONSAMLOGONEX:
-			process_creds = false;
 			fn = "_netr_LogonSamLogonEx";
 			break;
 		default:
@@ -1578,13 +1592,46 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 	{
 		uint8_t chal[8];
 
+#ifdef DEBUG_PASSWORD
+		DEBUG(100,("lm owf password:"));
+		dump_data(100, logon->password->lmpassword.hash, 16);
+
+		DEBUG(100,("nt owf password:"));
+		dump_data(100, logon->password->ntpassword.hash, 16);
+#endif
+		if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+			netlogon_creds_aes_decrypt(creds,
+						   logon->password->lmpassword.hash,
+						   16);
+			netlogon_creds_aes_decrypt(creds,
+						   logon->password->ntpassword.hash,
+						   16);
+		} else if (creds->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
+			netlogon_creds_arcfour_crypt(creds,
+						     logon->password->lmpassword.hash,
+						     16);
+			netlogon_creds_arcfour_crypt(creds,
+						     logon->password->ntpassword.hash,
+						     16);
+		} else {
+			netlogon_creds_des_decrypt(creds, &logon->password->lmpassword);
+			netlogon_creds_des_decrypt(creds, &logon->password->ntpassword);
+		}
+
+#ifdef DEBUG_PASSWORD
+		DEBUG(100,("decrypt of lm owf password:"));
+		dump_data(100, logon->password->lmpassword.hash, 16);
+
+		DEBUG(100,("decrypt of nt owf password:"));
+		dump_data(100, logon->password->ntpassword.hash, 16);
+#endif
 		status = make_auth_context_subsystem(talloc_tos(),
 						     &auth_context);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
 		}
 
-		auth_context->get_ntlm_challenge(auth_context, chal);
+		auth_get_ntlm_challenge(auth_context, chal);
 
 		if (!make_user_info_netlogon_interactive(&user_info,
 							 nt_username, nt_domain,
@@ -1593,8 +1640,7 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 							 logon->password->identity_info.parameter_control,
 							 chal,
 							 logon->password->lmpassword.hash,
-							 logon->password->ntpassword.hash,
-							 creds->session_key)) {
+							 logon->password->ntpassword.hash)) {
 			status = NT_STATUS_NO_MEMORY;
 		}
 		break;
@@ -1605,7 +1651,7 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 	} /* end switch */
 
 	if ( NT_STATUS_IS_OK(status) ) {
-		status = auth_context->check_ntlm_password(auth_context,
+		status = auth_check_ntlm_password(auth_context,
 			user_info, &server_info);
 	}
 
@@ -1643,40 +1689,47 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
            the SAM Local Security Authority should record that the user is
            logged in to the domain.  */
 
-	if (process_creds) {
-		/* Get the pipe session key from the creds. */
-		memcpy(pipe_session_key, creds->session_key, 16);
-	} else {
-		struct schannel_state *schannel_auth;
-		/* Get the pipe session key from the schannel. */
-		if ((p->auth.auth_type != DCERPC_AUTH_TYPE_SCHANNEL)
-		    || (p->auth.auth_ctx == NULL)) {
-			return NT_STATUS_INVALID_HANDLE;
-		}
-
-		schannel_auth = talloc_get_type_abort(p->auth.auth_ctx,
-						      struct schannel_state);
-		memcpy(pipe_session_key, schannel_auth->creds->session_key, 16);
-	}
-
 	switch (r->in.validation_level) {
 	case 2:
-		status = serverinfo_to_SamInfo2(server_info, pipe_session_key, 16,
+		status = serverinfo_to_SamInfo2(server_info,
 						r->out.validation->sam2);
+		base = &r->out.validation->sam2->base;
 		break;
 	case 3:
-		status = serverinfo_to_SamInfo3(server_info, pipe_session_key, 16,
+		status = serverinfo_to_SamInfo3(server_info,
 						r->out.validation->sam3);
+		base = &r->out.validation->sam3->base;
 		break;
 	case 6:
-		status = serverinfo_to_SamInfo6(server_info, pipe_session_key, 16,
+		status = serverinfo_to_SamInfo6(server_info,
 						r->out.validation->sam6);
+		base = &r->out.validation->sam6->base;
 		break;
 	}
 
 	TALLOC_FREE(server_info);
 
-	return status;
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	if (r->in.validation_level == 6) {
+		/* no further crypto to be applied - gd */
+		return NT_STATUS_OK;
+	}
+
+	if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+		netlogon_creds_aes_encrypt(creds, base->key.key, 16);
+		netlogon_creds_aes_encrypt(creds, base->LMSessKey.key, 8);
+	} else if (creds->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
+		netlogon_creds_arcfour_crypt(creds, base->key.key, 16);
+		netlogon_creds_arcfour_crypt(creds, base->LMSessKey.key, 8);
+	} else {
+		/* key is unencrypted when neither AES nor RC4 bits are set */
+		netlogon_creds_des_encrypt_LMKey(creds, &base->LMSessKey);
+	}
+
+	return NT_STATUS_OK;
 }
 
 /****************************************************************
@@ -1781,7 +1834,7 @@ NTSTATUS _netr_LogonSamLogonEx(struct pipes_struct *p,
 		return NT_STATUS_INVALID_PARAMETER;
         }
 
-	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return NT_STATUS_INTERNAL_ERROR;
@@ -1829,7 +1882,7 @@ NTSTATUS _netr_LogonSamLogonEx(struct pipes_struct *p,
 WERROR _netr_LogonUasLogon(struct pipes_struct *p,
 			   struct netr_LogonUasLogon *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -1839,7 +1892,7 @@ WERROR _netr_LogonUasLogon(struct pipes_struct *p,
 WERROR _netr_LogonUasLogoff(struct pipes_struct *p,
 			    struct netr_LogonUasLogoff *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -1849,7 +1902,7 @@ WERROR _netr_LogonUasLogoff(struct pipes_struct *p,
 NTSTATUS _netr_DatabaseDeltas(struct pipes_struct *p,
 			      struct netr_DatabaseDeltas *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -1859,7 +1912,7 @@ NTSTATUS _netr_DatabaseDeltas(struct pipes_struct *p,
 NTSTATUS _netr_DatabaseSync(struct pipes_struct *p,
 			    struct netr_DatabaseSync *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -1869,7 +1922,7 @@ NTSTATUS _netr_DatabaseSync(struct pipes_struct *p,
 NTSTATUS _netr_AccountDeltas(struct pipes_struct *p,
 			     struct netr_AccountDeltas *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -1879,7 +1932,7 @@ NTSTATUS _netr_AccountDeltas(struct pipes_struct *p,
 NTSTATUS _netr_AccountSync(struct pipes_struct *p,
 			   struct netr_AccountSync *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2020,7 +2073,7 @@ WERROR _netr_GetAnyDCName(struct pipes_struct *p,
 NTSTATUS _netr_DatabaseSync2(struct pipes_struct *p,
 			     struct netr_DatabaseSync2 *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2030,7 +2083,7 @@ NTSTATUS _netr_DatabaseSync2(struct pipes_struct *p,
 NTSTATUS _netr_DatabaseRedo(struct pipes_struct *p,
 			    struct netr_DatabaseRedo *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2040,7 +2093,7 @@ NTSTATUS _netr_DatabaseRedo(struct pipes_struct *p,
 WERROR _netr_DsRGetDCName(struct pipes_struct *p,
 			  struct netr_DsRGetDCName *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2079,7 +2132,7 @@ NTSTATUS _netr_LogonGetCapabilities(struct pipes_struct *p,
 WERROR _netr_NETRLOGONSETSERVICEBITS(struct pipes_struct *p,
 				     struct netr_NETRLOGONSETSERVICEBITS *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2089,7 +2142,7 @@ WERROR _netr_NETRLOGONSETSERVICEBITS(struct pipes_struct *p,
 WERROR _netr_LogonGetTrustRid(struct pipes_struct *p,
 			      struct netr_LogonGetTrustRid *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2099,7 +2152,7 @@ WERROR _netr_LogonGetTrustRid(struct pipes_struct *p,
 WERROR _netr_NETRLOGONCOMPUTESERVERDIGEST(struct pipes_struct *p,
 					  struct netr_NETRLOGONCOMPUTESERVERDIGEST *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2109,7 +2162,7 @@ WERROR _netr_NETRLOGONCOMPUTESERVERDIGEST(struct pipes_struct *p,
 WERROR _netr_NETRLOGONCOMPUTECLIENTDIGEST(struct pipes_struct *p,
 					  struct netr_NETRLOGONCOMPUTECLIENTDIGEST *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2119,7 +2172,7 @@ WERROR _netr_NETRLOGONCOMPUTECLIENTDIGEST(struct pipes_struct *p,
 WERROR _netr_DsRGetDCNameEx(struct pipes_struct *p,
 			    struct netr_DsRGetDCNameEx *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2129,7 +2182,7 @@ WERROR _netr_DsRGetDCNameEx(struct pipes_struct *p,
 WERROR _netr_DsRGetSiteName(struct pipes_struct *p,
 			    struct netr_DsRGetSiteName *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2139,7 +2192,7 @@ WERROR _netr_DsRGetSiteName(struct pipes_struct *p,
 NTSTATUS _netr_LogonGetDomainInfo(struct pipes_struct *p,
 				  struct netr_LogonGetDomainInfo *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2149,7 +2202,7 @@ NTSTATUS _netr_LogonGetDomainInfo(struct pipes_struct *p,
 WERROR _netr_ServerPasswordGet(struct pipes_struct *p,
 			       struct netr_ServerPasswordGet *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2159,7 +2212,7 @@ WERROR _netr_ServerPasswordGet(struct pipes_struct *p,
 WERROR _netr_NETRLOGONSENDTOSAM(struct pipes_struct *p,
 				struct netr_NETRLOGONSENDTOSAM *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2169,7 +2222,7 @@ WERROR _netr_NETRLOGONSENDTOSAM(struct pipes_struct *p,
 WERROR _netr_DsRAddressToSitenamesW(struct pipes_struct *p,
 				    struct netr_DsRAddressToSitenamesW *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2179,7 +2232,7 @@ WERROR _netr_DsRAddressToSitenamesW(struct pipes_struct *p,
 WERROR _netr_DsRGetDCNameEx2(struct pipes_struct *p,
 			     struct netr_DsRGetDCNameEx2 *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2189,7 +2242,7 @@ WERROR _netr_DsRGetDCNameEx2(struct pipes_struct *p,
 WERROR _netr_NETRLOGONGETTIMESERVICEPARENTDOMAIN(struct pipes_struct *p,
 						 struct netr_NETRLOGONGETTIMESERVICEPARENTDOMAIN *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2199,7 +2252,7 @@ WERROR _netr_NETRLOGONGETTIMESERVICEPARENTDOMAIN(struct pipes_struct *p,
 WERROR _netr_NetrEnumerateTrustedDomainsEx(struct pipes_struct *p,
 					   struct netr_NetrEnumerateTrustedDomainsEx *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2209,7 +2262,7 @@ WERROR _netr_NetrEnumerateTrustedDomainsEx(struct pipes_struct *p,
 WERROR _netr_DsRAddressToSitenamesExW(struct pipes_struct *p,
 				      struct netr_DsRAddressToSitenamesExW *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2219,7 +2272,7 @@ WERROR _netr_DsRAddressToSitenamesExW(struct pipes_struct *p,
 WERROR _netr_DsrGetDcSiteCoverageW(struct pipes_struct *p,
 				   struct netr_DsrGetDcSiteCoverageW *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2229,7 +2282,7 @@ WERROR _netr_DsrGetDcSiteCoverageW(struct pipes_struct *p,
 WERROR _netr_DsrEnumerateDomainTrusts(struct pipes_struct *p,
 				      struct netr_DsrEnumerateDomainTrusts *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2239,7 +2292,7 @@ WERROR _netr_DsrEnumerateDomainTrusts(struct pipes_struct *p,
 WERROR _netr_DsrDeregisterDNSHostRecords(struct pipes_struct *p,
 					 struct netr_DsrDeregisterDNSHostRecords *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2249,7 +2302,7 @@ WERROR _netr_DsrDeregisterDNSHostRecords(struct pipes_struct *p,
 NTSTATUS _netr_ServerTrustPasswordsGet(struct pipes_struct *p,
 				       struct netr_ServerTrustPasswordsGet *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2259,7 +2312,7 @@ NTSTATUS _netr_ServerTrustPasswordsGet(struct pipes_struct *p,
 WERROR _netr_DsRGetForestTrustInformation(struct pipes_struct *p,
 					  struct netr_DsRGetForestTrustInformation *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
@@ -2334,7 +2387,7 @@ NTSTATUS _netr_GetForestTrustInformation(struct pipes_struct *p,
 
 	/* TODO: check server name */
 
-	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return NT_STATUS_INTERNAL_ERROR;
@@ -2380,7 +2433,7 @@ NTSTATUS _netr_GetForestTrustInformation(struct pipes_struct *p,
 
 static NTSTATUS get_password_from_trustAuth(TALLOC_CTX *mem_ctx,
 					    const DATA_BLOB *trustAuth_blob,
-					    const DATA_BLOB *session_key,
+					    struct netlogon_creds_CredentialState *creds,
 					    struct samr_Password *current_pw_enc,
 					    struct samr_Password *previous_pw_enc)
 {
@@ -2403,8 +2456,7 @@ static NTSTATUS get_password_from_trustAuth(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	arcfour_crypt_blob(current_pw_enc->hash, sizeof(current_pw_enc->hash),
-			   session_key);
+	netlogon_creds_des_encrypt(creds, current_pw_enc);
 
 	if (trustAuth.previous.count != 0 &&
 	    trustAuth.previous.array[0].AuthType == TRUST_AUTH_TYPE_CLEAR) {
@@ -2414,8 +2466,8 @@ static NTSTATUS get_password_from_trustAuth(TALLOC_CTX *mem_ctx,
 	} else {
 		mdfour(previous_pw_enc->hash, NULL, 0);
 	}
-	arcfour_crypt_blob(previous_pw_enc->hash, sizeof(previous_pw_enc->hash),
-			   session_key);
+
+	netlogon_creds_des_encrypt(creds, previous_pw_enc);
 
 	return NT_STATUS_OK;
 }
@@ -2437,10 +2489,9 @@ NTSTATUS _netr_ServerGetTrustInfo(struct pipes_struct *p,
 	DATA_BLOB trustAuth_blob;
 	struct samr_Password *new_owf_enc;
 	struct samr_Password *old_owf_enc;
-	DATA_BLOB session_key;
 	struct loadparm_context *lp_ctx;
 
-	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(p->mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return NT_STATUS_INTERNAL_ERROR;
@@ -2525,10 +2576,8 @@ NTSTATUS _netr_ServerGetTrustInfo(struct pipes_struct *p,
 			trustAuth_blob = td->trust_auth_outgoing;
 		}
 
-		session_key.data = creds->session_key;
-		session_key.length = sizeof(creds->session_key);
 		status = get_password_from_trustAuth(p->mem_ctx, &trustAuth_blob,
-						     &session_key,
+						     creds,
 						     new_owf_enc, old_owf_enc);
 
 		if (!NT_STATUS_IS_OK(status)) {
@@ -2554,7 +2603,7 @@ NTSTATUS _netr_ServerGetTrustInfo(struct pipes_struct *p,
 NTSTATUS _netr_Unused47(struct pipes_struct *p,
 			struct netr_Unused47 *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -2564,6 +2613,6 @@ NTSTATUS _netr_Unused47(struct pipes_struct *p,
 NTSTATUS _netr_DsrUpdateReadOnlyServerDnsRecords(struct pipes_struct *p,
 						 struct netr_DsrUpdateReadOnlyServerDnsRecords *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }

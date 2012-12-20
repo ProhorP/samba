@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# vim: expandtab ft=python
-#
 #   Unix SMB/CIFS implementation.
 #   Test validity of smb.conf
 #   Copyright (C) 2010-2011 Jelmer Vernooij <jelmer@samba.org>
@@ -46,11 +43,6 @@ class cmd_testparm(Command):
     synopsis = "%prog [options]"
 
     takes_optiongroups = {
-        "sambaopts" : options.SambaOptions,
-        "versionopts": options.VersionOptions
-    }
-
-    takes_optiongroups = {
         "sambaopts": options.SambaOptions,
         "versionopts": options.VersionOptions
     }
@@ -70,7 +62,7 @@ class cmd_testparm(Command):
         Option("-v", "--verbose", action="store_true",
                default=False, help="Show default options too"),
         # We need support for smb.conf macros before this will work again
-        Option("--server", type=str, help="Set %%L macro to servername"),
+        Option("--server", type=str, help="Set %L macro to servername"),
         # These are harder to do with the new code structure
         Option("--show-all-parameters", action="store_true", default=False,
                help="Show the parameters, type, possible values")
@@ -78,11 +70,10 @@ class cmd_testparm(Command):
 
     takes_args = []
 
-    def run(self, sambaopts, versionopts, 
-            section_name=None, parameter_name=None,
-            client_ip=None, client_name=None, verbose=False,
-            suppress_prompt=None,
-            show_all_parameters=False, server=None):
+    def run(self, sambaopts, versionopts, section_name=None,
+            parameter_name=None, client_ip=None, client_name=None,
+            verbose=False, suppress_prompt=None, show_all_parameters=False,
+            server=None):
         if server:
             raise NotImplementedError("--server not yet implemented")
         if show_all_parameters:
@@ -91,7 +82,10 @@ class cmd_testparm(Command):
             raise CommandError("Both a DNS name and an IP address are "
                                "required for the host access check")
 
-        lp = sambaopts.get_loadparm()
+        try:
+            lp = sambaopts.get_loadparm()
+        except RuntimeError, err:
+            raise CommandError(err)
 
         # We need this to force the output
         samba.set_debug_level(2)
@@ -108,7 +102,8 @@ class cmd_testparm(Command):
         else:
             if section_name is not None or parameter_name is not None:
                 if parameter_name is None:
-                    lp[section_name].dump(sys.stdout, lp.default_service, verbose)
+                    lp[section_name].dump(sys.stdout, lp.default_service,
+                            verbose)
                 else:
                     self.outf.write(lp.get(parameter_name, section_name)+"\n")
             else:
@@ -156,8 +151,9 @@ class cmd_testparm(Command):
             valid = False
 
         if winbind_separator == '+':
-            logger.error("'winbind separator = +' might cause problems with group "
-                         "membership.")
+            logger.error(
+                "'winbind separator = +' might cause problems with group "
+                "membership.")
             valid = False
 
         return valid
@@ -169,7 +165,8 @@ class cmd_testparm(Command):
         valid = True
         for s in lp.services():
             if len(s) > 12:
-                logger.warning("You have some share names that are longer than 12 "
+                logger.warning(
+                    "You have some share names that are longer than 12 "
                     "characters. These may not be accessible to some older "
                     "clients. (Eg. Windows9x, WindowsMe, and not listed in "
                     "smbclient in Samba 3.0.)")

@@ -440,7 +440,9 @@ static WERROR gp_extension_store_reg_entry(TALLOC_CTX *mem_ctx,
 	subkeyname = GUID_string2(mem_ctx, &entry->guid);
 	W_ERROR_HAVE_NO_MEMORY(subkeyname);
 
-	strupper_m(discard_const_p(char, subkeyname));
+	if (!strupper_m(discard_const_p(char, subkeyname))) {
+		return WERR_INVALID_PARAM;
+	}
 
 	werr = gp_store_reg_subkey(mem_ctx,
 				   subkeyname,
@@ -487,16 +489,16 @@ static NTSTATUS gp_glob_ext_list(TALLOC_CTX *mem_ctx,
 				 const char ***ext_list,
 				 size_t *ext_list_len)
 {
-	SMB_STRUCT_DIR *dir = NULL;
-	SMB_STRUCT_DIRENT *dirent = NULL;
+	DIR *dir = NULL;
+	struct dirent *dirent = NULL;
 
-	dir = sys_opendir(modules_path(talloc_tos(), 
+	dir = opendir(modules_path(talloc_tos(), 
 				       SAMBA_SUBSYSTEM_GPEXT));
 	if (!dir) {
 		return map_nt_error_from_unix_common(errno);
 	}
 
-	while ((dirent = sys_readdir(dir))) {
+	while ((dirent = readdir(dir))) {
 
 		fstring name; /* forgive me... */
 		char *p;
@@ -508,7 +510,7 @@ static NTSTATUS gp_glob_ext_list(TALLOC_CTX *mem_ctx,
 
 		p = strrchr(dirent->d_name, '.');
 		if (!p) {
-			sys_closedir(dir);
+			closedir(dir);
 			return NT_STATUS_NO_MEMORY;
 		}
 
@@ -523,12 +525,12 @@ static NTSTATUS gp_glob_ext_list(TALLOC_CTX *mem_ctx,
 
 		if (!add_string_to_array(mem_ctx, name, ext_list,
 					 (int *)ext_list_len)) {
-			sys_closedir(dir);
+			closedir(dir);
 			return NT_STATUS_NO_MEMORY;
 		}
 	}
 
-	sys_closedir(dir);
+	closedir(dir);
 
 	return NT_STATUS_OK;
 }

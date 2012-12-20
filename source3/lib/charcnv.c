@@ -61,7 +61,10 @@ size_t push_ascii(void *dest, const char *src, size_t dest_len, int flags)
 		if (!tmpbuf) {
 			smb_panic("malloc fail");
 		}
-		strupper_m(tmpbuf);
+		if (!strupper_m(tmpbuf)) {
+			SAFE_FREE(tmpbuf);
+			return (size_t)-1;
+		}
 		src = tmpbuf;
 	}
 
@@ -489,17 +492,6 @@ size_t pull_string_talloc(TALLOC_CTX *ctx,
 					src,
 					src_len,
 					flags);
-}
-
-
-size_t align_string(const void *base_ptr, const char *p, int flags)
-{
-	if (!(flags & STR_ASCII) && \
-	    ((flags & STR_UNICODE || \
-	      (SVAL(base_ptr, smb_flg2) & FLAGS2_UNICODE_STRINGS)))) {
-		return ucs2_align(base_ptr, p, flags);
-	}
-	return 0;
 }
 
 /*******************************************************************

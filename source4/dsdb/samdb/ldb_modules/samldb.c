@@ -4,6 +4,7 @@
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2005
    Copyright (C) Simo Sorce  2004-2008
    Copyright (C) Matthias Dieter Wallnöfer 2009-2011
+   Copyright (C) Matthieu Patou 2012
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -42,6 +43,12 @@
 #include "libds/common/flag_mapping.h"
 
 struct samldb_ctx;
+enum samldb_add_type {
+	SAMLDB_TYPE_USER,
+	SAMLDB_TYPE_GROUP,
+	SAMLDB_TYPE_CLASS,
+	SAMLDB_TYPE_ATTRIBUTE
+};
 
 typedef int (*samldb_step_fn_t)(struct samldb_ctx *);
 
@@ -55,7 +62,7 @@ struct samldb_ctx {
 	struct ldb_request *req;
 
 	/* used for add operations */
-	const char *type;
+	enum samldb_add_type type;
 
 	/* the resulting message */
 	struct ldb_message *msg;
@@ -169,7 +176,7 @@ static int samldb_check_sAMAccountName(struct samldb_ctx *ac)
 	const char *name;
 	int ret;
 	struct ldb_result *res;
-	const char *noattrs[] = { NULL };
+	const char * const noattrs[] = { NULL };
 
 	if (ldb_msg_find_element(ac->msg, "sAMAccountName") == NULL) {
 		ret = samldb_generate_sAMAccountName(ldb, ac->msg);
@@ -257,7 +264,7 @@ static bool samldb_krbtgtnumber_available(struct samldb_ctx *ac,
 {
 	TALLOC_CTX *tmp_ctx = talloc_new(ac);
 	struct ldb_result *res;
-	const char *no_attrs[] = { NULL };
+	const char * const no_attrs[] = { NULL };
 	int ret;
 
 	ret = dsdb_module_search(ac->module, tmp_ctx, &res,
@@ -354,7 +361,7 @@ static int samldb_find_for_defaultObjectCategory(struct samldb_ctx *ac)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
 	struct ldb_result *res;
-	const char *no_attrs[] = { NULL };
+	const char * const no_attrs[] = { NULL };
 	int ret;
 
 	ac->res_dn = NULL;
@@ -422,6 +429,8 @@ static int samldb_add_handle_msDS_IntId(struct samldb_ctx *ac)
 	struct ldb_context *ldb;
 	struct ldb_result *ldb_res;
 	struct ldb_dn *schema_dn;
+	struct samldb_msds_intid_persistant *msds_intid_struct;
+	struct dsdb_schema *schema;
 
 	ldb = ldb_module_get_ctx(ac->module);
 	schema_dn = ldb_get_schema_basedn(ldb);
@@ -453,36 +462,95 @@ static int samldb_add_handle_msDS_IntId(struct samldb_ctx *ac)
 	if (system_flags & SYSTEM_FLAG_SCHEMA_BASE_OBJECT) {
 		return LDB_SUCCESS;
 	}
+	schema = dsdb_get_schema(ldb, NULL);
+	if (!schema) {
+		ldb_debug_set(ldb, LDB_DEBUG_FATAL,
+			      "samldb_schema_info_update: no dsdb_schema loaded");
+		DEBUG(0,(__location__ ": %s\n", ldb_errstring(ldb)));
+		return ldb_operr(ldb);
+	}
 
-	/* Generate new value for msDs-IntId
-	 * Value should be in 0x80000000..0xBFFFFFFF range */
-	msds_intid = generate_random() % 0X3FFFFFFF;
-	msds_intid += 0x80000000;
+	msds_intid_struct = (struct samldb_msds_intid_persistant*) ldb_get_opaque(ldb, SAMLDB_MSDS_INTID_OPAQUE);
+	if (!msds_intid_struct) {
+		msds_intid_struct = talloc(ldb, struct samldb_msds_intid_persistant);
+		/* Generate new value for msDs-IntId
+		* Value should be in 0x80000000..0xBFFFFFFF range */
+		msds_intid = generate_random() % 0X3FFFFFFF;
+		msds_intid += 0x80000000;
+		msds_intid_struct->msds_intid = msds_intid;
+		msds_intid_struct->usn = schema->loaded_usn;
+		DEBUG(2, ("No samldb_msds_intid_persistant struct, allocating a new one\n"));
+	} else {
+		msds_intid = msds_intid_struct->msds_intid;
+	}
 
 	/* probe id values until unique one is found */
 	do {
+		uint64_t current_usn;
 		msds_intid++;
 		if (msds_intid > 0xBFFFFFFF) {
 			msds_intid = 0x80000001;
 		}
+		/*
+		 * Alternative strategy to a costly (even indexed search) to the
+		 * database.
+		 * We search in the schema if we have already this intid (using dsdb_attribute_by_attributeID_id because
+		 * in the range 0x80000000 0xBFFFFFFFF, attributeID is a DSDB_ATTID_TYPE_INTID).
+		 * If so generate another random value.
+		 * If not check if the highest USN in the database for the schema partition is the
+		 * one that we know.
+		 * If so it means that's only this ldb context that is touching the schema in the database.
+		 * If not it means that's someone else has modified the database while we are doing our changes too
+		 * (this case should be very bery rare) in order to be sure do the search in the database.
+		 */
+		if (dsdb_attribute_by_attributeID_id(schema, msds_intid)) {
+			msds_intid = generate_random() % 0X3FFFFFFF;
+			msds_intid += 0x80000000;
+			continue;
+		}
 
-		ret = dsdb_module_search(ac->module, ac,
-		                         &ldb_res,
-		                         schema_dn, LDB_SCOPE_ONELEVEL, NULL,
-		                         DSDB_FLAG_NEXT_MODULE,
-					 ac->req,
-		                         "(msDS-IntId=%d)", msds_intid);
+		ret = dsdb_module_load_partition_usn(ac->module, schema->base_dn, &current_usn, NULL, NULL);
 		if (ret != LDB_SUCCESS) {
 			ldb_debug_set(ldb, LDB_DEBUG_ERROR,
-				      __location__": Searching for msDS-IntId=%d failed - %s\n",
-				      msds_intid,
+				      __location__": Searching for schema USN failed: %s\n",
 				      ldb_errstring(ldb));
 			return ldb_operr(ldb);
 		}
-		id_exists = (ldb_res->count > 0);
 
-		talloc_free(ldb_res);
+		/* current_usn can be lesser than msds_intid_struct-> if there is
+		 * uncommited changes.
+		 */
+		if (current_usn > msds_intid_struct->usn) {
+			/* oups something has changed, someone/something
+			 * else is modifying or has modified the schema
+			 * we'd better check this intid is the database directly
+			 */
+
+			DEBUG(2, ("Schema has changed, searching the database for the unicity of %d\n",
+					msds_intid));
+
+			ret = dsdb_module_search(ac->module, ac,
+						&ldb_res,
+						schema_dn, LDB_SCOPE_ONELEVEL, NULL,
+						DSDB_FLAG_NEXT_MODULE,
+						ac->req,
+						"(msDS-IntId=%d)", msds_intid);
+			if (ret != LDB_SUCCESS) {
+				ldb_debug_set(ldb, LDB_DEBUG_ERROR,
+					__location__": Searching for msDS-IntId=%d failed - %s\n",
+					msds_intid,
+					ldb_errstring(ldb));
+				return ldb_operr(ldb);
+			}
+			id_exists = (ldb_res->count > 0);
+			talloc_free(ldb_res);
+		} else {
+			id_exists = 0;
+		}
+
 	} while(id_exists);
+	msds_intid_struct->msds_intid = msds_intid;
+	ldb_set_opaque(ldb, SAMLDB_MSDS_INTID_OPAQUE, msds_intid_struct);
 
 	return samdb_msg_add_int(ldb, ac->msg, ac->msg, "msDS-IntId",
 				 msds_intid);
@@ -581,7 +649,8 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 	int ret;
 
 	/* Add information for the different account types */
-	if (strcmp(ac->type, "user") == 0) {
+	switch(ac->type) {
+	case SAMLDB_TYPE_USER: {
 		struct ldb_control *rodc_control = ldb_request_get_control(ac->req,
 									   LDB_CONTROL_RODC_DCPROMO_OID);
 		if (rodc_control != NULL) {
@@ -597,17 +666,28 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 
 		ret = samldb_add_step(ac, samldb_add_entry);
 		if (ret != LDB_SUCCESS) return ret;
+		break;
+	}
 
-	} else if (strcmp(ac->type, "group") == 0) {
+	case SAMLDB_TYPE_GROUP: {
 		/* check if we have a valid sAMAccountName */
 		ret = samldb_add_step(ac, samldb_check_sAMAccountName);
 		if (ret != LDB_SUCCESS) return ret;
 
 		ret = samldb_add_step(ac, samldb_add_entry);
 		if (ret != LDB_SUCCESS) return ret;
+		break;
+	}
 
-	} else if (strcmp(ac->type, "classSchema") == 0) {
+	case SAMLDB_TYPE_CLASS: {
 		const struct ldb_val *rdn_value, *def_obj_cat_val;
+		unsigned int v = ldb_msg_find_attr_as_uint(ac->msg, "objectClassCategory", -2);
+
+		/* As discussed with Microsoft through dochelp in April 2012 this is the behavior of windows*/
+		if (!ldb_msg_find_element(ac->msg, "subClassOf")) {
+			ret = ldb_msg_add_string(ac->msg, "subClassOf", "top");
+			if (ret != LDB_SUCCESS) return ret;
+		}
 
 		ret = samdb_find_or_add_attribute(ldb, ac->msg,
 						  "rdnAttId", "cn");
@@ -685,8 +765,20 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 		ret = samldb_add_step(ac, samldb_find_for_defaultObjectCategory);
 		if (ret != LDB_SUCCESS) return ret;
 
-	} else if (strcmp(ac->type, "attributeSchema") == 0) {
+		/* -2 is not a valid objectClassCategory so it means the attribute wasn't present */
+		if (v == -2) {
+			/* Windows 2003 does this*/
+			ret = samdb_msg_add_uint(ldb, ac->msg, ac->msg, "objectClassCategory", 0);
+			if (ret != LDB_SUCCESS) {
+				return ret;
+			}
+		}
+		break;
+	}
+
+	case SAMLDB_TYPE_ATTRIBUTE: {
 		const struct ldb_val *rdn_value;
+		struct ldb_message_element *el;
 		rdn_value = ldb_dn_get_rdn_val(ac->msg->dn);
 		if (rdn_value == NULL) {
 			return ldb_operr(ldb);
@@ -726,17 +818,51 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 			}
 		}
 
+		el = ldb_msg_find_element(ac->msg, "attributeSyntax");
+		if (el) {
+			/*
+			 * No need to scream if there isn't as we have code later on
+			 * that will take care of it.
+			 */
+			const struct dsdb_syntax *syntax = find_syntax_map_by_ad_oid((const char *)el->values[0].data);
+			if (!syntax) {
+				DEBUG(9, ("Can't find dsdb_syntax object for attributeSyntax %s\n",
+						(const char *)el->values[0].data));
+			} else {
+				unsigned int v = ldb_msg_find_attr_as_uint(ac->msg, "oMSyntax", 0);
+				const struct ldb_val *val = ldb_msg_find_ldb_val(ac->msg, "oMObjectClass");
+
+				if (v == 0) {
+					ret = samdb_msg_add_uint(ldb, ac->msg, ac->msg, "oMSyntax", syntax->oMSyntax);
+					if (ret != LDB_SUCCESS) {
+						return ret;
+					}
+				}
+				if (!val) {
+					struct ldb_val val2 = ldb_val_dup(ldb, &syntax->oMObjectClass);
+					if (val2.length > 0) {
+						ret = ldb_msg_add_value(ac->msg, "oMObjectClass", &val2, NULL);
+						if (ret != LDB_SUCCESS) {
+							return ret;
+						}
+					}
+				}
+			}
+		}
+
 		/* handle msDS-IntID attribute */
 		ret = samldb_add_handle_msDS_IntId(ac);
 		if (ret != LDB_SUCCESS) return ret;
 
 		ret = samldb_add_step(ac, samldb_add_entry);
 		if (ret != LDB_SUCCESS) return ret;
+		break;
+	}
 
-	} else {
-		ldb_asprintf_errstring(ldb,
-			"Invalid entry type!");
+	default:
+		ldb_asprintf_errstring(ldb, "Invalid entry type!");
 		return LDB_ERR_OPERATIONS_ERROR;
+		break;
 	}
 
 	return samldb_first_step(ac);
@@ -862,7 +988,8 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 		if (ret != LDB_SUCCESS) return ret;
 	}
 
-	if (strcmp(ac->type, "user") == 0) {
+	switch(ac->type) {
+	case SAMLDB_TYPE_USER: {
 		bool uac_generated = false;
 
 		/* Step 1.2: Default values */
@@ -1008,8 +1135,10 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 				}
 			}
 		}
+		break;
+	}
 
-	} else if (strcmp(ac->type, "group") == 0) {
+	case SAMLDB_TYPE_GROUP: {
 		const char *tempstr;
 
 		/* Step 2.2: Default values */
@@ -1051,6 +1180,14 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 			el2 = ldb_msg_find_element(ac->msg, "sAMAccountType");
 			el2->flags = LDB_FLAG_MOD_REPLACE;
 		}
+		break;
+	}
+
+	default:
+		ldb_asprintf_errstring(ldb,
+				"Invalid entry type!");
+		return LDB_ERR_OPERATIONS_ERROR;
+		break;
 	}
 
 	return LDB_SUCCESS;
@@ -1070,7 +1207,7 @@ static int samldb_prim_group_tester(struct samldb_ctx *ac, uint32_t rid)
 	struct dom_sid *sid;
 	struct ldb_result *res;
 	int ret;
-	const char *noattrs[] = { NULL };
+	const char * const noattrs[] = { NULL };
 
 	sid = dom_sid_add_rid(ac, samdb_domain_sid(ldb), rid);
 	if (sid == NULL) {
@@ -1121,7 +1258,7 @@ static int samldb_prim_group_set(struct samldb_ctx *ac)
 static int samldb_prim_group_change(struct samldb_ctx *ac)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
-	const char * attrs[] = { "primaryGroupID", "memberOf", NULL };
+	const char * const attrs[] = { "primaryGroupID", "memberOf", NULL };
 	struct ldb_result *res, *group_res;
 	struct ldb_message_element *el;
 	struct ldb_message *msg;
@@ -1129,7 +1266,7 @@ static int samldb_prim_group_change(struct samldb_ctx *ac)
 	struct dom_sid *prev_sid, *new_sid;
 	struct ldb_dn *prev_prim_group_dn, *new_prim_group_dn;
 	int ret;
-	const char *noattrs[] = { NULL };
+	const char * const noattrs[] = { NULL };
 
 	el = dsdb_get_single_valued_attr(ac->msg, "primaryGroupID",
 					 ac->req->operation);
@@ -1297,7 +1434,7 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	struct ldb_message *tmp_msg;
 	int ret;
 	struct ldb_result *res;
-	const char *attrs[] = { "userAccountControl", "objectClass", NULL };
+	const char * const attrs[] = { "userAccountControl", "objectClass", NULL };
 	unsigned int i;
 	bool is_computer = false;
 
@@ -1437,7 +1574,7 @@ static int samldb_group_type_change(struct samldb_ctx *ac)
 	struct ldb_message *tmp_msg;
 	int ret;
 	struct ldb_result *res;
-	const char *attrs[] = { "groupType", NULL };
+	const char * const attrs[] = { "groupType", NULL };
 
 	el = dsdb_get_single_valued_attr(ac->msg, "groupType",
 					 ac->req->operation);
@@ -1529,7 +1666,7 @@ static int samldb_group_type_change(struct samldb_ctx *ac)
 static int samldb_sam_accountname_check(struct samldb_ctx *ac)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
-	const char *no_attrs[] = { NULL };
+	const char * const no_attrs[] = { NULL };
 	struct ldb_result *res;
 	const char *sam_accountname, *enc_str;
 	struct ldb_message_element *el;
@@ -1552,8 +1689,10 @@ static int samldb_sam_accountname_check(struct samldb_ctx *ac)
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
-	sam_accountname = talloc_steal(ac,
-				       ldb_msg_find_attr_as_string(tmp_msg, "sAMAccountName", NULL));
+
+	/* We must not steal the original string, it belongs to the caller! */
+	sam_accountname = talloc_strdup(ac, 
+					ldb_msg_find_attr_as_string(tmp_msg, "sAMAccountName", NULL));
 	talloc_free(tmp_msg);
 
 	if (sam_accountname == NULL) {
@@ -1595,7 +1734,7 @@ static int samldb_sam_accountname_check(struct samldb_ctx *ac)
 
 static int samldb_member_check(struct samldb_ctx *ac)
 {
-	static const char * const attrs[] = { "objectSid", "member", NULL };
+	const char * const attrs[] = { "objectSid", NULL };
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
 	struct ldb_message_element *el;
 	struct ldb_dn *member_dn;
@@ -1608,7 +1747,7 @@ static int samldb_member_check(struct samldb_ctx *ac)
 	/* Fetch information from the existing object */
 
 	ret = dsdb_module_search(ac->module, ac, &res, ac->msg->dn, LDB_SCOPE_BASE, attrs,
-				 DSDB_FLAG_NEXT_MODULE, ac->req, NULL);
+				 DSDB_FLAG_NEXT_MODULE | DSDB_SEARCH_SHOW_DELETED, ac->req, NULL);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -1737,11 +1876,11 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
 	struct ldb_message_element *el = NULL, *el2 = NULL;
 	struct ldb_message *msg;
-	const char *attrs[] = { "servicePrincipalName", NULL };
+	const char * const attrs[] = { "servicePrincipalName", NULL };
 	struct ldb_result *res;
 	const char *dns_hostname = NULL, *old_dns_hostname = NULL,
 		   *sam_accountname = NULL, *old_sam_accountname = NULL;
-	unsigned int i;
+	unsigned int i, j;
 	int ret;
 
 	el = dsdb_get_single_valued_attr(ac->msg, "dNSHostName",
@@ -1764,8 +1903,12 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
-		dns_hostname = talloc_steal(ac,
-					    ldb_msg_find_attr_as_string(msg, "dNSHostName", NULL));
+		dns_hostname = talloc_strdup(ac, 
+					     ldb_msg_find_attr_as_string(msg, "dNSHostName", NULL));
+		if (dns_hostname == NULL) {
+			return ldb_module_oom(ac->module);
+		}
+			
 		talloc_free(msg);
 
 		ret = dsdb_module_search_dn(ac->module, ac, &res, ac->msg->dn,
@@ -1820,7 +1963,7 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 		dns_hostname = NULL;
 	}
 	if ((old_dns_hostname != NULL) && (dns_hostname != NULL) &&
-	    (strcasecmp(old_dns_hostname, dns_hostname) == 0)) {
+	    (strcasecmp_m(old_dns_hostname, dns_hostname) == 0)) {
 		/* The "dNSHostName" didn't change */
 		dns_hostname = NULL;
 	}
@@ -1830,7 +1973,7 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 		sam_accountname = NULL;
 	}
 	if ((old_sam_accountname != NULL) && (sam_accountname != NULL) &&
-	    (strcasecmp(old_sam_accountname, sam_accountname) == 0)) {
+	    (strcasecmp_m(old_sam_accountname, sam_accountname) == 0)) {
 		/* The "sAMAccountName" didn't change */
 		sam_accountname = NULL;
 	}
@@ -1882,15 +2025,28 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 	}
 
 	if (res->msgs[0]->num_elements == 1) {
-		/* Yes, we do have "servicePrincipalName"s. First we update them
+		/*
+		 * Yes, we do have "servicePrincipalName"s. First we update them
 		 * locally, that means we do always substitute the current
 		 * "dNSHostName" with the new one and/or "sAMAccountName"
-		 * without "$" with the new one and then we append this to the
-		 * modification request (Windows behaviour). */
+		 * without "$" with the new one and then we append the
+		 * modified "servicePrincipalName"s as a message element
+		 * replace to the modification request (Windows behaviour). We
+		 * need also to make sure that the values remain case-
+		 * insensitively unique.
+		 */
+
+		ret = ldb_msg_add_empty(ac->msg, "servicePrincipalName",
+					LDB_FLAG_MOD_REPLACE, &el);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
 
 		for (i = 0; i < res->msgs[0]->elements[0].num_values; i++) {
 			char *old_str, *new_str, *pos;
 			const char *tok;
+			struct ldb_val *vals;
+			bool found = false;
 
 			old_str = (char *)
 				res->msgs[0]->elements[0].values[i].data;
@@ -1903,11 +2059,11 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 
 			while ((tok = strtok_r(NULL, "/", &pos)) != NULL) {
 				if ((dns_hostname != NULL) &&
-				    (strcasecmp(tok, old_dns_hostname) == 0)) {
+				    (strcasecmp_m(tok, old_dns_hostname) == 0)) {
 					tok = dns_hostname;
 				}
 				if ((sam_accountname != NULL) &&
-				    (strcasecmp(tok, old_sam_accountname) == 0)) {
+				    (strcasecmp_m(tok, old_sam_accountname) == 0)) {
 					tok = sam_accountname;
 				}
 
@@ -1918,16 +2074,93 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 				}
 			}
 
-			ret = ldb_msg_add_string(ac->msg,
-						 "servicePrincipalName",
-						 new_str);
-			if (ret != LDB_SUCCESS) {
-				return ret;
+			/* Uniqueness check */
+			for (j = 0; (!found) && (j < el->num_values); j++) {
+				if (strcasecmp_m((char *)el->values[j].data,
+					       new_str) == 0) {
+					found = true;
+				}
 			}
-		}
+			if (found) {
+				continue;
+			}
 
-		el = ldb_msg_find_element(ac->msg, "servicePrincipalName");
-		el->flags = LDB_FLAG_MOD_REPLACE;
+			/*
+			 * append the new "servicePrincipalName" -
+			 * code derived from ldb_msg_add_value().
+			 *
+			 * Open coded to make it clear that we must
+			 * append to the MOD_REPLACE el created above.
+			 */
+			vals = talloc_realloc(ac->msg, el->values,
+					      struct ldb_val,
+					      el->num_values + 1);
+			if (vals == NULL) {
+				return ldb_module_oom(ac->module);
+			}
+			el->values = vals;
+			el->values[el->num_values] = data_blob_string_const(new_str);
+			++(el->num_values);
+		}
+	}
+
+	talloc_free(res);
+
+	return LDB_SUCCESS;
+}
+
+/* This checks the "fSMORoleOwner" attributes */
+static int samldb_fsmo_role_owner_check(struct samldb_ctx *ac)
+{
+	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
+	const char * const no_attrs[] = { NULL };
+	struct ldb_message_element *el;
+	struct ldb_message *tmp_msg;
+	struct ldb_dn *res_dn;
+	struct ldb_result *res;
+	int ret;
+
+	el = dsdb_get_single_valued_attr(ac->msg, "fSMORoleOwner",
+					 ac->req->operation);
+	if (el == NULL) {
+		/* we are not affected */
+		return LDB_SUCCESS;
+	}
+
+	/* Create a temporary message for fetching the "fSMORoleOwner" */
+	tmp_msg = ldb_msg_new(ac->msg);
+	if (tmp_msg == NULL) {
+		return ldb_module_oom(ac->module);
+	}
+	ret = ldb_msg_add(tmp_msg, el, 0);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	res_dn = ldb_msg_find_attr_as_dn(ldb, ac, tmp_msg, "fSMORoleOwner");
+	talloc_free(tmp_msg);
+
+	if (res_dn == NULL) {
+		ldb_set_errstring(ldb,
+				  "samldb: 'fSMORoleOwner' attributes have to reference 'nTDSDSA' entries!");
+		if (ac->req->operation == LDB_ADD) {
+			return LDB_ERR_CONSTRAINT_VIOLATION;
+		} else {
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+	}
+
+	/* Fetched DN has to reference a "nTDSDSA" entry */
+	ret = dsdb_module_search(ac->module, ac, &res, res_dn, LDB_SCOPE_BASE,
+				 no_attrs,
+				 DSDB_FLAG_NEXT_MODULE | DSDB_SEARCH_SHOW_DELETED,
+				 ac->req, "(objectClass=nTDSDSA)");
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	if (res->count != 1) {
+		ldb_set_errstring(ldb,
+				  "samldb: 'fSMORoleOwner' attributes have to reference 'nTDSDSA' entries!");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
 	talloc_free(res);
@@ -1941,6 +2174,7 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 {
 	struct ldb_context *ldb;
 	struct samldb_ctx *ac;
+	struct ldb_message_element *el;
 	int ret;
 
 	ldb = ldb_module_get_ctx(module);
@@ -1965,9 +2199,17 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_operr(ldb);
 	}
 
+	el = ldb_msg_find_element(ac->msg, "fSMORoleOwner");
+	if (el != NULL) {
+		ret = samldb_fsmo_role_owner_check(ac);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+	}
+
 	if (samdb_find_attribute(ldb, ac->msg,
 				 "objectclass", "user") != NULL) {
-		ac->type = "user";
+		ac->type = SAMLDB_TYPE_USER;
 
 		ret = samldb_prim_group_trigger(ac);
 		if (ret != LDB_SUCCESS) {
@@ -1984,7 +2226,7 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 
 	if (samdb_find_attribute(ldb, ac->msg,
 				 "objectclass", "group") != NULL) {
-		ac->type = "group";
+		ac->type = SAMLDB_TYPE_GROUP;
 
 		ret = samldb_objectclass_trigger(ac);
 		if (ret != LDB_SUCCESS) {
@@ -2009,7 +2251,7 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 			return ret;
 		}
 
-		ac->type = "classSchema";
+		ac->type = SAMLDB_TYPE_CLASS;
 		return samldb_fill_object(ac);
 	}
 
@@ -2021,7 +2263,7 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 			return ret;
 		}
 
-		ac->type = "attributeSchema";
+		ac->type = SAMLDB_TYPE_ATTRIBUTE;
 		return samldb_fill_object(ac);
 	}
 
@@ -2156,6 +2398,14 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 		}
 	}
 
+	el = ldb_msg_find_element(ac->msg, "fSMORoleOwner");
+	if (el != NULL) {
+		ret = samldb_fsmo_role_owner_check(ac);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+	}
+
 	if (modified) {
 		struct ldb_request *child_req;
 
@@ -2189,8 +2439,8 @@ static int samldb_prim_group_users_check(struct samldb_ctx *ac)
 	NTSTATUS status;
 	int ret;
 	struct ldb_result *res;
-	const char *attrs[] = { "objectSid", "isDeleted", NULL };
-	const char *noattrs[] = { NULL };
+	const char * const attrs[] = { "objectSid", "isDeleted", NULL };
+	const char * const noattrs[] = { NULL };
 
 	ldb = ldb_module_get_ctx(ac->module);
 

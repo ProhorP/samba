@@ -972,29 +972,44 @@ NTSTATUS rpc_trusted_domains(TALLOC_CTX *mem_ctx,
 
 	do {
 		struct lsa_DomainList dom_list;
+		struct lsa_DomainListEx dom_list_ex;
+		bool has_ex = false;
 		uint32_t i;
 
 		/*
 		 * We don't run into deadlocks here, cause winbind_off() is
 		 * called in the main function.
 		 */
-		status = dcerpc_lsa_EnumTrustDom(b,
-						 mem_ctx,
-						 lsa_policy,
-						 &enum_ctx,
-						 &dom_list,
-						 (uint32_t) -1,
-						 &result);
-		if (!NT_STATUS_IS_OK(status)) {
-			return status;
-		}
-		if (!NT_STATUS_IS_OK(result)) {
-			if (!NT_STATUS_EQUAL(result, STATUS_MORE_ENTRIES)) {
-				return result;
+		status = dcerpc_lsa_EnumTrustedDomainsEx(b,
+							 mem_ctx,
+							 lsa_policy,
+							 &enum_ctx,
+							 &dom_list_ex,
+							 (uint32_t) -1,
+							 &result);
+		if (NT_STATUS_IS_OK(status) && !NT_STATUS_IS_ERR(result) &&
+		    dom_list_ex.count > 0) {
+			count += dom_list_ex.count;
+			has_ex = true;
+		} else {
+			status = dcerpc_lsa_EnumTrustDom(b,
+							 mem_ctx,
+							 lsa_policy,
+							 &enum_ctx,
+							 &dom_list,
+							 (uint32_t) -1,
+							 &result);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
 			}
-		}
+			if (!NT_STATUS_IS_OK(result)) {
+				if (!NT_STATUS_EQUAL(result, STATUS_MORE_ENTRIES)) {
+					return result;
+				}
+			}
 
-		count += dom_list.count;
+			count += dom_list.count;
+		}
 
 		array = talloc_realloc(mem_ctx,
 				       array,
@@ -1004,21 +1019,32 @@ NTSTATUS rpc_trusted_domains(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		for (i = 0; i < dom_list.count; i++) {
+		for (i = 0; i < count; i++) {
 			struct netr_DomainTrust *trust = &array[i];
 			struct dom_sid *sid;
 
 			ZERO_STRUCTP(trust);
 
-			trust->netbios_name = talloc_move(array,
-							  &dom_list.domains[i].name.string);
-			trust->dns_name = NULL;
-
 			sid = talloc(array, struct dom_sid);
 			if (sid == NULL) {
 				return NT_STATUS_NO_MEMORY;
 			}
-			sid_copy(sid, dom_list.domains[i].sid);
+
+			if (has_ex) {
+				trust->netbios_name = talloc_move(array,
+								  &dom_list_ex.domains[i].netbios_name.string);
+				trust->dns_name = talloc_move(array,
+							      &dom_list_ex.domains[i].domain_name.string);
+
+				sid_copy(sid, dom_list_ex.domains[i].sid);
+			} else {
+				trust->netbios_name = talloc_move(array,
+								  &dom_list.domains[i].name.string);
+				trust->dns_name = NULL;
+
+				sid_copy(sid, dom_list.domains[i].sid);
+			}
+
 			trust->sid = sid;
 		}
 	} while (NT_STATUS_EQUAL(result, STATUS_MORE_ENTRIES));
@@ -1031,6 +1057,7 @@ NTSTATUS rpc_trusted_domains(TALLOC_CTX *mem_ctx,
 
 static NTSTATUS rpc_try_lookup_sids3(TALLOC_CTX *mem_ctx,
 				     struct winbindd_domain *domain,
+				     struct rpc_pipe_client *cli,
 				     struct lsa_SidArray *sids,
 				     struct lsa_RefDomainList **pdomains,
 				     struct lsa_TransNameArray **pnames)
@@ -1038,14 +1065,7 @@ static NTSTATUS rpc_try_lookup_sids3(TALLOC_CTX *mem_ctx,
 	struct lsa_TransNameArray2 lsa_names2;
 	struct lsa_TransNameArray *names;
 	uint32_t i, count;
-	struct rpc_pipe_client *cli;
 	NTSTATUS status, result;
-
-	status = cm_connect_lsa_tcp(domain, talloc_tos(), &cli);
-	if (!NT_STATUS_IS_OK(status)) {
-		domain->can_do_ncacn_ip_tcp = false;
-		return status;
-	}
 
 	ZERO_STRUCT(lsa_names2);
 	status = dcerpc_lsa_LookupSids3(cli->binding_handle,
@@ -1096,17 +1116,14 @@ NTSTATUS rpc_lookup_sids(TALLOC_CTX *mem_ctx,
 	uint32_t count;
 	NTSTATUS status, result;
 
-	if (domain->can_do_ncacn_ip_tcp) {
-		status = rpc_try_lookup_sids3(mem_ctx, domain, sids,
-					      pdomains, pnames);
-		if (!NT_STATUS_IS_ERR(status)) {
-			return status;
-		}
-	}
-
-	status = cm_connect_lsa(domain, mem_ctx, &cli, &lsa_policy);
+	status = cm_connect_lsat(domain, mem_ctx, &cli, &lsa_policy);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
+	}
+
+	if (cli->transport->transport == NCACN_IP_TCP) {
+		return rpc_try_lookup_sids3(mem_ctx, domain, cli, sids,
+					    pdomains, pnames);
 	}
 
 	names = talloc_zero(mem_ctx, struct lsa_TransNameArray);

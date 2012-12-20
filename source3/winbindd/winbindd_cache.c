@@ -124,7 +124,7 @@ static struct winbind_cache *get_cache(struct winbindd_domain *domain)
 	}
 
 	if (strequal(domain->name, get_global_sam_name()) &&
-	    sid_check_is_domain(&domain->sid)) {
+	    sid_check_is_our_sam(&domain->sid)) {
 		domain->backend = &sam_passdb_methods;
 		domain->initialized = True;
 	}
@@ -668,7 +668,7 @@ static struct cache_entry *wcache_fetch_raw(char *kstr)
 static bool is_my_own_sam_domain(struct winbindd_domain *domain)
 {
 	if (strequal(domain->name, get_global_sam_name()) &&
-	    sid_check_is_domain(&domain->sid)) {
+	    sid_check_is_our_sam(&domain->sid)) {
 		return true;
 	}
 
@@ -946,7 +946,7 @@ static void wcache_save_name_to_sid(struct winbindd_domain *domain,
 	centry_put_uint32(centry, type);
 	centry_put_sid(centry, sid);
 	fstrcpy(uname, name);
-	strupper_m(uname);
+	(void)strupper_m(uname);
 	centry_end(centry, "NS/%s/%s", domain_name, uname);
 	DEBUG(10,("wcache_save_name_to_sid: %s\\%s -> %s (%s)\n", domain_name,
 		  uname, sid_string_dbg(sid), nt_errstr(status)));
@@ -1064,7 +1064,7 @@ static void wcache_save_username_alias(struct winbindd_domain *domain,
 	centry_put_string( centry, alias );
 
 	fstrcpy(uname, name);
-	strupper_m(uname);
+	(void)strupper_m(uname);
 	centry_end(centry, "NSS/NA/%s", uname);
 
 	DEBUG(10,("wcache_save_username_alias: %s -> %s\n", name, alias ));
@@ -1085,7 +1085,7 @@ static void wcache_save_alias_username(struct winbindd_domain *domain,
 	centry_put_string( centry, name );
 
 	fstrcpy(uname, alias);
-	strupper_m(uname);
+	(void)strupper_m(uname);
 	centry_end(centry, "NSS/AN/%s", uname);
 
 	DEBUG(10,("wcache_save_alias_username: %s -> %s\n", alias, name ));
@@ -1113,7 +1113,10 @@ NTSTATUS resolve_username_to_alias( TALLOC_CTX *mem_ctx,
 
 	if ( (upper_name = SMB_STRDUP(name)) == NULL )
 		return NT_STATUS_NO_MEMORY;
-	strupper_m(upper_name);
+	if (!strupper_m(upper_name)) {
+		SAFE_FREE(name);
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	centry = wcache_fetch(cache, domain, "NSS/NA/%s", upper_name);
 
@@ -1188,7 +1191,10 @@ NTSTATUS resolve_alias_to_username( TALLOC_CTX *mem_ctx,
 
 	if ( (upper_name = SMB_STRDUP(alias)) == NULL )
 		return NT_STATUS_NO_MEMORY;
-	strupper_m(upper_name);
+	if (!strupper_m(upper_name)) {
+		SAFE_FREE(alias);
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	centry = wcache_fetch(cache, domain, "NSS/AN/%s", upper_name);
 
@@ -1296,10 +1302,6 @@ NTSTATUS wcache_get_creds(struct winbindd_domain *domain,
 	uint32 rid;
 	fstring tmp;
 
-	if (!winbindd_use_cache()) {
-		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
-	}
-
 	if (!cache->tdb) {
 		return NT_STATUS_INTERNAL_DB_ERROR;
 	}
@@ -1322,6 +1324,13 @@ NTSTATUS wcache_get_creds(struct winbindd_domain *domain,
 			  sid_string_dbg(sid)));
 		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
+
+	/*
+	 * We don't use the time element at this moment,
+	 * but we have to consume it, so that we don't
+	 * neet to change the disk format of the cache.
+	 */
+	(void)centry_time(centry);
 
 	/* In the salted case this isn't actually the nt_hash itself,
 	   but the MD5 of the salt + nt_hash. Let the caller
@@ -1859,8 +1868,10 @@ static NTSTATUS name_to_sid(struct winbindd_domain *domain,
 
 		/* Only save the reverse mapping if this was not a UPN */
 		if (!strchr(name, '@')) {
-			strupper_m(discard_const_p(char, domain_name));
-			strlower_m(discard_const_p(char, name));
+			if (!strupper_m(discard_const_p(char, domain_name))) {
+				return NT_STATUS_INVALID_PARAMETER;
+			}
+			(void)strlower_m(discard_const_p(char, name));
 			wcache_save_sid_to_name(domain, status, sid, domain_name, name, *type);
 		}
 	}

@@ -254,10 +254,10 @@ bool push_blocking_lock_request( struct byte_range_lock *br_lck,
 	}
 
 	DEBUG(3,("push_blocking_lock_request: lock request blocked with "
-		"expiry time (%u sec. %u usec) (+%d msec) for fnum = %d, name = %s\n",
+		"expiry time (%u sec. %u usec) (+%d msec) for %s, name = %s\n",
 		(unsigned int)blr->expire_time.tv_sec,
 		(unsigned int)blr->expire_time.tv_usec, lock_timeout,
-		blr->fsp->fnum, fsp_str_dbg(blr->fsp)));
+		fsp_fnum_dbg(blr->fsp), fsp_str_dbg(blr->fsp)));
 
 	return True;
 }
@@ -268,7 +268,11 @@ bool push_blocking_lock_request( struct byte_range_lock *br_lck,
 
 static void reply_lockingX_success(struct blocking_lock_record *blr)
 {
-	reply_outbuf(blr->req, 2, 0);
+	struct smb_request *req = blr->req;
+
+	reply_outbuf(req, 2, 0);
+	SSVAL(req->outbuf, smb_vwv0, 0xff); /* andx chain ends */
+	SSVAL(req->outbuf, smb_vwv1, 0);    /* no andx offset */
 
 	/*
 	 * As this message is a lockingX call we must handle
@@ -278,8 +282,15 @@ static void reply_lockingX_success(struct blocking_lock_record *blr)
 	 * that here and must set up the chain info manually.
 	 */
 
-	chain_reply(blr->req);
-	TALLOC_FREE(blr->req->outbuf);
+	if (!srv_send_smb(req->sconn,
+			(char *)req->outbuf,
+			true, req->seqnum+1,
+			IS_CONN_ENCRYPTED(req->conn)||req->encrypted,
+			&req->pcd)) {
+		exit_server_cleanly("construct_reply: srv_send_smb failed.");
+	}
+
+	TALLOC_FREE(req->outbuf);
 }
 
 /****************************************************************************
@@ -325,7 +336,7 @@ static void generic_blocking_lock_error(struct blocking_lock_record *blr, NTSTAT
  obtained first.
 *****************************************************************************/
 
-static void reply_lockingX_error(struct blocking_lock_record *blr, NTSTATUS status)
+static void undo_locks_obtained(struct blocking_lock_record *blr)
 {
 	files_struct *fsp = blr->fsp;
 	uint16 num_ulocks = SVAL(blr->req->vwv+6, 0);
@@ -369,8 +380,6 @@ static void reply_lockingX_error(struct blocking_lock_record *blr, NTSTATUS stat
 			offset,
 			WINDOWS_LOCK);
 	}
-
-	generic_blocking_lock_error(blr, status);
 }
 
 /****************************************************************************
@@ -383,7 +392,16 @@ static void blocking_lock_reply_error(struct blocking_lock_record *blr, NTSTATUS
 
 	switch(blr->req->cmd) {
 	case SMBlockingX:
-		reply_lockingX_error(blr, status);
+		/*
+		 * This code can be called during the rundown of a
+		 * file after it was already closed. In that case,
+		 * blr->fsp==NULL and we do not need to undo any
+		 * locks, they are already gone.
+		 */
+		if (blr->fsp != NULL) {
+			undo_locks_obtained(blr);
+		}
+		generic_blocking_lock_error(blr, status);
 		break;
 	case SMBtrans2:
 	case SMBtranss2:
@@ -474,8 +492,8 @@ static bool process_lockingX(struct blocking_lock_record *blr)
 		 * Success - we got all the locks.
 		 */
 
-		DEBUG(3,("process_lockingX file = %s, fnum=%d type=%d "
-			 "num_locks=%d\n", fsp_str_dbg(fsp), fsp->fnum,
+		DEBUG(3,("process_lockingX file = %s, %s, type=%d "
+			 "num_locks=%d\n", fsp_str_dbg(fsp), fsp_fnum_dbg(fsp),
 			 (unsigned int)locktype, num_locks));
 
 		reply_lockingX_success(blr);
@@ -497,9 +515,10 @@ static bool process_lockingX(struct blocking_lock_record *blr)
 	 * Still can't get all the locks - keep waiting.
 	 */
 
-	DEBUG(10,("process_lockingX: only got %d locks of %d needed for file %s, fnum = %d. \
-Waiting....\n", 
-		 blr->lock_num, num_locks, fsp_str_dbg(fsp), fsp->fnum));
+	DEBUG(10, ("process_lockingX: only got %d locks of %d needed for "
+		   "file %s, %s. Waiting....\n",
+		   blr->lock_num, num_locks, fsp_str_dbg(fsp),
+		   fsp_fnum_dbg(fsp)));
 
 	return False;
 }
@@ -601,8 +620,8 @@ void smbd_cancel_pending_lock_requests_by_fid(files_struct *fsp,
 		}
 
 		DEBUG(10, ("remove_pending_lock_requests_by_fid - removing "
-			   "request type %d for file %s fnum = %d\n",
-			   blr->req->cmd, fsp_str_dbg(fsp), fsp->fnum));
+			   "request type %d for file %s, %s\n",
+			   blr->req->cmd, fsp_str_dbg(fsp), fsp_fnum_dbg(fsp)));
 
 		blr_cancelled = blocking_lock_cancel_smb1(fsp,
 				     blr->smblctx,
@@ -653,9 +672,9 @@ void remove_pending_lock_requests_by_mid_smb1(
 
 		if (br_lck) {
 			DEBUG(10, ("remove_pending_lock_requests_by_mid_smb1 - "
-				   "removing request type %d for file %s fnum "
-				   "= %d\n", blr->req->cmd, fsp_str_dbg(fsp),
-				   fsp->fnum ));
+				   "removing request type %d for file %s, %s\n",
+				   blr->req->cmd, fsp_str_dbg(fsp),
+				   fsp_fnum_dbg(fsp)));
 
 			brl_lock_cancel(br_lck,
 					blr->smblctx,
@@ -789,8 +808,8 @@ void process_blocking_lock_queue(struct smbd_server_connection *sconn)
 
 			if (br_lck) {
 				DEBUG(5,("process_blocking_lock_queue: "
-					 "pending lock fnum = %d for file %s "
-					 "timed out.\n", blr->fsp->fnum,
+					 "pending lock for %s, file %s "
+					 "timed out.\n", fsp_fnum_dbg(blr->fsp),
 					 fsp_str_dbg(blr->fsp)));
 
 				brl_lock_cancel(br_lck,

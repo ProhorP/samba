@@ -1,12 +1,12 @@
-#!/usr/bin/env python
-#
 # domain management
 #
 # Copyright Matthias Dieter Wallnoefer 2009
 # Copyright Andrew Kroeger 2009
-# Copyright Jelmer Vernooij 2009
+# Copyright Jelmer Vernooij 2007-2012
 # Copyright Giampaolo Lauria 2011
 # Copyright Matthieu Patou <mat@matws.net> 2011
+# Copyright Andrew Bartlett 2008
+# Copyright Stefan Metzmacher 2012
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -22,12 +22,11 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-
-
 import samba.getopt as options
 import ldb
 import string
 import os
+import sys
 import tempfile
 import logging
 from samba.net import Net, LIBNET_JOIN_AUTOMATIC
@@ -65,37 +64,49 @@ from samba.dsdb import (
     UF_TRUSTED_FOR_DELEGATION
     )
 
+from samba.credentials import DONT_USE_KERBEROS
+from samba.provision import (
+    provision,
+    FILL_FULL,
+    FILL_NT4SYNC,
+    FILL_DRS,
+    ProvisioningError,
+    )
+
 def get_testparm_var(testparm, smbconf, varname):
     cmd = "%s -s -l --parameter-name='%s' %s 2>/dev/null" % (testparm, varname, smbconf)
     output = os.popen(cmd, 'r').readline()
     return output.strip()
 
+try:
+   import samba.dckeytab
+   class cmd_domain_export_keytab(Command):
+       """Dump Kerberos keys of the domain into a keytab."""
 
-class cmd_domain_export_keytab(Command):
-    """Dumps kerberos keys of the domain into a keytab"""
+       synopsis = "%prog <keytab> [options]"
 
-    synopsis = "%prog <keytab> [options]"
+       takes_optiongroups = {
+           "sambaopts": options.SambaOptions,
+           "credopts": options.CredentialsOptions,
+           "versionopts": options.VersionOptions,
+           }
 
-    takes_optiongroups = {
-        "sambaopts": options.SambaOptions,
-        "credopts": options.CredentialsOptions,
-        "versionopts": options.VersionOptions,
-        }
+       takes_options = [
+           Option("--principal", help="extract only this principal", type=str),
+           ]
 
-    takes_options = [
-        Option("--principal", help="extract only this principal", type=str),
-        ]
+       takes_args = ["keytab"]
 
-    takes_args = ["keytab"]
-
-    def run(self, keytab, credopts=None, sambaopts=None, versionopts=None, principal=None):
-        lp = sambaopts.get_loadparm()
-        net = Net(None, lp)
-        net.export_keytab(keytab=keytab, principal=principal)
+       def run(self, keytab, credopts=None, sambaopts=None, versionopts=None, principal=None):
+           lp = sambaopts.get_loadparm()
+           net = Net(None, lp)
+           net.export_keytab(keytab=keytab, principal=principal)
+except:
+   cmd_domain_export_keytab = None
 
 
 class cmd_domain_info(Command):
-    """Print basic info about a domain and the DC passed as parameter"""
+    """Print basic info about a domain and the DC passed as parameter."""
 
     synopsis = "%prog <ip_address> [options]"
 
@@ -114,19 +125,373 @@ class cmd_domain_info(Command):
         lp = sambaopts.get_loadparm()
         try:
             res = netcmd_get_domain_infos_via_cldap(lp, None, address)
-            print "Forest           : %s" % res.forest
-            print "Domain           : %s" % res.dns_domain
-            print "Netbios domain   : %s" % res.domain_name
-            print "DC name          : %s" % res.pdc_dns_name
-            print "DC netbios name  : %s" % res.pdc_name
-            print "Server site      : %s" % res.server_site
-            print "Client site      : %s" % res.client_site
         except RuntimeError:
             raise CommandError("Invalid IP address '" + address + "'!")
+        self.outf.write("Forest           : %s\n" % res.forest)
+        self.outf.write("Domain           : %s\n" % res.dns_domain)
+        self.outf.write("Netbios domain   : %s\n" % res.domain_name)
+        self.outf.write("DC name          : %s\n" % res.pdc_dns_name)
+        self.outf.write("DC netbios name  : %s\n" % res.pdc_name)
+        self.outf.write("Server site      : %s\n" % res.server_site)
+        self.outf.write("Client site      : %s\n" % res.client_site)
+
+
+class cmd_domain_provision(Command):
+    """Provision a domain."""
+
+    synopsis = "%prog [options]"
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "versionopts": options.VersionOptions,
+        "credopts": options.CredentialsOptions,
+    }
+
+    takes_options = [
+         Option("--interactive", help="Ask for names", action="store_true"),
+         Option("--domain", type="string", metavar="DOMAIN",
+                help="set domain"),
+         Option("--domain-guid", type="string", metavar="GUID",
+                help="set domainguid (otherwise random)"),
+         Option("--domain-sid", type="string", metavar="SID",
+                help="set domainsid (otherwise random)"),
+         Option("--ntds-guid", type="string", metavar="GUID",
+                help="set NTDS object GUID (otherwise random)"),
+         Option("--invocationid", type="string", metavar="GUID",
+                help="set invocationid (otherwise random)"),
+         Option("--host-name", type="string", metavar="HOSTNAME",
+                help="set hostname"),
+         Option("--host-ip", type="string", metavar="IPADDRESS",
+                help="set IPv4 ipaddress"),
+         Option("--host-ip6", type="string", metavar="IP6ADDRESS",
+                help="set IPv6 ipaddress"),
+         Option("--adminpass", type="string", metavar="PASSWORD",
+                help="choose admin password (otherwise random)"),
+         Option("--krbtgtpass", type="string", metavar="PASSWORD",
+                help="choose krbtgt password (otherwise random)"),
+         Option("--machinepass", type="string", metavar="PASSWORD",
+                help="choose machine password (otherwise random)"),
+         Option("--dns-backend", type="choice", metavar="NAMESERVER-BACKEND",
+                choices=["SAMBA_INTERNAL", "BIND9_FLATFILE", "BIND9_DLZ", "NONE"],
+                help="The DNS server backend. SAMBA_INTERNAL is the builtin name server (default), "
+                     "BIND9_FLATFILE uses bind9 text database to store zone information, "
+                     "BIND9_DLZ uses samba4 AD to store zone information, "
+                     "NONE skips the DNS setup entirely (not recommended)",
+                default="SAMBA_INTERNAL"),
+         Option("--dnspass", type="string", metavar="PASSWORD",
+                help="choose dns password (otherwise random)"),
+         Option("--ldapadminpass", type="string", metavar="PASSWORD",
+                help="choose password to set between Samba and it's LDAP backend (otherwise random)"),
+         Option("--root", type="string", metavar="USERNAME",
+                help="choose 'root' unix username"),
+         Option("--nobody", type="string", metavar="USERNAME",
+                help="choose 'nobody' user"),
+         Option("--users", type="string", metavar="GROUPNAME",
+                help="choose 'users' group"),
+         Option("--quiet", help="Be quiet", action="store_true"),
+         Option("--blank", action="store_true",
+                help="do not add users or groups, just the structure"),
+         Option("--ldap-backend-type", type="choice", metavar="LDAP-BACKEND-TYPE",
+                help="Test initialisation support for unsupported LDAP backend type (fedora-ds or openldap) DO NOT USE",
+                choices=["fedora-ds", "openldap"]),
+         Option("--server-role", type="choice", metavar="ROLE",
+                choices=["domain controller", "dc", "member server", "member", "standalone"],
+                help="The server role (domain controller | dc | member server | member | standalone). Default is dc.",
+                default="domain controller"),
+         Option("--function-level", type="choice", metavar="FOR-FUN-LEVEL",
+                choices=["2000", "2003", "2008", "2008_R2"],
+                help="The domain and forest function level (2000 | 2003 | 2008 | 2008_R2 - always native). Default is (Windows) 2003 Native.",
+                default="2003"),
+         Option("--next-rid", type="int", metavar="NEXTRID", default=1000,
+                help="The initial nextRid value (only needed for upgrades).  Default is 1000."),
+         Option("--partitions-only",
+                help="Configure Samba's partitions, but do not modify them (ie, join a BDC)", action="store_true"),
+         Option("--targetdir", type="string", metavar="DIR",
+                help="Set target directory"),
+         Option("--ol-mmr-urls", type="string", metavar="LDAPSERVER",
+                help="List of LDAP-URLS [ ldap://<FQHN>:<PORT>/  (where <PORT> has to be different than 389!) ] separated with comma (\",\") for use with OpenLDAP-MMR (Multi-Master-Replication), e.g.: \"ldap://s4dc1:9000,ldap://s4dc2:9000\""),
+         Option("--use-xattrs", type="choice", choices=["yes", "no", "auto"], help="Define if we should use the native fs capabilities or a tdb file for storing attributes likes ntacl, auto tries to make an inteligent guess based on the user rights and system capabilities", default="auto"),
+         Option("--use-ntvfs", action="store_true", help="Use NTVFS for the fileserver (default = no)"),
+         Option("--use-rfc2307", action="store_true", help="Use AD to store posix attributes (default = no)"),
+        ]
+    takes_args = []
+
+    def run(self, sambaopts=None, credopts=None, versionopts=None,
+            interactive=None,
+            domain=None,
+            domain_guid=None,
+            domain_sid=None,
+            ntds_guid=None,
+            invocationid=None,
+            host_name=None,
+            host_ip=None,
+            host_ip6=None,
+            adminpass=None,
+            krbtgtpass=None,
+            machinepass=None,
+            dns_backend=None,
+            dns_forwarder=None,
+            dnspass=None,
+            ldapadminpass=None,
+            root=None,
+            nobody=None,
+            users=None,
+            quiet=None,
+            blank=None,
+            ldap_backend_type=None,
+            server_role=None,
+            function_level=None,
+            next_rid=None,
+            partitions_only=None,
+            targetdir=None,
+            ol_mmr_urls=None,
+            use_xattrs=None,
+            use_ntvfs=None,
+            use_rfc2307=None):
+
+        self.logger = self.get_logger("provision")
+        if quiet:
+            self.logger.setLevel(logging.WARNING)
+        else:
+            self.logger.setLevel(logging.INFO)
+
+        lp = sambaopts.get_loadparm()
+        smbconf = lp.configfile
+
+        creds = credopts.get_credentials(lp)
+
+        creds.set_kerberos_state(DONT_USE_KERBEROS)
+
+        if dns_forwarder is not None:
+            suggested_forwarder = dns_forwarder
+        else:
+            suggested_forwarder = self._get_nameserver_ip()
+            if suggested_forwarder is None:
+                suggested_forwarder = "none"
+
+        if len(self.raw_argv) == 1:
+            interactive = True
+
+        if interactive:
+            from getpass import getpass
+            import socket
+
+            def ask(prompt, default=None):
+                if default is not None:
+                    print "%s [%s]: " % (prompt, default),
+                else:
+                    print "%s: " % (prompt,),
+                return sys.stdin.readline().rstrip("\n") or default
+
+            try:
+                default = socket.getfqdn().split(".", 1)[1].upper()
+            except IndexError:
+                default = None
+            realm = ask("Realm", default)
+            if realm in (None, ""):
+                raise CommandError("No realm set!")
+
+            try:
+                default = realm.split(".")[0]
+            except IndexError:
+                default = None
+            domain = ask("Domain", default)
+            if domain is None:
+                raise CommandError("No domain set!")
+
+            server_role = ask("Server Role (dc, member, standalone)", "dc")
+
+            dns_backend = ask("DNS backend (SAMBA_INTERNAL, BIND9_FLATFILE, BIND9_DLZ, NONE)", "SAMBA_INTERNAL")
+            if dns_backend in (None, ''):
+                raise CommandError("No DNS backend set!")
+
+            if dns_backend == "SAMBA_INTERNAL":
+                dns_forwarder = ask("DNS forwarder IP address (write 'none' to disable forwarding)", suggested_forwarder)
+                if dns_forwarder.lower() in (None, 'none'):
+                    suggested_forwarder = None
+                    dns_forwarder = None
+
+            while True:
+                adminpassplain = getpass("Administrator password: ")
+                if not adminpassplain:
+                    self.errf.write("Invalid administrator password.\n")
+                else:
+                    adminpassverify = getpass("Retype password: ")
+                    if not adminpassplain == adminpassverify:
+                        self.errf.write("Sorry, passwords do not match.\n")
+                    else:
+                        adminpass = adminpassplain
+                        break
+
+        else:
+            realm = sambaopts._lp.get('realm')
+            if realm is None:
+                raise CommandError("No realm set!")
+            if domain is None:
+                raise CommandError("No domain set!")
+
+        if not adminpass:
+            self.logger.info("Administrator password will be set randomly!")
+
+        if function_level == "2000":
+            dom_for_fun_level = DS_DOMAIN_FUNCTION_2000
+        elif function_level == "2003":
+            dom_for_fun_level = DS_DOMAIN_FUNCTION_2003
+        elif function_level == "2008":
+            dom_for_fun_level = DS_DOMAIN_FUNCTION_2008
+        elif function_level == "2008_R2":
+            dom_for_fun_level = DS_DOMAIN_FUNCTION_2008_R2
+
+        if dns_backend == "SAMBA_INTERNAL" and dns_forwarder is None:
+            dns_forwarder = suggested_forwarder
+
+        samdb_fill = FILL_FULL
+        if blank:
+            samdb_fill = FILL_NT4SYNC
+        elif partitions_only:
+            samdb_fill = FILL_DRS
+
+        if targetdir is not None:
+            if not os.path.isdir(targetdir):
+                os.mkdir(targetdir)
+
+        eadb = True
+
+        if use_xattrs == "yes":
+            eadb = False
+        elif use_xattrs == "auto" and not lp.get("posix:eadb"):
+            if targetdir:
+                file = tempfile.NamedTemporaryFile(dir=os.path.abspath(targetdir))
+            else:
+                file = tempfile.NamedTemporaryFile(dir=os.path.abspath(os.path.dirname(lp.get("private dir"))))
+            try:
+                try:
+                    samba.ntacls.setntacl(lp, file.name,
+                                          "O:S-1-5-32G:S-1-5-32", "S-1-5-32", "native")
+                    eadb = False
+                except Exception:
+                    self.logger.info("You are not root or your system do not support xattr, using tdb backend for attributes. ")
+            finally:
+                file.close()
+
+        if eadb:
+            self.logger.info("not using extended attributes to store ACLs and other metadata. If you intend to use this provision in production, rerun the script as root on a system supporting xattrs.")
+
+        session = system_session()
+        try:
+            result = provision(self.logger,
+                  session, creds, smbconf=smbconf, targetdir=targetdir,
+                  samdb_fill=samdb_fill, realm=realm, domain=domain,
+                  domainguid=domain_guid, domainsid=domain_sid,
+                  hostname=host_name,
+                  hostip=host_ip, hostip6=host_ip6,
+                  ntdsguid=ntds_guid,
+                  invocationid=invocationid, adminpass=adminpass,
+                  krbtgtpass=krbtgtpass, machinepass=machinepass,
+                  dns_backend=dns_backend, dns_forwarder=dns_forwarder,
+                  dnspass=dnspass, root=root, nobody=nobody,
+                  users=users,
+                  serverrole=server_role, dom_for_fun_level=dom_for_fun_level,
+                  backend_type=ldap_backend_type,
+                  ldapadminpass=ldapadminpass, ol_mmr_urls=ol_mmr_urls,
+                  useeadb=eadb, next_rid=next_rid, lp=lp, use_ntvfs=use_ntvfs,
+                  use_rfc2307=use_rfc2307, skip_sysvolacl=False)
+        except ProvisioningError, e:
+            raise CommandError("Provision failed", e)
+
+        result.report_logger(self.logger)
+
+    def _get_nameserver_ip(self):
+        """Grab the nameserver IP address from /etc/resolv.conf."""
+        from os import path
+        RESOLV_CONF="/etc/resolv.conf"
+
+        if not path.isfile(RESOLV_CONF):
+            self.logger.warning("Failed to locate %s" % RESOLV_CONF)
+            return None
+
+        handle = None
+        try:
+            handle = open(RESOLV_CONF, 'r')
+            for line in handle:
+                if not line.startswith('nameserver'):
+                    continue
+                # we want the last non-space continuous string of the line
+                return line.strip().split()[-1]
+        finally:
+            if handle is not None:
+                handle.close()
+
+        self.logger.warning("No nameserver found in %s" % RESOLV_CONF)
+
+
+class cmd_domain_dcpromo(Command):
+    """Promote an existing domain member or NT4 PDC to an AD DC."""
+
+    synopsis = "%prog <dnsdomain> [DC|RODC] [options]"
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "versionopts": options.VersionOptions,
+        "credopts": options.CredentialsOptions,
+    }
+
+    takes_options = [
+        Option("--server", help="DC to join", type=str),
+        Option("--site", help="site to join", type=str),
+        Option("--targetdir", help="where to store provision", type=str),
+        Option("--domain-critical-only",
+               help="only replicate critical domain objects",
+               action="store_true"),
+        Option("--machinepass", type=str, metavar="PASSWORD",
+               help="choose machine password (otherwise random)"),
+        Option("--use-ntvfs", help="Use NTVFS for the fileserver (default = no)",
+               action="store_true"),
+        Option("--dns-backend", type="choice", metavar="NAMESERVER-BACKEND",
+               choices=["SAMBA_INTERNAL", "BIND9_DLZ", "NONE"],
+               help="The DNS server backend. SAMBA_INTERNAL is the builtin name server (default), "
+                   "BIND9_DLZ uses samba4 AD to store zone information, "
+                   "NONE skips the DNS setup entirely (this DC will not be a DNS server)",
+               default="SAMBA_INTERNAL")
+       ]
+
+    takes_args = ["domain", "role?"]
+
+    def run(self, domain, role=None, sambaopts=None, credopts=None,
+            versionopts=None, server=None, site=None, targetdir=None,
+            domain_critical_only=False, parent_domain=None, machinepass=None,
+            use_ntvfs=False, dns_backend=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp)
+        net = Net(creds, lp, server=credopts.ipaddress)
+
+        if site is None:
+            site = "Default-First-Site-Name"
+
+        netbios_name = lp.get("netbios name")
+
+        if not role is None:
+            role = role.upper()
+
+        if role == "DC":
+            join_DC(server=server, creds=creds, lp=lp, domain=domain,
+                    site=site, netbios_name=netbios_name, targetdir=targetdir,
+                    domain_critical_only=domain_critical_only,
+                    machinepass=machinepass, use_ntvfs=use_ntvfs,
+                    dns_backend=dns_backend,
+                    promote_existing=True)
+        elif role == "RODC":
+            join_RODC(server=server, creds=creds, lp=lp, domain=domain,
+                      site=site, netbios_name=netbios_name, targetdir=targetdir,
+                      domain_critical_only=domain_critical_only,
+                      machinepass=machinepass, use_ntvfs=use_ntvfs, dns_backend=dns_backend,
+                      promote_existing=True)
+        else:
+            raise CommandError("Invalid role '%s' (possible values: DC, RODC)" % role)
 
 
 class cmd_domain_join(Command):
-    """Joins domain as either member or backup domain controller"""
+    """Join domain as either member or backup domain controller."""
 
     synopsis = "%prog <dnsdomain> [DC|RODC|MEMBER|SUBDOMAIN] [options]"
 
@@ -145,14 +510,23 @@ class cmd_domain_join(Command):
                help="only replicate critical domain objects",
                action="store_true"),
         Option("--machinepass", type=str, metavar="PASSWORD",
-               help="choose machine password (otherwise random)")
-        ]
+               help="choose machine password (otherwise random)"),
+        Option("--use-ntvfs", help="Use NTVFS for the fileserver (default = no)",
+               action="store_true"),
+        Option("--dns-backend", type="choice", metavar="NAMESERVER-BACKEND",
+               choices=["SAMBA_INTERNAL", "BIND9_DLZ", "NONE"],
+               help="The DNS server backend. SAMBA_INTERNAL is the builtin name server (default), "
+                   "BIND9_DLZ uses samba4 AD to store zone information, "
+                   "NONE skips the DNS setup entirely (this DC will not be a DNS server)",
+               default="SAMBA_INTERNAL")
+       ]
 
     takes_args = ["domain", "role?"]
 
     def run(self, domain, role=None, sambaopts=None, credopts=None,
             versionopts=None, server=None, site=None, targetdir=None,
-            domain_critical_only=False, parent_domain=None, machinepass=None):
+            domain_critical_only=False, parent_domain=None, machinepass=None,
+            use_ntvfs=False, dns_backend=None):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
         net = Net(creds, lp, server=credopts.ipaddress)
@@ -166,40 +540,37 @@ class cmd_domain_join(Command):
             role = role.upper()
 
         if role is None or role == "MEMBER":
-            (join_password, sid, domain_name) = net.join_member(domain,
-                                                                netbios_name,
-                                                                LIBNET_JOIN_AUTOMATIC,
-                                                                machinepass=machinepass)
+            (join_password, sid, domain_name) = net.join_member(
+                domain, netbios_name, LIBNET_JOIN_AUTOMATIC,
+                machinepass=machinepass)
 
-            self.outf.write("Joined domain %s (%s)\n" % (domain_name, sid))
-            return
+            self.errf.write("Joined domain %s (%s)\n" % (domain_name, sid))
         elif role == "DC":
             join_DC(server=server, creds=creds, lp=lp, domain=domain,
                     site=site, netbios_name=netbios_name, targetdir=targetdir,
                     domain_critical_only=domain_critical_only,
-                    machinepass=machinepass)
-            return
+                    machinepass=machinepass, use_ntvfs=use_ntvfs, dns_backend=dns_backend)
         elif role == "RODC":
             join_RODC(server=server, creds=creds, lp=lp, domain=domain,
                       site=site, netbios_name=netbios_name, targetdir=targetdir,
                       domain_critical_only=domain_critical_only,
-                      machinepass=machinepass)
-            return
+                      machinepass=machinepass, use_ntvfs=use_ntvfs,
+                      dns_backend=dns_backend)
         elif role == "SUBDOMAIN":
             netbios_domain = lp.get("workgroup")
             if parent_domain is None:
                 parent_domain = ".".join(domain.split(".")[1:])
-            join_subdomain(server=server, creds=creds, lp=lp, dnsdomain=domain, parent_domain=parent_domain,
-                           site=site, netbios_name=netbios_name, netbios_domain=netbios_domain, targetdir=targetdir,
-                           machinepass=machinepass)
-            return
+            join_subdomain(server=server, creds=creds, lp=lp, dnsdomain=domain,
+                    parent_domain=parent_domain, site=site,
+                    netbios_name=netbios_name, netbios_domain=netbios_domain,
+                    targetdir=targetdir, machinepass=machinepass,
+                    use_ntvfs=use_ntvfs, dns_backend=dns_backend)
         else:
             raise CommandError("Invalid role '%s' (possible values: MEMBER, DC, RODC, SUBDOMAIN)" % role)
 
 
-
 class cmd_domain_demote(Command):
-    """Demote ourselves from the role of Domain Controller"""
+    """Demote ourselves from the role of Domain Controller."""
 
     synopsis = "%prog [options]"
 
@@ -237,9 +608,9 @@ class cmd_domain_demote(Command):
                     break
 
         ntds_guid = samdb.get_ntds_GUID()
-        msg = samdb.search(base=str(samdb.get_config_basedn()), scope=ldb.SCOPE_SUBTREE,
-                                expression="(objectGUID=%s)" % ntds_guid,
-                                attrs=['options'])
+        msg = samdb.search(base=str(samdb.get_config_basedn()),
+            scope=ldb.SCOPE_SUBTREE, expression="(objectGUID=%s)" % ntds_guid,
+            attrs=['options'])
         if len(msg) == 0 or "options" not in msg[0]:
             raise CommandError("Failed to find options on %s" % ntds_guid)
 
@@ -250,12 +621,13 @@ class cmd_domain_demote(Command):
                             controls=["search_options:1:2"])
 
         if len(res) != 0:
-            raise CommandError("Current DC is still the owner of %d role(s), use the role command to transfer roles to another DC")
+            raise CommandError("Current DC is still the owner of %d role(s), use the role command to transfer roles to another DC" % len(res))
 
-        print "Using %s as partner server for the demotion" % server
+        self.errf.write("Using %s as partner server for the demotion\n" %
+                        server)
         (drsuapiBind, drsuapi_handle, supportedExtensions) = drsuapi_connect(server, lp, creds)
 
-        print "Desactivating inbound replication"
+        self.errf.write("Desactivating inbound replication\n")
 
         nmsg = ldb.Message()
         nmsg.dn = msg[0].dn
@@ -266,14 +638,17 @@ class cmd_domain_demote(Command):
 
         if not (dsa_options & DS_NTDSDSA_OPT_DISABLE_OUTBOUND_REPL) and not samdb.am_rodc():
 
-            print "Asking partner server %s to synchronize from us" % server
+            self.errf.write("Asking partner server %s to synchronize from us\n"
+                            % server)
             for part in (samdb.get_schema_basedn(),
                             samdb.get_config_basedn(),
                             samdb.get_root_basedn()):
                 try:
                     sendDsReplicaSync(drsuapiBind, drsuapi_handle, ntds_guid, str(part), drsuapi.DRSUAPI_DRS_WRIT_REP)
                 except drsException, e:
-                    print "Error while demoting, re-enabling inbound replication"
+                    self.errf.write(
+                        "Error while demoting, "
+                        "re-enabling inbound replication\n")
                     dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
                     nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
                     samdb.modify(nmsg)
@@ -283,7 +658,7 @@ class cmd_domain_demote(Command):
                                 session_info=system_session(),
                                 credentials=creds, lp=lp)
 
-            print "Changing userControl and container"
+            self.errf.write("Changing userControl and container\n")
             res = remote_samdb.search(base=str(remote_samdb.get_root_basedn()),
                                 expression="(&(objectClass=user)(sAMAccountName=%s$))" %
                                             netbios_name.upper(),
@@ -292,14 +667,16 @@ class cmd_domain_demote(Command):
             uac = int(str(res[0]["userAccountControl"]))
 
         except Exception, e:
-                print "Error while demoting, re-enabling inbound replication"
-                dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
-                nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
-                samdb.modify(nmsg)
-                raise CommandError("Error while changing account control", e)
+            self.errf.write(
+                "Error while demoting, re-enabling inbound replication\n")
+            dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
+            nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
+            samdb.modify(nmsg)
+            raise CommandError("Error while changing account control", e)
 
         if (len(res) != 1):
-            print "Error while demoting, re-enabling inbound replication"
+            self.errf.write(
+                "Error while demoting, re-enabling inbound replication")
             dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
             nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
             samdb.modify(nmsg)
@@ -320,7 +697,8 @@ class cmd_domain_demote(Command):
         try:
             remote_samdb.modify(msg)
         except Exception, e:
-            print "Error while demoting, re-enabling inbound replication"
+            self.errf.write(
+                "Error while demoting, re-enabling inbound replication")
             dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
             nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
             samdb.modify(nmsg)
@@ -346,7 +724,8 @@ class cmd_domain_demote(Command):
                                             scope=ldb.SCOPE_ONELEVEL)
 
             if i == 100:
-                print "Error while demoting, re-enabling inbound replication"
+                self.errf.write(
+                    "Error while demoting, re-enabling inbound replication\n")
                 dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
                 nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
                 samdb.modify(nmsg)
@@ -370,7 +749,8 @@ class cmd_domain_demote(Command):
             newdn = ldb.Dn(remote_samdb, "%s,%s" % (newrdn, str(computer_dn)))
             remote_samdb.rename(dc_dn, newdn)
         except Exception, e:
-            print "Error while demoting, re-enabling inbound replication"
+            self.errf.write(
+                "Error while demoting, re-enabling inbound replication\n")
             dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
             nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
             samdb.modify(nmsg)
@@ -392,7 +772,8 @@ class cmd_domain_demote(Command):
         try:
             sendRemoveDsServer(drsuapiBind, drsuapi_handle, server_dsa_dn, domain)
         except drsException, e:
-            print "Error while demoting, re-enabling inbound replication"
+            self.errf.write(
+                "Error while demoting, re-enabling inbound replication\n")
             dsa_options ^= DS_NTDSDSA_OPT_DISABLE_INBOUND_REPL
             nmsg["options"] = ldb.MessageElement(str(dsa_options), ldb.FLAG_MOD_REPLACE, "options")
             samdb.modify(nmsg)
@@ -427,11 +808,11 @@ class cmd_domain_demote(Command):
             except ldb.LdbError, l:
                 pass
 
-        self.outf.write("Demote successfull\n")
+        self.errf.write("Demote successfull\n")
 
 
 class cmd_domain_level(Command):
-    """Raises domain and forest function levels"""
+    """Raise domain and forest function levels."""
 
     synopsis = "%prog (show|raise <options>) [options]"
 
@@ -578,7 +959,7 @@ class cmd_domain_level(Command):
                     samdb.modify(m)
                     # Under partitions
                     m = ldb.Message()
-                    m.dn = ldb.Dn(samdb, "CN=" + lp.get("workgroup") + ",CN=Partitions,%s" % ldb.get_config_basedn())
+                    m.dn = ldb.Dn(samdb, "CN=" + lp.get("workgroup") + ",CN=Partitions,%s" % samdb.get_config_basedn())
                     m["nTMixedDomain"] = ldb.MessageElement("0",
                       ldb.FLAG_MOD_REPLACE, "nTMixedDomain")
                     try:
@@ -597,7 +978,7 @@ class cmd_domain_level(Command):
                 # Under partitions
                 m = ldb.Message()
                 m.dn = ldb.Dn(samdb, "CN=" + lp.get("workgroup")
-                  + ",CN=Partitions,%s" % ldb.get_config_basedn())
+                  + ",CN=Partitions,%s" % samdb.get_config_basedn())
                 m["msDS-Behavior-Version"]= ldb.MessageElement(
                   str(new_level_domain), ldb.FLAG_MOD_REPLACE,
                           "msDS-Behavior-Version")
@@ -622,7 +1003,7 @@ class cmd_domain_level(Command):
                 if new_level_forest > level_domain:
                     raise CommandError("Forest function level can't be higher than the domain function level(s). Please raise it/them first!")
                 m = ldb.Message()
-                m.dn = ldb.Dn(samdb, "CN=Partitions,%s" % ldb.get_config_basedn())
+                m.dn = ldb.Dn(samdb, "CN=Partitions,%s" % samdb.get_config_basedn())
                 m["msDS-Behavior-Version"]= ldb.MessageElement(
                   str(new_level_forest), ldb.FLAG_MOD_REPLACE,
                           "msDS-Behavior-Version")
@@ -635,7 +1016,7 @@ class cmd_domain_level(Command):
 
 
 class cmd_domain_passwordsettings(Command):
-    """Sets password settings
+    """Set password settings.
 
     Password complexity, history length, minimum password length, the minimum
     and maximum password age) on a Samba4 server.
@@ -810,14 +1191,14 @@ class cmd_domain_passwordsettings(Command):
             raise CommandError("Wrong argument '%s'!" % subcommand)
 
 
-class cmd_domain_samba3upgrade(Command):
-    """Upgrade from Samba3 database to Samba4 AD database.
+class cmd_domain_classicupgrade(Command):
+    """Upgrade from Samba classic (NT4-like) database to Samba AD DC database.
 
-    Specify either a directory with all samba3 databases and state files (with --dbdir) or
-    samba3 testparm utility (with --testparm).
+    Specify either a directory with all Samba classic DC databases and state files (with --dbdir) or
+    the testparm utility from your classic installation (with --testparm).
     """
 
-    synopsis = "%prog [options] <samba3_smb_conf>"
+    synopsis = "%prog [options] <classic_smb_conf>"
 
     takes_optiongroups = {
         "sambaopts": options.SambaOptions,
@@ -826,21 +1207,31 @@ class cmd_domain_samba3upgrade(Command):
 
     takes_options = [
         Option("--dbdir", type="string", metavar="DIR",
-                  help="Path to samba3 database directory"),
+                  help="Path to samba classic DC database directory"),
         Option("--testparm", type="string", metavar="PATH",
-                  help="Path to samba3 testparm utility from the previous installation.  This allows the default paths of the previous installation to be followed"),
+                  help="Path to samba classic DC testparm utility from the previous installation.  This allows the default paths of the previous installation to be followed"),
         Option("--targetdir", type="string", metavar="DIR",
                   help="Path prefix where the new Samba 4.0 AD domain should be initialised"),
         Option("--quiet", help="Be quiet", action="store_true"),
         Option("--verbose", help="Be verbose", action="store_true"),
         Option("--use-xattrs", type="choice", choices=["yes","no","auto"], metavar="[yes|no|auto]",
                    help="Define if we should use the native fs capabilities or a tdb file for storing attributes likes ntacl, auto tries to make an inteligent guess based on the user rights and system capabilities", default="auto"),
+        Option("--use-ntvfs", help="Use NTVFS for the fileserver (default = no)",
+               action="store_true"),
+        Option("--dns-backend", type="choice", metavar="NAMESERVER-BACKEND",
+               choices=["SAMBA_INTERNAL", "BIND9_FLATFILE", "BIND9_DLZ", "NONE"],
+               help="The DNS server backend. SAMBA_INTERNAL is the builtin name server (default), "
+                   "BIND9_FLATFILE uses bind9 text database to store zone information, "
+                   "BIND9_DLZ uses samba4 AD to store zone information, "
+                   "NONE skips the DNS setup entirely (this DC will not be a DNS server)",
+               default="SAMBA_INTERNAL")
     ]
 
     takes_args = ["smbconf"]
 
-    def run(self, smbconf=None, targetdir=None, dbdir=None, testparm=None, 
-            quiet=False, verbose=False, use_xattrs=None, sambaopts=None, versionopts=None):
+    def run(self, smbconf=None, targetdir=None, dbdir=None, testparm=None,
+            quiet=False, verbose=False, use_xattrs=None, sambaopts=None, versionopts=None,
+            dns_backend=None, use_ntvfs=False):
 
         if not os.path.exists(smbconf):
             raise CommandError("File %s does not exist" % smbconf)
@@ -903,9 +1294,11 @@ class cmd_domain_samba3upgrade(Command):
             paths["state directory"] = dbdir
             paths["private dir"] = dbdir
             paths["lock directory"] = dbdir
+            paths["smb passwd file"] = dbdir + "/smbpasswd"
         else:
             paths["state directory"] = get_testparm_var(testparm, smbconf, "state directory")
             paths["private dir"] = get_testparm_var(testparm, smbconf, "private dir")
+            paths["smb passwd file"] = get_testparm_var(testparm, smbconf, "smb passwd file")
             paths["lock directory"] = get_testparm_var(testparm, smbconf, "lock directory")
             # "testparm" from Samba 3 < 3.4.x is not aware of the parameter
             # "state directory", instead make use of "lock directory"
@@ -914,24 +1307,38 @@ class cmd_domain_samba3upgrade(Command):
 
         for p in paths:
             s3conf.set(p, paths[p])
-    
+
         # load smb.conf parameters
         logger.info("Reading smb.conf")
         s3conf.load(smbconf)
         samba3 = Samba3(smbconf, s3conf)
-    
+
         logger.info("Provisioning")
-        upgrade_from_samba3(samba3, logger, targetdir, session_info=system_session(), 
-                            useeadb=eadb)
+        upgrade_from_samba3(samba3, logger, targetdir, session_info=system_session(),
+                            useeadb=eadb, dns_backend=dns_backend, use_ntvfs=use_ntvfs)
+
+
+class cmd_domain_samba3upgrade(cmd_domain_classicupgrade):
+    __doc__ = cmd_domain_classicupgrade.__doc__
+
+    # This command is present for backwards compatibility only,
+    # and should not be shown.
+
+    hidden = True
+
 
 class cmd_domain(SuperCommand):
-    """Domain management"""
+    """Domain management."""
 
     subcommands = {}
     subcommands["demote"] = cmd_domain_demote()
-    subcommands["exportkeytab"] = cmd_domain_export_keytab()
+    if cmd_domain_export_keytab is not None:
+        subcommands["exportkeytab"] = cmd_domain_export_keytab()
     subcommands["info"] = cmd_domain_info()
+    subcommands["provision"] = cmd_domain_provision()
     subcommands["join"] = cmd_domain_join()
+    subcommands["dcpromo"] = cmd_domain_dcpromo()
     subcommands["level"] = cmd_domain_level()
     subcommands["passwordsettings"] = cmd_domain_passwordsettings()
+    subcommands["classicupgrade"] = cmd_domain_classicupgrade()
     subcommands["samba3upgrade"] = cmd_domain_samba3upgrade()

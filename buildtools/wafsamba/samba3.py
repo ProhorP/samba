@@ -4,6 +4,7 @@
 import Options, Build, os
 from optparse import SUPPRESS_HELP
 from samba_utils import os_path_relpath, TO_LIST
+from samba_autoconf import library_flags
 
 def SAMBA3_ADD_OPTION(opt, option, help=(), dest=None, default=True,
                       with_name="with", without_name="without"):
@@ -52,26 +53,43 @@ def s3_fix_kwargs(bld, kwargs):
 
     # the extra_includes list is relative to the source3 directory
     extra_includes = [ '.', 'include', 'lib', '../lib/tdb_compat' ]
+    # local heimdal paths only included when USING_SYSTEM_KRB5 is not set
     if not bld.CONFIG_SET("USING_SYSTEM_KRB5"):
         extra_includes += [ '../source4/heimdal/lib/com_err',
+                            '../source4/heimdal/lib/krb5',
                             '../source4/heimdal/lib/gssapi',
-                            '../source4/heimdal_build' ]
+                            '../source4/heimdal_build',
+                            '../bin/default/source4/heimdal/lib/asn1' ]
 
-    if bld.CONFIG_SET('BUILD_TDB2'):
-        if not bld.CONFIG_SET('USING_SYSTEM_TDB2'):
-            extra_includes += [ '../lib/tdb2' ]
+    if bld.CONFIG_SET('USING_SYSTEM_TDB'):
+        (tdb_includes, tdb_ldflags, tdb_cpppath) = library_flags(bld, 'tdb')
+        extra_includes += tdb_cpppath
     else:
-        if not bld.CONFIG_SET('USING_SYSTEM_TDB'):
-            extra_includes += [ '../lib/tdb/include' ]
+        extra_includes += [ '../lib/tdb/include' ]
 
-    if not bld.CONFIG_SET('USING_SYSTEM_TEVENT'):
+    if bld.CONFIG_SET('USING_SYSTEM_TEVENT'):
+        (tevent_includes, tevent_ldflags, tevent_cpppath) = library_flags(bld, 'tevent')
+        extra_includes += tevent_cpppath
+    else:
         extra_includes += [ '../lib/tevent' ]
 
-    if not bld.CONFIG_SET('USING_SYSTEM_TALLOC'):
+    if bld.CONFIG_SET('USING_SYSTEM_TALLOC'):
+        (talloc_includes, talloc_ldflags, talloc_cpppath) = library_flags(bld, 'talloc')
+        extra_includes += talloc_cpppath
+    else:
         extra_includes += [ '../lib/talloc' ]
 
-    if not bld.CONFIG_SET('USING_SYSTEM_POPT'):
+    if bld.CONFIG_SET('USING_SYSTEM_POPT'):
+        (popt_includes, popt_ldflags, popt_cpppath) = library_flags(bld, 'popt')
+        extra_includes += popt_cpppath
+    else:
         extra_includes += [ '../lib/popt' ]
+
+    if bld.CONFIG_SET('USING_SYSTEM_INIPARSER'):
+        (iniparser_includes, iniparser_ldflags, iniparser_cpppath) = library_flags(bld, 'iniparser')
+        extra_includes += iniparser_cpppath
+    else:
+        extra_includes += [ '../lib/iniparser' ]
 
     # s3 builds assume that they will have a bunch of extra include paths
     includes = []
@@ -82,12 +100,6 @@ def s3_fix_kwargs(bld, kwargs):
     if 'includes' in kwargs:
         includes += TO_LIST(kwargs['includes'])
     kwargs['includes'] = includes
-
-    # some S3 code assumes that CONFIGFILE is set
-    cflags = ['-DCONFIGFILE="%s"' % bld.env['CONFIGFILE']]
-    if 'cflags' in kwargs:
-        cflags += TO_LIST(kwargs['cflags'])
-    kwargs['cflags'] = cflags
 
 # these wrappers allow for mixing of S3 and S4 build rules in the one build
 

@@ -16,8 +16,29 @@ $VALGRIND ldbadd $LDBDIR/tests/test.ldif 2> /dev/null && {
     exit 1
 }
 
+echo "Adding LDIF with one already-existing user again - should fail"
+$VALGRIND ldbadd $LDBDIR/tests/test-dup.ldif 2> /dev/null && {
+    echo "Should have failed to add again - gave $?"
+    exit 1
+}
+
+echo "Adding again - should succeed (as previous failed)"
+$VALGRIND ldbadd $LDBDIR/tests/test-dup-2.ldif || exit 1
+
 echo "Modifying elements"
 $VALGRIND ldbmodify $LDBDIR/tests/test-modify.ldif || exit 1
+
+echo "Modify LDIF with one un-met constraint - should fail"
+$VALGRIND ldbadd $LDBDIR/tests/test-modify-unmet.ldif 2> /dev/null && {
+    echo "Should have failed to modify - gave $?"
+    exit 1
+}
+
+echo "Modify LDIF with after failure of un-met constraint - should also fail"
+$VALGRIND ldbadd $LDBDIR/tests/test-modify-unmet-2.ldif 2> /dev/null && {
+    echo "Should have failed to modify - gave $?"
+    exit 1
+}
 
 echo "Showing modified record"
 $VALGRIND ldbsearch '(uid=uham)'  || exit 1
@@ -102,12 +123,14 @@ if [ $count != 2 ]; then
     echo returned $count records - expected 2
     echo "this fails on openLdap ..."
 fi
+$VALGRIND ldbsearch '(cn>t)' cn && exit 1 # strictly greater should not work
 
 count=`$VALGRIND ldbsearch '(cn<=t)' cn | grep '^dn' | wc -l`
 if [ $count != 13 ]; then
     echo returned $count records - expected 13
     echo "this fails on openLdap ..."
 fi
+$VALGRIND ldbsearch '(cn<t)' cn && exit 1 # strictly less should not work
 
 checkcount() {
     count=$1

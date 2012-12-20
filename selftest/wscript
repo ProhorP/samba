@@ -69,6 +69,8 @@ def set_options(opt):
     gr.add_option('--socket-wrapper-keep-pcap',
                   help=("create a pcap file for all individual test"),
                   action="store_true", dest='SOCKET_WRAPPER_KEEP_PCAP', default=False)
+    gr.add_option('--random-order', dest='RANDOM_ORDER', default=False,
+                  action="store_true", help="Run testsuites in random order")
 
 def configure(conf):
     conf.env.SELFTEST_PREFIX = Options.options.SELFTEST_PREFIX
@@ -76,6 +78,10 @@ def configure(conf):
     if conf.env.enable_coverage:
         conf.ADD_LDFLAGS('-lgcov', testflags=True)
         conf.ADD_CFLAGS('--coverage')
+
+    if Options.options.enable_selftest or Options.options.developer:
+        conf.DEFINE('ENABLE_SELFTEST', 1)
+
 
 def cmd_testonly(opt):
     '''run tests without doing a build first'''
@@ -110,10 +116,12 @@ def cmd_testonly(opt):
         if o[0:1] != '_':
             os.environ['TESTENV_%s' % o.upper()] = str(getattr(Options.options, o, ''))
 
-    binary_mapping = ('nmblookup3:nmblookup3,' +
-                      'smbclient3:smbclient3,' +
+    binary_mapping = ('nmblookup3:nmblookup,' +
+                      'nmblookup4:nmblookup4,' +
+                      'smbclient3:smbclient,' +
+                      'smbclient4:smbclient4,' +
                       'smbtorture4:smbtorture,' + 
-                      'ntlm_auth3:ntlm_auth3')
+                      'ntlm_auth3:ntlm_auth')
 
     env.OPTIONS = '--binary-mapping=%s' % binary_mapping 
     if not Options.options.SLOWTEST:
@@ -128,6 +136,8 @@ def cmd_testonly(opt):
         env.OPTIONS += ' --socket-wrapper-pcap'
     if Options.options.SOCKET_WRAPPER_KEEP_PCAP:
         env.OPTIONS += ' --socket-wrapper-keep-pcap'
+    if Options.options.RANDOM_ORDER:
+        env.OPTIONS += ' --random-order'
     if os.environ.get('RUN_FROM_BUILD_FARM') is not None:
         env.FILTER_OPTIONS = '${FILTER_XFAIL} --strip-passed-output'
     else:
@@ -163,9 +173,6 @@ def cmd_testonly(opt):
     if env.USING_SYSTEM_LDB:
         os.environ['LDB_MODULES_PATH'] = 'bin/modules/ldb'
 
-    if env.BUILD_TDB2:
-        os.environ['BUILD_TDB2'] = '1'
-
     # tell build system where to find config.h
     os.environ['VFSLIBDIR'] = os.path.abspath('bin/modules/vfs')
     os.environ['CONFIG_H'] = 'bin/default/include/config.h'
@@ -177,11 +184,17 @@ def cmd_testonly(opt):
     if not os.path.isdir(env.SELFTEST_PREFIX):
         os.makedirs(env.SELFTEST_PREFIX, int('755', 8))
 
-    env.TESTLISTS = ('--testlist="${PYTHON} ${srcdir}/source3/selftest/tests.py|" ' +
+    env.TESTLISTS = ('--testlist="${PYTHON} ${srcdir}/selftest/tests.py|" ' +
+                     '--testlist="${PYTHON} ${srcdir}/source3/selftest/tests.py|" ' +
                      '--testlist="${PYTHON} ${srcdir}/source4/selftest/tests.py|"')
 
+    if CONFIG_SET(opt, 'AD_DC_BUILD_IS_ENABLED'):
+        env.SELFTEST_TARGET="samba"
+    else:
+        env.SELFTEST_TARGET="samba3"
+
     # We use the full path rather than relative path because it cause problems on some plateforms (ie. solaris 8).
-    env.CORE_COMMAND = '${PERL} ${srcdir}/selftest/selftest.pl --target=samba --prefix=${SELFTEST_PREFIX} --srcdir=${srcdir} --exclude=${srcdir}/selftest/skip ${TESTLISTS} ${OPTIONS} ${TESTS}'
+    env.CORE_COMMAND = '${PERL} ${srcdir}/selftest/selftest.pl --target=${SELFTEST_TARGET} --prefix=${SELFTEST_PREFIX} --srcdir=${srcdir} --exclude=${srcdir}/selftest/skip ${TESTLISTS} ${OPTIONS} ${TESTS}'
     if Options.options.LIST:
         cmd = '${CORE_COMMAND} --list'
     else:

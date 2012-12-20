@@ -378,7 +378,7 @@ static bool dfs_auth(char *user, char *password)
 	}
 
 	DEBUG(0, ("DCE login succeeded for principal %s on pid %d\n",
-		  user, sys_getpid()));
+		  user, getpid()));
 
 	DEBUG(3, ("DCE principal: %s\n"
 		  "          uid: %d\n"
@@ -431,7 +431,7 @@ void dfs_unlogin(void)
 		dce_error_inq_text(err, dce_errstr, &err2);
 		DEBUG(0,
 		      ("DCE purge login context failed for server instance %d: %s\n",
-		       sys_getpid(), dce_errstr));
+		       getpid(), dce_errstr));
 	}
 }
 #endif
@@ -867,7 +867,9 @@ NTSTATUS pass_check(const struct passwd *pass,
 
 	/* try all lowercase if it's currently all uppercase */
 	if (strhasupper(pass2)) {
-		strlower_m(pass2);
+		if (!strlower_m(pass2)) {
+			return NT_STATUS_INVALID_PARAMETER;
+		}
 		nt_status = password_check(pass2, (const void *)rhost);
 		if (NT_STATUS_IS_OK(nt_status)) {
 			return (nt_status);
@@ -880,7 +882,9 @@ NTSTATUS pass_check(const struct passwd *pass,
 	}
 
 	/* last chance - all combinations of up to level chars upper! */
-	strlower_m(pass2);
+	if (!strlower_m(pass2)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	nt_status = string_combinations(pass2, password_check, level,
 					(const void *)rhost);

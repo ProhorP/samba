@@ -341,7 +341,7 @@ static NTSTATUS authsam_want_check(struct auth_method_context *ctx,
 			}
 			return NT_STATUS_OK;
 
-		case ROLE_DOMAIN_CONTROLLER:
+		case ROLE_ACTIVE_DIRECTORY_DC:
 			if (!is_local_name && !is_my_domain) {
 				DEBUG(6,("authsam_check_password: %s is not one of my local names or domain name (DC)\n",
 					user_info->mapped.domain_name));
@@ -367,7 +367,6 @@ static NTSTATUS authsam_get_user_info_dc_principal_wrapper(TALLOC_CTX *mem_ctx,
 }
 static const struct auth_operations sam_ignoredomain_ops = {
 	.name		           = "sam_ignoredomain",
-	.get_challenge	           = auth_get_challenge_not_implemented,
 	.want_check	           = authsam_ignoredomain_want_check,
 	.check_password	           = authsam_check_password_internals,
 	.get_user_info_dc_principal = authsam_get_user_info_dc_principal_wrapper
@@ -375,7 +374,6 @@ static const struct auth_operations sam_ignoredomain_ops = {
 
 static const struct auth_operations sam_ops = {
 	.name		           = "sam",
-	.get_challenge	           = auth_get_challenge_not_implemented,
 	.want_check	           = authsam_want_check,
 	.check_password	           = authsam_check_password_internals,
 	.get_user_info_dc_principal = authsam_get_user_info_dc_principal_wrapper

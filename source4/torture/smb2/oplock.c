@@ -364,7 +364,6 @@ static bool test_smb2_oplock_exclusive1(struct torture_context *tctx,
 	NTSTATUS status;
 	bool ret = true;
 	union smb_open io;
-	union smb_unlink unl;
 	struct smb2_handle h1;
 	struct smb2_handle h;
 
@@ -411,8 +410,6 @@ static bool test_smb2_oplock_exclusive1(struct torture_context *tctx,
 	CHECK_VAL(break_info.failures, 0);
 
 	torture_comment(tctx, "unlink it - should also be no break\n");
-	unl.unlink.in.pattern = fname;
-	unl.unlink.in.attrib = 0;
 	status = smb2_util_unlink(tree2, fname);
 	torture_assert_ntstatus_equal(tctx, status, NT_STATUS_SHARING_VIOLATION,
 				      "Incorrect status");
@@ -435,7 +432,6 @@ static bool test_smb2_oplock_exclusive2(struct torture_context *tctx,
 	NTSTATUS status;
 	bool ret = true;
 	union smb_open io;
-	union smb_unlink unl;
 	struct smb2_handle h, h1, h2;
 
 	status = torture_smb2_testdir(tree1, BASEDIR, &h);
@@ -490,8 +486,6 @@ static bool test_smb2_oplock_exclusive2(struct torture_context *tctx,
 
 	/* now we have 2 level II oplocks... */
 	torture_comment(tctx, "try to unlink it - should cause a break\n");
-	unl.unlink.in.pattern = fname;
-	unl.unlink.in.attrib = 0;
 	status = smb2_util_unlink(tree2, fname);
 	torture_assert_ntstatus_ok(tctx, status, "Error unlinking the file");
 	torture_wait_for_oplock_break(tctx);
@@ -2422,10 +2416,6 @@ static bool test_smb2_oplock_batch22(struct torture_context *tctx,
 	int timeout = torture_setting_int(tctx, "oplocktimeout", 30);
 	int te;
 
-	if (torture_setting_bool(tctx, "samba3", false)) {
-		torture_skip(tctx, "BATCH22 disabled against samba3\n");
-	}
-
 	status = torture_smb2_testdir(tree1, BASEDIR, &h);
 	torture_assert_ntstatus_ok(tctx, status, "Error creating directory");
 
@@ -2765,12 +2755,6 @@ static bool test_raw_oplock_stream1(struct torture_context *tctx,
 		{&fname_default_stream, true,  SMB2_OPLOCK_LEVEL_EXCLUSIVE, SMB2_OPLOCK_LEVEL_II},
 	};
 
-	/* Only passes against windows at the moment. */
-	if (torture_setting_bool(tctx, "samba3", false) ||
-	    torture_setting_bool(tctx, "samba4", false)) {
-		torture_skip(tctx, "STREAM1 disabled against samba3+4\n");
-	}
-
 	fname_stream = talloc_asprintf(tctx, "%s:%s", fname_base, stream);
 	fname_default_stream = talloc_asprintf(tctx, "%s%s", fname_base,
 					       default_stream);
@@ -2973,7 +2957,6 @@ static bool test_smb2_oplock_brl1(struct torture_context *tctx,
 	/*int fname, f;*/
 	bool ret = true;
 	uint8_t buf[1000];
-	bool correct = true;
 	union smb_open io;
 	NTSTATUS status;
 	struct smb2_lock lck;
@@ -3025,7 +3008,7 @@ static bool test_smb2_oplock_brl1(struct torture_context *tctx,
 	status = smb2_util_write(tree1, h1,buf, 0, sizeof(buf));
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OK)) {
 		torture_comment(tctx, "Failed to create file\n");
-		correct = false;
+		ret = false;
 		goto done;
 	}
 
@@ -3096,7 +3079,6 @@ static bool test_smb2_oplock_brl2(struct torture_context *tctx, struct smb2_tree
 	/*int fname, f;*/
 	bool ret = true;
 	uint8_t buf[1000];
-	bool correct = true;
 	union smb_open io;
 	NTSTATUS status;
 	struct smb2_handle h, h1;
@@ -3148,7 +3130,7 @@ static bool test_smb2_oplock_brl2(struct torture_context *tctx, struct smb2_tree
 	status = smb2_util_write(tree1, h1, buf, 0, sizeof(buf));
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OK)) {
 		torture_comment(tctx, "Failed to create file\n");
-		correct = false;
+		ret = false;
 		goto done;
 	}
 
@@ -3198,7 +3180,6 @@ static bool test_smb2_oplock_brl3(struct torture_context *tctx, struct smb2_tree
 	const char *fname = BASEDIR "\\test_batch_brl.dat";
 	bool ret = true;
 	uint8_t buf[1000];
-	bool correct = true;
 	union smb_open io;
 	NTSTATUS status;
 	struct smb2_handle h, h1, h2;
@@ -3249,7 +3230,7 @@ static bool test_smb2_oplock_brl3(struct torture_context *tctx, struct smb2_tree
 
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OK)) {
 		torture_comment(tctx, "Failed to create file\n");
-		correct = false;
+		ret = false;
 		goto done;
 	}
 

@@ -51,6 +51,11 @@ struct extended_search_context {
 	int extended_type;
 };
 
+static const char *wkattr[] = {
+	"wellKnownObjects",
+	"otherWellKnownObjects",
+	NULL
+};
 /* An extra layer of indirection because LDB does not allow the original request to be altered */
 
 static int extended_final_callback(struct ldb_request *req, struct ldb_reply *ares)
@@ -88,7 +93,7 @@ static int extended_base_callback(struct ldb_request *req, struct ldb_reply *are
 	struct ldb_request *down_req;
 	struct ldb_message_element *el;
 	int ret;
-	unsigned int i;
+	unsigned int i, j;
 	size_t wkn_len = 0;
 	char *valstr = NULL;
 	const char *found = NULL;
@@ -125,29 +130,35 @@ static int extended_base_callback(struct ldb_request *req, struct ldb_reply *are
 
 		wkn_len = strlen(ac->wellknown_object);
 
-		el = ldb_msg_find_element(ares->message, "wellKnownObjects");
-		if (!el) {
-			ac->basedn = NULL;
-			break;
-		}
+		for (j=0; wkattr[j]; j++) {
 
-		for (i=0; i < el->num_values; i++) {
-			valstr = talloc_strndup(ac,
-						(const char *)el->values[i].data,
-						el->values[i].length);
-			if (!valstr) {
-				ldb_oom(ldb_module_get_ctx(ac->module));
-				return ldb_module_done(ac->req, NULL, NULL,
-						       LDB_ERR_OPERATIONS_ERROR);
-			}
-
-			if (strncasecmp(valstr, ac->wellknown_object, wkn_len) != 0) {
-				talloc_free(valstr);
+			el = ldb_msg_find_element(ares->message, wkattr[j]);
+			if (!el) {
+				ac->basedn = NULL;
 				continue;
 			}
 
-			found = &valstr[wkn_len];
-			break;
+			for (i=0; i < el->num_values; i++) {
+				valstr = talloc_strndup(ac,
+							(const char *)el->values[i].data,
+							el->values[i].length);
+				if (!valstr) {
+					ldb_oom(ldb_module_get_ctx(ac->module));
+					return ldb_module_done(ac->req, NULL, NULL,
+							LDB_ERR_OPERATIONS_ERROR);
+				}
+
+				if (strncasecmp(valstr, ac->wellknown_object, wkn_len) != 0) {
+					talloc_free(valstr);
+					continue;
+				}
+
+				found = &valstr[wkn_len];
+				break;
+			}
+			if (found) {
+				break;
+			}
 		}
 
 		if (!found) {
@@ -349,6 +360,10 @@ static int extended_dn_filter_callback(struct ldb_parse_tree *tree, void *privat
 		return LDB_SUCCESS;
 	}
 
+	if (!filter_ctx->schema) {
+		/* Schema not setup yet */
+		return LDB_SUCCESS;
+	}
 	attribute = dsdb_attribute_by_lDAPDisplayName(filter_ctx->schema, tree->u.equality.attr);
 	if (attribute == NULL) {
 		return LDB_SUCCESS;
@@ -397,7 +412,8 @@ static int extended_dn_filter_callback(struct ldb_parse_tree *tree, void *privat
 	}
 
 	dsdb_flags = DSDB_FLAG_NEXT_MODULE |
-		DSDB_SEARCH_SHOW_DELETED |
+		DSDB_FLAG_AS_SYSTEM |
+		DSDB_SEARCH_SHOW_RECYCLED |
 		DSDB_SEARCH_SHOW_EXTENDED_DN;
 
 	if (guid_val) {
@@ -525,10 +541,6 @@ static int extended_dn_in_fix(struct ldb_module *module, struct ldb_request *req
 	static const char *no_attr[] = {
 		NULL
 	};
-	static const char *wkattr[] = {
-		"wellKnownObjects",
-		NULL
-	};
 	bool all_partitions = false;
 
 	if (req->operation == LDB_SEARCH) {
@@ -544,6 +556,7 @@ static int extended_dn_in_fix(struct ldb_module *module, struct ldb_request *req
 	} else {
 		/* It looks like we need to map the DN */
 		const struct ldb_val *sid_val, *guid_val, *wkguid_val;
+		uint32_t dsdb_flags = 0;
 
 		if (!ldb_dn_match_allowed(dn, req)) {
 			return ldb_error(ldb_module_get_ctx(module),
@@ -640,7 +653,7 @@ static int extended_dn_in_fix(struct ldb_module *module, struct ldb_request *req
 					   base_dn_scope,
 					   base_dn_filter,
 					   base_dn_attrs,
-					   req->controls,
+					   NULL,
 					   ac, extended_base_callback,
 					   req);
 		LDB_REQ_SET_LOCATION(down_req);
@@ -648,17 +661,16 @@ static int extended_dn_in_fix(struct ldb_module *module, struct ldb_request *req
 			return ldb_operr(ldb_module_get_ctx(module));
 		}
 
+		dsdb_flags = DSDB_FLAG_AS_SYSTEM |
+			DSDB_SEARCH_SHOW_RECYCLED |
+			DSDB_SEARCH_SHOW_EXTENDED_DN;
 		if (all_partitions) {
-			struct ldb_search_options_control *control;
-			control = talloc(down_req, struct ldb_search_options_control);
-			control->search_options = 2;
-			ret = ldb_request_replace_control(down_req,
-						      LDB_CONTROL_SEARCH_OPTIONS_OID,
-						      true, control);
-			if (ret != LDB_SUCCESS) {
-				ldb_oom(ldb_module_get_ctx(module));
-				return ret;
-			}
+			dsdb_flags |= DSDB_SEARCH_SEARCH_ALL_PARTITIONS;
+		}
+
+		ret = dsdb_request_add_controls(down_req, dsdb_flags);
+		if (ret != LDB_SUCCESS) {
+			return ret;
 		}
 
 		/* perform the search */

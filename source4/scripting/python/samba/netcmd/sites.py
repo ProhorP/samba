@@ -1,6 +1,3 @@
-
-#!/usr/bin/env python
-#
 # sites management
 #
 # Copyright Matthieu Patou <mat@matws.net> 2011
@@ -19,8 +16,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-
-
 import os
 from samba import sites
 from samba.samdb import SamDB
@@ -34,7 +29,7 @@ from samba.netcmd import (
 
 
 class cmd_sites_create(Command):
-    """Create a new site"""
+    """Create a new site."""
 
     synopsis = "%prog <site> [options]"
 
@@ -67,7 +62,7 @@ class cmd_sites_create(Command):
         self.outf.write("Site %s created !\n" % sitename)
 
 class cmd_sites_delete(Command):
-    """Delete a new site"""
+    """Delete an existing site."""
 
     synopsis = "%prog <site> [options]"
 
@@ -95,14 +90,15 @@ class cmd_sites_delete(Command):
             samdb.transaction_commit()
         except sites.SiteException, e:
             samdb.transaction_cancel()
-            raise CommandError("Error while removing site %s, error: %s" % (sitename, str(e)))
+            raise CommandError(
+                "Error while removing site %s, error: %s" % (sitename, str(e)))
 
         self.outf.write("Site %s removed!\n" % sitename)
 
 
 
 class cmd_sites(SuperCommand):
-    """Sites management"""
+    """Sites management."""
 
     subcommands = {}
     subcommands["create"] = cmd_sites_create()

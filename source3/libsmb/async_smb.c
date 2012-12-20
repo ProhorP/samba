@@ -23,40 +23,6 @@
 #include "async_smb.h"
 #include "../libcli/smb/smbXcli_base.h"
 
-void cli_smb_req_unset_pending(struct tevent_req *req)
-{
-	smbXcli_req_unset_pending(req);
-}
-
-bool cli_smb_req_set_pending(struct tevent_req *req)
-{
-	return smbXcli_req_set_pending(req);
-}
-
-/*
- * Fetch a smb request's mid. Only valid after the request has been sent by
- * cli_smb_req_send().
- */
-uint16_t cli_smb_req_mid(struct tevent_req *req)
-{
-	return smb1cli_req_mid(req);
-}
-
-void cli_smb_req_set_mid(struct tevent_req *req, uint16_t mid)
-{
-	smb1cli_req_set_mid(req, mid);
-}
-
-uint32_t cli_smb_req_seqnum(struct tevent_req *req)
-{
-	return smb1cli_req_seqnum(req);
-}
-
-void cli_smb_req_set_seqnum(struct tevent_req *req, uint32_t seqnum)
-{
-	smb1cli_req_set_seqnum(req, seqnum);
-}
-
 struct cli_smb_req_state {
 	struct cli_state *cli;
 	uint8_t smb_command;
@@ -117,7 +83,7 @@ struct tevent_req *cli_smb_req_create(TALLOC_CTX *mem_ctx,
 		additional_flags |= FLAG_CASELESS_PATHNAMES;
 	}
 
-	if ((cli_state_capabilities(cli) & CAP_DFS) && cli->dfsroot) {
+	if ((smb1cli_conn_capabilities(cli->conn) & CAP_DFS) && cli->dfsroot) {
 		additional_flags2 |= FLAGS2_DFS_PATHNAMES;
 	}
 
@@ -126,8 +92,8 @@ struct tevent_req *cli_smb_req_create(TALLOC_CTX *mem_ctx,
 					additional_flags2, clear_flags2,
 					cli->timeout,
 					cli->smb1.pid,
-					cli->smb1.tid,
-					cli->smb1.uid,
+					cli->smb1.tcon,
+					cli->smb1.session,
 					wct, vwv, iov_count, bytes_iov);
 	if (state->req == NULL) {
 		talloc_free(state);
@@ -139,11 +105,6 @@ struct tevent_req *cli_smb_req_create(TALLOC_CTX *mem_ctx,
 	talloc_set_destructor(state->ptr, cli_smb_req_state_ptr_destructor);
 
 	return state->req;
-}
-
-NTSTATUS cli_smb_req_send(struct tevent_req *req)
-{
-	return smb1cli_req_chain_submit(&req, 1);
 }
 
 struct tevent_req *cli_smb_send(TALLOC_CTX *mem_ctx,
@@ -180,7 +141,7 @@ struct tevent_req *cli_smb_send(TALLOC_CTX *mem_ctx,
 		additional_flags |= FLAG_CASELESS_PATHNAMES;
 	}
 
-	if ((cli_state_capabilities(cli) & CAP_DFS) && cli->dfsroot) {
+	if ((smb1cli_conn_capabilities(cli->conn) & CAP_DFS) && cli->dfsroot) {
 		additional_flags2 |= FLAGS2_DFS_PATHNAMES;
 	}
 
@@ -189,8 +150,8 @@ struct tevent_req *cli_smb_send(TALLOC_CTX *mem_ctx,
 				additional_flags2, clear_flags2,
 				cli->timeout,
 				cli->smb1.pid,
-				cli->smb1.tid,
-				cli->smb1.uid,
+				cli->smb1.tcon,
+				cli->smb1.session,
 				wct, vwv, num_bytes, bytes);
 	if (state->req == NULL) {
 		talloc_free(state);
@@ -314,22 +275,12 @@ NTSTATUS cli_smb_recv(struct tevent_req *req,
 		} else {
 			*pinbuf = inbuf;
 		}
+	} else if (mem_ctx != NULL) {
+		if (talloc_reference_count(inbuf) == 0) {
+			(void)talloc_move(mem_ctx, &inbuf);
+			TALLOC_FREE(recv_iov);
+		}
 	}
 
 	return status;
-}
-
-size_t cli_smb_wct_ofs(struct tevent_req **reqs, int num_reqs)
-{
-	return smb1cli_req_wct_ofs(reqs, num_reqs);
-}
-
-NTSTATUS cli_smb_chain_send(struct tevent_req **reqs, int num_reqs)
-{
-	return smb1cli_req_chain_submit(reqs, num_reqs);
-}
-
-bool cli_has_async_calls(struct cli_state *cli)
-{
-	return smbXcli_conn_has_async_calls(cli->conn);
 }

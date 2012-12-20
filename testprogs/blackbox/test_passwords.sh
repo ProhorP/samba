@@ -5,7 +5,7 @@
 
 if [ $# -lt 5 ]; then
 cat <<EOF
-Usage: test_passwords.sh SERVER USERNAME PASSWORD REALM DOMAIN PREFIX
+Usage: test_passwords.sh SERVER USERNAME PASSWORD REALM DOMAIN PREFIX SMBCLIENT
 EOF
 exit 1;
 fi
@@ -16,11 +16,11 @@ PASSWORD=$3
 REALM=$4
 DOMAIN=$5
 PREFIX=$6
-shift 6
+smbclient=$7
+shift 7
 failed=0
 
 samba4bindir="$BINDIR"
-smbclient="$samba4bindir/smbclient"
 samba4kinit="$samba4bindir/samba4kinit"
 samba_tool="$samba4bindir/samba-tool"
 smbpasswd="$samba4bindir/smbpasswd"
@@ -71,6 +71,14 @@ echo $NEWUSERPASS > ./tmpuserpassfile
 testit "kinit with user password" $samba4kinit --password-file=./tmpuserpassfile --request-pac nettestuser@$REALM   || failed=`expr $failed + 1`
 
 test_smbclient "Test login with user kerberos ccache" 'ls' -k yes || failed=`expr $failed + 1`
+
+#
+# These tests demonstrate that a credential cache in the environment does not
+# override a username/password, even an incorrect one, on the command line
+#
+
+testit_expect_failure  "Test login with user kerberos ccache, but wrong password specified" $VALGRIND $smbclient //$SERVER/tmp -c 'ls' -k yes -Unettestuser@$REALM%wrongpass && failed=`expr $failed + 1`
+testit_expect_failure  "Test login with user kerberos ccache, but old password specified" $VALGRIND $smbclient //$SERVER/tmp -c 'ls' -k yes -Unettestuser@$REALM%$USERPASS && failed=`expr $failed + 1`
 
 
 USERPASS=$NEWUSERPASS
@@ -227,7 +235,7 @@ testit_expect_failure "try to change password too quickly (command should not su
 
 testit "reset password policies" $VALGRIND $samba_tool domain passwordsettings $CONFIG set --complexity=default --history-length=default --min-pwd-length=default --min-pwd-age=default --max-pwd-age=default || failed=`expr $failed + 1`
 
-testit "del user" $VALGRIND $samba_tool user delete nettestuser -U"$USERNAME%$PASSWORD" -k no $@ || failed=`expr $failed + 1`
+testit "del user" $VALGRIND $samba_tool user delete nettestuser -U"$USERNAME%$PASSWORD" $CONFIG -k no $@ || failed=`expr $failed + 1`
 
 rm -f tmpccfile tmppassfile tmpuserpassfile tmpuserccache tmpkpasswdscript tmpsmbpasswdscript
 exit $failed

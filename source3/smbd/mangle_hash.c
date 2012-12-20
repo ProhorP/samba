@@ -26,6 +26,7 @@
 #include "smbd/globals.h"
 #include "mangle.h"
 #include "util_tdb.h"
+#include "lib/param/loadparm.h"
 
 /* -------------------------------------------------------------------------- **
  * Other stuff...
@@ -629,7 +630,10 @@ static bool to_8_3(char magic_char, const char *in, char out[13], int default_ca
 	} else
 		csum = str_checksum(s);
 
-	strupper_m( s );
+	if (!strupper_m( s )) {
+		SAFE_FREE(s);
+		return false;
+	}
 
 	if( p ) {
 		if( p == s )
@@ -764,13 +768,8 @@ const struct mangle_fns *mangle_hash_init(void)
 	mangle_reset();
 
 	/* Create the in-memory tdb using our custom hash function. */
-#ifndef BUILD_TDB2
 	tdb_mangled_cache = tdb_open_ex("mangled_cache", 1031, TDB_INTERNAL,
 				(O_RDWR|O_CREAT), 0644, NULL, fast_string_hash);
-#else
-	/* FIXME: We should *never* open a tdb without logging! */
-	tdb_mangled_cache = tdb_open("mangled_cache", TDB_INTERNAL, 0, 0, NULL);
-#endif
 
 	return &mangle_hash_fns;
 }

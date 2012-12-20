@@ -43,7 +43,7 @@ struct name_cache_entry {
 
 struct smb_Dir {
 	connection_struct *conn;
-	SMB_STRUCT_DIR *dir;
+	DIR *dir;
 	long offset;
 	char *dir_path;
 	size_t name_cache_size;
@@ -64,6 +64,7 @@ struct dptr_struct {
 	char *path;
 	bool has_wild; /* Set to true if the wcard entry has MS wildcard characters in it. */
 	bool did_stat; /* Optimisation for non-wcard searches. */
+	bool priv;     /* Directory handle opened with privilege. */
 };
 
 static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
@@ -81,7 +82,7 @@ bool make_dir_struct(TALLOC_CTX *ctx,
 			char *buf,
 			const char *mask,
 			const char *fname,
-			SMB_OFF_T size,
+			off_t size,
 			uint32 mode,
 			time_t date,
 			bool uc)
@@ -215,7 +216,7 @@ static struct dptr_struct *dptr_get(struct smbd_server_connection *sconn,
  Get the dir path for a dir index.
 ****************************************************************************/
 
-char *dptr_path(struct smbd_server_connection *sconn, int key)
+const char *dptr_path(struct smbd_server_connection *sconn, int key)
 {
 	struct dptr_struct *dptr = dptr_get(sconn, key, false);
 	if (dptr)
@@ -227,7 +228,7 @@ char *dptr_path(struct smbd_server_connection *sconn, int key)
  Get the dir wcard for a dir index.
 ****************************************************************************/
 
-char *dptr_wcard(struct smbd_server_connection *sconn, int key)
+const char *dptr_wcard(struct smbd_server_connection *sconn, int key)
 {
 	struct dptr_struct *dptr = dptr_get(sconn, key, false);
 	if (dptr)
@@ -281,11 +282,7 @@ static void dptr_close_internal(struct dptr_struct *dptr)
 
 done:
 	TALLOC_FREE(dptr->dir_hnd);
-
-	/* Lanman 2 specific code */
-	SAFE_FREE(dptr->wcard);
-	SAFE_FREE(dptr->path);
-	SAFE_FREE(dptr);
+	TALLOC_FREE(dptr);
 }
 
 /****************************************************************************
@@ -416,6 +413,60 @@ static void dptr_close_oldest(struct smbd_server_connection *sconn,
 }
 
 /****************************************************************************
+ Safely do an OpenDir as root, ensuring we're in the right place.
+****************************************************************************/
+
+static struct smb_Dir *open_dir_with_privilege(connection_struct *conn,
+					struct smb_request *req,
+					const char *path,
+					const char *wcard,
+					uint32_t attr)
+{
+	NTSTATUS status;
+	struct smb_Dir *dir_hnd = NULL;
+	struct smb_filename *smb_fname_cwd = NULL;
+	char *saved_dir = vfs_GetWd(talloc_tos(), conn);
+	struct privilege_paths *priv_paths = req->priv_paths;
+	int ret;
+
+	if (saved_dir == NULL) {
+		return NULL;
+	}
+
+	if (vfs_ChDir(conn, path) == -1) {
+		return NULL;
+	}
+
+	/* Now check the stat value is the same. */
+	status = create_synthetic_smb_fname(talloc_tos(), ".",
+					NULL, NULL,
+					&smb_fname_cwd);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		goto out;
+	}
+	ret = SMB_VFS_STAT(conn, smb_fname_cwd);
+	if (ret != 0) {
+		goto out;
+	}
+
+	if (!check_same_stat(&smb_fname_cwd->st, &priv_paths->parent_name.st)) {
+		DEBUG(0,("open_dir_with_privilege: stat mismatch between %s "
+			"and %s\n",
+			path,
+			smb_fname_str_dbg(&priv_paths->parent_name)));
+		goto out;
+	}
+
+	dir_hnd = OpenDir(NULL, conn, ".", wcard, attr);
+
+  out:
+
+	vfs_ChDir(conn, saved_dir);
+	return dir_hnd;
+}
+
+/****************************************************************************
  Create a new dir ptr. If the flag old_handle is true then we must allocate
  from the bitmap range 0 - 255 as old SMBsearch directory handles are only
  one byte long. If old_handle is false we allocate from the range
@@ -424,7 +475,9 @@ static void dptr_close_oldest(struct smbd_server_connection *sconn,
  wcard must not be zero.
 ****************************************************************************/
 
-NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
+NTSTATUS dptr_create(connection_struct *conn,
+		struct smb_request *req,
+		files_struct *fsp,
 		const char *path, bool old_handle, bool expect_close,uint16 spid,
 		const char *wcard, bool wcard_has_wild, uint32 attr, struct dptr_struct **dptr_ret)
 {
@@ -483,7 +536,15 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
 		}
-		dir_hnd = OpenDir(NULL, conn, path, wcard, attr);
+		if (req && req->priv_paths) {
+			dir_hnd = open_dir_with_privilege(conn,
+						req,
+						path,
+						wcard,
+						attr);
+		} else {
+			dir_hnd = OpenDir(NULL, conn, path, wcard, attr);
+		}
 	}
 
 	if (!dir_hnd) {
@@ -494,18 +555,18 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 		dptr_idleoldest(sconn);
 	}
 
-	dptr = SMB_MALLOC_P(struct dptr_struct);
+	dptr = talloc(NULL, struct dptr_struct);
 	if(!dptr) {
-		DEBUG(0,("malloc fail in dptr_create.\n"));
+		DEBUG(0,("talloc fail in dptr_create.\n"));
 		TALLOC_FREE(dir_hnd);
 		return NT_STATUS_NO_MEMORY;
 	}
 
 	ZERO_STRUCTP(dptr);
 
-	dptr->path = SMB_STRDUP(path);
+	dptr->path = talloc_strdup(dptr, path);
 	if (!dptr->path) {
-		SAFE_FREE(dptr);
+		TALLOC_FREE(dptr);
 		TALLOC_FREE(dir_hnd);
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -513,10 +574,9 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 	dptr->dir_hnd = dir_hnd;
 	dptr->spid = spid;
 	dptr->expect_close = expect_close;
-	dptr->wcard = SMB_STRDUP(wcard);
+	dptr->wcard = talloc_strdup(dptr, wcard);
 	if (!dptr->wcard) {
-		SAFE_FREE(dptr->path);
-		SAFE_FREE(dptr);
+		TALLOC_FREE(dptr);
 		TALLOC_FREE(dir_hnd);
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -555,9 +615,7 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 			dptr->dnum = bitmap_find(sconn->searches.dptr_bmap, 0);
 			if(dptr->dnum == -1 || dptr->dnum > 254) {
 				DEBUG(0,("dptr_create: returned %d: Error - all old dirptrs in use ?\n", dptr->dnum));
-				SAFE_FREE(dptr->path);
-				SAFE_FREE(dptr->wcard);
-				SAFE_FREE(dptr);
+				TALLOC_FREE(dptr);
 				TALLOC_FREE(dir_hnd);
 				return NT_STATUS_TOO_MANY_OPENED_FILES;
 			}
@@ -587,9 +645,7 @@ NTSTATUS dptr_create(connection_struct *conn, files_struct *fsp,
 
 			if(dptr->dnum == -1 || dptr->dnum < 255) {
 				DEBUG(0,("dptr_create: returned %d: Error - all new dirptrs in use ?\n", dptr->dnum));
-				SAFE_FREE(dptr->path);
-				SAFE_FREE(dptr->wcard);
-				SAFE_FREE(dptr);
+				TALLOC_FREE(dptr);
 				TALLOC_FREE(dir_hnd);
 				return NT_STATUS_TOO_MANY_OPENED_FILES;
 			}
@@ -654,6 +710,16 @@ bool dptr_has_wild(struct dptr_struct *dptr)
 int dptr_dnum(struct dptr_struct *dptr)
 {
 	return dptr->dnum;
+}
+
+bool dptr_get_priv(struct dptr_struct *dptr)
+{
+	return dptr->priv;
+}
+
+void dptr_set_priv(struct dptr_struct *dptr)
+{
+	dptr->priv = true;
 }
 
 /****************************************************************************
@@ -1155,7 +1221,7 @@ bool get_dir_entry(TALLOC_CTX *ctx,
 		const char *mask,
 		uint32_t dirtype,
 		char **_fname,
-		SMB_OFF_T *_size,
+		off_t *_size,
 		uint32_t *_mode,
 		struct timespec *_date,
 		bool check_descend,
@@ -1674,16 +1740,20 @@ bool SearchDir(struct smb_Dir *dirp, const char *name, long *poffset)
  Is this directory empty ?
 *****************************************************************/
 
-NTSTATUS can_delete_directory(struct connection_struct *conn,
-			      const char *dirname)
+NTSTATUS can_delete_directory_fsp(files_struct *fsp)
 {
 	NTSTATUS status = NT_STATUS_OK;
 	long dirpos = 0;
 	const char *dname = NULL;
+	const char *dirname = fsp->fsp_name->base_name;
 	char *talloced = NULL;
 	SMB_STRUCT_STAT st;
-	struct smb_Dir *dir_hnd = OpenDir(talloc_tos(), conn,
-					dirname, NULL, 0);
+	struct connection_struct *conn = fsp->conn;
+	struct smb_Dir *dir_hnd = OpenDir_fsp(talloc_tos(),
+					conn,
+					fsp,
+					NULL,
+					0);
 
 	if (!dir_hnd) {
 		return map_nt_error_from_unix(errno);
@@ -1703,7 +1773,7 @@ NTSTATUS can_delete_directory(struct connection_struct *conn,
 			continue;
 		}
 
-		DEBUG(10,("can_delete_directory: got name %s - can't delete\n",
+		DEBUG(10,("got name %s - can't delete\n",
 			 dname ));
 		status = NT_STATUS_DIRECTORY_NOT_EMPTY;
 		break;

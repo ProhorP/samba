@@ -70,9 +70,15 @@ static bool check_MasterNC(struct kccsrv_partition *p, struct repsFromToBlob *r,
 	struct repsFromTo1 *r1 = &r->ctr.ctr1;
 	struct GUID invocation_id = r1->source_dsa_invocation_id;
 	unsigned int i, j;
+	TALLOC_CTX *tmp_ctx;
 
 	/* we are expecting only version 1 */
 	SMB_ASSERT(r->version == 1);
+
+	tmp_ctx = talloc_new(p);
+	if (!tmp_ctx) {
+		return false;
+	}
 
 	for (i=0; i<res->count; i++) {
 		struct ldb_message *msg = res->msgs[i];
@@ -93,23 +99,24 @@ static bool check_MasterNC(struct kccsrv_partition *p, struct repsFromToBlob *r,
 			}
 		}
 		for (j=0; j<el->num_values; j++) {
-			dn = ldb_dn_from_ldb_val(p, p->service->samdb, &el->values[j]);
+			dn = ldb_dn_from_ldb_val(tmp_ctx, p->service->samdb, &el->values[j]);
 			if (!ldb_dn_validate(dn)) {
 				talloc_free(dn);
 				continue;
 			}
 			if (ldb_dn_compare(dn, p->dn) == 0) {
-				talloc_free(dn);
 				DEBUG(5,("%s %s match on %s in %s\n",
 					 r1->other_info->dns_name,
 					 el->name,
 					 ldb_dn_get_linearized(dn),
 					 ldb_dn_get_linearized(msg->dn)));
+				talloc_free(tmp_ctx);
 				return true;
 			}
 			talloc_free(dn);
 		}
 	}
+	talloc_free(tmp_ctx);
 	return false;
 }
 
@@ -392,7 +399,7 @@ static int kccsrv_gc_update(struct kccsrv_service *s, struct ldb_result *res)
 	}
 
 	/* get a list of what NCs we are already replicating */
-	ret = dsdb_search_dn(s->samdb, tmp_ctx, &res2, samdb_ntds_settings_dn(s->samdb), attrs2, 0);
+	ret = dsdb_search_dn(s->samdb, tmp_ctx, &res2, samdb_ntds_settings_dn(s->samdb, tmp_ctx), attrs2, 0);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(1,("Failed to get our NC list attributes for GC update - %s\n", ldb_errstring(s->samdb)));
 		talloc_free(tmp_ctx);
@@ -436,6 +443,13 @@ static int kccsrv_gc_update(struct kccsrv_service *s, struct ldb_result *res)
 		talloc_free(tmp_ctx);
 		return LDB_SUCCESS;
 	}
+
+	if (s->am_rodc) {
+		DEBUG(5, ("%d partial replica should be added but we are RODC so we skip\n", msg->num_elements));
+		talloc_free(tmp_ctx);
+		return LDB_SUCCESS;
+	}
+
 	msg->elements[0].flags = LDB_FLAG_MOD_ADD;
 
 	ret = dsdb_modify(s->samdb, msg, 0);

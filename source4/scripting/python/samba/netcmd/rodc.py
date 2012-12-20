@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # rodc related commands
 #
 # Copyright Andrew Tridgell 2010
@@ -28,7 +26,7 @@ from samba.drs_utils import drs_Replicate
 
 
 class cmd_rodc_preload(Command):
-    """Preload one account for an RODC"""
+    """Preload one account for an RODC."""
 
     synopsis = "%prog (<SID>|<DN>|<accountname>) [options]"
 
@@ -104,7 +102,7 @@ class cmd_rodc_preload(Command):
 
 
 class cmd_rodc(SuperCommand):
-    """Read-Only Domain Controller (RODC) management"""
+    """Read-Only Domain Controller (RODC) management."""
 
     subcommands = {}
     subcommands["preload"] = cmd_rodc_preload()

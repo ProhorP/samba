@@ -56,10 +56,10 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "util_tdb.h"
+#include "lib/param/loadparm.h"
 #include "printing.h"
 #include "lib/smbconf/smbconf.h"
 #include "lib/smbconf/smbconf_init.h"
-#include "lib/param/loadparm.h"
 
 #include "ads.h"
 #include "../librpc/gen_ndr/svcctl.h"
@@ -68,7 +68,6 @@
 #include "dbwrap/dbwrap.h"
 #include "dbwrap/dbwrap_rbt.h"
 #include "../lib/util/bitmap.h"
-#include "../source4/dns_server/dns_update.h"
 
 #ifdef HAVE_SYS_SYSCTL_H
 #include <sys/sysctl.h>
@@ -76,6 +75,10 @@
 
 #ifdef HAVE_HTTPCONNECTENCRYPT
 #include <cups/http.h>
+#endif
+
+#ifdef CLUSTER_SUPPORT
+#include "ctdb_private.h"
 #endif
 
 bool bLoaded = false;
@@ -93,9 +96,6 @@ extern userdom_struct current_user_info;
 static bool in_client = false;		/* Not in the client by default */
 static struct smbconf_csn conf_last_csn;
 
-#define CONFIG_BACKEND_FILE 0
-#define CONFIG_BACKEND_REGISTRY 1
-
 static int config_backend = CONFIG_BACKEND_FILE;
 
 /* some helpful bits */
@@ -110,24 +110,28 @@ static bool defaults_saved = false;
 #define LOADPARM_EXTRA_GLOBALS \
 	struct parmlist_entry *param_opt;				\
 	char *szRealm;							\
-	char *szLogLevel;						\
+	char *loglevel;							\
 	int iminreceivefile;						\
 	char *szPrintcapname;						\
 	int CupsEncrypt;						\
 	int  iPreferredMaster;						\
-	int iDomainMaster;						\
 	char *szLdapMachineSuffix;					\
 	char *szLdapUserSuffix;						\
 	char *szLdapIdmapSuffix;					\
 	char *szLdapGroupSuffix;					\
 	char *szStateDir;						\
 	char *szCacheDir;						\
-	char *szSocketAddress;						\
 	char *szUsershareTemplateShare;					\
 	char *szIdmapUID;						\
 	char *szIdmapGID;						\
 	int winbindMaxDomainConnections;				\
-	int ismb2_max_credits;
+	int ismb2_max_credits;						\
+	char *tls_keyfile;						\
+	char *tls_certfile;						\
+	char *tls_cafile;						\
+	char *tls_crlfile;						\
+	char *tls_dhpfile;						\
+	int bPreferredMaster;
 
 #include "param/param_global.h"
 
@@ -175,7 +179,6 @@ static struct loadparm_service sDefault =
 	.force_group = NULL,
 	.readlist = NULL,
 	.writelist = NULL,
-	.printer_admin = NULL,
 	.volume = NULL,
 	.fstype = NULL,
 	.szVfsObjects = NULL,
@@ -188,12 +191,8 @@ static struct loadparm_service sDefault =
 	.iWriteCacheSize = 0,
 	.iCreate_mask = 0744,
 	.iCreate_force_mode = 0,
-	.iSecurity_mask = 0777,
-	.iSecurity_force_mode = 0,
 	.iDir_mask = 0755,
 	.iDir_force_mode = 0,
-	.iDir_Security_mask = 0777,
-	.iDir_Security_force_mode = 0,
 	.iMaxConnections = 0,
 	.iDefaultCase = CASE_LOWER,
 	.iPrinting = DEFAULT_PRINTING,
@@ -228,8 +227,8 @@ static struct loadparm_service sDefault =
 	.bLocking = true,
 	.iStrictLocking = Auto,
 	.bPosixLocking = true,
-	.bShareModes = true,
 	.bOpLocks = true,
+	.bKernelOplocks = false,
 	.bLevel2OpLocks = true,
 	.bOnlyUser = false,
 	.bMangledNames = true,
@@ -276,7 +275,9 @@ static struct loadparm_service sDefault =
 #else
 	.iDirectoryNameCacheSize = 100,
 #endif
-	.ismb_encrypt = Auto,
+	.ismb_encrypt = SMB_SIGNING_DEFAULT,
+	.bKernelShareModes = true,
+	.bDurableHandles = true,
 	.param_opt = NULL,
 	.dummy = ""
 };
@@ -307,3981 +308,71 @@ static bool handle_dos_charset(struct loadparm_context *unused, int snum, const 
 static bool handle_printing(struct loadparm_context *unused, int snum, const char *pszParmValue, char **ptr);
 static bool handle_ldap_debug_level(struct loadparm_context *unused, int snum, const char *pszParmValue, char **ptr);
 
+/* these are parameter handlers which are not needed in the
+ * source3 code
+ */
+
+#define handle_logfile NULL
+
 static void set_allowed_client_auth(void);
 
 static void add_to_file_list(const char *fname, const char *subfname);
 static bool lp_set_cmdline_helper(const char *pszParmName, const char *pszParmValue, bool store_values);
 static void free_param_opts(struct parmlist_entry **popts);
 
-#include "lib/param/param_enums.c"
-
-static const struct enum_list enum_printing[] = {
-	{PRINT_SYSV, "sysv"},
-	{PRINT_AIX, "aix"},
-	{PRINT_HPUX, "hpux"},
-	{PRINT_BSD, "bsd"},
-	{PRINT_QNX, "qnx"},
-	{PRINT_PLP, "plp"},
-	{PRINT_LPRNG, "lprng"},
-	{PRINT_CUPS, "cups"},
-	{PRINT_IPRINT, "iprint"},
-	{PRINT_LPRNT, "nt"},
-	{PRINT_LPROS2, "os2"},
-#if defined(DEVELOPER) || defined(ENABLE_BUILD_FARM_HACKS)
-	{PRINT_TEST, "test"},
-	{PRINT_VLP, "vlp"},
-#endif /* DEVELOPER */
-	{-1, NULL}
-};
-
-static const struct enum_list enum_ldap_sasl_wrapping[] = {
-	{0, "plain"},
-	{ADS_AUTH_SASL_SIGN, "sign"},
-	{ADS_AUTH_SASL_SEAL, "seal"},
-	{-1, NULL}
-};
-
-static const struct enum_list enum_ldap_ssl[] = {
-	{LDAP_SSL_OFF, "no"},
-	{LDAP_SSL_OFF, "off"},
-	{LDAP_SSL_START_TLS, "start tls"},
-	{LDAP_SSL_START_TLS, "start_tls"},
-	{-1, NULL}
-};
-
-/* LDAP Dereferencing Alias types */
-#define SAMBA_LDAP_DEREF_NEVER		0
-#define SAMBA_LDAP_DEREF_SEARCHING	1
-#define SAMBA_LDAP_DEREF_FINDING	2
-#define SAMBA_LDAP_DEREF_ALWAYS		3
-
-static const struct enum_list enum_ldap_deref[] = {
-	{SAMBA_LDAP_DEREF_NEVER, "never"},
-	{SAMBA_LDAP_DEREF_SEARCHING, "searching"},
-	{SAMBA_LDAP_DEREF_FINDING, "finding"},
-	{SAMBA_LDAP_DEREF_ALWAYS, "always"},
-	{-1, "auto"}
-};
-
-static const struct enum_list enum_ldap_passwd_sync[] = {
-	{LDAP_PASSWD_SYNC_OFF, "no"},
-	{LDAP_PASSWD_SYNC_OFF, "off"},
-	{LDAP_PASSWD_SYNC_ON, "yes"},
-	{LDAP_PASSWD_SYNC_ON, "on"},
-	{LDAP_PASSWD_SYNC_ONLY, "only"},
-	{-1, NULL}
-};
-
-static const struct enum_list enum_map_readonly[] = {
-	{MAP_READONLY_NO, "no"},
-	{MAP_READONLY_NO, "false"},
-	{MAP_READONLY_NO, "0"},
-	{MAP_READONLY_YES, "yes"},
-	{MAP_READONLY_YES, "true"},
-	{MAP_READONLY_YES, "1"},
-	{MAP_READONLY_PERMISSIONS, "permissions"},
-	{MAP_READONLY_PERMISSIONS, "perms"},
-	{-1, NULL}
-};
-
-static const struct enum_list enum_case[] = {
-	{CASE_LOWER, "lower"},
-	{CASE_UPPER, "upper"},
-	{-1, NULL}
-};
-
-
-/* ACL compatibility options. */
-static const struct enum_list enum_acl_compat_vals[] = {
-    { ACL_COMPAT_AUTO, "auto" },
-    { ACL_COMPAT_WINNT, "winnt" },
-    { ACL_COMPAT_WIN2K, "win2k" },
-    { -1, NULL}
-};
-
-/* 
-   Do you want session setups at user level security with a invalid
-   password to be rejected or allowed in as guest? WinNT rejects them
-   but it can be a pain as it means "net view" needs to use a password
-
-   You have 3 choices in the setting of map_to_guest:
-
-   "Never" means session setups with an invalid password
-   are rejected. This is the default.
-
-   "Bad User" means session setups with an invalid password
-   are rejected, unless the username does not exist, in which case it
-   is treated as a guest login
-
-   "Bad Password" means session setups with an invalid password
-   are treated as a guest login
-
-   Note that map_to_guest only has an effect in user or server
-   level security.
-*/
-
-static const struct enum_list enum_map_to_guest[] = {
-	{NEVER_MAP_TO_GUEST, "Never"},
-	{MAP_TO_GUEST_ON_BAD_USER, "Bad User"},
-	{MAP_TO_GUEST_ON_BAD_PASSWORD, "Bad Password"},
-        {MAP_TO_GUEST_ON_BAD_UID, "Bad Uid"},
-	{-1, NULL}
-};
-
-/* Config backend options */
-
-static const struct enum_list enum_config_backend[] = {
-	{CONFIG_BACKEND_FILE, "file"},
-	{CONFIG_BACKEND_REGISTRY, "registry"},
-	{-1, NULL}
-};
-
-/* ADS kerberos ticket verification options */
-
-static const struct enum_list enum_kerberos_method[] = {
-	{KERBEROS_VERIFY_SECRETS, "default"},
-	{KERBEROS_VERIFY_SECRETS, "secrets only"},
-	{KERBEROS_VERIFY_SYSTEM_KEYTAB, "system keytab"},
-	{KERBEROS_VERIFY_DEDICATED_KEYTAB, "dedicated keytab"},
-	{KERBEROS_VERIFY_SECRETS_AND_KEYTAB, "secrets and keytab"},
-	{-1, NULL}
-};
-
-/* Note: We do not initialise the defaults union - it is not allowed in ANSI C
- *
- * The FLAG_HIDE is explicit. Parameters set this way do NOT appear in any edit
- * screen in SWAT. This is used to exclude parameters as well as to squash all
- * parameters that have been duplicated by pseudonyms.
- *
- * NOTE: To display a parameter in BASIC view set FLAG_BASIC
- *       Any parameter that does NOT have FLAG_ADVANCED will not disply at all
- *	 Set FLAG_SHARE and FLAG_PRINT to specifically display parameters in
- *        respective views.
- *
- * NOTE2: Handling of duplicated (synonym) parameters:
- *	Only the first occurance of a parameter should be enabled by FLAG_BASIC
- *	and/or FLAG_ADVANCED. All duplicates following the first mention should be
- *	set to FLAG_HIDE. ie: Make you must place the parameter that has the preferred
- *	name first, and all synonyms must follow it with the FLAG_HIDE attribute.
- */
-
-#define GLOBAL_VAR(name) offsetof(struct loadparm_global, name)
-#define LOCAL_VAR(name) offsetof(struct loadparm_service, name)
-
-static struct parm_struct parm_table[] = {
-	{N_("Base Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "dos charset",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(dos_charset),
-		.special	= handle_dos_charset,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED
-	},
-	{
-		.label		= "unix charset",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(unix_charset),
-		.special	= handle_charset,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED
-	},
-	{
-		.label		= "comment",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(comment),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT
-	},
-	{
-		.label		= "path",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPath),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "directory",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPath),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "workgroup",
-		.type		= P_USTRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWorkgroup),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "realm",
-		.type		= P_USTRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRealm),
-		.special	= handle_realm,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "netbios name",
-		.type		= P_USTRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szNetbiosName),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "netbios aliases",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szNetbiosAliases),
-		.special	= handle_netbios_aliases,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "netbios scope",
-		.type		= P_USTRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szNetbiosScope),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "server string",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szServerString),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "interfaces",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szInterfaces),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "bind interfaces only",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bBindInterfacesOnly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "config backend",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ConfigBackend),
-		.special	= NULL,
-		.enum_list	= enum_config_backend,
-		.flags		= FLAG_HIDE|FLAG_ADVANCED|FLAG_META,
-	},
-	{
-		.label		= "server role",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ServerRole),
-		.special	= NULL,
-		.enum_list	= enum_server_role,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-
-	{N_("Security Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "security",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(security),
-		.special	= NULL,
-		.enum_list	= enum_security,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "auth methods",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(AuthMethods),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "encrypt passwords",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bEncryptPasswords),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "client schannel",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(clientSchannel),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "server schannel",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(serverSchannel),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "allow trusted domains",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bAllowTrustedDomains),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "map to guest",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(map_to_guest),
-		.special	= NULL,
-		.enum_list	= enum_map_to_guest,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "null passwords",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNullPasswords),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "obey pam restrictions",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bObeyPamRestrictions),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "password server",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPasswordServer),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "smb passwd file",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSMBPasswdFile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "private dir",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPrivateDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "passdb backend",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPassdbBackend),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "algorithmic rid base",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(AlgorithmicRidBase),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "root directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRootdir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "root dir",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRootdir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "root",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRootdir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "guest account",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szGuestaccount),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "enable privileges",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bEnablePrivileges),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-
-	{
-		.label		= "pam password change",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bPamPasswordChange),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "passwd program",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPasswdProgram),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "passwd chat",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPasswdChat),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "passwd chat debug",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bPasswdChatDebug),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "passwd chat timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iPasswdChatTimeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "check password script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szCheckPasswordScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "username map",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsernameMap),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "password level",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(pwordlevel),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "username level",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(unamelevel),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "unix password sync",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUnixPasswdSync),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "restrict anonymous",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(restrict_anonymous),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "lanman auth",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bLanmanAuth),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ntlm auth",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNTLMAuth),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client NTLMv2 auth",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bClientNTLMv2Auth),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client lanman auth",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bClientLanManAuth),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client plaintext auth",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bClientPlaintextAuth),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client use spnego principal",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(client_use_spnego_principal),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "username",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szUsername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "user",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szUsername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "users",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szUsername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "invalid users",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szInvalidUsers),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "valid users",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szValidUsers),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "admin users",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szAdminUsers),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "read list",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(readlist),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "write list",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(writelist),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "printer admin",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(printer_admin),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_PRINT | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "force user",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(force_user),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "force group",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(force_group),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "group",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(force_group),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "read only",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bRead_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "write ok",
-		.type		= P_BOOLREV,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bRead_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "writeable",
-		.type		= P_BOOLREV,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bRead_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "writable",
-		.type		= P_BOOLREV,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bRead_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "acl check permissions",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAclCheckPermissions),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "acl group control",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAclGroupControl),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "acl map full control",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAclMapFullControl),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "create mask",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCreate_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "create mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCreate_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "force create mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCreate_force_mode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "security mask",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iSecurity_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "force security mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iSecurity_force_mode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "directory mask",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDir_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "directory mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDir_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "force directory mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDir_force_mode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "directory security mask",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDir_Security_mask),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "force directory security mode",
-		.type		= P_OCTAL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDir_Security_force_mode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "force unknown acl user",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bForceUnknownAclUser),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "inherit permissions",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bInheritPerms),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "inherit acls",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bInheritACLS),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "inherit owner",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bInheritOwner),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "guest only",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bGuest_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "only guest",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bGuest_only),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "administrative share",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAdministrative_share),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-
-	{
-		.label		= "guest ok",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bGuest_ok),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "public",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bGuest_ok),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "only user",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bOnlyUser),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "hosts allow",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szHostsallow),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_GLOBAL | FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "allow hosts",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szHostsallow),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "hosts deny",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szHostsdeny),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_GLOBAL | FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "deny hosts",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szHostsdeny),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "preload modules",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPreloadModules),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dedicated keytab file",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDedicatedKeytabFile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "kerberos method",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iKerberosMethod),
-		.special	= NULL,
-		.enum_list	= enum_kerberos_method,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "map untrusted to domain",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bMapUntrustedToDomain),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-
-
-	{N_("Logging Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "log level",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogLevel),
-		.special	= handle_debug_list,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debuglevel",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogLevel),
-		.special	= handle_debug_list,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "syslog",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(syslog),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "syslog only",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bSyslogOnly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "log file",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogFile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max log size",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_log_size),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug timestamp",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bTimestampLogs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "timestamp logs",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bTimestampLogs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug prefix timestamp",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDebugPrefixTimestamp),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug hires timestamp",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDebugHiresTimestamp),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug pid",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDebugPid),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug uid",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDebugUid),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "debug class",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDebugClass),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "enable core files",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bEnableCoreFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("Protocol Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "allocation roundup size",
-		.type		= P_BYTES,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iallocation_roundup_size),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "aio read size",
-		.type		= P_BYTES,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iAioReadSize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "aio write size",
-		.type		= P_BYTES,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iAioWriteSize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "aio write behind",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szAioWriteBehind),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "smb ports",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(smb_ports),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "large readwrite",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bLargeReadwrite),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max protocol",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(maxprotocol),
-		.special	= NULL,
-		.enum_list	= enum_protocol,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "protocol",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(maxprotocol),
-		.special	= NULL,
-		.enum_list	= enum_protocol,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "min protocol",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(minprotocol),
-		.special	= NULL,
-		.enum_list	= enum_protocol,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "min receivefile size",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iminreceivefile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "read raw",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bReadRaw),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "write raw",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWriteRaw),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "disable netbios",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDisableNetbios),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "reset on zero vc",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bResetOnZeroVC),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "log writeable files on exit",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bLogWriteableFilesOnExit),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "acl compatibility",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iAclCompat),
-		.special	= NULL,
-		.enum_list	= enum_acl_compat_vals,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "defer sharing violations",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDeferSharingViolations),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "ea support",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bEASupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "nt acl support",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bNTAclSupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "nt pipe support",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNTPipeSupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "nt status support",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNTStatusSupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "profile acls",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bProfileAcls),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-	{
-		.label		= "map acl inherit",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMap_acl_inherit),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "afs share",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAfs_Share),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "max mux",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_mux),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max xmit",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_xmit),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "name resolve order",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szNameResolveOrder),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "max ttl",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_ttl),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max wins ttl",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_wins_ttl),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "min wins ttl",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(min_wins_ttl),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "time server",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bTimeServer),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "unix extensions",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUnixExtensions),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "use spnego",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUseSpnego),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "client signing",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(client_signing),
-		.special	= NULL,
-		.enum_list	= enum_smb_signing_vals,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "server signing",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(server_signing),
-		.special	= NULL,
-		.enum_list	= enum_smb_signing_vals,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "smb encrypt",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(ismb_encrypt),
-		.special	= NULL,
-		.enum_list	= enum_smb_signing_vals,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client use spnego",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bClientUseSpnego),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "client ldap sasl wrapping",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(client_ldap_sasl_wrapping),
-		.special	= NULL,
-		.enum_list	= enum_ldap_sasl_wrapping,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "enable asu support",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bASUSupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "svcctl list",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szServicesList),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("Tuning Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "block size",
-		.type		= P_BYTES,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iBlock_size),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "deadtime",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(deadtime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "getwd cache",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(getwd_cache),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "keepalive",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iKeepalive),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "change notify",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bChangeNotify),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "directory name cache size",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDirectoryNameCacheSize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "kernel change notify",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bKernelChangeNotify),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "lpq cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(lpqcachetime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max smbd processes",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iMaxSmbdProcesses),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max connections",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iMaxConnections),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "paranoid server security",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(paranoid_server_security),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max disk size",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(maxdisksize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "max open files",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(max_open_files),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "min print space",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iMinPrintSpace),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "socket options",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSocketOptions),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "strict allocate",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bStrictAllocate),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "strict sync",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bStrictSync),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "sync always",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bSyncAlways),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "use mmap",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUseMmap),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "use sendfile",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bUseSendfile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "hostname lookups",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bHostnameLookups),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "write cache size",
-		.type		= P_BYTES,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iWriteCacheSize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "name cache timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(name_cache_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ctdbd socket",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ctdbdSocket),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "cluster addresses",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szClusterAddresses),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "clustering",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(clustering),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "ctdb timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ctdb_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "ctdb locktime warn threshold",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ctdb_locktime_warn_threshold),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "smb2 max read",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ismb2_max_read),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "smb2 max write",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ismb2_max_write),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "smb2 max trans",
-		.type		= P_BYTES,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ismb2_max_trans),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "smb2 max credits",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ismb2_max_credits),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("Printing Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "max reported print jobs",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iMaxReportedPrintJobs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "max print jobs",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iMaxPrintJobs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "load printers",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bLoadPrinters),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "printcap cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(PrintcapCacheTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "printcap name",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPrintcapname),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "printcap",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPrintcapname),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "printable",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bPrint_ok),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "print notify backchannel",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bPrintNotifyBackchannel),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "print ok",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bPrint_ok),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "printing",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iPrinting),
-		.special	= handle_printing,
-		.enum_list	= enum_printing,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "cups options",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szCupsOptions),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "cups server",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szCupsServer),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label          = "cups encrypt",
-		.type           = P_ENUM,
-		.p_class        = P_GLOBAL,
-		.offset            = GLOBAL_VAR(CupsEncrypt),
-		.special        = NULL,
-		.enum_list      = enum_bool_auto,
-		.flags          = FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-
-		.label		= "cups connection timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(cups_connection_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "iprint server",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIPrintServer),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "print command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPrintcommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "disable spoolss",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDisableSpoolss),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "enable spoolss",
-		.type		= P_BOOLREV,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDisableSpoolss),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "lpq command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szLpqcommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "lprm command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szLprmcommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "lppause command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szLppausecommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "lpresume command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szLpresumecommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "queuepause command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szQueuepausecommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "queueresume command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szQueueresumecommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT | FLAG_GLOBAL,
-	},
-	{
-		.label		= "addport command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddPortCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "enumports command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szEnumPortsCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "addprinter command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddPrinterCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "deleteprinter command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDeletePrinterCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "show add printer wizard",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bMsAddPrinterWizard),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "os2 driver map",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szOs2DriverMap),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{
-		.label		= "printer name",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPrintername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "printer",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPrintername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "use client driver",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bUseClientDriver),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "default devmode",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDefaultDevmode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "force printername",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bForcePrintername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-	{
-		.label		= "printjob username",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPrintjobUsername),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_PRINT,
-	},
-
-	{N_("Filename Handling"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "mangling method",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szManglingMethod),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "mangle prefix",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(mangle_prefix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{
-		.label		= "default case",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDefaultCase),
-		.special	= NULL,
-		.enum_list	= enum_case,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "case sensitive",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCaseSensitive),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "casesignames",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCaseSensitive),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL | FLAG_HIDE,
-	},
-	{
-		.label		= "preserve case",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bCasePreserve),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "short preserve case",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bShortCasePreserve),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "mangling char",
-		.type		= P_CHAR,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(magic_char),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "hide dot files",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bHideDotFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "hide special files",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bHideSpecialFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "hide unreadable",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bHideUnReadable),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "hide unwriteable files",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bHideUnWriteableFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "delete veto files",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDeleteVetoFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "veto files",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szVetoFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "hide files",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szHideFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "veto oplock files",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szVetoOplockFiles),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "map archive",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMap_archive),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "map hidden",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMap_hidden),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "map system",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMap_system),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "map readonly",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iMap_readonly),
-		.special	= NULL,
-		.enum_list	= enum_map_readonly,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "mangled names",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMangledNames),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "max stat cache size",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iMaxStatCacheSize),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "stat cache",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bStatCache),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "store dos attributes",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bStoreDosAttributes),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dmapi support",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDmapiSupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-
-
-	{N_("Domain Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "machine password timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(machine_password_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_WIZARD,
-	},
-
-	{N_("Logon Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "add user script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddUserScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "rename user script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRenameUserScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "delete user script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDelUserScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "add group script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddGroupScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "delete group script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDelGroupScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "add user to group script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddUserToGroupScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "delete user from group script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDelUserFromGroupScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "set primary group script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSetPrimaryGroupScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "add machine script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddMachineScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "shutdown script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szShutdownScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "abort shutdown script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAbortShutdownScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "username map script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsernameMapScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "username map cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iUsernameMapCacheTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "logon script",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogonScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "logon path",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogonPath),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "logon drive",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogonDrive),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "logon home",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogonHome),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "domain logons",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDomainLogons),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{
-		.label		= "init logon delayed hosts",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szInitLogonDelayedHosts),
-		.special        = NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{
-		.label		= "init logon delay",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(InitLogonDelay),
-		.special        = NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-
-	},
-
-	{N_("Browse Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "os level",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(os_level),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "lm announce",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(lm_announce),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "lm interval",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(lm_interval),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "preferred master",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iPreferredMaster),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "prefered master",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iPreferredMaster),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "local master",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bLocalMaster),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "domain master",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iDomainMaster),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED,
-	},
-	{
-		.label		= "browse list",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bBrowseList),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "browseable",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bBrowseable),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "browsable",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bBrowseable),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "access based share enum",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAccessBasedShareEnum),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE
-	},
-	{
-		.label		= "enhanced browsing",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(enhanced_browsing),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("WINS Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "dns proxy",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bDNSproxy),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "wins proxy",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWINSproxy),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "wins server",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWINSservers),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "wins support",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWINSsupport),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_WIZARD,
-	},
-	{
-		.label		= "wins hook",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWINSHook),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("Locking Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "blocking locks",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bBlockingLocks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "csc policy",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iCSCPolicy),
-		.special	= NULL,
-		.enum_list	= enum_csc_policy,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "fake oplocks",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bFakeOplocks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "kernel oplocks",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bKernelOplocks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "locking",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bLocking),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "lock spin time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iLockSpinTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "oplocks",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bOpLocks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "level2 oplocks",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bLevel2OpLocks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "oplock break wait time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(oplock_break_wait_time),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "oplock contention limit",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iOplockContentionLimit),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "posix locking",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bPosixLocking),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "strict locking",
-		.type		= P_ENUM,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iStrictLocking),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "share modes",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bShareModes),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL | FLAG_DEPRECATED,
-	},
-
-	{N_("Ldap Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "ldap admin dn",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapAdminDn),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap delete dn",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_delete_dn),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap group suffix",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapGroupSuffix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap idmap suffix",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapIdmapSuffix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap machine suffix",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapMachineSuffix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap passwd sync",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_passwd_sync),
-		.special	= NULL,
-		.enum_list	= enum_ldap_passwd_sync,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap password sync",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_passwd_sync),
-		.special	= NULL,
-		.enum_list	= enum_ldap_passwd_sync,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "ldap replication sleep",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_replication_sleep),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap suffix",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapSuffix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap ssl",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_ssl),
-		.special	= NULL,
-		.enum_list	= enum_ldap_ssl,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap ssl ads",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_ssl_ads),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap deref",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_deref),
-		.special	= NULL,
-		.enum_list	= enum_ldap_deref,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap follow referral",
-		.type		= P_ENUM,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_follow_referral),
-		.special	= NULL,
-		.enum_list	= enum_bool_auto,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap connection timeout",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_connection_timeout),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap page size",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_page_size),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap user suffix",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLdapUserSuffix),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap debug level",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_debug_level),
-		.special	= handle_ldap_debug_level,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ldap debug threshold",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ldap_debug_threshold),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("EventLog Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "eventlog list",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szEventLogs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL | FLAG_SHARE,
-	},
-
-	{N_("Miscellaneous Options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "add share command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAddShareCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "change share command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szChangeShareCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "delete share command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDeleteShareCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "config file",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szConfigFile),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE|FLAG_META,
-	},
-	{
-		.label		= "preload",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAutoServices),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "auto services",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAutoServices),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "lock directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLockDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "lock dir",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLockDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "state directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szStateDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "cache directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szCacheDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "pid directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPidDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-#ifdef WITH_UTMP
-	{
-		.label		= "utmp directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUtmpDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "wtmp directory",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWtmpDir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "utmp",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUtmp),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-#endif
-	{
-		.label		= "default service",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDefaultService),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "default",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szDefaultService),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "message command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szMsgCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "dfree cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(iDfreeCacheTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "dfree command",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szDfree),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "get quota command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szGetQuota),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "set quota command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSetQuota),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "remote announce",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRemoteAnnounce),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "remote browse sync",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szRemoteBrowseSync),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "socket address",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSocketAddress),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "nmbd bind explicit broadcast",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNmbdBindExplicitBroadcast),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "homedir map",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szNISHomeMapName),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "afs username map",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szAfsUsernameMap),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "afs token lifetime",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iAfsTokenLifetime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "log nt token command",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szLogNtTokenCommand),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "NIS homedir",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bNISHomeMap),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "-valid",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(valid),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "copy",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szCopy),
-		.special	= handle_copy,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "include",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szInclude),
-		.special	= handle_include,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE|FLAG_META,
-	},
-	{
-		.label		= "preexec",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPreExec),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "exec",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPreExec),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "preexec close",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bPreexecClose),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "postexec",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szPostExec),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "root preexec",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szRootPreExec),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "root preexec close",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bRootpreexecClose),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "root postexec",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szRootPostExec),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "available",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bAvailable),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_BASIC | FLAG_ADVANCED | FLAG_SHARE | FLAG_PRINT,
-	},
-	{
-		.label		= "registry shares",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bRegistryShares),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare allow guests",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUsershareAllowGuests),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare max shares",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iUsershareMaxShares),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare owner only",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bUsershareOwnerOnly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare path",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsersharePath),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare prefix allow list",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsersharePrefixAllowList),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare prefix deny list",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsersharePrefixDenyList),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "usershare template share",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szUsershareTemplateShare),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "volume",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(volume),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "fstype",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(fstype),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "set directory",
-		.type		= P_BOOLREV,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bNo_set_dir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "allow insecure wide links",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bAllowInsecureWidelinks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "wide links",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bWidelinks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "follow symlinks",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bSymlinks),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dont descend",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szDontdescend),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "magic script",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szMagicScript),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "magic output",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szMagicOutput),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "delete readonly",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDeleteReadonly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dos filemode",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDosFilemode),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dos filetimes",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDosFiletimes),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "dos filetime resolution",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bDosFiletimeResolution),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE | FLAG_GLOBAL,
-	},
-	{
-		.label		= "fake directory create times",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bFakeDirCreateTimes),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "async smb echo handler",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bAsyncSMBEchoHandler),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "multicast dns register",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bMulticastDnsRegister),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_GLOBAL,
-	},
-	{
-		.label		= "panic action",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szPanicAction),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "perfcount module",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szSMBPerfcountModule),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("VFS module options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "vfs objects",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szVfsObjects),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "vfs object",
-		.type		= P_LIST,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szVfsObjects),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-
-
-	{N_("MSDFS options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "msdfs root",
-		.type		= P_BOOL,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(bMSDfsRoot),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "msdfs proxy",
-		.type		= P_STRING,
-		.p_class	= P_LOCAL,
-		.offset		= LOCAL_VAR(szMSDfsProxy),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_SHARE,
-	},
-	{
-		.label		= "host msdfs",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bHostMSDfs),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{N_("Winbind options"), P_SEP, P_SEPARATOR},
-
-	{
-		.label		= "passdb expand explicit",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bPassdbExpandExplicit),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "idmap backend",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIdmapBackend),
-		.special	= handle_idmap_backend,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "idmap cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iIdmapCacheTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "idmap negative cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(iIdmapNegativeCacheTime),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "idmap uid",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIdmapUID),
-		.special	= handle_idmap_uid,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "winbind uid",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIdmapUID),
-		.special	= handle_idmap_uid,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "idmap gid",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIdmapGID),
-		.special	= handle_idmap_gid,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED | FLAG_DEPRECATED,
-	},
-	{
-		.label		= "winbind gid",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szIdmapGID),
-		.special	= handle_idmap_gid,
-		.enum_list	= NULL,
-		.flags		= FLAG_HIDE,
-	},
-	{
-		.label		= "template homedir",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szTemplateHomedir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "template shell",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szTemplateShell),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind separator",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWinbindSeparator),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind cache time",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(winbind_cache_time),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind reconnect delay",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(winbind_reconnect_delay),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind max clients",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(winbind_max_clients),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind enum users",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindEnumUsers),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind enum groups",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindEnumGroups),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind use default domain",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindUseDefaultDomain),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind trusted domains only",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindTrustedDomainsOnly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind nested groups",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindNestedGroups),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind expand groups",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(winbind_expand_groups),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind nss info",
-		.type		= P_LIST,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(szWinbindNssInfo),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind refresh tickets",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindRefreshTickets),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind offline logon",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindOfflineLogon),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind normalize names",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindNormalizeNames),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind rpc only",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bWinbindRpcOnly),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "create krb5 conf",
-		.type		= P_BOOL,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(bCreateKrb5Conf),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "ncalrpc dir",
-		.type		= P_STRING,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(ncalrpc_dir),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-	{
-		.label		= "winbind max domain connections",
-		.type		= P_INTEGER,
-		.p_class	= P_GLOBAL,
-		.offset		= GLOBAL_VAR(winbindMaxDomainConnections),
-		.special	= NULL,
-		.enum_list	= NULL,
-		.flags		= FLAG_ADVANCED,
-	},
-
-	{NULL,  P_BOOL,  P_NONE,  0,  NULL,  NULL,  0}
-};
+#include "lib/param/param_table.c"
+
+/* this is used to prevent lots of mallocs of size 1 */
+static const char null_string[] = "";
+
+/**
+ Set a string value, allocing the space for the string
+**/
+
+static bool string_init(char **dest,const char *src)
+{
+	size_t l;
+
+	if (!src)
+		src = "";
+
+	l = strlen(src);
+
+	if (l == 0) {
+		*dest = discard_const_p(char, null_string);
+	} else {
+		(*dest) = SMB_STRDUP(src);
+		if ((*dest) == NULL) {
+			DEBUG(0,("Out of memory in string_init\n"));
+			return false;
+		}
+	}
+	return(true);
+}
+
+/**
+ Free a string value.
+**/
+
+static void string_free(char **s)
+{
+	if (!s || !(*s))
+		return;
+	if (*s == null_string)
+		*s = NULL;
+	SAFE_FREE(*s);
+}
+
+/**
+ Set a string value, deallocating any existing space, and allocing the space
+ for the string
+**/
+
+static bool string_set(char **dest,const char *src)
+{
+	string_free(dest);
+	return(string_init(dest,src));
+}
 
 /***************************************************************************
  Initialise the sDefault parameter structure for the printer values.
@@ -4313,7 +404,6 @@ static void init_printer_values(struct loadparm_service *pService)
 
 		case PRINT_CUPS:
 		case PRINT_IPRINT:
-#ifdef HAVE_CUPS
 			/* set the lpq command to contain the destination printer
 			   name only.  This is used by cups_queue_get() */
 			string_set(&pService->szLpqcommand, "%p");
@@ -4323,15 +413,6 @@ static void init_printer_values(struct loadparm_service *pService)
 			string_set(&pService->szLpresumecommand, "");
 			string_set(&pService->szQueuepausecommand, "");
 			string_set(&pService->szQueueresumecommand, "");
-#else
-			string_set(&pService->szLpqcommand, "lpq -P'%p'");
-			string_set(&pService->szLprmcommand, "lprm -P'%p' %j");
-			string_set(&pService->szPrintcommand, "lpr -P'%p' %s; rm %s");
-			string_set(&pService->szLppausecommand, "lp -i '%p-%j' -H hold");
-			string_set(&pService->szLpresumecommand, "lp -i '%p-%j' -H resume");
-			string_set(&pService->szQueuepausecommand, "disable '%p'");
-			string_set(&pService->szQueueresumecommand, "enable '%p'");
-#endif /* HAVE_CUPS */
 			break;
 
 		case PRINT_SYSV:
@@ -4353,62 +434,57 @@ static void init_printer_values(struct loadparm_service *pService)
 			string_set(&pService->szPrintcommand, "lp -r -P%p %s");
 			break;
 
-#if defined(DEVELOPER) || defined(ENABLE_BUILD_FARM_HACKS)
+#if defined(DEVELOPER) || defined(ENABLE_SELFTEST)
 
 	case PRINT_TEST:
 	case PRINT_VLP: {
 		const char *tdbfile;
+		TALLOC_CTX *tmp_ctx = talloc_stackframe();
 		char *tmp;
 
 		tdbfile = talloc_asprintf(
-			talloc_tos(), "tdbfile=%s",
+			tmp_ctx, "tdbfile=%s",
 			lp_parm_const_string(-1, "vlp", "tdbfile",
 					     "/tmp/vlp.tdb"));
 		if (tdbfile == NULL) {
 			tdbfile="tdbfile=/tmp/vlp.tdb";
 		}
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s print %%p %%s",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s print %%p %%s",
 				      tdbfile);
 		string_set(&pService->szPrintcommand,
 			   tmp ? tmp : "vlp print %p %s");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s lpq %%p",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s lpq %%p",
 				      tdbfile);
 		string_set(&pService->szLpqcommand,
 			   tmp ? tmp : "vlp lpq %p");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s lprm %%p %%j",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s lprm %%p %%j",
 				      tdbfile);
 		string_set(&pService->szLprmcommand,
 			   tmp ? tmp : "vlp lprm %p %j");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s lppause %%p %%j",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s lppause %%p %%j",
 				      tdbfile);
 		string_set(&pService->szLppausecommand,
 			   tmp ? tmp : "vlp lppause %p %j");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s lpresume %%p %%j",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s lpresume %%p %%j",
 				      tdbfile);
 		string_set(&pService->szLpresumecommand,
 			   tmp ? tmp : "vlp lpresume %p %j");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s queuepause %%p",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s queuepause %%p",
 				      tdbfile);
 		string_set(&pService->szQueuepausecommand,
 			   tmp ? tmp : "vlp queuepause %p");
-		TALLOC_FREE(tmp);
 
-		tmp = talloc_asprintf(talloc_tos(), "vlp %s queueresume %%p",
+		tmp = talloc_asprintf(tmp_ctx, "vlp %s queueresume %%p",
 				      tdbfile);
 		string_set(&pService->szQueueresumecommand,
 			   tmp ? tmp : "vlp queueresume %p");
-		TALLOC_FREE(tmp);
+		TALLOC_FREE(tmp_ctx);
 
 		break;
 	}
@@ -4555,6 +631,7 @@ static void free_global_parameters(void)
 {
 	free_param_opts(&Globals.param_opt);
 	free_parameters_by_snum(GLOBAL_SECTION_SNUM);
+	TALLOC_FREE(Globals.ctx);
 }
 
 static int map_parameter(const char *pszParmName);
@@ -4637,9 +714,9 @@ static void init_globals(bool reinit_globals)
 
 	if (!done_init) {
 		/* The logfile can be set before this is invoked. Free it if so. */
-		if (Globals.szLogFile != NULL) {
-			string_free(&Globals.szLogFile);
-			Globals.szLogFile = NULL;
+		if (Globals.logfile != NULL) {
+			string_free(&Globals.logfile);
+			Globals.logfile = NULL;
 		}
 		done_init = true;
 	} else {
@@ -4651,6 +728,8 @@ static void init_globals(bool reinit_globals)
 	 * apply_lp_set_cmdline() call puts these values back in the
 	 * table once the defaults are set */
 	ZERO_STRUCT(Globals);
+
+	Globals.ctx = talloc_new(NULL);
 
 	for (i = 0; parm_table[i].label; i++) {
 		if ((parm_table[i].type == P_STRING ||
@@ -4699,7 +778,7 @@ static void init_globals(bool reinit_globals)
 	string_set(&Globals.szStateDir, get_dyn_STATEDIR());
 	string_set(&Globals.szCacheDir, get_dyn_CACHEDIR());
 	string_set(&Globals.szPidDir, get_dyn_PIDDIR());
-	string_set(&Globals.szSocketAddress, "0.0.0.0");
+	string_set(&Globals.nbt_client_socket_address, "0.0.0.0");
 	/*
 	 * By default support explicit binding to broadcast
  	 * addresses.
@@ -4715,14 +794,14 @@ static void init_globals(bool reinit_globals)
 	string_set(&Globals.szPanicAction, "/bin/sleep 999999999");
 #endif
 
-	string_set(&Globals.szSocketOptions, DEFAULT_SOCKET_OPTIONS);
+	string_set(&Globals.socket_options, DEFAULT_SOCKET_OPTIONS);
 
 	string_set(&Globals.szLogonDrive, "");
 	/* %N is the NIS auto.home server if -DAUTOHOME is used, else same as %L */
 	string_set(&Globals.szLogonHome, "\\\\%N\\%U");
 	string_set(&Globals.szLogonPath, "\\\\%N\\%U\\profile");
 
-	string_set(&Globals.szNameResolveOrder, "lmhosts wins host bcast");
+	Globals.szNameResolveOrder = (const char **)str_list_make_v3(NULL, "lmhosts wins host bcast", NULL);
 	string_set(&Globals.szPasswordServer, "*");
 
 	Globals.AlgorithmicRidBase = BASE_RID;
@@ -4731,7 +810,7 @@ static void init_globals(bool reinit_globals)
 	Globals.PrintcapCacheTime = 750; 	/* 12.5 minutes */
 
 	Globals.ConfigBackend = config_backend;
-	Globals.ServerRole = ROLE_AUTO;
+	Globals.server_role = ROLE_AUTO;
 
 	/* Was 65535 (0xFFFF). 0x4101 matches W2K and causes major speed improvements... */
 	/* Discovered by 2 days of pain by Don McCall @ HP :-). */
@@ -4748,10 +827,9 @@ static void init_globals(bool reinit_globals)
 	Globals.max_log_size = 5000;
 	Globals.max_open_files = max_open_files();
 	Globals.open_files_db_hash_size = SMB_OPEN_DATABASE_TDB_HASH_SIZE;
-	Globals.maxprotocol = PROTOCOL_NT1;
-	Globals.minprotocol = PROTOCOL_CORE;
+	Globals.srv_maxprotocol = PROTOCOL_SMB3_00;
+	Globals.srv_minprotocol = PROTOCOL_LANMAN1;
 	Globals.security = SEC_USER;
-	Globals.paranoid_server_security = true;
 	Globals.bEncryptPasswords = true;
 	Globals.clientSchannel = Auto;
 	Globals.serverSchannel = Auto;
@@ -4762,7 +840,7 @@ static void init_globals(bool reinit_globals)
 	Globals.syslog = 1;
 	Globals.bSyslogOnly = false;
 	Globals.bTimestampLogs = true;
-	string_set(&Globals.szLogLevel, "0");
+	string_set(&Globals.loglevel, "0");
 	Globals.bDebugPrefixTimestamp = false;
 	Globals.bDebugHiresTimestamp = true;
 	Globals.bDebugPid = false;
@@ -4810,6 +888,7 @@ static void init_globals(bool reinit_globals)
 #else
 	Globals.bUseMmap = true;
 #endif
+	Globals.bUnicode = true;
 	Globals.bUnixExtensions = true;
 	Globals.bResetOnZeroVC = false;
 	Globals.bLogWriteableFilesOnExit = false;
@@ -4820,7 +899,7 @@ static void init_globals(bool reinit_globals)
 	   a large number of sites (tridge) */
 	Globals.bHostnameLookups = false;
 
-	string_set(&Globals.szPassdbBackend, "tdbsam");
+	string_set(&Globals.passdb_backend, "tdbsam");
 	string_set(&Globals.szLdapSuffix, "");
 	string_set(&Globals.szLdapMachineSuffix, "");
 	string_set(&Globals.szLdapUserSuffix, "");
@@ -4863,7 +942,7 @@ static void init_globals(bool reinit_globals)
 	Globals.bMsAddPrinterWizard = true;
 	Globals.os_level = 20;
 	Globals.bLocalMaster = true;
-	Globals.iDomainMaster = Auto;	/* depending on bDomainLogons */
+	Globals.domain_master = Auto;	/* depending on bDomainLogons */
 	Globals.bDomainLogons = false;
 	Globals.bBrowseList = true;
 	Globals.bWINSsupport = false;
@@ -4872,10 +951,7 @@ static void init_globals(bool reinit_globals)
 	TALLOC_FREE(Globals.szInitLogonDelayedHosts);
 	Globals.InitLogonDelay = 100; /* 100 ms default delay */
 
-	Globals.bDNSproxy = true;
-
-	/* this just means to use them if they exist */
-	Globals.bKernelOplocks = true;
+	Globals.bWINSdnsProxy = true;
 
 	Globals.bAllowTrustedDomains = true;
 	string_set(&Globals.szIdmapBackend, "tdb");
@@ -4887,7 +963,12 @@ static void init_globals(bool reinit_globals)
 	string_set(&Globals.szCupsServer, "");
 	string_set(&Globals.szIPrintServer, "");
 
+#ifdef CLUSTER_SUPPORT
+	string_set(&Globals.ctdbdSocket, CTDB_PATH);
+#else
 	string_set(&Globals.ctdbdSocket, "");
+#endif
+
 	Globals.szClusterAddresses = NULL;
 	Globals.clustering = false;
 	Globals.ctdb_timeout = 0;
@@ -4920,7 +1001,7 @@ static void init_globals(bool reinit_globals)
 	Globals.server_signing = SMB_SIGNING_DEFAULT;
 
 	Globals.bDeferSharingViolations = true;
-	string_set(&Globals.smb_ports, SMB_PORTS);
+	Globals.smb_ports = (const char **)str_list_make_v3(NULL, SMB_PORTS, NULL);
 
 	Globals.bEnablePrivileges = true;
 	Globals.bHostMSDfs        = true;
@@ -4961,15 +1042,14 @@ static void init_globals(bool reinit_globals)
 }
 
 /*******************************************************************
- Convenience routine to grab string parameters into temporary memory
+ Convenience routine to grab string parameters into talloced memory
  and run standard_sub_basic on them. The buffers can be written to by
  callers without affecting the source string.
 ********************************************************************/
 
-static char *lp_string(const char *s)
+static char *lp_string(TALLOC_CTX *ctx, const char *s)
 {
 	char *ret;
-	TALLOC_CTX *ctx = talloc_tos();
 
 	/* The follow debug is useful for tracking down memory problems
 	   especially if you have an inner loop that is calling a lp_*()
@@ -5005,20 +1085,20 @@ static char *lp_string(const char *s)
 */
 
 #define FN_GLOBAL_STRING(fn_name,ptr) \
- char *fn_name(void) {return(lp_string(*(char **)(&Globals.ptr) ? *(char **)(&Globals.ptr) : ""));}
+char *lp_ ## fn_name(TALLOC_CTX *ctx) {return(lp_string((ctx), *(char **)(&Globals.ptr) ? *(char **)(&Globals.ptr) : ""));}
 #define FN_GLOBAL_CONST_STRING(fn_name,ptr) \
- const char *fn_name(void) {return(*(const char **)(&Globals.ptr) ? *(const char **)(&Globals.ptr) : "");}
+ const char *lp_ ## fn_name(void) {return(*(const char * const *)(&Globals.ptr) ? *(const char * const *)(&Globals.ptr) : "");}
 #define FN_GLOBAL_LIST(fn_name,ptr) \
- const char **fn_name(void) {return(*(const char ***)(&Globals.ptr));}
+ const char **lp_ ## fn_name(void) {return(*(const char ***)(&Globals.ptr));}
 #define FN_GLOBAL_BOOL(fn_name,ptr) \
- bool fn_name(void) {return(*(bool *)(&Globals.ptr));}
+ bool lp_ ## fn_name(void) {return(*(bool *)(&Globals.ptr));}
 #define FN_GLOBAL_CHAR(fn_name,ptr) \
- char fn_name(void) {return(*(char *)(&Globals.ptr));}
+ char lp_ ## fn_name(void) {return(*(char *)(&Globals.ptr));}
 #define FN_GLOBAL_INTEGER(fn_name,ptr) \
- int fn_name(void) {return(*(int *)(&Globals.ptr));}
+ int lp_ ## fn_name(void) {return(*(int *)(&Globals.ptr));}
 
 #define FN_LOCAL_STRING(fn_name,val) \
- char *lp_ ## fn_name(int i) {return(lp_string((LP_SNUM_OK(i) && ServicePtrs[(i)]->val) ? ServicePtrs[(i)]->val : sDefault.val));}
+char *lp_ ## fn_name(TALLOC_CTX *ctx,int i) {return(lp_string((ctx), (LP_SNUM_OK(i) && ServicePtrs[(i)]->val) ? ServicePtrs[(i)]->val : sDefault.val));}
 #define FN_LOCAL_CONST_STRING(fn_name,val) \
  const char *lp_ ## fn_name(int i) {return (const char *)((LP_SNUM_OK(i) && ServicePtrs[(i)]->val) ? ServicePtrs[(i)]->val : sDefault.val);}
 #define FN_LOCAL_LIST(fn_name,val) \
@@ -5035,21 +1115,10 @@ static char *lp_string(const char *s)
 #define FN_LOCAL_CHAR(fn_name,val) \
  char lp_ ## fn_name(const struct share_params *p) {return(LP_SNUM_OK(p->service)? ServicePtrs[(p->service)]->val : sDefault.val);}
 
-FN_GLOBAL_CONST_STRING(lp_smb_ports, smb_ports)
-FN_GLOBAL_CONST_STRING(lp_dos_charset, dos_charset)
-FN_GLOBAL_CONST_STRING(lp_unix_charset, unix_charset)
-FN_GLOBAL_STRING(lp_logfile, szLogFile)
-FN_GLOBAL_STRING(lp_configfile, szConfigFile)
-FN_GLOBAL_CONST_STRING(lp_smb_passwd_file, szSMBPasswdFile)
-FN_GLOBAL_CONST_STRING(lp_private_dir, szPrivateDir)
-FN_GLOBAL_STRING(lp_serverstring, szServerString)
-FN_GLOBAL_INTEGER(lp_printcap_cache_time, PrintcapCacheTime)
-FN_GLOBAL_STRING(lp_addport_cmd, szAddPortCommand)
-FN_GLOBAL_STRING(lp_enumports_cmd, szEnumPortsCommand)
-FN_GLOBAL_STRING(lp_addprinter_cmd, szAddPrinterCommand)
-FN_GLOBAL_STRING(lp_deleteprinter_cmd, szDeletePrinterCommand)
-FN_GLOBAL_STRING(lp_os2_driver_map, szOs2DriverMap)
-FN_GLOBAL_CONST_STRING(lp_lockdir, szLockDir)
+
+static FN_GLOBAL_BOOL(_readraw, bReadRaw)
+static FN_GLOBAL_BOOL(_writeraw, bWriteRaw)
+
 /* If lp_statedir() and lp_cachedir() are explicitely set during the
  * build process or in smb.conf, we use that value.  Otherwise they
  * default to the value of lp_lockdir(). */
@@ -5071,83 +1140,7 @@ const char *lp_cachedir(void) {
 		return(*(char **)(&Globals.szLockDir) ?
 		       *(char **)(&Globals.szLockDir) : "");
 }
-FN_GLOBAL_CONST_STRING(lp_piddir, szPidDir)
-FN_GLOBAL_STRING(lp_mangling_method, szManglingMethod)
-FN_GLOBAL_INTEGER(lp_mangle_prefix, mangle_prefix)
-FN_GLOBAL_CONST_STRING(lp_utmpdir, szUtmpDir)
-FN_GLOBAL_CONST_STRING(lp_wtmpdir, szWtmpDir)
-FN_GLOBAL_BOOL(lp_utmp, bUtmp)
-FN_GLOBAL_STRING(lp_rootdir, szRootdir)
-FN_GLOBAL_STRING(lp_perfcount_module, szSMBPerfcountModule)
-FN_GLOBAL_STRING(lp_defaultservice, szDefaultService)
-FN_GLOBAL_STRING(lp_msg_command, szMsgCommand)
-FN_GLOBAL_STRING(lp_get_quota_command, szGetQuota)
-FN_GLOBAL_STRING(lp_set_quota_command, szSetQuota)
-FN_GLOBAL_STRING(lp_auto_services, szAutoServices)
-FN_GLOBAL_STRING(lp_passwd_program, szPasswdProgram)
-FN_GLOBAL_STRING(lp_passwd_chat, szPasswdChat)
-FN_GLOBAL_CONST_STRING(lp_passwordserver, szPasswordServer)
-FN_GLOBAL_CONST_STRING(lp_name_resolve_order, szNameResolveOrder)
-FN_GLOBAL_CONST_STRING(lp_workgroup, szWorkgroup)
-FN_GLOBAL_CONST_STRING(lp_netbios_name, szNetbiosName)
-FN_GLOBAL_CONST_STRING(lp_netbios_scope, szNetbiosScope)
-FN_GLOBAL_CONST_STRING(lp_realm, szRealmUpper)
-FN_GLOBAL_CONST_STRING(lp_dnsdomain, szDnsDomain)
-FN_GLOBAL_CONST_STRING(lp_afs_username_map, szAfsUsernameMap)
-FN_GLOBAL_INTEGER(lp_afs_token_lifetime, iAfsTokenLifetime)
-FN_GLOBAL_STRING(lp_log_nt_token_command, szLogNtTokenCommand)
-FN_GLOBAL_STRING(lp_username_map, szUsernameMap)
-FN_GLOBAL_CONST_STRING(lp_logon_script, szLogonScript)
-FN_GLOBAL_CONST_STRING(lp_logon_path, szLogonPath)
-FN_GLOBAL_CONST_STRING(lp_logon_drive, szLogonDrive)
-FN_GLOBAL_CONST_STRING(lp_logon_home, szLogonHome)
-FN_GLOBAL_STRING(lp_remote_announce, szRemoteAnnounce)
-FN_GLOBAL_STRING(lp_remote_browse_sync, szRemoteBrowseSync)
-FN_GLOBAL_BOOL(lp_nmbd_bind_explicit_broadcast, bNmbdBindExplicitBroadcast)
-FN_GLOBAL_LIST(lp_wins_server_list, szWINSservers)
-FN_GLOBAL_LIST(lp_interfaces, szInterfaces)
-FN_GLOBAL_STRING(lp_nis_home_map_name, szNISHomeMapName)
-FN_GLOBAL_LIST(lp_netbios_aliases, szNetbiosAliases)
-FN_GLOBAL_CONST_STRING(lp_passdb_backend, szPassdbBackend)
-FN_GLOBAL_LIST(lp_preload_modules, szPreloadModules)
-FN_GLOBAL_STRING(lp_panic_action, szPanicAction)
-FN_GLOBAL_STRING(lp_adduser_script, szAddUserScript)
-FN_GLOBAL_STRING(lp_renameuser_script, szRenameUserScript)
-FN_GLOBAL_STRING(lp_deluser_script, szDelUserScript)
-
-FN_GLOBAL_CONST_STRING(lp_guestaccount, szGuestaccount)
-FN_GLOBAL_STRING(lp_addgroup_script, szAddGroupScript)
-FN_GLOBAL_STRING(lp_delgroup_script, szDelGroupScript)
-FN_GLOBAL_STRING(lp_addusertogroup_script, szAddUserToGroupScript)
-FN_GLOBAL_STRING(lp_deluserfromgroup_script, szDelUserFromGroupScript)
-FN_GLOBAL_STRING(lp_setprimarygroup_script, szSetPrimaryGroupScript)
-
-FN_GLOBAL_STRING(lp_addmachine_script, szAddMachineScript)
-
-FN_GLOBAL_STRING(lp_shutdown_script, szShutdownScript)
-FN_GLOBAL_STRING(lp_abort_shutdown_script, szAbortShutdownScript)
-FN_GLOBAL_STRING(lp_username_map_script, szUsernameMapScript)
-FN_GLOBAL_INTEGER(lp_username_map_cache_time, iUsernameMapCacheTime)
-
-FN_GLOBAL_STRING(lp_check_password_script, szCheckPasswordScript)
-
-FN_GLOBAL_STRING(lp_wins_hook, szWINSHook)
-FN_GLOBAL_CONST_STRING(lp_template_homedir, szTemplateHomedir)
-FN_GLOBAL_CONST_STRING(lp_template_shell, szTemplateShell)
-FN_GLOBAL_CONST_STRING(lp_winbind_separator, szWinbindSeparator)
-FN_GLOBAL_INTEGER(lp_acl_compatibility, iAclCompat)
-FN_GLOBAL_BOOL(lp_winbind_enum_users, bWinbindEnumUsers)
-FN_GLOBAL_BOOL(lp_winbind_enum_groups, bWinbindEnumGroups)
-FN_GLOBAL_BOOL(lp_winbind_use_default_domain, bWinbindUseDefaultDomain)
-FN_GLOBAL_BOOL(lp_winbind_trusted_domains_only, bWinbindTrustedDomainsOnly)
-FN_GLOBAL_BOOL(lp_winbind_nested_groups, bWinbindNestedGroups)
-FN_GLOBAL_INTEGER(lp_winbind_expand_groups, winbind_expand_groups)
-FN_GLOBAL_BOOL(lp_winbind_refresh_tickets, bWinbindRefreshTickets)
-FN_GLOBAL_BOOL(lp_winbind_offline_logon, bWinbindOfflineLogon)
-FN_GLOBAL_BOOL(lp_winbind_normalize_names, bWinbindNormalizeNames)
-FN_GLOBAL_BOOL(lp_winbind_rpc_only, bWinbindRpcOnly)
-FN_GLOBAL_BOOL(lp_create_krb5_conf, bCreateKrb5Conf)
-static FN_GLOBAL_INTEGER(lp_winbind_max_domain_connections_int,
+static FN_GLOBAL_INTEGER(winbind_max_domain_connections_int,
 		  winbindMaxDomainConnections)
 
 int lp_winbind_max_domain_connections(void)
@@ -5161,147 +1154,6 @@ int lp_winbind_max_domain_connections(void)
 	return MAX(1, lp_winbind_max_domain_connections_int());
 }
 
-FN_GLOBAL_CONST_STRING(lp_idmap_backend, szIdmapBackend)
-FN_GLOBAL_INTEGER(lp_idmap_cache_time, iIdmapCacheTime)
-FN_GLOBAL_INTEGER(lp_idmap_negative_cache_time, iIdmapNegativeCacheTime)
-FN_GLOBAL_INTEGER(lp_keepalive, iKeepalive)
-FN_GLOBAL_BOOL(lp_passdb_expand_explicit, bPassdbExpandExplicit)
-
-FN_GLOBAL_STRING(lp_ldap_suffix, szLdapSuffix)
-FN_GLOBAL_STRING(lp_ldap_admin_dn, szLdapAdminDn)
-FN_GLOBAL_INTEGER(lp_ldap_ssl, ldap_ssl)
-FN_GLOBAL_BOOL(lp_ldap_ssl_ads, ldap_ssl_ads)
-FN_GLOBAL_INTEGER(lp_ldap_deref, ldap_deref)
-FN_GLOBAL_INTEGER(lp_ldap_follow_referral, ldap_follow_referral)
-FN_GLOBAL_INTEGER(lp_ldap_passwd_sync, ldap_passwd_sync)
-FN_GLOBAL_BOOL(lp_ldap_delete_dn, ldap_delete_dn)
-FN_GLOBAL_INTEGER(lp_ldap_replication_sleep, ldap_replication_sleep)
-FN_GLOBAL_INTEGER(lp_ldap_timeout, ldap_timeout)
-FN_GLOBAL_INTEGER(lp_ldap_connection_timeout, ldap_connection_timeout)
-FN_GLOBAL_INTEGER(lp_ldap_page_size, ldap_page_size)
-FN_GLOBAL_INTEGER(lp_ldap_debug_level, ldap_debug_level)
-FN_GLOBAL_INTEGER(lp_ldap_debug_threshold, ldap_debug_threshold)
-FN_GLOBAL_STRING(lp_add_share_cmd, szAddShareCommand)
-FN_GLOBAL_STRING(lp_change_share_cmd, szChangeShareCommand)
-FN_GLOBAL_STRING(lp_delete_share_cmd, szDeleteShareCommand)
-FN_GLOBAL_STRING(lp_usershare_path, szUsersharePath)
-FN_GLOBAL_LIST(lp_usershare_prefix_allow_list, szUsersharePrefixAllowList)
-FN_GLOBAL_LIST(lp_usershare_prefix_deny_list, szUsersharePrefixDenyList)
-
-FN_GLOBAL_LIST(lp_eventlog_list, szEventLogs)
-
-FN_GLOBAL_BOOL(lp_registry_shares, bRegistryShares)
-FN_GLOBAL_BOOL(lp_usershare_allow_guests, bUsershareAllowGuests)
-FN_GLOBAL_BOOL(lp_usershare_owner_only, bUsershareOwnerOnly)
-FN_GLOBAL_BOOL(lp_disable_netbios, bDisableNetbios)
-FN_GLOBAL_BOOL(lp_reset_on_zero_vc, bResetOnZeroVC)
-FN_GLOBAL_BOOL(lp_log_writeable_files_on_exit, bLogWriteableFilesOnExit)
-FN_GLOBAL_BOOL(lp_ms_add_printer_wizard, bMsAddPrinterWizard)
-FN_GLOBAL_BOOL(lp_dns_proxy, bDNSproxy)
-FN_GLOBAL_BOOL(lp_we_are_a_wins_server, bWINSsupport)
-FN_GLOBAL_BOOL(lp_wins_proxy, bWINSproxy)
-FN_GLOBAL_BOOL(lp_local_master, bLocalMaster)
-static FN_GLOBAL_BOOL(lp_domain_logons, bDomainLogons)
-FN_GLOBAL_LIST(lp_init_logon_delayed_hosts, szInitLogonDelayedHosts)
-FN_GLOBAL_INTEGER(lp_init_logon_delay, InitLogonDelay)
-FN_GLOBAL_BOOL(lp_load_printers, bLoadPrinters)
-FN_GLOBAL_BOOL(_lp_readraw, bReadRaw)
-FN_GLOBAL_BOOL(lp_large_readwrite, bLargeReadwrite)
-FN_GLOBAL_BOOL(_lp_writeraw, bWriteRaw)
-FN_GLOBAL_BOOL(lp_null_passwords, bNullPasswords)
-FN_GLOBAL_BOOL(lp_obey_pam_restrictions, bObeyPamRestrictions)
-FN_GLOBAL_BOOL(lp_encrypted_passwords, bEncryptPasswords)
-FN_GLOBAL_INTEGER(lp_client_schannel, clientSchannel)
-FN_GLOBAL_INTEGER(lp_server_schannel, serverSchannel)
-FN_GLOBAL_BOOL(lp_syslog_only, bSyslogOnly)
-FN_GLOBAL_BOOL(lp_timestamp_logs, bTimestampLogs)
-FN_GLOBAL_BOOL(lp_debug_prefix_timestamp, bDebugPrefixTimestamp)
-FN_GLOBAL_BOOL(lp_debug_hires_timestamp, bDebugHiresTimestamp)
-FN_GLOBAL_BOOL(lp_debug_pid, bDebugPid)
-FN_GLOBAL_BOOL(lp_debug_uid, bDebugUid)
-FN_GLOBAL_BOOL(lp_debug_class, bDebugClass)
-FN_GLOBAL_BOOL(lp_enable_core_files, bEnableCoreFiles)
-FN_GLOBAL_BOOL(lp_browse_list, bBrowseList)
-FN_GLOBAL_BOOL(lp_nis_home_map, bNISHomeMap)
-static FN_GLOBAL_BOOL(lp_time_server, bTimeServer)
-FN_GLOBAL_BOOL(lp_bind_interfaces_only, bBindInterfacesOnly)
-FN_GLOBAL_BOOL(lp_pam_password_change, bPamPasswordChange)
-FN_GLOBAL_BOOL(lp_unix_password_sync, bUnixPasswdSync)
-FN_GLOBAL_BOOL(lp_passwd_chat_debug, bPasswdChatDebug)
-FN_GLOBAL_INTEGER(lp_passwd_chat_timeout, iPasswdChatTimeout)
-FN_GLOBAL_BOOL(lp_nt_pipe_support, bNTPipeSupport)
-FN_GLOBAL_BOOL(lp_nt_status_support, bNTStatusSupport)
-FN_GLOBAL_BOOL(lp_stat_cache, bStatCache)
-FN_GLOBAL_INTEGER(lp_max_stat_cache_size, iMaxStatCacheSize)
-FN_GLOBAL_BOOL(lp_allow_trusted_domains, bAllowTrustedDomains)
-FN_GLOBAL_BOOL(lp_map_untrusted_to_domain, bMapUntrustedToDomain)
-FN_GLOBAL_INTEGER(lp_restrict_anonymous, restrict_anonymous)
-FN_GLOBAL_BOOL(lp_lanman_auth, bLanmanAuth)
-FN_GLOBAL_BOOL(lp_ntlm_auth, bNTLMAuth)
-FN_GLOBAL_BOOL(lp_client_plaintext_auth, bClientPlaintextAuth)
-FN_GLOBAL_BOOL(lp_client_lanman_auth, bClientLanManAuth)
-FN_GLOBAL_BOOL(lp_client_ntlmv2_auth, bClientNTLMv2Auth)
-FN_GLOBAL_BOOL(lp_host_msdfs, bHostMSDfs)
-FN_GLOBAL_BOOL(lp_kernel_oplocks, bKernelOplocks)
-FN_GLOBAL_BOOL(lp_enhanced_browsing, enhanced_browsing)
-FN_GLOBAL_BOOL(lp_use_mmap, bUseMmap)
-FN_GLOBAL_BOOL(lp_unix_extensions, bUnixExtensions)
-FN_GLOBAL_BOOL(lp_use_spnego, bUseSpnego)
-FN_GLOBAL_BOOL(lp_client_use_spnego, bClientUseSpnego)
-FN_GLOBAL_BOOL(lp_client_use_spnego_principal, client_use_spnego_principal)
-FN_GLOBAL_BOOL(lp_hostname_lookups, bHostnameLookups)
-FN_GLOBAL_CONST_STRING(lp_dedicated_keytab_file, szDedicatedKeytabFile)
-FN_GLOBAL_INTEGER(lp_kerberos_method, iKerberosMethod)
-FN_GLOBAL_BOOL(lp_defer_sharing_violations, bDeferSharingViolations)
-FN_GLOBAL_BOOL(lp_enable_privileges, bEnablePrivileges)
-FN_GLOBAL_BOOL(lp_enable_asu_support, bASUSupport)
-FN_GLOBAL_INTEGER(lp_os_level, os_level)
-FN_GLOBAL_INTEGER(lp_max_ttl, max_ttl)
-FN_GLOBAL_INTEGER(lp_max_wins_ttl, max_wins_ttl)
-FN_GLOBAL_INTEGER(lp_min_wins_ttl, min_wins_ttl)
-FN_GLOBAL_INTEGER(lp_max_log_size, max_log_size)
-FN_GLOBAL_INTEGER(lp_max_open_files, max_open_files)
-FN_GLOBAL_INTEGER(lp_open_files_db_hash_size, open_files_db_hash_size)
-FN_GLOBAL_INTEGER(lp_maxxmit, max_xmit)
-FN_GLOBAL_INTEGER(lp_maxmux, max_mux)
-FN_GLOBAL_INTEGER(lp_passwordlevel, pwordlevel)
-FN_GLOBAL_INTEGER(lp_usernamelevel, unamelevel)
-FN_GLOBAL_INTEGER(lp_deadtime, deadtime)
-FN_GLOBAL_BOOL(lp_getwd_cache, getwd_cache)
-static FN_GLOBAL_INTEGER(_lp_maxprotocol, maxprotocol)
-int lp_maxprotocol(void)
-{
-	int ret = _lp_maxprotocol();
-	if ((ret >= PROTOCOL_SMB2_02) && (lp_security() == SEC_SHARE)) {
-		DEBUG(2,("WARNING!!: \"security = share\" is incompatible "
-			"with the SMB2 protocol. Resetting to SMB1.\n" ));
-			lp_do_parameter(-1, "max protocol", "NT1");
-		return PROTOCOL_NT1;
-	}
-	return ret;
-}
-FN_GLOBAL_INTEGER(lp_minprotocol, minprotocol)
-FN_GLOBAL_INTEGER(lp_security, security)
-FN_GLOBAL_LIST(lp_auth_methods, AuthMethods)
-FN_GLOBAL_BOOL(lp_paranoid_server_security, paranoid_server_security)
-FN_GLOBAL_INTEGER(lp_maxdisksize, maxdisksize)
-FN_GLOBAL_INTEGER(lp_lpqcachetime, lpqcachetime)
-FN_GLOBAL_INTEGER(lp_max_smbd_processes, iMaxSmbdProcesses)
-FN_GLOBAL_BOOL(_lp_disable_spoolss, bDisableSpoolss)
-FN_GLOBAL_INTEGER(lp_syslog, syslog)
-FN_GLOBAL_INTEGER(lp_lm_announce, lm_announce)
-FN_GLOBAL_INTEGER(lp_lm_interval, lm_interval)
-FN_GLOBAL_INTEGER(lp_machine_password_timeout, machine_password_timeout)
-FN_GLOBAL_INTEGER(lp_map_to_guest, map_to_guest)
-FN_GLOBAL_INTEGER(lp_oplock_break_wait_time, oplock_break_wait_time)
-FN_GLOBAL_INTEGER(lp_lock_spin_time, iLockSpinTime)
-FN_GLOBAL_INTEGER(lp_usershare_max_shares, iUsershareMaxShares)
-FN_GLOBAL_CONST_STRING(lp_socket_options, szSocketOptions)
-FN_GLOBAL_INTEGER(lp_config_backend, ConfigBackend)
-static FN_GLOBAL_INTEGER(lp__server_role, ServerRole)
-FN_GLOBAL_INTEGER(lp_smb2_max_read, ismb2_max_read)
-FN_GLOBAL_INTEGER(lp_smb2_max_write, ismb2_max_write)
-FN_GLOBAL_INTEGER(lp_smb2_max_trans, ismb2_max_trans)
 int lp_smb2_max_credits(void)
 {
 	if (Globals.ismb2_max_credits == 0) {
@@ -5309,8 +1161,6 @@ int lp_smb2_max_credits(void)
 	}
 	return Globals.ismb2_max_credits;
 }
-FN_GLOBAL_LIST(lp_svcctl_list, szServicesList)
-FN_GLOBAL_STRING(lp_cups_server, szCupsServer)
 int lp_cups_encrypt(void)
 {
 	int result = 0;
@@ -5329,27 +1179,10 @@ int lp_cups_encrypt(void)
 #endif
 	return result;
 }
-FN_GLOBAL_STRING(lp_iprint_server, szIPrintServer)
-FN_GLOBAL_INTEGER(lp_cups_connection_timeout, cups_connection_timeout)
-FN_GLOBAL_CONST_STRING(lp_ctdbd_socket, ctdbdSocket)
-FN_GLOBAL_LIST(lp_cluster_addresses, szClusterAddresses)
-FN_GLOBAL_BOOL(lp_clustering, clustering)
-FN_GLOBAL_INTEGER(lp_ctdb_timeout, ctdb_timeout)
-FN_GLOBAL_INTEGER(lp_ctdb_locktime_warn_threshold, ctdb_locktime_warn_threshold)
-FN_GLOBAL_BOOL(lp_async_smb_echo_handler, bAsyncSMBEchoHandler)
-FN_GLOBAL_BOOL(lp_multicast_dns_register, bMulticastDnsRegister)
-FN_GLOBAL_BOOL(lp_allow_insecure_widelinks, bAllowInsecureWidelinks)
-FN_GLOBAL_INTEGER(lp_winbind_cache_time, winbind_cache_time)
-FN_GLOBAL_INTEGER(lp_winbind_reconnect_delay, winbind_reconnect_delay)
-FN_GLOBAL_INTEGER(lp_winbind_max_clients, winbind_max_clients)
-FN_GLOBAL_LIST(lp_winbind_nss_info, szWinbindNssInfo)
-FN_GLOBAL_INTEGER(lp_algorithmic_rid_base, AlgorithmicRidBase)
-FN_GLOBAL_INTEGER(lp_name_cache_timeout, name_cache_timeout)
-FN_GLOBAL_INTEGER(lp_client_signing, client_signing)
-FN_GLOBAL_INTEGER(lp_server_signing, server_signing)
-FN_GLOBAL_INTEGER(lp_client_ldap_sasl_wrapping, client_ldap_sasl_wrapping)
 
-FN_GLOBAL_CONST_STRING(lp_ncalrpc_dir, ncalrpc_dir)
+/* These functions remain in source3/param for now */
+
+FN_GLOBAL_STRING(configfile, szConfigFile)
 
 #include "lib/param/param_functions.c"
 
@@ -5518,20 +1351,19 @@ static int lp_enum(const char *s,const struct enum_list *_enum)
 
 /* Return parametric option from a given service. Type is a part of option before ':' */
 /* Parametric option has following syntax: 'Type: option = value' */
-/* the returned value is talloced on the talloc_tos() */
-char *lp_parm_talloc_string(int snum, const char *type, const char *option, const char *def)
+char *lp_parm_talloc_string(TALLOC_CTX *ctx, int snum, const char *type, const char *option, const char *def)
 {
 	struct parmlist_entry *data = get_parametrics(snum, type, option);
 
 	if (data == NULL||data->value==NULL) {
 		if (def) {
-			return lp_string(def);
+			return lp_string(ctx, def);
 		} else {
 			return NULL;
 		}
 	}
 
-	return lp_string(data->value);
+	return lp_string(ctx, data->value);
 }
 
 /* Return parametric option from a given service. Type is a part of option before ':' */
@@ -5649,10 +1481,6 @@ static void free_param_opts(struct parmlist_entry **popts)
 {
 	struct parmlist_entry *opt, *next_opt;
 
-	if (popts == NULL) {
-		return;
-	}
-
 	if (*popts != NULL) {
 		DEBUG(5, ("Freeing parametrics:\n"));
 	}
@@ -5717,6 +1545,7 @@ static void free_service_byindex(int idx)
 	}
 
 	free_service(ServicePtrs[idx]);
+	talloc_free_children(ServicePtrs[idx]);
 }
 
 /***************************************************************************
@@ -5757,7 +1586,7 @@ static int add_a_service(const struct loadparm_service *pservice, const char *na
 			return (-1);
 		}
 		ServicePtrs = tsp;
-		ServicePtrs[iNumServices] = SMB_MALLOC_P(struct loadparm_service);
+		ServicePtrs[iNumServices] = talloc(NULL, struct loadparm_service);
 		if (!ServicePtrs[iNumServices]) {
 			DEBUG(0,("add_a_service: out of memory!\n"));
 			return (-1);
@@ -5810,7 +1639,10 @@ char *canonicalize_servicename(TALLOC_CTX *ctx, const char *src)
 	result = talloc_strdup(ctx, src);
 	SMB_ASSERT(result != NULL);
 
-	strlower_m(result);
+	if (!strlower_m(result)) {
+		TALLOC_FREE(result);
+		return NULL;
+	}
 	return result;
 }
 
@@ -5866,7 +1698,8 @@ bool lp_add_home(const char *pszHomename, int iDefaultService,
 		return false;
 
 	if (!(*(ServicePtrs[iDefaultService]->szPath))
-	    || strequal(ServicePtrs[iDefaultService]->szPath, lp_pathname(GLOBAL_SECTION_SNUM))) {
+	    || strequal(ServicePtrs[iDefaultService]->szPath,
+			lp_pathname(talloc_tos(), GLOBAL_SECTION_SNUM))) {
 		string_set(&ServicePtrs[i]->szPath, pszHomedir);
 	}
 
@@ -5967,8 +1800,6 @@ bool lp_add_printer(const char *pszPrintername, int iDefaultService)
 
 	/* Printers cannot be read_only. */
 	ServicePtrs[i]->bRead_only = false;
-	/* No share modes on printer services. */
-	ServicePtrs[i]->bShareModes = false;
 	/* No oplocks on printer services. */
 	ServicePtrs[i]->bOpLocks = false;
 	/* Printer services must be printable. */
@@ -6405,10 +2236,6 @@ static void set_param_opt(struct parmlist_entry **opt_list,
 {
 	struct parmlist_entry *new_opt, *opt;
 	bool not_added;
-
-	if (opt_list == NULL) {
-		return;
-	}
 
 	opt = *opt_list;
 	not_added = true;
@@ -6941,14 +2768,14 @@ static bool handle_dos_charset(struct loadparm_context *unused, int snum, const 
 static bool handle_realm(struct loadparm_context *unused, int snum, const char *pszParmValue, char **ptr)
 {
 	bool ret = true;
-	char *realm = strupper_talloc(talloc_tos(), pszParmValue);
-	char *dnsdomain = strlower_talloc(talloc_tos(), pszParmValue);
+	TALLOC_CTX *frame = talloc_stackframe();
+	char *realm = strupper_talloc(frame, pszParmValue);
+	char *dnsdomain = strlower_talloc(realm, pszParmValue);
 
 	ret &= string_set(&Globals.szRealm, pszParmValue);
-	ret &= string_set(&Globals.szRealmUpper, realm);
-	ret &= string_set(&Globals.szDnsDomain, dnsdomain);
-	TALLOC_FREE(realm);
-	TALLOC_FREE(dnsdomain);
+	ret &= string_set(&Globals.szRealm_upper, realm);
+	ret &= string_set(&Globals.szRealm_lower, dnsdomain);
+	TALLOC_FREE(frame);
 
 	return ret;
 }
@@ -7141,12 +2968,11 @@ static bool handle_debug_list(struct loadparm_context *unused, int snum, const c
  Handle ldap suffixes - default to ldapsuffix if sub-suffixes are not defined.
 ***************************************************************************/
 
-static const char *append_ldap_suffix( const char *str )
+static const char *append_ldap_suffix(TALLOC_CTX *ctx, const char *str )
 {
 	const char *suffix_string;
 
-
-	suffix_string = talloc_asprintf(talloc_tos(), "%s,%s", str,
+	suffix_string = talloc_asprintf(ctx, "%s,%s", str,
 					Globals.szLdapSuffix );
 	if ( !suffix_string ) {
 		DEBUG(0,("append_ldap_suffix: talloc_asprintf() failed!\n"));
@@ -7156,36 +2982,36 @@ static const char *append_ldap_suffix( const char *str )
 	return suffix_string;
 }
 
-const char *lp_ldap_machine_suffix(void)
+const char *lp_ldap_machine_suffix(TALLOC_CTX *ctx)
 {
 	if (Globals.szLdapMachineSuffix[0])
-		return append_ldap_suffix(Globals.szLdapMachineSuffix);
+		return append_ldap_suffix(ctx, Globals.szLdapMachineSuffix);
 
-	return lp_string(Globals.szLdapSuffix);
+	return lp_string(ctx, Globals.szLdapSuffix);
 }
 
-const char *lp_ldap_user_suffix(void)
+const char *lp_ldap_user_suffix(TALLOC_CTX *ctx)
 {
 	if (Globals.szLdapUserSuffix[0])
-		return append_ldap_suffix(Globals.szLdapUserSuffix);
+		return append_ldap_suffix(ctx, Globals.szLdapUserSuffix);
 
-	return lp_string(Globals.szLdapSuffix);
+	return lp_string(ctx, Globals.szLdapSuffix);
 }
 
-const char *lp_ldap_group_suffix(void)
+const char *lp_ldap_group_suffix(TALLOC_CTX *ctx)
 {
 	if (Globals.szLdapGroupSuffix[0])
-		return append_ldap_suffix(Globals.szLdapGroupSuffix);
+		return append_ldap_suffix(ctx, Globals.szLdapGroupSuffix);
 
-	return lp_string(Globals.szLdapSuffix);
+	return lp_string(ctx, Globals.szLdapSuffix);
 }
 
-const char *lp_ldap_idmap_suffix(void)
+const char *lp_ldap_idmap_suffix(TALLOC_CTX *ctx)
 {
 	if (Globals.szLdapIdmapSuffix[0])
-		return append_ldap_suffix(Globals.szLdapIdmapSuffix);
+		return append_ldap_suffix(ctx, Globals.szLdapIdmapSuffix);
 
-	return lp_string(Globals.szLdapSuffix);
+	return lp_string(ctx, Globals.szLdapSuffix);
 }
 
 /****************************************************************************
@@ -7643,12 +3469,42 @@ static bool equal_parameter(parm_type type, void *ptr1, void *ptr2)
 }
 
 /***************************************************************************
- Initialize any local varients in the sDefault table.
+ Initialize any local variables in the sDefault table, after parsing a
+ [globals] section.
 ***************************************************************************/
 
-void init_locals(void)
+static void init_locals(void)
 {
-	/* None as yet. */
+	/*
+	 * We run this check once the [globals] is parsed, to force
+	 * the VFS objects and other per-share settings we need for
+	 * the standard way a AD DC is operated.  We may change these
+	 * as our code evolves, which is why we force these settings.
+	 *
+	 * We can't do this at the end of lp_load_ex(), as by that
+	 * point the services have been loaded and they will already
+	 * have "" as their vfs objects.
+	 */
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC) {
+		const char **vfs_objects = lp_vfs_objects(-1);
+		if (!vfs_objects || !vfs_objects[0]) {
+			if (lp_parm_const_string(-1, "xattr_tdb", "file", NULL)) {
+				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr xattr_tdb");
+			} else if (lp_parm_const_string(-1, "posix", "eadb", NULL)) {
+				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr posix_eadb");
+			} else {
+				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr");
+			}
+		}
+
+		lp_do_parameter(-1, "map hidden", "no");
+		lp_do_parameter(-1, "map system", "no");
+		lp_do_parameter(-1, "map readonly", "no");
+		lp_do_parameter(-1, "map archive", "no");
+		lp_do_parameter(-1, "store dos attributes", "yes");
+		lp_do_parameter(-1, "create mask", "0777");
+		lp_do_parameter(-1, "directory mask", "0777");
+	}
 }
 
 /***************************************************************************
@@ -8246,7 +4102,7 @@ enum usershare_err parse_usershare_file(TALLOC_CTX *ctx,
 	const char **prefixallowlist = lp_usershare_prefix_allow_list();
 	const char **prefixdenylist = lp_usershare_prefix_deny_list();
 	int us_vers;
-	SMB_STRUCT_DIR *dp;
+	DIR *dp;
 	SMB_STRUCT_STAT sbuf;
 	char *sharepath = NULL;
 	char *comment = NULL;
@@ -8381,7 +4237,7 @@ enum usershare_err parse_usershare_file(TALLOC_CTX *ctx,
         }
 
 	/* Ensure this is pointing to a directory. */
-	dp = sys_opendir(sharepath);
+	dp = opendir(sharepath);
 
 	if (!dp) {
 		DEBUG(2,("parse_usershare_file: share %s path %s is not a directory.\n",
@@ -8395,11 +4251,11 @@ enum usershare_err parse_usershare_file(TALLOC_CTX *ctx,
 	if (sys_stat(sharepath, &sbuf, false) == -1) {
 		DEBUG(2,("parse_usershare_file: share %s : stat failed on path %s. %s\n",
 			servicename, sharepath, strerror(errno) ));
-		sys_closedir(dp);
+		closedir(dp);
 		return USERSHARE_POSIX_ERR;
 	}
 
-	sys_closedir(dp);
+	closedir(dp);
 
 	if (!S_ISDIR(sbuf.st_ex_mode)) {
 		DEBUG(2,("parse_usershare_file: share %s path %s is not a directory.\n",
@@ -8513,9 +4369,9 @@ static int process_usershare_file(const char *dir_name, const char *file_name, i
 
 	/* Try and open the file read only - no symlinks allowed. */
 #ifdef O_NOFOLLOW
-	fd = sys_open(fname, O_RDONLY|O_NOFOLLOW, 0);
+	fd = open(fname, O_RDONLY|O_NOFOLLOW, 0);
 #else
-	fd = sys_open(fname, O_RDONLY, 0);
+	fd = open(fname, O_RDONLY, 0);
 #endif
 
 	if (fd == -1) {
@@ -8533,7 +4389,7 @@ static int process_usershare_file(const char *dir_name, const char *file_name, i
 	}
 
 	/* Is it the same dev/inode as was lstated ? */
-	if (lsbuf.st_ex_dev != sbuf.st_ex_dev || lsbuf.st_ex_ino != sbuf.st_ex_ino) {
+	if (!check_same_stat(&lsbuf, &sbuf)) {
 		close(fd);
 		DEBUG(0,("process_usershare_file: fstat of %s is a different file from lstat. "
 			"Symlink spoofing going on ?\n", fname ));
@@ -8725,9 +4581,9 @@ int load_usershare_service(const char *servicename)
 int load_usershare_shares(struct smbd_server_connection *sconn,
 			  bool (*snumused) (struct smbd_server_connection *, int))
 {
-	SMB_STRUCT_DIR *dp;
+	DIR *dp;
 	SMB_STRUCT_STAT sbuf;
-	SMB_STRUCT_DIRENT *de;
+	struct dirent *de;
 	int num_usershares = 0;
 	int max_user_shares = Globals.iUsershareMaxShares;
 	unsigned int num_dir_entries, num_bad_dir_entries, num_tmp_dir_entries;
@@ -8737,6 +4593,7 @@ int load_usershare_shares(struct smbd_server_connection *sconn,
 	int snum_template = -1;
 	const char *usersharepath = Globals.szUsersharePath;
 	int ret = lp_numservices();
+	TALLOC_CTX *tmp_ctx;
 
 	if (max_user_shares == 0 || *usersharepath == '\0') {
 		return lp_numservices();
@@ -8791,7 +4648,7 @@ int load_usershare_shares(struct smbd_server_connection *sconn,
 		}
 	}
 
-	dp = sys_opendir(usersharepath);
+	dp = opendir(usersharepath);
 	if (!dp) {
 		DEBUG(0,("load_usershare_shares:: failed to open directory %s. %s\n",
 			usersharepath, strerror(errno) ));
@@ -8799,7 +4656,7 @@ int load_usershare_shares(struct smbd_server_connection *sconn,
 	}
 
 	for (num_dir_entries = 0, num_bad_dir_entries = 0, num_tmp_dir_entries = 0;
-			(de = sys_readdir(dp));
+			(de = readdir(dp));
 			num_dir_entries++ ) {
 		int r;
 		const char *n = de->d_name;
@@ -8855,22 +4712,29 @@ int load_usershare_shares(struct smbd_server_connection *sconn,
 		}
 	}
 
-	sys_closedir(dp);
+	closedir(dp);
 
 	/* Sweep through and delete any non-refreshed usershares that are
 	   not currently in use. */
+	tmp_ctx = talloc_stackframe();
 	for (iService = iNumServices - 1; iService >= 0; iService--) {
 		if (VALID(iService) && (ServicePtrs[iService]->usershare == USERSHARE_PENDING_DELETE)) {
+			char *servname;
+
 			if (snumused && snumused(sconn, iService)) {
 				continue;
 			}
+
+			servname = lp_servicename(tmp_ctx, iService);
+
 			/* Remove from the share ACL db. */
 			DEBUG(10,("load_usershare_shares: Removing deleted usershare %s\n",
-				lp_servicename(iService) ));
-			delete_share_security(lp_servicename(iService));
+				  servname ));
+			delete_share_security(servname);
 			free_service_byindex(iService);
 		}
 	}
+	talloc_free(tmp_ctx);
 
 	return lp_numservices();
 }
@@ -9019,7 +4883,11 @@ static bool lp_load_ex(const char *pszFname,
 		}
 	}
 
-	lp_add_auto_services(lp_auto_services());
+	{
+		char *serv = lp_auto_services(talloc_tos());
+		lp_add_auto_services(serv);
+		TALLOC_FREE(serv);
+	}
 
 	if (add_ipc) {
 		/* When 'restrict anonymous = 2' guest connections to ipc$
@@ -9031,12 +4899,6 @@ static bool lp_load_ex(const char *pszFname,
 	}
 
 	set_allowed_client_auth();
-
-	if (lp_security() == SEC_SHARE) {
-		DEBUG(1, ("WARNING: The security=share option is deprecated\n"));
-	} else if (lp_security() == SEC_SERVER) {
-		DEBUG(1, ("WARNING: The security=server option is deprecated\n"));
-	}
 
 	if (lp_security() == SEC_ADS && strchr(lp_passwordserver(), ':')) {
 		DEBUG(1, ("WARNING: The optional ':port' in password server = %s is deprecated\n",
@@ -9054,6 +4916,26 @@ static bool lp_load_ex(const char *pszFname,
 	init_iconv();
 
 	fault_configure(smb_panic_s3);
+
+	/*
+	 * We run this check once the whole smb.conf is parsed, to
+	 * force some settings for the standard way a AD DC is
+	 * operated.  We may changed these as our code evolves, which
+	 * is why we force these settings.
+	 */
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC) {
+		lp_do_parameter(-1, "passdb backend", "samba_dsdb");
+
+		lp_do_parameter(-1, "rpc_server:default", "external");
+		lp_do_parameter(-1, "rpc_server:svcctl", "embedded");
+		lp_do_parameter(-1, "rpc_server:srvsvc", "embedded");
+		lp_do_parameter(-1, "rpc_server:eventlog", "embedded");
+		lp_do_parameter(-1, "rpc_server:ntsvcs", "embedded");
+		lp_do_parameter(-1, "rpc_server:winreg", "embedded");
+		lp_do_parameter(-1, "rpc_server:spoolss", "embedded");
+		lp_do_parameter(-1, "rpc_daemon:spoolssd", "embedded");
+		lp_do_parameter(-1, "rpc_server:tcpip", "no");
+	}
 
 	bAllowIncludeRegistry = true;
 
@@ -9231,7 +5113,7 @@ int lp_servicenumber(const char *pszServiceName)
 
 		if (!usershare_exists(iService, &last_mod)) {
 			/* Remove the share security tdb entry for it. */
-			delete_share_security(lp_servicename(iService));
+			delete_share_security(lp_servicename(talloc_tos(), iService));
 			/* Remove it from the array. */
 			free_service_byindex(iService);
 			/* Doesn't exist anymore. */
@@ -9260,16 +5142,16 @@ int lp_servicenumber(const char *pszServiceName)
  A useful volume label function. 
 ********************************************************************/
 
-const char *volume_label(int snum)
+const char *volume_label(TALLOC_CTX *ctx, int snum)
 {
 	char *ret;
-	const char *label = lp_volume(snum);
+	const char *label = lp_volume(ctx, snum);
 	if (!*label) {
-		label = lp_servicename(snum);
+		label = lp_servicename(ctx, snum);
 	}
 
 	/* This returns a 33 byte guarenteed null terminated string. */
-	ret = talloc_strndup(talloc_tos(), label, 32);
+	ret = talloc_strndup(ctx, label, 32);
 	if (!ret) {
 		return "";
 	}		
@@ -9325,10 +5207,10 @@ int lp_default_server_announce(void)
 
 bool lp_domain_master(void)
 {
-	if (Globals.iDomainMaster == Auto)
+	if (Globals.domain_master == Auto)
 		return (lp_server_role() == ROLE_DOMAIN_PDC);
 
-	return (bool)Globals.iDomainMaster;
+	return (bool)Globals.domain_master;
 }
 
 /***********************************************************
@@ -9337,7 +5219,7 @@ bool lp_domain_master(void)
 
 static bool lp_domain_master_true_or_auto(void)
 {
-	if (Globals.iDomainMaster) /* auto or yes */
+	if (Globals.domain_master) /* auto or yes */
 		return true;
 
 	return false;
@@ -9374,26 +5256,19 @@ void lp_copy_service(int snum, const char *new_name)
 	do_section(new_name, NULL);
 	if (snum >= 0) {
 		snum = lp_servicenumber(new_name);
-		if (snum >= 0)
-			lp_do_parameter(snum, "copy", lp_servicename(snum));
+		if (snum >= 0) {
+			char *name = lp_servicename(talloc_tos(), snum);
+			lp_do_parameter(snum, "copy", name);
+		}
 	}
 }
 
-
-/***********************************************************
- Set the global name resolution order (used in smbclient).
-************************************************************/
-
-void lp_set_name_resolve_order(const char *new_order)
+const char *lp_printername(TALLOC_CTX *ctx, int snum)
 {
-	string_set(&Globals.szNameResolveOrder, new_order);
-}
-
-const char *lp_printername(int snum)
-{
-	const char *ret = lp__printername(snum);
-	if (ret == NULL || (ret != NULL && *ret == '\0'))
+	const char *ret = lp__printername(talloc_tos(), snum);
+	if (ret == NULL || *ret == '\0') {
 		ret = lp_const_servicename(snum);
+	}
 
 	return ret;
 }
@@ -9405,7 +5280,7 @@ const char *lp_printername(int snum)
 
 void lp_set_logfile(const char *name)
 {
-	string_set(&Globals.szLogFile, name);
+	string_set(&Globals.logfile, name);
 	debug_set_logfile(name);
 }
 
@@ -9429,11 +5304,7 @@ const char *lp_printcapname(void)
 		return Globals.szPrintcapname;
 
 	if (sDefault.iPrinting == PRINT_CUPS) {
-#ifdef HAVE_CUPS
 		return "cups";
-#else
-		return "lpstat";
-#endif
 	}
 
 	if (sDefault.iPrinting == PRINT_BSD)
@@ -9447,7 +5318,7 @@ static uint32 spoolss_state;
 bool lp_disable_spoolss( void )
 {
 	if ( spoolss_state == SVCCTL_STATE_UNKNOWN )
-		spoolss_state = _lp_disable_spoolss() ? SVCCTL_STOPPED : SVCCTL_RUNNING;
+		spoolss_state = lp__disable_spoolss() ? SVCCTL_STOPPED : SVCCTL_RUNNING;
 
 	return spoolss_state == SVCCTL_STOPPED ? true : false;
 }
@@ -9567,21 +5438,6 @@ int lp_min_receive_file_size(void)
 }
 
 /*******************************************************************
- If socket address is an empty character string, it is necessary to 
- define it as "0.0.0.0". 
-********************************************************************/
-
-const char *lp_socket_address(void)
-{
-	char *sock_addr = Globals.szSocketAddress;
-
-	if (sock_addr[0] == '\0'){
-		string_set(&Globals.szSocketAddress, "0.0.0.0");
-	}
-	return  Globals.szSocketAddress;
-}
-
-/*******************************************************************
  Safe wide links checks.
  This helper function always verify the validity of wide links,
  even after a configuration file reload.
@@ -9603,7 +5459,7 @@ void widelinks_warning(int snum)
 		DEBUG(0,("Share '%s' has wide links and unix extensions enabled. "
 			"These parameters are incompatible. "
 			"Wide links will be disabled for this share.\n",
-			lp_servicename(snum) ));
+			 lp_servicename(talloc_tos(), snum) ));
 	}
 }
 
@@ -9628,7 +5484,7 @@ bool lp_writeraw(void)
 	if (lp_async_smb_echo_handler()) {
 		return false;
 	}
-	return _lp_writeraw();
+	return lp__writeraw();
 }
 
 bool lp_readraw(void)
@@ -9636,13 +5492,19 @@ bool lp_readraw(void)
 	if (lp_async_smb_echo_handler()) {
 		return false;
 	}
-	return _lp_readraw();
+	return lp__readraw();
 }
 
 int lp_server_role(void)
 {
 	return lp_find_server_role(lp__server_role(),
-				   lp_security(),
-				   lp_domain_logons(),
+				   lp__security(),
+				   lp__domain_logons(),
 				   lp_domain_master_true_or_auto());
+}
+
+int lp_security(void)
+{
+	return lp_find_security(lp__server_role(),
+				lp__security());
 }

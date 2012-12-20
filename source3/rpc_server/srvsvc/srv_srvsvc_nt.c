@@ -37,6 +37,7 @@
 #include "smbd/globals.h"
 #include "auth.h"
 #include "messages.h"
+#include "lib/conn_tdb.h"
 
 extern const struct generic_mapping file_generic_mapping;
 
@@ -58,98 +59,6 @@ struct sess_file_count {
 	uid_t uid;
 	int count;
 };
-
-/* Used to store pipe open records for NetFileEnum() */
-
-struct pipe_open_rec {
-	struct server_id pid;
-	uid_t uid;
-	int pnum;
-	fstring name;
-};
-
-/****************************************************************************
- Count the entries belonging to a service in the connection db.
-****************************************************************************/
-
-static int pipe_enum_fn( struct db_record *rec, void *p)
-{
-	struct pipe_open_rec prec;
-	struct file_enum_count *fenum = (struct file_enum_count *)p;
-	struct srvsvc_NetFileInfo3 *f;
-	int i = fenum->ctr3->count;
-	char *fullpath = NULL;
-	const char *username;
-	TDB_DATA value;
-
-	value = dbwrap_record_get_value(rec);
-
-	if (value.dsize != sizeof(struct pipe_open_rec))
-		return 0;
-
-	memcpy(&prec, value.dptr, sizeof(struct pipe_open_rec));
-
-	if ( !process_exists(prec.pid) ) {
-		return 0;
-	}
-
-	username = uidtoname(prec.uid);
-
-	if ((fenum->username != NULL)
-	    && !strequal(username, fenum->username)) {
-		return 0;
-	}
-
-	fullpath = talloc_asprintf(fenum->ctx, "\\PIPE\\%s", prec.name );
-	if (!fullpath) {
-		return 1;
-	}
-
-	f = talloc_realloc(fenum->ctx, fenum->ctr3->array,
-				 struct srvsvc_NetFileInfo3, i+1);
-	if ( !f ) {
-		DEBUG(0,("conn_enum_fn: realloc failed for %d items\n", i+1));
-		return 1;
-	}
-	fenum->ctr3->array = f;
-
-	fenum->ctr3->array[i].fid		=
-		(((uint32_t)(procid_to_pid(&prec.pid))<<16) | prec.pnum);
-	fenum->ctr3->array[i].permissions	=
-		(FILE_READ_DATA|FILE_WRITE_DATA);
-	fenum->ctr3->array[i].num_locks		= 0;
-	fenum->ctr3->array[i].path		= fullpath;
-	fenum->ctr3->array[i].user		= username;
-
-	fenum->ctr3->count++;
-
-	return 0;
-}
-
-/*******************************************************************
-********************************************************************/
-
-static WERROR net_enum_pipes(TALLOC_CTX *ctx,
-			     const char *username,
-			     struct srvsvc_NetFileCtr3 **ctr3,
-			     uint32_t resume )
-{
-	struct file_enum_count fenum;
-
-	fenum.ctx = ctx;
-	fenum.username = username;
-	fenum.ctr3 = *ctr3;
-
-	if (connections_traverse(pipe_enum_fn, &fenum) < 0) {
-		DEBUG(0,("net_enum_pipes: traverse of connections.tdb "
-			 "failed\n"));
-		return WERR_NOMEM;
-	}
-
-	*ctr3 = fenum.ctr3;
-
-	return WERR_OK;
-}
 
 /*******************************************************************
 ********************************************************************/
@@ -260,7 +169,7 @@ static enum srvsvc_ShareType get_share_type(int snum)
 		type = lp_administrative_share(snum)
 			? STYPE_PRINTQ_HIDDEN : STYPE_PRINTQ;
 	}
-	if (strequal(lp_fstype(snum), "IPC")) {
+	if (strequal(lp_fstype(talloc_tos(), snum), "IPC")) {
 		type = lp_administrative_share(snum)
 			? STYPE_IPC_HIDDEN : STYPE_IPC;
 	}
@@ -274,7 +183,7 @@ static enum srvsvc_ShareType get_share_type(int snum)
 static void init_srv_share_info_0(struct pipes_struct *p,
 				  struct srvsvc_NetShareInfo0 *r, int snum)
 {
-	r->name		= lp_servicename(snum);
+	r->name		= lp_servicename(talloc_tos(), snum);
 }
 
 /*******************************************************************
@@ -285,13 +194,13 @@ static void init_srv_share_info_1(struct pipes_struct *p,
 				  struct srvsvc_NetShareInfo1 *r,
 				  int snum)
 {
-	char *net_name = lp_servicename(snum);
-	char *remark = talloc_strdup(p->mem_ctx, lp_comment(snum));
+	char *net_name = lp_servicename(talloc_tos(), snum);
+	char *remark = lp_comment(p->mem_ctx, snum);
 
 	if (remark) {
 		remark = talloc_sub_advanced(
-			p->mem_ctx, lp_servicename(snum),
-			get_current_username(), lp_pathname(snum),
+			p->mem_ctx, lp_servicename(talloc_tos(), snum),
+			get_current_username(), lp_pathname(talloc_tos(), snum),
 			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
@@ -313,18 +222,18 @@ static void init_srv_share_info_2(struct pipes_struct *p,
 	char *path = NULL;
 	int max_connections = lp_max_connections(snum);
 	uint32_t max_uses = max_connections!=0 ? max_connections : (uint32_t)-1;
-	char *net_name = lp_servicename(snum);
+	char *net_name = lp_servicename(talloc_tos(), snum);
 
-	remark = talloc_strdup(p->mem_ctx, lp_comment(snum));
+	remark = lp_comment(p->mem_ctx, snum);
 	if (remark) {
 		remark = talloc_sub_advanced(
-			p->mem_ctx, lp_servicename(snum),
-			get_current_username(), lp_pathname(snum),
+			p->mem_ctx, lp_servicename(talloc_tos(), snum),
+			get_current_username(), lp_pathname(talloc_tos(), snum),
 			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
 	path = talloc_asprintf(p->mem_ctx,
-			"C:%s", lp_pathname(snum));
+			"C:%s", lp_pathname(talloc_tos(), snum));
 
 	if (path) {
 		/*
@@ -378,13 +287,13 @@ static void map_generic_share_sd_bits(struct security_descriptor *psd)
 static void init_srv_share_info_501(struct pipes_struct *p,
 				    struct srvsvc_NetShareInfo501 *r, int snum)
 {
-	const char *net_name = lp_servicename(snum);
-	char *remark = talloc_strdup(p->mem_ctx, lp_comment(snum));
+	const char *net_name = lp_servicename(talloc_tos(), snum);
+	char *remark = lp_comment(p->mem_ctx, snum);
 
 	if (remark) {
 		remark = talloc_sub_advanced(
-			p->mem_ctx, lp_servicename(snum),
-			get_current_username(), lp_pathname(snum),
+			p->mem_ctx, lp_servicename(talloc_tos(), snum),
+			get_current_username(), lp_pathname(talloc_tos(), snum),
 			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
@@ -402,22 +311,22 @@ static void init_srv_share_info_501(struct pipes_struct *p,
 static void init_srv_share_info_502(struct pipes_struct *p,
 				    struct srvsvc_NetShareInfo502 *r, int snum)
 {
-	const char *net_name = lp_servicename(snum);
+	const char *net_name = lp_servicename(talloc_tos(), snum);
 	char *path = NULL;
 	struct security_descriptor *sd = NULL;
 	struct sec_desc_buf *sd_buf = NULL;
 	size_t sd_size = 0;
 	TALLOC_CTX *ctx = p->mem_ctx;
-	char *remark = talloc_strdup(ctx, lp_comment(snum));
+	char *remark = lp_comment(ctx, snum);
 
 	if (remark) {
 		remark = talloc_sub_advanced(
-			p->mem_ctx, lp_servicename(snum),
-			get_current_username(), lp_pathname(snum),
+			p->mem_ctx, lp_servicename(talloc_tos(), snum),
+			get_current_username(), lp_pathname(talloc_tos(), snum),
 			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
-	path = talloc_asprintf(ctx, "C:%s", lp_pathname(snum));
+	path = talloc_asprintf(ctx, "C:%s", lp_pathname(talloc_tos(), snum));
 	if (path) {
 		/*
 		 * Change / to \\ so that win2k will see it as a valid path.  This was added to
@@ -426,7 +335,7 @@ static void init_srv_share_info_502(struct pipes_struct *p,
 		string_replace(path, '/', '\\');
 	}
 
-	sd = get_share_security(ctx, lp_servicename(snum), &sd_size);
+	sd = get_share_security(ctx, lp_servicename(talloc_tos(), snum), &sd_size);
 
 	sd_buf = make_sec_desc_buf(p->mem_ctx, sd_size, sd);
 
@@ -449,12 +358,12 @@ static void init_srv_share_info_1004(struct pipes_struct *p,
 				     struct srvsvc_NetShareInfo1004 *r,
 				     int snum)
 {
-	char *remark = talloc_strdup(p->mem_ctx, lp_comment(snum));
+	char *remark = lp_comment(p->mem_ctx, snum);
 
 	if (remark) {
 		remark = talloc_sub_advanced(
-			p->mem_ctx, lp_servicename(snum),
-			get_current_username(), lp_pathname(snum),
+			p->mem_ctx, lp_servicename(talloc_tos(), snum),
+			get_current_username(), lp_pathname(talloc_tos(), snum),
 			p->session_info->unix_token->uid, get_current_username(),
 			"", remark);
 	}
@@ -517,7 +426,7 @@ static void init_srv_share_info_1501(struct pipes_struct *p,
 	size_t sd_size;
 	TALLOC_CTX *ctx = p->mem_ctx;
 
-	sd = get_share_security(ctx, lp_servicename(snum), &sd_size);
+	sd = get_share_security(ctx, lp_servicename(talloc_tos(), snum), &sd_size);
 	if (sd) {
 		sd_buf = make_sec_desc_buf(p->mem_ctx, sd_size, sd);
 	}
@@ -531,7 +440,7 @@ static void init_srv_share_info_1501(struct pipes_struct *p,
 
 static bool is_hidden_share(int snum)
 {
-	const char *net_name = lp_servicename(snum);
+	const char *net_name = lp_servicename(talloc_tos(), snum);
 
 	return (net_name[strlen(net_name) - 1] == '$') ? True : False;
 }
@@ -546,7 +455,8 @@ static bool is_enumeration_allowed(struct pipes_struct *p,
         return true;
 
     return share_access_check(p->session_info->security_token,
-			      lp_servicename(snum), FILE_READ_DATA, NULL);
+			      lp_servicename(talloc_tos(), snum),
+			      FILE_READ_DATA, NULL);
 }
 
 /*******************************************************************
@@ -588,12 +498,12 @@ static WERROR init_srv_share_info_ctr(struct pipes_struct *p,
                     is_enumeration_allowed(p, snum) &&
                     (all_shares || !is_hidden_share(snum)) ) {
                         DEBUG(10, ("counting service %s\n",
-				lp_servicename(snum) ? lp_servicename(snum) : "(null)"));
+				lp_servicename(talloc_tos(), snum) ? lp_servicename(talloc_tos(), snum) : "(null)"));
                         allowed[snum] = true;
                         num_entries++;
                 } else {
                         DEBUG(10, ("NOT counting service %s\n",
-				lp_servicename(snum) ? lp_servicename(snum) : "(null)"));
+				lp_servicename(talloc_tos(), snum) ? lp_servicename(talloc_tos(), snum) : "(null)"));
                 }
         }
 
@@ -855,7 +765,7 @@ static void sess_file_fn( const struct share_mode_entry *e,
 {
 	struct sess_file_count *sess = (struct sess_file_count *)data;
 
-	if ( procid_equal(&e->pid, &sess->pid) && (sess->uid == e->uid) ) {
+	if (serverid_equal(&e->pid, &sess->pid) && (sess->uid == e->uid)) {
 		sess->count++;
 	}
 
@@ -906,7 +816,7 @@ static WERROR init_srv_sess_info_1(struct pipes_struct *p,
 	for (; resume_handle < *total_entries; resume_handle++) {
 		uint32 num_files;
 		uint32 connect_time;
-		struct passwd *pw = sys_getpwnam(session_list[resume_handle].username);
+		struct passwd *pw = getpwnam(session_list[resume_handle].username);
 		bool guest;
 
 		if ( !pw ) {
@@ -1104,11 +1014,6 @@ WERROR _srvsvc_NetFileEnum(struct pipes_struct *p,
 		goto done;
 	}
 
-	werr = net_enum_pipes(ctx, r->in.user, &ctr3, resume_hnd);
-	if (!W_ERROR_IS_OK(werr)) {
-		goto done;
-	}
-
 	*r->out.totalentries = ctr3->count;
 	r->out.info_ctr->ctr.ctr3->array = ctr3->array;
 	r->out.info_ctr->ctr.ctr3->count = ctr3->count;
@@ -1154,7 +1059,7 @@ WERROR _srvsvc_NetSrvGetInfo(struct pipes_struct *p,
 		info102->version_major	= SAMBA_MAJOR_NBT_ANNOUNCE_VERSION;
 		info102->version_minor	= SAMBA_MINOR_NBT_ANNOUNCE_VERSION;
 		info102->server_type	= lp_default_server_announce();
-		info102->comment	= string_truncate(lp_serverstring(),
+		info102->comment	= string_truncate(lp_serverstring(talloc_tos()),
 						MAX_SERVER_STRING_LENGTH);
 		info102->users		= 0xffffffff;
 		info102->disc		= 0xf;
@@ -1180,7 +1085,7 @@ WERROR _srvsvc_NetSrvGetInfo(struct pipes_struct *p,
 		info101->version_major	= SAMBA_MAJOR_NBT_ANNOUNCE_VERSION;
 		info101->version_minor	= SAMBA_MINOR_NBT_ANNOUNCE_VERSION;
 		info101->server_type	= lp_default_server_announce();
-		info101->comment	= string_truncate(lp_serverstring(),
+		info101->comment	= string_truncate(lp_serverstring(talloc_tos()),
 						MAX_SERVER_STRING_LENGTH);
 
 		r->out.info->info101 = info101;
@@ -1587,7 +1492,7 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 
 	switch (r->in.level) {
 	case 1:
-		pathname = talloc_strdup(ctx, lp_pathname(snum));
+		pathname = lp_pathname(ctx, snum);
 		comment = talloc_strdup(ctx, info->info1->comment);
 		type = info->info1->type;
 		psd = NULL;
@@ -1616,7 +1521,7 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 		map_generic_share_sd_bits(psd);
 		break;
 	case 1004:
-		pathname = talloc_strdup(ctx, lp_pathname(snum));
+		pathname = lp_pathname(ctx, snum);
 		comment = talloc_strdup(ctx, info->info1004->comment);
 		type = STYPE_DISKTREE;
 		break;
@@ -1637,8 +1542,8 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 	case 1007:
 		return WERR_ACCESS_DENIED;
 	case 1501:
-		pathname = talloc_strdup(ctx, lp_pathname(snum));
-		comment = talloc_strdup(ctx, lp_comment(snum));
+		pathname = lp_pathname(ctx, snum);
+		comment = lp_comment(ctx, snum);
 		psd = info->info1501->sd;
 		map_generic_share_sd_bits(psd);
 		type = STYPE_DISKTREE;
@@ -1674,20 +1579,20 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 	string_replace(comment, '"', ' ');
 
 	DEBUG(10,("_srvsvc_NetShareSetInfo: change share command = %s\n",
-		lp_change_share_cmd() ? lp_change_share_cmd() : "NULL" ));
+		lp_change_share_cmd(talloc_tos()) ? lp_change_share_cmd(talloc_tos()) : "NULL" ));
 
 	/* Only call modify function if something changed. */
 
-	if (strcmp(path, lp_pathname(snum)) || strcmp(comment, lp_comment(snum))
+	if (strcmp(path, lp_pathname(talloc_tos(), snum)) || strcmp(comment, lp_comment(talloc_tos(), snum))
 			|| (lp_max_connections(snum) != max_connections)) {
-		if (!lp_change_share_cmd() || !*lp_change_share_cmd()) {
+		if (!lp_change_share_cmd(talloc_tos()) || !*lp_change_share_cmd(talloc_tos())) {
 			DEBUG(10,("_srvsvc_NetShareSetInfo: No change share command\n"));
 			return WERR_ACCESS_DENIED;
 		}
 
 		command = talloc_asprintf(p->mem_ctx,
 				"%s \"%s\" \"%s\" \"%s\" \"%s\" %d",
-				lp_change_share_cmd(),
+				lp_change_share_cmd(talloc_tos()),
 				get_dyn_CONFIGFILE(),
 				share_name,
 				path,
@@ -1732,7 +1637,7 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 		struct security_descriptor *old_sd;
 		size_t sd_size;
 
-		old_sd = get_share_security(p->mem_ctx, lp_servicename(snum), &sd_size);
+		old_sd = get_share_security(p->mem_ctx, lp_servicename(talloc_tos(), snum), &sd_size);
 
 		if (old_sd && !security_descriptor_equal(old_sd, psd)) {
 			if (!set_share_security(share_name, psd))
@@ -1780,7 +1685,7 @@ WERROR _srvsvc_NetShareAdd(struct pipes_struct *p,
 	if (p->session_info->unix_token->uid != sec_initial_uid()  && !is_disk_op )
 		return WERR_ACCESS_DENIED;
 
-	if (!lp_add_share_cmd() || !*lp_add_share_cmd()) {
+	if (!lp_add_share_cmd(talloc_tos()) || !*lp_add_share_cmd(talloc_tos())) {
 		DEBUG(10,("_srvsvc_NetShareAdd: No add share command\n"));
 		return WERR_ACCESS_DENIED;
 	}
@@ -1876,7 +1781,7 @@ WERROR _srvsvc_NetShareAdd(struct pipes_struct *p,
 
 	command = talloc_asprintf(ctx,
 			"%s \"%s\" \"%s\" \"%s\" \"%s\" %d",
-			lp_add_share_cmd(),
+			lp_add_share_cmd(talloc_tos()),
 			get_dyn_CONFIGFILE(),
 			share_name_in,
 			path,
@@ -1986,16 +1891,16 @@ WERROR _srvsvc_NetShareDel(struct pipes_struct *p,
 	if (p->session_info->unix_token->uid != sec_initial_uid()  && !is_disk_op )
 		return WERR_ACCESS_DENIED;
 
-	if (!lp_delete_share_cmd() || !*lp_delete_share_cmd()) {
+	if (!lp_delete_share_cmd(talloc_tos()) || !*lp_delete_share_cmd(talloc_tos())) {
 		DEBUG(10,("_srvsvc_NetShareDel: No delete share command\n"));
 		return WERR_ACCESS_DENIED;
 	}
 
 	command = talloc_asprintf(ctx,
 			"%s \"%s\" \"%s\"",
-			lp_delete_share_cmd(),
+			lp_delete_share_cmd(talloc_tos()),
 			get_dyn_CONFIGFILE(),
-			lp_servicename(snum));
+			lp_servicename(talloc_tos(), snum));
 	if (!command) {
 		return WERR_NOMEM;
 	}
@@ -2024,7 +1929,7 @@ WERROR _srvsvc_NetShareDel(struct pipes_struct *p,
 		return WERR_ACCESS_DENIED;
 
 	/* Delete the SD in the database. */
-	delete_share_security(lp_servicename(params->service));
+	delete_share_security(lp_servicename(talloc_tos(), params->service));
 
 	lp_killservice(params->service);
 
@@ -2104,7 +2009,6 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 				  struct srvsvc_NetGetFileSecurity *r)
 {
 	struct smb_filename *smb_fname = NULL;
-	struct security_descriptor *psd = NULL;
 	size_t sd_size;
 	char *servicename = NULL;
 	SMB_STRUCT_STAT st;
@@ -2133,8 +2037,11 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
-				       snum, lp_pathname(snum),
+	nt_status = create_conn_struct(talloc_tos(),
+				       server_event_context(),
+				       server_messaging_context(),
+				       &conn,
+				       snum, lp_pathname(talloc_tos(), snum),
 				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(10, ("create_conn_struct failed: %s\n",
@@ -2180,32 +2087,34 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	nt_status = SMB_VFS_FGET_NT_ACL(fsp,
-				       (SECINFO_OWNER
-					|SECINFO_GROUP
-					|SECINFO_DACL), &psd);
-
-	if (!NT_STATUS_IS_OK(nt_status)) {
-		DEBUG(3,("_srvsvc_NetGetFileSecurity: Unable to get NT ACL "
-			"for file %s\n", smb_fname_str_dbg(smb_fname)));
-		werr = ntstatus_to_werror(nt_status);
-		goto error_exit;
-	}
-
-	sd_size = ndr_size_security_descriptor(psd, 0);
-
 	sd_buf = talloc_zero(p->mem_ctx, struct sec_desc_buf);
 	if (!sd_buf) {
 		werr = WERR_NOMEM;
 		goto error_exit;
 	}
 
+	nt_status = SMB_VFS_FGET_NT_ACL(fsp,
+				       (SECINFO_OWNER
+					|SECINFO_GROUP
+					|SECINFO_DACL), sd_buf, &sd_buf->sd);
+
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(3,("_srvsvc_NetGetFileSecurity: Unable to get NT ACL "
+			"for file %s\n", smb_fname_str_dbg(smb_fname)));
+		werr = ntstatus_to_werror(nt_status);
+		TALLOC_FREE(sd_buf);
+		goto error_exit;
+	}
+
+	if (sd_buf->sd->dacl) {
+		sd_buf->sd->dacl->revision = NT4_ACL_REVISION;
+	}
+
+	sd_size = ndr_size_security_descriptor(sd_buf->sd, 0);
+
 	sd_buf->sd_size = sd_size;
-	sd_buf->sd = psd;
 
 	*r->out.sd_buf = sd_buf;
-
-	psd->dacl->revision = NT4_ACL_REVISION;
 
 	close_file(NULL, fsp, NORMAL_CLOSE);
 	vfs_ChDir(conn, oldcwd);
@@ -2230,6 +2139,7 @@ error_exit:
 	}
 
  done:
+
 	TALLOC_FREE(smb_fname);
 
 	return werr;
@@ -2274,8 +2184,11 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 		goto error_exit;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
-				       snum, lp_pathname(snum),
+	nt_status = create_conn_struct(talloc_tos(),
+				       server_event_context(),
+				       server_messaging_context(),
+				       &conn,
+				       snum, lp_pathname(talloc_tos(), snum),
 				       p->session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(10, ("create_conn_struct failed: %s\n",
@@ -2324,26 +2237,7 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 	psd = r->in.sd_buf->sd;
 	security_info_sent = r->in.securityinformation;
 
-	if (psd->owner_sid==0) {
-		security_info_sent &= ~SECINFO_OWNER;
-	}
-	if (psd->group_sid==0) {
-		security_info_sent &= ~SECINFO_GROUP;
-	}
-	if (psd->sacl==0) {
-		security_info_sent &= ~SECINFO_SACL;
-	}
-	if (psd->dacl==0) {
-		security_info_sent &= ~SECINFO_DACL;
-	}
-
-	/* Convert all the generic bits. */
-	security_acl_map_generic(psd->dacl, &file_generic_mapping);
-	security_acl_map_generic(psd->sacl, &file_generic_mapping);
-
-	nt_status = SMB_VFS_FSET_NT_ACL(fsp,
-					security_info_sent,
-					psd);
+	nt_status = set_sd(fsp, psd, security_info_sent);
 
 	if (!NT_STATUS_IS_OK(nt_status) ) {
 		DEBUG(3,("_srvsvc_NetSetFileSecurity: Unable to set NT ACL "
@@ -2573,244 +2467,244 @@ WERROR _srvsvc_NetFileClose(struct pipes_struct *p,
 WERROR _srvsvc_NetCharDevEnum(struct pipes_struct *p,
 			      struct srvsvc_NetCharDevEnum *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevGetInfo(struct pipes_struct *p,
 				 struct srvsvc_NetCharDevGetInfo *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevControl(struct pipes_struct *p,
 				 struct srvsvc_NetCharDevControl *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevQEnum(struct pipes_struct *p,
 			       struct srvsvc_NetCharDevQEnum *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevQGetInfo(struct pipes_struct *p,
 				  struct srvsvc_NetCharDevQGetInfo *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevQSetInfo(struct pipes_struct *p,
 				  struct srvsvc_NetCharDevQSetInfo *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevQPurge(struct pipes_struct *p,
 				struct srvsvc_NetCharDevQPurge *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetCharDevQPurgeSelf(struct pipes_struct *p,
 				    struct srvsvc_NetCharDevQPurgeSelf *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetFileGetInfo(struct pipes_struct *p,
 			      struct srvsvc_NetFileGetInfo *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetShareCheck(struct pipes_struct *p,
 			     struct srvsvc_NetShareCheck *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetServerStatisticsGet(struct pipes_struct *p,
 				      struct srvsvc_NetServerStatisticsGet *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetTransportAdd(struct pipes_struct *p,
 			       struct srvsvc_NetTransportAdd *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetTransportEnum(struct pipes_struct *p,
 				struct srvsvc_NetTransportEnum *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetTransportDel(struct pipes_struct *p,
 			       struct srvsvc_NetTransportDel *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetSetServiceBits(struct pipes_struct *p,
 				 struct srvsvc_NetSetServiceBits *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetPathType(struct pipes_struct *p,
 			   struct srvsvc_NetPathType *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetPathCanonicalize(struct pipes_struct *p,
 				   struct srvsvc_NetPathCanonicalize *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetPathCompare(struct pipes_struct *p,
 			      struct srvsvc_NetPathCompare *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRPRNAMECANONICALIZE(struct pipes_struct *p,
 				      struct srvsvc_NETRPRNAMECANONICALIZE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetPRNameCompare(struct pipes_struct *p,
 				struct srvsvc_NetPRNameCompare *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetShareDelStart(struct pipes_struct *p,
 				struct srvsvc_NetShareDelStart *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetShareDelCommit(struct pipes_struct *p,
 				 struct srvsvc_NetShareDelCommit *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetServerTransportAddEx(struct pipes_struct *p,
 				       struct srvsvc_NetServerTransportAddEx *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NetServerSetServiceBitsEx(struct pipes_struct *p,
 					 struct srvsvc_NetServerSetServiceBitsEx *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSGETVERSION(struct pipes_struct *p,
 				 struct srvsvc_NETRDFSGETVERSION *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSCREATELOCALPARTITION(struct pipes_struct *p,
 					   struct srvsvc_NETRDFSCREATELOCALPARTITION *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSDELETELOCALPARTITION(struct pipes_struct *p,
 					   struct srvsvc_NETRDFSDELETELOCALPARTITION *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSSETLOCALVOLUMESTATE(struct pipes_struct *p,
 					  struct srvsvc_NETRDFSSETLOCALVOLUMESTATE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSSETSERVERINFO(struct pipes_struct *p,
 				    struct srvsvc_NETRDFSSETSERVERINFO *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSCREATEEXITPOINT(struct pipes_struct *p,
 				      struct srvsvc_NETRDFSCREATEEXITPOINT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSDELETEEXITPOINT(struct pipes_struct *p,
 				      struct srvsvc_NETRDFSDELETEEXITPOINT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSMODIFYPREFIX(struct pipes_struct *p,
 				   struct srvsvc_NETRDFSMODIFYPREFIX *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSFIXLOCALVOLUME(struct pipes_struct *p,
 				     struct srvsvc_NETRDFSFIXLOCALVOLUME *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRDFSMANAGERREPORTSITEINFO(struct pipes_struct *p,
 					    struct srvsvc_NETRDFSMANAGERREPORTSITEINFO *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _srvsvc_NETRSERVERTRANSPORTDELEX(struct pipes_struct *p,
 					struct srvsvc_NETRSERVERTRANSPORTDELEX *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }

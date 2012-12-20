@@ -55,6 +55,10 @@ struct ldb_module;
 /* an extended match rule that always fails to match */
 #define SAMBA_LDAP_MATCH_ALWAYS_FALSE "1.3.6.1.4.1.7165.4.5.1"
 
+/* The const char * const * pointer to a list of secret (password)
+ * attributes, not to be printed in trace messages */
+#define LDB_SECRET_ATTRIBUTE_LIST_OPAQUE "LDB_SECRET_ATTRIBUTE_LIST"
+
 /*
    these function pointers define the operations that a ldb module can intercept
 */
@@ -83,6 +87,7 @@ void ldb_debug_set(struct ldb_context *ldb, enum ldb_debug_level level,
 		   const char *fmt, ...) PRINTF_ATTRIBUTE(3, 4);
 void ldb_debug_add(struct ldb_context *ldb, const char *fmt, ...) PRINTF_ATTRIBUTE(2, 3);
 void ldb_debug_end(struct ldb_context *ldb, enum ldb_debug_level level);
+void ldb_vdebug(struct ldb_context *ldb, enum ldb_debug_level level, const char *fmt, va_list ap) PRINTF_ATTRIBUTE(3, 0);
 
 #define ldb_error(ldb, ecode, reason) ldb_error_at(ldb, ecode, reason, __FILE__, __LINE__)
 #define ldb_module_error(module, ecode, reason) ldb_error_at(ldb_module_get_ctx(module), ecode, reason, __FILE__, __LINE__)
@@ -358,5 +363,10 @@ bool ldb_dn_replace_components(struct ldb_dn *dn, struct ldb_dn *new_dn);
 int ldb_parse_tree_walk(struct ldb_parse_tree *tree,
 			int (*callback)(struct ldb_parse_tree *tree, void *),
 			void *private_context);
+
+/* compare two message elements with ordering - used by modify */
+bool ldb_msg_element_equal_ordered(const struct ldb_message_element *el1,
+				   const struct ldb_message_element *el2);
+
 
 #endif

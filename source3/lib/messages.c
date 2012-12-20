@@ -69,10 +69,17 @@ static void ping_message(struct messaging_context *msg_ctx,
 			 struct server_id src,
 			 DATA_BLOB *data)
 {
-	const char *msg = data->data ? (const char *)data->data : "none";
+	const char *msg = "none";
+	char *free_me = NULL;
 
+	if (data->data != NULL) {
+		free_me = talloc_strndup(talloc_tos(), (char *)data->data,
+					 data->length);
+		msg = free_me;
+	}
 	DEBUG(1,("INFO: Received PING message from PID %s [%s]\n",
 		 procid_str_static(&src), msg));
+	TALLOC_FREE(free_me);
 	messaging_send(msg_ctx, src, MSG_PONG, data);
 }
 
@@ -344,6 +351,10 @@ NTSTATUS messaging_send(struct messaging_context *msg_ctx,
 			struct server_id server, uint32_t msg_type,
 			const DATA_BLOB *data)
 {
+	if (server_id_is_disconnected(&server)) {
+		return NT_STATUS_INVALID_PARAMETER_MIX;
+	}
+
 #ifdef CLUSTER_SUPPORT
 	if (!procid_is_local(&server)) {
 		return msg_ctx->remote->send_fn(msg_ctx, server,

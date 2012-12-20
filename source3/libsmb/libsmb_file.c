@@ -26,7 +26,7 @@
 #include "libsmb/libsmb.h"
 #include "libsmbclient.h"
 #include "libsmb_internal.h"
-
+#include "../libcli/smb/smbXcli_base.h"
 
 /*
  * Routine to open() a file ...
@@ -489,7 +489,7 @@ SMBC_getatr(SMBCCTX * context,
             SMBCSRV *srv,
             const char *path,
             uint16 *mode,
-            SMB_OFF_T *size,
+            off_t *size,
             struct timespec *create_time_ts,
             struct timespec *access_time_ts,
             struct timespec *write_time_ts,
@@ -551,7 +551,7 @@ SMBC_getatr(SMBCCTX * context,
         }
 
 	/* if this is NT then don't bother with the getatr */
-	if (cli_state_capabilities(targetcli) & CAP_NT_SMBS) {
+	if (smb1cli_conn_capabilities(targetcli->conn) & CAP_NT_SMBS) {
                 errno = EPERM;
 		TALLOC_FREE(frame);
                 return False;
@@ -679,7 +679,7 @@ SMBC_lseek_ctx(SMBCCTX *context,
                off_t offset,
                int whence)
 {
-	SMB_OFF_T size;
+	off_t size;
 	char *server = NULL, *share = NULL, *user = NULL, *password = NULL;
 	char *path = NULL;
 	char *targetpath = NULL;
@@ -745,7 +745,7 @@ SMBC_lseek_ctx(SMBCCTX *context,
 					     targetcli, file->cli_fd, NULL,
 					     &size, NULL, NULL, NULL, NULL,
 					     NULL))) {
-                        SMB_OFF_T b_size = size;
+                        off_t b_size = size;
 			if (!NT_STATUS_IS_OK(cli_getattrE(targetcli, file->cli_fd,
                                           NULL, &b_size, NULL, NULL, NULL))) {
                                 errno = EINVAL;
@@ -775,7 +775,7 @@ SMBC_ftruncate_ctx(SMBCCTX *context,
                    SMBCFILE *file,
                    off_t length)
 {
-	SMB_OFF_T size = length;
+	off_t size = length;
 	char *server = NULL;
 	char *share = NULL;
 	char *user = NULL;

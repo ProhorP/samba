@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2008
 #
@@ -46,7 +44,7 @@ class WinregTests(RpcInterfaceTestCase):
         self.conn.CloseKey(handle)
 
     def test_getkeyinfo(self):
-        handle = self.conn.OpenHKLM(None, 
+        handle = self.conn.OpenHKLM(None,
                  winreg.KEY_QUERY_VALUE | winreg.KEY_ENUMERATE_SUB_KEYS)
         x = self.conn.QueryInfoKey(handle, winreg.String())
         self.assertEquals(9, len(x)) # should return a 9-tuple

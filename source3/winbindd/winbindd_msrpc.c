@@ -407,7 +407,7 @@ static NTSTATUS msrpc_query_user(struct winbindd_domain *domain,
 {
 	struct rpc_pipe_client *samr_pipe;
 	struct policy_handle dom_pol;
-	struct netr_SamInfo3 *user = NULL;
+	struct netr_SamInfo3 *user;
 	TALLOC_CTX *tmp_ctx;
 	NTSTATUS status;
 
@@ -425,9 +425,7 @@ static NTSTATUS msrpc_query_user(struct winbindd_domain *domain,
 	}
 
 	/* try netsamlogon cache first */
-	if (winbindd_use_cache()) {
-		user = netsamlogon_cache_get(tmp_ctx, user_sid);
-	}
+	user = netsamlogon_cache_get(tmp_ctx, user_sid);
 	if (user != NULL) {
 		DEBUG(5,("msrpc_query_user: Cache lookup succeeded for %s\n",
 			sid_string_dbg(user_sid)));
@@ -1066,16 +1064,6 @@ static NTSTATUS msrpc_password_policy(struct winbindd_domain *domain,
 	return status;
 }
 
-typedef NTSTATUS (*lookup_sids_fn_t)(struct dcerpc_binding_handle *h,
-				     TALLOC_CTX *mem_ctx,
-				     struct policy_handle *pol,
-				     int num_sids,
-				     const struct dom_sid *sids,
-				     char ***pdomains,
-				     char ***pnames,
-				     enum lsa_SidType **ptypes,
-				     NTSTATUS *result);
-
 NTSTATUS winbindd_lookup_sids(TALLOC_CTX *mem_ctx,
 			      struct winbindd_domain *domain,
 			      uint32_t num_sids,
@@ -1090,24 +1078,20 @@ NTSTATUS winbindd_lookup_sids(TALLOC_CTX *mem_ctx,
 	struct dcerpc_binding_handle *b = NULL;
 	struct policy_handle lsa_policy;
 	unsigned int orig_timeout;
-	lookup_sids_fn_t lookup_sids_fn = dcerpc_lsa_lookup_sids;
+	bool use_lookupsids3 = false;
+	bool retried = false;
 
-	if (domain->can_do_ncacn_ip_tcp) {
-		status = cm_connect_lsa_tcp(domain, mem_ctx, &cli);
-		if (NT_STATUS_IS_OK(status)) {
-			lookup_sids_fn = dcerpc_lsa_lookup_sids3;
-			goto lookup;
-		}
-		domain->can_do_ncacn_ip_tcp = false;
-	}
-	status = cm_connect_lsa(domain, mem_ctx, &cli, &lsa_policy);
-
+ connect:
+	status = cm_connect_lsat(domain, mem_ctx, &cli, &lsa_policy);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
 
- lookup:
 	b = cli->binding_handle;
+
+	if (cli->transport->transport == NCACN_IP_TCP) {
+		use_lookupsids3 = true;
+	}
 
 	/*
 	 * This call can take a long time
@@ -1116,21 +1100,23 @@ NTSTATUS winbindd_lookup_sids(TALLOC_CTX *mem_ctx,
 	 */
 	orig_timeout = dcerpc_binding_handle_set_timeout(b, 35000);
 
-	status = lookup_sids_fn(b,
-				mem_ctx,
-				&lsa_policy,
-				num_sids,
-				sids,
-				domains,
-				names,
-				types,
-				&result);
+	status = dcerpc_lsa_lookup_sids_generic(b,
+						mem_ctx,
+						&lsa_policy,
+						num_sids,
+						sids,
+						domains,
+						names,
+						types,
+						use_lookupsids3,
+						&result);
 
 	/* And restore our original timeout. */
 	dcerpc_binding_handle_set_timeout(b, orig_timeout);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED) ||
-	    NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR)) {
+	    NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR) ||
+	    NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_ACCESS_DENIED)) {
 		/*
 		 * This can happen if the schannel key is not
 		 * valid anymore, we need to invalidate the
@@ -1138,6 +1124,11 @@ NTSTATUS winbindd_lookup_sids(TALLOC_CTX *mem_ctx,
 		 * a netlogon connection first.
 		 */
 		invalidate_cm_connection(&domain->conn);
+		domain->can_do_ncacn_ip_tcp = domain->active_directory;
+		if (!retried) {
+			retried = true;
+			goto connect;
+		}
 		status = NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -1151,17 +1142,6 @@ NTSTATUS winbindd_lookup_sids(TALLOC_CTX *mem_ctx,
 
 	return NT_STATUS_OK;
 }
-
-typedef NTSTATUS (*lookup_names_fn_t)(struct dcerpc_binding_handle *h,
-				      TALLOC_CTX *mem_ctx,
-				      struct policy_handle *pol,
-				      uint32_t num_names,
-				      const char **names,
-				      const char ***dom_names,
-				      enum lsa_LookupNamesLevel level,
-				      struct dom_sid **sids,
-				      enum lsa_SidType **types,
-				      NTSTATUS *result);
 
 static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
 				      struct winbindd_domain *domain,
@@ -1177,24 +1157,20 @@ static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
 	struct dcerpc_binding_handle *b = NULL;
 	struct policy_handle lsa_policy;
 	unsigned int orig_timeout = 0;
-	lookup_names_fn_t lookup_names_fn = dcerpc_lsa_lookup_names;
+	bool use_lookupnames4 = false;
+	bool retried = false;
 
-	if (domain->can_do_ncacn_ip_tcp) {
-		status = cm_connect_lsa_tcp(domain, mem_ctx, &cli);
-		if (NT_STATUS_IS_OK(status)) {
-			lookup_names_fn = dcerpc_lsa_lookup_names4;
-			goto lookup;
-		}
-		domain->can_do_ncacn_ip_tcp = false;
-	}
-	status = cm_connect_lsa(domain, mem_ctx, &cli, &lsa_policy);
-
+ connect:
+	status = cm_connect_lsat(domain, mem_ctx, &cli, &lsa_policy);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
 
- lookup:
 	b = cli->binding_handle;
+
+	if (cli->transport->transport == NCACN_IP_TCP) {
+		use_lookupnames4 = true;
+	}
 
 	/*
 	 * This call can take a long time
@@ -1203,22 +1179,24 @@ static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
 	 */
 	orig_timeout = dcerpc_binding_handle_set_timeout(b, 35000);
 
-	status = lookup_names_fn(b,
-				 mem_ctx,
-				 &lsa_policy,
-				 num_names,
-				 (const char **) names,
-				 domains,
-				 1,
-				 sids,
-				 types,
-				 &result);
+	status = dcerpc_lsa_lookup_names_generic(b,
+						 mem_ctx,
+						 &lsa_policy,
+						 num_names,
+						 (const char **) names,
+						 domains,
+						 1,
+						 sids,
+						 types,
+						 use_lookupnames4,
+						 &result);
 
 	/* And restore our original timeout. */
 	dcerpc_binding_handle_set_timeout(b, orig_timeout);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED) ||
-	    NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR)) {
+	    NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR) ||
+	    NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_ACCESS_DENIED)) {
 		/*
 		 * This can happen if the schannel key is not
 		 * valid anymore, we need to invalidate the
@@ -1226,6 +1204,10 @@ static NTSTATUS winbindd_lookup_names(TALLOC_CTX *mem_ctx,
 		 * a netlogon connection first.
 		 */
 		invalidate_cm_connection(&domain->conn);
+		if (!retried) {
+			retried = true;
+			goto connect;
+		}
 		status = NT_STATUS_ACCESS_DENIED;
 	}
 

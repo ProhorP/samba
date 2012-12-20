@@ -53,7 +53,6 @@ struct smb_private_data {
 	struct smbcli_tree *tree;
 };
 
-
 static void dos_format(char *s)
 {
 	string_replace(s, '/', '\\');
@@ -151,7 +150,6 @@ static PyObject * py_smb_savefile(pytalloc_Object *self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
-
 /*
  * Callback function to accumulate directory contents in a python list
  */
@@ -182,7 +180,6 @@ static void py_smb_list_callback(struct clilist_file_info *f, const char *mask, 
 		}
 	}
 }
-
 
 /*
  * List the directory contents for specified directory (Ignore '.' and '..' dirs)
@@ -225,7 +222,6 @@ static PyObject *py_smb_list(pytalloc_Object *self, PyObject *args, PyObject *kw
 	return py_dirlist;
 }
 
-
 /*
  * Create a directory
  */
@@ -245,7 +241,6 @@ static PyObject *py_smb_mkdir(pytalloc_Object *self, PyObject *args)
 
 	Py_RETURN_NONE;
 }
-
 
 /*
  * Remove a directory
@@ -267,6 +262,27 @@ static PyObject *py_smb_rmdir(pytalloc_Object *self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/*
+ * Remove a directory and all its contents
+ */
+static PyObject *py_smb_deltree(pytalloc_Object *self, PyObject *args)
+{
+	int status;
+	const char *dirname;
+	struct smb_private_data *spdata;
+
+	if (!PyArg_ParseTuple(args, "s:deltree", &dirname)) {
+		return NULL;
+	}
+
+	spdata = self->ptr;
+	status = smbcli_deltree(spdata->tree, dirname);
+	if (status <= 0) {
+		return NULL;
+	}
+
+	Py_RETURN_NONE;
+}
 
 /*
  * Check existence of a path
@@ -291,7 +307,6 @@ static PyObject *py_smb_chkpath(pytalloc_Object *self, PyObject *args)
 	Py_RETURN_FALSE;
 }
 
-
 /*
  * Read ACL on a given file/directory as a security descriptor object
  */
@@ -302,9 +317,11 @@ static PyObject *py_smb_getacl(pytalloc_Object *self, PyObject *args, PyObject *
 	union smb_fileinfo fio;
 	struct smb_private_data *spdata;
 	const char *filename;
+	uint32_t sinfo = 0;
+	int access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	int fnum;
 
-	if (!PyArg_ParseTuple(args, "s:get_acl", &filename)) {
+	if (!PyArg_ParseTuple(args, "s|Ii:get_acl", &filename, &sinfo, &access_mask)) {
 		return NULL;
 	}
 
@@ -315,7 +332,7 @@ static PyObject *py_smb_getacl(pytalloc_Object *self, PyObject *args, PyObject *
 	io.generic.level = RAW_OPEN_NTCREATEX;
 	io.ntcreatex.in.root_fid.fnum = 0;
 	io.ntcreatex.in.flags = 0;
-	io.ntcreatex.in.access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	io.ntcreatex.in.access_mask = access_mask;
 	io.ntcreatex.in.create_options = 0;
 	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
 	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_READ | 
@@ -335,15 +352,17 @@ static PyObject *py_smb_getacl(pytalloc_Object *self, PyObject *args, PyObject *
 
 	fio.query_secdesc.level = RAW_FILEINFO_SEC_DESC;
 	fio.query_secdesc.in.file.fnum = fnum;
-	fio.query_secdesc.in.secinfo_flags = SECINFO_OWNER |
+	if (sinfo)
+		fio.query_secdesc.in.secinfo_flags = sinfo;
+	else
+		fio.query_secdesc.in.secinfo_flags = SECINFO_OWNER |
 						SECINFO_GROUP |
 						SECINFO_DACL |
 						SECINFO_PROTECTED_DACL |
 						SECINFO_UNPROTECTED_DACL |
-						SECINFO_DACL |
+						SECINFO_SACL |
 						SECINFO_PROTECTED_SACL |
 						SECINFO_UNPROTECTED_SACL;
-
 
 	status = smb_raw_query_secdesc(spdata->tree, self->talloc_ctx, &fio);
 	smbcli_close(spdata->tree, fnum);
@@ -353,7 +372,6 @@ static PyObject *py_smb_getacl(pytalloc_Object *self, PyObject *args, PyObject *
 	return py_return_ndr_struct("samba.dcerpc.security", "descriptor",
 				self->talloc_ctx, fio.query_secdesc.out.sd);
 }
-
 
 /*
  * Set ACL on file/directory using given security descriptor object
@@ -367,9 +385,10 @@ static PyObject *py_smb_setacl(pytalloc_Object *self, PyObject *args, PyObject *
 	const char *filename;
 	PyObject *py_sd;
 	struct security_descriptor *sd;
+	uint32_t sinfo = 0;
 	int fnum;
 
-	if (!PyArg_ParseTuple(args, "sO:set_acl", &filename, &py_sd)) {
+	if (!PyArg_ParseTuple(args, "sO|I:get_acl", &filename, &py_sd, &sinfo)) {
 		return NULL;
 	}
 
@@ -410,7 +429,18 @@ static PyObject *py_smb_setacl(pytalloc_Object *self, PyObject *args, PyObject *
 
 	fio.set_secdesc.level = RAW_SFILEINFO_SEC_DESC;
 	fio.set_secdesc.in.file.fnum = fnum;
-	fio.set_secdesc.in.secinfo_flags = 0;
+	if (sinfo)
+		fio.set_secdesc.in.secinfo_flags = sinfo;
+	else
+		fio.set_secdesc.in.secinfo_flags = SECINFO_OWNER |
+						SECINFO_GROUP |
+						SECINFO_DACL |
+						SECINFO_PROTECTED_DACL |
+						SECINFO_UNPROTECTED_DACL |
+						SECINFO_SACL |
+						SECINFO_PROTECTED_SACL |
+						SECINFO_UNPROTECTED_SACL;
+
 	fio.set_secdesc.in.sd = sd;
 
 	status = smb_raw_set_secdesc(spdata->tree, &fio);
@@ -421,6 +451,82 @@ static PyObject *py_smb_setacl(pytalloc_Object *self, PyObject *args, PyObject *
 	Py_RETURN_NONE;
 }
 
+/*
+ * Open the file with the parameters passed in and return an object if OK
+ */
+static PyObject *py_open_file(pytalloc_Object *self, PyObject *args, PyObject *kwargs)
+{
+	NTSTATUS status;
+	union smb_open io;
+	struct smb_private_data *spdata;
+	const char *filename;
+	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	uint32_t share_access = NTCREATEX_SHARE_ACCESS_READ |
+				NTCREATEX_SHARE_ACCESS_WRITE;
+        uint32_t open_disposition = NTCREATEX_DISP_OPEN;
+        uint32_t create_options = 0;
+	TALLOC_CTX *mem_ctx;
+	int fnum;
+
+	if (!PyArg_ParseTuple(args, "s|iiii:open_file", 
+				&filename, 
+				&access_mask,
+				&share_access,
+				&open_disposition,
+				&create_options)) {
+		return NULL;
+	}
+
+	ZERO_STRUCT(io);
+
+	spdata = self->ptr;	
+
+	mem_ctx = talloc_new(NULL);
+
+	io.generic.level = RAW_OPEN_NTCREATEX;
+	io.ntcreatex.in.root_fid.fnum = 0;
+	io.ntcreatex.in.flags = 0;
+	io.ntcreatex.in.access_mask = access_mask;
+	io.ntcreatex.in.create_options = create_options;
+	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	io.ntcreatex.in.share_access = share_access;
+	io.ntcreatex.in.alloc_size = 0;
+	io.ntcreatex.in.open_disposition = open_disposition;
+	io.ntcreatex.in.impersonation = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.ntcreatex.in.security_flags = 0;
+	io.ntcreatex.in.fname = filename;
+	
+	status = smb_raw_open(spdata->tree, mem_ctx, &io);
+	talloc_free(mem_ctx);
+
+	PyErr_NTSTATUS_IS_ERR_RAISE(status);
+
+	fnum = io.ntcreatex.out.file.fnum;
+
+	return Py_BuildValue("i", fnum);
+}
+
+/*
+ * Close the file based on the fnum passed in
+ */
+static PyObject *py_close_file(pytalloc_Object *self, PyObject *args, PyObject *kwargs)
+{
+	struct smb_private_data *spdata;
+	int fnum;
+
+	if (!PyArg_ParseTuple(args, "i:close_file", &fnum)) {
+		return NULL;
+	}
+
+	spdata = self->ptr;	
+
+	/*
+	 * Should check the status ...
+	 */
+	smbcli_close(spdata->tree, fnum);
+
+	Py_RETURN_NONE;
+}
 
 static PyMethodDef py_smb_methods[] = {
 	{ "loadfile", (PyCFunction)py_smb_loadfile, METH_VARARGS,
@@ -443,18 +549,26 @@ static PyMethodDef py_smb_methods[] = {
 	{ "rmdir", (PyCFunction)py_smb_rmdir, METH_VARARGS,
 		"rmdir(path) -> None\n\n \
 		Delete a directory." },
+	{ "deltree", (PyCFunction)py_smb_deltree, METH_VARARGS,
+		"deltree(path) -> None\n\n \
+		Delete a directory and all its contents." },
 	{ "chkpath", (PyCFunction)py_smb_chkpath, METH_VARARGS,
 		"chkpath(path) -> True or False\n\n \
 		Return true if path exists, false otherwise." },
 	{ "get_acl", (PyCFunction)py_smb_getacl, METH_VARARGS,
-		"get_acl(path) -> security_descriptor object\n\n \
+		"get_acl(path[, security_info=0]) -> security_descriptor object\n\n \
 		Get security descriptor for file." },
 	{ "set_acl", (PyCFunction)py_smb_setacl, METH_VARARGS,
-		"set_acl(path, security_descriptor) -> None\n\n \
+		"set_acl(path, security_descriptor[, security_info=0]) -> None\n\n \
 		Set security descriptor for file." },
+	{ "open_file", (PyCFunction)py_open_file, METH_VARARGS,
+		"open_file(path, access_mask[, share_access[, open_disposition[, create_options]]] -> fnum\n\n \
+		Open a file. Throws NTSTATUS exceptions on errors." },
+	{ "close_file", (PyCFunction)py_close_file, METH_VARARGS,
+		"close_file(fnum) -> None\n\n \
+		Close the file based on fnum."},
 	{ NULL },
 };
-
 
 static PyObject *py_smb_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
@@ -515,14 +629,13 @@ static PyObject *py_smb_new(PyTypeObject *type, PyObject *args, PyObject *kwargs
 	return (PyObject *)smb;
 }
 
-
 static PyTypeObject PySMB = {
 	.tp_name = "smb.SMB",
 	.tp_basicsize = sizeof(pytalloc_Object),
 	.tp_new = py_smb_new,
 	.tp_flags = Py_TPFLAGS_DEFAULT,
 	.tp_methods = py_smb_methods,
-	.tp_doc = "SMB(hostname, service[, lp[, creds]]) -> SMB connection object\n",
+	.tp_doc = "SMB(hostname, service[, creds[, lp]]) -> SMB connection object\n",
 
 };
 

@@ -470,7 +470,7 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
 
 	if (handle->private_data == NULL) {
 		TALLOC_FREE(handle);
-		return NT_STATUS_PIPE_NOT_AVAILABLE;
+		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
 
 	*phandle = handle;
@@ -687,7 +687,7 @@ struct np_read_state {
 	struct np_proxy_state *p;
 	struct np_ipc_readv_next_vector_state next_vector;
 
-	size_t nread;
+	ssize_t nread;
 	bool is_data_outstanding;
 };
 

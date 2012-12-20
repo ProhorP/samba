@@ -75,8 +75,9 @@ WERROR _dfs_Add(struct pipes_struct *p, struct dfs_Add *r)
 	}
 
 	/* The following call can change the cwd. */
-	status = get_referred_path(ctx, r->in.path, smbd_server_conn, jn,
-				   &consumedcnt, &self_ref);
+	status = get_referred_path(ctx, r->in.path,
+				   true, /*allow_broken_path */
+				   jn, &consumedcnt, &self_ref);
 	if(!NT_STATUS_IS_OK(status)) {
 		return ntstatus_to_werror(status);
 	}
@@ -137,12 +138,15 @@ WERROR _dfs_Remove(struct pipes_struct *p, struct dfs_Remove *r)
 		if (!altpath) {
 			return WERR_NOMEM;
 		}
-		strlower_m(altpath);
+		if (!strlower_m(altpath)) {
+			return WERR_INVALID_PARAM;
+		}
 		DEBUG(5,("init_reply_dfs_remove: Request to remove %s -> %s\\%s.\n",
 			r->in.dfs_entry_path, r->in.servername, r->in.sharename));
 	}
 
-	status = get_referred_path(ctx, r->in.dfs_entry_path, smbd_server_conn,
+	status = get_referred_path(ctx, r->in.dfs_entry_path,
+				   true, /*allow_broken_path */
 				   jn, &consumedcnt, &self_ref);
 	if(!NT_STATUS_IS_OK(status)) {
 		return WERR_DFS_NO_SUCH_VOL;
@@ -361,13 +365,16 @@ WERROR _dfs_GetInfo(struct pipes_struct *p, struct dfs_GetInfo *r)
 		return WERR_NOMEM;
 	}
 
-	if(!create_junction(ctx, r->in.dfs_entry_path,
-			    !smbd_server_conn->using_smb2, jn)) {
+	ret = create_junction(ctx, r->in.dfs_entry_path,
+			      true, /* allow broken_path */
+			      jn);
+	if (!ret) {
 		return WERR_DFS_NO_SUCH_SERVER;
 	}
 
 	/* The following call can change the cwd. */
-	status = get_referred_path(ctx, r->in.dfs_entry_path, smbd_server_conn,
+	status = get_referred_path(ctx, r->in.dfs_entry_path,
+				   true, /*allow_broken_path */
 				   jn, &consumedcnt, &self_ref);
 	if(!NT_STATUS_IS_OK(status) ||
 			consumedcnt < strlen(r->in.dfs_entry_path)) {
@@ -417,125 +424,125 @@ WERROR _dfs_GetInfo(struct pipes_struct *p, struct dfs_GetInfo *r)
 WERROR _dfs_SetInfo(struct pipes_struct *p, struct dfs_SetInfo *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_Rename(struct pipes_struct *p, struct dfs_Rename *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_Move(struct pipes_struct *p, struct dfs_Move *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_ManagerGetConfigInfo(struct pipes_struct *p, struct dfs_ManagerGetConfigInfo *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_ManagerSendSiteInfo(struct pipes_struct *p, struct dfs_ManagerSendSiteInfo *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_AddFtRoot(struct pipes_struct *p, struct dfs_AddFtRoot *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_RemoveFtRoot(struct pipes_struct *p, struct dfs_RemoveFtRoot *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_AddStdRoot(struct pipes_struct *p, struct dfs_AddStdRoot *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_RemoveStdRoot(struct pipes_struct *p, struct dfs_RemoveStdRoot *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_ManagerInitialize(struct pipes_struct *p, struct dfs_ManagerInitialize *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_AddStdRootForced(struct pipes_struct *p, struct dfs_AddStdRootForced *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_GetDcAddress(struct pipes_struct *p, struct dfs_GetDcAddress *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_SetDcAddress(struct pipes_struct *p, struct dfs_SetDcAddress *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_FlushFtTable(struct pipes_struct *p, struct dfs_FlushFtTable *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_Add2(struct pipes_struct *p, struct dfs_Add2 *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_Remove2(struct pipes_struct *p, struct dfs_Remove2 *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_EnumEx(struct pipes_struct *p, struct dfs_EnumEx *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }
 
 WERROR _dfs_SetInfo2(struct pipes_struct *p, struct dfs_SetInfo2 *r)
 {
 	/* FIXME: Implement your code here */
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
 }

@@ -329,7 +329,7 @@ static bool tdbsam_upgrade_next_rid(struct db_context *db)
 	bool ok = false;
 	NTSTATUS status;
 
-	status = dbwrap_fetch_uint32(db, NEXT_RID_STRING, &rid);
+	status = dbwrap_fetch_uint32_bystring(db, NEXT_RID_STRING, &rid);
 	if (NT_STATUS_IS_OK(status)) {
 		return true;
 	}
@@ -347,7 +347,7 @@ static bool tdbsam_upgrade_next_rid(struct db_context *db)
 		rid = BASE_RID;
 	}
 
-	status = dbwrap_store_uint32(db, NEXT_RID_STRING, rid);
+	status = dbwrap_store_uint32_bystring(db, NEXT_RID_STRING, rid);
 	if (!NT_STATUS_IS_OK(status)) {
 		return false;
 	}
@@ -392,16 +392,16 @@ static bool tdbsam_convert(struct db_context **pp_db, const char *name, int32 fr
 		goto cancel;
 	}
 
-	status = dbwrap_store_int32(db, TDBSAM_VERSION_STRING,
-				    TDBSAM_VERSION);
+	status = dbwrap_store_int32_bystring(db, TDBSAM_VERSION_STRING,
+					     TDBSAM_VERSION);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("tdbsam_convert: Could not store tdbsam version: "
 			  "%s\n", nt_errstr(status)));
 		goto cancel;
 	}
 
-	status = dbwrap_store_int32(db, TDBSAM_MINOR_VERSION_STRING,
-				    TDBSAM_MINOR_VERSION);
+	status = dbwrap_store_int32_bystring(db, TDBSAM_MINOR_VERSION_STRING,
+					     TDBSAM_MINOR_VERSION);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("tdbsam_convert: Could not store tdbsam minor "
 			  "version: %s\n", nt_errstr(status)));
@@ -451,14 +451,15 @@ static bool tdbsam_open( const char *name )
 	}
 
 	/* Check the version */
-	status = dbwrap_fetch_int32(db_sam, TDBSAM_VERSION_STRING, &version);
+	status = dbwrap_fetch_int32_bystring(db_sam, TDBSAM_VERSION_STRING,
+					     &version);
 	if (!NT_STATUS_IS_OK(status)) {
 		version = 0;	/* Version not found, assume version 0 */
 	}
 
 	/* Get the minor version */
-	status = dbwrap_fetch_int32(db_sam, TDBSAM_MINOR_VERSION_STRING,
-				    &minor_version);
+	status = dbwrap_fetch_int32_bystring(
+		db_sam, TDBSAM_MINOR_VERSION_STRING, &minor_version);
 	if (!NT_STATUS_IS_OK(status)) {
 		minor_version = 0; /* Minor version not found, assume 0 */
 	}
@@ -493,15 +494,15 @@ static bool tdbsam_open( const char *name )
 		}
 
 		/* Re-check the version */
-		status = dbwrap_fetch_int32(db_sam, TDBSAM_VERSION_STRING,
-					    &version);
+		status = dbwrap_fetch_int32_bystring(
+			db_sam, TDBSAM_VERSION_STRING, &version);
 		if (!NT_STATUS_IS_OK(status)) {
 			version = 0;	/* Version not found, assume version 0 */
 		}
 
 		/* Re-check the minor version */
-		status = dbwrap_fetch_int32(db_sam, TDBSAM_MINOR_VERSION_STRING,
-					    &minor_version);
+		status = dbwrap_fetch_int32_bystring(
+			db_sam, TDBSAM_MINOR_VERSION_STRING, &minor_version);
 		if (!NT_STATUS_IS_OK(status)) {
 			minor_version = 0; /* Minor version not found, assume 0 */
 		}
@@ -571,7 +572,9 @@ static NTSTATUS tdbsam_getsampwnam (struct pdb_methods *my_methods,
 
 	/* Data is stored in all lower-case */
 	fstrcpy(name, sname);
-	strlower_m(name);
+	if (!strlower_m(name)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	/* set search key */
 	slprintf(keystr, sizeof(keystr)-1, "%s%s", USERPREFIX, name);
@@ -667,7 +670,9 @@ static bool tdb_delete_samacct_only( struct samu *sam_pass )
 	NTSTATUS status;
 
 	fstrcpy(name, pdb_get_username(sam_pass));
-	strlower_m(name);
+	if (!strlower_m(name)) {
+		return false;
+	}
 
   	/* set the search key */
 
@@ -711,7 +716,9 @@ static NTSTATUS tdbsam_delete_sam_account(struct pdb_methods *my_methods,
 	}
 
 	fstrcpy(name, pdb_get_username(sam_pass));
-	strlower_m(name);
+	if (!strlower_m(name)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
   	/* set the search key */
 
@@ -784,7 +791,9 @@ static bool tdb_update_samacct_only( struct samu* newpwd, int flag )
 	data.dptr = buf;
 
 	fstrcpy(name, pdb_get_username(newpwd));
-	strlower_m(name);
+	if (!strlower_m(name)) {
+		goto done;
+	}
 
 	DEBUG(5, ("Storing %saccount %s with RID %d\n",
 		  flag == TDB_INSERT ? "(new) " : "", name,
@@ -822,7 +831,9 @@ static bool tdb_update_ridrec_only( struct samu* newpwd, int flag )
 	NTSTATUS status;
 
 	fstrcpy(name, pdb_get_username(newpwd));
-	strlower_m(name);
+	if (!strlower_m(name)) {
+		return false;
+	}
 
 	/* setup RID data */
 	data = string_term_tdb_data(name);
@@ -990,7 +1001,7 @@ static NTSTATUS tdbsam_rename_sam_account(struct pdb_methods *my_methods,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rename_script = talloc_strdup(new_acct, lp_renameuser_script());
+	rename_script = lp_renameuser_script(new_acct);
 	if (!rename_script) {
 		TALLOC_FREE(new_acct);
 		return NT_STATUS_NO_MEMORY;
@@ -1031,10 +1042,14 @@ static NTSTATUS tdbsam_rename_sam_account(struct pdb_methods *my_methods,
 	   so that we lower case the posix name but preserve the case in passdb */
 
 	fstrcpy( oldname_lower, pdb_get_username(old_acct) );
-	strlower_m( oldname_lower );
+	if (!strlower_m( oldname_lower )) {
+		goto cancel;
+	}
 
 	fstrcpy( newname_lower, newname );
-	strlower_m( newname_lower );
+	if (!strlower_m( newname_lower )) {
+		goto cancel;
+	}
 
 	rename_script = talloc_string_sub2(new_acct,
 				rename_script,
@@ -1117,8 +1132,8 @@ static bool tdbsam_new_rid(struct pdb_methods *methods, uint32 *prid)
 		return false;
 	}
 
-	status = dbwrap_trans_change_uint32_atomic(db_sam, NEXT_RID_STRING,
-						   &rid, 1);
+	status = dbwrap_trans_change_uint32_atomic_bystring(
+		db_sam, NEXT_RID_STRING, &rid, 1);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("tdbsam_new_rid: Failed to increase %s: %s\n",
 			NEXT_RID_STRING, nt_errstr(status)));
@@ -1188,6 +1203,7 @@ static bool tdbsam_search_next_entry(struct pdb_search *search,
 	}
 
 	if (state->current == state->num_rids) {
+		TALLOC_FREE(user);
 		return false;
 	}
 

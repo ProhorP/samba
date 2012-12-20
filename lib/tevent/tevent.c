@@ -114,6 +114,7 @@ static void tevent_backend_init(void)
 {
 	tevent_select_init();
 	tevent_poll_init();
+	tevent_poll_mt_init();
 	tevent_standard_init();
 #ifdef HAVE_EPOLL
 	tevent_epoll_init();
@@ -210,8 +211,9 @@ int tevent_common_context_destructor(struct tevent_context *ev)
 
   NOTE: use tevent_context_init() inside of samba!
 */
-static struct tevent_context *tevent_context_init_ops(TALLOC_CTX *mem_ctx,
-						      const struct tevent_ops *ops)
+struct tevent_context *tevent_context_init_ops(TALLOC_CTX *mem_ctx,
+					       const struct tevent_ops *ops,
+					       void *additional_data)
 {
 	struct tevent_context *ev;
 	int ret;
@@ -222,6 +224,7 @@ static struct tevent_context *tevent_context_init_ops(TALLOC_CTX *mem_ctx,
 	talloc_set_destructor(ev, tevent_common_context_destructor);
 
 	ev->ops = ops;
+	ev->additional_data = additional_data;
 
 	ret = ev->ops->context_init(ev);
 	if (ret != 0) {
@@ -253,7 +256,7 @@ struct tevent_context *tevent_context_init_byname(TALLOC_CTX *mem_ctx,
 
 	for (e=tevent_backends;e;e=e->next) {
 		if (strcmp(name, e->name) == 0) {
-			return tevent_context_init_ops(mem_ctx, e->ops);
+			return tevent_context_init_ops(mem_ctx, e->ops, NULL);
 		}
 	}
 	return NULL;

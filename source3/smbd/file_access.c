@@ -149,13 +149,16 @@ bool can_write_to_file(connection_struct *conn,
 
 bool directory_has_default_acl(connection_struct *conn, const char *fname)
 {
-	/* returns talloced off tos. */
 	struct security_descriptor *secdesc = NULL;
 	unsigned int i;
 	NTSTATUS status = SMB_VFS_GET_NT_ACL(conn, fname,
-				SECINFO_DACL, &secdesc);
+					     SECINFO_DACL, talloc_tos(),
+					     &secdesc);
 
-	if (!NT_STATUS_IS_OK(status) || secdesc == NULL) {
+	if (!NT_STATUS_IS_OK(status) ||
+			secdesc == NULL ||
+			secdesc->dacl == NULL) {
+		TALLOC_FREE(secdesc);
 		return false;
 	}
 
@@ -223,8 +226,7 @@ NTSTATUS can_set_delete_on_close(files_struct *fsp, uint32 dosmode)
 			return NT_STATUS_ACCESS_DENIED;
 		}
 
-		return can_delete_directory(fsp->conn,
-					    fsp->fsp_name->base_name);
+		return can_delete_directory_fsp(fsp);
 	}
 
 	return NT_STATUS_OK;

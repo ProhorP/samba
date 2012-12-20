@@ -433,6 +433,21 @@ class BasicTests(samba.tests.TestCase):
           "objectClass")
         ldb.modify(m)
 
+        # Add a new auxiliary object class "posixAccount" to "ldaptestuser"
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
+        m["objectClass"] = MessageElement("posixAccount", FLAG_MOD_ADD,
+          "objectClass")
+        ldb.modify(m)
+
+        # Be sure that "top" is the first and the (most) structural object class
+        # the last value of the "objectClass" attribute - MS-ADTS 3.1.1.1.4
+        res = ldb.search("cn=ldaptestuser,cn=users," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["objectClass"])
+        self.assertTrue(len(res) == 1)
+        self.assertEquals(res[0]["objectClass"][0], "top")
+        self.assertEquals(res[0]["objectClass"][len(res[0]["objectClass"])-1], "user")
+
         delete_force(self.ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
 
     def test_system_only(self):
@@ -1913,20 +1928,13 @@ servicePrincipalName: host/ldaptest2computer29
         res = ldb.search(expression="(&(&(cn=ldaptestuser3)(userAccountControl=547))(objectClass=user))")
         self.assertEquals(len(res), 0, "(&(&(cn=ldaptestuser3)(userAccountControl=547))(objectClass=user))")
 
-        # This is a Samba special, and does not exist in real AD
-        #    print "Testing ldb.search for (dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")"
-        #    res = ldb.search("(dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
-        #    if (res.error != 0 || len(res) != 1) {
-        #        print "Could not find (dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")"
-        #        self.assertEquals(len(res), 1)
-        #    }
-        #    self.assertEquals(res[0].dn, ("CN=ldaptestUSER3,CN=Users," + self.base_dn))
-        #    self.assertEquals(res[0].cn, "ldaptestUSER3")
-        #    self.assertEquals(res[0].name, "ldaptestUSER3")
+        print "Testing ldb.search for (dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ") - should not work"
+        res = ldb.search(expression="(dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
+        self.assertEquals(len(res), 0, "Could find (dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
 
         print "Testing ldb.search for (distinguishedName=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")"
         res = ldb.search(expression="(distinguishedName=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
-        self.assertEquals(len(res), 1, "Could not find (dn=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
+        self.assertEquals(len(res), 1, "Could not find (distinguishedName=CN=ldaptestUSER3,CN=Users," + self.base_dn + ")")
         self.assertEquals(str(res[0].dn), ("CN=ldaptestUSER3,CN=Users," + self.base_dn))
         self.assertEquals(str(res[0]["cn"]), "ldaptestUSER3")
         self.assertEquals(str(res[0]["name"]), "ldaptestUSER3")

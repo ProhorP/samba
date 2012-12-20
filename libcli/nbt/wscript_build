@@ -7,7 +7,7 @@ bld.SAMBA_SUBSYSTEM('NDR_NBT_BUF',
 	)
 
 bld.SAMBA_SUBSYSTEM('lmhosts',
-                    source='lmhosts.c ../dns/dns_hosts_file.c',
+                    source='lmhosts.c',
                     deps='replace talloc'
                     )
 
@@ -17,9 +17,9 @@ bld.SAMBA_LIBRARY('cli-nbt',
                   private_library=True
                   )
 
-bld.SAMBA_BINARY('nmblookup',
+bld.SAMBA_BINARY('nmblookup' + bld.env.suffix4,
                  source='tools/nmblookup.c',
-                 manpages='man/nmblookup.1',
+                 manpages='man/nmblookup4.1',
                  deps='samba-hostconfig samba-util cli-nbt popt POPT_SAMBA netif LIBCLI_RESOLVE'
                  )
 

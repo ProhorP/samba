@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Samba4 AD database checker
 #
 # Copyright (C) Andrew Tridgell 2011
@@ -50,7 +48,22 @@ class dbcheck(object):
         self.fix_time_metadata = False
         self.fix_all_missing_backlinks = False
         self.fix_all_orphaned_backlinks = False
+        self.fix_rmd_flags = False
+        self.seize_fsmo_role = False
+        self.move_to_lost_and_found = False
+        self.fix_instancetype = False
         self.in_transaction = in_transaction
+        self.infrastructure_dn = ldb.Dn(samdb, "CN=Infrastructure," + samdb.domain_dn())
+        self.naming_dn = ldb.Dn(samdb, "CN=Partitions,%s" % samdb.get_config_basedn())
+        self.schema_dn = samdb.get_schema_basedn()
+        self.rid_dn = ldb.Dn(samdb, "CN=RID Manager$,CN=System," + samdb.domain_dn())
+        self.ntds_dsa = samdb.get_dsServiceName()
+
+        res = self.samdb.search(base=self.ntds_dsa, scope=ldb.SCOPE_BASE, attrs=['msDS-hasMasterNCs'])
+        if "msDS-hasMasterNCs" in res[0]:
+            self.write_ncs = res[0]["msDS-hasMasterNCs"]
+        else:
+            self.write_ncs = None
 
     def check_database(self, DN=None, scope=ldb.SCOPE_SUBTREE, controls=[], attrs=['*']):
         '''perform a database check, returning the number of errors found'''
@@ -106,7 +119,7 @@ class dbcheck(object):
             return True
         if c == 'NONE':
             setattr(self, all_attr, 'NONE')
-            return True
+            return False
         return c
 
     def do_modify(self, m, controls, msg, validate=True):
@@ -114,7 +127,25 @@ class dbcheck(object):
         if self.verbose:
             self.report(self.samdb.write_ldif(m, ldb.CHANGETYPE_MODIFY))
         try:
+            controls = controls + ["local_oid:%s:0" % dsdb.DSDB_CONTROL_DBCHECK]
             self.samdb.modify(m, controls=controls, validate=validate)
+        except Exception, err:
+            self.report("%s : %s" % (msg, err))
+            return False
+        return True
+
+    def do_rename(self, from_dn, to_rdn, to_base, controls, msg):
+        '''perform a modify with optional verbose output'''
+        if self.verbose:
+            self.report("""dn: %s
+changeType: modrdn
+newrdn: %s
+deleteOldRdn: 1
+newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
+        try:
+            to_dn = to_rdn + to_base
+            controls = controls + ["local_oid:%s:0" % dsdb.DSDB_CONTROL_DBCHECK]
+            self.samdb.rename(from_dn, to_dn, controls=controls)
         except Exception, err:
             self.report("%s : %s" % (msg, err))
             return False
@@ -159,6 +190,26 @@ class dbcheck(object):
             if nval != '':
                 m['normv_%u' % i] = ldb.MessageElement(nval, ldb.FLAG_MOD_ADD,
                     attrname)
+
+        if self.do_modify(m, ["relax:0", "show_recycled:1"],
+                          "Failed to normalise attribute %s" % attrname,
+                          validate=False):
+            self.report("Normalised attribute %s" % attrname)
+
+    def err_normalise_mismatch_replace(self, dn, attrname, values):
+        '''fix attribute normalisation errors'''
+        normalised = self.samdb.dsdb_normalise_attributes(self.samdb_schema, attrname, values)
+        self.report("ERROR: Normalisation error for attribute '%s' in '%s'" % (attrname, dn))
+        self.report("Values/Order of values do/does not match: %s/%s!" % (values, list(normalised)))
+        if list(normalised) == values:
+            return
+        if not self.confirm_all("Fix normalisation for '%s' from '%s'?" % (attrname, dn), 'fix_all_normalisation'):
+            self.report("Not fixing attribute '%s'" % attrname)
+            return
+
+        m = ldb.Message()
+        m.dn = dn
+        m[attrname] = ldb.MessageElement(normalised, ldb.FLAG_MOD_REPLACE, attrname)
 
         if self.do_modify(m, ["relax:0", "show_recycled:1"],
                           "Failed to normalise attribute %s" % attrname,
@@ -264,6 +315,20 @@ class dbcheck(object):
                           "Failed to fix missing backlink %s" % backlink_name):
             self.report("Fixed missing backlink %s" % (backlink_name))
 
+    def err_incorrect_rmd_flags(self, obj, attrname, revealed_dn):
+        '''handle a incorrect RMD_FLAGS value'''
+        rmd_flags = int(revealed_dn.dn.get_extended_component("RMD_FLAGS"))
+        self.report("ERROR: incorrect RMD_FLAGS value %u for attribute '%s' in %s for link %s" % (rmd_flags, attrname, obj.dn, revealed_dn.dn.extended_str()))
+        if not self.confirm_all('Fix incorrect RMD_FLAGS %u' % rmd_flags, 'fix_rmd_flags'):
+            self.report("Not fixing incorrect RMD_FLAGS %u" % rmd_flags)
+            return
+        m = ldb.Message()
+        m.dn = obj.dn
+        m['old_value'] = ldb.MessageElement(str(revealed_dn), ldb.FLAG_MOD_DELETE, attrname)
+        if self.do_modify(m, ["show_recycled:1", "reveal_internals:0", "show_deleted:0"],
+                          "Failed to fix incorrect RMD_FLAGS %u" % rmd_flags):
+            self.report("Fixed incorrect RMD_FLAGS %u" % (rmd_flags))
+
     def err_orphaned_backlink(self, obj, attrname, val, link_name, target_dn):
         '''handle a orphaned backlink value'''
         self.report("ERROR: orphaned backlink attribute '%s' in %s for link %s in %s" % (attrname, obj.dn, link_name, target_dn))
@@ -276,6 +341,85 @@ class dbcheck(object):
         if self.do_modify(m, ["show_recycled:1", "relax:0"],
                           "Failed to fix orphaned backlink %s" % link_name):
             self.report("Fixed orphaned backlink %s" % (link_name))
+
+    def err_no_fsmoRoleOwner(self, obj):
+        '''handle a missing fSMORoleOwner'''
+        self.report("ERROR: fSMORoleOwner not found for role %s" % (obj.dn))
+        res = self.samdb.search("",
+                                scope=ldb.SCOPE_BASE, attrs=["dsServiceName"])
+        assert len(res) == 1
+        serviceName = res[0]["dsServiceName"][0]
+        if not self.confirm_all('Sieze role %s onto current DC by adding fSMORoleOwner=%s' % (obj.dn, serviceName), 'seize_fsmo_role'):
+            self.report("Not Siezing role %s onto current DC by adding fSMORoleOwner=%s" % (obj.dn, serviceName))
+            return
+        m = ldb.Message()
+        m.dn = obj.dn
+        m['value'] = ldb.MessageElement(serviceName, ldb.FLAG_MOD_ADD, 'fSMORoleOwner')
+        if self.do_modify(m, [],
+                          "Failed to sieze role %s onto current DC by adding fSMORoleOwner=%s" % (obj.dn, serviceName)):
+            self.report("Siezed role %s onto current DC by adding fSMORoleOwner=%s" % (obj.dn, serviceName))
+
+    def err_missing_parent(self, obj):
+        '''handle a missing parent'''
+        self.report("ERROR: parent object not found for %s" % (obj.dn))
+        if not self.confirm_all('Move object %s into LostAndFound?' % (obj.dn), 'move_to_lost_and_found'):
+            self.report('Not moving object %s into LostAndFound' % (obj.dn))
+            return
+
+        keep_transaction = True
+        self.samdb.transaction_start()
+        try:
+            nc_root = self.samdb.get_nc_root(obj.dn);
+            lost_and_found = self.samdb.get_wellknown_dn(nc_root, dsdb.DS_GUID_LOSTANDFOUND_CONTAINER)
+            new_dn = ldb.Dn(self.samdb, str(obj.dn))
+            new_dn.remove_base_components(len(new_dn) - 1)
+            if self.do_rename(obj.dn, new_dn, lost_and_found, ["show_deleted:0", "relax:0"],
+                              "Failed to rename object %s into lostAndFound at %s" % (obj.dn, new_dn + lost_and_found)):
+                self.report("Renamed object %s into lostAndFound at %s" % (obj.dn, new_dn + lost_and_found))
+
+                m = ldb.Message()
+                m.dn = obj.dn
+                m['lastKnownParent'] = ldb.MessageElement(str(obj.dn.parent()), ldb.FLAG_MOD_REPLACE, 'lastKnownParent')
+
+                if self.do_modify(m, [],
+                                  "Failed to set lastKnownParent on lostAndFound object at %s" % (new_dn + lost_and_found)):
+                    self.report("Set lastKnownParent on lostAndFound object at %s" % (new_dn + lost_and_found))
+                    keep_transaction = True
+        except:
+            self.samdb.transaction_cancel()
+            raise
+
+        if keep_transaction:
+            self.samdb.transaction_commit()
+        else:
+            self.samdb.transaction_cancel()
+
+
+    def err_wrong_instancetype(self, obj, calculated_instancetype):
+        '''handle a wrong instanceType'''
+        self.report("ERROR: wrong instanceType %s on %s, should be %d" % (obj["instanceType"], obj.dn, calculated_instancetype))
+        if not self.confirm_all('Change instanceType from %s to %d on %s?' % (obj["instanceType"], calculated_instancetype, obj.dn), 'fix_instancetype'):
+            self.report('Not changing instanceType from %s to %d on %s' % (obj["instanceType"], calculated_instancetype, obj.dn))
+            return
+
+        m = ldb.Message()
+        m.dn = obj.dn
+        m['value'] = ldb.MessageElement(str(calculated_instancetype), ldb.FLAG_MOD_REPLACE, 'instanceType')
+        if self.do_modify(m, ["local_oid:%s:0" % dsdb.DSDB_CONTROL_DBCHECK_MODIFY_RO_REPLICA],
+                          "Failed to correct missing instanceType on %s by setting instanceType=%d" % (obj.dn, calculated_instancetype)):
+            self.report("Corrected instancetype on %s by setting instanceType=%d" % (obj.dn, calculated_instancetype))
+
+    def find_revealed_link(self, dn, attrname, guid):
+        '''return a revealed link in an object'''
+        res = self.samdb.search(base=dn, scope=ldb.SCOPE_BASE, attrs=[attrname],
+                                controls=["show_deleted:0", "extended_dn:0", "reveal_internals:0"])
+        syntax_oid = self.samdb_schema.get_syntax_oid_from_lDAPDisplayName(attrname)
+        for val in res[0][attrname]:
+            dsdb_dn = dsdb_Dn(self.samdb, val, syntax_oid)
+            guid2 = dsdb_dn.dn.get_extended_component("GUID")
+            if guid == guid2:
+                return dsdb_dn
+        return None
 
     def check_dn(self, obj, attrname, syntax_oid):
         '''check a DN attribute for correctness'''
@@ -325,6 +469,14 @@ class dbcheck(object):
                 self.err_dn_target_mismatch(obj.dn, attrname, val, dsdb_dn,
                                             res[0].dn, "incorrect string version of DN")
                 continue
+
+            if is_deleted and not target_is_deleted and reverse_link_name is not None:
+                revealed_dn = self.find_revealed_link(obj.dn, attrname, guid)
+                rmd_flags = revealed_dn.dn.get_extended_component("RMD_FLAGS")
+                if rmd_flags is not None and (int(rmd_flags) & 1) == 0:
+                    # the RMD_FLAGS for this link should be 1, as the target is deleted
+                    self.err_incorrect_rmd_flags(obj, attrname, revealed_dn)
+                    continue
 
             # check the reverse_link is correct if there should be one
             if reverse_link_name is not None:
@@ -388,6 +540,38 @@ class dbcheck(object):
                           "Failed to fix metadata for attribute %s" % attr):
             self.report("Fixed metadata for attribute %s" % attr)
 
+    def is_fsmo_role(self, dn):
+        if dn == self.samdb.domain_dn:
+            return True
+        if dn == self.infrastructure_dn:
+            return True
+        if dn == self.naming_dn:
+            return True
+        if dn == self.schema_dn:
+            return True
+        if dn == self.rid_dn:
+            return True
+
+        return False
+
+    def calculate_instancetype(self, dn):
+        instancetype = 0
+        nc_root = self.samdb.get_nc_root(dn)
+        if dn == nc_root:
+            instancetype |= dsdb.INSTANCE_TYPE_IS_NC_HEAD
+            try:
+                self.samdb.search(base=dn.parent(), scope=ldb.SCOPE_BASE, attrs=[], controls=["show_recycled:1"])
+            except ldb.LdbError, (enum, estr):
+                if enum != ldb.ERR_NO_SUCH_OBJECT:
+                    raise
+            else:
+                instancetype |= dsdb.INSTANCE_TYPE_NC_ABOVE
+
+        if self.write_ncs is not None and str(nc_root) in self.write_ncs:
+            instancetype |= dsdb.INSTANCE_TYPE_WRITE
+
+        return instancetype
+
     def check_object(self, dn, attrs=['*']):
         '''check one object'''
         if self.verbose:
@@ -422,6 +606,13 @@ class dbcheck(object):
             if str(attrname).lower() == 'replpropertymetadata':
                 list_attrs_from_md = self.process_metadata(obj[attrname])
                 got_repl_property_meta_data = True
+                continue
+
+            if str(attrname).lower() == 'objectclass':
+                normalised = self.samdb.dsdb_normalise_attributes(self.samdb_schema, attrname, list(obj[attrname]))
+                if list(normalised) != list(obj[attrname]):
+                    self.err_normalise_mismatch_replace(dn, attrname, list(obj[attrname]))
+                    error_count += 1
                 continue
 
             # check for empty attributes
@@ -459,6 +650,11 @@ class dbcheck(object):
                     error_count += 1
                     break
 
+            if str(attrname).lower() == "instancetype":
+                calculated_instancetype = self.calculate_instancetype(dn)
+                if len(obj["instanceType"]) != 1 or obj["instanceType"][0] != str(calculated_instancetype):
+                    self.err_wrong_instancetype(obj, calculated_instancetype)
+
         show_dn = True
         if got_repl_property_meta_data:
             rdn = (str(dn).split(","))[0]
@@ -489,6 +685,22 @@ class dbcheck(object):
                         self.report("Not fixing missing replPropertyMetaData element '%s'" % att)
                         continue
                     self.fix_metadata(dn, att)
+
+        if self.is_fsmo_role(dn):
+            if "fSMORoleOwner" not in obj:
+                self.err_no_fsmoRoleOwner(obj)
+                error_count += 1
+
+        try:
+            if dn != self.samdb.get_root_basedn():
+                res = self.samdb.search(base=dn.parent(), scope=ldb.SCOPE_BASE,
+                                        controls=["show_recycled:1", "show_deleted:1"])
+        except ldb.LdbError, (enum, estr):
+            if enum == ldb.ERR_NO_SUCH_OBJECT:
+                self.err_missing_parent(obj)
+                error_count += 1
+            else:
+                raise
 
         return error_count
 

@@ -1047,11 +1047,17 @@ static NTSTATUS becomeDC_ldap1_infrastructure_fsmo(struct libnet_BecomeDC_state 
 				DS_GUID_INFRASTRUCTURE_CONTAINER,
 				&basedn);
 	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to get well known DN for DS_GUID_INFRASTRUCTURE_CONTAINER on %s: %s\n", 
+			 ldb_dn_get_linearized(ldb_get_default_basedn(s->ldap1.ldb)), 
+			 ldb_errstring(s->ldap1.ldb)));
 		return NT_STATUS_LDAP(ret);
 	}
 
 	ret = samdb_reference_dn(s->ldap1.ldb, s, basedn, "fSMORoleOwner", &ntds_dn);
 	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to get reference DN from fsmoRoleOwner on %s: %s\n", 
+			 ldb_dn_get_linearized(basedn), 
+			 ldb_errstring(s->ldap1.ldb)));
 		talloc_free(basedn);
 		return NT_STATUS_LDAP(ret);
 	}
@@ -1068,6 +1074,9 @@ static NTSTATUS becomeDC_ldap1_infrastructure_fsmo(struct libnet_BecomeDC_state 
 	ret = ldb_search(s->ldap1.ldb, s, &r, server_dn, LDB_SCOPE_BASE,
 			 dns_attrs, "(objectClass=*)");
 	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to get server DN %s: %s\n", 
+			 ldb_dn_get_linearized(server_dn), 
+			 ldb_errstring(s->ldap1.ldb)));
 		return NT_STATUS_LDAP(ret);
 	} else if (r->count != 1) {
 		talloc_free(r);
@@ -1080,9 +1089,13 @@ static NTSTATUS becomeDC_ldap1_infrastructure_fsmo(struct libnet_BecomeDC_state 
 
 	talloc_free(r);
 
+	ldb_dn_remove_extended_components(ntds_dn);
 	ret = ldb_search(s->ldap1.ldb, s, &r, ntds_dn, LDB_SCOPE_BASE,
 			 guid_attrs, "(objectClass=*)");
 	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("Failed to get NTDS Settings DN %s: %s\n", 
+			 ldb_dn_get_linearized(ntds_dn), 
+			 ldb_errstring(s->ldap1.ldb)));
 		return NT_STATUS_LDAP(ret);
 	} else if (r->count != 1) {
 		talloc_free(r);
@@ -2395,6 +2408,7 @@ static void becomeDC_drsuapi1_add_entry_recv(struct tevent_req *subreq)
 				 "method succeeded but objects returned are %d (expected 1).\n",
 				 r->out.ctr->ctr3.count));
 			composite_error(c, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
 		}
 
 		s->dest_dsa.ntds_guid	= r->out.ctr->ctr3.objects[0].guid;
@@ -2416,6 +2430,7 @@ static void becomeDC_drsuapi1_add_entry_recv(struct tevent_req *subreq)
 				 r->out.ctr->ctr2.dir_err,
 				 win_errstr(r->out.ctr->ctr2.extended_err)));
 			composite_error(c, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
 		}
 
 		s->dest_dsa.ntds_guid	= r->out.ctr->ctr2.objects[0].guid;

@@ -1,7 +1,5 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
-# Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009-2011
+# Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009-2012
 # Copyright (C) Theresa Halloran <theresahalloran@gmail.com> 2011
 #
 # This program is free software; you can redistribute it and/or modify
@@ -42,6 +40,11 @@ class PlainHelpFormatter(optparse.IndentedHelpFormatter):
             result = "\n".join(wrapped_paragraphs) + "\n"
             return result
 
+    def format_epilog(self, epilog):
+        if epilog:
+            return "\n" + epilog + "\n"
+        else:
+            return ""
 
 class Command(object):
     """A samba-tool command."""
@@ -71,6 +74,12 @@ class Command(object):
     takes_args = []
     takes_options = []
     takes_optiongroups = {}
+
+    hidden = False
+
+    raw_argv = None
+    raw_args = None
+    raw_kwargs = None
 
     def __init__(self, outf=sys.stdout, errf=sys.stderr):
         self.outf = outf
@@ -113,12 +122,12 @@ class Command(object):
         if force_traceback or samba.get_debug_level() >= 3:
             traceback.print_tb(etraceback)
 
-    def _create_parser(self, prog):
+    def _create_parser(self, prog, epilog=None):
         parser = optparse.OptionParser(
             usage=self.synopsis,
             description=self.full_description,
             formatter=PlainHelpFormatter(),
-            prog=prog)
+            prog=prog,epilog=epilog)
         parser.add_options(self.takes_options)
         optiongroups = {}
         for name, optiongroup in self.takes_optiongroups.iteritems():
@@ -154,9 +163,13 @@ class Command(object):
                undetermined_max_args = True
             else:
                max_args += 1
-        if (len(args) < min_args) or (undetermined_max_args == False and len(args) > max_args):
+        if (len(args) < min_args) or (not undetermined_max_args and len(args) > max_args):
             parser.print_usage()
             return -1
+
+        self.raw_argv = list(argv)
+        self.raw_args = args
+        self.raw_kwargs = kwargs
 
         try:
             return self.run(*args, **kwargs)
@@ -172,7 +185,7 @@ class Command(object):
         """Get a logger object."""
         import logging
         logger = logging.getLogger(name)
-        logger.addHandler(logging.StreamHandler(self.outf))
+        logger.addHandler(logging.StreamHandler(self.errf))
         return logger
 
 
@@ -188,21 +201,25 @@ class SuperCommand(Command):
             return self.subcommands[subcommand]._run(
                 "%s %s" % (myname, subcommand), *args)
 
-        self.usage(myname)
-        self.outf.write("Available subcommands:\n")
+        epilog = "\nAvailable subcommands:\n"
         subcmds = self.subcommands.keys()
         subcmds.sort()
         max_length = max([len(c) for c in subcmds])
-        for cmd in subcmds:
-            self.outf.write("  %*s  - %s\n" % (
-                -max_length, cmd, self.subcommands[cmd].short_description))
-        if subcommand in [None]:
-            raise CommandError("You must specify a subcommand")
-        if subcommand in ['help', '-h', '--help']:
-            self.outf.write("For more help on a specific subcommand, please type: %s (-h|--help)\n" % myname)
-            return 0
-        raise CommandError("No such subcommand '%s'" % subcommand)
+        for cmd_name in subcmds:
+            cmd = self.subcommands[cmd_name]
+            if not cmd.hidden:
+                epilog += "  %*s  - %s\n" % (
+                    -max_length, cmd_name, cmd.short_description)
+        epilog += "For more help on a specific subcommand, please type: %s <subcommand> (-h|--help)\n" % myname
 
+        parser, optiongroups = self._create_parser(myname, epilog=epilog)
+        args_list = list(args)
+        if subcommand:
+            args_list.insert(0, subcommand)
+        opts, args = parser.parse_args(args_list)
+
+        parser.print_help()
+        return -1
 
 
 class CommandError(Exception):

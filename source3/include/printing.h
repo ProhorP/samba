@@ -25,6 +25,7 @@
    SAMBA printing subsystem.
 */
 #include "tdb_compat.h"
+#include "lib/param/loadparm.h"
 
 /* Extra fields above "LPQ_PRINTING" are used to map extra NT status codes. */
 
@@ -47,7 +48,7 @@ enum {
 };
 
 typedef struct _print_queue_struct {
-	int job;		/* normally the UNIX jobid -- see note in
+	int sysjob;		/* normally the UNIX jobid -- see note in
 				   printing.c:traverse_fn_delete() */
 	int size;
 	int page_count;
@@ -69,6 +70,7 @@ typedef struct {
 /* Information for print jobs */
 struct printjob {
 	pid_t pid; /* which process launched the job */
+	uint32_t jobid; /* the spoolss print job identifier */
 	int sysjob; /* the system (lp) job number */
 	int fd; /* file descriptor of open file if open */
 	time_t starttime; /* when the job started spooling */
@@ -101,7 +103,9 @@ struct printif
   int (*job_delete)(const char *sharename, const char *lprm_command, struct printjob *pjob);
   int (*job_pause)(int snum, struct printjob *pjob);
   int (*job_resume)(int snum, struct printjob *pjob);
-  int (*job_submit)(int snum, struct printjob *pjob);
+  int (*job_submit)(int snum, struct printjob *pjob,
+		    enum printing_types printing_type,
+		    char *lpq_command);
 };
 
 extern struct printif	generic_printif;
@@ -124,7 +128,7 @@ extern struct printif	iprint_printif;
 #ifndef PRINT_SPOOL_PREFIX
 #define PRINT_SPOOL_PREFIX "smbprn."
 #endif
-#define PRINT_DATABASE_VERSION 7
+#define PRINT_DATABASE_VERSION 8
 
 #ifdef AIX
 #define DEFAULT_PRINTING PRINT_AIX
@@ -176,15 +180,16 @@ struct tdb_print_db {
 
 NTSTATUS print_spool_open(files_struct *fsp,
 			  const char *fname,
-			  uint16_t current_vuid);
+			  uint64_t current_vuid);
 
 int print_spool_write(files_struct *fsp, const char *data, uint32_t size,
-		      SMB_OFF_T offset, uint32_t *written);
+		      off_t offset, uint32_t *written);
 
 void print_spool_end(files_struct *fsp, enum file_close_type close_type);
 
 void print_spool_terminate(struct connection_struct *conn,
 			   struct print_file_data *print_file);
+uint16_t print_spool_rap_jobid(struct print_file_data *print_file);
 
 /* The following definitions come from printing/printing.c  */
 
@@ -192,8 +197,9 @@ uint32 sysjob_to_jobid(int unix_jobid);
 bool print_notify_register_pid(int snum);
 bool print_notify_deregister_pid(int snum);
 bool print_job_exists(const char* sharename, uint32 jobid);
-char *print_job_fname(const char* sharename, uint32 jobid);
-struct spoolss_DeviceMode *print_job_devmode(const char* sharename, uint32 jobid);
+struct spoolss_DeviceMode *print_job_devmode(TALLOC_CTX *mem_ctx,
+					     const char *sharename,
+					     uint32 jobid);
 bool print_job_set_name(struct tevent_context *ev,
 			struct messaging_context *msg_ctx,
 			const char *sharename, uint32 jobid, const char *name);
@@ -201,12 +207,12 @@ bool print_job_get_name(TALLOC_CTX *mem_ctx, const char *sharename, uint32_t job
 WERROR print_job_delete(const struct auth_session_info *server_info,
 			struct messaging_context *msg_ctx,
 			int snum, uint32_t jobid);
-bool print_job_pause(const struct auth_session_info *server_info,
+WERROR print_job_pause(const struct auth_session_info *server_info,
 		     struct messaging_context *msg_ctx,
-		     int snum, uint32 jobid, WERROR *errcode);
-bool print_job_resume(const struct auth_session_info *server_info,
+		     int snum, uint32 jobid);
+WERROR print_job_resume(const struct auth_session_info *server_info,
 		      struct messaging_context *msg_ctx,
-		      int snum, uint32 jobid, WERROR *errcode);
+		      int snum, uint32 jobid);
 ssize_t print_job_write(struct tevent_context *ev,
 			struct messaging_context *msg_ctx,
 			int snum, uint32 jobid, const char *buf, size_t size);
@@ -241,7 +247,6 @@ void printing_end(void);
 bool parse_lpq_entry(enum printing_types printing_type,char *line,
 		     print_queue_struct *buf,
 		     print_status_struct *status,bool first);
-uint32_t print_parse_jobid(const char *fname);
 
 /* The following definitions come from printing/printing_db.c  */
 

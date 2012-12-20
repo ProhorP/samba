@@ -36,8 +36,8 @@ static struct smbcli_request *smb_raw_trans_backend_send(struct smbcli_tree *tre
 	uint16_t additional_flags2;
 	uint16_t clear_flags2;
 	uint32_t pid;
-	uint16_t tid;
-	uint16_t uid;
+	struct smbXcli_tcon *tcon = NULL;
+	struct smbXcli_session *session = NULL;
 	const char *pipe_name = NULL;
 	uint8_t s;
 	uint32_t timeout_msec;
@@ -54,8 +54,14 @@ static struct smbcli_request *smb_raw_trans_backend_send(struct smbcli_tree *tre
 	additional_flags2 = SVAL(req->out.hdr, HDR_FLG2);
 	pid  = SVAL(req->out.hdr, HDR_PID);
 	pid |= SVAL(req->out.hdr, HDR_PIDHIGH)<<16;
-	tid = SVAL(req->out.hdr, HDR_TID);
-	uid = SVAL(req->out.hdr, HDR_UID);
+
+	if (req->session) {
+		session = req->session->smbXcli;
+	}
+
+	if (req->tree) {
+		tcon = req->tree->smbXcli;
+	}
 
 	clear_flags = ~additional_flags;
 	clear_flags2 = ~additional_flags2;
@@ -86,7 +92,9 @@ static struct smbcli_request *smb_raw_trans_backend_send(struct smbcli_tree *tre
 					     additional_flags2,
 					     clear_flags2,
 					     timeout_msec,
-					     pid, tid, uid,
+					     pid,
+					     tcon,
+					     session,
 					     pipe_name,
 					     0xFFFF, /* fid */
 					     0, /* function */
@@ -258,8 +266,8 @@ struct smbcli_request *smb_raw_nttrans_send(struct smbcli_tree *tree,
 	uint16_t additional_flags2;
 	uint16_t clear_flags2;
 	uint32_t pid;
-	uint16_t tid;
-	uint16_t uid;
+	struct smbXcli_tcon *tcon = NULL;
+	struct smbXcli_session *session = NULL;
 	uint32_t timeout_msec;
 	uint32_t tmp;
 
@@ -274,8 +282,14 @@ struct smbcli_request *smb_raw_nttrans_send(struct smbcli_tree *tree,
 	additional_flags2 = SVAL(req->out.hdr, HDR_FLG2);
 	pid  = SVAL(req->out.hdr, HDR_PID);
 	pid |= SVAL(req->out.hdr, HDR_PIDHIGH)<<16;
-	tid = SVAL(req->out.hdr, HDR_TID);
-	uid = SVAL(req->out.hdr, HDR_UID);
+
+	if (req->session) {
+		session = req->session->smbXcli;
+	}
+
+	if (req->tree) {
+		tcon = req->tree->smbXcli;
+	}
 
 	clear_flags = ~additional_flags;
 	clear_flags2 = ~additional_flags2;
@@ -302,7 +316,9 @@ struct smbcli_request *smb_raw_nttrans_send(struct smbcli_tree *tree,
 					     additional_flags2,
 					     clear_flags2,
 					     timeout_msec,
-					     pid, tid, uid,
+					     pid,
+					     tcon,
+					     session,
 					     NULL, /* pipe_name */
 					     0xFFFF, /* fid */
 					     parms->in.function,

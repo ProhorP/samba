@@ -306,7 +306,7 @@ error_status_t _epm_Insert(struct pipes_struct *p,
 	/* If this is not a priviledged users, return */
 	if (p->transport != NCALRPC ||
 	    !is_priviledged_pipe(p->session_info)) {
-		p->rng_fault_state = true;
+		p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 		return EPMAPPER_STATUS_CANT_PERFORM_OP;
 	}
 
@@ -443,7 +443,7 @@ error_status_t _epm_Delete(struct pipes_struct *p,
 	/* If this is not a priviledged users, return */
 	if (p->transport != NCALRPC ||
 	    !is_priviledged_pipe(p->session_info)) {
-		p->rng_fault_state = true;
+		p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 		return EPMAPPER_STATUS_CANT_PERFORM_OP;
 	}
 
@@ -537,8 +537,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 		  r->in.max_ents));
 
 	if (r->in.entry_handle == NULL ||
-	    policy_handle_empty(r->in.entry_handle)) {
-		struct GUID *obj;
+	    ndr_policy_handle_empty(r->in.entry_handle)) {
 		char *srv_addr = NULL;
 
 		DEBUG(7, ("_epm_Lookup: No entry_handle found, creating it.\n"));
@@ -547,12 +546,6 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 		if (eps == NULL) {
 			rc = EPMAPPER_STATUS_NO_MEMORY;
 			goto done;
-		}
-
-		if (r->in.object == NULL || GUID_all_zero(r->in.object)) {
-			obj = NULL;
-		} else {
-			obj = r->in.object;
 		}
 
 		if (p->local_address != NULL) {
@@ -743,7 +736,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 					if (r->in.interface_id->vers_major ==
 					    (eps->e[i].syntax_id.if_version >> 16) &&
 					    r->in.interface_id->vers_minor <=
-					    (eps->e[i].syntax_id.if_version && 0xFFFF)) {
+					    (eps->e[i].syntax_id.if_version & 0xFFFF)) {
 						match = true;
 					}
 					break;
@@ -756,7 +749,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 					if (r->in.interface_id->vers_major ==
 					    (eps->e[i].syntax_id.if_version >> 16) &&
 					    r->in.interface_id->vers_minor ==
-					    (eps->e[i].syntax_id.if_version && 0xFFFF)) {
+					    (eps->e[i].syntax_id.if_version & 0xFFFF)) {
 						match = true;
 					}
 					match = true;
@@ -789,7 +782,7 @@ error_status_t _epm_Lookup(struct pipes_struct *p,
 						if (r->in.interface_id->vers_major ==
 						    (eps->e[i].syntax_id.if_version >> 16) &&
 						    r->in.interface_id->vers_minor >=
-						    (eps->e[i].syntax_id.if_version && 0xFFFF)) {
+						    (eps->e[i].syntax_id.if_version & 0xFFFF)) {
 							match = true;
 						}
 					}
@@ -857,7 +850,6 @@ error_status_t _epm_Map(struct pipes_struct *p,
 	error_status_t rc;
 	uint32_t count = 0;
 	uint32_t num_towers = 0;
-	uint32_t num_floors = 0;
 	uint32_t i;
 	bool ok;
 
@@ -897,15 +889,14 @@ error_status_t _epm_Map(struct pipes_struct *p,
 	 * | Floor 6 | Routing                                               |
 	 * +---------+-------------------------------------------------------+
 	 */
-	num_floors = r->in.map_tower->tower.num_floors;
 	floors = r->in.map_tower->tower.floors;
 
 	/* We accept NDR as the transfer syntax */
 	dcerpc_floor_get_lhs_data(&floors[1], &ifid);
 
 	if (floors[1].lhs.protocol != EPM_PROTOCOL_UUID ||
-	    !GUID_equal(&ifid.uuid, &ndr_transfer_syntax.uuid) ||
-	    ifid.if_version != ndr_transfer_syntax.if_version) {
+	    !GUID_equal(&ifid.uuid, &ndr_transfer_syntax_ndr.uuid) ||
+	    ifid.if_version != ndr_transfer_syntax_ndr.if_version) {
 		rc = EPMAPPER_STATUS_NO_MORE_ENTRIES;
 		goto done;
 	}
@@ -924,7 +915,7 @@ error_status_t _epm_Map(struct pipes_struct *p,
 	}
 
 	if (r->in.entry_handle == NULL ||
-	    policy_handle_empty(r->in.entry_handle)) {
+	    ndr_policy_handle_empty(r->in.entry_handle)) {
 		struct GUID *obj;
 		char *srv_addr = NULL;
 
@@ -1119,7 +1110,7 @@ error_status_t _epm_LookupHandleFree(struct pipes_struct *p,
 error_status_t _epm_InqObject(struct pipes_struct *p,
 		      struct epm_InqObject *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return EPMAPPER_STATUS_CANT_PERFORM_OP;
 }
 
@@ -1133,7 +1124,7 @@ error_status_t _epm_InqObject(struct pipes_struct *p,
 error_status_t _epm_MgmtDelete(struct pipes_struct *p,
 		       struct epm_MgmtDelete *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return EPMAPPER_STATUS_CANT_PERFORM_OP;
 }
 
@@ -1144,7 +1135,7 @@ error_status_t _epm_MgmtDelete(struct pipes_struct *p,
 error_status_t _epm_MapAuth(struct pipes_struct *p,
 		    struct epm_MapAuth *r)
 {
-	p->rng_fault_state = true;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return EPMAPPER_STATUS_CANT_PERFORM_OP;
 }
 

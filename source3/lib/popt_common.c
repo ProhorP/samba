@@ -375,7 +375,7 @@ static void get_password_file(struct user_auth_info *auth_info)
 		sscanf(p, "%d", &fd);
 		close_it = false;
 	} else if ((p = getenv("PASSWD_FILE")) != NULL) {
-		fd = sys_open(p, O_RDONLY, 0);
+		fd = open(p, O_RDONLY, 0);
 		spec = SMB_STRDUP(p);
 		if (fd < 0) {
 			fprintf(stderr, "Error opening PASSWD_FILE %s: %s\n",
@@ -592,6 +592,9 @@ static void popt_common_credentials_callback(poptContext con,
 	case 'C':
 		set_cmdline_auth_info_use_ccache(auth_info, true);
 		break;
+	case 'H':
+		set_cmdline_auth_info_use_pw_nt_hash(auth_info, true);
+		break;
 	}
 }
 
@@ -615,5 +618,7 @@ struct poptOption popt_common_credentials[] = {
 	{"encrypt", 'e', POPT_ARG_NONE, NULL, 'e', "Encrypt SMB transport (UNIX extended servers only)" },
 	{"use-ccache", 'C', POPT_ARG_NONE, NULL, 'C',
 	 "Use the winbind ccache for authentication" },
+	{"pw-nt-hash", '\0', POPT_ARG_NONE, NULL, 'H',
+	 "The supplied password is the NT hash" },
 	POPT_TABLEEND
 };

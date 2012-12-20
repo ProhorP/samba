@@ -21,8 +21,7 @@
 #include "includes.h"
 #ifdef HAVE_KRB5
 
-#include "libcli/auth/krb5_wrap.h"
-#include "lib/util/asn1.h"
+#include "auth/kerberos/pac_utils.h"
 
 #if 0
 /* FIXME - need proper configure/waf test
@@ -81,8 +80,24 @@ NTSTATUS gssapi_obtain_pac_blob(TALLOC_CTX *mem_ctx,
 	NTSTATUS status;
 	OM_uint32 gss_maj, gss_min;
 #ifdef HAVE_GSS_GET_NAME_ATTRIBUTE
-	gss_buffer_desc pac_buffer;
-	gss_buffer_desc pac_display_buffer;
+/*
+ * gss_get_name_attribute() in MIT krb5 1.10.0 can return unintialized pac_display_buffer
+ * and later gss_release_buffer() will crash on attempting to release it.
+ *
+ * So always initialize the buffer descriptors.
+ *
+ * See following links for more details:
+ * http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=658514
+ * http://krbdev.mit.edu/rt/Ticket/Display.html?user=guest&pass=guest&id=7087
+ */
+	gss_buffer_desc pac_buffer = {
+		.value = NULL,
+		.length = 0
+	};
+	gss_buffer_desc pac_display_buffer = {
+		.value = NULL,
+		.length = 0
+	};
 	gss_buffer_desc pac_name = {
 		.value = discard_const("urn:mspac:"),
 		.length = sizeof("urn:mspac:")-1
@@ -209,10 +224,7 @@ NTSTATUS gssapi_get_session_key(TALLOC_CTX *mem_ctx,
 		krb5_free_keyblock(NULL /* should be krb5_context */, subkey);
 		return NT_STATUS_OK;
 #else
-		DEBUG(0, ("gss_inquire_sec_context_by_oid returned unknown "
-			  "OID for data in results:\n"));
-		dump_data(1, (uint8_t *)set->elements[1].value,
-			     set->elements[1].length);
+		DEBUG(0, ("gss_inquire_sec_context_by_oid didn't return any session key (and no alternative method available)\n"));
 		return NT_STATUS_NO_USER_SESSION_KEY;
 #endif
 	}
@@ -223,43 +235,100 @@ NTSTATUS gssapi_get_session_key(TALLOC_CTX *mem_ctx,
 	}
 
 	if (keytype) {
-		char *oid;
-		char *p, *q = NULL;
-		
-		if (set->count < 2
-		    || memcmp(set->elements[1].value,
-			      gse_sesskeytype_oid.elements,
-			      gse_sesskeytype_oid.length) != 0) {
+		int diflen, i;
+		const char *p;
+
+		if (set->count < 2) {
+
+#ifdef HAVE_GSSKRB5_GET_SUBKEY
+			krb5_keyblock *subkey;
+			gss_maj = gsskrb5_get_subkey(&gss_min,
+						     gssapi_context,
+						     &subkey);
+			if (gss_maj == 0) {
+				*keytype = KRB5_KEY_TYPE(subkey);
+				krb5_free_keyblock(NULL /* should be krb5_context */, subkey);
+			} else
+#else
+			{
+				*keytype = 0;
+			}
+#endif
+			gss_maj = gss_release_buffer_set(&gss_min, &set);
+	
+			return NT_STATUS_OK;
+
+		} else if (memcmp(set->elements[1].value,
+				  gse_sesskeytype_oid.elements,
+				  gse_sesskeytype_oid.length) != 0) {
 			/* Perhaps a non-krb5 session key */
 			*keytype = 0;
 			gss_maj = gss_release_buffer_set(&gss_min, &set);
 			return NT_STATUS_OK;
 		}
-		if (!ber_read_OID_String(mem_ctx,
-					 data_blob_const(set->elements[1].value,
-							 set->elements[1].length), &oid)) {
-			TALLOC_FREE(oid);
+		p = (uint8_t *)set->elements[1].value + gse_sesskeytype_oid.length;
+		diflen = set->elements[1].length - gse_sesskeytype_oid.length;
+		if (diflen <= 0) {
 			gss_maj = gss_release_buffer_set(&gss_min, &set);
 			return NT_STATUS_INVALID_PARAMETER;
 		}
-		p = strrchr(oid, '.');
-		if (!p) {
-			TALLOC_FREE(oid);
-			gss_maj = gss_release_buffer_set(&gss_min, &set);
-			return NT_STATUS_INVALID_PARAMETER;
-		} else {
-			p++;
-			*keytype = strtoul(p, &q, 10);
-			if (q == NULL || *q != '\0') {
-				TALLOC_FREE(oid);
+		*keytype = 0;
+		for (i = 0; i < diflen; i++) {
+			*keytype = (*keytype << 7) | (p[i] & 0x7f);
+			if (i + 1 != diflen && (p[i] & 0x80) == 0) {
+				gss_maj = gss_release_buffer_set(&gss_min, &set);
 				return NT_STATUS_INVALID_PARAMETER;
 			}
 		}
-		TALLOC_FREE(oid);
 	}
-	
+
 	gss_maj = gss_release_buffer_set(&gss_min, &set);
 	return NT_STATUS_OK;
 }
 
-#endif
+
+char *gssapi_error_string(TALLOC_CTX *mem_ctx,
+			  OM_uint32 maj_stat, OM_uint32 min_stat,
+			  const gss_OID mech)
+{
+	OM_uint32 disp_min_stat, disp_maj_stat;
+	gss_buffer_desc maj_error_message;
+	gss_buffer_desc min_error_message;
+	char *maj_error_string, *min_error_string;
+	OM_uint32 msg_ctx = 0;
+
+	char *ret;
+
+	maj_error_message.value = NULL;
+	min_error_message.value = NULL;
+	maj_error_message.length = 0;
+	min_error_message.length = 0;
+
+	disp_maj_stat = gss_display_status(&disp_min_stat, maj_stat,
+					   GSS_C_GSS_CODE, mech,
+					   &msg_ctx, &maj_error_message);
+	disp_maj_stat = gss_display_status(&disp_min_stat, min_stat,
+					   GSS_C_MECH_CODE, mech,
+					   &msg_ctx, &min_error_message);
+
+	maj_error_string = talloc_strndup(mem_ctx,
+					  (char *)maj_error_message.value,
+					  maj_error_message.length);
+
+	min_error_string = talloc_strndup(mem_ctx,
+					  (char *)min_error_message.value,
+					  min_error_message.length);
+
+	ret = talloc_asprintf(mem_ctx, "%s: %s",
+				maj_error_string, min_error_string);
+
+	talloc_free(maj_error_string);
+	talloc_free(min_error_string);
+
+	gss_release_buffer(&disp_min_stat, &maj_error_message);
+	gss_release_buffer(&disp_min_stat, &min_error_message);
+
+	return ret;
+}
+
+#endif /* HAVE_KRB5 */

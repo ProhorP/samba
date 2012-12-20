@@ -25,6 +25,24 @@
 #include "smbd/globals.h"
 #include "../libcli/security/security.h"
 
+struct print_file_data {
+	char *svcname;
+	char *docname;
+	char *filename;
+	struct policy_handle handle;
+	uint32_t jobid;
+	uint16 rap_jobid;
+};
+
+uint16_t print_spool_rap_jobid(struct print_file_data *print_file)
+{
+	if (print_file == NULL) {
+		return 0;
+	}
+
+	return print_file->rap_jobid;
+}
+
 void print_spool_terminate(struct connection_struct *conn,
 			   struct print_file_data *print_file);
 
@@ -39,7 +57,7 @@ void print_spool_terminate(struct connection_struct *conn,
 
 NTSTATUS print_spool_open(files_struct *fsp,
 			  const char *fname,
-			  uint16_t current_vuid)
+			  uint64_t current_vuid)
 {
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
@@ -60,7 +78,7 @@ NTSTATUS print_spool_open(files_struct *fsp,
 		status = NT_STATUS_NO_MEMORY;
 		goto done;
 	}
-	pf->svcname = talloc_strdup(pf, lp_servicename(SNUM(fsp->conn)));
+	pf->svcname = lp_servicename(pf, SNUM(fsp->conn));
 
 	/* the document name is derived from the file name.
 	 * "Remote Downlevel Document" is added in front to
@@ -82,7 +100,8 @@ NTSTATUS print_spool_open(files_struct *fsp,
 		}
 	}
 
-	/* Ok, now we have to open an actual file.
+	/*
+	 * Ok, now we have to open an actual file.
 	 * Here is the reason:
 	 * We want to write the spool job to this file in
 	 * smbd for scalability reason (and also because
@@ -92,10 +111,15 @@ NTSTATUS print_spool_open(files_struct *fsp,
 	 * to spoolss in output_file so it can monitor and
 	 * take over once we call EndDocPrinter().
 	 * Of course we will not start writing until
-	 * StartDocPrinter() actually gives the ok. */
+	 * StartDocPrinter() actually gives the ok.
+	 * smbd spooler files do not include a print jobid
+	 * path component, as the jobid is only known after
+	 * calling StartDocPrinter().
+	 */
 
-	pf->filename = talloc_asprintf(pf, "%s/%s.XXXXXX",
-					lp_pathname(SNUM(fsp->conn)),
+	pf->filename = talloc_asprintf(pf, "%s/%sXXXXXX",
+					lp_pathname(talloc_tos(),
+						    SNUM(fsp->conn)),
 					PRINT_SPOOL_PREFIX);
 	if (!pf->filename) {
 		status = NT_STATUS_NO_MEMORY;
@@ -139,7 +163,7 @@ NTSTATUS print_spool_open(files_struct *fsp,
 
 	status = dcerpc_spoolss_OpenPrinter(b, pf, pf->svcname,
 					    "RAW", devmode_ctr,
-					    SEC_FLAG_MAXIMUM_ALLOWED,
+					    PRINTER_ACCESS_USE,
 					    &pf->handle, &werr);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto done;
@@ -223,7 +247,7 @@ done:
 
 int print_spool_write(files_struct *fsp,
 		      const char *data, uint32_t size,
-		      SMB_OFF_T offset, uint32_t *written)
+		      off_t offset, uint32_t *written)
 {
 	SMB_STRUCT_STAT st;
 	ssize_t n;

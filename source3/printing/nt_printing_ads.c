@@ -366,7 +366,7 @@ WERROR check_published_printers(struct messaging_context *msg_ctx)
 		}
 
 		result = winreg_get_printer_internal(tmp_ctx, session_info, msg_ctx,
-					    lp_servicename(snum),
+					    lp_servicename(talloc_tos(), snum),
 					    &pinfo2);
 		if (!W_ERROR_IS_OK(result)) {
 			continue;
@@ -390,7 +390,9 @@ done:
 bool is_printer_published(TALLOC_CTX *mem_ctx,
 			  const struct auth_session_info *session_info,
 			  struct messaging_context *msg_ctx,
-			  const char *servername, char *printer, struct GUID *guid,
+			  const char *servername,
+			  const char *printer,
+			  struct GUID *guid,
 			  struct spoolss_PrinterInfo2 **info2)
 {
 	struct spoolss_PrinterInfo2 *pinfo2 = NULL;
@@ -485,7 +487,9 @@ WERROR check_published_printers(struct messaging_context *msg_ctx)
 bool is_printer_published(TALLOC_CTX *mem_ctx,
 			  const struct auth_session_info *session_info,
 			  struct messaging_context *msg_ctx,
-			  const char *servername, char *printer, struct GUID *guid,
+			  const char *servername,
+			  const char *printer,
+			  struct GUID *guid,
 			  struct spoolss_PrinterInfo2 **info2)
 {
 	return False;

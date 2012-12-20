@@ -372,7 +372,7 @@ class DnTests(TestCase):
         x = ldb.Dn(self.ldb, "dc=foo16,bar=bloe")
         self.assertEquals("bar=bloe", x.parent().__str__())
 
-    def test_parent_nonexistant(self):
+    def test_parent_nonexistent(self):
         x = ldb.Dn(self.ldb, "@BLA")
         self.assertEquals(None, x.parent())
 
@@ -414,7 +414,12 @@ class DnTests(TestCase):
     def test_add(self):
         x = ldb.Dn(self.ldb, "dc=foo24")
         y = ldb.Dn(self.ldb, "bar=bla")
-        self.assertEquals("dc=foo24,bar=bla", str(y + x))
+        self.assertEquals("dc=foo24,bar=bla", str(x + y))
+
+    def test_remove_base_components(self):
+        x = ldb.Dn(self.ldb, "dc=foo24,dc=samba,dc=org")
+        x.remove_base_components(len(x)-1)
+        self.assertEquals("dc=foo24", str(x))
 
     def test_parse_ldif(self):
         msgs = self.ldb.parse_ldif("dn: foo=bar\n")

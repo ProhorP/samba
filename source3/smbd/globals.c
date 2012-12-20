@@ -20,17 +20,12 @@
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
-#include "lib/smbd_shim.h"
 #include "memcache.h"
 #include "messages.h"
 #include "tdb_compat.h"
 
-#if defined(WITH_AIO)
-struct aio_extra *aio_list_head = NULL;
-struct tevent_signal *aio_signal_event = NULL;
-int aio_pending_size = 0;
+int aio_pending_size = 100;	/* tevent supports 100 signals SA_SIGINFO */
 int outstanding_aio_calls = 0;
-#endif
 
 #ifdef USE_DMAPI
 struct smbd_dmapi_context *dmapi_ctx = NULL;
@@ -53,8 +48,6 @@ TDB_CONTEXT *tdb_mangled_cache = NULL;
   The largest possible value is 6.
 */
 unsigned mangle_prefix = 0;
-
-struct msg_state *smbd_msg_state = NULL;
 
 bool logged_ioctl_message = false;
 
@@ -93,16 +86,11 @@ struct vfs_init_function_entry *backends = NULL;
 char *sparse_buf = NULL;
 char *LastDir = NULL;
 
-/* Current number of oplocks we have outstanding. */
-int32_t exclusive_oplocks_open = 0;
-int32_t level_II_oplocks_open = 0;
-struct kernel_oplocks *koplocks = NULL;
-
 struct smbd_parent_context *am_parent = NULL;
 struct memcache *smbd_memcache_ctx = NULL;
 bool exit_firsttime = true;
 
-struct smbd_server_connection *smbd_server_conn = NULL;
+struct smbXsrv_connection *global_smbXsrv_connection = NULL;
 
 struct memcache *smbd_memcache(void)
 {
@@ -122,33 +110,9 @@ struct memcache *smbd_memcache(void)
 	return smbd_memcache_ctx;
 }
 
-static const struct smbd_shim smbd_shim_fns = 
-{
-	.cancel_pending_lock_requests_by_fid = smbd_cancel_pending_lock_requests_by_fid,
-	.send_stat_cache_delete_message = smbd_send_stat_cache_delete_message,
-	.change_to_root_user = smbd_change_to_root_user,
-
-	.contend_level2_oplocks_begin = smbd_contend_level2_oplocks_begin,
-	.contend_level2_oplocks_end = smbd_contend_level2_oplocks_end,
-
-	.become_root = smbd_become_root,
-	.unbecome_root = smbd_unbecome_root
-};
-
 void smbd_init_globals(void)
 {
-	set_smbd_shim(&smbd_shim_fns);
-
 	ZERO_STRUCT(conn_ctx_stack);
 
 	ZERO_STRUCT(sec_ctx_stack);
-
-	smbd_server_conn = talloc_zero(server_event_context(), struct smbd_server_connection);
-	if (!smbd_server_conn) {
-		exit_server("failed to create smbd_server_connection");
-	}
-
-	smbd_server_conn->ev_ctx = server_event_context();
-	smbd_server_conn->smb1.echo_handler.trusted_fd = -1;
-	smbd_server_conn->smb1.echo_handler.socket_lock_fd = -1;
 }

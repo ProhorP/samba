@@ -23,9 +23,6 @@
 
 #include "includes.h"
 
-/* Max allowable allococation - 256mb - 0x10000000 */
-#define MAX_ALLOC_SIZE (1024*1024*256)
-
 #if defined(PARANOID_MALLOC_CHECKER)
 
 /****************************************************************************
@@ -43,20 +40,6 @@ void *malloc_(size_t size)
 }
 
 /****************************************************************************
- Internal calloc wrapper. Not externally visible.
-****************************************************************************/
-
-static void *calloc_(size_t count, size_t size)
-{
-	if (size == 0 || count == 0) {
-		return NULL;
-	}
-#undef calloc
-	return calloc(count, size);
-#define calloc(n,s) __ERROR_DONT_USE_CALLOC_DIRECTLY
-}
-
-/****************************************************************************
  Internal realloc wrapper. Not externally visible.
 ****************************************************************************/
 
@@ -68,38 +51,6 @@ static void *realloc_(void *ptr, size_t size)
 }
 
 #endif /* PARANOID_MALLOC_CHECKER */
-
-/****************************************************************************
- Type-safe memalign
-****************************************************************************/
-
-void *memalign_array(size_t el_size, size_t align, unsigned int count)
-{
-	if (count >= MAX_ALLOC_SIZE/el_size) {
-		return NULL;
-	}
-
-	return sys_memalign(align, el_size*count);
-}
-
-/****************************************************************************
- Type-safe calloc.
-****************************************************************************/
-
-void *calloc_array(size_t size, size_t nmemb)
-{
-	if (nmemb >= MAX_ALLOC_SIZE/size) {
-		return NULL;
-	}
-	if (size == 0 || nmemb == 0) {
-		return NULL;
-	}
-#if defined(PARANOID_MALLOC_CHECKER)
-	return calloc_(nmemb, size);
-#else
-	return calloc(nmemb, size);
-#endif
-}
 
 /****************************************************************************
  Expand a pointer to be a particular size.

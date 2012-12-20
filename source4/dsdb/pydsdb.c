@@ -40,11 +40,18 @@ typedef intargfunc ssizeargfunc;
 
 /* FIXME: These should be in a header file somewhere */
 #define PyErr_LDB_OR_RAISE(py_ldb, ldb) \
-/*	if (!PyLdb_Check(py_ldb)) { \
+	if (!py_check_dcerpc_type(py_ldb, "ldb", "Ldb")) { \
 		PyErr_SetString(py_ldb_get_exception(), "Ldb connection object required"); \
 		return NULL; \
-	} */\
+	} \
 	ldb = pyldb_Ldb_AsLdbContext(py_ldb);
+
+#define PyErr_LDB_DN_OR_RAISE(py_ldb_dn, dn) \
+	if (!py_check_dcerpc_type(py_ldb_dn, "ldb", "Dn")) { \
+		PyErr_SetString(py_ldb_get_exception(), "ldb Dn object required"); \
+		return NULL; \
+	} \
+	dn = pyldb_Dn_AsDn(py_ldb_dn);
 
 static PyObject *py_ldb_get_exception(void)
 {
@@ -96,7 +103,7 @@ static PyObject *py_samdb_server_site_name(PyObject *self, PyObject *args)
 }
 
 static PyObject *py_dsdb_convert_schema_to_openldap(PyObject *self,
-													PyObject *args)
+						    PyObject *args)
 {
 	char *target_str, *mapping;
 	PyObject *py_ldb;
@@ -569,6 +576,7 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
 		PyObject *item = PyList_GetItem(el_list, i);
 		if (!PyString_Check(item)) {
 			PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
+			talloc_free(tmp_ctx);
 			return NULL;
 		}
 		el->values[i].data = (uint8_t *)PyString_AsString(item);
@@ -583,7 +591,7 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
 	}
 
 	werr = a->syntax->ldb_to_drsuapi(&syntax_ctx, a, el, attr, attr);
-	PyErr_WERROR_IS_ERR_RAISE(werr);
+	PyErr_WERROR_NOT_OK_RAISE(werr);
 
 	ret = py_return_ndr_struct("samba.dcerpc.drsuapi", "DsReplicaAttribute", attr, attr);
 
@@ -663,10 +671,22 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
 		PyObject *item = PyList_GetItem(el_list, i);
 		if (!PyString_Check(item)) {
 			PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
+			talloc_free(tmp_ctx);
 			return NULL;
 		}
 		el->values[i].data = (uint8_t *)PyString_AsString(item);
 		el->values[i].length = PyString_Size(item);
+	}
+
+	/* Normalise "objectClass" attribute if needed */
+	if (ldb_attr_cmp(a->lDAPDisplayName, "objectClass") == 0) {
+		int iret;
+		iret = dsdb_sort_objectClass_attr(ldb, schema, el, tmp_ctx, el);
+		if (iret != LDB_SUCCESS) {
+			PyErr_SetString(PyExc_RuntimeError, ldb_errstring(ldb));
+			talloc_free(tmp_ctx);
+			return NULL;
+		}
 	}
 
 	/* first run ldb_to_drsuapi, then convert back again. This has
@@ -681,11 +701,11 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
 	}
 
 	werr = a->syntax->ldb_to_drsuapi(&syntax_ctx, a, el, attr, attr);
-	PyErr_WERROR_IS_ERR_RAISE(werr);
+	PyErr_WERROR_NOT_OK_RAISE(werr);
 
 	/* now convert back again */
 	werr = a->syntax->drsuapi_to_ldb(&syntax_ctx, a, attr, el, el);
-	PyErr_WERROR_IS_ERR_RAISE(werr);
+	PyErr_WERROR_NOT_OK_RAISE(werr);
 
 	ret = py_return_ndr_struct("ldb", "MessageElement", el, el);
 
@@ -839,7 +859,7 @@ static PyObject *py_dsdb_set_schema_from_ldif(PyObject *self, PyObject *args)
 	PyErr_LDB_OR_RAISE(py_ldb, ldb);
 
 	result = dsdb_set_schema_from_ldif(ldb, pf, df, dn);
-	PyErr_WERROR_IS_ERR_RAISE(result);
+	PyErr_WERROR_NOT_OK_RAISE(result);
 
 	Py_RETURN_NONE;
 }
@@ -852,7 +872,9 @@ static PyObject *py_dsdb_set_schema_from_ldb(PyObject *self, PyObject *args)
 	struct ldb_context *from_ldb;
 	struct dsdb_schema *schema;
 	int ret;
-	if (!PyArg_ParseTuple(args, "OO", &py_ldb, &py_from_ldb))
+	char write_indices_and_attributes = true;
+	if (!PyArg_ParseTuple(args, "OO|b",
+			      &py_ldb, &py_from_ldb, &write_indices_and_attributes))
 		return NULL;
 
 	PyErr_LDB_OR_RAISE(py_ldb, ldb);
@@ -865,7 +887,7 @@ static PyObject *py_dsdb_set_schema_from_ldb(PyObject *self, PyObject *args)
 		return NULL;
 	}
 
-	ret = dsdb_reference_schema(ldb, schema, true);
+	ret = dsdb_reference_schema(ldb, schema, write_indices_and_attributes);
 	PyErr_LDB_ERROR_IS_ERR_RAISE(py_ldb_get_exception(), ret, ldb);
 
 	Py_RETURN_NONE;
@@ -890,7 +912,7 @@ static PyObject *py_dsdb_write_prefixes_from_schema_to_ldb(PyObject *self, PyObj
 	}
 
 	result = dsdb_write_prefixes_from_schema_to_ldb(NULL, ldb, schema);
-	PyErr_WERROR_IS_ERR_RAISE(result);
+	PyErr_WERROR_NOT_OK_RAISE(result);
 
 	Py_RETURN_NONE;
 }
@@ -901,9 +923,6 @@ static PyObject *py_dsdb_get_partitions_dn(PyObject *self, PyObject *args)
 	struct ldb_context *ldb;
 	struct ldb_dn *dn;
 	PyObject *py_ldb, *ret;
-	PyObject *mod;
-
-	mod = PyImport_ImportModule("ldb");
 
 	if (!PyArg_ParseTuple(args, "O", &py_ldb))
 		return NULL;
@@ -918,6 +937,50 @@ static PyObject *py_dsdb_get_partitions_dn(PyObject *self, PyObject *args)
 	ret = pyldb_Dn_FromDn(dn);
 	talloc_free(dn);
 	return ret;
+}
+
+
+static PyObject *py_dsdb_get_nc_root(PyObject *self, PyObject *args)
+{
+	struct ldb_context *ldb;
+	struct ldb_dn *dn, *nc_root;
+	PyObject *py_ldb, *py_ldb_dn, *py_nc_root;
+	int ret;
+
+	if (!PyArg_ParseTuple(args, "OO", &py_ldb, &py_ldb_dn))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+	PyErr_LDB_DN_OR_RAISE(py_ldb_dn, dn);
+
+	ret = dsdb_find_nc_root(ldb, ldb, dn, &nc_root);
+	PyErr_LDB_ERROR_IS_ERR_RAISE(py_ldb_get_exception(), ret, ldb);
+
+	py_nc_root = pyldb_Dn_FromDn(nc_root);
+	talloc_unlink(ldb, nc_root);
+	return py_nc_root;
+}
+
+static PyObject *py_dsdb_get_wellknown_dn(PyObject *self, PyObject *args)
+{
+	struct ldb_context *ldb;
+	struct ldb_dn *nc_dn, *wk_dn;
+	char *wkguid;
+	PyObject *py_ldb, *py_nc_dn, *py_wk_dn;
+	int ret;
+
+	if (!PyArg_ParseTuple(args, "OOs", &py_ldb, &py_nc_dn, &wkguid))
+		return NULL;
+
+	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+	PyErr_LDB_DN_OR_RAISE(py_nc_dn, nc_dn);
+
+	ret = dsdb_wellknown_dn(ldb, ldb, nc_dn, wkguid, &wk_dn);
+	PyErr_LDB_ERROR_IS_ERR_RAISE(py_ldb_get_exception(), ret, ldb);
+
+	py_wk_dn = pyldb_Dn_FromDn(wk_dn);
+	talloc_unlink(ldb, wk_dn);
+	return py_wk_dn;
 }
 
 
@@ -1025,6 +1088,8 @@ static PyMethodDef py_dsdb_methods[] = {
 	{ "_dsdb_write_prefixes_from_schema_to_ldb", (PyCFunction)py_dsdb_write_prefixes_from_schema_to_ldb, METH_VARARGS,
 		NULL },
 	{ "_dsdb_get_partitions_dn", (PyCFunction)py_dsdb_get_partitions_dn, METH_VARARGS, NULL },
+	{ "_dsdb_get_nc_root", (PyCFunction)py_dsdb_get_nc_root, METH_VARARGS, NULL },
+	{ "_dsdb_get_wellknown_dn", (PyCFunction)py_dsdb_get_wellknown_dn, METH_VARARGS, NULL },
 	{ "_dsdb_DsReplicaAttribute", (PyCFunction)py_dsdb_DsReplicaAttribute, METH_VARARGS, NULL },
 	{ "_dsdb_normalise_attributes", (PyCFunction)py_dsdb_normalise_attributes, METH_VARARGS, NULL },
 	{ NULL }
@@ -1205,4 +1270,17 @@ void initdsdb(void)
 	ADD_DSDB_STRING(DSDB_SYNTAX_STRING_DN);
 	ADD_DSDB_STRING(DSDB_SYNTAX_OR_NAME);
 	ADD_DSDB_STRING(DSDB_CONTROL_DBCHECK);
+	ADD_DSDB_STRING(DSDB_CONTROL_DBCHECK_MODIFY_RO_REPLICA);
+
+	ADD_DSDB_STRING(DS_GUID_COMPUTERS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_DELETED_OBJECTS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_DOMAIN_CONTROLLERS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_FOREIGNSECURITYPRINCIPALS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_INFRASTRUCTURE_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_LOSTANDFOUND_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_MICROSOFT_PROGRAM_DATA_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_NTDS_QUOTAS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_PROGRAM_DATA_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_SYSTEMS_CONTAINER);
+	ADD_DSDB_STRING(DS_GUID_USERS_CONTAINER);
 }

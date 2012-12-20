@@ -29,7 +29,6 @@
 #include "includes.h"
 #include "lib/param/param.h"
 #include "libcli/raw/libcliraw.h"
-#include "rpc_server/common/common.h"
 
 void lpcfg_smbcli_options(struct loadparm_context *lp_ctx,
 			 struct smbcli_options *options)
@@ -52,17 +51,5 @@ void lpcfg_smbcli_session_options(struct loadparm_context *lp_ctx,
 	options->lanman_auth = lpcfg_client_lanman_auth(lp_ctx);
 	options->ntlmv2_auth = lpcfg_client_ntlmv2_auth(lp_ctx);
 	options->plaintext_auth = lpcfg_client_plaintext_auth(lp_ctx);
-}
-
-_PUBLIC_ struct dcerpc_server_info *lpcfg_dcerpc_server_info(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_ctx)
-{
-	struct dcerpc_server_info *ret = talloc_zero(mem_ctx, struct dcerpc_server_info);
-
-	ret->domain_name = talloc_reference(mem_ctx, lpcfg_workgroup(lp_ctx));
-	ret->version_major = lpcfg_parm_int(lp_ctx, NULL, "server_info", "version_major", 5);
-	ret->version_minor = lpcfg_parm_int(lp_ctx, NULL, "server_info", "version_minor", 2);
-	ret->version_build = lpcfg_parm_int(lp_ctx, NULL, "server_info", "version_build", 3790);
-
-	return ret;
 }
 

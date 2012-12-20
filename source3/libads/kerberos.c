@@ -219,7 +219,8 @@ int kerberos_kinit_password_ext(const char *principal,
 	}
 #endif
 	if (add_netbios_addr) {
-		if ((code = smb_krb5_gen_netbios_krb5_address(&addr))) {
+		if ((code = smb_krb5_gen_netbios_krb5_address(&addr,
+							lp_netbios_name()))) {
 			goto out;
 		}
 		krb5_get_init_creds_opt_set_address_list(opt, addr->addrs);
@@ -355,7 +356,7 @@ char* kerberos_standard_des_salt( void )
 	fstring salt;
 
 	fstr_sprintf( salt, "host/%s.%s@", lp_netbios_name(), lp_realm() );
-	strlower_m( salt );
+	(void)strlower_m( salt );
 	fstrcat( salt, lp_realm() );
 
 	return SMB_STRDUP( salt );
@@ -407,6 +408,7 @@ bool kerberos_secrets_store_des_salt( const char* salt )
 /************************************************************************
 ************************************************************************/
 
+static
 char* kerberos_secrets_fetch_des_salt( void )
 {
 	char *salt, *key;
@@ -424,152 +426,13 @@ char* kerberos_secrets_fetch_des_salt( void )
 }
 
 /************************************************************************
- Routine to get the default realm from the kerberos credentials cache.
- Caller must free if the return value is not NULL.
-************************************************************************/
-
-char *kerberos_get_default_realm_from_ccache(TALLOC_CTX *mem_ctx)
-{
-	char *realm = NULL;
-	krb5_context ctx = NULL;
-	krb5_ccache cc = NULL;
-	krb5_principal princ = NULL;
-
-	initialize_krb5_error_table();
-	if (krb5_init_context(&ctx)) {
-		return NULL;
-	}
-
-	DEBUG(5,("kerberos_get_default_realm_from_ccache: "
-		"Trying to read krb5 cache: %s\n",
-		krb5_cc_default_name(ctx)));
-	if (krb5_cc_default(ctx, &cc)) {
-		DEBUG(0,("kerberos_get_default_realm_from_ccache: "
-			"failed to read default cache\n"));
-		goto out;
-	}
-	if (krb5_cc_get_principal(ctx, cc, &princ)) {
-		DEBUG(0,("kerberos_get_default_realm_from_ccache: "
-			"failed to get default principal\n"));
-		goto out;
-	}
-
-#if defined(HAVE_KRB5_PRINCIPAL_GET_REALM)
-	realm = talloc_strdup(mem_ctx, krb5_principal_get_realm(ctx, princ));
-#elif defined(HAVE_KRB5_PRINC_REALM)
-	{
-		krb5_data *realm_data = krb5_princ_realm(ctx, princ);
-		realm = talloc_strndup(mem_ctx, realm_data->data, realm_data->length);
-	}
-#endif
-
-  out:
-
-	if (ctx) {
-		if (princ) {
-			krb5_free_principal(ctx, princ);
-		}
-		if (cc) {
-			krb5_cc_close(ctx, cc);
-		}
-		krb5_free_context(ctx);
-	}
-
-	return realm;
-}
-
-/************************************************************************
- Routine to get the realm from a given DNS name.
-************************************************************************/
-
-char *kerberos_get_realm_from_hostname(TALLOC_CTX *mem_ctx, const char *hostname)
-{
-#if defined(HAVE_KRB5_REALM_TYPE)
-	/* Heimdal. */
-	krb5_realm *realm_list = NULL;
-#else
-	/* MIT */
-	char **realm_list = NULL;
-#endif
-	char *realm = NULL;
-	krb5_error_code kerr;
-	krb5_context ctx = NULL;
-
-	initialize_krb5_error_table();
-	if (krb5_init_context(&ctx)) {
-		return NULL;
-	}
-
-	kerr = krb5_get_host_realm(ctx, hostname, &realm_list);
-	if (kerr != 0) {
-		DEBUG(3,("kerberos_get_realm_from_hostname %s: "
-			"failed %s\n",
-			hostname ? hostname : "(NULL)",
-			error_message(kerr) ));
-		goto out;
-	}
-
-	if (realm_list && realm_list[0]) {
-		realm = talloc_strdup(mem_ctx, realm_list[0]);
-	}
-
-  out:
-
-	if (ctx) {
-		if (realm_list) {
-			krb5_free_host_realm(ctx, realm_list);
-			realm_list = NULL;
-		}
-		krb5_free_context(ctx);
-		ctx = NULL;
-	}
-	return realm;
-}
-
-char *kerberos_get_principal_from_service_hostname(TALLOC_CTX *mem_ctx,
-						   const char *service,
-						   const char *remote_name)
-{
-	char *realm = NULL;
-	char *host = NULL;
-	char *principal;
-	host = strchr_m(remote_name, '.');
-	if (host) {
-		/* DNS name. */
-		realm = kerberos_get_realm_from_hostname(talloc_tos(), remote_name);
-	} else {
-		/* NetBIOS name - use our realm. */
-		realm = kerberos_get_default_realm_from_ccache(talloc_tos());
-	}
-
-	if (realm == NULL || *realm == '\0') {
-		realm = talloc_strdup(talloc_tos(), lp_realm());
-		if (!realm) {
-			return NULL;
-		}
-		DEBUG(3,("kerberos_get_principal_from_service_hostname: "
-			 "cannot get realm from, "
-			 "desthost %s or default ccache. Using default "
-			 "smb.conf realm %s\n",
-			 remote_name,
-			 realm));
-	}
-
-	principal = talloc_asprintf(mem_ctx,
-				    "%s/%s@%s",
-				    service, remote_name,
-				    realm);
-	TALLOC_FREE(realm);
-	return principal;
-}
-
-/************************************************************************
  Routine to get the salting principal for this service.  This is 
  maintained for backwards compatibilty with releases prior to 3.0.24.
  Since we store the salting principal string only at join, we may have 
  to look for the older tdb keys.  Caller must free if return is not null.
  ************************************************************************/
 
+static
 krb5_principal kerberos_fetch_salt_princ_for_host_princ(krb5_context context,
 							krb5_principal host_princ,
 							int enctype)
@@ -600,6 +463,38 @@ krb5_principal kerberos_fetch_salt_princ_for_host_princ(krb5_context context,
 	SAFE_FREE(salt_princ_s);
 
 	return ret_princ;
+}
+
+int create_kerberos_key_from_string(krb5_context context,
+					krb5_principal host_princ,
+					krb5_data *password,
+					krb5_keyblock *key,
+					krb5_enctype enctype,
+					bool no_salt)
+{
+	krb5_principal salt_princ = NULL;
+	int ret;
+	/*
+	 * Check if we've determined that the KDC is salting keys for this
+	 * principal/enctype in a non-obvious way.  If it is, try to match
+	 * its behavior.
+	 */
+	if (no_salt) {
+		KRB5_KEY_DATA(key) = (KRB5_KEY_DATA_CAST *)SMB_MALLOC(password->length);
+		if (!KRB5_KEY_DATA(key)) {
+			return ENOMEM;
+		}
+		memcpy(KRB5_KEY_DATA(key), password->data, password->length);
+		KRB5_KEY_LENGTH(key) = password->length;
+		KRB5_KEY_TYPE(key) = enctype;
+		return 0;
+	}
+	salt_princ = kerberos_fetch_salt_princ_for_host_princ(context, host_princ, enctype);
+	ret = create_kerberos_key_from_string_direct(context, salt_princ ? salt_princ : host_princ, password, key, enctype);
+	if (salt_princ) {
+		krb5_free_principal(context, salt_princ);
+	}
+	return ret;
 }
 
 /************************************************************************
@@ -806,6 +701,7 @@ static char *get_kdc_ip_string(char *mem_ctx,
 	char *kdc_str = print_kdc_line(mem_ctx, "", pss, kdc_name);
 
 	if (kdc_str == NULL) {
+		TALLOC_FREE(frame);
 		return NULL;
 	}
 
@@ -936,6 +832,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	int fd;
 	char *realm_upper = NULL;
 	bool result = false;
+	char *aes_enctypes = NULL;
 
 	if (!lp_create_krb5_conf()) {
 		return false;
@@ -966,21 +863,42 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 		fname, realm, domain ));
 
 	realm_upper = talloc_strdup(fname, realm);
-	strupper_m(realm_upper);
+	if (!strupper_m(realm_upper)) {
+		goto done;
+	}
 
 	kdc_ip_string = get_kdc_ip_string(dname, realm, sitename, pss, kdc_name);
 	if (!kdc_ip_string) {
 		goto done;
 	}
 
+	aes_enctypes = talloc_strdup(fname, "");
+	if (aes_enctypes == NULL) {
+		goto done;
+	}
+
+#ifdef HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96
+	aes_enctypes = talloc_asprintf_append(aes_enctypes, "%s", "aes256-cts-hmac-sha1-96 ");
+	if (aes_enctypes == NULL) {
+		goto done;
+	}
+#endif
+#ifdef HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96
+	aes_enctypes = talloc_asprintf_append(aes_enctypes, "%s", "aes128-cts-hmac-sha1-96");
+	if (aes_enctypes == NULL) {
+		goto done;
+	}
+#endif
+
 	file_contents = talloc_asprintf(fname,
 					"[libdefaults]\n\tdefault_realm = %s\n"
-					"\tdefault_tgs_enctypes = RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
-					"\tdefault_tkt_enctypes = RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
-					"\tpreferred_enctypes = RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n\n"
+					"\tdefault_tgs_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
+					"\tdefault_tkt_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
+					"\tpreferred_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n\n"
 					"[realms]\n\t%s = {\n"
 					"\t%s\t}\n",
-					realm_upper, realm_upper, kdc_ip_string);
+					realm_upper, aes_enctypes, aes_enctypes, aes_enctypes,
+					realm_upper, kdc_ip_string);
 
 	if (!file_contents) {
 		goto done;

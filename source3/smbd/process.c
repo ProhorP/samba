@@ -39,8 +39,7 @@
 #include "../libcli/security/dom_sid.h"
 #include "../libcli/security/security_token.h"
 #include "lib/id_cache.h"
-
-extern bool global_machine_password_needs_changing;
+#include "serverid.h"
 
 /* Internal message queue for deferred opens. */
 struct pending_message_list {
@@ -60,6 +59,7 @@ static void construct_reply_common(struct smb_request *req, const char *inbuf,
 				   char *outbuf);
 static struct pending_message_list *get_deferred_open_message_smb(
 	struct smbd_server_connection *sconn, uint64_t mid);
+static bool smb_splice_chain(uint8_t **poutbuf, const uint8_t *andx_buf);
 
 static bool smbd_lock_socket_internal(struct smbd_server_connection *sconn)
 {
@@ -75,12 +75,12 @@ static bool smbd_lock_socket_internal(struct smbd_server_connection *sconn)
 		return true;
 	}
 
-	DEBUG(10,("pid[%d] wait for socket lock\n", (int)sys_getpid()));
+	DEBUG(10,("pid[%d] wait for socket lock\n", (int)getpid()));
 
 	do {
 		ok = fcntl_lock(
 			sconn->smb1.echo_handler.socket_lock_fd,
-			SMB_F_SETLKW, 0, 0, F_WRLCK);
+			F_SETLKW, 0, 0, F_WRLCK);
 	} while (!ok && (errno == EINTR));
 
 	if (!ok) {
@@ -88,7 +88,7 @@ static bool smbd_lock_socket_internal(struct smbd_server_connection *sconn)
 		return false;
 	}
 
-	DEBUG(10,("pid[%d] got for socket lock\n", (int)sys_getpid()));
+	DEBUG(10,("pid[%d] got for socket lock\n", (int)getpid()));
 
 	return true;
 }
@@ -117,7 +117,7 @@ static bool smbd_unlock_socket_internal(struct smbd_server_connection *sconn)
 	do {
 		ok = fcntl_lock(
 			sconn->smb1.echo_handler.socket_lock_fd,
-			SMB_F_SETLKW, 0, 0, F_UNLCK);
+			F_SETLKW, 0, 0, F_UNLCK);
 	} while (!ok && (errno == EINTR));
 
 	if (!ok) {
@@ -125,7 +125,7 @@ static bool smbd_unlock_socket_internal(struct smbd_server_connection *sconn)
 		return false;
 	}
 
-	DEBUG(10,("pid[%d] unlocked socket\n", (int)sys_getpid()));
+	DEBUG(10,("pid[%d] unlocked socket\n", (int)getpid()));
 
 	return true;
 }
@@ -170,7 +170,7 @@ bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 		}
 	}
 
-	len = smb_len(buf_out) + 4;
+	len = smb_len_large(buf_out) + 4;
 
 	ret = write_data(sconn->sock, buf_out+nwritten, len - nwritten);
 	if (ret <= 0) {
@@ -181,7 +181,7 @@ bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 		 * client failed.
 		 */
 		DEBUG(1,("pid[%d] Error writing %d bytes to client %s. %d. (%s)\n",
-			 (int)sys_getpid(), (int)len,
+			 (int)getpid(), (int)len,
 			 get_peer_addr(sconn->sock, addr, sizeof(addr)),
 			 (int)ret, strerror(errno) ));
 
@@ -514,13 +514,21 @@ static bool init_smb_request(struct smb_request *req,
 			     size_t unread_bytes, bool encrypted,
 			     uint32_t seqnum)
 {
+	struct smbXsrv_tcon *tcon;
+	NTSTATUS status;
+	NTTIME now;
 	size_t req_size = smb_len(inbuf) + 4;
+
 	/* Ensure we have at least smb_size bytes. */
 	if (req_size < smb_size) {
 		DEBUG(0,("init_smb_request: invalid request size %u\n",
 			(unsigned int)req_size ));
 		return false;
 	}
+
+	req->request_time = timeval_current();
+	now = timeval_to_nttime(&req->request_time);
+
 	req->cmd    = CVAL(inbuf, smb_com);
 	req->flags2 = SVAL(inbuf, smb_flg2);
 	req->smbpid = SVAL(inbuf, smb_pid);
@@ -535,11 +543,16 @@ static bool init_smb_request(struct smb_request *req,
 	req->unread_bytes = unread_bytes;
 	req->encrypted = encrypted;
 	req->sconn = sconn;
-	req->conn = conn_find(sconn,req->tid);
+	status = smb1srv_tcon_lookup(sconn->conn, req->tid, now, &tcon);
+	if (NT_STATUS_IS_OK(status)) {
+		req->conn = tcon->compat;
+	} else {
+		req->conn = NULL;
+	}
 	req->chain_fsp = NULL;
-	req->chain_outbuf = NULL;
-	req->done = false;
 	req->smb2req = NULL;
+	req->priv_paths = NULL;
+	req->chain = NULL;
 	smb_init_perfcount_data(&req->pcd);
 
 	/* Ensure we have at least wct words and 2 bytes of bcc. */
@@ -703,15 +716,14 @@ void remove_deferred_open_message_smb(struct smbd_server_connection *sconn,
  schedule it for immediate processing.
 ****************************************************************************/
 
-void schedule_deferred_open_message_smb(struct smbd_server_connection *sconn,
+bool schedule_deferred_open_message_smb(struct smbd_server_connection *sconn,
 					uint64_t mid)
 {
 	struct pending_message_list *pml;
 	int i = 0;
 
 	if (sconn->using_smb2) {
-		schedule_deferred_open_message_smb2(sconn, mid);
-		return;
+		return schedule_deferred_open_message_smb2(sconn, mid);
 	}
 
 	for (pml = sconn->deferred_open_queue; pml; pml = pml->next) {
@@ -753,13 +765,15 @@ void schedule_deferred_open_message_smb(struct smbd_server_connection *sconn,
 			TALLOC_FREE(pml->te);
 			pml->te = te;
 			DLIST_PROMOTE(sconn->deferred_open_queue, pml);
-			return;
+			return true;
 		}
 	}
 
 	DEBUG(10,("schedule_deferred_open_message_smb: failed to "
 		"find message mid %llu\n",
 		(unsigned long long)mid ));
+
+	return false;
 }
 
 /****************************************************************************
@@ -1303,22 +1317,28 @@ void reply_outbuf(struct smb_request *req, uint8 num_words, uint32 num_bytes)
  Dump a packet to a file.
 ********************************************************************/
 
-static void smb_dump(const char *name, int type, const char *data, ssize_t len)
+static void smb_dump(const char *name, int type, const char *data)
 {
+	size_t len;
 	int fd, i;
 	char *fname = NULL;
 	if (DEBUGLEVEL < 50) {
 		return;
 	}
 
-	if (len < 4) len = smb_len(data)+4;
+	len = smb_len_tcp(data)+4;
 	for (i=1;i<100;i++) {
-		if (asprintf(&fname, "/tmp/%s.%d.%s", name, i,
-			     type ? "req" : "resp") == -1) {
+		fname = talloc_asprintf(talloc_tos(),
+				"/tmp/%s.%d.%s",
+				name,
+				i,
+				type ? "req" : "resp");
+		if (fname == NULL) {
 			return;
 		}
 		fd = open(fname, O_WRONLY|O_CREAT|O_EXCL, 0644);
 		if (fd != -1 || errno != EEXIST) break;
+		TALLOC_FREE(fname);
 	}
 	if (fd != -1) {
 		ssize_t ret = write(fd, data, len);
@@ -1327,7 +1347,7 @@ static void smb_dump(const char *name, int type, const char *data, ssize_t len)
 		close(fd);
 		DEBUG(0,("created %s len %lu\n", fname, (unsigned long)len));
 	}
-	SAFE_FREE(fname);
+	TALLOC_FREE(fname);
 }
 
 /****************************************************************************
@@ -1343,19 +1363,21 @@ static void smb_dump(const char *name, int type, const char *data, ssize_t len)
  find.
 ****************************************************************************/
 
-static connection_struct *switch_message(uint8 type, struct smb_request *req, int size)
+static connection_struct *switch_message(uint8 type, struct smb_request *req)
 {
 	int flags;
-	uint16 session_tag;
+	uint64_t session_tag;
 	connection_struct *conn = NULL;
 	struct smbd_server_connection *sconn = req->sconn;
-	char *raddr;
+	NTTIME now = timeval_to_nttime(&req->request_time);
+	struct smbXsrv_session *session = NULL;
+	NTSTATUS status;
 
 	errno = 0;
 
 	if (smb_messages[type].fn == NULL) {
 		DEBUG(0,("Unknown message type %d!\n",type));
-		smb_dump("Unknown", 1, (const char *)req->inbuf, size);
+		smb_dump("Unknown", 1, (const char *)req->inbuf);
 		reply_unknown_new(req, type);
 		return NULL;
 	}
@@ -1363,14 +1385,13 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 	flags = smb_messages[type].flags;
 
 	/* In share mode security we must ignore the vuid. */
-	session_tag = (lp_security() == SEC_SHARE)
-		? UID_FIELD_INVALID : req->vuid;
+	session_tag = req->vuid;
 	conn = req->conn;
 
 	DEBUG(3,("switch message %s (pid %d) conn 0x%lx\n", smb_fn_name(type),
-		 (int)sys_getpid(), (unsigned long)conn));
+		 (int)getpid(), (unsigned long)conn));
 
-	smb_dump(smb_fn_name(type), 1, (const char *)req->inbuf, size);
+	smb_dump(smb_fn_name(type), 1, (const char *)req->inbuf);
 
 	/* Ensure this value is replaced in the incoming packet. */
 	SSVAL(discard_const_p(uint8_t, req->inbuf),smb_uid,session_tag);
@@ -1384,18 +1405,42 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 	 * JRA.
 	 */
 
+	/*
+	 * lookup an existing session
+	 *
+	 * Note: for now we only check for NT_STATUS_NETWORK_SESSION_EXPIRED
+	 * here, the main check is still in change_to_user()
+	 */
+	status = smb1srv_session_lookup(sconn->conn,
+					session_tag,
+					now,
+					&session);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_SESSION_EXPIRED)) {
+		switch (type) {
+		case SMBsesssetupX:
+			status = NT_STATUS_OK;
+			break;
+		default:
+			DEBUG(1,("Error: session %llu is expired, mid=%llu.\n",
+				 (unsigned long long)session_tag,
+				 (unsigned long long)req->mid));
+			reply_nterror(req, NT_STATUS_NETWORK_SESSION_EXPIRED);
+			return conn;
+		}
+	}
+
 	if (session_tag != sconn->smb1.sessions.last_session_tag) {
-		user_struct *vuser = NULL;
+		struct user_struct *vuser = NULL;
 
 		sconn->smb1.sessions.last_session_tag = session_tag;
-		if(session_tag != UID_FIELD_INVALID) {
-			vuser = get_valid_user_struct(sconn, session_tag);
-			if (vuser) {
-				set_current_user_info(
-					vuser->session_info->unix_info->sanitized_username,
-					vuser->session_info->unix_info->unix_name,
-					vuser->session_info->info->domain_name);
-			}
+		if (session) {
+			vuser = session->compat;
+		}
+		if (vuser) {
+			set_current_user_info(
+				vuser->session_info->unix_info->sanitized_username,
+				vuser->session_info->unix_info->unix_name,
+				vuser->session_info->info->domain_name);
 		}
 	}
 
@@ -1447,11 +1492,15 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 		if (req->encrypted) {
 			conn->encrypted_tid = true;
 			/* encrypted required from now on. */
-			conn->encrypt_level = Required;
+			conn->encrypt_level = SMB_SIGNING_REQUIRED;
 		} else if (ENCRYPTION_REQUIRED(conn)) {
 			if (req->cmd != SMBtrans2 && req->cmd != SMBtranss2) {
-				exit_server_cleanly("encryption required "
-					"on connection");
+				DEBUG(1,("service[%s] requires encryption"
+					"%s ACCESS_DENIED. mid=%llu\n",
+					lp_servicename(talloc_tos(), SNUM(conn)),
+					smb_fn_name(type),
+					(unsigned long long)req->mid));
+				reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 				return conn;
 			}
 		}
@@ -1465,21 +1514,38 @@ static connection_struct *switch_message(uint8 type, struct smb_request *req, in
 		conn->num_smb_operations++;
 	}
 
-	raddr = tsocket_address_inet_addr_string(sconn->remote_address,
-						 talloc_tos());
-	if (raddr == NULL) {
-		reply_nterror(req, NT_STATUS_NO_MEMORY);
-		return conn;
-	}
+	/*
+	 * Does this protocol need to be run as guest? (Only archane
+	 * messenger service requests have this...)
+	 */
+	if (flags & AS_GUEST) {
+		char *raddr;
+		bool ok;
 
-	/* does this protocol need to be run as guest? */
-	if ((flags & AS_GUEST)
-	    && (!change_to_guest() ||
-		!allow_access(lp_hostsdeny(-1), lp_hostsallow(-1),
-			      sconn->remote_hostname,
-			      raddr))) {
-		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
-		return conn;
+		if (!change_to_guest()) {
+			reply_nterror(req, NT_STATUS_ACCESS_DENIED);
+			return conn;
+		}
+
+		raddr = tsocket_address_inet_addr_string(sconn->remote_address,
+							 talloc_tos());
+		if (raddr == NULL) {
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			return conn;
+		}
+
+		/*
+		 * Haven't we checked this in smbd_process already???
+		 */
+
+		ok = allow_access(lp_hostsdeny(-1), lp_hostsallow(-1),
+				  sconn->remote_hostname, raddr);
+		TALLOC_FREE(raddr);
+
+		if (!ok) {
+			reply_nterror(req, NT_STATUS_ACCESS_DENIED);
+			return conn;
+		}
 	}
 
 	smb_messages[type].fn(req);
@@ -1518,21 +1584,7 @@ static void construct_reply(struct smbd_server_connection *sconn,
 		SMB_PERFCOUNT_SET_MSGLEN_IN(&req->pcd, size);
 	}
 
-	conn = switch_message(req->cmd, req, size);
-
-	if (req->unread_bytes) {
-		/* writeX failed. drain socket. */
-		if (drain_socket(req->sconn->sock, req->unread_bytes) !=
-				req->unread_bytes) {
-			smb_panic("failed to drain pending bytes");
-		}
-		req->unread_bytes = 0;
-	}
-
-	if (req->done) {
-		TALLOC_FREE(req);
-		return;
-	}
+	conn = switch_message(req->cmd, req);
 
 	if (req->outbuf == NULL) {
 		return;
@@ -1553,6 +1605,170 @@ static void construct_reply(struct smbd_server_connection *sconn,
 	TALLOC_FREE(req);
 
 	return;
+}
+
+static void construct_reply_chain(struct smbd_server_connection *sconn,
+				  char *inbuf, int size, uint32_t seqnum,
+				  bool encrypted,
+				  struct smb_perfcount_data *deferred_pcd)
+{
+	struct smb_request **reqs = NULL;
+	struct smb_request *req;
+	unsigned num_reqs;
+	bool ok;
+
+	ok = smb1_parse_chain(talloc_tos(), (uint8_t *)inbuf, sconn, encrypted,
+			      seqnum, &reqs, &num_reqs);
+	if (!ok) {
+		char errbuf[smb_size];
+		error_packet(errbuf, 0, 0, NT_STATUS_INVALID_PARAMETER,
+			     __LINE__, __FILE__);
+		if (!srv_send_smb(sconn, errbuf, true, seqnum, encrypted,
+				  NULL)) {
+			exit_server_cleanly("construct_reply_chain: "
+					    "srv_send_smb failed.");
+		}
+		return;
+	}
+
+	req = reqs[0];
+	req->inbuf = (uint8_t *)talloc_move(reqs, &inbuf);
+
+	req->conn = switch_message(req->cmd, req);
+
+	if (req->outbuf == NULL) {
+		/*
+		 * Request has suspended itself, will come
+		 * back here.
+		 */
+		return;
+	}
+	smb_request_done(req);
+}
+
+/*
+ * To be called from an async SMB handler that is potentially chained
+ * when it is finished for shipping.
+ */
+
+void smb_request_done(struct smb_request *req)
+{
+	struct smb_request **reqs = NULL;
+	struct smb_request *first_req;
+	size_t i, num_reqs, next_index;
+	NTSTATUS status;
+
+	if (req->chain == NULL) {
+		first_req = req;
+		goto shipit;
+	}
+
+	reqs = req->chain;
+	num_reqs = talloc_array_length(reqs);
+
+	for (i=0; i<num_reqs; i++) {
+		if (reqs[i] == req) {
+			break;
+		}
+	}
+	if (i == num_reqs) {
+		/*
+		 * Invalid chain, should not happen
+		 */
+		status = NT_STATUS_INTERNAL_ERROR;
+		goto error;
+	}
+	next_index = i+1;
+
+	while ((next_index < num_reqs) && (IVAL(req->outbuf, smb_rcls) == 0)) {
+		struct smb_request *next = reqs[next_index];
+		struct smbXsrv_tcon *tcon;
+		NTTIME now = timeval_to_nttime(&req->request_time);
+
+		next->vuid = SVAL(req->outbuf, smb_uid);
+		next->tid  = SVAL(req->outbuf, smb_tid);
+		status = smb1srv_tcon_lookup(req->sconn->conn, req->tid,
+					     now, &tcon);
+		if (NT_STATUS_IS_OK(status)) {
+			req->conn = tcon->compat;
+		} else {
+			req->conn = NULL;
+		}
+		next->chain_fsp = req->chain_fsp;
+		next->inbuf = (uint8_t *)req->inbuf;
+
+		req = next;
+		req->conn = switch_message(req->cmd, req);
+
+		if (req->outbuf == NULL) {
+			/*
+			 * Request has suspended itself, will come
+			 * back here.
+			 */
+			return;
+		}
+		next_index += 1;
+	}
+
+	first_req = reqs[0];
+
+	for (i=1; i<next_index; i++) {
+		bool ok;
+
+		ok = smb_splice_chain(&first_req->outbuf, reqs[i]->outbuf);
+		if (!ok) {
+			status = NT_STATUS_INTERNAL_ERROR;
+			goto error;
+		}
+	}
+
+	SSVAL(first_req->outbuf, smb_uid, SVAL(req->outbuf, smb_uid));
+	SSVAL(first_req->outbuf, smb_tid, SVAL(req->outbuf, smb_tid));
+
+	/*
+	 * This scary statement intends to set the
+	 * FLAGS2_32_BIT_ERROR_CODES flg2 field in first_req->outbuf
+	 * to the value last_req->outbuf carries
+	 */
+	SSVAL(first_req->outbuf, smb_flg2,
+	      (SVAL(first_req->outbuf, smb_flg2) & ~FLAGS2_32_BIT_ERROR_CODES)
+	      |(SVAL(req->outbuf, smb_flg2) & FLAGS2_32_BIT_ERROR_CODES));
+
+	/*
+	 * Transfer the error codes from the subrequest to the main one
+	 */
+	SSVAL(first_req->outbuf, smb_rcls, SVAL(req->outbuf, smb_rcls));
+	SSVAL(first_req->outbuf, smb_err,  SVAL(req->outbuf, smb_err));
+
+	_smb_setlen_large(
+		first_req->outbuf, talloc_get_size(first_req->outbuf) - 4);
+
+shipit:
+	if (!srv_send_smb(first_req->sconn,
+			  (char *)first_req->outbuf,
+			  true, first_req->seqnum+1,
+			  IS_CONN_ENCRYPTED(req->conn)||first_req->encrypted,
+			  &first_req->pcd)) {
+		exit_server_cleanly("construct_reply_chain: srv_send_smb "
+				    "failed.");
+	}
+	TALLOC_FREE(req);	/* non-chained case */
+	TALLOC_FREE(reqs);	/* chained case */
+	return;
+
+error:
+	{
+		char errbuf[smb_size];
+		error_packet(errbuf, 0, 0, status, __LINE__, __FILE__);
+		if (!srv_send_smb(req->sconn, errbuf, true,
+				  req->seqnum+1, req->encrypted,
+				  NULL)) {
+			exit_server_cleanly("construct_reply_chain: "
+					    "srv_send_smb failed.");
+		}
+	}
+	TALLOC_FREE(req);	/* non-chained case */
+	TALLOC_FREE(reqs);	/* chained case */
 }
 
 /****************************************************************************
@@ -1615,8 +1831,14 @@ static void process_smb(struct smbd_server_connection *sconn,
 
 	show_msg((char *)inbuf);
 
-	construct_reply(sconn, (char *)inbuf, nread, unread_bytes, seqnum,
-			encrypted, deferred_pcd);
+	if ((unread_bytes == 0) && smb1_is_chain(inbuf)) {
+		construct_reply_chain(sconn, (char *)inbuf, nread,
+				      seqnum, encrypted, deferred_pcd);
+	} else {
+		construct_reply(sconn, (char *)inbuf, nread, unread_bytes,
+				seqnum,	encrypted, deferred_pcd);
+	}
+
 	sconn->trans_num++;
 
 done:
@@ -1694,40 +1916,6 @@ void construct_reply_common_req(struct smb_request *req, char *outbuf)
 	construct_reply_common(req, (const char *)req->inbuf, outbuf);
 }
 
-/*
- * How many bytes have we already accumulated up to the current wct field
- * offset?
- */
-
-size_t req_wct_ofs(struct smb_request *req)
-{
-	size_t buf_size;
-
-	if (req->chain_outbuf == NULL) {
-		return smb_wct - 4;
-	}
-	buf_size = talloc_get_size(req->chain_outbuf);
-	if ((buf_size % 4) != 0) {
-		buf_size += (4 - (buf_size % 4));
-	}
-	return buf_size - 4;
-}
-
-/*
- * Hack around reply_nterror & friends not being aware of chained requests,
- * generating illegal (i.e. wct==0) chain replies.
- */
-
-static void fixup_chain_error_packet(struct smb_request *req)
-{
-	uint8_t *outbuf = req->outbuf;
-	req->outbuf = NULL;
-	reply_outbuf(req, 2, 0);
-	memcpy(req->outbuf, outbuf, smb_wct);
-	TALLOC_FREE(outbuf);
-	SCVAL(req->outbuf, smb_vwv0, 0xff);
-}
-
 /**
  * @brief Find the smb_cmd offset of the last command pushed
  * @param[in] buf	The buffer we're building up
@@ -1745,7 +1933,9 @@ static bool find_andx_cmd_ofs(uint8_t *buf, size_t *pofs)
 
 	cmd = CVAL(buf, smb_com);
 
-	SMB_ASSERT(is_andx_req(cmd));
+	if (!is_andx_req(cmd)) {
+		return false;
+	}
 
 	ofs = smb_vwv0;
 
@@ -1761,7 +1951,9 @@ static bool find_andx_cmd_ofs(uint8_t *buf, size_t *pofs)
 		 */
 		ofs = SVAL(buf, ofs+2) + 4 + 1;
 
-		SMB_ASSERT(ofs+4 < talloc_get_size(buf));
+		if (ofs+4 >= talloc_get_size(buf)) {
+			return false;
+		}
 	}
 
 	*pofs = ofs;
@@ -1771,39 +1963,27 @@ static bool find_andx_cmd_ofs(uint8_t *buf, size_t *pofs)
 /**
  * @brief Do the smb chaining at a buffer level
  * @param[in] poutbuf		Pointer to the talloc'ed buffer to be modified
- * @param[in] smb_command	The command that we want to issue
- * @param[in] wct		How many words?
- * @param[in] vwv		The words, already in network order
- * @param[in] bytes_alignment	How shall we align "bytes"?
- * @param[in] num_bytes		How many bytes?
- * @param[in] bytes		The data the request ships
- *
- * smb_splice_chain() adds the vwv and bytes to the request already present in
- * *poutbuf.
+ * @param[in] andx_buf		Buffer to be appended
  */
 
-static bool smb_splice_chain(uint8_t **poutbuf, uint8_t smb_command,
-			     uint8_t wct, const uint16_t *vwv,
-			     size_t bytes_alignment,
-			     uint32_t num_bytes, const uint8_t *bytes)
+static bool smb_splice_chain(uint8_t **poutbuf, const uint8_t *andx_buf)
 {
+	uint8_t smb_command	= CVAL(andx_buf, smb_com);
+	uint8_t wct		= CVAL(andx_buf, smb_wct);
+	const uint16_t *vwv	= (const uint16_t *)(andx_buf + smb_vwv);
+	uint32_t num_bytes	= smb_buflen(andx_buf);
+	const uint8_t *bytes	= (const uint8_t *)smb_buf_const(andx_buf);
+
 	uint8_t *outbuf;
 	size_t old_size, new_size;
 	size_t ofs;
 	size_t chain_padding = 0;
-	size_t bytes_padding = 0;
-	bool first_request;
+	size_t andx_cmd_ofs;
+
 
 	old_size = talloc_get_size(*poutbuf);
 
-	/*
-	 * old_size == smb_wct means we're pushing the first request in for
-	 * libsmb/
-	 */
-
-	first_request = (old_size == smb_wct);
-
-	if (!first_request && ((old_size % 4) != 0)) {
+	if ((old_size % 4) != 0) {
 		/*
 		 * Align the wct field of subsequent requests to a 4-byte
 		 * boundary
@@ -1813,20 +1993,14 @@ static bool smb_splice_chain(uint8_t **poutbuf, uint8_t smb_command,
 
 	/*
 	 * After the old request comes the new wct field (1 byte), the vwv's
-	 * and the num_bytes field. After at we might need to align the bytes
-	 * given to us to "bytes_alignment", increasing the num_bytes value.
+	 * and the num_bytes field.
 	 */
 
 	new_size = old_size + chain_padding + 1 + wct * sizeof(uint16_t) + 2;
-
-	if ((bytes_alignment != 0) && ((new_size % bytes_alignment) != 0)) {
-		bytes_padding = bytes_alignment - (new_size % bytes_alignment);
-	}
-
-	new_size += bytes_padding + num_bytes;
+	new_size += num_bytes;
 
 	if ((smb_command != SMBwriteX) && (new_size > 0xffff)) {
-		DEBUG(1, ("splice_chain: %u bytes won't fit\n",
+		DEBUG(1, ("smb_splice_chain: %u bytes won't fit\n",
 			  (unsigned)new_size));
 		return false;
 	}
@@ -1838,26 +2012,19 @@ static bool smb_splice_chain(uint8_t **poutbuf, uint8_t smb_command,
 	}
 	*poutbuf = outbuf;
 
-	if (first_request) {
-		SCVAL(outbuf, smb_com, smb_command);
-	} else {
-		size_t andx_cmd_ofs;
-
-		if (!find_andx_cmd_ofs(outbuf, &andx_cmd_ofs)) {
-			DEBUG(1, ("invalid command chain\n"));
-			*poutbuf = talloc_realloc(
-				NULL, *poutbuf, uint8_t, old_size);
-			return false;
-		}
-
-		if (chain_padding != 0) {
-			memset(outbuf + old_size, 0, chain_padding);
-			old_size += chain_padding;
-		}
-
-		SCVAL(outbuf, andx_cmd_ofs, smb_command);
-		SSVAL(outbuf, andx_cmd_ofs + 2, old_size - 4);
+	if (!find_andx_cmd_ofs(outbuf, &andx_cmd_ofs)) {
+		DEBUG(1, ("invalid command chain\n"));
+		*poutbuf = talloc_realloc(NULL, *poutbuf, uint8_t, old_size);
+		return false;
 	}
+
+	if (chain_padding != 0) {
+		memset(outbuf + old_size, 0, chain_padding);
+		old_size += chain_padding;
+	}
+
+	SCVAL(outbuf, andx_cmd_ofs, smb_command);
+	SSVAL(outbuf, andx_cmd_ofs + 2, old_size - 4);
 
 	ofs = old_size;
 
@@ -1875,23 +2042,46 @@ static bool smb_splice_chain(uint8_t **poutbuf, uint8_t smb_command,
 	 */
 
 	memcpy(outbuf + ofs, vwv, sizeof(uint16_t) * wct);
+
+	/*
+	 * HACK ALERT
+	 *
+	 * Read&X has an offset into its data buffer at
+	 * vwv[6]. reply_read_andx has no idea anymore that it's
+	 * running from within a chain, so we have to fix up the
+	 * offset here.
+	 *
+	 * Although it looks disgusting at this place, I want to keep
+	 * it here. The alternative would be to push knowledge about
+	 * the andx chain down into read&x again.
+	 */
+
+	if (smb_command == SMBreadX) {
+		uint8_t *bytes_addr;
+
+		if (wct < 7) {
+			/*
+			 * Invalid read&x response
+			 */
+			return false;
+		}
+
+		bytes_addr = outbuf + ofs	 /* vwv start */
+			+ sizeof(uint16_t) * wct /* vwv array */
+			+ sizeof(uint16_t);	 /* bcc */
+
+		SSVAL(outbuf + ofs, 6 * sizeof(uint16_t),
+		      bytes_addr - outbuf - 4);
+	}
+
 	ofs += sizeof(uint16_t) * wct;
 
 	/*
 	 * bcc (byte count)
 	 */
 
-	SSVAL(outbuf, ofs, num_bytes + bytes_padding);
+	SSVAL(outbuf, ofs, num_bytes);
 	ofs += sizeof(uint16_t);
-
-	/*
-	 * padding
-	 */
-
-	if (bytes_padding != 0) {
-		memset(outbuf + ofs, 0, bytes_padding);
-		ofs += bytes_padding;
-	}
 
 	/*
 	 * The bytes field
@@ -1902,267 +2092,244 @@ static bool smb_splice_chain(uint8_t **poutbuf, uint8_t smb_command,
 	return true;
 }
 
-/****************************************************************************
- Construct a chained reply and add it to the already made reply
-****************************************************************************/
-
-void chain_reply(struct smb_request *req)
+bool smb1_is_chain(const uint8_t *buf)
 {
-	size_t smblen = smb_len(req->inbuf);
-	size_t already_used, length_needed;
-	uint8_t chain_cmd;
-	uint32_t chain_offset;	/* uint32_t to avoid overflow */
+	uint8_t cmd, wct, andx_cmd;
 
+	cmd = CVAL(buf, smb_com);
+	if (!is_andx_req(cmd)) {
+		return false;
+	}
+	wct = CVAL(buf, smb_wct);
+	if (wct < 2) {
+		return false;
+	}
+	andx_cmd = CVAL(buf, smb_vwv);
+	return (andx_cmd != 0xFF);
+}
+
+bool smb1_walk_chain(const uint8_t *buf,
+		     bool (*fn)(uint8_t cmd,
+				uint8_t wct, const uint16_t *vwv,
+				uint16_t num_bytes, const uint8_t *bytes,
+				void *private_data),
+		     void *private_data)
+{
+	size_t smblen = smb_len(buf);
+	const char *smb_buf = smb_base(buf);
+	uint8_t cmd, chain_cmd;
 	uint8_t wct;
 	const uint16_t *vwv;
-	uint16_t buflen;
+	uint16_t num_bytes;
+	const uint8_t *bytes;
+
+	cmd = CVAL(buf, smb_com);
+	wct = CVAL(buf, smb_wct);
+	vwv = (const uint16_t *)(buf + smb_vwv);
+	num_bytes = smb_buflen(buf);
+	bytes = (uint8_t *)smb_buf_const(buf);
+
+	if (!fn(cmd, wct, vwv, num_bytes, bytes, private_data)) {
+		return false;
+	}
+
+	if (!is_andx_req(cmd)) {
+		return true;
+	}
+	if (wct < 2) {
+		return false;
+	}
+
+	chain_cmd = CVAL(vwv, 0);
+
+	while (chain_cmd != 0xff) {
+		uint32_t chain_offset;	/* uint32_t to avoid overflow */
+		size_t length_needed;
+		ptrdiff_t vwv_offset;
+
+		chain_offset = SVAL(vwv+1, 0);
+
+		/*
+		 * Check if the client tries to fool us. The chain
+		 * offset needs to point beyond the current request in
+		 * the chain, it needs to strictly grow. Otherwise we
+		 * might be tricked into an endless loop always
+		 * processing the same request over and over again. We
+		 * used to assume that vwv and the byte buffer array
+		 * in a chain are always attached, but OS/2 the
+		 * Write&X/Read&X chain puts the Read&X vwv array
+		 * right behind the Write&X vwv chain. The Write&X bcc
+		 * array is put behind the Read&X vwv array. So now we
+		 * check whether the chain offset points strictly
+		 * behind the previous vwv array. req->buf points
+		 * right after the vwv array of the previous
+		 * request. See
+		 * https://bugzilla.samba.org/show_bug.cgi?id=8360 for
+		 * more information.
+		 */
+
+		vwv_offset = ((const char *)vwv - smb_buf);
+		if (chain_offset <= vwv_offset) {
+			return false;
+		}
+
+		/*
+		 * Next check: Make sure the chain offset does not
+		 * point beyond the overall smb request length.
+		 */
+
+		length_needed = chain_offset+1;	/* wct */
+		if (length_needed > smblen) {
+			return false;
+		}
+
+		/*
+		 * Now comes the pointer magic. Goal here is to set up
+		 * vwv and buf correctly again. The chain offset (the
+		 * former vwv[1]) points at the new wct field.
+		 */
+
+		wct = CVAL(smb_buf, chain_offset);
+
+		if (is_andx_req(chain_cmd) && (wct < 2)) {
+			return false;
+		}
+
+		/*
+		 * Next consistency check: Make the new vwv array fits
+		 * in the overall smb request.
+		 */
+
+		length_needed += (wct+1)*sizeof(uint16_t); /* vwv+buflen */
+		if (length_needed > smblen) {
+			return false;
+		}
+		vwv = (const uint16_t *)(smb_buf + chain_offset + 1);
+
+		/*
+		 * Now grab the new byte buffer....
+		 */
+
+		num_bytes = SVAL(vwv+wct, 0);
+
+		/*
+		 * .. and check that it fits.
+		 */
+
+		length_needed += num_bytes;
+		if (length_needed > smblen) {
+			return false;
+		}
+		bytes = (const uint8_t *)(vwv+wct+1);
+
+		if (!fn(chain_cmd, wct, vwv, num_bytes, bytes, private_data)) {
+			return false;
+		}
+
+		if (!is_andx_req(chain_cmd)) {
+			return true;
+		}
+		chain_cmd = CVAL(vwv, 0);
+	}
+	return true;
+}
+
+static bool smb1_chain_length_cb(uint8_t cmd,
+				 uint8_t wct, const uint16_t *vwv,
+				 uint16_t num_bytes, const uint8_t *bytes,
+				 void *private_data)
+{
+	unsigned *count = (unsigned *)private_data;
+	*count += 1;
+	return true;
+}
+
+unsigned smb1_chain_length(const uint8_t *buf)
+{
+	unsigned count = 0;
+
+	if (!smb1_walk_chain(buf, smb1_chain_length_cb, &count)) {
+		return 0;
+	}
+	return count;
+}
+
+struct smb1_parse_chain_state {
+	TALLOC_CTX *mem_ctx;
 	const uint8_t *buf;
+	struct smbd_server_connection *sconn;
+	bool encrypted;
+	uint32_t seqnum;
 
-	if (IVAL(req->outbuf, smb_rcls) != 0) {
-		fixup_chain_error_packet(req);
+	struct smb_request **reqs;
+	unsigned num_reqs;
+};
+
+static bool smb1_parse_chain_cb(uint8_t cmd,
+				uint8_t wct, const uint16_t *vwv,
+				uint16_t num_bytes, const uint8_t *bytes,
+				void *private_data)
+{
+	struct smb1_parse_chain_state *state =
+		(struct smb1_parse_chain_state *)private_data;
+	struct smb_request **reqs;
+	struct smb_request *req;
+	bool ok;
+
+	reqs = talloc_realloc(state->mem_ctx, state->reqs,
+			      struct smb_request *, state->num_reqs+1);
+	if (reqs == NULL) {
+		return false;
+	}
+	state->reqs = reqs;
+
+	req = talloc(reqs, struct smb_request);
+	if (req == NULL) {
+		return false;
 	}
 
-	/*
-	 * Any of the AndX requests and replies have at least a wct of
-	 * 2. vwv[0] is the next command, vwv[1] is the offset from the
-	 * beginning of the SMB header to the next wct field.
-	 *
-	 * None of the AndX requests put anything valuable in vwv[0] and [1],
-	 * so we can overwrite it here to form the chain.
-	 */
-
-	if ((req->wct < 2) || (CVAL(req->outbuf, smb_wct) < 2)) {
-		if (req->chain_outbuf == NULL) {
-			req->chain_outbuf = talloc_realloc(
-				req, req->outbuf, uint8_t,
-				smb_len(req->outbuf) + 4);
-			if (req->chain_outbuf == NULL) {
-				smb_panic("talloc failed");
-			}
-		}
-		req->outbuf = NULL;
-		goto error;
+	ok = init_smb_request(req, state->sconn, state->buf, 0,
+			      state->encrypted, state->seqnum);
+	if (!ok) {
+		return false;
 	}
-
-	/*
-	 * Here we assume that this is the end of the chain. For that we need
-	 * to set "next command" to 0xff and the offset to 0. If we later find
-	 * more commands in the chain, this will be overwritten again.
-	 */
-
-	SCVAL(req->outbuf, smb_vwv0, 0xff);
-	SCVAL(req->outbuf, smb_vwv0+1, 0);
-	SSVAL(req->outbuf, smb_vwv1, 0);
-
-	if (req->chain_outbuf == NULL) {
-		/*
-		 * In req->chain_outbuf we collect all the replies. Start the
-		 * chain by copying in the first reply.
-		 *
-		 * We do the realloc because later on we depend on
-		 * talloc_get_size to determine the length of
-		 * chain_outbuf. The reply_xxx routines might have
-		 * over-allocated (reply_pipe_read_and_X used to be such an
-		 * example).
-		 */
-		req->chain_outbuf = talloc_realloc(
-			req, req->outbuf, uint8_t, smb_len(req->outbuf) + 4);
-		if (req->chain_outbuf == NULL) {
-			smb_panic("talloc failed");
-		}
-		req->outbuf = NULL;
-	} else {
-		/*
-		 * Update smb headers where subsequent chained commands
-		 * may have updated them.
-		 */
-		SSVAL(req->chain_outbuf, smb_tid, SVAL(req->outbuf, smb_tid));
-		SSVAL(req->chain_outbuf, smb_uid, SVAL(req->outbuf, smb_uid));
-
-		if (!smb_splice_chain(&req->chain_outbuf,
-				      CVAL(req->outbuf, smb_com),
-				      CVAL(req->outbuf, smb_wct),
-				      (uint16_t *)(req->outbuf + smb_vwv),
-				      0, smb_buflen(req->outbuf),
-				      (uint8_t *)smb_buf(req->outbuf))) {
-			goto error;
-		}
-		TALLOC_FREE(req->outbuf);
-	}
-
-	/*
-	 * We use the old request's vwv field to grab the next chained command
-	 * and offset into the chained fields.
-	 */
-
-	chain_cmd = CVAL(req->vwv+0, 0);
-	chain_offset = SVAL(req->vwv+1, 0);
-
-	if (chain_cmd == 0xff) {
-		/*
-		 * End of chain, no more requests from the client. So ship the
-		 * replies.
-		 */
-		smb_setlen((char *)(req->chain_outbuf),
-			   talloc_get_size(req->chain_outbuf) - 4);
-
-		if (!srv_send_smb(req->sconn, (char *)req->chain_outbuf,
-				  true, req->seqnum+1,
-				  IS_CONN_ENCRYPTED(req->conn)
-				  ||req->encrypted,
-				  &req->pcd)) {
-			exit_server_cleanly("chain_reply: srv_send_smb "
-					    "failed.");
-		}
-		TALLOC_FREE(req->chain_outbuf);
-		req->done = true;
-		return;
-	}
-
-	/* add a new perfcounter for this element of chain */
-	SMB_PERFCOUNT_ADD(&req->pcd);
-	SMB_PERFCOUNT_SET_OP(&req->pcd, chain_cmd);
-	SMB_PERFCOUNT_SET_MSGLEN_IN(&req->pcd, smblen);
-
-	/*
-	 * Check if the client tries to fool us. The chain offset
-	 * needs to point beyond the current request in the chain, it
-	 * needs to strictly grow. Otherwise we might be tricked into
-	 * an endless loop always processing the same request over and
-	 * over again. We used to assume that vwv and the byte buffer
-	 * array in a chain are always attached, but OS/2 the
-	 * Write&X/Read&X chain puts the Read&X vwv array right behind
-	 * the Write&X vwv chain. The Write&X bcc array is put behind
-	 * the Read&X vwv array. So now we check whether the chain
-	 * offset points strictly behind the previous vwv
-	 * array. req->buf points right after the vwv array of the
-	 * previous request. See
-	 * https://bugzilla.samba.org/show_bug.cgi?id=8360 for more
-	 * information.
-	 */
-
-	already_used = PTR_DIFF(req->buf, smb_base(req->inbuf));
-	if (chain_offset <= already_used) {
-		goto error;
-	}
-
-	/*
-	 * Next check: Make sure the chain offset does not point beyond the
-	 * overall smb request length.
-	 */
-
-	length_needed = chain_offset+1;	/* wct */
-	if (length_needed > smblen) {
-		goto error;
-	}
-
-	/*
-	 * Now comes the pointer magic. Goal here is to set up req->vwv and
-	 * req->buf correctly again to be able to call the subsequent
-	 * switch_message(). The chain offset (the former vwv[1]) points at
-	 * the new wct field.
-	 */
-
-	wct = CVAL(smb_base(req->inbuf), chain_offset);
-
-	/*
-	 * Next consistency check: Make the new vwv array fits in the overall
-	 * smb request.
-	 */
-
-	length_needed += (wct+1)*sizeof(uint16_t); /* vwv+buflen */
-	if (length_needed > smblen) {
-		goto error;
-	}
-	vwv = (const uint16_t *)(smb_base(req->inbuf) + chain_offset + 1);
-
-	/*
-	 * Now grab the new byte buffer....
-	 */
-
-	buflen = SVAL(vwv+wct, 0);
-
-	/*
-	 * .. and check that it fits.
-	 */
-
-	length_needed += buflen;
-	if (length_needed > smblen) {
-		goto error;
-	}
-	buf = (const uint8_t *)(vwv+wct+1);
-
-	req->cmd = chain_cmd;
+	req->cmd = cmd;
 	req->wct = wct;
-	req->vwv = discard_const_p(uint16_t, vwv);
-	req->buflen = buflen;
-	req->buf = buf;
+	req->vwv = vwv;
+	req->buflen = num_bytes;
+	req->buf = bytes;
 
-	switch_message(chain_cmd, req, smblen);
+	reqs[state->num_reqs] = req;
+	state->num_reqs += 1;
+	return true;
+}
 
-	if (req->outbuf == NULL) {
-		/*
-		 * This happens if the chained command has suspended itself or
-		 * if it has called srv_send_smb() itself.
-		 */
-		return;
+bool smb1_parse_chain(TALLOC_CTX *mem_ctx, const uint8_t *buf,
+		      struct smbd_server_connection *sconn,
+		      bool encrypted, uint32_t seqnum,
+		      struct smb_request ***reqs, unsigned *num_reqs)
+{
+	struct smb1_parse_chain_state state;
+	unsigned i;
+
+	state.mem_ctx = mem_ctx;
+	state.buf = buf;
+	state.sconn = sconn;
+	state.encrypted = encrypted;
+	state.seqnum = seqnum;
+	state.reqs = NULL;
+	state.num_reqs = 0;
+
+	if (!smb1_walk_chain(buf, smb1_parse_chain_cb, &state)) {
+		TALLOC_FREE(state.reqs);
+		return false;
 	}
-
-	/*
-	 * We end up here if the chained command was not itself chained or
-	 * suspended, but for example a close() command. We now need to splice
-	 * the chained commands' outbuf into the already built up chain_outbuf
-	 * and ship the result.
-	 */
-	goto done;
-
- error:
-	/*
-	 * We end up here if there's any error in the chain syntax. Report a
-	 * DOS error, just like Windows does.
-	 */
-	reply_force_doserror(req, ERRSRV, ERRerror);
-	fixup_chain_error_packet(req);
-
- done:
-	/*
-	 * This scary statement intends to set the
-	 * FLAGS2_32_BIT_ERROR_CODES flg2 field in req->chain_outbuf
-	 * to the value req->outbuf carries
-	 */
-	SSVAL(req->chain_outbuf, smb_flg2,
-	      (SVAL(req->chain_outbuf, smb_flg2) & ~FLAGS2_32_BIT_ERROR_CODES)
-	      | (SVAL(req->outbuf, smb_flg2) & FLAGS2_32_BIT_ERROR_CODES));
-
-	/*
-	 * Transfer the error codes from the subrequest to the main one
-	 */
-	SSVAL(req->chain_outbuf, smb_rcls, SVAL(req->outbuf, smb_rcls));
-	SSVAL(req->chain_outbuf, smb_err, SVAL(req->outbuf, smb_err));
-
-	if (!smb_splice_chain(&req->chain_outbuf,
-			      CVAL(req->outbuf, smb_com),
-			      CVAL(req->outbuf, smb_wct),
-			      (uint16_t *)(req->outbuf + smb_vwv),
-			      0, smb_buflen(req->outbuf),
-			      (uint8_t *)smb_buf(req->outbuf))) {
-		exit_server_cleanly("chain_reply: smb_splice_chain failed\n");
+	for (i=0; i<state.num_reqs; i++) {
+		state.reqs[i]->chain = state.reqs;
 	}
-	TALLOC_FREE(req->outbuf);
-
-	smb_setlen((char *)(req->chain_outbuf),
-		   talloc_get_size(req->chain_outbuf) - 4);
-
-	show_msg((char *)(req->chain_outbuf));
-
-	if (!srv_send_smb(req->sconn, (char *)req->chain_outbuf,
-			  true, req->seqnum+1,
-			  IS_CONN_ENCRYPTED(req->conn)||req->encrypted,
-			  &req->pcd)) {
-		exit_server_cleanly("chain_reply: srv_send_smb failed.");
-	}
-	TALLOC_FREE(req->chain_outbuf);
-	req->done = true;
+	*reqs = state.reqs;
+	*num_reqs = state.num_reqs;
+	return true;
 }
 
 /****************************************************************************
@@ -2299,12 +2466,21 @@ static void smbd_server_echo_handler(struct event_context *ev,
 }
 
 #ifdef CLUSTER_SUPPORT
+
+struct smbd_release_ip_state {
+	struct smbd_server_connection *sconn;
+	char addr[INET6_ADDRSTRLEN];
+};
+
 /****************************************************************************
 received when we should release a specific IP
 ****************************************************************************/
 static void release_ip(const char *ip, void *priv)
 {
-	const char *addr = (const char *)priv;
+	struct smbd_release_ip_state *state =
+		talloc_get_type_abort(priv,
+		struct smbd_release_ip_state);
+	const char *addr = state->addr;
 	const char *p = addr;
 
 	if (strncmp("::ffff:", addr, 7) == 0) {
@@ -2315,17 +2491,53 @@ static void release_ip(const char *ip, void *priv)
 		   "our address is %s\n", ip, p));
 
 	if ((strcmp(p, ip) == 0) || ((p != addr) && strcmp(addr, ip) == 0)) {
-		/* we can't afford to do a clean exit - that involves
-		   database writes, which would potentially mean we
-		   are still running after the failover has finished -
-		   we have to get rid of this process ID straight
-		   away */
 		DEBUG(0,("Got release IP message for our IP %s - exiting immediately\n",
 			ip));
-		/* note we must exit with non-zero status so the unclean handler gets
-		   called in the parent, so that the brl database is tickled */
-		_exit(1);
+		/*
+		 * With SMB2 we should do a clean disconnect,
+		 * the previous_session_id in the session setup
+		 * will cleanup the old session, tcons and opens.
+		 *
+		 * A clean disconnect is needed in order to support
+		 * durable handles.
+		 *
+		 * Note: typically this is never triggered
+		 *       as we got a TCP RST (triggered by ctdb event scripts)
+		 *       before we get CTDB_SRVID_RELEASE_IP.
+		 *
+		 * We used to call _exit(1) here, but as this was mostly never
+		 * triggered and has implication on our process model,
+		 * we can just use smbd_server_connection_terminate()
+		 * (also for SMB1).
+		 */
+		smbd_server_connection_terminate(state->sconn,
+						 "CTDB_SRVID_RELEASE_IP");
+		return;
 	}
+}
+
+static NTSTATUS smbd_register_ips(struct smbd_server_connection *sconn,
+				  struct sockaddr_storage *srv,
+				  struct sockaddr_storage *clnt)
+{
+	struct smbd_release_ip_state *state;
+	struct ctdbd_connection *cconn;
+
+	cconn = messaging_ctdbd_connection();
+	if (cconn == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	state = talloc_zero(sconn, struct smbd_release_ip_state);
+	if (state == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	state->sconn = sconn;
+	if (print_sockaddr(state->addr, sizeof(state->addr), srv) == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	return ctdbd_register_ips(cconn, srv, clnt, release_ip, state);
 }
 
 static int client_get_tcp_info(int sock, struct sockaddr_storage *server,
@@ -2415,9 +2627,6 @@ static bool housekeeping_fn(const struct timeval *now, void *private_data)
 
 	/* check if we need to reload services */
 	check_reload(sconn, time_mono(NULL));
-
-	/* Change machine password if neccessary. */
-	attempt_machine_password_change();
 
         /*
 	 * Force a log file check.
@@ -2523,7 +2732,7 @@ static void smbd_echo_read_waited(struct tevent_req *subreq)
 
 	if (!fd_is_readable(sconn->sock)) {
 		DEBUG(10,("echo_handler[%d] the parent smbd was faster\n",
-			  (int)sys_getpid()));
+			  (int)getpid()));
 
 		ok = smbd_unlock_socket_internal(sconn);
 		if (!ok) {
@@ -2552,7 +2761,7 @@ static void smbd_echo_read_waited(struct tevent_req *subreq)
 	if (tevent_req_nterror(req, status)) {
 		tevent_req_nterror(req, status);
 		DEBUG(1, ("echo_handler[%d]: receive_smb_raw_talloc failed: %s\n",
-			  (int)sys_getpid(), nt_errstr(status)));
+			  (int)getpid(), nt_errstr(status)));
 		return;
 	}
 
@@ -2636,7 +2845,7 @@ static void smbd_echo_writer_done(struct tevent_req *req)
 		DEBUG(1, ("writev to parent failed: %s\n", strerror(err)));
 		exit(1);
 	}
-	DEBUG(10,("echo_handler[%d]: forwarded pdu to main\n", (int)sys_getpid()));
+	DEBUG(10,("echo_handler[%d]: forwarded pdu to main\n", (int)getpid()));
 	smbd_echo_activate_writer(state);
 }
 
@@ -2817,7 +3026,7 @@ static void smbd_echo_got_packet(struct tevent_req *req)
 		iov->iov_len = buflen;
 
 		DEBUG(10,("echo_handler[%d]: forward to main\n",
-			  (int)sys_getpid()));
+			  (int)getpid()));
 		smbd_echo_activate_writer(state);
 	}
 
@@ -2850,7 +3059,7 @@ bool fork_echo_handler(struct smbd_server_connection *sconn)
 		goto fail;
 	}
 
-	child = sys_fork();
+	child = fork();
 	if (child == 0) {
 		NTSTATUS status;
 
@@ -2872,7 +3081,7 @@ bool fork_echo_handler(struct smbd_server_connection *sconn)
 	listener_pipe[1] = -1;
 	sconn->smb1.echo_handler.trusted_fd = listener_pipe[0];
 
-	DEBUG(10,("fork_echo_handler: main[%d] echo_child[%d]\n", (int)sys_getpid(), child));
+	DEBUG(10,("fork_echo_handler: main[%d] echo_child[%d]\n", (int)getpid(), child));
 
 	/*
 	 * Without smb signing this is the same as the normal smbd
@@ -2906,31 +3115,6 @@ fail:
 	sconn->smb1.echo_handler.socket_lock_fd = -1;
 	return false;
 }
-
-#if CLUSTER_SUPPORT
-
-static NTSTATUS smbd_register_ips(struct smbd_server_connection *sconn,
-				  struct sockaddr_storage *srv,
-				  struct sockaddr_storage *clnt)
-{
-	struct ctdbd_connection *cconn;
-	char tmp_addr[INET6_ADDRSTRLEN];
-	char *addr;
-
-	cconn = messaging_ctdbd_connection();
-	if (cconn == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	client_socket_addr(sconn->sock, tmp_addr, sizeof(tmp_addr));
-	addr = talloc_strdup(cconn, tmp_addr);
-	if (addr == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	return ctdbd_register_ips(cconn, srv, clnt, release_ip, addr);
-}
-
-#endif
 
 static bool uid_in_use(const struct user_struct *user, uid_t uid)
 {
@@ -3016,23 +3200,80 @@ static void smbd_id_cache_kill(struct messaging_context *msg_ctx,
 {
 	const char *msg = (data && data->data)
 		? (const char *)data->data : "<NULL>";
-	struct user_struct *validated_users;
 	struct id_cache_ref id;
 	struct smbd_server_connection *sconn =
 		talloc_get_type_abort(private_data,
 		struct smbd_server_connection);
-
-	validated_users = sconn->smb1.sessions.validated_users;
 
 	if (!id_cache_ref_parse(msg, &id)) {
 		DEBUG(0, ("Invalid ?ID: %s\n", msg));
 		return;
 	}
 
-	if (id_in_use(validated_users, &id)) {
+	if (id_in_use(sconn->users, &id)) {
 		exit_server_cleanly(msg);
 	}
 	id_cache_delete_from_cache(&id);
+}
+
+NTSTATUS smbXsrv_connection_init_tables(struct smbXsrv_connection *conn,
+					enum protocol_types protocol)
+{
+	NTSTATUS status;
+
+	set_Protocol(protocol);
+	conn->protocol = protocol;
+
+	if (protocol >= PROTOCOL_SMB2_02) {
+		status = smb2srv_session_table_init(conn);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		status = smb2srv_open_table_init(conn);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+	} else {
+		status = smb1srv_session_table_init(conn);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		status = smb1srv_tcon_table_init(conn);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		status = smb1srv_open_table_init(conn);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+	}
+
+	return NT_STATUS_OK;
+}
+
+static void smbd_tevent_trace_callback(enum tevent_trace_point point,
+				       void *private_data)
+{
+	struct smbXsrv_connection *conn =
+		talloc_get_type_abort(private_data,
+		struct smbXsrv_connection);
+
+	switch (point) {
+	case TEVENT_TRACE_BEFORE_WAIT:
+		/*
+		 * This just removes compiler warning
+		 * without profile support
+		 */
+		conn->smbd_idle_profstamp = 0;
+		START_PROFILE_STAMP(smbd_idle, conn->smbd_idle_profstamp);
+		break;
+	case TEVENT_TRACE_AFTER_WAIT:
+		END_PROFILE_STAMP(smbd_idle, conn->smbd_idle_profstamp);
+		break;
+	}
 }
 
 /****************************************************************************
@@ -3040,9 +3281,13 @@ static void smbd_id_cache_kill(struct messaging_context *msg_ctx,
 ****************************************************************************/
 
 void smbd_process(struct tevent_context *ev_ctx,
-		  struct smbd_server_connection *sconn)
+		  struct messaging_context *msg_ctx,
+		  int sock_fd,
+		  bool interactive)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
+	struct smbXsrv_connection *conn;
+	struct smbd_server_connection *sconn;
 	struct sockaddr_storage ss;
 	struct sockaddr *sa = NULL;
 	socklen_t sa_socklen;
@@ -3053,7 +3298,48 @@ void smbd_process(struct tevent_context *ev_ctx,
 	char *rhost;
 	int ret;
 
-	if (lp_maxprotocol() >= PROTOCOL_SMB2_02) {
+	conn = talloc_zero(ev_ctx, struct smbXsrv_connection);
+	if (conn == NULL) {
+		DEBUG(0,("talloc_zero(struct smbXsrv_connection)\n"));
+		exit_server_cleanly("talloc_zero(struct smbXsrv_connection).\n");
+	}
+
+	conn->ev_ctx = ev_ctx;
+	conn->msg_ctx = msg_ctx;
+
+	sconn = talloc_zero(conn, struct smbd_server_connection);
+	if (!sconn) {
+		exit_server("failed to create smbd_server_connection");
+	}
+
+	conn->sconn = sconn;
+	sconn->conn = conn;
+
+	/*
+	 * TODO: remove this...:-)
+	 */
+	global_smbXsrv_connection = conn;
+
+	sconn->ev_ctx = ev_ctx;
+	sconn->msg_ctx = msg_ctx;
+	sconn->sock = sock_fd;
+	sconn->smb1.echo_handler.trusted_fd = -1;
+	sconn->smb1.echo_handler.socket_lock_fd = -1;
+
+	if (!interactive) {
+		smbd_setup_sig_term_handler(sconn);
+		smbd_setup_sig_hup_handler(sconn);
+
+		if (!serverid_register(messaging_server_id(msg_ctx),
+				       FLAG_MSG_GENERAL|FLAG_MSG_SMBD
+				       |FLAG_MSG_DBWRAP
+				       |FLAG_MSG_PRINT_GENERAL)) {
+			exit_server_cleanly("Could not register myself in "
+					    "serverid.tdb");
+		}
+	}
+
+	if (lp_srv_maxprotocol() >= PROTOCOL_SMB2_02) {
 		/*
 		 * We're not making the decision here,
 		 * we're just allowing the client
@@ -3182,7 +3468,9 @@ void smbd_process(struct tevent_context *ev_ctx,
 		   tsocket_address_string(remote_address, talloc_tos()),
 		   tsocket_address_string(local_address, talloc_tos())));
 
-	init_modules();
+	if (lp_preload_modules()) {
+		smb_load_modules(lp_preload_modules());
+	}
 
 	smb_perfcount_init();
 
@@ -3190,20 +3478,25 @@ void smbd_process(struct tevent_context *ev_ctx,
 		exit_server("Could not open account policy tdb.\n");
 	}
 
-	if (*lp_rootdir()) {
-		if (chroot(lp_rootdir()) != 0) {
-			DEBUG(0,("Failed to change root to %s\n", lp_rootdir()));
+	if (*lp_rootdir(talloc_tos())) {
+		if (chroot(lp_rootdir(talloc_tos())) != 0) {
+			DEBUG(0,("Failed to change root to %s\n",
+				 lp_rootdir(talloc_tos())));
 			exit_server("Failed to chroot()");
 		}
 		if (chdir("/") == -1) {
-			DEBUG(0,("Failed to chdir to / on chroot to %s\n", lp_rootdir()));
+			DEBUG(0,("Failed to chdir to / on chroot to %s\n", lp_rootdir(talloc_tos())));
 			exit_server("Failed to chroot()");
 		}
-		DEBUG(0,("Changed root to %s\n", lp_rootdir()));
+		DEBUG(0,("Changed root to %s\n", lp_rootdir(talloc_tos())));
 	}
 
 	if (!srv_init_signing(sconn)) {
 		exit_server("Failed to init smb_signing");
+	}
+
+	if (!file_init(sconn)) {
+		exit_server("file_init() failed");
 	}
 
 	/* Setup oplocks */
@@ -3291,21 +3584,12 @@ void smbd_process(struct tevent_context *ev_ctx,
 
 	sconn->nbt.got_session = false;
 
-	sconn->smb1.negprot.max_recv = MIN(lp_maxxmit(),BUFFER_SIZE);
+	sconn->smb1.negprot.max_recv = MIN(lp_max_xmit(),BUFFER_SIZE);
 
 	sconn->smb1.sessions.done_sesssetup = false;
 	sconn->smb1.sessions.max_send = BUFFER_SIZE;
 	sconn->smb1.sessions.last_session_tag = UID_FIELD_INVALID;
-	/* users from session setup */
-	sconn->smb1.sessions.session_userlist = NULL;
-	/* workgroup from session setup. */
-	sconn->smb1.sessions.session_workgroup = NULL;
-	/* this holds info on user ids that are already validated for this VC */
-	sconn->smb1.sessions.validated_users = NULL;
-	sconn->smb1.sessions.next_vuid = VUID_OFFSET;
-	sconn->smb1.sessions.num_validated_vuids = 0;
 
-	conn_init(sconn);
 	if (!init_dptrs(sconn)) {
 		exit_server("init_dptrs() failed");
 	}
@@ -3320,7 +3604,14 @@ void smbd_process(struct tevent_context *ev_ctx,
 		exit_server("failed to create smbd_server_connection fde");
 	}
 
+	sconn->conn->local_address = sconn->local_address;
+	sconn->conn->remote_address = sconn->remote_address;
+	sconn->conn->remote_hostname = sconn->remote_hostname;
+	sconn->conn->protocol = PROTOCOL_NONE;
+
 	TALLOC_FREE(frame);
+
+	tevent_set_trace_callback(ev_ctx, smbd_tevent_trace_callback, conn);
 
 	while (True) {
 		frame = talloc_stackframe_pool(8192);

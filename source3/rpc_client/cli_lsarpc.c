@@ -166,6 +166,8 @@ NTSTATUS rpccli_lsa_open_policy2(struct rpc_pipe_client *cli,
 
 static NTSTATUS dcerpc_lsa_lookup_sids_noalloc(struct dcerpc_binding_handle *h,
 					       TALLOC_CTX *mem_ctx,
+					       TALLOC_CTX *domains_ctx,
+					       TALLOC_CTX *names_ctx,
 					       struct policy_handle *pol,
 					       int num_sids,
 					       const struct dom_sid *sids,
@@ -287,7 +289,7 @@ static NTSTATUS dcerpc_lsa_lookup_sids_noalloc(struct dcerpc_binding_handle *h,
 			name = lsa_names.names[i].name.string;
 
 			if (name) {
-				(names)[i] = talloc_strdup(names, name);
+				(names)[i] = talloc_strdup(names_ctx, name);
 				if ((names)[i] == NULL) {
 					DEBUG(0, ("cli_lsa_lookup_sids_noalloc(): out of memory\n"));
 					*presult = NT_STATUS_UNSUCCESSFUL;
@@ -296,10 +298,10 @@ static NTSTATUS dcerpc_lsa_lookup_sids_noalloc(struct dcerpc_binding_handle *h,
 			} else {
 				(names)[i] = NULL;
 			}
-			domains[i] = talloc_strdup(domains,
+			domains[i] = talloc_strdup(domains_ctx,
 						   dom_name ? dom_name : "");
 			(types)[i] = lsa_names.names[i].sid_type;
-			if (((domains)[i] == NULL)) {
+			if ((domains)[i] == NULL) {
 				DEBUG(0, ("cli_lsa_lookup_sids_noalloc(): out of memory\n"));
 				*presult = NT_STATUS_UNSUCCESSFUL;
 				return status;
@@ -328,16 +330,16 @@ static NTSTATUS dcerpc_lsa_lookup_sids_noalloc(struct dcerpc_binding_handle *h,
  * at 20480 for win2k3, but we keep it at a save 1000 for now. */
 #define LOOKUP_SIDS_HUNK_SIZE 1000
 
-static NTSTATUS dcerpc_lsa_lookup_sids_generic(struct dcerpc_binding_handle *h,
-					       TALLOC_CTX *mem_ctx,
-					       struct policy_handle *pol,
-					       int num_sids,
-					       const struct dom_sid *sids,
-					       char ***pdomains,
-					       char ***pnames,
-					       enum lsa_SidType **ptypes,
-					       bool use_lookupsids3,
-					       NTSTATUS *presult)
+NTSTATUS dcerpc_lsa_lookup_sids_generic(struct dcerpc_binding_handle *h,
+					TALLOC_CTX *mem_ctx,
+					struct policy_handle *pol,
+					int num_sids,
+					const struct dom_sid *sids,
+					char ***pdomains,
+					char ***pnames,
+					enum lsa_SidType **ptypes,
+					bool use_lookupsids3,
+					NTSTATUS *presult)
 {
 	NTSTATUS status = NT_STATUS_OK;
 	NTSTATUS result = NT_STATUS_OK;
@@ -394,6 +396,8 @@ static NTSTATUS dcerpc_lsa_lookup_sids_generic(struct dcerpc_binding_handle *h,
 
 		status = dcerpc_lsa_lookup_sids_noalloc(h,
 							mem_ctx,
+							(TALLOC_CTX *)domains,
+							(TALLOC_CTX *)names,
 							pol,
 							hunk_num_sids,
 							hunk_sids,
@@ -433,7 +437,7 @@ static NTSTATUS dcerpc_lsa_lookup_sids_generic(struct dcerpc_binding_handle *h,
 		}
 
 		sids_left -= hunk_num_sids;
-		sids_processed += hunk_num_sids; /* only used in DEBUG */
+		sids_processed += hunk_num_sids;
 		hunk_sids += hunk_num_sids;
 		hunk_domains += hunk_num_sids;
 		hunk_names += hunk_num_sids;
@@ -535,48 +539,19 @@ NTSTATUS dcerpc_lsa_lookup_sids3(struct dcerpc_binding_handle *h,
 					      result);
 }
 
-NTSTATUS rpccli_lsa_lookup_sids3(struct rpc_pipe_client *cli,
-				 TALLOC_CTX *mem_ctx,
-				 struct policy_handle *pol,
-				 int num_sids,
-				 const struct dom_sid *sids,
-				 char ***pdomains,
-				 char ***pnames,
-				 enum lsa_SidType **ptypes)
-{
-	NTSTATUS status;
-	NTSTATUS result = NT_STATUS_UNSUCCESSFUL;
-
-	status = dcerpc_lsa_lookup_sids_generic(cli->binding_handle,
-						mem_ctx,
-						pol,
-						num_sids,
-						sids,
-						pdomains,
-						pnames,
-						ptypes,
-						true,
-						&result);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
-	}
-
-	return result;
-}
-
 /** Lookup a list of names */
 
-static NTSTATUS dcerpc_lsa_lookup_names_generic(struct dcerpc_binding_handle *h,
-						TALLOC_CTX *mem_ctx,
-						struct policy_handle *pol,
-						uint32_t num_names,
-						const char **names,
-						const char ***dom_names,
-						enum lsa_LookupNamesLevel level,
-						struct dom_sid **sids,
-						enum lsa_SidType **types,
-						bool use_lookupnames4,
-						NTSTATUS *presult)
+NTSTATUS dcerpc_lsa_lookup_names_generic(struct dcerpc_binding_handle *h,
+					 TALLOC_CTX *mem_ctx,
+					 struct policy_handle *pol,
+					 uint32_t num_names,
+					 const char **names,
+					 const char ***dom_names,
+					 enum lsa_LookupNamesLevel level,
+					 struct dom_sid **sids,
+					 enum lsa_SidType **types,
+					 bool use_lookupnames4,
+					 NTSTATUS *presult)
 {
 	NTSTATUS status;
 	struct lsa_String *lsa_names = NULL;
@@ -785,34 +760,4 @@ NTSTATUS dcerpc_lsa_lookup_names4(struct dcerpc_binding_handle *h,
 					       types,
 					       true,
 					       result);
-}
-
-NTSTATUS rpccli_lsa_lookup_names4(struct rpc_pipe_client *cli,
-				  TALLOC_CTX *mem_ctx,
-				  struct policy_handle *pol,
-				  int num_names,
-				  const char **names,
-				  const char ***dom_names,
-				  int level,
-				  struct dom_sid **sids,
-				  enum lsa_SidType **types)
-{
-	NTSTATUS status;
-	NTSTATUS result = NT_STATUS_UNSUCCESSFUL;
-
-	status = dcerpc_lsa_lookup_names4(cli->binding_handle,
-					  mem_ctx,
-					  pol,
-					  num_names,
-					  names,
-					  dom_names,
-					  level,
-					  sids,
-					  types,
-					  &result);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
-	}
-
-	return result;
 }

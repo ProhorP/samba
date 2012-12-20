@@ -150,6 +150,8 @@ static int samba_dsdb_init(struct ldb_module *module)
 	  - extended_dn_in must be before objectclass.c, as it resolves the DN
 	  - objectclass must be before password_hash and samldb since these LDB
 	    modules require the expanded "objectClass" list
+          - objectclass must be before descriptor, as descriptor assumes that 
+            objectClass values are sorted
 	  - objectclass_attrs must be behind operational in order to see all
 	    attributes (the operational module protects and therefore
 	    suppresses per default some important ones)
@@ -162,6 +164,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 	*/
 	static const char *modules_list[] = {"resolve_oids",
 					     "rootdse",
+					     "schema_load",
 					     "lazy_commit",
 					     "dirsync",
 					     "paged_results",
@@ -178,7 +181,6 @@ static int samba_dsdb_init(struct ldb_module *module)
 					     "samldb",
 					     "password_hash",
 					     "operational",
-					     "schema_load",
 					     "instancetype",
 					     "objectclass_attrs",
 					     NULL };

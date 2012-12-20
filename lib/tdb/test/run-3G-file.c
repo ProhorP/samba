@@ -1,6 +1,3 @@
-/* We need this otherwise fcntl locking fails. */
-#define _FILE_OFFSET_BITS 64
-#define _XOPEN_SOURCE 500
 #include "../common/tdb_private.h"
 #include "../common/io.c"
 #include "../common/tdb.c"
@@ -14,7 +11,6 @@
 #include "../common/hash.c"
 #include "tap-interface.h"
 #include <stdlib.h>
-#include <err.h>
 #include "logging.h"
 
 static int tdb_expand_file_sparse(struct tdb_context *tdb,
@@ -73,6 +69,7 @@ int main(int argc, char *argv[])
 	uint32_t hash;
 	tdb_off_t rec_ptr;
 	struct tdb_record rec;
+	int ret;
 
 	plan_tests(24);
 	tdb = tdb_open_ex("run-36-file.tdb", 1024, TDB_CLEAR_IF_FIRST,
@@ -81,15 +78,33 @@ int main(int argc, char *argv[])
 	ok1(tdb);
 	tdb->methods = &large_io_methods;
 
-	/* Enlarge the file (internally multiplies by 2). */
-	ok1(tdb_expand(tdb, 1500000000) == 0);
-
-	/* Put an entry in, and check it. */
 	key.dsize = strlen("hi");
 	key.dptr = (void *)"hi";
 	orig_data.dsize = strlen("world");
 	orig_data.dptr = (void *)"world";
 
+	/* Enlarge the file (internally multiplies by 2). */
+	ret = tdb_expand(tdb, 1500000000);
+#ifdef HAVE_INCOHERENT_MMAP
+	/* This can fail due to mmap failure on 32 bit systems. */
+	if (ret == -1) {
+		/* These should now fail. */
+		ok1(tdb_store(tdb, key, orig_data, TDB_INSERT) == -1);
+		data = tdb_fetch(tdb, key);
+		ok1(data.dptr == NULL);
+		ok1(tdb_traverse(tdb, test_traverse, &orig_data) == -1);
+		ok1(tdb_delete(tdb, key) == -1);
+		ok1(tdb_traverse(tdb, test_traverse, NULL) == -1);
+		/* Skip the rest... */
+		for (ret = 0; ret < 24 - 6; ret++)
+			ok1(1);
+		tdb_close(tdb);
+		return exit_status();
+	}
+#endif
+	ok1(ret == 0);
+
+	/* Put an entry in, and check it. */
 	ok1(tdb_store(tdb, key, orig_data, TDB_INSERT) == 0);
 
 	data = tdb_fetch(tdb, key);

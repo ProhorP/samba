@@ -44,7 +44,7 @@ static void get_challenge(struct smbd_server_connection *sconn, uint8 buff[8])
 	}
 
 	DEBUG(10, ("get challenge: creating negprot_global_auth_context\n"));
-	nt_status = make_auth_context_subsystem(
+	nt_status = make_auth4_context(
 		sconn, &sconn->smb1.negprot.auth_context);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0, ("make_auth_context_subsystem returned %s",
@@ -54,38 +54,6 @@ static void get_challenge(struct smbd_server_connection *sconn, uint8 buff[8])
 	DEBUG(10, ("get challenge: getting challenge\n"));
 	sconn->smb1.negprot.auth_context->get_ntlm_challenge(
 		sconn->smb1.negprot.auth_context, buff);
-}
-
-/****************************************************************************
- Reply for the core protocol.
-****************************************************************************/
-
-static void reply_corep(struct smb_request *req, uint16 choice)
-{
-	reply_outbuf(req, 1, 0);
-	SSVAL(req->outbuf, smb_vwv0, choice);
-
-	set_Protocol(PROTOCOL_CORE);
-}
-
-/****************************************************************************
- Reply for the coreplus protocol.
-****************************************************************************/
-
-static void reply_coreplus(struct smb_request *req, uint16 choice)
-{
-	int raw = (lp_readraw()?1:0) | (lp_writeraw()?2:0);
-
-	reply_outbuf(req, 13, 0);
-
-	SSVAL(req->outbuf,smb_vwv0,choice);
-	SSVAL(req->outbuf,smb_vwv5,raw); /* tell redirector we support
-			readbraw and writebraw (possibly) */
-	/* Reply, SMBlockread, SMBwritelock supported. */
-	SCVAL(req->outbuf,smb_flg,FLAG_REPLY|FLAG_SUPPORT_LOCKREAD);
-	SSVAL(req->outbuf,smb_vwv1,0x1); /* user level security, don't
-					  * encrypt */
-	set_Protocol(PROTOCOL_COREPLUS);
 }
 
 /****************************************************************************
@@ -101,9 +69,7 @@ static void reply_lanman1(struct smb_request *req, uint16 choice)
 
 	sconn->smb1.negprot.encrypted_passwords = lp_encrypted_passwords();
 
-	if (lp_security()>=SEC_USER) {
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-	}
+	secword |= NEGOTIATE_SECURITY_USER_LEVEL;
 	if (sconn->smb1.negprot.encrypted_passwords) {
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 	}
@@ -118,16 +84,16 @@ static void reply_lanman1(struct smb_request *req, uint16 choice)
 		SSVAL(req->outbuf,smb_vwv11, 8);
 	}
 
-	set_Protocol(PROTOCOL_LANMAN1);
+	smbXsrv_connection_init_tables(req->sconn->conn, PROTOCOL_LANMAN1);
 
 	/* Reply, SMBlockread, SMBwritelock supported. */
-	SCVAL(req->outbuf,smb_flg,FLAG_REPLY|FLAG_SUPPORT_LOCKREAD);
-	SSVAL(req->outbuf,smb_vwv2,sconn->smb1.negprot.max_recv);
-	SSVAL(req->outbuf,smb_vwv3,lp_maxmux()); /* maxmux */
-	SSVAL(req->outbuf,smb_vwv4,1);
-	SSVAL(req->outbuf,smb_vwv5,raw); /* tell redirector we support
+	SCVAL(req->outbuf,smb_flg, FLAG_REPLY|FLAG_SUPPORT_LOCKREAD);
+	SSVAL(req->outbuf,smb_vwv2, sconn->smb1.negprot.max_recv);
+	SSVAL(req->outbuf,smb_vwv3, lp_maxmux()); /* maxmux */
+	SSVAL(req->outbuf,smb_vwv4, 1);
+	SSVAL(req->outbuf,smb_vwv5, raw); /* tell redirector we support
 		readbraw writebraw (possibly) */
-	SIVAL(req->outbuf,smb_vwv6,sys_getpid());
+	SIVAL(req->outbuf,smb_vwv6, getpid());
 	SSVAL(req->outbuf,smb_vwv10, set_server_zone_offset(t)/60);
 
 	srv_put_dos_date((char *)req->outbuf,smb_vwv8,t);
@@ -148,18 +114,16 @@ static void reply_lanman2(struct smb_request *req, uint16 choice)
 
 	sconn->smb1.negprot.encrypted_passwords = lp_encrypted_passwords();
 
-	if (lp_security()>=SEC_USER) {
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-	}
+	secword |= NEGOTIATE_SECURITY_USER_LEVEL;
 	if (sconn->smb1.negprot.encrypted_passwords) {
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 	}
 
 	reply_outbuf(req, 13, sconn->smb1.negprot.encrypted_passwords?8:0);
 
-	SSVAL(req->outbuf,smb_vwv0,choice);
-	SSVAL(req->outbuf,smb_vwv1,secword);
-	SIVAL(req->outbuf,smb_vwv6,sys_getpid());
+	SSVAL(req->outbuf,smb_vwv0, choice);
+	SSVAL(req->outbuf,smb_vwv1, secword);
+	SIVAL(req->outbuf,smb_vwv6, getpid());
 
 	/* Create a token value and add it to the outgoing packet. */
 	if (sconn->smb1.negprot.encrypted_passwords) {
@@ -167,7 +131,7 @@ static void reply_lanman2(struct smb_request *req, uint16 choice)
 		SSVAL(req->outbuf,smb_vwv11, 8);
 	}
 
-	set_Protocol(PROTOCOL_LANMAN2);
+	smbXsrv_connection_init_tables(req->sconn->conn, PROTOCOL_LANMAN2);
 
 	/* Reply, SMBlockread, SMBwritelock supported. */
 	SCVAL(req->outbuf,smb_flg,FLAG_REPLY|FLAG_SUPPORT_LOCKREAD);
@@ -242,7 +206,7 @@ DATA_BLOB negprot_spnego(TALLOC_CTX *ctx, struct smbd_server_connection *sconn)
 	memset(blob_out.data, '\0', 16);
 
 	checked_strlcpy(unix_name, lp_netbios_name(), sizeof(unix_name));
-	strlower_m(unix_name);
+	(void)strlower_m(unix_name);
 	push_ascii_nstring(dos_name, unix_name);
 	strlcpy((char *)blob_out.data, dos_name, 17);
 
@@ -299,7 +263,6 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 	   supports it and we can do encrypted passwords */
 
 	if (sconn->smb1.negprot.encrypted_passwords &&
-	    (lp_security() != SEC_SHARE) &&
 	    lp_use_spnego() &&
 	    (req->flags2 & FLAGS2_EXTENDED_SECURITY)) {
 		negotiate_spnego = True;
@@ -311,7 +274,11 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 		      req->flags2 | FLAGS2_EXTENDED_SECURITY);
 	}
 
-	capabilities |= CAP_NT_SMBS|CAP_RPC_REMOTE_APIS|CAP_UNICODE;
+	capabilities |= CAP_NT_SMBS|CAP_RPC_REMOTE_APIS;
+
+	if (lp_unicode()) {
+		capabilities |= CAP_UNICODE;
+	}
 
 	if (lp_unix_extensions()) {
 		capabilities |= CAP_UNIX;
@@ -332,9 +299,7 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 	if (lp_host_msdfs())
 		capabilities |= CAP_DFS;
 
-	if (lp_security() >= SEC_USER) {
-		secword |= NEGOTIATE_SECURITY_USER_LEVEL;
-	}
+	secword |= NEGOTIATE_SECURITY_USER_LEVEL;
 	if (sconn->smb1.negprot.encrypted_passwords) {
 		secword |= NEGOTIATE_SECURITY_CHALLENGE_RESPONSE;
 	}
@@ -343,33 +308,26 @@ static void reply_nt1(struct smb_request *req, uint16 choice)
 	signing_required = smb_signing_is_mandatory(req->sconn->smb1.signing_state);
 
 	if (signing_enabled) {
-	       	if (lp_security() >= SEC_USER) {
-			secword |= NEGOTIATE_SECURITY_SIGNATURES_ENABLED;
-			/* No raw mode with smb signing. */
-			capabilities &= ~CAP_RAW_MODE;
-			if (signing_required) {
-				secword |=NEGOTIATE_SECURITY_SIGNATURES_REQUIRED;
-			}
-		} else {
-			DEBUG(0,("reply_nt1: smb signing is incompatible with share level security !\n"));
-			if (signing_required) {
-				exit_server_cleanly("reply_nt1: smb signing required and share level security selected.");
-			}
+		secword |= NEGOTIATE_SECURITY_SIGNATURES_ENABLED;
+		/* No raw mode with smb signing. */
+		capabilities &= ~CAP_RAW_MODE;
+		if (signing_required) {
+			secword |=NEGOTIATE_SECURITY_SIGNATURES_REQUIRED;
 		}
 	}
 
 	SSVAL(req->outbuf,smb_vwv0,choice);
 	SCVAL(req->outbuf,smb_vwv1,secword);
 
-	set_Protocol(PROTOCOL_NT1);
+	smbXsrv_connection_init_tables(req->sconn->conn, PROTOCOL_NT1);
 
-	SSVAL(req->outbuf,smb_vwv1+1,lp_maxmux()); /* maxmpx */
-	SSVAL(req->outbuf,smb_vwv2+1,1); /* num vcs */
+	SSVAL(req->outbuf,smb_vwv1+1, lp_maxmux()); /* maxmpx */
+	SSVAL(req->outbuf,smb_vwv2+1, 1); /* num vcs */
 	SIVAL(req->outbuf,smb_vwv3+1,
 	      sconn->smb1.negprot.max_recv); /* max buffer. LOTS! */
-	SIVAL(req->outbuf,smb_vwv5+1,0x10000); /* raw size. full 64k */
-	SIVAL(req->outbuf,smb_vwv7+1,sys_getpid()); /* session key */
-	SIVAL(req->outbuf,smb_vwv9+1,capabilities); /* capabilities */
+	SIVAL(req->outbuf,smb_vwv5+1, 0x10000); /* raw size. full 64k */
+	SIVAL(req->outbuf,smb_vwv7+1, getpid()); /* session key */
+	SIVAL(req->outbuf,smb_vwv9+1, capabilities); /* capabilities */
 	clock_gettime(CLOCK_REALTIME,&ts);
 	put_long_date_timespec(TIMESTAMP_SET_NT_OR_BETTER,(char *)req->outbuf+smb_vwv11+1,ts);
 	SSVALS(req->outbuf,smb_vwv15+1,set_server_zone_offset(ts.tv_sec)/60);
@@ -529,8 +487,6 @@ static const struct {
 	{"DOS LM1.2X002",           "LANMAN2",  reply_lanman2,  PROTOCOL_LANMAN2},
 	{"LANMAN1.0",               "LANMAN1",  reply_lanman1,  PROTOCOL_LANMAN1},
 	{"MICROSOFT NETWORKS 3.0",  "LANMAN1",  reply_lanman1,  PROTOCOL_LANMAN1},
-	{"MICROSOFT NETWORKS 1.03", "COREPLUS", reply_coreplus, PROTOCOL_COREPLUS},
-	{"PC NETWORK PROGRAM 1.0",  "CORE",     reply_corep,    PROTOCOL_CORE}, 
 	{NULL,NULL,NULL,0},
 };
 
@@ -695,8 +651,8 @@ void reply_negprot(struct smb_request *req)
 	/* Check for protocols, most desirable first */
 	for (protocol = 0; supported_protocols[protocol].proto_name; protocol++) {
 		i = 0;
-		if ((supported_protocols[protocol].protocol_level <= lp_maxprotocol()) &&
-				(supported_protocols[protocol].protocol_level >= lp_minprotocol()))
+		if ((supported_protocols[protocol].protocol_level <= lp_srv_maxprotocol()) &&
+				(supported_protocols[protocol].protocol_level >= lp_srv_minprotocol()))
 			while (i < num_cliprotos) {
 				if (strequal(cliprotos[i],supported_protocols[protocol].proto_name))
 					choice = i;

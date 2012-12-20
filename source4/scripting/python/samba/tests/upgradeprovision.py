@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007-2008
 #
@@ -20,7 +18,7 @@
 """Tests for samba.upgradeprovision."""
 
 import os
-from samba.upgradehelpers import  (usn_in_range, dn_sort,
+from samba.upgradehelpers import (usn_in_range, dn_sort,
                                   get_diff_sddls, update_secrets,
                                   construct_existor_expr)
 
@@ -128,7 +126,7 @@ class UpdateSecretsTests(samba.tests.TestCaseInTempDir):
         self.assertEquals(newmodules.msgs, refmodules.msgs)
 
     def tearDown(self):
-        for name in ["ref.ldb", "secrets.ldb"]:
+        for name in ["ref.ldb", "secrets.ldb", "secrets.tdb"]:
             path = os.path.join(self.tempdir, name)
             if os.path.exists(path):
                 os.unlink(path)

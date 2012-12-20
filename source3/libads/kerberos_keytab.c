@@ -263,9 +263,15 @@ int ads_keytab_add_entry(ADS_STRUCT *ads, const char *srvPrinc)
 	krb5_keytab keytab = NULL;
 	krb5_data password;
 	krb5_kvno kvno;
-        krb5_enctype enctypes[4] = {
+        krb5_enctype enctypes[6] = {
 		ENCTYPE_DES_CBC_CRC,
 		ENCTYPE_DES_CBC_MD5,
+#ifdef HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96
+		ENCTYPE_AES128_CTS_HMAC_SHA1_96,
+#endif
+#ifdef HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96
+		ENCTYPE_AES256_CTS_HMAC_SHA1_96,
+#endif
 		ENCTYPE_ARCFOUR_HMAC,
 		0
 	};
@@ -564,7 +570,10 @@ int ads_keytab_create_default(ADS_STRUCT *ads)
 
 	/* upper case the sAMAccountName to make it easier for apps to
 	   know what case to use in the keytab file */
-	strupper_m(sam_account_name);
+	if (!strupper_m(sam_account_name)) {
+		ret = -1;
+		goto done;
+	}
 
 	ret = ads_keytab_add_entry(ads, sam_account_name);
 	if (ret != 0) {

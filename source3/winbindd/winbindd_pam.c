@@ -38,6 +38,9 @@
 #include "passdb/machine_sid.h"
 #include "auth.h"
 #include "../lib/tsocket/tsocket.h"
+#include "auth/kerberos/pac_utils.h"
+#include "auth/gensec/gensec.h"
+#include "librpc/crypto/gse_krb5.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -217,7 +220,9 @@ static NTSTATUS append_afs_token(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	strlower_m(afsname);
+	if (!strlower_m(afsname)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	DEBUG(10, ("Generating token for user %s\n", afsname));
 
@@ -271,6 +276,7 @@ static NTSTATUS check_info3_in_group(struct netr_SamInfo3 *info3,
 
 	if (!group_sid || !group_sid[0]) {
 		/* NO sid supplied, all users may access */
+		TALLOC_FREE(frame);
 		return NT_STATUS_OK;
 	}
 
@@ -307,7 +313,7 @@ static NTSTATUS check_info3_in_group(struct netr_SamInfo3 *info3,
 	status = sid_array_from_info3(talloc_tos(), info3,
 				      &token->sids,
 				      &token->num_sids,
-				      true, false);
+				      true);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
 		return status;
@@ -581,7 +587,9 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 	parse_domain_user(user, name_domain, name_user);
 
 	realm = domain->alt_name;
-	strupper_m(realm);
+	if (!strupper_m(realm)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	principal_s = talloc_asprintf(mem_ctx, "%s@%s", name_user, realm);
 	if (principal_s == NULL) {
@@ -641,6 +649,7 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 					    cc,
 					    service,
 					    user,
+					    pass,
 					    realm,
 					    uid,
 					    time(NULL),
@@ -718,12 +727,12 @@ bool check_request_flags(uint32_t flags)
 /****************************************************************
 ****************************************************************/
 
-static NTSTATUS append_auth_data(TALLOC_CTX *mem_ctx,
-				 struct winbindd_response *resp,
-				 uint32_t request_flags,
-				 struct netr_SamInfo3 *info3,
-				 const char *name_domain,
-				 const char *name_user)
+NTSTATUS append_auth_data(TALLOC_CTX *mem_ctx,
+			  struct winbindd_response *resp,
+			  uint32_t request_flags,
+			  struct netr_SamInfo3 *info3,
+			  const char *name_domain,
+			  const char *name_user)
 {
 	NTSTATUS result;
 
@@ -937,7 +946,9 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 			}
 
 			realm = domain->alt_name;
-			strupper_m(realm);
+			if (!strupper_m(realm)) {
+				return NT_STATUS_INVALID_PARAMETER;
+			}
 
 			principal_s = talloc_asprintf(state->mem_ctx, "%s@%s", name_user, realm);
 			if (principal_s == NULL) {
@@ -958,6 +969,7 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 							    cc,
 							    service,
 							    state->request->data.auth.user,
+							    state->request->data.auth.pass,
 							    domain->alt_name,
 							    uid,
 							    time(NULL),
@@ -1163,6 +1175,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					    struct netr_SamInfo3 **info3)
 {
 	int attempts = 0;
+	int netr_attempts = 0;
 	bool retry = false;
 	NTSTATUS result;
 
@@ -1177,10 +1190,47 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 		result = cm_connect_netlogon(domain, &netlogon_pipe);
 
 		if (!NT_STATUS_IS_OK(result)) {
-			DEBUG(3,("could not open handle to NETLOGON pipe (error: %s)\n",
-				  nt_errstr(result)));
+			DEBUG(3,("Could not open handle to NETLOGON pipe "
+				 "(error: %s, attempts: %d)\n",
+				  nt_errstr(result), netr_attempts));
+
+			/* After the first retry always close the connection */
+			if (netr_attempts > 0) {
+				DEBUG(3, ("This is again a problem for this "
+					  "particular call, forcing the close "
+					  "of this connection\n"));
+				invalidate_cm_connection(&domain->conn);
+			}
+
+			/* After the second retry failover to the next DC */
+			if (netr_attempts > 1) {
+				/*
+				 * If the netlogon server is not reachable then
+				 * it is possible that the DC is rebuilding
+				 * sysvol and shutdown netlogon for that time.
+				 * We should failover to the next dc.
+				 */
+				DEBUG(3, ("This is the third problem for this "
+					  "particular call, adding DC to the "
+					  "negative cache list\n"));
+				add_failed_connection_entry(domain->name,
+							    domain->dcname,
+							    result);
+				saf_delete(domain->name);
+			}
+
+			/* Only allow 3 retries */
+			if (netr_attempts < 3) {
+				DEBUG(3, ("The connection to netlogon "
+					  "failed, retrying\n"));
+				netr_attempts++;
+				retry = true;
+				continue;
+			}
 			return result;
 		}
+		netr_attempts = 0;
+
 		auth = netlogon_pipe->auth;
 		if (netlogon_pipe->dc) {
 			neg_flags = netlogon_pipe->dc->negotiate_flags;
@@ -1234,7 +1284,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 			domain->can_do_validation6 = false;
 		}
 
-		if (domain->can_do_samlogon_ex) {
+		if (domain->can_do_samlogon_ex && domain->can_do_validation6) {
 			result = rpccli_netlogon_sam_network_logon_ex(
 					netlogon_pipe,
 					mem_ctx,
@@ -1244,7 +1294,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					domainname,	/* target domain */
 					workstation,	/* workstation */
 					chal,
-					domain->can_do_validation6 ? 6 : 3,
+					6,
 					lm_response,
 					nt_response,
 					info3);
@@ -1322,7 +1372,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 		   rpc changetrustpw' */
 
 		if ( NT_STATUS_EQUAL(result, NT_STATUS_ACCESS_DENIED) ) {
-			DEBUG(3,("winbindd_pam_auth: sam_logon returned "
+			DEBUG(3,("winbind_samlogon_retry_loop: sam_logon returned "
 				 "ACCESS_DENIED.  Maybe the trust account "
 				"password was changed and we didn't know it. "
 				 "Killing connections to domain %s\n",
@@ -1333,6 +1383,13 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 
 	} while ( (attempts < 2) && retry );
 
+	if (NT_STATUS_EQUAL(result, NT_STATUS_IO_TIMEOUT)) {
+		DEBUG(3,("winbind_samlogon_retry_loop: sam_network_logon(ex) "
+				"returned NT_STATUS_IO_TIMEOUT after the retry."
+				"Killing connections to domain %s\n",
+			domainname));
+		invalidate_cm_connection(&domain->conn);
+	}
 	return result;
 }
 
@@ -2101,6 +2158,13 @@ enum winbindd_result winbindd_dual_pam_logoff(struct winbindd_domain *domain,
 		goto process_result;
 	}
 
+	/*
+	 * Remove any mlock'ed memory creds in the child
+	 * we might be using for krb5 ticket renewal.
+	 */
+
+	winbindd_delete_memory_creds(state->request->data.logoff.user);
+
 #else
 	result = NT_STATUS_NOT_SUPPORTED;
 #endif
@@ -2194,8 +2258,8 @@ enum winbindd_result winbindd_dual_pam_chng_pswd_auth_crap(struct winbindd_domai
 			state->request->data.chng_pswd_auth_crap.old_lm_hash_enc,
 			state->request->data.chng_pswd_auth_crap.old_lm_hash_enc_len);
 	} else {
-		new_lm_password.length = 0;
-		old_lm_hash_enc.length = 0;
+		new_lm_password = data_blob_null;
+		old_lm_hash_enc = data_blob_null;
 	}
 
 	/* Get sam handle */
@@ -2235,3 +2299,116 @@ enum winbindd_result winbindd_dual_pam_chng_pswd_auth_crap(struct winbindd_domai
 
 	return NT_STATUS_IS_OK(result) ? WINBINDD_OK : WINBINDD_ERROR;
 }
+
+#ifdef HAVE_KRB5
+static NTSTATUS extract_pac_vrfy_sigs(TALLOC_CTX *mem_ctx, DATA_BLOB pac_blob,
+				      struct PAC_LOGON_INFO **logon_info)
+{
+	krb5_context krbctx = NULL;
+	krb5_error_code k5ret;
+	krb5_keytab keytab;
+	krb5_kt_cursor cursor;
+	krb5_keytab_entry entry;
+	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
+
+	ZERO_STRUCT(entry);
+	ZERO_STRUCT(cursor);
+
+	k5ret = krb5_init_context(&krbctx);
+	if (k5ret) {
+		DEBUG(1, ("Failed to initialize kerberos context: %s\n",
+			  error_message(k5ret)));
+		status = krb5_to_nt_status(k5ret);
+		goto out;
+	}
+
+	k5ret =  gse_krb5_get_server_keytab(krbctx, &keytab);
+	if (k5ret) {
+		DEBUG(1, ("Failed to get keytab: %s\n",
+			  error_message(k5ret)));
+		status = krb5_to_nt_status(k5ret);
+		goto out_free;
+	}
+
+	k5ret = krb5_kt_start_seq_get(krbctx, keytab, &cursor);
+	if (k5ret) {
+		DEBUG(1, ("Failed to start seq: %s\n",
+			  error_message(k5ret)));
+		status = krb5_to_nt_status(k5ret);
+		goto out_keytab;
+	}
+
+	k5ret = krb5_kt_next_entry(krbctx, keytab, &entry, &cursor);
+	while (k5ret == 0) {
+		status = kerberos_pac_logon_info(mem_ctx, pac_blob,
+						 krbctx, NULL,
+						 KRB5_KT_KEY(&entry), NULL, 0,
+						 logon_info);
+		if (NT_STATUS_IS_OK(status)) {
+			break;
+		}
+		k5ret = smb_krb5_kt_free_entry(krbctx, &entry);
+		k5ret = krb5_kt_next_entry(krbctx, keytab, &entry, &cursor);
+	}
+
+	k5ret = krb5_kt_end_seq_get(krbctx, keytab, &cursor);
+	if (k5ret) {
+		DEBUG(1, ("Failed to end seq: %s\n",
+			  error_message(k5ret)));
+	}
+out_keytab:
+	k5ret = krb5_kt_close(krbctx, keytab);
+	if (k5ret) {
+		DEBUG(1, ("Failed to close keytab: %s\n",
+			  error_message(k5ret)));
+	}
+out_free:
+	krb5_free_context(krbctx);
+out:
+	return status;
+}
+
+NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
+				    struct netr_SamInfo3 **info3)
+{
+	struct winbindd_request *req = state->request;
+	DATA_BLOB pac_blob;
+	struct PAC_LOGON_INFO *logon_info = NULL;
+	NTSTATUS result;
+
+	pac_blob = data_blob_const(req->extra_data.data, req->extra_len);
+	result = extract_pac_vrfy_sigs(state->mem_ctx, pac_blob, &logon_info);
+	if (!NT_STATUS_IS_OK(result) &&
+	    !NT_STATUS_EQUAL(result, NT_STATUS_ACCESS_DENIED)) {
+		DEBUG(1, ("Error during PAC signature verification: %s\n",
+			  nt_errstr(result)));
+		return result;
+	}
+
+	if (logon_info) {
+		/* Signature verification succeeded, trust the PAC */
+		netsamlogon_cache_store(NULL, &logon_info->info3);
+
+	} else {
+		/* Try without signature verification */
+		result = kerberos_pac_logon_info(state->mem_ctx, pac_blob, NULL,
+						 NULL, NULL, NULL, 0,
+						 &logon_info);
+		if (!NT_STATUS_IS_OK(result)) {
+			DEBUG(10, ("Could not extract PAC: %s\n",
+				   nt_errstr(result)));
+			return result;
+		}
+	}
+
+	*info3 = &logon_info->info3;
+
+	return NT_STATUS_OK;
+}
+#else /* HAVE_KRB5 */
+NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
+				    struct netr_SamInfo3 **info3)
+{
+	return NT_STATUS_NO_SUCH_USER;
+}
+#endif /* HAVE_KRB5 */

@@ -27,7 +27,6 @@
 #include "../librpc/gen_ndr/ndr_spoolss_c.h"
 #include "rpc_client/cli_spoolss.h"
 #include "rpc_client/init_spoolss.h"
-#include "registry/reg_objects.h"
 #include "nt_printing.h"
 #include "../libcli/security/display_sec.h"
 #include "../libcli/security/security_descriptor.h"
@@ -764,25 +763,26 @@ static WERROR cmd_spoolss_getprinter(struct rpc_pipe_client *cli,
 /****************************************************************************
 ****************************************************************************/
 
-static void display_reg_value(struct regval_blob *value)
+static void display_reg_value(const char *name, enum winreg_Type type, DATA_BLOB blob)
 {
 	const char *text = NULL;
-	DATA_BLOB blob;
 
-	switch(regval_type(value)) {
+	switch(type) {
 	case REG_DWORD:
-		printf("%s: REG_DWORD: 0x%08x\n", regval_name(value),
-		       *((uint32_t *) regval_data_p(value)));
+		if (blob.length == sizeof(uint32)) {
+			printf("%s: REG_DWORD: 0x%08x\n", name, IVAL(blob.data,0));
+		} else {
+			printf("%s: REG_DWORD: <invalid>\n", name);
+		}
 		break;
 	case REG_SZ:
-		blob = data_blob_const(regval_data_p(value), regval_size(value));
 		pull_reg_sz(talloc_tos(), &blob, &text);
-		printf("%s: REG_SZ: %s\n", regval_name(value), text ? text : "");
+		printf("%s: REG_SZ: %s\n", name, text ? text : "");
 		break;
 	case REG_BINARY: {
-		char *hex = hex_encode_talloc(NULL, regval_data_p(value), regval_size(value));
+		char *hex = hex_encode_talloc(NULL, blob.data, blob.length);
 		size_t i, len;
-		printf("%s: REG_BINARY:", regval_name(value));
+		printf("%s: REG_BINARY:", name);
 		len = strlen(hex);
 		for (i=0; i<len; i++) {
 			if (hex[i] == '\0') {
@@ -800,14 +800,13 @@ static void display_reg_value(struct regval_blob *value)
 	case REG_MULTI_SZ: {
 		uint32_t i;
 		const char **values;
-		blob = data_blob_const(regval_data_p(value), regval_size(value));
 
 		if (!pull_reg_multi_sz(NULL, &blob, &values)) {
 			d_printf("pull_reg_multi_sz failed\n");
 			break;
 		}
 
-		printf("%s: REG_MULTI_SZ: \n", regval_name(value));
+		printf("%s: REG_MULTI_SZ: \n", name);
 		for (i=0; values[i] != NULL; i++) {
 			d_printf("%s\n", values[i]);
 		}
@@ -815,7 +814,7 @@ static void display_reg_value(struct regval_blob *value)
 		break;
 	}
 	default:
-		printf("%s: unknown type %d\n", regval_name(value), regval_type(value));
+		printf("%s: unknown type %d\n", name, type);
 	}
 
 }
@@ -2535,7 +2534,7 @@ static WERROR cmd_spoolss_setprinterdata(struct rpc_pipe_client *cli,
 	WERROR result;
 	NTSTATUS status;
 	const char *printername;
-	struct policy_handle pol;
+	struct policy_handle pol = { 0, };
 	union spoolss_PrinterInfo info;
 	enum winreg_Type type;
 	union spoolss_PrinterData data;
@@ -2614,6 +2613,8 @@ static WERROR cmd_spoolss_setprinterdata(struct rpc_pipe_client *cli,
 	case REG_MULTI_SZ: {
 		int i, num_strings;
 		const char **strings = NULL;
+
+		num_strings = 0;
 
 		for (i=4; i<argc; i++) {
 			if (strcmp(argv[i], "NULL") == 0) {
@@ -3043,22 +3044,8 @@ static WERROR cmd_spoolss_enum_data(struct rpc_pipe_client *cli,
 
 		r.in.enum_index++;
 
-		{
-			struct regval_blob *v;
-
-			v = regval_compose(talloc_tos(),
-					   r.out.value_name,
-					   *r.out.type,
-					   r.out.data,
-					   r.in.data_offered);
-			if (v == NULL) {
-				result = WERR_NOMEM;
-				goto done;
-			}
-
-			display_reg_value(v);
-			talloc_free(v);
-		}
+		display_reg_value(r.out.value_name, *r.out.type,
+				  data_blob_const(r.out.data, r.in.data_offered));
 
 	} while (W_ERROR_IS_OK(r.out.result));
 
@@ -3209,7 +3196,7 @@ static WERROR cmd_spoolss_rffpcnex(struct rpc_pipe_client *cli,
 {
 	const char *printername;
 	const char *clientname;
-	struct policy_handle hnd;
+	struct policy_handle hnd = { 0, };
 	WERROR result;
 	NTSTATUS status;
 	struct spoolss_NotifyOption option;

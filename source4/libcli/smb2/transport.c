@@ -27,7 +27,6 @@
 #include "libcli/smb2/smb2_calls.h"
 #include "lib/socket/socket.h"
 #include "lib/events/events.h"
-#include "lib/stream/packet.h"
 #include "../lib/util/dlinklist.h"
 #include "../libcli/smb/smbXcli_base.h"
 #include "librpc/ndr/libndr.h"
@@ -50,6 +49,7 @@ struct smb2_transport *smb2_transport_init(struct smbcli_socket *sock,
 {
 	struct smb2_transport *transport;
 	struct GUID client_guid;
+	uint32_t smb2_capabilities = 0;
 
 	transport = talloc_zero(parent_ctx, struct smb2_transport);
 	if (!transport) return NULL;
@@ -62,12 +62,16 @@ struct smb2_transport *smb2_transport_init(struct smbcli_socket *sock,
 
 	client_guid = GUID_random();
 
+	/* TODO: hand this in via the options? */
+	smb2_capabilities = SMB2_CAP_ALL;
+
 	transport->conn = smbXcli_conn_create(transport,
 					      sock->sock->fd,
 					      sock->hostname,
 					      options->signing,
 					      0, /* smb1_capabilities */
-					      &client_guid);
+					      &client_guid,
+					      smb2_capabilities);
 	if (transport->conn == NULL) {
 		talloc_free(transport);
 		return NULL;
@@ -111,8 +115,7 @@ void smb2_transport_send(struct smb2_request *req)
 	uint16_t cmd = SVAL(req->out.hdr, SMB2_HDR_OPCODE);
 	uint32_t additional_flags = IVAL(req->out.hdr, SMB2_HDR_FLAGS);
 	uint32_t clear_flags = 0;
-	uint32_t pid = IVAL(req->out.hdr, SMB2_HDR_PID);
-	uint32_t tid = IVAL(req->out.hdr, SMB2_HDR_TID);
+	struct smbXcli_tcon *tcon = NULL;
 	struct smbXcli_session *session = NULL;
 	bool need_pending_break = false;
 	size_t hdr_ofs;
@@ -143,8 +146,7 @@ void smb2_transport_send(struct smb2_request *req)
 					    0, /* additional_flags */
 					    0, /*clear_flags */
 					    0, /* timeout_msec */
-					    0, /* pid */
-					    0, /* tid */
+					    NULL, /* tcon */
 					    NULL, /* session */
 					    NULL, /* body */
 					    0, /* body_fixed */
@@ -161,6 +163,10 @@ void smb2_transport_send(struct smb2_request *req)
 
 	if (req->session) {
 		session = req->session->smbXcli;
+	}
+
+	if (req->tree) {
+		tcon = req->tree->smbXcli;
 	}
 
 	if (transport->compound.related) {
@@ -181,8 +187,7 @@ void smb2_transport_send(struct smb2_request *req)
 					 additional_flags,
 					 clear_flags,
 					 timeout_msec,
-					 pid,
-					 tid,
+					 tcon,
 					 session,
 					 body.data, body.length,
 					 dyn.data, dyn.length);
@@ -229,6 +234,7 @@ void smb2_transport_send(struct smb2_request *req)
 	status = smb2cli_req_compound_submit(reqs, num_reqs);
 
 	TALLOC_FREE(transport->compound.reqs);
+	transport->compound.related = false;
 
 	if (!NT_STATUS_IS_OK(status)) {
 		req->status = status;
@@ -310,7 +316,6 @@ static void smb2_transport_break_handler(struct tevent_req *subreq)
 		tevent_req_callback_data(subreq,
 		struct smb2_transport);
 	NTSTATUS status;
-	uint8_t *hdr;
 	uint8_t *body;
 	uint16_t len = 0;
 	bool lease;
@@ -337,8 +342,7 @@ static void smb2_transport_break_handler(struct tevent_req *subreq)
 				    0, /* additional_flags */
 				    0, /*clear_flags */
 				    0, /* timeout_msec */
-				    0, /* pid */
-				    0, /* tid */
+				    NULL, /* tcon */
 				    NULL, /* session */
 				    NULL, /* body */
 				    0, /* body_fixed */
@@ -352,7 +356,6 @@ static void smb2_transport_break_handler(struct tevent_req *subreq)
 		transport->break_subreq = subreq;
 	}
 
-	hdr = recv_iov[0].iov_base;
 	body = recv_iov[1].iov_base;
 
 	len = recv_iov[1].iov_len;

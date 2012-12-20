@@ -313,15 +313,13 @@ static NTSTATUS sam_query_user(struct winbindd_domain *domain,
 	ZERO_STRUCT(dom_pol);
 
 	/* Paranoia check */
-	if (!sid_check_is_in_our_domain(user_sid)) {
+	if (!sid_check_is_in_our_sam(user_sid)) {
 		return NT_STATUS_NO_SUCH_USER;
 	}
 
-	if (user_info) {
-		user_info->homedir = NULL;
-		user_info->shell = NULL;
-		user_info->primary_gid = (gid_t) -1;
-	}
+	user_info->homedir = NULL;
+	user_info->shell = NULL;
+	user_info->primary_gid = (gid_t) -1;
 
 	tmp_ctx = talloc_stackframe();
 	if (tmp_ctx == NULL) {
@@ -686,7 +684,7 @@ static NTSTATUS sam_sid_to_name(struct winbindd_domain *domain,
 
 	/* Paranoia check */
 	if (!sid_check_is_in_builtin(sid) &&
-	    !sid_check_is_in_our_domain(sid) &&
+	    !sid_check_is_in_our_sam(sid) &&
 	    !sid_check_is_in_unix_users(sid) &&
 	    !sid_check_is_unix_users(sid) &&
 	    !sid_check_is_in_unix_groups(sid) &&
@@ -763,7 +761,7 @@ static NTSTATUS sam_rids_to_names(struct winbindd_domain *domain,
 
 	/* Paranoia check */
 	if (!sid_check_is_builtin(domain_sid) &&
-	    !sid_check_is_domain(domain_sid) &&
+	    !sid_check_is_our_sam(domain_sid) &&
 	    !sid_check_is_unix_users(domain_sid) &&
 	    !sid_check_is_unix_groups(domain_sid) &&
 	    !sid_check_is_in_wellknown_domain(domain_sid)) {

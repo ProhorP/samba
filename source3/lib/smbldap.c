@@ -26,6 +26,7 @@
 #include "smbldap.h"
 #include "../libcli/security/security.h"
 #include <tevent.h>
+#include "lib/param/loadparm.h"
 
 /* Try not to hit the up or down server forever */
 
@@ -246,7 +247,7 @@
 	return 0;
 }
 
- void talloc_autofree_ldapmsg(TALLOC_CTX *mem_ctx, LDAPMessage *result)
+ void smbldap_talloc_autofree_ldapmsg(TALLOC_CTX *mem_ctx, LDAPMessage *result)
 {
 	LDAPMessage **handle;
 
@@ -266,7 +267,7 @@
 	return 0;
 }
 
- void talloc_autofree_ldapmod(TALLOC_CTX *mem_ctx, LDAPMod **mod)
+ void smbldap_talloc_autofree_ldapmod(TALLOC_CTX *mem_ctx, LDAPMod **mod)
 {
 	LDAPMod ***handle;
 
@@ -411,12 +412,6 @@ static void smbldap_make_mod_internal(LDAP *ldap_struct, LDAPMessage *existing,
 	bool existed;
 	DATA_BLOB oldblob = data_blob_null;
 
-	if (attribute == NULL) {
-		/* This can actually happen for ldapsam_compat where we for
-		 * example don't have a password history */
-		return;
-	}
-
 	if (existing != NULL) {
 		if (op & LDAP_MOD_BVALUES) {
 			existed = smbldap_talloc_single_blob(talloc_tos(), ldap_struct, existing, attribute, &oldblob);
@@ -559,7 +554,7 @@ static void smbldap_store_state(LDAP *ld, struct smbldap_state *smbldap_state)
  start TLS on an existing LDAP connection
 *******************************************************************/
 
-int smb_ldap_start_tls(LDAP *ldap_struct, int version)
+int smbldap_start_tls(LDAP *ldap_struct, int version)
 { 
 #ifdef LDAP_OPT_X_TLS
 	int rc;
@@ -730,7 +725,7 @@ static int smb_ldap_upgrade_conn(LDAP *ldap_struct, int *new_version)
  open a connection to the ldap server (just until the bind)
  ******************************************************************/
 
-int smb_ldap_setup_full_conn(LDAP **ldap_struct, const char *uri)
+int smbldap_setup_full_conn(LDAP **ldap_struct, const char *uri)
 {
 	int rc, version;
 
@@ -744,7 +739,7 @@ int smb_ldap_setup_full_conn(LDAP **ldap_struct, const char *uri)
 		return rc;
 	}
 
-	rc = smb_ldap_start_tls(*ldap_struct, version);
+	rc = smbldap_start_tls(*ldap_struct, version);
 	if (rc) {
 		return rc;
 	}
@@ -781,7 +776,7 @@ static int smbldap_open_connection (struct smbldap_state *ldap_state)
 
 	/* Start TLS if required */
 
-	rc = smb_ldap_start_tls(*ldap_struct, version);
+	rc = smbldap_start_tls(*ldap_struct, version);
 	if (rc) {
 		return rc;
 	}
@@ -875,7 +870,7 @@ static int rebindproc_connect_with_state (LDAP *ldap_struct,
 	 * our credentials. At least *try* to secure the connection - Guenther */
 
 	smb_ldap_upgrade_conn(ldap_struct, &version);
-	smb_ldap_start_tls(ldap_struct, version);
+	smbldap_start_tls(ldap_struct, version);
 
 	/** @TODO Should we be doing something to check what servers we rebind to?
 	    Could we get a referral to a machine that we don't want to give our
@@ -976,7 +971,20 @@ static int smbldap_connect_system(struct smbldap_state *ldap_state)
 #endif /*defined(LDAP_API_FEATURE_X_OPENLDAP) && (LDAP_API_VERSION > 2000)*/
 #endif
 
-	rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
+	/* When there is an alternative bind callback is set,
+	   attempt to use it to perform the bind */
+	if (ldap_state->bind_callback != NULL) {
+		/* We have to allow bind callback to be run under become_root/unbecome_root
+		   to make sure within smbd the callback has proper write access to its resources,
+		   like credential cache. This is similar to passdb case where this callback is supposed
+		   to be used. When used outside smbd, become_root()/unbecome_root() are no-op.
+		*/
+		become_root();
+		rc = ldap_state->bind_callback(ldap_struct, ldap_state, ldap_state->bind_callback_data);
+		unbecome_root();
+	} else {
+		rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
+	}
 
 	if (rc != LDAP_SUCCESS) {
 		char *ld_error = NULL;
@@ -1070,7 +1078,7 @@ static int smbldap_open(struct smbldap_state *ldap_state)
 
 
 	ldap_state->last_ping = time_mono(NULL);
-	ldap_state->pid = sys_getpid();
+	ldap_state->pid = getpid();
 
 	TALLOC_FREE(ldap_state->idle_event);
 
@@ -1157,7 +1165,7 @@ static void setup_ldap_local_alarm(struct smbldap_state *ldap_state, time_t abso
 		alarm(absolute_endtime - now);
 	}
 
-	if (ldap_state->pid != sys_getpid()) {
+	if (ldap_state->pid != getpid()) {
 		smbldap_close(ldap_state);
 	}
 }
@@ -1619,7 +1627,8 @@ int smbldap_search_suffix (struct smbldap_state *ldap_state,
 			   const char *filter, const char **search_attr,
 			   LDAPMessage ** result)
 {
-	return smbldap_search(ldap_state, lp_ldap_suffix(), LDAP_SCOPE_SUBTREE,
+	return smbldap_search(ldap_state, lp_ldap_suffix(talloc_tos()),
+			      LDAP_SCOPE_SUBTREE,
 			      filter, search_attr, 0, result);
 }
 
@@ -1667,6 +1676,8 @@ void smbldap_free_struct(struct smbldap_state **ldap_state)
 
 	SAFE_FREE((*ldap_state)->bind_dn);
 	SAFE_FREE((*ldap_state)->bind_secret);
+	(*ldap_state)->bind_callback = NULL;
+	(*ldap_state)->bind_callback_data = NULL;
 
 	TALLOC_FREE(*ldap_state);
 
@@ -1846,6 +1857,9 @@ bool smbldap_set_creds(struct smbldap_state *ldap_state, bool anon, const char *
 	/* free any previously set credential */
 
 	SAFE_FREE(ldap_state->bind_dn);
+	ldap_state->bind_callback = NULL;
+	ldap_state->bind_callback_data = NULL;
+
 	if (ldap_state->bind_secret) {
 		/* make sure secrets are zeroed out of memory */
 		memset(ldap_state->bind_secret, '\0', strlen(ldap_state->bind_secret));

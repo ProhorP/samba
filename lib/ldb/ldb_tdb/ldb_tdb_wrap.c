@@ -24,32 +24,6 @@
 #include "ldb_tdb.h"
 #include "dlinklist.h"
 
-/* FIXME: TDB2 does this internally, so no need to wrap multiple opens! */
-#if BUILD_TDB2
-static void ltdb_log_fn(struct tdb_context *tdb,
-			enum tdb_log_level level,
-			enum TDB_ERROR ecode,
-			const char *message,
-			struct ldb_context *ldb)
-{
-	enum ldb_debug_level ldb_level;
-	const char *name = tdb_name(tdb);
-
-	switch (level) {
-	case TDB_LOG_WARNING:
-		ldb_level = LDB_DEBUG_WARNING;
-	case TDB_LOG_USE_ERROR:
-	case TDB_LOG_ERROR:
-		ldb_level = LDB_DEBUG_FATAL;
-		break;
-	default:
-		ldb_level = LDB_DEBUG_FATAL;
-	}
-
-	ldb_debug(ldb, ldb_level, "ltdb: tdb(%s): %s: %s", name,
-		  tdb_errorstr(ecode), message);
-}
-#else /* !TDB2 */
 static void ltdb_log_fn(struct tdb_context *tdb, enum tdb_debug_level level, const char *fmt, ...) PRINTF_ATTRIBUTE(3, 4);
 static void ltdb_log_fn(struct tdb_context *tdb, enum tdb_debug_level level, const char *fmt, ...)
 {
@@ -86,7 +60,6 @@ static void ltdb_log_fn(struct tdb_context *tdb, enum tdb_debug_level level, con
 	ldb_debug(ldb, ldb_level, "ltdb: tdb(%s): %s", name, message);
 	talloc_free(message);
 }
-#endif
 
 /*
   the purpose of this code is to work around the braindead posix locking
@@ -126,6 +99,7 @@ struct tdb_context *ltdb_wrap_open(TALLOC_CTX *mem_ctx,
 				   struct ldb_context *ldb)
 {
 	struct ltdb_wrap *w;
+	struct tdb_logging_context lctx;
 	struct stat st;
 
 	if (stat(path, &st) == 0) {
@@ -144,7 +118,10 @@ struct tdb_context *ltdb_wrap_open(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	w->tdb = tdb_open_compat(path, hash_size, tdb_flags, open_flags, mode, ltdb_log_fn, ldb);
+	lctx.log_fn = ltdb_log_fn;
+	lctx.log_private = ldb;
+	w->tdb = tdb_open_ex(path, hash_size, tdb_flags, open_flags, mode,
+			     &lctx, NULL);
 	if (w->tdb == NULL) {
 		talloc_free(w);
 		return NULL;

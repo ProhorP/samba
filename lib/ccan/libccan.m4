@@ -21,14 +21,18 @@ AC_SUBST(CCAN_CFLAGS)
 # All the configuration checks.  Regrettably, the __attribute__ checks will
 # give false positives on old GCCs, since they just cause warnings.  But that's
 # fairly harmless.
+AC_CHECK_HEADERS(err.h)
+
+AC_CHECK_HEADERS(byteswap.h)
+
 AC_CACHE_CHECK([whether we can compile with __attribute__((cold))],
 	       samba_cv_attribute_cold,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((cold))
 				cleanup(void) { }
-			],
+			])],
 			samba_cv_attribute_cold=yes)
 		])
 
@@ -40,11 +44,11 @@ fi
 AC_CACHE_CHECK([whether we can compile with __attribute__((const))],
 	       samba_cv_attribute_const,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((const))
 				cleanup(void) { }
-			],
+			])],
 			samba_cv_attribute_const=yes)
 		])
 
@@ -56,11 +60,11 @@ fi
 AC_CACHE_CHECK([whether we can compile with __attribute__((noreturn))],
 	       samba_cv_attribute_noreturn,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((noreturn))
 				cleanup(void) { exit(1); }
-			],
+			])],
 			samba_cv_attribute_noreturn=yes)
 		])
 
@@ -72,11 +76,11 @@ fi
 AC_CACHE_CHECK([whether we can compile with __attribute__((printf))],
 	       samba_cv_attribute_printf,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((format(__printf__, 1, 2)))
 				cleanup(const char *fmt, ...) { }
-			],
+			])],
 			samba_cv_attribute_printf=yes)
 		])
 
@@ -88,11 +92,11 @@ fi
 AC_CACHE_CHECK([whether we can compile with __attribute__((unused))],
 	       samba_cv_attribute_unused,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((unused))
 				cleanup(void) { }
-			],
+			])],
 			samba_cv_attribute_unused=yes)
 		])
 
@@ -104,11 +108,11 @@ fi
 AC_CACHE_CHECK([whether we can compile with __attribute__((used))],
 	       samba_cv_attribute_used,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[
 				static void __attribute__((used))
 				cleanup(void) { }
-			],
+			])],
 			samba_cv_attribute_used=yes)
 		])
 
@@ -135,10 +139,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clz],
 	       samba_cv_builtin_clz,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_clz(1) == (sizeof(int)*8 - 1) ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_clz=yes)
 		])
 
@@ -150,10 +154,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clzl],
 	       samba_cv_builtin_clzl,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_clzl(1) == (sizeof(int)*8 - 1) ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_clzl=yes)
 		])
 
@@ -164,10 +168,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_clzll],
 	       samba_cv_builtin_clzll,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_clzll(1) == (sizeof(int)*8 - 1) ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_clzll=yes)
 		])
 
@@ -179,10 +183,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_constant_p],
 	       samba_cv_builtin_constant_p,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_constant_p(1) ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_constant_p=yes)
 		])
 
@@ -194,10 +198,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_expect],
 	       samba_cv_builtin_expect,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_expect(main != 0, 1) ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_expect=yes)
 		])
 
@@ -209,10 +213,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_popcountl],
 	       samba_cv_builtin_popcountl,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_popcountl(255L) == 8 ? 0 : 1;
-			}],
+			}])],
 			samba_cv_builtin_popcountl=yes)
 		])
 
@@ -224,10 +228,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_types_compatible_p],
 	       samba_cv_builtin_types_compatible_p,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_types_compatible_p(char *, int) ? 1 : 0;
-			}],
+			}])],
 			samba_cv_builtin_types_compatible_p=yes)
 		])
 
@@ -239,10 +243,10 @@ fi
 AC_CACHE_CHECK([whether we have __builtin_choose_expr],
 	       samba_cv_builtin_choose_expr,
 	       [
-	         AC_LINK_IFELSE(
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				return __builtin_choose_expr(1, 0, "garbage");
-			}],
+			}])],
 			samba_cv_builtin_choose_expr=yes)
 		])
 
@@ -255,11 +259,11 @@ fi
 AC_CACHE_CHECK([whether we have compound literals],
 	       samba_cv_compound_literals,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				int *foo = (int@<:@@:>@) { 1, 2, 3, 4 };
 				return foo@<:@0@:>@ == 1 ? 0 : 1;
-			}],
+			}])],
 			samba_cv_compound_literals=yes)
 		])
 
@@ -268,19 +272,32 @@ if test x"$samba_cv_compound_literals" = xyes ; then
 	     [whether we have compound literals])
 fi
 
-AC_CACHE_CHECK([whether we have __builtin_have_isblank],
-	       samba_cv_builtin_have_isblank,
+AC_CACHE_CHECK([whether we have flexible array members],
+	       samba_cv_have_flex_arr_member,
 	       [
-	         AC_LINK_IFELSE(
-			[#include <ctype.h>
-			 int main(void) { return isblank(' ') ? 0 : 1; }
-			],
-			samba_cv_builtin_have_isblank=yes)
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
+			[struct foo { unsigned int x; int arr@<:@@:>@; }; ])],
+			samba_cv_have_flex_arr_member=yes)
 		])
 
-if test x"$samba_cv_builtin_have_isblank" = xyes ; then
-   AC_DEFINE(HAVE_BUILTIN_HAVE_ISBLANK, 1,
-	     [whether we have __builtin_have_isblank])
+if test x"$samba_cv_have_flex_arr_member" = xyes ; then
+   AC_DEFINE(HAVE_FLEXIBLE_ARRAY_MEMBER, 1,
+	     [whether we have flexible array member support])
+fi
+
+AC_CACHE_CHECK([whether we have isblank],
+	       samba_cv_have_isblank,
+	       [
+	         AC_LINK_IFELSE([AC_LANG_SOURCE(
+			[#include <ctype.h>
+			 int main(void) { return isblank(' ') ? 0 : 1; }
+			])],
+			samba_cv_have_isblank=yes)
+		])
+
+if test x"$samba_cv_have_isblank" = xyes ; then
+   AC_DEFINE(HAVE_ISBLANK, 1,
+	     [whether we have isblank])
 fi
 
 # FIXME: We could use endian.h or sys/endian.h here, and __BYTE_ORDER for
@@ -301,13 +318,13 @@ fi
 AC_CACHE_CHECK([whether we have __typeof__],
 	       samba_cv_typeof,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[int main(void) {
 				int x = 1;
 				__typeof__(x) i;
 				i = x;
 				return i == x ? 0 : 1;
-			}],
+			}])],
 			samba_cv_typeof=yes)
 		])
 
@@ -319,9 +336,9 @@ fi
 AC_CACHE_CHECK([whether we have __attribute__((warn_unused_result))],
 	       samba_cv_warn_unused_result,
 	       [
-	         AC_COMPILE_IFELSE(
+	         AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 			[int __attribute__((warn_unused_result)) func(int x)
-			    { return x; }],
+			    { return x; }])],
 			samba_cv_warn_unused_result=yes)
 		])
 
@@ -329,3 +346,4 @@ if test x"$samba_cv_warn_unused_result" = xyes ; then
    AC_DEFINE(HAVE_WARN_UNUSED_RESULT, 1,
 	     [whether we have __attribute__((warn_unused_result))])
 fi
+AC_HAVE_DECL(bswap_64, [#include <byteswap.h>])

@@ -287,7 +287,7 @@ static NTSTATUS lookup_lsa_sids(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		DEBUG(5, ("init_lsa_sids: looking up name %s\n", full_name));
+		DEBUG(5, ("lookup_lsa_sids: looking up name %s\n", full_name));
 
 		if (!lookup_name(mem_ctx, full_name, flags, &domain, NULL,
 				 &sid, &type)) {
@@ -300,12 +300,12 @@ static NTSTATUS lookup_lsa_sids(TALLOC_CTX *mem_ctx,
 		case SID_NAME_DOMAIN:
 		case SID_NAME_ALIAS:
 		case SID_NAME_WKN_GRP:
-			DEBUG(5, ("init_lsa_sids: %s found\n", full_name));
+			DEBUG(5, ("lookup_lsa_sids: %s found\n", full_name));
 			/* Leave these unchanged */
 			break;
 		default:
 			/* Don't hand out anything but the list above */
-			DEBUG(5, ("init_lsa_sids: %s not found\n", full_name));
+			DEBUG(5, ("lookup_lsa_sids: %s not found\n", full_name));
 			type = SID_NAME_UNKNOWN;
 			break;
 		}
@@ -436,6 +436,11 @@ NTSTATUS _lsa_OpenPolicy2(struct pipes_struct *p,
 	uint32 acc_granted;
 	NTSTATUS status;
 
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	/* Work out max allowed. */
 	map_max_allowed_access(p->session_info->security_token,
 			       p->session_info->unix_token,
@@ -480,6 +485,8 @@ NTSTATUS _lsa_OpenPolicy(struct pipes_struct *p,
 			 struct lsa_OpenPolicy *r)
 {
 	struct lsa_OpenPolicy2 o;
+
+	/* _lsa_OpenPolicy2 will check if this is a NCACN_NP connection */
 
 	o.in.system_name	= NULL; /* should be ignored */
 	o.in.attr		= r->in.attr;
@@ -820,7 +827,7 @@ NTSTATUS _lsa_QueryInfoPolicy2(struct pipes_struct *p,
 	struct lsa_QueryInfoPolicy r;
 
 	if ((pdb_capabilities() & PDB_CAP_ADS) == 0) {
-		p->rng_fault_state = True;
+		p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 		return NT_STATUS_NOT_IMPLEMENTED;
 	}
 
@@ -957,6 +964,11 @@ NTSTATUS _lsa_LookupSids(struct pipes_struct *p,
 	struct lsa_TranslatedName2 *names = NULL;
 	int i;
 
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	if ((r->in.level < 1) || (r->in.level > 6)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
@@ -1022,12 +1034,8 @@ NTSTATUS _lsa_LookupSids(struct pipes_struct *p,
 	return status;
 }
 
-/***************************************************************************
- _lsa_LookupSids2
- ***************************************************************************/
-
-NTSTATUS _lsa_LookupSids2(struct pipes_struct *p,
-			  struct lsa_LookupSids2 *r)
+static NTSTATUS _lsa_LookupSids_common(struct pipes_struct *p,
+				struct lsa_LookupSids2 *r)
 {
 	NTSTATUS status;
 	struct lsa_info *handle;
@@ -1089,6 +1097,21 @@ NTSTATUS _lsa_LookupSids2(struct pipes_struct *p,
 }
 
 /***************************************************************************
+ _lsa_LookupSids2
+ ***************************************************************************/
+
+NTSTATUS _lsa_LookupSids2(struct pipes_struct *p,
+			  struct lsa_LookupSids2 *r)
+{
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	return _lsa_LookupSids_common(p, r);
+}
+
+/***************************************************************************
  _lsa_LookupSids3
  ***************************************************************************/
 
@@ -1097,11 +1120,19 @@ NTSTATUS _lsa_LookupSids3(struct pipes_struct *p,
 {
 	struct lsa_LookupSids2 q;
 
+	if (p->transport != NCACN_IP_TCP) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	/* No policy handle on this call. Restrict to crypto connections. */
-	if (p->auth.auth_type != DCERPC_AUTH_TYPE_SCHANNEL) {
-		DEBUG(0,("_lsa_LookupSids3: client %s not using schannel for netlogon\n",
-			get_remote_machine_name() ));
-		return NT_STATUS_INVALID_PARAMETER;
+	if (p->auth.auth_type != DCERPC_AUTH_TYPE_SCHANNEL ||
+	    p->auth.auth_level < DCERPC_AUTH_LEVEL_INTEGRITY) {
+		DEBUG(1, ("_lsa_LookupSids3: The client %s is not using "
+			  "a secure connection over netlogon\n",
+			  get_remote_machine_name() ));
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	q.in.handle		= NULL;
@@ -1116,7 +1147,7 @@ NTSTATUS _lsa_LookupSids3(struct pipes_struct *p,
 	q.out.names		= r->out.names;
 	q.out.count		= r->out.count;
 
-	return _lsa_LookupSids2(p, &q);
+	return _lsa_LookupSids_common(p, &q);
 }
 
 /***************************************************************************
@@ -1163,6 +1194,11 @@ NTSTATUS _lsa_LookupNames(struct pipes_struct *p,
 	struct lsa_TranslatedSid *rids = NULL;
 	uint32 mapped_count = 0;
 	int flags = 0;
+
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
 
 	if (num_entries >  MAX_LOOKUP_SIDS) {
 		num_entries = MAX_LOOKUP_SIDS;
@@ -1239,6 +1275,11 @@ NTSTATUS _lsa_LookupNames2(struct pipes_struct *p,
 	struct lsa_TransSidArray *sid_array = NULL;
 	uint32_t i;
 
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	sid_array = talloc_zero(p->mem_ctx, struct lsa_TransSidArray);
 	if (!sid_array) {
 		return NT_STATUS_NO_MEMORY;
@@ -1278,12 +1319,8 @@ NTSTATUS _lsa_LookupNames2(struct pipes_struct *p,
 	return status;
 }
 
-/***************************************************************************
- _lsa_LookupNames3
- ***************************************************************************/
-
-NTSTATUS _lsa_LookupNames3(struct pipes_struct *p,
-			   struct lsa_LookupNames3 *r)
+static NTSTATUS _lsa_LookupNames_common(struct pipes_struct *p,
+					struct lsa_LookupNames3 *r)
 {
 	NTSTATUS status;
 	struct lsa_info *handle;
@@ -1309,10 +1346,7 @@ NTSTATUS _lsa_LookupNames3(struct pipes_struct *p,
 		DEBUG(5,("_lsa_LookupNames3: truncating name lookup list to %d\n", num_entries));
 	}
 
-	/* Probably the lookup_level is some sort of bitmask. */
-	if (r->in.level == 1) {
-		flags = LOOKUP_NAME_ALL;
-	}
+	flags = lsa_lookup_level_to_flags(r->in.level);
 
 	domains = talloc_zero(p->mem_ctx, struct lsa_RefDomainList);
 	if (!domains) {
@@ -1372,6 +1406,21 @@ done:
 }
 
 /***************************************************************************
+ _lsa_LookupNames3
+ ***************************************************************************/
+
+NTSTATUS _lsa_LookupNames3(struct pipes_struct *p,
+			   struct lsa_LookupNames3 *r)
+{
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
+	return _lsa_LookupNames_common(p, r);
+}
+
+/***************************************************************************
  _lsa_LookupNames4
  ***************************************************************************/
 
@@ -1380,11 +1429,19 @@ NTSTATUS _lsa_LookupNames4(struct pipes_struct *p,
 {
 	struct lsa_LookupNames3 q;
 
+	if (p->transport != NCACN_IP_TCP) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	/* No policy handle on this call. Restrict to crypto connections. */
-	if (p->auth.auth_type != DCERPC_AUTH_TYPE_SCHANNEL) {
-		DEBUG(0,("_lsa_lookup_names4: client %s not using schannel for netlogon\n",
-			get_remote_machine_name() ));
-		return NT_STATUS_INVALID_PARAMETER;
+	if (p->auth.auth_type != DCERPC_AUTH_TYPE_SCHANNEL ||
+	    p->auth.auth_level < DCERPC_AUTH_LEVEL_INTEGRITY) {
+		DEBUG(1, ("_lsa_LookupNames4: The client %s is not using "
+			  "a secure connection over netlogon\n",
+			  get_remote_machine_name()));
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	q.in.handle		= NULL;
@@ -1400,7 +1457,7 @@ NTSTATUS _lsa_LookupNames4(struct pipes_struct *p,
 	q.out.sids		= r->out.sids;
 	q.out.count		= r->out.count;
 
-	return _lsa_LookupNames3(p, &q);
+	return _lsa_LookupNames_common(p, &q);
 }
 
 /***************************************************************************
@@ -1409,6 +1466,11 @@ NTSTATUS _lsa_LookupNames4(struct pipes_struct *p,
 
 NTSTATUS _lsa_Close(struct pipes_struct *p, struct lsa_Close *r)
 {
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	if (!find_policy_by_hnd(p, r->in.handle, NULL)) {
 		return NT_STATUS_INVALID_HANDLE;
 	}
@@ -1660,6 +1722,46 @@ NTSTATUS _lsa_OpenTrustedDomainByName(struct pipes_struct *p,
 					   r->out.trustdom_handle);
 }
 
+static NTSTATUS get_trustdom_auth_blob(struct pipes_struct *p,
+				       TALLOC_CTX *mem_ctx, DATA_BLOB *auth_blob,
+				       struct trustDomainPasswords *auth_struct)
+{
+	enum ndr_err_code ndr_err;
+	DATA_BLOB lsession_key;
+	NTSTATUS status;
+
+	status = session_extract_session_key(p->session_info, &lsession_key, KEY_USE_16BYTES);
+	if (!NT_STATUS_IS_OK(status)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	arcfour_crypt_blob(auth_blob->data, auth_blob->length, &lsession_key);
+	ndr_err = ndr_pull_struct_blob(auth_blob, mem_ctx,
+				       auth_struct,
+				       (ndr_pull_flags_fn_t)ndr_pull_trustDomainPasswords);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	return NT_STATUS_OK;
+}
+
+static NTSTATUS get_trustauth_inout_blob(TALLOC_CTX *mem_ctx,
+					 struct trustAuthInOutBlob *iopw,
+					 DATA_BLOB *trustauth_blob)
+{
+	enum ndr_err_code ndr_err;
+
+	ndr_err = ndr_push_struct_blob(trustauth_blob, mem_ctx,
+				       iopw,
+				       (ndr_push_flags_fn_t)ndr_push_trustAuthInOutBlob);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	return NT_STATUS_OK;
+}
+
 /***************************************************************************
  _lsa_CreateTrustedDomainEx2
  ***************************************************************************/
@@ -1674,7 +1776,6 @@ NTSTATUS _lsa_CreateTrustedDomainEx2(struct pipes_struct *p,
 	size_t sd_size;
 	struct pdb_trusted_domain td;
 	struct trustDomainPasswords auth_struct;
-	enum ndr_err_code ndr_err;
 	DATA_BLOB auth_blob;
 
 	if (!IS_DC) {
@@ -1738,27 +1839,18 @@ NTSTATUS _lsa_CreateTrustedDomainEx2(struct pipes_struct *p,
 		auth_blob.length = r->in.auth_info_internal->auth_blob.size;
 		auth_blob.data = r->in.auth_info_internal->auth_blob.data;
 
-		arcfour_crypt_blob(auth_blob.data, auth_blob.length,
-				   &p->session_info->session_key);
-
-		ndr_err = ndr_pull_struct_blob(&auth_blob, p->mem_ctx,
-					       &auth_struct,
-					       (ndr_pull_flags_fn_t) ndr_pull_trustDomainPasswords);
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		status = get_trustdom_auth_blob(p, p->mem_ctx, &auth_blob, &auth_struct);
+		if (!NT_STATUS_IS_OK(status)) {
 			return NT_STATUS_UNSUCCESSFUL;
 		}
 
-		ndr_err = ndr_push_struct_blob(&td.trust_auth_incoming, p->mem_ctx,
-					       &auth_struct.incoming,
-					       (ndr_push_flags_fn_t) ndr_push_trustAuthInOutBlob);
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		status = get_trustauth_inout_blob(p->mem_ctx, &auth_struct.incoming, &td.trust_auth_incoming);
+		if (!NT_STATUS_IS_OK(status)) {
 			return NT_STATUS_UNSUCCESSFUL;
 		}
 
-		ndr_err = ndr_push_struct_blob(&td.trust_auth_outgoing, p->mem_ctx,
-					       &auth_struct.outgoing,
-					       (ndr_push_flags_fn_t) ndr_push_trustAuthInOutBlob);
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		status = get_trustauth_inout_blob(p->mem_ctx, &auth_struct.outgoing, &td.trust_auth_outgoing);
+		if (!NT_STATUS_IS_OK(status)) {
 			return NT_STATUS_UNSUCCESSFUL;
 		}
 	} else {
@@ -2244,6 +2336,7 @@ NTSTATUS _lsa_SetSecret(struct pipes_struct *p,
 	DATA_BLOB cleartext_blob_old = data_blob_null;
 	DATA_BLOB *cleartext_blob_new_p = NULL;
 	DATA_BLOB *cleartext_blob_old_p = NULL;
+	DATA_BLOB session_key;
 
 	if (!find_policy_by_hnd(p, r->in.sec_handle, (void **)(void *)&info)) {
 		return NT_STATUS_INVALID_HANDLE;
@@ -2257,12 +2350,17 @@ NTSTATUS _lsa_SetSecret(struct pipes_struct *p,
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
+	status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+	if(!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
 	if (r->in.new_val) {
 		blob_new = data_blob_const(r->in.new_val->data,
 					   r->in.new_val->length);
 
 		status = sess_decrypt_blob(p->mem_ctx, &blob_new,
-					   &p->session_info->session_key,
+					   &session_key,
 					   &cleartext_blob_new);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
@@ -2276,7 +2374,7 @@ NTSTATUS _lsa_SetSecret(struct pipes_struct *p,
 					   r->in.old_val->length);
 
 		status = sess_decrypt_blob(p->mem_ctx, &blob_old,
-					   &p->session_info->session_key,
+					   &session_key,
 					   &cleartext_blob_old);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
@@ -2310,6 +2408,7 @@ NTSTATUS _lsa_QuerySecret(struct pipes_struct *p,
 	struct lsa_info *info = NULL;
 	DATA_BLOB blob_new, blob_old;
 	DATA_BLOB blob_new_crypt, blob_old_crypt;
+	DATA_BLOB session_key;
 	NTTIME nttime_new, nttime_old;
 	NTSTATUS status;
 
@@ -2333,6 +2432,11 @@ NTSTATUS _lsa_QuerySecret(struct pipes_struct *p,
 		return status;
 	}
 
+	status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+	if(!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
 	if (r->in.new_val) {
 		if (blob_new.length) {
 			if (!r->out.new_val->buf) {
@@ -2343,7 +2447,7 @@ NTSTATUS _lsa_QuerySecret(struct pipes_struct *p,
 			}
 
 			blob_new_crypt = sess_encrypt_blob(p->mem_ctx, &blob_new,
-							   &p->session_info->session_key);
+							   &session_key);
 			if (!blob_new_crypt.length) {
 				return NT_STATUS_NO_MEMORY;
 			}
@@ -2364,7 +2468,7 @@ NTSTATUS _lsa_QuerySecret(struct pipes_struct *p,
 			}
 
 			blob_old_crypt = sess_encrypt_blob(p->mem_ctx, &blob_old,
-							   &p->session_info->session_key);
+							   &session_key);
 			if (!blob_old_crypt.length) {
 				return NT_STATUS_NO_MEMORY;
 			}
@@ -2627,6 +2731,11 @@ NTSTATUS _lsa_GetUserName(struct pipes_struct *p,
 	struct lsa_String *account_name = NULL;
 	struct lsa_String *authority_name = NULL;
 
+	if (p->transport != NCACN_NP && p->transport != NCALRPC) {
+		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
+		return NT_STATUS_ACCESS_DENIED;
+	}
+
 	if (r->in.account_name &&
 	   *r->in.account_name) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -2686,6 +2795,10 @@ NTSTATUS _lsa_CreateAccount(struct pipes_struct *p,
 	uint32_t acc_granted;
 	struct security_descriptor *psd;
 	size_t sd_size;
+	uint32_t owner_access = (LSA_ACCOUNT_ALL_ACCESS &
+			~(LSA_ACCOUNT_ADJUST_PRIVILEGES|
+			LSA_ACCOUNT_ADJUST_SYSTEM_ACCESS|
+			SEC_STD_DELETE));
 
 	/* find the connection policy handle. */
 	if (!find_policy_by_hnd(p, r->in.handle, (void **)(void *)&handle))
@@ -2711,7 +2824,7 @@ NTSTATUS _lsa_CreateAccount(struct pipes_struct *p,
 
 	status = make_lsa_object_sd(p->mem_ctx, &psd, &sd_size,
 				    &lsa_account_mapping,
-				    r->in.sid, LSA_POLICY_ALL_ACCESS);
+				    r->in.sid, owner_access);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -2752,6 +2865,10 @@ NTSTATUS _lsa_OpenAccount(struct pipes_struct *p,
 	size_t sd_size;
 	uint32_t des_access = r->in.access_mask;
 	uint32_t acc_granted;
+	uint32_t owner_access = (LSA_ACCOUNT_ALL_ACCESS &
+			~(LSA_ACCOUNT_ADJUST_PRIVILEGES|
+			LSA_ACCOUNT_ADJUST_SYSTEM_ACCESS|
+			SEC_STD_DELETE));
 	NTSTATUS status;
 
 	/* find the connection policy handle. */
@@ -2776,7 +2893,7 @@ NTSTATUS _lsa_OpenAccount(struct pipes_struct *p,
 	/* get the generic lsa account SD until we store it */
 	status = make_lsa_object_sd(p->mem_ctx, &psd, &sd_size,
 				&lsa_account_mapping,
-				r->in.sid, LSA_ACCOUNT_ALL_ACCESS);
+				r->in.sid, owner_access);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -3135,7 +3252,7 @@ NTSTATUS _lsa_AddAccountRights(struct pipes_struct *p,
         /* get the generic lsa account SD for this SID until we store it */
         status = make_lsa_object_sd(p->mem_ctx, &psd, &sd_size,
                                 &lsa_account_mapping,
-                                r->in.sid, LSA_ACCOUNT_ALL_ACCESS);
+				NULL, 0);
         if (!NT_STATUS_IS_OK(status)) {
                 return status;
         }
@@ -3206,7 +3323,7 @@ NTSTATUS _lsa_RemoveAccountRights(struct pipes_struct *p,
         /* get the generic lsa account SD for this SID until we store it */
         status = make_lsa_object_sd(p->mem_ctx, &psd, &sd_size,
                                 &lsa_account_mapping,
-                                r->in.sid, LSA_ACCOUNT_ALL_ACCESS);
+				NULL, 0);
         if (!NT_STATUS_IS_OK(status)) {
                 return status;
         }
@@ -3468,40 +3585,6 @@ static NTSTATUS info_ex_2_pdb_trusted_domain(
 	return NT_STATUS_OK;
 }
 
-static NTSTATUS get_trustdom_auth_blob(struct pipes_struct *p,
-				       TALLOC_CTX *mem_ctx, DATA_BLOB *auth_blob,
-				       struct trustDomainPasswords *auth_struct)
-{
-	enum ndr_err_code ndr_err;
-
-	arcfour_crypt_blob(auth_blob->data, auth_blob->length,
-			   &p->session_info->session_key);
-	ndr_err = ndr_pull_struct_blob(auth_blob, mem_ctx,
-				       auth_struct,
-				       (ndr_pull_flags_fn_t)ndr_pull_trustDomainPasswords);
-	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-
-	return NT_STATUS_OK;
-}
-
-static NTSTATUS get_trustauth_inout_blob(TALLOC_CTX *mem_ctx,
-					 struct trustAuthInOutBlob *iopw,
-					 DATA_BLOB *trustauth_blob)
-{
-	enum ndr_err_code ndr_err;
-
-	ndr_err = ndr_push_struct_blob(trustauth_blob, mem_ctx,
-				       iopw,
-				       (ndr_push_flags_fn_t)ndr_push_trustAuthInOutBlob);
-	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-
-	return NT_STATUS_OK;
-}
-
 static NTSTATUS setInfoTrustedDomain_base(struct pipes_struct *p,
 					  TALLOC_CTX *mem_ctx,
 					  struct lsa_info *policy,
@@ -3754,61 +3837,61 @@ NTSTATUS _lsa_SetInformationTrustedDomain(struct pipes_struct *p,
 
 NTSTATUS _lsa_SetSecObj(struct pipes_struct *p, struct lsa_SetSecObj *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_ChangePassword(struct pipes_struct *p,
 			     struct lsa_ChangePassword *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_SetInfoPolicy(struct pipes_struct *p, struct lsa_SetInfoPolicy *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_ClearAuditLog(struct pipes_struct *p, struct lsa_ClearAuditLog *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_GetQuotasForAccount(struct pipes_struct *p,
 				  struct lsa_GetQuotasForAccount *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_SetQuotasForAccount(struct pipes_struct *p,
 				  struct lsa_SetQuotasForAccount *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_StorePrivateData(struct pipes_struct *p,
 			       struct lsa_StorePrivateData *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_RetrievePrivateData(struct pipes_struct *p,
 				  struct lsa_RetrievePrivateData *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_SetInfoPolicy2(struct pipes_struct *p,
 			     struct lsa_SetInfoPolicy2 *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -3827,7 +3910,7 @@ NTSTATUS _lsa_EnumTrustedDomainsEx(struct pipes_struct *p,
 	 * _lsa_EnumTrustedDomains() afterwards - gd */
 
 	if (!(pdb_capabilities() & PDB_CAP_TRUSTED_DOMAINS_EX)) {
-		p->rng_fault_state = True;
+		p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 		return NT_STATUS_NOT_IMPLEMENTED;
 	}
 
@@ -3857,9 +3940,14 @@ NTSTATUS _lsa_EnumTrustedDomainsEx(struct pipes_struct *p,
 	}
 
 	for (i=0; i<count; i++) {
+		init_lsa_StringLarge(&entries[i].domain_name,
+				     domains[i]->domain_name);
 		init_lsa_StringLarge(&entries[i].netbios_name,
 				     domains[i]->netbios_name);
 		entries[i].sid = &domains[i]->security_identifier;
+		entries[i].trust_direction = domains[i]->trust_direction;
+		entries[i].trust_type = domains[i]->trust_type;
+		entries[i].trust_attributes = domains[i]->trust_attributes;
 	}
 
 	if (*r->in.resume_handle >= count) {
@@ -3896,107 +3984,107 @@ NTSTATUS _lsa_EnumTrustedDomainsEx(struct pipes_struct *p,
 NTSTATUS _lsa_QueryDomainInformationPolicy(struct pipes_struct *p,
 					   struct lsa_QueryDomainInformationPolicy *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_SetDomainInformationPolicy(struct pipes_struct *p,
 					 struct lsa_SetDomainInformationPolicy *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_TestCall(struct pipes_struct *p, struct lsa_TestCall *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRWRITE(struct pipes_struct *p, struct lsa_CREDRWRITE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRREAD(struct pipes_struct *p, struct lsa_CREDRREAD *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRENUMERATE(struct pipes_struct *p, struct lsa_CREDRENUMERATE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRWRITEDOMAINCREDENTIALS(struct pipes_struct *p,
 					  struct lsa_CREDRWRITEDOMAINCREDENTIALS *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRREADDOMAINCREDENTIALS(struct pipes_struct *p,
 					 struct lsa_CREDRREADDOMAINCREDENTIALS *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRDELETE(struct pipes_struct *p, struct lsa_CREDRDELETE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRGETTARGETINFO(struct pipes_struct *p,
 				 struct lsa_CREDRGETTARGETINFO *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRPROFILELOADED(struct pipes_struct *p,
 				 struct lsa_CREDRPROFILELOADED *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_CREDRGETSESSIONTYPES(struct pipes_struct *p,
 				   struct lsa_CREDRGETSESSIONTYPES *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARREGISTERAUDITEVENT(struct pipes_struct *p,
 				     struct lsa_LSARREGISTERAUDITEVENT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARGENAUDITEVENT(struct pipes_struct *p,
 				struct lsa_LSARGENAUDITEVENT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARUNREGISTERAUDITEVENT(struct pipes_struct *p,
 				       struct lsa_LSARUNREGISTERAUDITEVENT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_lsaRQueryForestTrustInformation(struct pipes_struct *p,
 					      struct lsa_lsaRQueryForestTrustInformation *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
@@ -4128,9 +4216,7 @@ static NTSTATUS check_ft_info(TALLOC_CTX *mem_ctx,
 	struct dom_sid *sid = NULL;
 	const char *tname = NULL;
 	size_t dns_len = 0;
-	size_t nb_len;
 	size_t tlen = 0;
-	NTSTATUS nt_status;
 	uint32_t new_fti_idx;
 	uint32_t i;
 	/* use always TDO type, until we understand when Xref can be used */
@@ -4165,7 +4251,6 @@ static NTSTATUS check_ft_info(TALLOC_CTX *mem_ctx,
 			dns_name = nrec->data.info.dns_name.string;
 			dns_len = nrec->data.info.dns_name.size;
 			nb_name = nrec->data.info.netbios_name.string;
-			nb_len = nrec->data.info.netbios_name.size;
 			sid = &nrec->data.info.sid;
 			break;
 		}
@@ -4235,19 +4320,19 @@ static NTSTATUS check_ft_info(TALLOC_CTX *mem_ctx,
 		}
 
 		if (tln_conflict) {
-			nt_status = add_collision(c_info, new_fti_idx,
+			(void)add_collision(c_info, new_fti_idx,
 						  collision_type,
 						  LSA_TLN_DISABLED_CONFLICT,
 						  tdo_name);
 		}
 		if (sid_conflict) {
-			nt_status = add_collision(c_info, new_fti_idx,
+			(void)add_collision(c_info, new_fti_idx,
 						  collision_type,
 						  LSA_SID_DISABLED_CONFLICT,
 						  tdo_name);
 		}
 		if (nb_conflict) {
-			nt_status = add_collision(c_info, new_fti_idx,
+			(void)add_collision(c_info, new_fti_idx,
 						  collision_type,
 						  LSA_NB_DISABLED_CONFLICT,
 						  tdo_name);
@@ -4509,34 +4594,34 @@ NTSTATUS _lsa_lsaRSetForestTrustInformation(struct pipes_struct *p,
 NTSTATUS _lsa_CREDRRENAME(struct pipes_struct *p,
 			  struct lsa_CREDRRENAME *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSAROPENPOLICYSCE(struct pipes_struct *p,
 				struct lsa_LSAROPENPOLICYSCE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARADTREGISTERSECURITYEVENTSOURCE(struct pipes_struct *p,
 						 struct lsa_LSARADTREGISTERSECURITYEVENTSOURCE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARADTUNREGISTERSECURITYEVENTSOURCE(struct pipes_struct *p,
 						   struct lsa_LSARADTUNREGISTERSECURITYEVENTSOURCE *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS _lsa_LSARADTREPORTSECURITYEVENT(struct pipes_struct *p,
 					 struct lsa_LSARADTREPORTSECURITYEVENT *r)
 {
-	p->rng_fault_state = True;
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return NT_STATUS_NOT_IMPLEMENTED;
 }

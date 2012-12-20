@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # implement samba_tool drs commands
 #
 # Copyright Andrew Tridgell 2010
@@ -82,7 +80,7 @@ def drs_parse_ntds_dn(ntds_dn):
 
 
 class cmd_drs_showrepl(Command):
-    """show replication status"""
+    """Show replication status."""
 
     synopsis = "%prog [<DC>] [options]"
 
@@ -172,10 +170,13 @@ class cmd_drs_showrepl(Command):
 
         self.message("==== KCC CONNECTION OBJECTS ====\n")
         for c in conn:
+            c_rdn, sep, c_server_dn = c['fromServer'][0].partition(',')
+            c_server_res = self.samdb.search(base=c_server_dn, scope=ldb.SCOPE_BASE, attrs=["dnsHostName"])
+            c_server_dns = c_server_res[0]["dnsHostName"][0]
             self.message("Connection --")
             self.message("\tConnection name: %s" % c['name'][0])
             self.message("\tEnabled        : %s" % attr_default(c, 'enabledConnection', 'TRUE'))
-            self.message("\tServer DNS name : %s" % server_dns)
+            self.message("\tServer DNS name : %s" % c_server_dns)
             self.message("\tServer DN name  : %s" % c['fromServer'][0])
             self.message("\t\tTransportType: RPC")
             self.message("\t\toptions: 0x%08X" % int(attr_default(c, 'options', 0)))
@@ -193,7 +194,7 @@ class cmd_drs_showrepl(Command):
 
 
 class cmd_drs_kcc(Command):
-    """trigger knowledge consistency center run"""
+    """Trigger knowledge consistency center run."""
 
     synopsis = "%prog [<DC>] [options]"
 
@@ -262,7 +263,7 @@ def drs_local_replicate(self, SOURCE_DC, NC):
 
 
 class cmd_drs_replicate(Command):
-    """replicate a naming context between two DCs"""
+    """Replicate a naming context between two DCs."""
 
     synopsis = "%prog <destinationDC> <sourceDC> <NC> [options]"
 
@@ -338,7 +339,7 @@ class cmd_drs_replicate(Command):
 
 
 class cmd_drs_bind(Command):
-    """show DRS capabilities of a server"""
+    """Show DRS capabilities of a server."""
 
     synopsis = "%prog [<DC>] [options]"
 
@@ -437,7 +438,7 @@ class cmd_drs_bind(Command):
 
 
 class cmd_drs_options(Command):
-    """query or change 'options' for NTDS Settings object of a domain controller"""
+    """Query or change 'options' for NTDS Settings object of a Domain Controller."""
 
     synopsis = "%prog [<DC>] [options]"
 
@@ -500,7 +501,7 @@ class cmd_drs_options(Command):
 
 
 class cmd_drs(SuperCommand):
-    """Directory Replication Services (DRS) management"""
+    """Directory Replication Services (DRS) management."""
 
     subcommands = {}
     subcommands["bind"] = cmd_drs_bind()

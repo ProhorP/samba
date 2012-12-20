@@ -154,11 +154,11 @@ bool strict_lock_default(files_struct *fsp, struct lock_struct *plock)
 	}
 
 	DEBUG(10,("strict_lock_default: flavour = %s brl start=%.0f "
-			"len=%.0f %s for fnum %d file %s\n",
+			"len=%.0f %s for fnum %llu file %s\n",
 			lock_flav_name(plock->lock_flav),
 			(double)plock->start, (double)plock->size,
 			ret ? "unlocked" : "locked",
-			plock->fnum, fsp_str_dbg(fsp)));
+			(unsigned long long)plock->fnum, fsp_str_dbg(fsp)));
 
 	return ret;
 }
@@ -267,10 +267,10 @@ struct byte_range_lock *do_lock(struct messaging_context *msg_ctx,
 	/* NOTE! 0 byte long ranges ARE allowed and should be stored  */
 
 	DEBUG(10,("do_lock: lock flavour %s lock type %s start=%.0f len=%.0f "
-		"blocking_lock=%s requested for fnum %d file %s\n",
+		"blocking_lock=%s requested for %s file %s\n",
 		lock_flav_name(lock_flav), lock_type_name(lock_type),
 		(double)offset, (double)count, blocking_lock ? "true" :
-		"false", fsp->fnum, fsp_str_dbg(fsp)));
+		"false", fsp_fnum_dbg(fsp), fsp_str_dbg(fsp)));
 
 	br_lck = brl_get_locks(talloc_tos(), fsp);
 	if (!br_lck) {
@@ -318,8 +318,8 @@ NTSTATUS do_unlock(struct messaging_context *msg_ctx,
 		return NT_STATUS_OK;
 	}
 
-	DEBUG(10,("do_unlock: unlock start=%.0f len=%.0f requested for fnum %d file %s\n",
-		  (double)offset, (double)count, fsp->fnum,
+	DEBUG(10,("do_unlock: unlock start=%.0f len=%.0f requested for %s file %s\n",
+		  (double)offset, (double)count, fsp_fnum_dbg(fsp),
 		  fsp_str_dbg(fsp)));
 
 	br_lck = brl_get_locks(talloc_tos(), fsp);
@@ -369,8 +369,8 @@ NTSTATUS do_lock_cancel(files_struct *fsp,
 		return NT_STATUS_DOS(ERRDOS, ERRcancelviolation);
 	}
 
-	DEBUG(10,("do_lock_cancel: cancel start=%.0f len=%.0f requested for fnum %d file %s\n",
-		  (double)offset, (double)count, fsp->fnum,
+	DEBUG(10,("do_lock_cancel: cancel start=%.0f len=%.0f requested for %s file %s\n",
+		  (double)offset, (double)count, fsp_fnum_dbg(fsp),
 		  fsp_str_dbg(fsp)));
 
 	br_lck = brl_get_locks(talloc_tos(), fsp);
@@ -482,6 +482,7 @@ bool rename_share_filename(struct messaging_context *msg_ctx,
 	int i;
 	bool strip_two_chars = false;
 	bool has_stream = smb_fname_dst->stream_name != NULL;
+	struct server_id self_pid = messaging_server_id(msg_ctx);
 
 	DEBUG(10, ("rename_share_filename: servicepath %s newname %s\n",
 		   servicepath, smb_fname_dst->base_name));
@@ -552,7 +553,11 @@ bool rename_share_filename(struct messaging_context *msg_ctx,
 		se->name_hash = new_name_hash;
 
 		/* But not to ourselves... */
-		if (procid_is_me(&se->pid)) {
+		if (serverid_equal(&se->pid, &self_pid)) {
+			continue;
+		}
+
+		if (share_mode_stale_pid(d, i)) {
 			continue;
 		}
 
@@ -616,13 +621,58 @@ bool is_valid_share_mode_entry(const struct share_mode_entry *e)
 	num_props += (EXCLUSIVE_OPLOCK_TYPE(e->op_type) ? 1 : 0);
 	num_props += (LEVEL_II_OPLOCK_TYPE(e->op_type) ? 1 : 0);
 
-	SMB_ASSERT(num_props <= 1);
+	if ((num_props > 1) && serverid_exists(&e->pid)) {
+		smb_panic("Invalid share mode entry");
+	}
 	return (num_props != 0);
 }
 
 bool is_deferred_open_entry(const struct share_mode_entry *e)
 {
 	return (e->op_type == DEFERRED_OPEN_ENTRY);
+}
+
+/*
+ * In case d->share_modes[i] conflicts with something or otherwise is
+ * being used, we need to make sure the corresponding process still
+ * exists. This routine checks it and potentially removes the entry
+ * from d->share_modes. Modifies d->num_share_modes, watch out in
+ * routines iterating over that array.
+ */
+bool share_mode_stale_pid(struct share_mode_data *d, unsigned i)
+{
+	struct share_mode_entry *e;
+
+	if (i > d->num_share_modes) {
+		DEBUG(1, ("Asking for index %u, only %u around\n",
+			  i, (unsigned)d->num_share_modes));
+		return false;
+	}
+	e = &d->share_modes[i];
+	if (serverid_exists(&e->pid)) {
+		DEBUG(10, ("PID %s (index %u out of %u) still exists\n",
+			   procid_str_static(&e->pid), i,
+			   (unsigned)d->num_share_modes));
+		return false;
+	}
+	DEBUG(10, ("PID %s (index %u out of %u) does not exist anymore\n",
+		   procid_str_static(&e->pid), i,
+		   (unsigned)d->num_share_modes));
+	*e = d->share_modes[d->num_share_modes-1];
+	d->num_share_modes -= 1;
+
+	if (d->num_share_modes == 0 &&
+	    d->num_delete_tokens) {
+		/*
+		 * We cannot have any delete tokens
+		 * if there are no valid share modes.
+		 */
+		TALLOC_FREE(d->delete_tokens);
+		d->num_delete_tokens = 0;
+	}
+
+	d->modified = true;
+	return true;
 }
 
 /*******************************************************************
@@ -705,7 +755,7 @@ static bool share_modes_identical(struct share_mode_entry *e1,
 	   sharing the same share mode entry may validly differ in
 	   fsp->share_access field. */
 
-	return (procid_equal(&e1->pid, &e2->pid) &&
+	return (serverid_equal(&e1->pid, &e2->pid) &&
 		file_id_equal(&e1->id, &e2->id) &&
 		e1->share_file_id == e2->share_file_id );
 }
@@ -713,7 +763,7 @@ static bool share_modes_identical(struct share_mode_entry *e1,
 static bool deferred_open_identical(struct share_mode_entry *e1,
 				    struct share_mode_entry *e2)
 {
-	return (procid_equal(&e1->pid, &e2->pid) &&
+	return (serverid_equal(&e1->pid, &e2->pid) &&
 		(e1->op_mid == e2->op_mid) &&
 		file_id_equal(&e1->id, &e2->id));
 }
@@ -759,6 +809,44 @@ bool del_share_mode(struct share_mode_lock *lck, files_struct *fsp)
 	lck->data->num_share_modes -= 1;
 	lck->data->modified = True;
 	return True;
+}
+
+bool mark_share_mode_disconnected(struct share_mode_lock *lck,
+				  struct files_struct *fsp)
+{
+	struct share_mode_entry entry, *e;
+
+	if (lck->data->num_share_modes != 1) {
+		return false;
+	}
+
+	if (fsp->op == NULL) {
+		return false;
+	}
+	if (!fsp->op->global->durable) {
+		return false;
+	}
+
+	/* Don't care about the pid owner being correct here - just a search. */
+	fill_share_mode_entry(&entry, fsp, (uid_t)-1, 0, NO_OPLOCK);
+
+	e = find_share_mode_entry(lck->data, &entry);
+	if (e == NULL) {
+		return false;
+	}
+
+	DEBUG(10, ("Marking share mode entry disconnected for durable handle\n"));
+
+	server_id_set_disconnected(&e->pid);
+
+	/*
+	 * On reopen the caller needs to check that
+	 * the client comes with the correct handle.
+	 */
+	e->share_file_id = fsp->op->global->open_persistent_id;
+
+	lck->data->modified = true;
+	return true;
 }
 
 void del_deferred_open_entry(struct share_mode_lock *lck, uint64_t mid,
@@ -832,41 +920,13 @@ bool downgrade_share_oplock(struct share_mode_lock *lck, files_struct *fsp)
 	return True;
 }
 
-/*************************************************************************
- Return a talloced copy of a struct security_unix_token. NULL on fail.
- (Should this be in locking.c.... ?).
-*************************************************************************/
-
-static struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct security_unix_token *tok)
-{
-	struct security_unix_token *cpy;
-
-	cpy = talloc(ctx, struct security_unix_token);
-	if (!cpy) {
-		return NULL;
-	}
-
-	cpy->uid = tok->uid;
-	cpy->gid = tok->gid;
-	cpy->ngroups = tok->ngroups;
-	if (tok->ngroups) {
-		/* Make this a talloc child of cpy. */
-		cpy->groups = (gid_t *)talloc_memdup(
-			cpy, tok->groups, tok->ngroups * sizeof(gid_t));
-		if (!cpy->groups) {
-			TALLOC_FREE(cpy);
-			return NULL;
-		}
-	}
-	return cpy;
-}
-
 /****************************************************************************
  Adds a delete on close token.
 ****************************************************************************/
 
 static bool add_delete_on_close_token(struct share_mode_data *d,
 			uint32_t name_hash,
+			const struct security_token *nt_tok,
 			const struct security_unix_token *tok)
 {
 	struct delete_token *tmp, *dtl;
@@ -880,6 +940,10 @@ static bool add_delete_on_close_token(struct share_mode_data *d,
 	dtl = &d->delete_tokens[d->num_delete_tokens];
 
 	dtl->name_hash = name_hash;
+	dtl->delete_nt_token = dup_nt_token(d->delete_tokens, nt_tok);
+	if (dtl->delete_nt_token == NULL) {
+		return false;
+	}
 	dtl->delete_token = copy_unix_token(d->delete_tokens, tok);
 	if (dtl->delete_token == NULL) {
 		return false;
@@ -903,6 +967,7 @@ static bool add_delete_on_close_token(struct share_mode_data *d,
 void set_delete_on_close_lck(files_struct *fsp,
 			struct share_mode_lock *lck,
 			bool delete_on_close,
+			const struct security_token *nt_tok,
 			const struct security_unix_token *tok)
 {
 	struct share_mode_data *d = lck->data;
@@ -910,8 +975,10 @@ void set_delete_on_close_lck(files_struct *fsp,
 	bool ret;
 
 	if (delete_on_close) {
+		SMB_ASSERT(nt_tok != NULL);
 		SMB_ASSERT(tok != NULL);
 	} else {
+		SMB_ASSERT(nt_tok == NULL);
 		SMB_ASSERT(tok == NULL);
 	}
 
@@ -921,17 +988,22 @@ void set_delete_on_close_lck(files_struct *fsp,
 			d->modified = true;
 			if (delete_on_close == false) {
 				/* Delete this entry. */
+				TALLOC_FREE(dt->delete_nt_token);
 				TALLOC_FREE(dt->delete_token);
 				*dt = d->delete_tokens[
 					d->num_delete_tokens-1];
 				d->num_delete_tokens -= 1;
-				return;
+			} else {
+				/* Replace this token with the
+				   given tok. */
+				TALLOC_FREE(dt->delete_nt_token);
+				dt->delete_nt_token = dup_nt_token(dt, nt_tok);
+				SMB_ASSERT(dt->delete_nt_token != NULL);
+				TALLOC_FREE(dt->delete_token);
+				dt->delete_token = copy_unix_token(dt, tok);
+				SMB_ASSERT(dt->delete_token != NULL);
 			}
-			/* Replace this token with the
-			   given tok. */
-			TALLOC_FREE(dt->delete_token);
-			dt->delete_token = copy_unix_token(dt, tok);
-			SMB_ASSERT(dt->delete_token != NULL);
+			return;
 		}
 	}
 
@@ -940,17 +1012,19 @@ void set_delete_on_close_lck(files_struct *fsp,
 		return;
 	}
 
-	ret = add_delete_on_close_token(lck->data, fsp->name_hash, tok);
+	ret = add_delete_on_close_token(lck->data, fsp->name_hash, nt_tok, tok);
 	SMB_ASSERT(ret);
 }
 
-bool set_delete_on_close(files_struct *fsp, bool delete_on_close, const struct security_unix_token *tok)
+bool set_delete_on_close(files_struct *fsp, bool delete_on_close,
+			const struct security_token *nt_tok,
+			const struct security_unix_token *tok)
 {
 	struct share_mode_lock *lck;
 
 	DEBUG(10,("set_delete_on_close: %s delete on close flag for "
-		  "fnum = %d, file %s\n",
-		  delete_on_close ? "Adding" : "Removing", fsp->fnum,
+		  "%s, file %s\n",
+		  delete_on_close ? "Adding" : "Removing", fsp_fnum_dbg(fsp),
 		  fsp_str_dbg(fsp)));
 
 	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
@@ -958,8 +1032,15 @@ bool set_delete_on_close(files_struct *fsp, bool delete_on_close, const struct s
 		return False;
 	}
 
-	set_delete_on_close_lck(fsp, lck, delete_on_close,
-			delete_on_close ? tok : NULL);
+	if (delete_on_close) {
+		set_delete_on_close_lck(fsp, lck, true,
+			nt_tok,
+			tok);
+	} else {
+		set_delete_on_close_lck(fsp, lck, false,
+			NULL,
+			NULL);
+	}
 
 	if (fsp->is_directory) {
 		SMB_ASSERT(!is_ntfs_stream_smb_fname(fsp->fsp_name));
@@ -974,27 +1055,50 @@ bool set_delete_on_close(files_struct *fsp, bool delete_on_close, const struct s
 	return True;
 }
 
-const struct security_unix_token *get_delete_on_close_token(struct share_mode_lock *lck, uint32_t name_hash)
+static struct delete_token *find_delete_on_close_token(
+	struct share_mode_data *d, uint32_t name_hash)
 {
-	int i;
+	uint32_t i;
 
-	DEBUG(10,("get_delete_on_close_token: name_hash = 0x%x\n",
-			(unsigned int)name_hash ));
+	DEBUG(10, ("find_delete_on_close_token: name_hash = 0x%x\n",
+		   (unsigned int)name_hash));
 
-	for (i=0; i<lck->data->num_delete_tokens; i++) {
-		struct delete_token *dt = &lck->data->delete_tokens[i];
-		DEBUG(10,("get_delete_on_close_token: dtl->name_hash = 0x%x\n",
-				(unsigned int)dt->name_hash ));
+	for (i=0; i<d->num_delete_tokens; i++) {
+		struct delete_token *dt = &d->delete_tokens[i];
+
+		DEBUG(10, ("find__delete_on_close_token: dt->name_hash = 0x%x\n",
+			   (unsigned int)dt->name_hash ));
 		if (dt->name_hash == name_hash) {
-			return dt->delete_token;
+			return dt;
 		}
 	}
 	return NULL;
 }
 
+/****************************************************************************
+ Return the NT token and UNIX token if there's a match. Return true if
+ found, false if not.
+****************************************************************************/
+
+bool get_delete_on_close_token(struct share_mode_lock *lck,
+					uint32_t name_hash,
+					const struct security_token **pp_nt_tok,
+					const struct security_unix_token **pp_tok)
+{
+	struct delete_token *dt;
+
+	dt = find_delete_on_close_token(lck->data, name_hash);
+	if (dt == NULL) {
+		return false;
+	}
+	*pp_nt_tok = dt->delete_nt_token;
+	*pp_tok =  dt->delete_token;
+	return true;
+}
+
 bool is_delete_on_close_set(struct share_mode_lock *lck, uint32_t name_hash)
 {
-	return (get_delete_on_close_token(lck, name_hash) != NULL);
+	return find_delete_on_close_token(lck->data, name_hash) != NULL;
 }
 
 bool set_sticky_write_time(struct file_id fileid, struct timespec write_time)

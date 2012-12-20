@@ -62,7 +62,7 @@ NTSTATUS auth_generic_client_prepare(TALLOC_CTX *mem_ctx, struct auth_generic_st
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	lp_ctx = loadparm_init_s3(ans, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(ans, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(10, ("loadparm_init_s3 failed\n"));
 		TALLOC_FREE(ans);
@@ -83,13 +83,15 @@ NTSTATUS auth_generic_client_prepare(TALLOC_CTX *mem_ctx, struct auth_generic_st
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	gensec_settings->backends[idx++] = &gensec_ntlmssp3_client_ops;
+	gensec_init();
 
-#if defined(HAVE_KRB5) && defined(HAVE_GSS_WRAP_IOV)
+	/* These need to be in priority order, krb5 before NTLMSSP */
+#if defined(HAVE_KRB5)
 	gensec_settings->backends[idx++] = &gensec_gse_krb5_security_ops;
 #endif
 
-	gensec_init();
+	gensec_settings->backends[idx++] = &gensec_ntlmssp3_client_ops;
+
 	gensec_settings->backends[idx++] = gensec_security_by_oid(NULL,
 						GENSEC_OID_SPNEGO);
 

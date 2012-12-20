@@ -30,30 +30,13 @@
 
 static void conn_lastused_update(struct smbd_server_connection *sconn,time_t t)
 {
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *ptcon;
+	struct connection_struct *conn;
 
-			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
-				connection_struct *conn = ptcon->compat_conn;
-				/* Update if connection wasn't idle. */
-				if (conn && conn->lastused != conn->lastused_count) {
-					conn->lastused = t;
-					conn->lastused_count = t;
-				}
-			}
-		}
-	} else {
-		/* SMB1 */
-		connection_struct *conn;
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=conn->next) {
-			/* Update if connection wasn't idle. */
-			if (conn->lastused != conn->lastused_count) {
-				conn->lastused = t;
-				conn->lastused_count = t;
-			}
+	for (conn=sconn->connections; conn; conn=conn->next) {
+		/* Update if connection wasn't idle. */
+		if (conn->lastused != conn->lastused_count) {
+			conn->lastused = t;
+			conn->lastused_count = t;
 		}
 	}
 }
@@ -65,6 +48,7 @@ static void conn_lastused_update(struct smbd_server_connection *sconn,time_t t)
 bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
 {
 	int deadtime = lp_deadtime()*60;
+	struct connection_struct *conn;
 
 	conn_lastused_update(sconn, t);
 
@@ -72,45 +56,16 @@ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
 		deadtime = DEFAULT_SMBD_TIMEOUT;
 	}
 
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *ptcon;
+	for (conn=sconn->connections;conn;conn=conn->next) {
+		time_t age = t - conn->lastused;
 
-			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
-				time_t age;
-				connection_struct *conn = ptcon->compat_conn;
-
-				if (conn == NULL) {
-					continue;
-				}
-
-				age = t - conn->lastused;
-				/* close dirptrs on connections that are idle */
-				if (age > DPTR_IDLE_TIMEOUT) {
-					dptr_idlecnum(conn);
-				}
-
-				if (conn->num_files_open > 0 || age < deadtime) {
-					return false;
-				}
-			}
+		/* close dirptrs on connections that are idle */
+		if (age > DPTR_IDLE_TIMEOUT) {
+			dptr_idlecnum(conn);
 		}
-	} else {
-		/* SMB1 */
-		connection_struct *conn;
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=conn->next) {
-			time_t age = t - conn->lastused;
 
-			/* close dirptrs on connections that are idle */
-			if (age > DPTR_IDLE_TIMEOUT) {
-				dptr_idlecnum(conn);
-			}
-
-			if (conn->num_files_open > 0 || age < deadtime) {
-				return false;
-			}
+		if (conn->num_files_open > 0 || age < deadtime) {
+			return false;
 		}
 	}
 
@@ -126,41 +81,6 @@ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
 }
 
 /****************************************************************************
- Close all conn structures.
- Return true if any were closed.
-****************************************************************************/
-
-bool conn_close_all(struct smbd_server_connection *sconn)
-{
-	bool ret = false;
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *tcon, *tc_next;
-
-			for (tcon = sess->tcons.list; tcon; tcon = tc_next) {
-				tc_next = tcon->next;
-				TALLOC_FREE(tcon);
-				ret = true;
-			}
-		}
-	} else {
-		/* SMB1 */
-		connection_struct *conn, *next;
-
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=next) {
-			next=conn->next;
-			set_current_service(conn, 0, True);
-			close_cnum(conn, conn->vuid);
-			ret = true;
-		}
-	}
-	return ret;
-}
-
-
-/****************************************************************************
  Forcibly unmount a share.
  All instances of the parameter 'sharename' share are unmounted.
  The special sharename '*' forces unmount of all shares.
@@ -169,39 +89,57 @@ bool conn_close_all(struct smbd_server_connection *sconn)
 void conn_force_tdis(struct smbd_server_connection *sconn, const char *sharename)
 {
 	connection_struct *conn, *next;
+	bool close_all = false;
 
 	if (strcmp(sharename, "*") == 0) {
-		DEBUG(1,("Forcing close of all shares\n"));
-		conn_close_all(sconn);
-		return;
+		close_all = true;
+		DEBUG(1, ("conn_force_tdis: Forcing close of all shares\n"));
 	}
 
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *tcon, *tc_next;
+	/* SMB1 and SMB 2*/
+	for (conn = sconn->connections; conn; conn = next) {
+		struct smbXsrv_tcon *tcon;
+		bool do_close = false;
+		NTSTATUS status;
+		uint64_t vuid = UID_FIELD_INVALID;
 
-			for (tcon = sess->tcons.list; tcon; tcon = tc_next) {
-				tc_next = tcon->next;
-				if (tcon->compat_conn &&
-						strequal(lp_servicename(SNUM(tcon->compat_conn)),
-								sharename)) {
-					DEBUG(1,("Forcing close of share %s cnum=%d\n",
-						sharename, tcon->compat_conn->cnum));
-					TALLOC_FREE(tcon);
-				}
-			}
+		next = conn->next;
+
+		if (conn->tcon == NULL) {
+			continue;
 		}
-	} else {
-		/* SMB1 */
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=next) {
-			next=conn->next;
-			if (strequal(lp_servicename(SNUM(conn)), sharename)) {
-				DEBUG(1,("Forcing close of share %s cnum=%d\n",
-					sharename, conn->cnum));
-				close_cnum(conn, (uint16)-1);
-			}
+		tcon = conn->tcon;
+
+		if (close_all) {
+			do_close = true;
+		} else if (strequal(lp_servicename(talloc_tos(), SNUM(conn)),
+				    sharename)) {
+			DEBUG(1, ("conn_force_tdis: Forcing close of "
+				  "share '%s' (wire_id=0x%08x)\n",
+				  tcon->global->share_name,
+				  tcon->global->tcon_wire_id));
+			do_close = true;
 		}
+
+		if (!do_close) {
+			continue;
+		}
+
+		if (sconn->using_smb2) {
+			vuid = conn->vuid;
+		}
+
+		conn = NULL;
+		status = smbXsrv_tcon_disconnect(tcon, vuid);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0, ("conn_force_tdis: "
+				  "smbXsrv_tcon_disconnect() of share '%s' "
+				  "(wire_id=0x%08x) failed: %s\n",
+				  tcon->global->share_name,
+				  tcon->global->tcon_wire_id,
+				  nt_errstr(status)));
+		}
+
+		TALLOC_FREE(tcon);
 	}
 }

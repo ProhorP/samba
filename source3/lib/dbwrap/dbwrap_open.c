@@ -24,6 +24,7 @@
 #include "dbwrap/dbwrap_open.h"
 #include "dbwrap/dbwrap_tdb.h"
 #include "dbwrap/dbwrap_ctdb.h"
+#include "lib/param/param.h"
 #include "util_tdb.h"
 #ifdef CLUSTER_SUPPORT
 #include "ctdb_private.h"
@@ -33,10 +34,6 @@ bool db_is_local(const char *name)
 {
 #ifdef CLUSTER_SUPPORT
 	const char *sockname = lp_ctdbd_socket();
-
-	if(!sockname || !*sockname) {
-		sockname = CTDB_PATH;
-	}
 
 	if (lp_clustering() && socket_exist(sockname)) {
 		const char *partname;
@@ -70,11 +67,14 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
 	const char *sockname;
 #endif
 
-	if ((lock_order != DBWRAP_LOCK_ORDER_1) &&
-	    (lock_order != DBWRAP_LOCK_ORDER_2)) {
+	switch (lock_order) {
+	case DBWRAP_LOCK_ORDER_1:
+	case DBWRAP_LOCK_ORDER_2:
+	case DBWRAP_LOCK_ORDER_3:
+		break;
+	default:
 		/*
-		 * Only allow 2 levels. ctdb gives us 3, and we will
-		 * have the watchers database soon.
+		 * Only allow the 3 levels ctdb gives us.
 		 */
 		errno = EINVAL;
 		return NULL;
@@ -82,10 +82,6 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
 
 #ifdef CLUSTER_SUPPORT
 	sockname = lp_ctdbd_socket();
-
-	if(!sockname || !*sockname) {
-		sockname = CTDB_PATH;
-	}
 
 	if (lp_clustering()) {
 		const char *partname;
@@ -122,11 +118,11 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
 #endif
 
 	if (result == NULL) {
-		result = db_open_tdb(mem_ctx, name, hash_size,
-				     tdb_flags, open_flags, mode);
-	}
-	if (result != NULL) {
-		result->lock_order = lock_order;
+		struct loadparm_context *lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
+		result = dbwrap_local_open(mem_ctx, lp_ctx, name, hash_size,
+					   tdb_flags, open_flags, mode,
+					   lock_order);
+		talloc_unlink(mem_ctx, lp_ctx);
 	}
 	return result;
 }

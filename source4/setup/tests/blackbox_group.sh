@@ -14,7 +14,7 @@ shift 1
 
 
 rm -rf $PREFIX/simple-dc
-testit "simple-dc" $PYTHON $SRCDIR/source4/setup/provision --server-role="dc" --domain=FOO --realm=foo.example.com --domain-sid=S-1-5-21-4177067393-1453636373-93818738 --targetdir=$PREFIX/simple-dc
+testit "simple-dc" $PYTHON $BINDIR/samba-tool domain provision --server-role="dc" --domain=FOO --realm=foo.example.com --domain-sid=S-1-5-21-4177067393-1453636373-93818738 --targetdir=$PREFIX/simple-dc --use-ntvfs
 samba_tool="./bin/samba-tool"
 
 CONFIG="--configfile=$PREFIX/simple-dc/etc/smb.conf"
@@ -70,5 +70,11 @@ testit "group delete" $samba_tool group delete $CONFIG usg
 testit "group delete" $samba_tool group delete $CONFIG ddg
 testit "group delete" $samba_tool group delete $CONFIG gdg
 testit "group delete" $samba_tool group delete $CONFIG udg
+
+#test listing of all groups
+testit "group list" $samba_tool group list $CONFIG
+
+#test listing of members of a particular group
+testit "group listmembers" $samba_tool group listmembers $CONFIG Users
 
 exit $failed

@@ -46,11 +46,9 @@ static bool test_unlink(struct torture_context *tctx, struct smbcli_state *cli)
 	bool ret = true;
 	const char *fname = BASEDIR "\\test.txt";
 
-	if (!torture_setup_dir(cli, BASEDIR)) {
-		return false;
-	}
+	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
 
-	printf("Trying non-existant file\n");
+	printf("Trying non-existent file\n");
 	io.unlink.in.pattern = fname;
 	io.unlink.in.attrib = 0;
 	status = smb_raw_unlink(cli->tree, &io);
@@ -215,9 +213,7 @@ static bool test_delete_on_close(struct torture_context *tctx,
 	const char *inside = BASEDIR "\\test.dir\\test.txt";
 	union smb_setfileinfo sfinfo;
 
-	if (!torture_setup_dir(cli, BASEDIR)) {
-		return false;
-	}
+	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
 
 	dio.in.path = dname;
 

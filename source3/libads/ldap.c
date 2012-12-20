@@ -25,10 +25,11 @@
 #include "ads.h"
 #include "libads/sitename_cache.h"
 #include "libads/cldap.h"
-#include "libads/dns.h"
+#include "../lib/addns/dnsquery.h"
 #include "../libds/common/flags.h"
 #include "smbldap.h"
 #include "../libcli/security/security.h"
+#include "lib/param/loadparm.h"
 
 #ifdef HAVE_LDAP
 
@@ -297,7 +298,11 @@ static bool ads_try_connect(ADS_STRUCT *ads, const char *server, bool gc)
 	ads->config.flags	       = cldap_reply.server_type;
 	ads->config.ldap_server_name   = SMB_STRDUP(cldap_reply.pdc_dns_name);
 	ads->config.realm              = SMB_STRDUP(cldap_reply.dns_domain);
-	strupper_m(ads->config.realm);
+	if (!strupper_m(ads->config.realm)) {
+		ret = false;
+		goto out;
+	}
+
 	ads->config.bind_path          = ads_build_dn(ads->config.realm);
 	if (*cldap_reply.server_site) {
 		ads->config.server_site_name =
@@ -553,6 +558,7 @@ ADS_STATUS ads_connect_gc(ADS_STRUCT *ads)
 	int i;
 	bool done = false;
 	char *sitename = NULL;
+	const char *dns_hosts_file;
 
 	if (!realm)
 		realm = lp_realm();
@@ -562,6 +568,7 @@ ADS_STATUS ads_connect_gc(ADS_STRUCT *ads)
 		sitename = sitename_fetch(realm);
 	}
 
+	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
 	do {
 		/* We try once with a sitename and once without
 		   (unless we don't have a sitename and then we're
@@ -570,7 +577,8 @@ ADS_STATUS ads_connect_gc(ADS_STRUCT *ads)
 		if (sitename == NULL)
 			done = true;
 
-		nt_status = ads_dns_query_gcs(frame, realm, sitename,
+		nt_status = ads_dns_query_gcs(frame, dns_hosts_file,
+					      realm, sitename,
 					      &gcs_list, &num_gcs);
 
 		SAFE_FREE(sitename);
@@ -723,7 +731,7 @@ got_connection:
 	ldap_set_option(ads->ldap.ld, LDAP_OPT_PROTOCOL_VERSION, &version);
 
 	if ( lp_ldap_ssl_ads() ) {
-		status = ADS_ERROR(smb_ldap_start_tls(ads->ldap.ld, version));
+		status = ADS_ERROR(smbldap_start_tls(ads->ldap.ld, version));
 		if (!ADS_ERR_OK(status)) {
 			goto out;
 		}
@@ -951,11 +959,11 @@ static ADS_STATUS ads_do_paged_search_args(ADS_STRUCT *ads,
 
 	cookie_be = ber_alloc_t(LBER_USE_DER);
 	if (*cookie) {
-		ber_printf(cookie_be, "{iO}", (ber_int_t) 1000, *cookie);
+		ber_printf(cookie_be, "{iO}", (ber_int_t) ads->config.ldap_page_size, *cookie);
 		ber_bvfree(*cookie); /* don't need it from last time */
 		*cookie = NULL;
 	} else {
-		ber_printf(cookie_be, "{io}", (ber_int_t) 1000, "", 0);
+		ber_printf(cookie_be, "{io}", (ber_int_t) ads->config.ldap_page_size, "", 0);
 	}
 	ber_flatten(cookie_be, &cookie_bv);
 	PagedResults.ldctl_oid = discard_const_p(char, ADS_PAGE_CTL_OID);
@@ -1941,8 +1949,15 @@ ADS_STATUS ads_add_service_principal_name(ADS_STRUCT *ads, const char *machine_n
 		ads_msgfree(ads, res);
 		return ADS_ERROR(LDAP_NO_MEMORY);
 	}
-	strupper_m(psp1);
-	strlower_m(&psp1[strlen(spn)]);
+	if (!strupper_m(psp1)) {
+		ret = ADS_ERROR(LDAP_NO_MEMORY);
+		goto out;
+	}
+
+	if (!strlower_m(&psp1[strlen(spn)])) {
+		ret = ADS_ERROR(LDAP_NO_MEMORY);
+		goto out;
+	}
 	servicePrincipalName[0] = psp1;
 
 	DEBUG(5,("ads_add_service_principal_name: INFO: Adding %s to host %s\n", 
@@ -1955,8 +1970,15 @@ ADS_STATUS ads_add_service_principal_name(ADS_STRUCT *ads, const char *machine_n
 		ret = ADS_ERROR(LDAP_NO_MEMORY);
 		goto out;
 	}
-	strupper_m(psp2);
-	strlower_m(&psp2[strlen(spn)]);
+	if (!strupper_m(psp2)) {
+		ret = ADS_ERROR(LDAP_NO_MEMORY);
+		goto out;
+	}
+
+	if (!strlower_m(&psp2[strlen(spn)])) {
+		ret = ADS_ERROR(LDAP_NO_MEMORY);
+		goto out;
+	}
 	servicePrincipalName[1] = psp2;
 
 	DEBUG(5,("ads_add_service_principal_name: INFO: Adding %s to host %s\n", 
@@ -3452,7 +3474,10 @@ ADS_STATUS ads_leave_realm(ADS_STRUCT *ads, const char *hostname)
 
 	/* hostname must be lowercase */
 	host = SMB_STRDUP(hostname);
-	strlower_m(host);
+	if (!strlower_m(host)) {
+		SAFE_FREE(host);
+		return ADS_ERROR_SYSTEM(EINVAL);
+	}
 
 	status = ads_find_machine_acct(ads, &res, host);
 	if (!ADS_ERR_OK(status)) {

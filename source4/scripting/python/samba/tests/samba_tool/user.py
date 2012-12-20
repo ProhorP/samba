@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Sean Dague <sdague@linux.vnet.ibm.com> 2011
 #
@@ -18,12 +16,13 @@
 #
 
 import os
-import sys
-import pprint
 import time
 import ldb
 from samba.tests.samba_tool.base import SambaToolCmdTest
-from samba import nttime2unix
+from samba import (
+        nttime2unix,
+        dsdb
+        )
 
 class UserCmdTestCase(SambaToolCmdTest):
     """Tests for samba-tool user subcommands"""
@@ -68,7 +67,7 @@ class UserCmdTestCase(SambaToolCmdTest):
         # try to add all the users again, this should fail
         for user in self.users:
             (result, out, err) = self._create_user(user)
-            self.assertCmdFail(result, "Ensure that create user files")
+            self.assertCmdFail(result, "Ensure that create user fails")
             self.assertIn("LDAP error 68 LDAP_ENTRY_ALREADY_EXISTS", err)
 
         # try to delete all the 4 users we just added
@@ -147,7 +146,7 @@ class UserCmdTestCase(SambaToolCmdTest):
                                                 "-H", "ldap://%s" % os.environ["DC_SERVER"],
                                                 "-U%s%%%s" % (os.environ["DC_USERNAME"], os.environ["DC_PASSWORD"]))
             self.assertCmdSuccess(result, "Can we run setexpiry with names")
-            self.assertIn("Set expiry for user '%s' to 2 days" % user["name"], out)
+            self.assertIn("Expiry for user '%s' set to 2 days." % user["name"], out)
 
         for user in self.users:
             found = self._find_user(user["name"])
@@ -176,6 +175,29 @@ class UserCmdTestCase(SambaToolCmdTest):
             else:
                 expires = nttime2unix(int("%s" % found.get("accountExpires")))
                 self.assertWithin(expires, twodays, 5, "Ensure account expires is within 5 seconds of the expected time")
+
+
+    def test_list(self):
+        (result, out, err) = self.runsubcmd("user", "list",
+                                            "-H", "ldap://%s" % os.environ["DC_SERVER"],
+                                            "-U%s%%%s" % (os.environ["DC_USERNAME"],
+                                                          os.environ["DC_PASSWORD"]))
+        self.assertCmdSuccess(result, "Error running list")
+
+        search_filter = ("(&(objectClass=user)(userAccountControl:%s:=%u))" %
+                         (ldb.OID_COMPARATOR_AND, dsdb.UF_NORMAL_ACCOUNT))
+
+        userlist = self.samdb.search(base=self.samdb.domain_dn(),
+                                     scope=ldb.SCOPE_SUBTREE,
+                                     expression=search_filter,
+                                     attrs=["samaccountname"])
+
+        self.assertTrue(len(userlist) > 0, "no users found in samdb")
+
+        for userobj in userlist:
+            name = userobj.get("samaccountname", idx=0)
+            found = self.assertMatch(out, name,
+                                     "user '%s' not found" % name)
 
 
     def _randomUser(self, base={}):

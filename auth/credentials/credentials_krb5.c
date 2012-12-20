@@ -23,13 +23,20 @@
 
 #include "includes.h"
 #include "system/kerberos.h"
+#include "system/gssapi.h"
 #include "auth/kerberos/kerberos.h"
 #include "auth/credentials/credentials.h"
 #include "auth/credentials/credentials_proto.h"
 #include "auth/credentials/credentials_krb5.h"
 #include "auth/kerberos/kerberos_credentials.h"
+#include "auth/kerberos/kerberos_srv_keytab.h"
 #include "auth/kerberos/kerberos_util.h"
+#include "auth/kerberos/pac_utils.h"
 #include "param/param.h"
+
+static void cli_credentials_invalidate_client_gss_creds(
+					struct cli_credentials *cred,
+					enum credentials_obtained obtained);
 
 _PUBLIC_ int cli_credentials_get_krb5_context(struct cli_credentials *cred, 
 				     struct loadparm_context *lp_ctx,
@@ -296,8 +303,8 @@ _PUBLIC_ int cli_credentials_get_named_ccache(struct cli_credentials *cred,
 	    cred->ccache_obtained > CRED_UNINITIALISED) {
 		time_t lifetime;
 		bool expired = false;
-		ret = krb5_cc_get_lifetime(cred->ccache->smb_krb5_context->krb5_context, 
-					   cred->ccache->ccache, &lifetime);
+		ret = smb_krb5_cc_get_lifetime(cred->ccache->smb_krb5_context->krb5_context,
+					       cred->ccache->ccache, &lifetime);
 		if (ret == KRB5_CC_END) {
 			/* If we have a particular ccache set, without
 			 * an initial ticket, then assume there is a
@@ -526,6 +533,7 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 		return ret;
 	}
 
+#ifdef SAMBA4_USES_HEIMDAL /* MIT lacks krb5_get_default_in_tkt_etypes */
 	/*
 	 * transfer the enctypes from the smb_krb5_context to the gssapi layer
 	 *
@@ -560,6 +568,8 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 			return ret;
 		}
 	}
+#endif
+#ifdef SAMBA4_USES_HEIMDAL /* MIT lacks GSS_KRB5_CRED_NO_CI_FLAGS_X */
 
 	/* don't force GSS_C_CONF_FLAG and GSS_C_INTEG_FLAG */
 	maj_stat = gss_set_cred_option(&min_stat, &gcc->creds,
@@ -575,7 +585,7 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 		(*error_string) = talloc_asprintf(cred, "gss_set_cred_option failed: %s", error_message(ret));
 		return ret;
 	}
-
+#endif
 	cred->client_gss_creds_obtained = cred->ccache_obtained;
 	talloc_set_destructor(gcc, free_gssapi_creds);
 	cred->client_gss_creds = gcc;
@@ -660,6 +670,8 @@ _PUBLIC_ int cli_credentials_get_keytab(struct cli_credentials *cred,
 	krb5_error_code ret;
 	struct keytab_container *ktc;
 	struct smb_krb5_context *smb_krb5_context;
+	const char *keytab_name;
+	krb5_keytab keytab;
 	TALLOC_CTX *mem_ctx;
 
 	if (cred->keytab_obtained >= (MAX(cred->principal_obtained, 
@@ -683,8 +695,20 @@ _PUBLIC_ int cli_credentials_get_keytab(struct cli_credentials *cred,
 		return ENOMEM;
 	}
 
-	ret = smb_krb5_create_memory_keytab(mem_ctx, cred, 
-					    smb_krb5_context, &ktc);
+	ret = smb_krb5_create_memory_keytab(mem_ctx,
+					smb_krb5_context->krb5_context,
+					cli_credentials_get_password(cred),
+					cli_credentials_get_username(cred),
+					cli_credentials_get_realm(cred),
+					cli_credentials_get_kvno(cred),
+					&keytab, &keytab_name);
+	if (ret) {
+		talloc_free(mem_ctx);
+		return ret;
+	}
+
+	ret = smb_krb5_get_keytab_container(mem_ctx, smb_krb5_context,
+					    keytab, keytab_name, &ktc);
 	if (ret) {
 		talloc_free(mem_ctx);
 		return ret;
@@ -692,6 +716,11 @@ _PUBLIC_ int cli_credentials_get_keytab(struct cli_credentials *cred,
 
 	cred->keytab_obtained = (MAX(cred->principal_obtained, 
 				     cred->username_obtained));
+
+	/* We make this keytab up based on a password.  Therefore
+	 * match-by-key is acceptable, we can't match on the wrong
+	 * principal */
+	ktc->password_based = true;
 
 	talloc_steal(cred, ktc);
 	cred->keytab = ktc;
@@ -728,7 +757,7 @@ _PUBLIC_ int cli_credentials_set_keytab_name(struct cli_credentials *cred,
 	}
 
 	ret = smb_krb5_get_keytab_container(mem_ctx, smb_krb5_context,
-					    keytab_name, &ktc);
+					    NULL, keytab_name, &ktc);
 	if (ret) {
 		return ret;
 	}
@@ -794,12 +823,12 @@ _PUBLIC_ int cli_credentials_get_server_gss_creds(struct cli_credentials *cred,
 		return ENOMEM;
 	}
 
-	if (obtained < CRED_SPECIFIED) {
-		/* This creates a GSSAPI cred_id_t with the principal and keytab set */
+	if (ktc->password_based || obtained < CRED_SPECIFIED) {
+		/* This creates a GSSAPI cred_id_t for match-by-key with only the keytab set */
 		maj_stat = gss_krb5_import_cred(&min_stat, NULL, NULL, ktc->keytab,
 						&gcc->creds);
 	} else {
-		/* This creates a GSSAPI cred_id_t with the principal and keytab set */
+		/* This creates a GSSAPI cred_id_t with the principal and keytab set, matching by name */
 		maj_stat = gss_krb5_import_cred(&min_stat, NULL, princ, ktc->keytab,
 						&gcc->creds);
 	}

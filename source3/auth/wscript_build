@@ -3,16 +3,14 @@
 AUTH_BUILTIN_SRC = 'auth_builtin.c'
 AUTH_DOMAIN_SRC = 'auth_domain.c'
 AUTH_SAM_SRC = 'auth_sam.c'
-AUTH_SERVER_SRC = 'auth_server.c'
 AUTH_UNIX_SRC = 'auth_unix.c'
 AUTH_WINBIND_SRC = 'auth_winbind.c'
 AUTH_WBC_SRC = 'auth_wbc.c'
 AUTH_SCRIPT_SRC = 'auth_script.c'
-AUTH_NETLOGOND_SRC = 'auth_netlogond.c'
 
 AUTH_SRC = '''auth.c
            user_krb5.c
-           auth_compat.c auth_ntlmssp.c auth_generic.c'''
+           auth_ntlmssp.c auth_generic.c'''
 
 bld.SAMBA3_SUBSYSTEM('TOKEN_UTIL',
                     source='token_util.c',
@@ -42,8 +40,7 @@ bld.SAMBA3_MODULE('auth_sam',
                  source=AUTH_SAM_SRC,
                  deps='samba-util',
                  init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_sam'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_sam'))
+                 internal_module=True)
 
 bld.SAMBA3_MODULE('auth_unix',
                  subsystem='auth',
@@ -58,8 +55,7 @@ bld.SAMBA3_MODULE('auth_winbind',
                  source=AUTH_WINBIND_SRC,
                  deps='samba-util',
                  init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_winbind'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_winbind'))
+                 internal_module=True)
 
 bld.SAMBA3_MODULE('auth_wbc',
                  subsystem='auth',
@@ -69,37 +65,19 @@ bld.SAMBA3_MODULE('auth_wbc',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_wbc'),
                  enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_wbc'))
 
-bld.SAMBA3_MODULE('auth_server',
-                 subsystem='auth',
-                 source=AUTH_SERVER_SRC,
-                 deps='samba-util',
-                 init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_server'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_server'))
-
 bld.SAMBA3_MODULE('auth_domain',
                  subsystem='auth',
                  source=AUTH_DOMAIN_SRC,
                  deps='RPC_CLIENT_SCHANNEL trusts_util',
                  init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_domain'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_domain'))
+                 internal_module=True)
 
 bld.SAMBA3_MODULE('auth_builtin',
                  subsystem='auth',
                  source=AUTH_BUILTIN_SRC,
                  deps='samba-util',
                  init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_builtin'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_builtin'))
-
-bld.SAMBA3_MODULE('auth_netlogond',
-                 subsystem='auth',
-                 source=AUTH_NETLOGOND_SRC,
-                 deps='TLDAP',
-                 init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_netlogond'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_netlogond'))
+                 internal_module=True)
 
 bld.SAMBA3_MODULE('auth_script',
                  subsystem='auth',
@@ -113,5 +91,5 @@ bld.SAMBA3_MODULE('auth_samba4',
                   source='auth_samba4.c',
                   init_function='',
                   deps='auth4 samba_server_gensec gensec',
-                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_samba4'),
-                  enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_samba4'))
+                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('auth_samba4') and bld.AD_DC_BUILD_IS_ENABLED(),
+                  enabled=bld.SAMBA3_IS_ENABLED_MODULE('auth_samba4') and bld.AD_DC_BUILD_IS_ENABLED())

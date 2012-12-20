@@ -59,20 +59,8 @@ NTSTATUS auth3_get_challenge(struct auth4_context *auth4_context,
 {
 	struct auth_context *auth_context = talloc_get_type_abort(auth4_context->private_data,
 								  struct auth_context);
-	auth_context->get_ntlm_challenge(auth_context, chal);
+	auth_get_ntlm_challenge(auth_context, chal);
 	return NT_STATUS_OK;
-}
-
-/**
- * Some authentication methods 'fix' the challenge, so we may not be able to set it
- *
- * @return If the effective challenge used by the auth subsystem may be modified
- */
-bool auth3_may_set_challenge(struct auth4_context *auth4_context)
-{
-	struct auth_context *auth_context = talloc_get_type_abort(auth4_context->private_data,
-								  struct auth_context);
-	return auth_context->challenge_may_be_modified;
 }
 
 /**
@@ -146,8 +134,8 @@ NTSTATUS auth3_check_password(struct auth4_context *auth4_context,
 
 	mapped_user_info->flags = user_info->flags;
 
-	nt_status = auth_context->check_ntlm_password(auth_context,
-						      mapped_user_info, &server_info);
+	nt_status = auth_check_ntlm_password(auth_context,
+					     mapped_user_info, &server_info);
 
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(5,("Checking NTLMSSP password for %s\\%s failed: %s\n",

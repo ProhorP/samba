@@ -54,8 +54,10 @@ uint8_t werr_to_dns_err(WERROR werr)
 		return DNS_RCODE_NOTAUTH;
 	} else if (W_ERROR_EQUAL(DNS_ERR(NOTZONE), werr)) {
 		return DNS_RCODE_NOTZONE;
+	} else if (W_ERROR_EQUAL(DNS_ERR(BADKEY), werr)) {
+		return DNS_RCODE_BADKEY;
 	}
-	DEBUG(5, ("No mapping exists for %%s\n"));
+	DEBUG(5, ("No mapping exists for %s\n", win_errstr(werr)));
 	return DNS_RCODE_SERVFAIL;
 }
 
@@ -115,6 +117,9 @@ bool dns_name_equal(const char *name1, const char *name2)
 bool dns_records_match(struct dnsp_DnssrvRpcRecord *rec1,
 		       struct dnsp_DnssrvRpcRecord *rec2)
 {
+	bool status;
+	int i;
+
 	if (rec1->wType != rec2->wType) {
 		return false;
 	}
@@ -128,7 +133,15 @@ bool dns_records_match(struct dnsp_DnssrvRpcRecord *rec1,
 	case DNS_TYPE_CNAME:
 		return dns_name_equal(rec1->data.cname, rec2->data.cname);
 	case DNS_TYPE_TXT:
-		return strcmp(rec1->data.txt, rec2->data.txt) == 0;
+		if (rec1->data.txt.count != rec2->data.txt.count) {
+			return false;
+		}
+		status = true;
+		for (i=0; i<rec1->data.txt.count; i++) {
+			status = status && (strcmp(rec1->data.txt.str[i],
+						rec2->data.txt.str[i]) == 0);
+		}
+		return status;
 	case DNS_TYPE_PTR:
 		return strcmp(rec1->data.ptr, rec2->data.ptr) == 0;
 	case DNS_TYPE_NS:
@@ -188,7 +201,7 @@ WERROR dns_lookup_records(struct dns_server *dns,
 	if (el == NULL) {
 		*records = NULL;
 		*rec_count = 0;
-		return WERR_OK;
+		return DNS_ERR(NAME_ERROR);
 	}
 
 	recs = talloc_zero_array(mem_ctx, struct dnsp_DnssrvRpcRecord, el->num_values);
@@ -281,6 +294,34 @@ WERROR dns_replace_records(struct dns_server *dns,
 	}
 
 	return WERR_OK;
+}
+
+bool dns_authorative_for_zone(struct dns_server *dns,
+			      const char *name)
+{
+	const struct dns_server_zone *z;
+	size_t host_part_len = 0;
+
+	if (name == NULL) {
+		return false;
+	}
+
+	if (strcmp(name, "") == 0) {
+		return true;
+	}
+	for (z = dns->zones; z != NULL; z = z->next) {
+		bool match;
+
+		match = dns_name_match(z->name, name, &host_part_len);
+		if (match) {
+			break;
+		}
+	}
+	if (z == NULL) {
+		return false;
+	}
+
+	return true;
 }
 
 WERROR dns_name2dn(struct dns_server *dns,

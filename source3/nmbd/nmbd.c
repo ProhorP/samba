@@ -25,6 +25,7 @@
 #include "nmbd/nmbd.h"
 #include "serverid.h"
 #include "messages.h"
+#include "../lib/util/pidfile.h"
 
 int ClientNMB       = -1;
 int ClientDGRAM     = -1;
@@ -70,7 +71,7 @@ static void terminate(struct messaging_context *msg)
 	gencache_stabilize();
 	serverid_deregister(messaging_server_id(msg));
 
-	pidfile_unlink();
+	pidfile_unlink(lp_piddir(), "nmbd");
 
 	exit(0);
 }
@@ -88,6 +89,24 @@ static void nmbd_sig_term_handler(struct tevent_context *ev,
 	terminate(msg);
 }
 
+/*
+  handle stdin becoming readable when we are in --foreground mode
+ */
+static void nmbd_stdin_handler(struct tevent_context *ev,
+			       struct tevent_fd *fde,
+			       uint16_t flags,
+			       void *private_data)
+{
+	char c;
+	if (read(0, &c, 1) != 1) {
+		struct messaging_context *msg = talloc_get_type_abort(
+			private_data, struct messaging_context);
+		
+		DEBUG(0,("EOF on stdin\n"));
+		terminate(msg);
+	}
+}
+
 static bool nmbd_setup_sig_term_handler(struct messaging_context *msg)
 {
 	struct tevent_signal *se;
@@ -100,6 +119,19 @@ static bool nmbd_setup_sig_term_handler(struct messaging_context *msg)
 	if (!se) {
 		DEBUG(0,("failed to setup SIGTERM handler"));
 		return false;
+	}
+
+	return true;
+}
+
+static bool nmbd_setup_stdin_handler(struct messaging_context *msg, bool foreground)
+{
+	if (foreground) {
+		/* if we are running in the foreground then look for
+		   EOF on stdin, and exit if it happens. This allows
+		   us to die if the parent process dies
+		*/
+		tevent_add_fd(nmbd_event_context(), nmbd_event_context(), 0, TEVENT_FD_READ, nmbd_stdin_handler, msg);
 	}
 
 	return true;
@@ -351,11 +383,12 @@ static bool reload_nmbd_services(bool test)
 	set_remote_machine_name("nmbd", False);
 
 	if ( lp_loaded() ) {
-		const char *fname = lp_configfile();
+		char *fname = lp_configfile(talloc_tos());
 		if (file_exist(fname) && !strcsequal(fname,get_dyn_CONFIGFILE())) {
 			set_dyn_CONFIGFILE(fname);
 			test = False;
 		}
+		TALLOC_FREE(fname);
 	}
 
 	if ( test && !lp_file_list_changed() )
@@ -659,7 +692,7 @@ static void process(struct messaging_context *msg)
 static bool open_sockets(bool isdaemon, int port)
 {
 	struct sockaddr_storage ss;
-	const char *sock_addr = lp_socket_address();
+	const char *sock_addr = lp_nbt_client_socket_address();
 
 	/*
 	 * The sockets opened here will be used to receive broadcast
@@ -799,7 +832,7 @@ static bool open_sockets(bool isdaemon, int port)
 
 	StartupTime = time(NULL);
 
-	sys_srandom(time(NULL) ^ sys_getpid());
+	sys_srandom(time(NULL) ^ getpid());
 
 	if (!override_logfile) {
 		char *lfile = NULL;
@@ -811,7 +844,7 @@ static bool open_sockets(bool isdaemon, int port)
 	}
 
 	fault_setup();
-	dump_core_setup("nmbd", lp_logfile());
+	dump_core_setup("nmbd", lp_logfile(talloc_tos()));
 
 	/* POSIX demands that signals are inherited. If the invoking process has
 	 * these signals masked, we will have problems, as we won't receive them. */
@@ -852,6 +885,16 @@ static bool open_sockets(bool isdaemon, int port)
 
 	if (!lp_load_initial_only(get_dyn_CONFIGFILE())) {
 		DEBUG(0, ("error opening config file '%s'\n", get_dyn_CONFIGFILE()));
+		exit(1);
+	}
+
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC
+	    && !lp_parm_bool(-1, "server role check", "inhibit", false)) {
+		/* TODO: when we have a merged set of defaults for
+		 * loadparm, we could possibly check if the internal
+		 * nbt server is in the list, and allow a startup if disabled */
+		DEBUG(0, ("server role = 'active directory domain controller' not compatible with running nmbd standalone. \n"));
+		DEBUGADD(0, ("You should start 'samba' instead, and it will control starting the internal nbt server\n"));
 		exit(1);
 	}
 
@@ -897,7 +940,7 @@ static bool open_sockets(bool isdaemon, int port)
 #ifndef SYNC_DNS
 	/* Setup the async dns. We do it here so it doesn't have all the other
 		stuff initialised and thus chewing memory and sockets */
-	if(lp_we_are_a_wins_server() && lp_dns_proxy()) {
+	if(lp_we_are_a_wins_server() && lp_wins_dns_proxy()) {
 		start_async_dns(msg);
 	}
 #endif
@@ -906,7 +949,11 @@ static bool open_sockets(bool isdaemon, int port)
 		mkdir(lp_lockdir(), 0755);
 	}
 
-	pidfile_create("nmbd");
+	if (!directory_exist(lp_piddir())) {
+		mkdir(lp_piddir(), 0755);
+	}
+
+	pidfile_create(lp_piddir(), "nmbd");
 
 	status = reinit_after_fork(msg, nmbd_event_context(),
 				   false);
@@ -916,7 +963,20 @@ static bool open_sockets(bool isdaemon, int port)
 		exit(1);
 	}
 
+	/*
+	 * Do not initialize the parent-child-pipe before becoming
+	 * a daemon: this is used to detect a died parent in the child
+	 * process.
+	 */
+	status = init_before_fork();
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("init_before_fork failed: %s\n", nt_errstr(status)));
+		exit(1);
+	}
+
 	if (!nmbd_setup_sig_term_handler(msg))
+		exit(1);
+	if (!nmbd_setup_stdin_handler(msg, !Fork))
 		exit(1);
 	if (!nmbd_setup_sig_hup_handler(msg))
 		exit(1);

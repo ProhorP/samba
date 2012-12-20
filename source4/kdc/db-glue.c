@@ -35,7 +35,6 @@
 #include <hdb.h>
 #include "kdc/samba_kdc.h"
 #include "kdc/kdc-glue.h"
-#include "kdc/kdc-policy.h"
 #include "kdc/db-glue.h"
 
 #define SAMBA_KVNO_GET_KRBTGT(kvno) \
@@ -66,6 +65,7 @@ static const char *trust_attrs[] = {
 	"trustType",
 	NULL
 };
+
 
 static KerberosTime ldb_msg_find_krb5time_ldap_time(struct ldb_message *msg, const char *attr, KerberosTime default_val)
 {
@@ -763,12 +763,12 @@ static krb5_error_code samba_kdc_message2entry(krb5_context context,
 	}
 
 	if (ent_type == SAMBA_KDC_ENT_TYPE_SERVER) {
-		*entry_ex->entry.max_life = nt_time_to_unix(kdc_db_ctx->policy.service_tkt_lifetime);
+		*entry_ex->entry.max_life = kdc_db_ctx->policy.svc_tkt_lifetime;
 	} else if (ent_type == SAMBA_KDC_ENT_TYPE_KRBTGT || ent_type == SAMBA_KDC_ENT_TYPE_CLIENT) {
-		*entry_ex->entry.max_life = nt_time_to_unix(kdc_db_ctx->policy.user_tkt_lifetime);
+		*entry_ex->entry.max_life = kdc_db_ctx->policy.usr_tkt_lifetime;
 	} else {
-		*entry_ex->entry.max_life = MIN(nt_time_to_unix(kdc_db_ctx->policy.service_tkt_lifetime),
-					       nt_time_to_unix(kdc_db_ctx->policy.user_tkt_lifetime));
+		*entry_ex->entry.max_life = MIN(kdc_db_ctx->policy.svc_tkt_lifetime,
+					        kdc_db_ctx->policy.usr_tkt_lifetime);
 	}
 
 	entry_ex->entry.max_renew = malloc(sizeof(*entry_ex->entry.max_life));
@@ -777,7 +777,7 @@ static krb5_error_code samba_kdc_message2entry(krb5_context context,
 		goto out;
 	}
 
-	*entry_ex->entry.max_renew = nt_time_to_unix(kdc_db_ctx->policy.user_tkt_renewaltime);
+	*entry_ex->entry.max_renew = kdc_db_ctx->policy.renewal_lifetime;
 
 	entry_ex->entry.generation = NULL;
 
@@ -1860,7 +1860,11 @@ NTSTATUS samba_kdc_setup_db_ctx(TALLOC_CTX *mem_ctx, struct samba_kdc_base_conte
 	kdc_db_ctx->ev_ctx = base_ctx->ev_ctx;
 	kdc_db_ctx->lp_ctx = base_ctx->lp_ctx;
 
-	kdc_get_policy(base_ctx->lp_ctx, NULL, &kdc_db_ctx->policy);
+	/* get default kdc policy */
+	lpcfg_default_kdc_policy(base_ctx->lp_ctx,
+				 &kdc_db_ctx->policy.svc_tkt_lifetime,
+				 &kdc_db_ctx->policy.usr_tkt_lifetime,
+				 &kdc_db_ctx->policy.renewal_lifetime);
 
 	session_info = system_session(kdc_db_ctx->lp_ctx);
 	if (session_info == NULL) {

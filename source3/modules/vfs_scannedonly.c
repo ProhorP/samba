@@ -90,7 +90,7 @@ struct scannedonly_DIR {
 	char *base;
 	int recheck_tries_done; /* if 0 the directory listing has not yet
 	been checked for files that need to be scanned. */
-	SMB_STRUCT_DIR *DIR;
+	DIR *DIR;
 };
 #define SCANNEDONLY_DEBUG 9
 /*********************/
@@ -327,8 +327,9 @@ static void notify_scanner(vfs_handle_struct * handle, const char *scanfile)
 	if (gsendlen + tmplen >= SENDBUFFERSIZE) {
 		flush_sendbuffer(handle);
 	}
-	strlcat(so->gsendbuffer, tmp, SENDBUFFERSIZE + 1);
-	strlcat(so->gsendbuffer, "\n", SENDBUFFERSIZE + 1);
+	/* FIXME ! Truncate checks... JRA. */
+	(void)strlcat(so->gsendbuffer, tmp, SENDBUFFERSIZE + 1);
+	(void)strlcat(so->gsendbuffer, "\n", SENDBUFFERSIZE + 1);
 }
 
 static bool is_scannedonly_file(struct Tscannedonly *so, const char *shortname)
@@ -361,7 +362,7 @@ fullpath is a full path starting from / or a relative path to the
 current working directory
 shortname is the filename without directory components
 basename, is the directory without file name component
-allow_nonexistant return TRUE if stat() on the requested file fails
+allow_nonexistent return TRUE if stat() on the requested file fails
 recheck_time, the time in milliseconds to wait for the daemon to
 create a .scanned file
 recheck_tries, the number of tries to wait
@@ -374,7 +375,7 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 				     struct smb_filename *smb_fname,
 				     const char *shortname,
 				     const char *base_name,
-				     int allow_nonexistant,
+				     int allow_nonexistent,
 				     int recheck_time, int recheck_tries,
 				     int recheck_size, int loop)
 {
@@ -402,9 +403,9 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 		if (retval != 0) {
 			/* failed to stat this file?!? --> hide it */
 			DEBUG(SCANNEDONLY_DEBUG,("no valid stat, return"
-						 " allow_nonexistant=%d\n",
-						 allow_nonexistant));
-			return allow_nonexistant;
+						 " allow_nonexistent=%d\n",
+						 allow_nonexistent));
+			return allow_nonexistent;
 		}
 	}
 	if (!S_ISREG(smb_fname->st.st_ex_mode)) {
@@ -445,7 +446,7 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 		/* check the rest of the directory and notify the
 		   scanner if some file needs scanning */
 		long offset;
-		SMB_STRUCT_DIRENT *dire;
+		struct dirent *dire;
 
 		offset = SMB_VFS_NEXT_TELLDIR(handle, sDIR->DIR);
 		dire = SMB_VFS_NEXT_READDIR(handle, sDIR->DIR, NULL);
@@ -505,11 +506,11 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 /* VFS functions     */
 /*********************/
 
-static SMB_STRUCT_DIR *scannedonly_opendir(vfs_handle_struct * handle,
+static DIR *scannedonly_opendir(vfs_handle_struct * handle,
 					   const char *fname,
 					   const char *mask, uint32 attr)
 {
-	SMB_STRUCT_DIR *DIRp;
+	DIR *DIRp;
 	struct scannedonly_DIR *sDIR;
 
 	DIRp = SMB_VFS_NEXT_OPENDIR(handle, fname, mask, attr);
@@ -527,14 +528,14 @@ static SMB_STRUCT_DIR *scannedonly_opendir(vfs_handle_struct * handle,
 			("scannedonly_opendir, fname=%s, base=%s\n",fname,sDIR->base));
 	sDIR->DIR = DIRp;
 	sDIR->recheck_tries_done = 0;
-	return (SMB_STRUCT_DIR *) sDIR;
+	return (DIR *) sDIR;
 }
 
-static SMB_STRUCT_DIR *scannedonly_fdopendir(vfs_handle_struct * handle,
+static DIR *scannedonly_fdopendir(vfs_handle_struct * handle,
 					   files_struct *fsp,
 					   const char *mask, uint32 attr)
 {
-	SMB_STRUCT_DIR *DIRp;
+	DIR *DIRp;
 	struct scannedonly_DIR *sDIR;
 	const char *fname;
 
@@ -555,21 +556,21 @@ static SMB_STRUCT_DIR *scannedonly_fdopendir(vfs_handle_struct * handle,
 			("scannedonly_fdopendir, fname=%s, base=%s\n",fname,sDIR->base));
 	sDIR->DIR = DIRp;
 	sDIR->recheck_tries_done = 0;
-	return (SMB_STRUCT_DIR *) sDIR;
+	return (DIR *) sDIR;
 }
 
 
-static SMB_STRUCT_DIRENT *scannedonly_readdir(vfs_handle_struct *handle,
-					      SMB_STRUCT_DIR * dirp,
+static struct dirent *scannedonly_readdir(vfs_handle_struct *handle,
+					      DIR * dirp,
 					      SMB_STRUCT_STAT *sbuf)
 {
-	SMB_STRUCT_DIRENT *result;
+	struct dirent *result;
 	int allowed = 0;
 	char *tmp;
 	struct smb_filename *smb_fname;
 	char *notify_name;
 	int namelen;
-	SMB_STRUCT_DIRENT *newdirent;
+	struct dirent *newdirent;
 	TALLOC_CTX *ctx=talloc_tos();
 
 	struct scannedonly_DIR *sDIR = (struct scannedonly_DIR *)dirp;
@@ -633,12 +634,12 @@ static SMB_STRUCT_DIRENT *scannedonly_readdir(vfs_handle_struct *handle,
 		ctx,"%s %s",result->d_name,
 		STRUCTSCANO(handle->data)->scanning_message);
 	namelen = strlen(notify_name);
-	newdirent = (SMB_STRUCT_DIRENT *)talloc_array(
-		ctx, char, sizeof(SMB_STRUCT_DIRENT) + namelen + 1);
+	newdirent = (struct dirent *)talloc_array(
+		ctx, char, sizeof(struct dirent) + namelen + 1);
 	if (!newdirent) {
 		return NULL;
 	}
-	memcpy(newdirent, result, sizeof(SMB_STRUCT_DIRENT));
+	memcpy(newdirent, result, sizeof(struct dirent));
 	memcpy(&newdirent->d_name, notify_name, namelen + 1);
 	DEBUG(SCANNEDONLY_DEBUG,
 	      ("scannedonly_readdir, return newdirent at %p with "
@@ -647,28 +648,28 @@ static SMB_STRUCT_DIRENT *scannedonly_readdir(vfs_handle_struct *handle,
 }
 
 static void scannedonly_seekdir(struct vfs_handle_struct *handle,
-				SMB_STRUCT_DIR * dirp, long offset)
+				DIR * dirp, long offset)
 {
 	struct scannedonly_DIR *sDIR = (struct scannedonly_DIR *)dirp;
 	SMB_VFS_NEXT_SEEKDIR(handle, sDIR->DIR, offset);
 }
 
 static long scannedonly_telldir(struct vfs_handle_struct *handle,
-				SMB_STRUCT_DIR * dirp)
+				DIR * dirp)
 {
 	struct scannedonly_DIR *sDIR = (struct scannedonly_DIR *)dirp;
 	return SMB_VFS_NEXT_TELLDIR(handle, sDIR->DIR);
 }
 
 static void scannedonly_rewinddir(struct vfs_handle_struct *handle,
-				  SMB_STRUCT_DIR * dirp)
+				  DIR * dirp)
 {
 	struct scannedonly_DIR *sDIR = (struct scannedonly_DIR *)dirp;
 	SMB_VFS_NEXT_REWINDDIR(handle, sDIR->DIR);
 }
 
 static int scannedonly_closedir(vfs_handle_struct * handle,
-				SMB_STRUCT_DIR * dirp)
+				DIR * dirp)
 {
 	int retval;
 	struct scannedonly_DIR *sDIR = (struct scannedonly_DIR *)dirp;
@@ -859,7 +860,7 @@ static int scannedonly_rmdir(vfs_handle_struct * handle, const char *path)
 	/* if there are only .scanned: .virus: or .failed: files, we delete
 	   those, because the client cannot see them */
 	DIR *dirp;
-	SMB_STRUCT_DIRENT *dire;
+	struct dirent *dire;
 	TALLOC_CTX *ctx = talloc_tos();
 	bool only_deletable_files = true, have_files = false;
 	char *path_w_slash;
@@ -944,6 +945,10 @@ static int scannedonly_connect(struct vfs_handle_struct *handle,
 	struct Tscannedonly *so;
 
 	so = SMB_MALLOC_P(struct Tscannedonly);
+	if (so == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
 	handle->data = (void *)so;
 	handle->free_data = free_scannedonly_data;
 	so->gsendbuffer[0]='\0';

@@ -32,6 +32,7 @@
 #include "libsmb/nmblib.h"
 #include "messages.h"
 #include "util_tdb.h"
+#include "../lib/util/pidfile.h"
 
 #if HAVE_LIBUNWIND_H
 #include <libunwind.h>
@@ -181,8 +182,8 @@ static bool do_idmap(struct tevent_context *ev,
 {
 	static const char* usage = "Usage: "
 		"smbcontrol <dest> idmap <cmd> [arg]\n"
-		"\tcmd:\tflush [gid|uid]\n"
-		"\t\tdelete \"UID <uid>\"|\"GID <gid>\"|<sid>\n"
+		"\tcmd:"
+		"\tdelete \"UID <uid>\"|\"GID <gid>\"|<sid>\n"
 		"\t\tkill \"UID <uid>\"|\"GID <gid>\"|<sid>\n";
 	const char* arg = NULL;
 	int arglen = 0;
@@ -200,10 +201,7 @@ static bool do_idmap(struct tevent_context *ev,
 		return false;
 	}
 
-	if (strcmp(argv[1], "flush") == 0) {
-		msg_type = ID_CACHE_FLUSH;
-	}
-	else if (strcmp(argv[1], "delete") == 0) {
+	if (strcmp(argv[1], "delete") == 0) {
 		msg_type = ID_CACHE_DELETE;
 	}
 	else if (strcmp(argv[1], "kill") == 0) {
@@ -323,12 +321,13 @@ cleanup:
 	ptrace(PTRACE_DETACH, pid, NULL, NULL);
 }
 
-static int stack_trace_connection(const struct connections_key *key,
-				  const struct connections_data *crec,
-				  void *priv)
+static int stack_trace_server(const struct server_id *id,
+			      uint32_t msg_flags,
+			      void *priv)
 {
-	print_stack_trace(procid_to_pid(&crec->pid), (int *)priv);
-
+	if (id->vnn == get_my_vnn()) {
+		print_stack_trace(procid_to_pid(&id->pid), (int *)priv);
+	}
 	return 0;
 }
 
@@ -355,7 +354,7 @@ static bool do_daemon_stack_trace(struct tevent_context *ev_ctx,
 		 */
 		print_stack_trace(dest, &count);
 	} else {
-		connections_forall_read(stack_trace_connection, &count);
+		serverid_traverse_read(stack_trace_server, &count);
 	}
 
 	return True;
@@ -1064,10 +1063,6 @@ static bool do_dump_event_list(struct tevent_context *ev_ctx,
 			       const struct server_id pid,
 			       const int argc, const char **argv)
 {
-	struct server_id myid;
-
-	myid = messaging_server_id(msg_ctx);
-
 	if (argc != 1) {
 		fprintf(stderr, "Usage: smbcontrol <dest> dump-event-list\n");
 		return False;
@@ -1192,12 +1187,25 @@ static bool do_reload_config(struct tevent_context *ev_ctx,
 	return send_message(msg_ctx, pid, MSG_SMB_CONF_UPDATED, NULL, 0);
 }
 
+static bool do_reload_printers(struct tevent_context *ev_ctx,
+			       struct messaging_context *msg_ctx,
+			       const struct server_id pid,
+			       const int argc, const char **argv)
+{
+	if (argc != 1) {
+		fprintf(stderr, "Usage: smbcontrol <dest> reload-printers\n");
+		return False;
+	}
+
+	return send_message(msg_ctx, pid, MSG_PRINTER_PCAP, NULL, 0);
+}
+
 static void my_make_nmb_name( struct nmb_name *n, const char *name, int type)
 {
 	fstring unix_name;
 	memset( (char *)n, '\0', sizeof(struct nmb_name) );
 	fstrcpy(unix_name, name);
-	strupper_m(unix_name);
+	(void)strupper_m(unix_name);
 	push_ascii(n->name, unix_name, sizeof(n->name), STR_TERMINATE);
 	n->name_type = (unsigned int)type & 0xFF;
 	push_ascii(n->scope,  lp_netbios_scope(), 64, STR_TERMINATE);
@@ -1241,6 +1249,18 @@ static bool do_nodestatus(struct tevent_context *ev_ctx,
 	return send_message(msg_ctx, pid, MSG_SEND_PACKET, &p, sizeof(p));
 }
 
+static bool do_notify_cleanup(struct tevent_context *ev_ctx,
+			      struct messaging_context *msg_ctx,
+			      const struct server_id pid,
+			      const int argc, const char **argv)
+{
+	if (argc != 1) {
+		fprintf(stderr, "Usage: smbcontrol smbd notify-cleanup\n");
+		return false;
+	}
+	return send_message(msg_ctx, pid, MSG_SMB_NOTIFY_CLEANUP, NULL, 0);
+}
+
 /* A list of message type supported */
 
 static const struct {
@@ -1274,6 +1294,7 @@ static const struct {
 	{ "shutdown", do_shutdown, "Shut down daemon" },
 	{ "drvupgrade", do_drvupgrade, "Notify a printer driver has changed" },
 	{ "reload-config", do_reload_config, "Force smbd or winbindd to reload config file"},
+	{ "reload-printers", do_reload_printers, "Force smbd to reload printers"},
 	{ "nodestatus", do_nodestatus, "Ask nmbd to do a node status request"},
 	{ "online", do_winbind_online, "Ask winbind to go into online state"},
 	{ "offline", do_winbind_offline, "Ask winbind to go into offline state"},
@@ -1282,6 +1303,7 @@ static const struct {
 	{ "validate-cache" , do_winbind_validate_cache,
 	  "Validate winbind's credential cache" },
 	{ "dump-domain-list", do_winbind_dump_domain_list, "Dump winbind domain list"},
+	{ "notify-cleanup", do_notify_cleanup },
 	{ "noop", do_noop, "Do nothing" },
 	{ NULL }
 };
@@ -1345,7 +1367,7 @@ static struct server_id parse_dest(struct messaging_context *msg,
 
 	/* Look up other destinations in pidfile directory */
 
-	if ((pid = pidfile_pid(dest)) != 0) {
+	if ((pid = pidfile_pid(lp_piddir(), dest)) != 0) {
 		return pid_to_procid(pid);
 	}
 

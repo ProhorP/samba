@@ -28,8 +28,8 @@
 static struct tevent_req *smbd_smb2_oplock_break_send(TALLOC_CTX *mem_ctx,
 						      struct tevent_context *ev,
 						      struct smbd_smb2_request *smb2req,
-						      uint8_t in_oplock_level,
-						      uint64_t in_file_id_volatile);
+						      struct files_struct *in_fsp,
+						      uint8_t in_oplock_level);
 static NTSTATUS smbd_smb2_oplock_break_recv(struct tevent_req *req,
 					    uint8_t *out_oplock_level);
 
@@ -38,17 +38,17 @@ NTSTATUS smbd_smb2_request_process_break(struct smbd_smb2_request *req)
 {
 	NTSTATUS status;
 	const uint8_t *inbody;
-	int i = req->current_idx;
 	uint8_t in_oplock_level;
 	uint64_t in_file_id_persistent;
 	uint64_t in_file_id_volatile;
+	struct files_struct *in_fsp;
 	struct tevent_req *subreq;
 
 	status = smbd_smb2_request_verify_sizes(req, 0x18);
 	if (!NT_STATUS_IS_OK(status)) {
 		return smbd_smb2_request_error(req, status);
 	}
-	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
+	inbody = SMBD_SMB2_IN_BODY_PTR(req);
 
 	in_oplock_level		= CVAL(inbody, 0x02);
 
@@ -62,17 +62,13 @@ NTSTATUS smbd_smb2_request_process_break(struct smbd_smb2_request *req)
 	in_file_id_persistent		= BVAL(inbody, 0x08);
 	in_file_id_volatile		= BVAL(inbody, 0x10);
 
-	if (req->compat_chain_fsp) {
-		/* skip check */
-	} else if (in_file_id_persistent != in_file_id_volatile) {
+	in_fsp = file_fsp_smb2(req, in_file_id_persistent, in_file_id_volatile);
+	if (in_fsp == NULL) {
 		return smbd_smb2_request_error(req, NT_STATUS_FILE_CLOSED);
 	}
 
-	subreq = smbd_smb2_oplock_break_send(req,
-					     req->sconn->ev_ctx,
-					     req,
-					     in_oplock_level,
-					     in_file_id_volatile);
+	subreq = smbd_smb2_oplock_break_send(req, req->sconn->ev_ctx,
+					     req, in_fsp, in_oplock_level);
 	if (subreq == NULL) {
 		return smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
 	}
@@ -86,7 +82,6 @@ static void smbd_smb2_request_oplock_break_done(struct tevent_req *subreq)
 	struct smbd_smb2_request *req = tevent_req_callback_data(subreq,
 					struct smbd_smb2_request);
 	const uint8_t *inbody;
-	int i = req->current_idx;
 	uint64_t in_file_id_persistent;
 	uint64_t in_file_id_volatile;
 	uint8_t out_oplock_level = 0;
@@ -106,7 +101,7 @@ static void smbd_smb2_request_oplock_break_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
+	inbody = SMBD_SMB2_IN_BODY_PTR(req);
 
 	in_file_id_persistent	= BVAL(inbody, 0x08);
 	in_file_id_volatile	= BVAL(inbody, 0x10);
@@ -148,14 +143,12 @@ struct smbd_smb2_oplock_break_state {
 static struct tevent_req *smbd_smb2_oplock_break_send(TALLOC_CTX *mem_ctx,
 						      struct tevent_context *ev,
 						      struct smbd_smb2_request *smb2req,
-						      uint8_t in_oplock_level,
-						      uint64_t in_file_id_volatile)
+						      struct files_struct *fsp,
+						      uint8_t in_oplock_level)
 {
 	struct tevent_req *req;
 	struct smbd_smb2_oplock_break_state *state;
 	struct smb_request *smbreq;
-	connection_struct *conn = smb2req->tcon->compat_conn;
-	files_struct *fsp = NULL;
 	int oplocklevel = map_smb2_oplock_levels_to_samba(in_oplock_level);
 	bool break_to_none = (oplocklevel == NO_OPLOCK);
 	bool result;
@@ -168,35 +161,21 @@ static struct tevent_req *smbd_smb2_oplock_break_send(TALLOC_CTX *mem_ctx,
 	state->smb2req = smb2req;
 	state->out_oplock_level = SMB2_OPLOCK_LEVEL_NONE;
 
-	DEBUG(10,("smbd_smb2_oplock_break_send: file_id[0x%016llX] "
-		"samba level %d\n",
-		(unsigned long long)in_file_id_volatile,
-		oplocklevel));
+	DEBUG(10,("smbd_smb2_oplock_break_send: %s - %s, "
+		  "samba level %d\n",
+		  fsp_str_dbg(fsp), fsp_fnum_dbg(fsp),
+		  oplocklevel));
 
 	smbreq = smbd_smb2_fake_smb_request(smb2req);
 	if (tevent_req_nomem(smbreq, req)) {
 		return tevent_req_post(req, ev);
 	}
 
-	fsp = file_fsp(smbreq, (uint16_t)in_file_id_volatile);
-	if (fsp == NULL) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
-		return tevent_req_post(req, ev);
-	}
-	if (conn != fsp->conn) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
-		return tevent_req_post(req, ev);
-	}
-	if (smb2req->session->vuid != fsp->vuid) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
-		return tevent_req_post(req, ev);
-	}
-
 	DEBUG(5,("smbd_smb2_oplock_break_send: got SMB2 oplock break (%u) from client "
-		"for file %s fnum = %d\n",
+		"for file %s, %s\n",
 		(unsigned int)in_oplock_level,
 		fsp_str_dbg(fsp),
-		fsp->fnum ));
+		fsp_fnum_dbg(fsp)));
 
 	/* Are we awaiting a break message ? */
 	if (fsp->oplock_timeout == NULL) {
@@ -256,17 +235,38 @@ void send_break_message_smb2(files_struct *fsp, int level)
 				SMB2_OPLOCK_LEVEL_II :
 				SMB2_OPLOCK_LEVEL_NONE;
 	NTSTATUS status;
+	struct smbXsrv_session *session = NULL;
+	struct timeval tv = timeval_current();
+	NTTIME now = timeval_to_nttime(&tv);
+
+	status = smb2srv_session_lookup(fsp->conn->sconn->conn,
+					fsp->vuid,
+					now,
+					&session);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_USER_SESSION_DELETED) ||
+	    (session == NULL))
+	{
+
+		DEBUG(10,("send_break_message_smb2: skip oplock break "
+			"for file %s, %s, smb2 level %u session %llu not found\n",
+			fsp_str_dbg(fsp),
+			fsp_fnum_dbg(fsp),
+			(unsigned int)smb2_oplock_level,
+			(unsigned long long)fsp->vuid));
+		return;
+	}
 
 	DEBUG(10,("send_break_message_smb2: sending oplock break "
-		"for file %s, fnum = %d, smb2 level %u\n",
+		"for file %s, %s, smb2 level %u\n",
 		fsp_str_dbg(fsp),
-		fsp->fnum,
+		fsp_fnum_dbg(fsp),
 		(unsigned int)smb2_oplock_level ));
 
 	status = smbd_smb2_send_oplock_break(fsp->conn->sconn,
-					(uint64_t)fsp->fnum,
-					(uint64_t)fsp->fnum,
-					smb2_oplock_level);
+					     session,
+					     fsp->conn->tcon,
+					     fsp->op,
+					     smb2_oplock_level);
 	if (!NT_STATUS_IS_OK(status)) {
 		smbd_server_connection_terminate(fsp->conn->sconn,
 				 nt_errstr(status));

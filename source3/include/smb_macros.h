@@ -139,7 +139,7 @@
 #define smb_len_large(buf) smb_len_tcp(buf)
 #define _smb_setlen_large(buf, len) _smb_setlen_tcp(buf, len)
 
-#define ENCRYPTION_REQUIRED(conn) ((conn) ? ((conn)->encrypt_level == Required) : false)
+#define ENCRYPTION_REQUIRED(conn) ((conn) ? ((conn)->encrypt_level == SMB_SIGNING_REQUIRED) : false)
 #define IS_CONN_ENCRYPTED(conn) ((conn) ? (conn)->encrypted_tid : false)
 
 /****************************************************************************
@@ -171,7 +171,7 @@ copy an IP address from one buffer to another
  Return True if a server has CIFS UNIX capabilities.
 ********************************************************************/
 
-#define SERVER_HAS_UNIX_CIFS(c) (cli_state_capabilities(c) & CAP_UNIX)
+#define SERVER_HAS_UNIX_CIFS(c) (smb1cli_conn_capabilities(c->conn) & CAP_UNIX)
 
 /****************************************************************************
  Make a filename into unix format.
@@ -190,7 +190,7 @@ copy an IP address from one buffer to another
  Check to see if we are a DC for this domain
 *****************************************************************************/
 
-#define IS_DC  (lp_server_role()==ROLE_DOMAIN_PDC || lp_server_role()==ROLE_DOMAIN_BDC) 
+#define IS_DC  (lp_server_role()==ROLE_DOMAIN_PDC || lp_server_role()==ROLE_DOMAIN_BDC || lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC) 
 
 /*
  * If you add any entries to KERBEROS_VERIFY defines, please modify the below expressions

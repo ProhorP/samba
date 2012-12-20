@@ -24,6 +24,26 @@
 #include "smbd/globals.h"
 #include "../librpc/gen_ndr/ndr_notify.h"
 
+struct notify_change_buf {
+	/*
+	 * If no requests are pending, changes are queued here. Simple array,
+	 * we only append.
+	 */
+
+	/*
+	 * num_changes == -1 means that we have got a catch-all change, when
+	 * asked we just return NT_STATUS_OK without specific changes.
+	 */
+	int num_changes;
+	struct notify_change *changes;
+
+	/*
+	 * If no changes are around requests are queued here. Using a linked
+	 * list, because we have to append at the end and delete from the top.
+	 */
+	struct notify_change_request *requests;
+};
+
 struct notify_change_request {
 	struct notify_change_request *prev, *next;
 	struct files_struct *fsp;	/* backpointer for cancel by mid */
@@ -38,6 +58,23 @@ struct notify_change_request {
 };
 
 static void notify_fsp(files_struct *fsp, uint32 action, const char *name);
+
+bool change_notify_fsp_has_changes(struct files_struct *fsp)
+{
+	if (fsp == NULL) {
+		return false;
+	}
+
+	if (fsp->notify == NULL) {
+		return false;
+	}
+
+	if (fsp->notify->num_changes == 0) {
+		return false;
+	}
+
+	return true;
+}
 
 /*
  * For NTCancel, we need to find the notify_change_request indexed by
@@ -174,14 +211,28 @@ static void notify_callback(void *private_data, const struct notify_event *e)
 	notify_fsp(fsp, e->action, e->path);
 }
 
+static void sys_notify_callback(struct sys_notify_context *ctx,
+				void *private_data,
+				struct notify_event *e)
+{
+	files_struct *fsp = (files_struct *)private_data;
+	DEBUG(10, ("sys_notify_callback called for %s\n", fsp_str_dbg(fsp)));
+	notify_fsp(fsp, e->action, e->path);
+}
+
 NTSTATUS change_notify_create(struct files_struct *fsp, uint32 filter,
 			      bool recursive)
 {
 	char *fullpath;
-	struct notify_entry e;
-	NTSTATUS status;
+	size_t len;
+	uint32_t subdir_filter;
+	NTSTATUS status = NT_STATUS_NOT_IMPLEMENTED;
 
-	SMB_ASSERT(fsp->notify == NULL);
+	if (fsp->notify != NULL) {
+		DEBUG(1, ("change_notify_create: fsp->notify != NULL, "
+			  "fname = %s\n", fsp->fsp_name->base_name));
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	if (!(fsp->notify = talloc_zero(NULL, struct notify_change_buf))) {
 		DEBUG(0, ("talloc failed\n"));
@@ -189,26 +240,44 @@ NTSTATUS change_notify_create(struct files_struct *fsp, uint32 filter,
 	}
 
 	/* Do notify operations on the base_name. */
-	if (asprintf(&fullpath, "%s/%s", fsp->conn->connectpath,
-		     fsp->fsp_name->base_name) == -1) {
-		DEBUG(0, ("asprintf failed\n"));
+	fullpath = talloc_asprintf(
+		talloc_tos(), "%s/%s", fsp->conn->connectpath,
+		fsp->fsp_name->base_name);
+	if (fullpath == NULL) {
+		DEBUG(0, ("talloc_asprintf failed\n"));
 		TALLOC_FREE(fsp->notify);
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	ZERO_STRUCT(e);
-	e.path = fullpath;
-	e.dir_fd = fsp->fh->fd;
-	e.dir_id = fsp->file_id;
-	e.filter = filter;
-	e.subdir_filter = 0;
-	if (recursive) {
-		e.subdir_filter = filter;
+	/*
+	 * Avoid /. at the end of the path name. notify can't deal with it.
+	 */
+	len = strlen(fullpath);
+	if (len > 1 && fullpath[len-1] == '.' && fullpath[len-2] == '/') {
+		fullpath[len-2] = '\0';
 	}
 
-	status = notify_add(fsp->conn->notify_ctx, &e, notify_callback, fsp);
-	SAFE_FREE(fullpath);
+	subdir_filter = recursive ? filter : 0;
 
+	if (fsp->conn->sconn->sys_notify_ctx != NULL) {
+		void *sys_notify_handle = NULL;
+
+		status = SMB_VFS_NOTIFY_WATCH(
+			fsp->conn, fsp->conn->sconn->sys_notify_ctx,
+			fullpath, &filter, &subdir_filter,
+			sys_notify_callback, fsp, &sys_notify_handle);
+
+		if (NT_STATUS_IS_OK(status)) {
+			talloc_steal(fsp->notify, sys_notify_handle);
+		}
+	}
+
+	if ((filter != 0) || (subdir_filter != 0)) {
+		status = notify_add(fsp->conn->sconn->notify_ctx,
+				    fullpath, filter, subdir_filter,
+				    notify_callback, fsp);
+	}
+	TALLOC_FREE(fullpath);
 	return status;
 }
 
@@ -348,33 +417,19 @@ void remove_pending_change_notify_requests_by_fid(files_struct *fsp,
 void notify_fname(connection_struct *conn, uint32 action, uint32 filter,
 		  const char *path)
 {
+	struct notify_context *notify_ctx = conn->sconn->notify_ctx;
 	char *fullpath;
-	char *parent;
-	const char *name;
 
 	if (path[0] == '.' && path[1] == '/') {
 		path += 2;
 	}
-	if (parent_dirname(talloc_tos(), path, &parent, &name)) {
-		struct smb_filename smb_fname_parent;
-
-		ZERO_STRUCT(smb_fname_parent);
-		smb_fname_parent.base_name = parent;
-
-		if (SMB_VFS_STAT(conn, &smb_fname_parent) != -1) {
-			notify_onelevel(conn->notify_ctx, action, filter,
-			    SMB_VFS_FILE_ID_CREATE(conn, &smb_fname_parent.st),
-			    name);
-		}
-	}
-
 	fullpath = talloc_asprintf(talloc_tos(), "%s/%s", conn->connectpath,
 				   path);
 	if (fullpath == NULL) {
 		DEBUG(0, ("asprintf failed\n"));
 		return;
 	}
-	notify_trigger(conn->notify_ctx, action, filter, fullpath);
+	notify_trigger(notify_ctx, action, filter, fullpath);
 	TALLOC_FREE(fullpath);
 }
 
@@ -514,8 +569,7 @@ char *notify_filter_string(TALLOC_CTX *mem_ctx, uint32 filter)
 	return result;
 }
 
-struct sys_notify_context *sys_notify_context_create(connection_struct *conn,
-						     TALLOC_CTX *mem_ctx, 
+struct sys_notify_context *sys_notify_context_create(TALLOC_CTX *mem_ctx,
 						     struct event_context *ev)
 {
 	struct sys_notify_context *ctx;
@@ -526,19 +580,6 @@ struct sys_notify_context *sys_notify_context_create(connection_struct *conn,
 	}
 
 	ctx->ev = ev;
-	ctx->conn = conn;
 	ctx->private_data = NULL;
 	return ctx;
 }
-
-NTSTATUS sys_notify_watch(struct sys_notify_context *ctx,
-			  struct notify_entry *e,
-			  void (*callback)(struct sys_notify_context *ctx, 
-					   void *private_data,
-					   struct notify_event *ev),
-			  void *private_data, void *handle)
-{
-	return SMB_VFS_NOTIFY_WATCH(ctx->conn, ctx, e, callback, private_data,
-				    handle);
-}
-

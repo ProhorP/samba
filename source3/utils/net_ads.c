@@ -28,7 +28,7 @@
 #include "nsswitch/libwbclient/wbclient.h"
 #include "ads.h"
 #include "libads/cldap.h"
-#include "libads/dns.h"
+#include "../lib/addns/dnsquery.h"
 #include "../libds/common/flags.h"
 #include "librpc/gen_ndr/libnet_join.h"
 #include "libnet/libnet_join.h"
@@ -37,6 +37,8 @@
 #include "krb5_env.h"
 #include "../libcli/security/security.h"
 #include "libsmb/libsmb.h"
+#include "lib/param/loadparm.h"
+#include "utils/net_dns.h"
 
 #ifdef HAVE_ADS
 
@@ -286,7 +288,10 @@ retry:
 		*cp++ = '\0';
 		SAFE_FREE(ads->auth.realm);
 		ads->auth.realm = smb_xstrdup(cp);
-		strupper_m(ads->auth.realm);
+		if (!strupper_m(ads->auth.realm)) {
+			ads_destroy(&ads);
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
        }
 
 	status = ads_connect(ads);
@@ -1018,7 +1023,7 @@ static int net_ads_leave(struct net_context *c, int argc, const char **argv)
 		goto done;
 	}
 
-	/* Based on what we requseted, we shouldn't get here, but if
+	/* Based on what we requested, we shouldn't get here, but if
 	   we did, it means the secrets were removed, and therefore
 	   we have left the domain */
 	d_fprintf(stderr, _("Machine '%s' Left domain '%s'\n"),
@@ -1122,12 +1127,9 @@ static WERROR check_ads_config( void )
 
 #if defined(WITH_DNS_UPDATES)
 #include "../lib/addns/dns.h"
-DNS_ERROR DoDNSUpdate(char *pszServerName,
-		      const char *pszDomainName, const char *pszHostName,
-		      const struct sockaddr_storage *sslist,
-		      size_t num_addrs );
 
-static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
+static NTSTATUS net_update_dns_internal(struct net_context *c,
+					TALLOC_CTX *ctx, ADS_STRUCT *ads,
 					const char *machine_name,
 					const struct sockaddr_storage *addrs,
 					int num_addrs)
@@ -1137,6 +1139,7 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	DNS_ERROR dns_err;
 	fstring dns_server;
+	const char *dns_hosts_file;
 	const char *dnsdomain = NULL;
 	char *root_domain = NULL;
 
@@ -1148,7 +1151,9 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
 	}
 	dnsdomain++;
 
-	status = ads_dns_lookup_ns( ctx, dnsdomain, &nameservers, &ns_count );
+	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
+	status = ads_dns_lookup_ns(ctx, dns_hosts_file,
+				   dnsdomain, &nameservers, &ns_count);
 	if ( !NT_STATUS_IS_OK(status) || (ns_count == 0)) {
 		/* Child domains often do not have NS records.  Look
 		   for the NS record for the forest root domain
@@ -1186,10 +1191,11 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
 
 		/* try again for NS servers */
 
-		status = ads_dns_lookup_ns( ctx, root_domain, &nameservers, &ns_count );
+		status = ads_dns_lookup_ns(ctx, dns_hosts_file, root_domain,
+					   &nameservers, &ns_count);
 
 		if ( !NT_STATUS_IS_OK(status) || (ns_count == 0)) {
-			DEBUG(3,("net_ads_join: Failed to find name server for the %s "
+			DEBUG(3,("net_update_dns_internal: Failed to find name server for the %s "
 			 "realm\n", ads->config.realm));
 			goto done;
 		}
@@ -1200,6 +1206,17 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
 
 	for (i=0; i < ns_count; i++) {
 
+		uint32_t flags = DNS_UPDATE_SIGNED |
+				 DNS_UPDATE_UNSIGNED |
+				 DNS_UPDATE_UNSIGNED_SUFFICIENT |
+				 DNS_UPDATE_PROBE |
+				 DNS_UPDATE_PROBE_SUFFICIENT;
+
+		if (c->opt_force) {
+			flags &= ~DNS_UPDATE_PROBE_SUFFICIENT;
+			flags &= ~DNS_UPDATE_UNSIGNED_SUFFICIENT;
+		}
+
 		status = NT_STATUS_UNSUCCESSFUL;
 
 		/* Now perform the dns update - we'll try non-secure and if we fail,
@@ -1207,7 +1224,7 @@ static NTSTATUS net_update_dns_internal(TALLOC_CTX *ctx, ADS_STRUCT *ads,
 
 		fstrcpy( dns_server, nameservers[i].hostname );
 
-		dns_err = DoDNSUpdate(dns_server, dnsdomain, machine_name, addrs, num_addrs);
+		dns_err = DoDNSUpdate(dns_server, dnsdomain, machine_name, addrs, num_addrs, flags);
 		if (ERR_DNS_IS_OK(dns_err)) {
 			status = NT_STATUS_OK;
 			goto done;
@@ -1234,7 +1251,8 @@ done:
 	return status;
 }
 
-static NTSTATUS net_update_dns_ext(TALLOC_CTX *mem_ctx, ADS_STRUCT *ads,
+static NTSTATUS net_update_dns_ext(struct net_context *c,
+				   TALLOC_CTX *mem_ctx, ADS_STRUCT *ads,
 				   const char *hostname,
 				   struct sockaddr_storage *iplist,
 				   int num_addrs)
@@ -1248,7 +1266,9 @@ static NTSTATUS net_update_dns_ext(TALLOC_CTX *mem_ctx, ADS_STRUCT *ads,
 	} else {
 		name_to_fqdn( machine_name, lp_netbios_name() );
 	}
-	strlower_m( machine_name );
+	if (!strlower_m( machine_name )) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	if (num_addrs == 0 || iplist == NULL) {
 		/*
@@ -1264,18 +1284,18 @@ static NTSTATUS net_update_dns_ext(TALLOC_CTX *mem_ctx, ADS_STRUCT *ads,
 		iplist = iplist_alloc;
 	}
 
-	status = net_update_dns_internal(mem_ctx, ads, machine_name,
+	status = net_update_dns_internal(c, mem_ctx, ads, machine_name,
 					 iplist, num_addrs);
 
 	SAFE_FREE(iplist_alloc);
 	return status;
 }
 
-static NTSTATUS net_update_dns(TALLOC_CTX *mem_ctx, ADS_STRUCT *ads, const char *hostname)
+static NTSTATUS net_update_dns(struct net_context *c, TALLOC_CTX *mem_ctx, ADS_STRUCT *ads, const char *hostname)
 {
 	NTSTATUS status;
 
-	status = net_update_dns_ext(mem_ctx, ads, hostname, NULL, 0);
+	status = net_update_dns_ext(c, mem_ctx, ads, hostname, NULL, 0);
 	return status;
 }
 #endif
@@ -1305,7 +1325,7 @@ static int net_ads_join_usage(struct net_context *c, int argc, const char **argv
 }
 
 
-static void _net_ads_join_dns_updates(TALLOC_CTX *ctx, struct libnet_JoinCtx *r)
+static void _net_ads_join_dns_updates(struct net_context *c, TALLOC_CTX *ctx, struct libnet_JoinCtx *r)
 {
 #if defined(WITH_DNS_UPDATES)
 	ADS_STRUCT *ads_dns = NULL;
@@ -1366,7 +1386,10 @@ static void _net_ads_join_dns_updates(TALLOC_CTX *ctx, struct libnet_JoinCtx *r)
 		goto done;
 	}
 
-	strupper_m(ads_dns->auth.realm);
+	if (!strupper_m(ads_dns->auth.realm)) {
+		d_fprintf(stderr, _("strupper_m %s failed\n"), ads_dns->auth.realm);
+		goto done;
+	}
 
 	ret = ads_kinit_password(ads_dns);
 	if (ret != 0) {
@@ -1376,7 +1399,7 @@ static void _net_ads_join_dns_updates(TALLOC_CTX *ctx, struct libnet_JoinCtx *r)
 		goto done;
 	}
 
-	status = net_update_dns(ctx, ads_dns, NULL);
+	status = net_update_dns(c, ctx, ads_dns, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf( stderr, _("DNS update failed: %s\n"),
 			  nt_errstr(status));
@@ -1520,7 +1543,7 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	d_printf(_("Using short domain name -- %s\n"), r->out.netbios_domain_name);
 
 	if (r->out.dns_domain_name) {
-		d_printf(_("Joined '%s' to realm '%s'\n"), r->in.machine_name,
+		d_printf(_("Joined '%s' to dns domain '%s'\n"), r->in.machine_name,
 			r->out.dns_domain_name);
 	} else {
 		d_printf(_("Joined '%s' to domain '%s'\n"), r->in.machine_name,
@@ -1532,7 +1555,7 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	 * If the dns update fails, we still consider the join
 	 * operation as succeeded if we came this far.
 	 */
-	_net_ads_join_dns_updates(ctx, r);
+	_net_ads_join_dns_updates(c, ctx, r);
 
 	TALLOC_FREE(r);
 	TALLOC_FREE( ctx );
@@ -1628,7 +1651,7 @@ static int net_ads_dns_register(struct net_context *c, int argc, const char **ar
 		return -1;
 	}
 
-	ntstatus = net_update_dns_ext(ctx, ads, hostname, addrs, num_addrs);
+	ntstatus = net_update_dns_ext(c, ctx, ads, hostname, addrs, num_addrs);
 	if (!NT_STATUS_IS_OK(ntstatus)) {
 		d_fprintf( stderr, _("DNS update failed!\n") );
 		ads_destroy( &ads );
@@ -1648,10 +1671,6 @@ static int net_ads_dns_register(struct net_context *c, int argc, const char **ar
 	return -1;
 #endif
 }
-
-#if defined(WITH_DNS_UPDATES)
-DNS_ERROR do_gethostbyname(const char *server, const char *host);
-#endif
 
 static int net_ads_dns_gethostbyname(struct net_context *c, int argc, const char **argv)
 {
@@ -2181,7 +2200,11 @@ int net_ads_changetrustpw(struct net_context *c, int argc, const char **argv)
 	}
 
 	fstrcpy(my_name, lp_netbios_name());
-	strlower_m(my_name);
+	if (!strlower_m(my_name)) {
+		ads_destroy(&ads);
+		return -1;
+	}
+
 	if (asprintf(&host_principal, "%s$@%s", my_name, ads->config.realm) == -1) {
 		ads_destroy(&ads);
 		return -1;
@@ -2251,7 +2274,7 @@ static int net_ads_search(struct net_context *c, int argc, const char **argv)
 	ldap_exp = argv[0];
 	attrs = (argv + 1);
 
-	rc = ads_do_search_all(ads, ads->config.bind_path,
+	rc = ads_do_search_retry(ads, ads->config.bind_path,
 			       LDAP_SCOPE_SUBTREE,
 			       ldap_exp, attrs, &res);
 	if (!ADS_ERR_OK(rc)) {

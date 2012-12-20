@@ -90,7 +90,8 @@ struct smbcli_transport *smbcli_transport_init(struct smbcli_socket *sock,
 					      sock->hostname,
 					      options->signing,
 					      smb1_capabilities,
-					      NULL); /* client_guid */
+					      NULL, /* client_guid */
+					      0); /* smb2_capabilities */
 	if (transport->conn == NULL) {
 		TALLOC_FREE(sock);
 		TALLOC_FREE(transport);
@@ -212,8 +213,8 @@ struct tevent_req *smbcli_transport_setup_subreq(struct smbcli_request *req)
 	uint16_t additional_flags2;
 	uint16_t clear_flags2;
 	uint32_t pid;
-	uint16_t tid;
-	uint16_t uid;
+	struct smbXcli_tcon *tcon = NULL;
+	struct smbXcli_session *session = NULL;
 	uint32_t timeout_msec = transport->options.request_timeout * 1000;
 	struct iovec *bytes_iov = NULL;
 	struct tevent_req *subreq = NULL;
@@ -223,11 +224,17 @@ struct tevent_req *smbcli_transport_setup_subreq(struct smbcli_request *req)
 	additional_flags2 = SVAL(req->out.hdr, HDR_FLG2);
 	pid  = SVAL(req->out.hdr, HDR_PID);
 	pid |= SVAL(req->out.hdr, HDR_PIDHIGH)<<16;
-	tid = SVAL(req->out.hdr, HDR_TID);
-	uid = SVAL(req->out.hdr, HDR_UID);
 
 	clear_flags = ~additional_flags;
 	clear_flags2 = ~additional_flags2;
+
+	if (req->session) {
+		session = req->session->smbXcli;
+	}
+
+	if (req->tree) {
+		tcon = req->tree->smbXcli;
+	}
 
 	bytes_iov = talloc(req, struct iovec);
 	if (bytes_iov == NULL) {
@@ -246,8 +253,8 @@ struct tevent_req *smbcli_transport_setup_subreq(struct smbcli_request *req)
 				    clear_flags2,
 				    timeout_msec,
 				    pid,
-				    tid,
-				    uid,
+				    tcon,
+				    session,
 				    req->out.wct,
 				    (uint16_t *)req->out.vwv,
 				    1, bytes_iov);
@@ -291,8 +298,8 @@ void smbcli_transport_send(struct smbcli_request *req)
 					    0, /* clear_flags2 */
 					    0, /* timeout_msec */
 					    0, /* pid */
-					    0, /* tid */
-					    0, /* uid */
+					    NULL, /* tcon */
+					    NULL, /* session */
 					    0, /* wct */
 					    NULL, /* vwv */
 					    0, /* iov_count */
@@ -497,8 +504,8 @@ static void smbcli_transport_break_handler(struct tevent_req *subreq)
 				    0, /* clear_flags2 */
 				    0, /* timeout_msec */
 				    0, /* pid */
-				    0, /* tid */
-				    0, /* uid */
+				    NULL, /* tcon */
+				    NULL, /* session */
 				    0, /* wct */
 				    NULL, /* vwv */
 				    0, /* iov_count */

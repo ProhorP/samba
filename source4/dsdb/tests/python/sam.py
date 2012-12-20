@@ -2432,10 +2432,53 @@ class SamTests(samba.tests.TestCase):
         self.assertTrue(len(res) == 1)
         self.assertEquals(res[0]["dNSHostName"][0], "testname2.testdom")
         self.assertEquals(res[0]["sAMAccountName"][0], "testname2$")
-        self.assertTrue(res[0]["servicePrincipalName"][0] == "HOST/testname2" or
-                        res[0]["servicePrincipalName"][1] == "HOST/testname2")
-        self.assertTrue(res[0]["servicePrincipalName"][0] == "HOST/testname2.testdom" or
-                        res[0]["servicePrincipalName"][1] == "HOST/testname2.testdom")
+        self.assertTrue(len(res[0]["servicePrincipalName"]) == 2)
+        self.assertTrue("HOST/testname2" in res[0]["servicePrincipalName"])
+        self.assertTrue("HOST/testname2.testdom" in res[0]["servicePrincipalName"])
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["servicePrincipalName"] = MessageElement("HOST/testname2.testdom",
+                                                   FLAG_MOD_ADD, "servicePrincipalName")
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_ATTRIBUTE_OR_VALUE_EXISTS)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["servicePrincipalName"] = MessageElement("HOST/testname3",
+                                                   FLAG_MOD_ADD, "servicePrincipalName")
+        ldb.modify(m)
+
+        res = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["dNSHostName", "sAMAccountName", "servicePrincipalName"])
+        self.assertTrue(len(res) == 1)
+        self.assertEquals(res[0]["dNSHostName"][0], "testname2.testdom")
+        self.assertEquals(res[0]["sAMAccountName"][0], "testname2$")
+        self.assertTrue(len(res[0]["servicePrincipalName"]) == 3)
+        self.assertTrue("HOST/testname2" in res[0]["servicePrincipalName"])
+        self.assertTrue("HOST/testname3" in res[0]["servicePrincipalName"])
+        self.assertTrue("HOST/testname2.testdom" in res[0]["servicePrincipalName"])
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["dNSHostName"] = MessageElement("testname3.testdom",
+                                          FLAG_MOD_REPLACE, "dNSHostName")
+        m["servicePrincipalName"] = MessageElement("HOST/testname3.testdom",
+                                                   FLAG_MOD_ADD, "servicePrincipalName")
+        ldb.modify(m)
+
+        res = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                         scope=SCOPE_BASE, attrs=["dNSHostName", "sAMAccountName", "servicePrincipalName"])
+        self.assertTrue(len(res) == 1)
+        self.assertEquals(res[0]["dNSHostName"][0], "testname3.testdom")
+        self.assertEquals(res[0]["sAMAccountName"][0], "testname2$")
+        self.assertTrue(len(res[0]["servicePrincipalName"]) == 3)
+        self.assertTrue("HOST/testname2" in res[0]["servicePrincipalName"])
+        self.assertTrue("HOST/testname3" in res[0]["servicePrincipalName"])
+        self.assertTrue("HOST/testname3.testdom" in res[0]["servicePrincipalName"])
 
         delete_force(self.ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
 
@@ -2603,6 +2646,83 @@ class SamTests(samba.tests.TestCase):
         self.assertTrue("description" in res[0])
         self.assertTrue(len(res[0]["description"]) == 1)
         self.assertEquals(res[0]["description"][0], "desc2")
+
+        delete_force(self.ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+
+
+    def test_fSMORoleOwner_attribute(self):
+        """Test fSMORoleOwner attribute"""
+        print "Test fSMORoleOwner attribute"""
+
+        ds_service_name = self.ldb.get_dsServiceName()
+
+        # The "fSMORoleOwner" attribute can only be set to "nTDSDSA" entries,
+        # invalid DNs return ERR_UNWILLING_TO_PERFORM
+
+        try:
+            self.ldb.add({
+                "dn": "cn=ldaptestgroup,cn=users," + self.base_dn,
+                "objectclass": "group",
+                "fSMORoleOwner": self.base_dn})
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        try:
+            self.ldb.add({
+                "dn": "cn=ldaptestgroup,cn=users," + self.base_dn,
+                "objectclass": "group",
+                "fSMORoleOwner": [] })
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_CONSTRAINT_VIOLATION)
+
+        # We are able to set it to a valid "nTDSDSA" entry if the server is
+        # capable of handling the role
+
+        self.ldb.add({
+            "dn": "cn=ldaptestgroup,cn=users," + self.base_dn,
+            "objectclass": "group",
+            "fSMORoleOwner": ds_service_name })
+
+        delete_force(self.ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+
+        self.ldb.add({
+            "dn": "cn=ldaptestgroup,cn=users," + self.base_dn,
+            "objectclass": "group" })
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+        m.add(MessageElement(self.base_dn, FLAG_MOD_REPLACE, "fSMORoleOwner"))
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+        m.add(MessageElement([], FLAG_MOD_REPLACE, "fSMORoleOwner"))
+        try:
+            ldb.modify(m)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+
+        # We are able to set it to a valid "nTDSDSA" entry if the server is
+        # capable of handling the role
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+        m.add(MessageElement(ds_service_name, FLAG_MOD_REPLACE, "fSMORoleOwner"))
+        ldb.modify(m)
+
+        # A clean-out works on plain entries, not master (schema, PDC...) DNs
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
+        m.add(MessageElement([], FLAG_MOD_DELETE, "fSMORoleOwner"))
+        ldb.modify(m)
 
         delete_force(self.ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
 

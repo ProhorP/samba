@@ -224,7 +224,7 @@ static NTSTATUS preopen_init_helper(struct preopen_helper *h)
 		return status;
 	}
 
-	h->pid = sys_fork();
+	h->pid = fork();
 
 	if (h->pid == -1) {
 		return map_nt_error_from_unix(errno);
@@ -405,7 +405,7 @@ static int preopen_open(vfs_handle_struct *handle,
 
 	TALLOC_FREE(state->template_fname);
 	state->template_fname = talloc_asprintf(
-		state, "%s/%s", fsp->conn->connectpath, smb_fname->base_name);
+		state, "%s/%s", fsp->conn->cwd, smb_fname->base_name);
 
 	if (state->template_fname == NULL) {
 		return res;

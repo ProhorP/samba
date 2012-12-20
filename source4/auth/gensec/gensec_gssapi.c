@@ -24,6 +24,7 @@
 #include "includes.h"
 #include "lib/events/events.h"
 #include "system/kerberos.h"
+#include "system/gssapi.h"
 #include "auth/kerberos/kerberos.h"
 #include "librpc/gen_ndr/krb5pac.h"
 #include "auth/auth.h"
@@ -37,11 +38,15 @@
 #include "auth/gensec/gensec_toplevel_proto.h"
 #include "param/param.h"
 #include "auth/session_proto.h"
-#include <gssapi/gssapi.h>
-#include <gssapi/gssapi_krb5.h>
-#include <gssapi/gssapi_spnego.h>
-#include "auth/gensec/gensec_gssapi.h"
+#include "gensec_gssapi.h"
 #include "lib/util/util_net.h"
+#include "auth/kerberos/pac_utils.h"
+
+#ifndef gss_mech_spnego
+gss_OID_desc spnego_mech_oid_desc =
+		{ 6, discard_const_p(void, "\x2b\x06\x01\x05\x05\x02") };
+#define gss_mech_spnego (&spnego_mech_oid_desc)
+#endif
 
 _PUBLIC_ NTSTATUS gensec_gssapi_init(void);
 
@@ -130,6 +135,7 @@ static NTSTATUS gensec_gssapi_start(struct gensec_security *gensec_security)
 	gensec_gssapi_state->client_name = GSS_C_NO_NAME;
 	
 	gensec_gssapi_state->gss_want_flags = 0;
+	gensec_gssapi_state->expire_time = GENSEC_EXPIRE_TIME_INFINITY;
 
 	if (gensec_setting_bool(gensec_security->settings, "gensec_gssapi", "delegation_by_kdc_policy", true)) {
 		gensec_gssapi_state->gss_want_flags |= GSS_C_DELEG_POLICY_FLAG;
@@ -166,7 +172,8 @@ static NTSTATUS gensec_gssapi_start(struct gensec_security *gensec_security)
 		break;
 	case DCERPC_AUTH_TYPE_KRB5:
 	default:
-		gensec_gssapi_state->gss_oid = gss_mech_krb5;
+		gensec_gssapi_state->gss_oid =
+			discard_const_p(void, gss_mech_krb5);
 		break;
 	}
 
@@ -199,6 +206,7 @@ static NTSTATUS gensec_gssapi_start(struct gensec_security *gensec_security)
 
 	talloc_set_destructor(gensec_gssapi_state, gensec_gssapi_destructor);
 
+#ifdef SAMBA4_USES_HEIMDAL
 	realm = lpcfg_realm(gensec_security->settings->lp_ctx);
 	if (realm != NULL) {
 		ret = gsskrb5_set_default_realm(realm);
@@ -216,7 +224,7 @@ static NTSTATUS gensec_gssapi_start(struct gensec_security *gensec_security)
 		talloc_free(gensec_gssapi_state);
 		return NT_STATUS_INTERNAL_ERROR;
 	}
-
+#endif
 	return NT_STATUS_OK;
 }
 
@@ -394,26 +402,6 @@ static NTSTATUS gensec_gssapi_sasl_client_start(struct gensec_security *gensec_s
 
 
 /**
- * Check if the packet is one for this mechansim
- * 
- * @param gensec_security GENSEC state
- * @param in The request, as a DATA_BLOB
- * @return Error, INVALID_PARAMETER if it's not a packet for us
- *                or NT_STATUS_OK if the packet is ok. 
- */
-
-static NTSTATUS gensec_gssapi_magic(struct gensec_security *gensec_security, 
-				    const DATA_BLOB *in) 
-{
-	if (gensec_gssapi_check_oid(in, GENSEC_OID_KERBEROS5)) {
-		return NT_STATUS_OK;
-	} else {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-}
-
-
-/**
  * Next state function for the GSSAPI GENSEC mechanism
  * 
  * @param gensec_gssapi_state GSSAPI State
@@ -436,6 +424,14 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 	OM_uint32 min_stat2;
 	gss_buffer_desc input_token, output_token;
 	gss_OID gss_oid_p = NULL;
+	OM_uint32 time_req = 0;
+	OM_uint32 time_rec = 0;
+	struct timeval tv;
+
+	time_req = gensec_setting_int(gensec_security->settings,
+				      "gensec_gssapi", "requested_life_time",
+				      time_req);
+
 	input_token.length = in.length;
 	input_token.value = in.data;
 
@@ -445,7 +441,9 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 		switch (gensec_security->gensec_role) {
 		case GENSEC_CLIENT:
 		{
+#ifdef SAMBA4_USES_HEIMDAL
 			struct gsskrb5_send_to_kdc send_to_kdc;
+#endif
 			krb5_error_code ret;
 
 			nt_status = gensec_gssapi_client_creds(gensec_security, ev);
@@ -453,6 +451,7 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 				return nt_status;
 			}
 
+#ifdef SAMBA4_USES_HEIMDAL
 			send_to_kdc.func = smb_krb5_send_and_recv_func;
 			send_to_kdc.ptr = ev;
 
@@ -461,24 +460,25 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 				DEBUG(1,("gensec_krb5_start: gsskrb5_set_send_to_kdc failed\n"));
 				return NT_STATUS_INTERNAL_ERROR;
 			}
-
+#endif
 			maj_stat = gss_init_sec_context(&min_stat, 
 							gensec_gssapi_state->client_cred->creds,
 							&gensec_gssapi_state->gssapi_context, 
 							gensec_gssapi_state->server_name, 
 							gensec_gssapi_state->gss_oid,
 							gensec_gssapi_state->gss_want_flags, 
-							0, 
+							time_req,
 							gensec_gssapi_state->input_chan_bindings,
 							&input_token, 
 							&gss_oid_p,
 							&output_token, 
 							&gensec_gssapi_state->gss_got_flags, /* ret flags */
-							NULL);
+							&time_rec);
 			if (gss_oid_p) {
 				gensec_gssapi_state->gss_oid = gss_oid_p;
 			}
 
+#ifdef SAMBA4_USES_HEIMDAL
 			send_to_kdc.func = smb_krb5_send_and_recv_func;
 			send_to_kdc.ptr = NULL;
 
@@ -487,7 +487,7 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 				DEBUG(1,("gensec_krb5_start: gsskrb5_set_send_to_kdc failed\n"));
 				return NT_STATUS_INTERNAL_ERROR;
 			}
-
+#endif
 			break;
 		}
 		case GENSEC_SERVER:
@@ -501,7 +501,7 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 							  &gss_oid_p,
 							  &output_token, 
 							  &gensec_gssapi_state->gss_got_flags, 
-							  NULL, 
+							  &time_rec,
 							  &gensec_gssapi_state->delegated_cred_handle);
 			if (gss_oid_p) {
 				gensec_gssapi_state->gss_oid = gss_oid_p;
@@ -524,6 +524,9 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 			} else {
 				DEBUG(5, ("gensec_gssapi: NO credentials were delegated\n"));
 			}
+
+			tv = timeval_current_ofs(time_rec, 0);
+			gensec_gssapi_state->expire_time = timeval_to_nttime(&tv);
 
 			/* We may have been invoked as SASL, so there
 			 * is more work to do */
@@ -564,9 +567,11 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 			case GENSEC_CLIENT:
 				creds = gensec_gssapi_state->client_cred->creds;
 				role = "client";
+				break;
 			case GENSEC_SERVER:
 				creds = gensec_gssapi_state->server_cred->creds;
 				role = "server";
+				break;
 			}
 
 			maj_stat = gss_inquire_cred(&min_stat, 
@@ -607,7 +612,8 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 					  gssapi_error_string(out_mem_ctx, maj_stat, min_stat, gensec_gssapi_state->gss_oid)));
 			}
 			return NT_STATUS_INVALID_PARAMETER;
-		} else if (gss_oid_equal(gensec_gssapi_state->gss_oid, gss_mech_krb5)) {
+		} else if (smb_gss_oid_equal(gensec_gssapi_state->gss_oid,
+					     gss_mech_krb5)) {
 			switch (min_stat) {
 			case KRB5KRB_AP_ERR_TKT_NYV:
 				DEBUG(1, ("Error with ticket to contact %s: possible clock skew between us and the KDC or target server: %s\n",
@@ -1220,7 +1226,8 @@ static bool gensec_gssapi_have_feature(struct gensec_security *gensec_security,
 	}
 	if (feature & GENSEC_FEATURE_SESSION_KEY) {
 		/* Only for GSSAPI/Krb5 */
-		if (gss_oid_equal(gensec_gssapi_state->gss_oid, gss_mech_krb5)) {
+		if (smb_gss_oid_equal(gensec_gssapi_state->gss_oid,
+				      gss_mech_krb5)) {
 			return true;
 		}
 	}
@@ -1269,6 +1276,15 @@ static bool gensec_gssapi_have_feature(struct gensec_security *gensec_security,
 		return true;
 	}
 	return false;
+}
+
+static NTTIME gensec_gssapi_expire_time(struct gensec_security *gensec_security)
+{
+	struct gensec_gssapi_state *gensec_gssapi_state =
+		talloc_get_type_abort(gensec_security->private_data,
+		struct gensec_gssapi_state);
+
+	return gensec_gssapi_state->expire_time;
 }
 
 /*
@@ -1429,22 +1445,24 @@ static size_t gensec_gssapi_sig_size(struct gensec_security *gensec_security, si
 		}
 	} else if (gensec_gssapi_state->lucid->protocol == 0) {
 		switch (gensec_gssapi_state->lucid->rfc1964_kd.ctx_key.type) {
-		case KEYTYPE_DES:
-		case KEYTYPE_ARCFOUR:
-		case KEYTYPE_ARCFOUR_56:
+		case ENCTYPE_DES_CBC_CRC:
+		case ENCTYPE_ARCFOUR_HMAC:
+		case ENCTYPE_ARCFOUR_HMAC_EXP:
 			if (gensec_gssapi_state->gss_got_flags & GSS_C_CONF_FLAG) {
 				gensec_gssapi_state->sig_size = 45;
 			} else {
 				gensec_gssapi_state->sig_size = 37;
 			}
 			break;
-		case KEYTYPE_DES3:
+#ifdef SAMBA4_USES_HEIMDAL
+		case ENCTYPE_OLD_DES3_CBC_SHA1:
 			if (gensec_gssapi_state->gss_got_flags & GSS_C_CONF_FLAG) {
 				gensec_gssapi_state->sig_size = 57;
 			} else {
 				gensec_gssapi_state->sig_size = 49;
 			}
 			break;
+#endif
 		}
 	}
 
@@ -1470,7 +1488,7 @@ static const struct gensec_security_ops gensec_gssapi_spnego_security_ops = {
 	.oid            = gensec_gssapi_spnego_oids,
 	.client_start   = gensec_gssapi_client_start,
 	.server_start   = gensec_gssapi_server_start,
-	.magic  	= gensec_gssapi_magic,
+	.magic  	= gensec_magic_check_krb5_oid,
 	.update 	= gensec_gssapi_update,
 	.session_key	= gensec_gssapi_session_key,
 	.session_info	= gensec_gssapi_session_info,
@@ -1481,6 +1499,7 @@ static const struct gensec_security_ops gensec_gssapi_spnego_security_ops = {
 	.wrap           = gensec_gssapi_wrap,
 	.unwrap         = gensec_gssapi_unwrap,
 	.have_feature   = gensec_gssapi_have_feature,
+	.expire_time    = gensec_gssapi_expire_time,
 	.enabled        = false,
 	.kerberos       = true,
 	.priority       = GENSEC_GSSAPI
@@ -1493,7 +1512,7 @@ static const struct gensec_security_ops gensec_gssapi_krb5_security_ops = {
 	.oid            = gensec_gssapi_krb5_oids,
 	.client_start   = gensec_gssapi_client_start,
 	.server_start   = gensec_gssapi_server_start,
-	.magic  	= gensec_gssapi_magic,
+	.magic  	= gensec_magic_check_krb5_oid,
 	.update 	= gensec_gssapi_update,
 	.session_key	= gensec_gssapi_session_key,
 	.session_info	= gensec_gssapi_session_info,
@@ -1505,6 +1524,7 @@ static const struct gensec_security_ops gensec_gssapi_krb5_security_ops = {
 	.wrap           = gensec_gssapi_wrap,
 	.unwrap         = gensec_gssapi_unwrap,
 	.have_feature   = gensec_gssapi_have_feature,
+	.expire_time    = gensec_gssapi_expire_time,
 	.enabled        = true,
 	.kerberos       = true,
 	.priority       = GENSEC_GSSAPI
@@ -1524,6 +1544,7 @@ static const struct gensec_security_ops gensec_gssapi_sasl_krb5_security_ops = {
 	.wrap             = gensec_gssapi_wrap,
 	.unwrap           = gensec_gssapi_unwrap,
 	.have_feature     = gensec_gssapi_have_feature,
+	.expire_time      = gensec_gssapi_expire_time,
 	.enabled          = true,
 	.kerberos         = true,
 	.priority         = GENSEC_GSSAPI

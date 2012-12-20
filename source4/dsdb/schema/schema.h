@@ -245,8 +245,14 @@ struct dsdb_schema {
 	struct ldb_module *loaded_from_module;
 	struct dsdb_schema *(*refresh_fn)(struct ldb_module *module, struct dsdb_schema *schema, bool is_global_schema);
 	bool refresh_in_progress;
-	/* an 'opaque' sequence number that the reload function may also wish to use */
-	uint64_t reload_seq_number;
+	time_t ts_last_change;
+	time_t last_refresh;
+	time_t refresh_interval;
+	/* This 'opaque' is stored in the metadata and is used to check if the currently
+	 * loaded schema needs a reload because another process has signaled that it has been
+	 * requested to reload the schema (either due through DRS or via the schemaUpdateNow).
+	 */
+	uint64_t metadata_usn;
 
 	/* Should the syntax handlers in this case handle all incoming OIDs automatically, assigning them as an OID if no text name is known? */
 	bool relax_OID_conversions;

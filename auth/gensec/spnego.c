@@ -713,8 +713,7 @@ static NTSTATUS gensec_spnego_create_negTokenInit(struct gensec_security *gensec
  * This is the case, where the client is the first one who sends data
 */
 
-static NTSTATUS gensec_spnego_server_negTokenTarg(struct gensec_security *gensec_security, 
-						  struct spnego_state *spnego_state,
+static NTSTATUS gensec_spnego_server_negTokenTarg(struct spnego_state *spnego_state,
 						  TALLOC_CTX *out_mem_ctx, 
 						  NTSTATUS nt_status,
 						  const DATA_BLOB unwrapped_out,
@@ -812,8 +811,7 @@ static NTSTATUS gensec_spnego_update(struct gensec_security *gensec_security, TA
 								     spnego.negTokenInit.mechToken, 
 								     &unwrapped_out);
 			
-			nt_status = gensec_spnego_server_negTokenTarg(gensec_security,
-								      spnego_state,
+			nt_status = gensec_spnego_server_negTokenTarg(spnego_state,
 								      out_mem_ctx,
 								      nt_status,
 								      unwrapped_out,
@@ -974,8 +972,7 @@ static NTSTATUS gensec_spnego_update(struct gensec_security *gensec_security, TA
 			}
 		}
 
-		nt_status = gensec_spnego_server_negTokenTarg(gensec_security,
-							      spnego_state,
+		nt_status = gensec_spnego_server_negTokenTarg(spnego_state,
 							      out_mem_ctx, 
 							      nt_status,
 							      unwrapped_out,
@@ -1355,6 +1352,17 @@ static bool gensec_spnego_have_feature(struct gensec_security *gensec_security,
 				   feature);
 }
 
+static NTTIME gensec_spnego_expire_time(struct gensec_security *gensec_security)
+{
+	struct spnego_state *spnego_state = (struct spnego_state *)gensec_security->private_data;
+
+	if (!spnego_state->sub_sec_security) {
+		return GENSEC_EXPIRE_TIME_INFINITY;
+	}
+
+	return gensec_expire_time(spnego_state->sub_sec_security);
+}
+
 static const char *gensec_spnego_oids[] = { 
 	GENSEC_OID_SPNEGO,
 	NULL 
@@ -1384,6 +1392,7 @@ static const struct gensec_security_ops gensec_spnego_security_ops = {
 	.session_info     = gensec_spnego_session_info,
 	.want_feature     = gensec_spnego_want_feature,
 	.have_feature     = gensec_spnego_have_feature,
+	.expire_time      = gensec_spnego_expire_time,
 	.enabled          = true,
 	.priority         = GENSEC_SPNEGO
 };

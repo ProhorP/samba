@@ -81,6 +81,12 @@ def parseCommandLine():
 	parser.add_option("--client-helper", dest="client_helper",\
 				help="Helper mode for the ntlm_auth client. [default: ntlmssp-client-1]")
 
+	parser.add_option("--target-hostname", dest="target_hostname",\
+				help="Target hostname for kerberos")
+	parser.add_option("--target-service", dest="target_service",\
+				help="Target service for kerberos")
+
+
 	parser.add_option("--server-username", dest="server_username",\
 				help="User name server uses for local auth. [default: foo]")
 	parser.add_option("--server-password", dest="server_password",\
@@ -137,6 +143,10 @@ def main():
 		client_args.append("--password=%s" % opts.client_password)
 		client_args.append("--domain=%s" % opts.client_domain)
 		client_args.append("--configfile=%s" % opts.config_file)
+		if opts.target_service:
+			client_args.append("--target-service=%s" % opts.target_service)
+		if opts.target_hostname:
+			client_args.append("--target-hostname=%s" % opts.target_hostname)
 
 		os.execv(ntlm_auth_path, client_args)
 
@@ -181,33 +191,93 @@ def main():
 	server_out = server_out_w
 	os.close(server_out_r)
 
-	# We're in the parent
-	writeLine(client_out, "YR")
-	buf = readLine(client_in)
+	if opts.client_helper == "ntlmssp-client-1" and opts.server_helper == "squid-2.5-ntlmssp":
 
-	if buf.count("YR ", 0, 3) != 1:
-		sys.exit(1)
+		# We're in the parent
+		writeLine(client_out, "YR")
+		buf = readLine(client_in)
+		
+		if buf.count("YR ", 0, 3) != 1:
+			sys.exit(1)
 
-	writeLine(server_out, buf)
-	buf = readLine(server_in)
+		writeLine(server_out, buf)
+		buf = readLine(server_in)
 
-	if buf.count("TT ", 0, 3) != 1:
-		sys.exit(2)
+		if buf.count("TT ", 0, 3) != 1:
+			sys.exit(2)
 
-	writeLine(client_out, buf)
-	buf = readLine(client_in)
+		writeLine(client_out, buf)
+		buf = readLine(client_in)
 
-	if buf.count("AF ", 0, 3) != 1:
-		sys.exit(3)
+		if buf.count("AF ", 0, 3) != 1:
+			sys.exit(3)
 
-	# Client sends 'AF <base64 blob>' but server expects 'KK <abse64 blob>'
-	buf = buf.replace("AF", "KK", 1)
+		# Client sends 'AF <base64 blob>' but server expects 'KK <abse64 blob>'
+		buf = buf.replace("AF", "KK", 1)
+		
+		writeLine(server_out, buf)
+		buf = readLine(server_in)
+		
+		if buf.count("AF ", 0, 3) != 1:
+			sys.exit(4)
 
-	writeLine(server_out, buf)
-	buf = readLine(server_in)
+	
+	elif opts.client_helper == "ntlmssp-client-1" and opts.server_helper == "gss-spnego":
+		# We're in the parent
+		writeLine(client_out, "YR")
+		buf = readLine(client_in)
+		
+		if buf.count("YR ", 0, 3) != 1:
+			sys.exit(1)
 
-	if buf.count("AF ", 0, 3) != 1:
-		sys.exit(4)
+		writeLine(server_out, buf)
+		buf = readLine(server_in)
+
+		if buf.count("TT ", 0, 3) != 1:
+			sys.exit(2)
+
+		writeLine(client_out, buf)
+		buf = readLine(client_in)
+
+		if buf.count("AF ", 0, 3) != 1:
+			sys.exit(3)
+
+		# Client sends 'AF <base64 blob>' but server expects 'KK <abse64 blob>'
+		buf = buf.replace("AF", "KK", 1)
+		
+		writeLine(server_out, buf)
+		buf = readLine(server_in)
+		
+		if buf.count("AF * ", 0, 5) != 1:
+			sys.exit(4)
+
+
+	elif opts.client_helper == "gss-spnego-client" and opts.server_helper == "gss-spnego":
+		# We're in the parent
+		writeLine(server_out, "YR")
+		buf = readLine(server_in)
+		
+		while True:
+			if buf.count("AF ", 0, 3) != 1 and buf.count("TT ", 0, 3) != 1:
+				sys.exit(1)
+
+			writeLine(client_out, buf)
+			buf = readLine(client_in)
+		
+			if buf.count("AF", 0, 2) == 1:
+				break
+
+			if buf.count("AF ", 0, 5) != 1 and buf.count("KK ", 0, 3) != 1 and buf.count("TT ", 0, 3) != 1:
+				sys.exit(2)
+
+			writeLine(server_out, buf)
+			buf = readLine(server_in)
+
+			if buf.count("AF * ", 0, 5) == 1:
+				break
+
+	else:
+		sys.exit(5)
 
 	if opts.client_helper == "ntlmssp-client-1":
 		writeLine(client_out, "GK")

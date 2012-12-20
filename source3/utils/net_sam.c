@@ -1699,7 +1699,8 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 
 		uname = talloc_strdup(tc, "domusers");
 		wname = talloc_strdup(tc, "Domain Users");
-		dn = talloc_asprintf(tc, "cn=%s,%s", "domusers", lp_ldap_group_suffix());
+		dn = talloc_asprintf(tc, "cn=%s,%s", "domusers",
+				     lp_ldap_group_suffix(talloc_tos()));
 		gidstr = talloc_asprintf(tc, "%u", (unsigned int)domusers_gid);
 		gtype = talloc_asprintf(tc, "%d", SID_NAME_DOM_GRP);
 
@@ -1722,7 +1723,7 @@ static int net_sam_provision(struct net_context *c, int argc, const char **argv)
 				sid_string_talloc(tc, &gsid));
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "sambaGroupType", gtype);
 
-		talloc_autofree_ldapmod(tc, mods);
+		smbldap_talloc_autofree_ldapmod(tc, mods);
 
 		rc = smbldap_add(state, dn, mods);
 
@@ -1775,7 +1776,8 @@ domu_done:
 
 		uname = talloc_strdup(tc, "domadmins");
 		wname = talloc_strdup(tc, "Domain Admins");
-		dn = talloc_asprintf(tc, "cn=%s,%s", "domadmins", lp_ldap_group_suffix());
+		dn = talloc_asprintf(tc, "cn=%s,%s", "domadmins",
+				     lp_ldap_group_suffix(talloc_tos()));
 		gidstr = talloc_asprintf(tc, "%u", (unsigned int)domadmins_gid);
 		gtype = talloc_asprintf(tc, "%d", SID_NAME_DOM_GRP);
 
@@ -1798,7 +1800,7 @@ domu_done:
 				sid_string_talloc(tc, &gsid));
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "sambaGroupType", gtype);
 
-		talloc_autofree_ldapmod(tc, mods);
+		smbldap_talloc_autofree_ldapmod(tc, mods);
 
 		rc = smbldap_add(state, dn, mods);
 
@@ -1865,7 +1867,8 @@ doma_done:
 		}
 
 		name = talloc_strdup(tc, "Administrator");
-		dn = talloc_asprintf(tc, "uid=Administrator,%s", lp_ldap_user_suffix());
+		dn = talloc_asprintf(tc, "uid=Administrator,%s",
+				     lp_ldap_user_suffix(talloc_tos()));
 		uidstr = talloc_asprintf(tc, "%u", (unsigned int)uid);
 		gidstr = talloc_asprintf(tc, "%u", (unsigned int)domadmins_gid);
 		dir = talloc_sub_specified(tc, lp_template_homedir(),
@@ -1915,7 +1918,7 @@ doma_done:
 				pdb_encode_acct_ctrl(ACB_NORMAL|ACB_DISABLED,
 				NEW_PW_FORMAT_SPACE_PADDED_LEN));
 
-		talloc_autofree_ldapmod(tc, mods);
+		smbldap_talloc_autofree_ldapmod(tc, mods);
 
 		rc = smbldap_add(state, dn, mods);
 
@@ -1989,7 +1992,8 @@ doma_done:
 			}
 		}
 
-		dn = talloc_asprintf(tc, "uid=%s,%s", pwd->pw_name, lp_ldap_user_suffix ());
+		dn = talloc_asprintf(tc, "uid=%s,%s", pwd->pw_name,
+				     lp_ldap_user_suffix (talloc_tos()));
 		uidstr = talloc_asprintf(tc, "%u", (unsigned int)pwd->pw_uid);
 		gidstr = talloc_asprintf(tc, "%u", (unsigned int)pwd->pw_gid);
 		if (!dn || !uidstr || !gidstr) {
@@ -2026,7 +2030,7 @@ doma_done:
 				pdb_encode_acct_ctrl(ACB_NORMAL|ACB_DISABLED,
 				NEW_PW_FORMAT_SPACE_PADDED_LEN));
 
-		talloc_autofree_ldapmod(tc, mods);
+		smbldap_talloc_autofree_ldapmod(tc, mods);
 
 		rc = smbldap_add(state, dn, mods);
 
@@ -2074,7 +2078,8 @@ doma_done:
 
 		uname = talloc_strdup(tc, "domguests");
 		wname = talloc_strdup(tc, "Domain Guests");
-		dn = talloc_asprintf(tc, "cn=%s,%s", "domguests", lp_ldap_group_suffix());
+		dn = talloc_asprintf(tc, "cn=%s,%s", "domguests",
+				     lp_ldap_group_suffix(talloc_tos()));
 		gidstr = talloc_asprintf(tc, "%u", (unsigned int)pwd->pw_gid);
 		gtype = talloc_asprintf(tc, "%d", SID_NAME_DOM_GRP);
 
@@ -2099,7 +2104,7 @@ doma_done:
 				sid_string_talloc(tc, &gsid));
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "sambaGroupType", gtype);
 
-		talloc_autofree_ldapmod(tc, mods);
+		smbldap_talloc_autofree_ldapmod(tc, mods);
 
 		rc = smbldap_add(state, dn, mods);
 

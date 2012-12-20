@@ -31,6 +31,16 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
 
+/* 
+ * This hook is currently unused, as all NTLM logins go via the hooks
+ * provided by make_auth4_context_s4() below.
+ *
+ * This is only left in case we find a way that it might become useful
+ * in future.  Importantly, this routine returns the information
+ * needed for a NETLOGON SamLogon, not what is needed to establish a
+ * session.
+ */
+
 static NTSTATUS check_samba4_security(const struct auth_context *auth_context,
 				      void *my_private_data,
 				      TALLOC_CTX *mem_ctx,
@@ -44,7 +54,7 @@ static NTSTATUS check_samba4_security(const struct auth_context *auth_context,
 	struct auth4_context *auth4_context;
 	struct loadparm_context *lp_ctx;
 
-	lp_ctx = loadparm_init_s3(frame, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(frame, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(10, ("loadparm_init_s3 failed\n"));
 		talloc_free(frame);
@@ -107,8 +117,9 @@ static NTSTATUS prepare_gensec(TALLOC_CTX *mem_ctx,
 	struct gensec_security *gensec_ctx;
 	struct imessaging_context *msg_ctx;
 	struct cli_credentials *server_credentials;
+	struct server_id *server_id;
 
-	lp_ctx = loadparm_init_s3(frame, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(frame, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(1, ("loadparm_init_s3 failed\n"));
 		TALLOC_FREE(frame);
@@ -121,14 +132,24 @@ static NTSTATUS prepare_gensec(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_INVALID_SERVER_STATE;
 	}
 
-	msg_ctx = imessaging_client_init(frame,
-					 lp_ctx,
-					 event_ctx);
+	server_id = new_server_id_task(frame);
+	if (server_id == NULL) {
+		DEBUG(1, ("new_server_id_task failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	msg_ctx = imessaging_init(frame,
+				  lp_ctx,
+				  *server_id,
+				  event_ctx, true);
 	if (msg_ctx == NULL) {
 		DEBUG(1, ("imessaging_init failed\n"));
 		TALLOC_FREE(frame);
 		return NT_STATUS_INVALID_SERVER_STATE;
 	}
+
+	talloc_reparent(frame, msg_ctx, server_id);
 
 	server_credentials
 		= cli_credentials_init(frame);
@@ -179,8 +200,9 @@ static NTSTATUS make_auth4_context_s4(TALLOC_CTX *mem_ctx,
 	struct tevent_context *event_ctx;
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct imessaging_context *msg_ctx;
+	struct server_id *server_id;
 
-	lp_ctx = loadparm_init_s3(frame, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(frame, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(1, ("loadparm_init_s3 failed\n"));
 		TALLOC_FREE(frame);
@@ -193,14 +215,23 @@ static NTSTATUS make_auth4_context_s4(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_INVALID_SERVER_STATE;
 	}
 
-	msg_ctx = imessaging_client_init(frame,
-					 lp_ctx,
-					 event_ctx);
+	server_id = new_server_id_task(frame);
+	if (server_id == NULL) {
+		DEBUG(1, ("new_server_id_task failed\n"));
+		TALLOC_FREE(frame);
+		return NT_STATUS_INVALID_SERVER_STATE;
+	}
+
+	msg_ctx = imessaging_init(frame,
+				  lp_ctx,
+				  *server_id,
+				  event_ctx, true);
 	if (msg_ctx == NULL) {
 		DEBUG(1, ("imessaging_init failed\n"));
 		TALLOC_FREE(frame);
 		return NT_STATUS_INVALID_SERVER_STATE;
 	}
+	talloc_reparent(frame, msg_ctx, server_id);
 
 	status = auth_context_create(mem_ctx,
 					event_ctx,

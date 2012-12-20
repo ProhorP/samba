@@ -78,17 +78,8 @@ struct auth_context {
 	/* Who set this up in the first place? */ 
 	const char *challenge_set_by; 
 
-	bool challenge_may_be_modified;
-
-	struct auth_methods *challenge_set_method; 
 	/* What order are the various methods in?   Try to stop it changing under us */ 
 	struct auth_methods *auth_method_list;	
-
-	NTSTATUS (*get_ntlm_challenge)(struct auth_context *auth_context,
-				       uint8_t chal[8]);
-	NTSTATUS (*check_ntlm_password)(const struct auth_context *auth_context,
-					const struct auth_usersupplied_info *user_info, 
-					struct auth_serversupplied_info **server_info);
 
 	prepare_gensec_fn prepare_gensec;
 	make_auth4_context_fn make_auth4_context;
@@ -104,14 +95,6 @@ typedef struct auth_methods
 			 TALLOC_CTX *mem_ctx,
 			 const struct auth_usersupplied_info *user_info, 
 			 struct auth_serversupplied_info **server_info);
-
-	/* If you are using this interface, then you are probably
-	 * getting something wrong.  This interface is only for
-	 * security=server, and makes a number of compromises to allow
-	 * that.  It is not compatible with being a PDC.  */
-	DATA_BLOB (*get_chal)(const struct auth_context *auth_context,
-			      void **my_private_data, 
-			      TALLOC_CTX *mem_ctx);
 
 	/* Optional methods allowing this module to provide a way to get a gensec context and an auth4_context */
 	prepare_gensec_fn prepare_gensec;
@@ -133,6 +116,12 @@ struct auth_init_function_entry {
 };
 
 extern const struct gensec_security_ops gensec_ntlmssp3_server_ops;
+
+/* Intent of use for session key. LSA and SAMR pipes use 16 bytes of session key when doing create/modify calls */
+enum session_key_use_intent {
+	KEY_USE_FULL = 0,
+	KEY_USE_16BYTES
+};
 
 /* Changed from 1 -> 2 to add the logon_parameters field. */
 /* Changed from 2 -> 3 when we reworked many auth structures to use IDL or be in common with Samba4 */

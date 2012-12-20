@@ -28,11 +28,10 @@
 #include "auth/gensec/gensec.h"
 #include "auth/credentials/credentials.h"
 #include "../librpc/gen_ndr/dcerpc.h"
-#include "lib/util/asn1.h"
 
-#if defined(HAVE_KRB5) && defined(HAVE_GSS_WRAP_IOV)
+#if defined(HAVE_KRB5)
 
-#include "smb_krb5.h"
+#include "auth/kerberos/pac_utils.h"
 #include "gse_krb5.h"
 
 static char *gse_errstr(TALLOC_CTX *mem_ctx, OM_uint32 maj, OM_uint32 min);
@@ -45,6 +44,8 @@ struct gse_context {
 
 	gss_cred_id_t delegated_cred_handle;
 
+	NTTIME expire_time;
+
 	/* gensec_gse only */
 	krb5_context k5ctx;
 	krb5_ccache ccache;
@@ -55,24 +56,6 @@ struct gse_context {
 
 	gss_OID ret_mech;
 };
-
-#ifndef HAVE_GSS_OID_EQUAL
-
-static bool gss_oid_equal(const gss_OID o1, const gss_OID o2)
-{
-	if (o1 == o2) {
-		return true;
-	}
-	if ((o1 == NULL && o2 != NULL) || (o1 != NULL && o2 == NULL)) {
-		return false;
-	}
-	if (o1->length != o2->length) {
-		return false;
-	}
-	return memcmp(o1->elements, o2->elements, o1->length) == false;
-}
-
-#endif
 
 /* free non talloc dependent contexts */
 static int gse_context_destructor(void *ptr)
@@ -125,7 +108,8 @@ static int gse_context_destructor(void *ptr)
 	 * this code to EAP or other GSS mechanisms determines an
 	 * implementation-dependent way of releasing any dynamically
 	 * allocated OID */
-	SMB_ASSERT(gss_oid_equal(&gse_ctx->gss_mech, GSS_C_NO_OID) || gss_oid_equal(&gse_ctx->gss_mech, gss_mech_krb5));
+	SMB_ASSERT(smb_gss_oid_equal(&gse_ctx->gss_mech, GSS_C_NO_OID) ||
+		   smb_gss_oid_equal(&gse_ctx->gss_mech, gss_mech_krb5));
 
 	return 0;
 }
@@ -145,6 +129,8 @@ static NTSTATUS gse_context_init(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 	talloc_set_destructor((TALLOC_CTX *)gse_ctx, gse_context_destructor);
+
+	gse_ctx->expire_time = GENSEC_EXPIRE_TIME_INFINITY;
 
 	memcpy(&gse_ctx->gss_mech, gss_mech_krb5, sizeof(gss_OID_desc));
 
@@ -232,8 +218,8 @@ static NTSTATUS gse_init_client(TALLOC_CTX *mem_ctx,
 	   realm in particular), possibly falling back to
 	   GSS_C_NT_HOSTBASED_SERVICE
 	*/
-	name_buffer.value = kerberos_get_principal_from_service_hostname(gse_ctx,
-									 service, server);
+	name_buffer.value = kerberos_get_principal_from_service_hostname(
+					gse_ctx, service, server, lp_realm());
 	if (!name_buffer.value) {
 		status = NT_STATUS_NO_MEMORY;
 		goto err_out;
@@ -291,6 +277,8 @@ static NTSTATUS gse_get_client_auth_token(TALLOC_CTX *mem_ctx,
 	gss_buffer_desc out_data;
 	DATA_BLOB blob = data_blob_null;
 	NTSTATUS status;
+	OM_uint32 time_rec = 0;
+	struct timeval tv;
 
 	in_data.value = token_in->data;
 	in_data.length = token_in->length;
@@ -303,10 +291,13 @@ static NTSTATUS gse_get_client_auth_token(TALLOC_CTX *mem_ctx,
 					gse_ctx->gss_want_flags,
 					0, GSS_C_NO_CHANNEL_BINDINGS,
 					&in_data, NULL, &out_data,
-					&gse_ctx->gss_got_flags, NULL);
+					&gse_ctx->gss_got_flags, &time_rec);
 	switch (gss_maj) {
 	case GSS_S_COMPLETE:
 		/* we are done with it */
+		tv = timeval_current_ofs(time_rec, 0);
+		gse_ctx->expire_time = timeval_to_nttime(&tv);
+
 		status = NT_STATUS_OK;
 		break;
 	case GSS_S_CONTINUE_NEEDED:
@@ -440,6 +431,8 @@ static NTSTATUS gse_get_server_auth_token(TALLOC_CTX *mem_ctx,
 	gss_buffer_desc out_data;
 	DATA_BLOB blob = data_blob_null;
 	NTSTATUS status;
+	OM_uint32 time_rec = 0;
+	struct timeval tv;
 
 	in_data.value = token_in->data;
 	in_data.length = token_in->length;
@@ -452,11 +445,15 @@ static NTSTATUS gse_get_server_auth_token(TALLOC_CTX *mem_ctx,
 					 &gse_ctx->client_name,
 					 &gse_ctx->ret_mech,
 					 &out_data,
-					 &gse_ctx->gss_got_flags, NULL,
+					 &gse_ctx->gss_got_flags,
+					 &time_rec,
 					 &gse_ctx->delegated_cred_handle);
 	switch (gss_maj) {
 	case GSS_S_COMPLETE:
 		/* we are done with it */
+		tv = timeval_current_ofs(time_rec, 0);
+		gse_ctx->expire_time = timeval_to_nttime(&tv);
+
 		status = NT_STATUS_OK;
 		break;
 	case GSS_S_CONTINUE_NEEDED:
@@ -464,7 +461,7 @@ static NTSTATUS gse_get_server_auth_token(TALLOC_CTX *mem_ctx,
 		status = NT_STATUS_MORE_PROCESSING_REQUIRED;
 		break;
 	default:
-		DEBUG(1, ("gss_init_sec_context failed with [%s]\n",
+		DEBUG(1, ("gss_accept_sec_context failed with [%s]\n",
 			  gse_errstr(talloc_tos(), gss_maj, gss_min)));
 
 		if (gse_ctx->gssapi_context) {
@@ -803,26 +800,6 @@ static NTSTATUS gensec_gse_server_start(struct gensec_security *gensec_security)
 }
 
 /**
- * Check if the packet is one for this mechansim
- *
- * @param gensec_security GENSEC state
- * @param in The request, as a DATA_BLOB
- * @return Error, INVALID_PARAMETER if it's not a packet for us
- *                or NT_STATUS_OK if the packet is ok.
- */
-
-static NTSTATUS gensec_gse_magic(struct gensec_security *gensec_security,
-				 const DATA_BLOB *in)
-{
-	if (gensec_gssapi_check_oid(in, GENSEC_OID_KERBEROS5)) {
-		return NT_STATUS_OK;
-	} else {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-}
-
-
-/**
  * Next state function for the GSE GENSEC mechanism
  *
  * @param gensec_gse_state GSE State
@@ -1000,7 +977,7 @@ static bool gensec_gse_have_feature(struct gensec_security *gensec_security,
 	}
 	if (feature & GENSEC_FEATURE_SESSION_KEY) {
 		/* Only for GSE/Krb5 */
-		if (gss_oid_equal(gse_ctx->ret_mech, gss_mech_krb5)) {
+		if (smb_gss_oid_equal(gse_ctx->ret_mech, gss_mech_krb5)) {
 			return true;
 		}
 	}
@@ -1042,6 +1019,15 @@ static bool gensec_gse_have_feature(struct gensec_security *gensec_security,
 		return true;
 	}
 	return false;
+}
+
+static NTTIME gensec_gse_expire_time(struct gensec_security *gensec_security)
+{
+	struct gse_context *gse_ctx =
+		talloc_get_type_abort(gensec_security->private_data,
+		struct gse_context);
+
+	return gse_ctx->expire_time;
 }
 
 /*
@@ -1163,7 +1149,7 @@ const struct gensec_security_ops gensec_gse_krb5_security_ops = {
 	.oid            = gensec_gse_krb5_oids,
 	.client_start   = gensec_gse_client_start,
 	.server_start   = gensec_gse_server_start,
-	.magic  	= gensec_gse_magic,
+	.magic  	= gensec_magic_check_krb5_oid,
 	.update 	= gensec_gse_update,
 	.session_key	= gensec_gse_session_key,
 	.session_info	= gensec_gse_session_info,
@@ -1175,9 +1161,10 @@ const struct gensec_security_ops gensec_gse_krb5_security_ops = {
 	.wrap           = gensec_gse_wrap,
 	.unwrap         = gensec_gse_unwrap,
 	.have_feature   = gensec_gse_have_feature,
+	.expire_time    = gensec_gse_expire_time,
 	.enabled        = true,
 	.kerberos       = true,
 	.priority       = GENSEC_GSSAPI
 };
 
-#endif /* HAVE_KRB5 && HAVE_GSS_WRAP_IOV */
+#endif /* HAVE_KRB5 */

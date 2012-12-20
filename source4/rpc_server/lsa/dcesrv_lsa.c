@@ -31,7 +31,6 @@
 #include "lib/util/tsort.h"
 #include "dsdb/common/util.h"
 #include "libcli/security/session.h"
-#include "kdc/kdc-policy.h"
 #include "libcli/lsarpc/util_lsarpc.h"
 
 /*
@@ -145,7 +144,12 @@ static NTSTATUS dcesrv_lsa_AddRemoveAccountRights(struct dcesrv_call_state *dce_
 static NTSTATUS dcesrv_lsa_Close(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 			  struct lsa_Close *r)
 {
+	enum dcerpc_transport_t transport = dce_call->conn->endpoint->ep_description->transport;
 	struct dcesrv_handle *h;
+
+	if (transport != NCACN_NP && transport != NCALRPC) {
+		DCESRV_FAULT(DCERPC_FAULT_ACCESS_DENIED);
+	}
 
 	*r->out.handle = *r->in.handle;
 
@@ -421,7 +425,7 @@ static WERROR dcesrv_dssetup_DsRoleGetPrimaryDomainInformation(struct dcesrv_cal
 		case ROLE_DOMAIN_MEMBER:
 			role		= DS_ROLE_MEMBER_SERVER;
 			break;
-		case ROLE_DOMAIN_CONTROLLER:
+		case ROLE_ACTIVE_DIRECTORY_DC:
 			if (samdb_is_pdc(state->sam_ldb)) {
 				role	= DS_ROLE_PRIMARY_DC;
 			} else {
@@ -440,7 +444,7 @@ static WERROR dcesrv_dssetup_DsRoleGetPrimaryDomainInformation(struct dcesrv_cal
 			W_ERROR_HAVE_NO_MEMORY(domain);
 			/* TODO: what is with dns_domain and forest and guid? */
 			break;
-		case ROLE_DOMAIN_CONTROLLER:
+		case ROLE_ACTIVE_DIRECTORY_DC:
 			flags		= DS_ROLE_PRIMARY_DS_RUNNING;
 
 			if (state->mixed_domain == 1) {
@@ -3635,11 +3639,16 @@ static NTSTATUS dcesrv_lsa_RetrievePrivateData(struct dcesrv_call_state *dce_cal
 static NTSTATUS dcesrv_lsa_GetUserName(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 				struct lsa_GetUserName *r)
 {
+	enum dcerpc_transport_t transport = dce_call->conn->endpoint->ep_description->transport;
 	NTSTATUS status = NT_STATUS_OK;
 	const char *account_name;
 	const char *authority_name;
 	struct lsa_String *_account_name;
 	struct lsa_String *_authority_name = NULL;
+
+	if (transport != NCACN_NP && transport != NCALRPC) {
+		DCESRV_FAULT(DCERPC_FAULT_ACCESS_DENIED);
+	}
 
 	/* this is what w2k3 does */
 	r->out.account_name = r->in.account_name;
@@ -3691,6 +3700,37 @@ static NTSTATUS dcesrv_lsa_SetInfoPolicy2(struct dcesrv_call_state *dce_call,
 	DCESRV_FAULT(DCERPC_FAULT_OP_RNG_ERROR);
 }
 
+static void kdc_get_policy(struct loadparm_context *lp_ctx,
+			   struct smb_krb5_context *smb_krb5_context,
+			   struct lsa_DomainInfoKerberos *k)
+{
+	time_t svc_tkt_lifetime;
+	time_t usr_tkt_lifetime;
+	time_t renewal_lifetime;
+
+	/* These should be set and stored via Group Policy, but until then, some defaults are in order */
+
+	/* Our KDC always re-validates the client */
+	k->authentication_options = LSA_POLICY_KERBEROS_VALIDATE_CLIENT;
+
+	lpcfg_default_kdc_policy(lp_ctx, &svc_tkt_lifetime,
+				 &usr_tkt_lifetime, &renewal_lifetime);
+
+	unix_to_nt_time(&k->service_tkt_lifetime, svc_tkt_lifetime);
+	unix_to_nt_time(&k->user_tkt_lifetime, usr_tkt_lifetime);
+	unix_to_nt_time(&k->user_tkt_renewaltime, renewal_lifetime);
+#ifdef SAMBA4_USES_HEIMDAL /* MIT lacks krb5_get_max_time_skew.
+	However in the parent function we basically just did a full
+	krb5_context init with the only purpose of getting a global
+	config option (the max skew), it would probably make more sense
+	to have a lp_ or ldb global option as the samba default */
+	if (smb_krb5_context) {
+		unix_to_nt_time(&k->clock_skew, 
+				krb5_get_max_time_skew(smb_krb5_context->krb5_context));
+	}
+#endif
+	k->reserved = 0;
+}
 /*
   lsa_QueryDomainInformationPolicy
 */

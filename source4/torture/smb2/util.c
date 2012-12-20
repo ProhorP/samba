@@ -23,6 +23,7 @@
 #include "libcli/security/security_descriptor.h"
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
+#include "../libcli/smb/smbXcli_base.h"
 #include "lib/cmdline/popt_common.h"
 #include "system/time.h"
 #include "librpc/gen_ndr/ndr_security.h"
@@ -294,7 +295,13 @@ bool torture_smb2_tree_connect(struct torture_context *tctx,
 		return false;
 	}
 
-	tree->tid = tcon.out.tid;
+	smb2cli_tcon_set_values(tree->smbXcli,
+				tree->session->smbXcli,
+				tcon.out.tid,
+				tcon.out.share_type,
+				tcon.out.flags,
+				tcon.out.capabilities,
+				tcon.out.access_mask);
 
 	*_tree = tree;
 
@@ -306,6 +313,7 @@ bool torture_smb2_tree_connect(struct torture_context *tctx,
  */
 bool torture_smb2_session_setup(struct torture_context *tctx,
 				struct smb2_transport *transport,
+				uint64_t previous_session_id,
 				TALLOC_CTX *mem_ctx,
 				struct smb2_session **_session)
 {
@@ -321,7 +329,8 @@ bool torture_smb2_session_setup(struct torture_context *tctx,
 		return false;
 	}
 
-	status = smb2_session_setup_spnego(session, credentials);
+	status = smb2_session_setup_spnego(session, credentials,
+					   previous_session_id);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("session setup failed: %s\n", nt_errstr(status));
 		talloc_free(session);
@@ -336,7 +345,9 @@ bool torture_smb2_session_setup(struct torture_context *tctx,
 /*
   open a smb2 connection
 */
-bool torture_smb2_connection(struct torture_context *tctx, struct smb2_tree **tree)
+bool torture_smb2_connection_ext(struct torture_context *tctx,
+				 uint64_t previous_session_id,
+				 struct smb2_tree **tree)
 {
 	NTSTATUS status;
 	const char *host = torture_setting_string(tctx, "host", NULL);
@@ -346,24 +357,34 @@ bool torture_smb2_connection(struct torture_context *tctx, struct smb2_tree **tr
 
 	lpcfg_smbcli_options(tctx->lp_ctx, &options);
 
-	status = smb2_connect(tctx,
-			      host,
-			      lpcfg_smb_ports(tctx->lp_ctx),
-			      share,
-			      lpcfg_resolve_context(tctx->lp_ctx),
-			      credentials,
-			      tree,
-			      tctx->ev,
-			      &options,
-			      lpcfg_socket_options(tctx->lp_ctx),
-			      lpcfg_gensec_settings(tctx, tctx->lp_ctx)
-			      );
+	status = smb2_connect_ext(tctx,
+				  host,
+				  lpcfg_smb_ports(tctx->lp_ctx),
+				  share,
+				  lpcfg_resolve_context(tctx->lp_ctx),
+				  credentials,
+				  previous_session_id,
+				  tree,
+				  tctx->ev,
+				  &options,
+				  lpcfg_socket_options(tctx->lp_ctx),
+				  lpcfg_gensec_settings(tctx, tctx->lp_ctx)
+				  );
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Failed to connect to SMB2 share \\\\%s\\%s - %s\n",
 		       host, share, nt_errstr(status));
 		return false;
 	}
 	return true;
+}
+
+bool torture_smb2_connection(struct torture_context *tctx, struct smb2_tree **tree)
+{
+	bool ret;
+
+	ret = torture_smb2_connection_ext(tctx, 0, tree);
+
+	return ret;
 }
 
 
@@ -557,7 +578,7 @@ bool smb2_util_verify_attrib(TALLOC_CTX *tctx, struct smb2_tree *tree,
 	status = smb2_getinfo_file(tree, tctx, &q);
 	CHECK_STATUS(status, NT_STATUS_OK);
 
-	q.all_info2.out.attrib &= ~FILE_ATTRIBUTE_ARCHIVE;
+	q.all_info2.out.attrib &= ~(FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NONINDEXED);
 
 	if (q.all_info2.out.attrib != attrib) {
 		torture_warning(tctx, "%s: attributes don't match! "

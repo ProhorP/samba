@@ -207,7 +207,10 @@ NTSTATUS rpccli_netlogon_sam_logon(struct rpc_pipe_client *cli,
 
 		nt_lm_owf_gen(password, ntpassword.hash, lmpassword.hash);
 
-		if (cli->dc->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
+		if (cli->dc->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+			netlogon_creds_aes_encrypt(cli->dc, lmpassword.hash, 16);
+			netlogon_creds_aes_encrypt(cli->dc, ntpassword.hash, 16);
+		} else if (cli->dc->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
 			netlogon_creds_arcfour_crypt(cli->dc, lmpassword.hash, 16);
 			netlogon_creds_arcfour_crypt(cli->dc, ntpassword.hash, 16);
 		} else {
@@ -625,10 +628,13 @@ NTSTATUS rpccli_netlogon_set_trust_password(struct rpc_pipe_client *cli,
 	if (cli->dc->negotiate_flags & NETLOGON_NEG_PASSWORD_SET2) {
 
 		struct netr_CryptPassword new_password;
+		uint32_t old_timeout;
 
 		init_netr_CryptPassword(new_trust_pwd_cleartext,
-					cli->dc->session_key,
+					cli->dc,
 					&new_password);
+
+		old_timeout = dcerpc_binding_handle_set_timeout(b, 600000);
 
 		status = dcerpc_netr_ServerPasswordSet2(b, mem_ctx,
 							cli->srv_name_slash,
@@ -639,6 +645,9 @@ NTSTATUS rpccli_netlogon_set_trust_password(struct rpc_pipe_client *cli,
 							&srv_cred,
 							&new_password,
 							&result);
+
+		dcerpc_binding_handle_set_timeout(b, old_timeout);
+
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("dcerpc_netr_ServerPasswordSet2 failed: %s\n",
 				nt_errstr(status)));
@@ -647,8 +656,12 @@ NTSTATUS rpccli_netlogon_set_trust_password(struct rpc_pipe_client *cli,
 	} else {
 
 		struct samr_Password new_password;
+		uint32_t old_timeout;
+
 		memcpy(new_password.hash, new_trust_passwd_hash, sizeof(new_password.hash));
 		netlogon_creds_des_encrypt(cli->dc, &new_password);
+
+		old_timeout = dcerpc_binding_handle_set_timeout(b, 600000);
 
 		status = dcerpc_netr_ServerPasswordSet(b, mem_ctx,
 						       cli->srv_name_slash,
@@ -659,6 +672,9 @@ NTSTATUS rpccli_netlogon_set_trust_password(struct rpc_pipe_client *cli,
 						       &srv_cred,
 						       &new_password,
 						       &result);
+
+		dcerpc_binding_handle_set_timeout(b, old_timeout);
+
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("dcerpc_netr_ServerPasswordSet failed: %s\n",
 				nt_errstr(status)));

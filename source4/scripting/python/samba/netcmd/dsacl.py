@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Manipulate ACLs on directory objects
 #
 # Copyright (C) Nadezhda Ivanova <nivanova@samba.org> 2010
@@ -47,7 +45,7 @@ from samba.netcmd import (
 
 
 class cmd_dsacl_set(Command):
-    """Modify access list on a directory object"""
+    """Modify access list on a directory object."""
 
     synopsis = "%prog [options]"
     car_help = """ The access control right to allow or deny """
@@ -178,7 +176,7 @@ class cmd_dsacl_set(Command):
 
 
 class cmd_dsacl(SuperCommand):
-    """DS ACLs manipulation"""
+    """DS ACLs manipulation."""
 
     subcommands = {}
     subcommands["set"] = cmd_dsacl_set()

@@ -72,7 +72,8 @@ static NTSTATUS regdb_trans_do_action(struct db_context *db, void *private_data)
 	int32_t version_id;
 	struct regdb_trans_ctx *ctx = (struct regdb_trans_ctx *)private_data;
 
-	status = dbwrap_fetch_int32(db, REGDB_VERSION_KEYNAME, &version_id);
+	status = dbwrap_fetch_int32_bystring(db, REGDB_VERSION_KEYNAME,
+					     &version_id);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("ERROR: could not fetch registry db version: %s. "
@@ -337,7 +338,7 @@ static NTSTATUS init_registry_data_action(struct db_context *db,
 
 		/* preserve existing values across restarts. Only add new ones */
 
-		if (!regval_ctr_key_exists(values,
+		if (!regval_ctr_value_exists(values,
 					builtin_registry_values[i].valuename))
 		{
 			regdb_ctr_add_value(values,
@@ -384,7 +385,7 @@ WERROR init_registry_data(void)
 		regdb_fetch_values_internal(regdb,
 					    builtin_registry_values[i].path,
 					    values);
-		if (!regval_ctr_key_exists(values,
+		if (!regval_ctr_value_exists(values,
 					builtin_registry_values[i].valuename))
 		{
 			TALLOC_FREE(values);
@@ -484,7 +485,8 @@ static WERROR regdb_store_regdb_version(struct db_context *db, uint32_t version)
 		return WERR_CAN_NOT_COMPLETE;
 	}
 
-	status = dbwrap_trans_store_int32(db, REGDB_VERSION_KEYNAME, version);
+	status = dbwrap_trans_store_int32_bystring(db, REGDB_VERSION_KEYNAME,
+						   version);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("regdb_store_regdb_version: error storing %s = %d: %s\n",
 			  REGDB_VERSION_KEYNAME, version, nt_errstr(status)));
@@ -559,7 +561,9 @@ static bool upgrade_v2_to_v3_check_subkeylist(struct db_context *db,
 	};
 	bool success = false;
 	char *path = talloc_asprintf(talloc_tos(), "%s\\%s", key, subkey);
-	strupper_m(path);
+	if (!strupper_m(path)) {
+		goto done;
+	}
 
 	if (!dbwrap_exists(db, string_term_tdb_data(path))) {
 		NTSTATUS status;
@@ -754,7 +758,8 @@ WERROR regdb_init(void)
 	DEBUG(10, ("regdb_init: registry db openend. refcount reset (%d)\n",
 		   regdb_refcount));
 
-	status = dbwrap_fetch_int32(regdb, REGDB_VERSION_KEYNAME, &vers_id);
+	status = dbwrap_fetch_int32_bystring(regdb, REGDB_VERSION_KEYNAME,
+					     &vers_id);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("regdb_init: registry version uninitialized "
 			   "(got %d), initializing to version %d\n",
@@ -1260,7 +1265,11 @@ static NTSTATUS regdb_store_keys_action(struct db_context *db,
 		W_ERROR_NOT_OK_GOTO_DONE(werr);
 	}
 
-	werr = WERR_OK;
+	/*
+	 * Update the seqnum in the container to possibly
+	 * prevent next read from going to disk
+	 */
+	werr = regsubkey_ctr_set_seqnum(store_ctx->ctr, dbwrap_get_seqnum(db));
 
 done:
 	talloc_free(mem_ctx);
@@ -1340,7 +1349,7 @@ done:
 	return ret;
 }
 
-bool regdb_store_keys(const char *key, struct regsubkey_ctr *ctr)
+static bool regdb_store_keys(const char *key, struct regsubkey_ctr *ctr)
 {
 	return regdb_store_keys_internal(regdb, key, ctr);
 }
@@ -1708,6 +1717,7 @@ static WERROR regdb_fetch_keys_internal(struct db_context *db, const char *key,
 	fstring subkeyname;
 	TALLOC_CTX *frame = talloc_stackframe();
 	TDB_DATA value;
+	int seqnum[2], count;
 
 	DEBUG(11,("regdb_fetch_keys: Enter key => [%s]\n", key ? key : "NULL"));
 
@@ -1720,10 +1730,28 @@ static WERROR regdb_fetch_keys_internal(struct db_context *db, const char *key,
 	werr = regsubkey_ctr_reinit(ctr);
 	W_ERROR_NOT_OK_GOTO_DONE(werr);
 
-	werr = regsubkey_ctr_set_seqnum(ctr, dbwrap_get_seqnum(db));
-	W_ERROR_NOT_OK_GOTO_DONE(werr);
+	count = 0;
+	ZERO_STRUCT(value);
+	seqnum[0] = dbwrap_get_seqnum(db);
 
-	value = regdb_fetch_key_internal(db, frame, key);
+	do {
+		count++;
+		TALLOC_FREE(value.dptr);
+		value = regdb_fetch_key_internal(db, frame, key);
+		seqnum[count % 2] = dbwrap_get_seqnum(db);
+
+	} while (seqnum[0] != seqnum[1]);
+
+	if (count > 1) {
+		DEBUG(5, ("regdb_fetch_keys_internal: it took %d attempts to "
+			  "fetch key '%s' with constant seqnum\n",
+			  count, key));
+	}
+
+	werr = regsubkey_ctr_set_seqnum(ctr, seqnum[0]);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
 
 	if (value.dsize == 0 || value.dptr == NULL) {
 		DEBUG(10, ("regdb_fetch_keys: no subkeys found for key [%s]\n",
@@ -1757,7 +1785,7 @@ done:
 	return werr;
 }
 
-int regdb_fetch_keys(const char *key, struct regsubkey_ctr *ctr)
+static int regdb_fetch_keys(const char *key, struct regsubkey_ctr *ctr)
 {
 	WERROR werr;
 
@@ -1804,7 +1832,8 @@ static int regdb_unpack_values(struct regval_ctr *values, uint8 *buf, int buflen
 				(uint8_t *)data_p, size);
 		SAFE_FREE(data_p); /* 'B' option to tdb_unpack does a malloc() */
 
-		DEBUG(8,("specific: [%s], len: %d\n", valuename, size));
+		DEBUG(10, ("regdb_unpack_values: value[%d]: name[%s] len[%d]\n",
+			   i, valuename, size));
 	}
 
 	return len;
@@ -1857,10 +1886,14 @@ static int regdb_fetch_values_internal(struct db_context *db, const char* key,
 	int ret = 0;
 	TDB_DATA value;
 	WERROR werr;
+	int seqnum[2], count;
 
-	DEBUG(10,("regdb_fetch_values: Looking for value of key [%s] \n", key));
+	DEBUG(10,("regdb_fetch_values: Looking for values of key [%s]\n", key));
 
 	if (!regdb_key_exists(db, key)) {
+		DEBUG(10, ("regb_fetch_values: key [%s] does not exist\n",
+			   key));
+		ret = -1;
 		goto done;
 	}
 
@@ -1869,10 +1902,27 @@ static int regdb_fetch_values_internal(struct db_context *db, const char* key,
 		goto done;
 	}
 
-	werr = regval_ctr_set_seqnum(values, dbwrap_get_seqnum(db));
-	W_ERROR_NOT_OK_GOTO_DONE(werr);
+	ZERO_STRUCT(value);
+	count = 0;
+	seqnum[0] = dbwrap_get_seqnum(db);
 
-	value = regdb_fetch_key_internal(db, ctx, keystr);
+	do {
+		count++;
+		TALLOC_FREE(value.dptr);
+		value = regdb_fetch_key_internal(db, ctx, keystr);
+		seqnum[count % 2] = dbwrap_get_seqnum(db);
+	} while (seqnum[0] != seqnum[1]);
+
+	if (count > 1) {
+		DEBUG(5, ("regdb_fetch_values_internal: it took %d attempts "
+			  "to fetch key '%s' with constant seqnum\n",
+			  count, key));
+	}
+
+	werr = regval_ctr_set_seqnum(values, seqnum[0]);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto done;
+	}
 
 	if (!value.dptr) {
 		/* all keys have zero values by default */
@@ -1887,7 +1937,7 @@ done:
 	return ret;
 }
 
-int regdb_fetch_values(const char* key, struct regval_ctr *values)
+static int regdb_fetch_values(const char* key, struct regval_ctr *values)
 {
 	return regdb_fetch_values_internal(regdb, key, values);
 }
@@ -1901,8 +1951,9 @@ static NTSTATUS regdb_store_values_internal(struct db_context *db,
 	TALLOC_CTX *ctx = talloc_stackframe();
 	int len;
 	NTSTATUS status;
+	WERROR werr;
 
-	DEBUG(10,("regdb_store_values: Looking for value of key [%s] \n", key));
+	DEBUG(10,("regdb_store_values: Looking for values of key [%s]\n", key));
 
 	if (!regdb_key_exists(db, key)) {
 		status = NT_STATUS_NOT_FOUND;
@@ -1910,8 +1961,19 @@ static NTSTATUS regdb_store_values_internal(struct db_context *db,
 	}
 
 	if (regval_ctr_numvals(values) == 0) {
-		WERROR werr = regdb_delete_values(db, key);
-		return werror_to_ntstatus(werr);
+		werr = regdb_delete_values(db, key);
+		if (!W_ERROR_IS_OK(werr)) {
+			status = werror_to_ntstatus(werr);
+			goto done;
+		}
+
+		/*
+		 * update the seqnum in the cache to prevent the next read
+		 * from going to disk
+		 */
+		werr = regval_ctr_set_seqnum(values, dbwrap_get_seqnum(db));
+		status = werror_to_ntstatus(werr);
+		goto done;
 	}
 
 	ZERO_STRUCT(data);
@@ -1953,6 +2015,17 @@ static NTSTATUS regdb_store_values_internal(struct db_context *db,
 	}
 
 	status = dbwrap_trans_store_bystring(db, keystr, data, TDB_REPLACE);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("regdb_store_values_internal: error storing: %s\n", nt_errstr(status)));
+		goto done;
+	}
+
+	/*
+	 * update the seqnum in the cache to prevent the next read
+	 * from going to disk
+	 */
+	werr = regval_ctr_set_seqnum(values, dbwrap_get_seqnum(db));
+	status = werror_to_ntstatus(werr);
 
 done:
 	TALLOC_FREE(ctx);
@@ -1976,7 +2049,7 @@ static NTSTATUS regdb_store_values_action(struct db_context *db,
 	return status;
 }
 
-bool regdb_store_values(const char *key, struct regval_ctr *values)
+static bool regdb_store_values(const char *key, struct regval_ctr *values)
 {
 	WERROR werr;
 	struct regdb_store_values_ctx ctx;
@@ -2103,12 +2176,12 @@ done:
 	return err;
 }
 
-bool regdb_subkeys_need_update(struct regsubkey_ctr *subkeys)
+static bool regdb_subkeys_need_update(struct regsubkey_ctr *subkeys)
 {
 	return (regdb_get_seqnum() != regsubkey_ctr_get_seqnum(subkeys));
 }
 
-bool regdb_values_need_update(struct regval_ctr *values)
+static bool regdb_values_need_update(struct regval_ctr *values)
 {
 	return (regdb_get_seqnum() != regval_ctr_get_seqnum(values));
 }

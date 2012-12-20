@@ -28,8 +28,6 @@
 __docformat__ = "restructuredText"
 
 import os
-import tdb
-import ldb
 from samba import read_and_sub_file
 from samba.param import setup_dir
 
@@ -77,7 +75,7 @@ def setup_ldb(ldb, ldif_path, subst_vars):
     ldb.transaction_start()
     try:
         setup_add_ldif(ldb, ldif_path, subst_vars)
-    except Exception:
+    except:
         ldb.transaction_cancel()
         raise
     else:

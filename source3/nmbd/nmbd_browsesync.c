@@ -120,7 +120,10 @@ static void announce_local_master_browser_to_domain_master_browser( struct work_
 	p++;
 
 	unstrcpy(myname, lp_netbios_name());
-	strupper_m(myname);
+	if (!strupper_m(myname)) {
+		DEBUG(2,("strupper_m %s failed\n", myname));
+		return;
+	}
 	myname[15]='\0';
 	/* The call below does CH_UNIX -> CH_DOS conversion. JRA */
 	push_ascii(p, myname, sizeof(outbuf)-PTR_DIFF(p,outbuf)-1, STR_TERMINATE);
@@ -471,7 +474,7 @@ static void get_domain_master_name_node_status_success(struct subnet_record *sub
 				break;
 			}
 		}
-	} else if( DEBUGLVL( 0 ) ) {
+	} else if( DEBUGLVL( 1 ) ) {
 		dbgtext( "get_domain_master_name_node_status_success:\n" );
 		dbgtext( "Failed to find a WORKGROUP<0x1b> name in reply from IP " );
 		dbgtext( "%s.\n", inet_ntoa(from_ip) );
@@ -485,7 +488,7 @@ static void get_domain_master_name_node_status_success(struct subnet_record *sub
 static void get_domain_master_name_node_status_fail(struct subnet_record *subrec,
                        struct response_record *rrec)
 {
-	if( DEBUGLVL( 0 ) ) {
+	if( DEBUGLVL( 2 ) ) {
 		dbgtext( "get_domain_master_name_node_status_fail:\n" );
 		dbgtext( "Doing a node status request to the domain master browser " );
 		dbgtext( "at IP %s failed.\n", inet_ntoa(rrec->packet->ip) );

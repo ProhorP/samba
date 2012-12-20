@@ -74,6 +74,7 @@ int dsdb_module_check_access_on_dn(struct ldb_module *module,
 	ret = dsdb_module_search_dn(module, mem_ctx, &acl_res, dn,
 				    acl_attrs,
 				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
 				    DSDB_SEARCH_SHOW_RECYCLED,
 				    parent);
 	if (ret != LDB_SUCCESS) {
@@ -200,4 +201,70 @@ const char *acl_user_name(TALLOC_CTX *mem_ctx, struct ldb_module *module)
 	return talloc_asprintf(mem_ctx, "%s\\%s",
 			       session_info->info->domain_name,
 			       session_info->info->account_name);
+}
+
+uint32_t dsdb_request_sd_flags(struct ldb_request *req, bool *explicit)
+{
+	struct ldb_control *sd_control;
+	uint32_t sd_flags = 0;
+
+	if (explicit) {
+		*explicit = false;
+	}
+
+	sd_control = ldb_request_get_control(req, LDB_CONTROL_SD_FLAGS_OID);
+	if (sd_control) {
+		struct ldb_sd_flags_control *sdctr = (struct ldb_sd_flags_control *)sd_control->data;
+
+		sd_flags = sdctr->secinfo_flags;
+
+		if (explicit) {
+			*explicit = true;
+		}
+
+		/* mark it as handled */
+		sd_control->critical = 0;
+	}
+
+	/* we only care for the last 4 bits */
+	sd_flags &= 0x0000000F;
+
+	/*
+	 * MS-ADTS 3.1.1.3.4.1.11 says that no bits
+	 * equals all 4 bits
+	 */
+	if (sd_flags == 0) {
+		sd_flags = 0xF;
+	}
+
+	return sd_flags;
+}
+
+int dsdb_module_schedule_sd_propagation(struct ldb_module *module,
+					struct ldb_dn *nc_root,
+					struct ldb_dn *dn,
+					bool include_self)
+{
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	struct dsdb_extended_sec_desc_propagation_op *op;
+	int ret;
+
+	op = talloc_zero(module, struct dsdb_extended_sec_desc_propagation_op);
+	if (op == NULL) {
+		return ldb_oom(ldb);
+	}
+
+	op->nc_root = nc_root;
+	op->dn = dn;
+	op->include_self = include_self;
+
+	ret = dsdb_module_extended(module, op, NULL,
+				   DSDB_EXTENDED_SEC_DESC_PROPAGATION_OID,
+				   op,
+				   DSDB_FLAG_TOP_MODULE |
+				   DSDB_FLAG_AS_SYSTEM |
+				   DSDB_FLAG_TRUSTED,
+				   NULL);
+	TALLOC_FREE(op);
+	return ret;
 }

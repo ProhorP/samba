@@ -34,6 +34,7 @@
 #undef strncasecmp
 #undef strdup
 #undef realloc
+#undef calloc
 
 /**
  * @file
@@ -145,48 +146,57 @@ _PUBLIC_ bool directory_exist(const char *dname)
 _PUBLIC_ bool directory_create_or_exist(const char *dname, uid_t uid, 
 			       mode_t dir_perms)
 {
-	mode_t old_umask;
+	int ret;
   	struct stat st;
       
-	old_umask = umask(0);
-	if (lstat(dname, &st) == -1) {
-		if (errno == ENOENT) {
-			/* Create directory */
-			if (mkdir(dname, dir_perms) == -1) {
-				DEBUG(0, ("error creating directory "
-					  "%s: %s\n", dname, 
-					  strerror(errno)));
-				umask(old_umask);
-				return false;
-			}
-		} else {
+	ret = lstat(dname, &st);
+	if (ret == -1) {
+		mode_t old_umask;
+
+		if (errno != ENOENT) {
 			DEBUG(0, ("lstat failed on directory %s: %s\n",
 				  dname, strerror(errno)));
+			return false;
+		}
+
+		/* Create directory */
+		old_umask = umask(0);
+		ret = mkdir(dname, dir_perms);
+		if (ret == -1 && errno != EEXIST) {
+			DEBUG(0, ("mkdir failed on directory "
+				  "%s: %s\n", dname,
+				  strerror(errno)));
 			umask(old_umask);
 			return false;
 		}
-	} else {
-		/* Check ownership and permission on existing directory */
-		if (!S_ISDIR(st.st_mode)) {
-			DEBUG(0, ("directory %s isn't a directory\n",
-				dname));
-			umask(old_umask);
-			return false;
-		}
-		if (st.st_uid != uid && !uwrap_enabled()) {
-			DEBUG(0, ("invalid ownership on directory "
-				  "%s\n", dname));
-			umask(old_umask);
-			return false;
-		}
-		if ((st.st_mode & 0777) != dir_perms) {
-			DEBUG(0, ("invalid permissions on directory "
-				  "'%s': has 0%o should be 0%o\n", dname,
-				  (st.st_mode & 0777), dir_perms));
-			umask(old_umask);
+		umask(old_umask);
+
+		ret = lstat(dname, &st);
+		if (ret == -1) {
+			DEBUG(0, ("lstat failed on created directory %s: %s\n",
+				  dname, strerror(errno)));
 			return false;
 		}
 	}
+
+	/* Check ownership and permission on existing directory */
+	if (!S_ISDIR(st.st_mode)) {
+		DEBUG(0, ("directory %s isn't a directory\n",
+			dname));
+		return false;
+	}
+	if (st.st_uid != uid && !uwrap_enabled()) {
+		DEBUG(0, ("invalid ownership on directory "
+			  "%s\n", dname));
+		return false;
+	}
+	if ((st.st_mode & 0777) != dir_perms) {
+		DEBUG(0, ("invalid permissions on directory "
+			  "'%s': has 0%o should be 0%o\n", dname,
+			  (st.st_mode & 0777), dir_perms));
+		return false;
+	}
+
 	return true;
 }       
 
@@ -276,7 +286,9 @@ _PUBLIC_ bool process_exists_by_pid(pid_t pid)
 {
 	/* Doing kill with a non-positive pid causes messages to be
 	 * sent to places we don't want. */
-	SMB_ASSERT(pid > 0);
+	if (pid <= 0) {
+		return false;
+	}
 	return(kill(pid,0) == 0 || errno != ESRCH);
 }
 
@@ -635,6 +647,34 @@ _PUBLIC_ void *realloc_array(void *ptr, size_t el_size, unsigned count, bool fre
 void *malloc_array(size_t el_size, unsigned int count)
 {
 	return realloc_array(NULL, el_size, count, false);
+}
+
+/****************************************************************************
+ Type-safe memalign
+****************************************************************************/
+
+void *memalign_array(size_t el_size, size_t align, unsigned int count)
+{
+	if (count*el_size >= MAX_MALLOC_SIZE) {
+		return NULL;
+	}
+
+	return memalign(align, el_size*count);
+}
+
+/****************************************************************************
+ Type-safe calloc.
+****************************************************************************/
+
+void *calloc_array(size_t size, size_t nmemb)
+{
+	if (nmemb >= MAX_MALLOC_SIZE/size) {
+		return NULL;
+	}
+	if (size == 0 || nmemb == 0) {
+		return NULL;
+	}
+	return calloc(nmemb, size);
 }
 
 /**
@@ -1071,8 +1111,21 @@ void *anonymous_shared_allocate(size_t orig_bufsz)
 	buf = mmap(NULL, bufsz, PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED,
 			-1 /* fd */, 0 /* offset */);
 #else
+{
+	int saved_errno;
+	int fd;
+
+	fd = open("/dev/zero", O_RDWR);
+	if (fd == -1) {
+		return NULL;
+	}
+
 	buf = mmap(NULL, bufsz, PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED,
-			open("/dev/zero", O_RDWR), 0 /* offset */);
+		   fd, 0 /* offset */);
+	saved_errno = errno;
+	close(fd);
+	errno = saved_errno;
+}
 #endif
 
 	if (buf == MAP_FAILED) {

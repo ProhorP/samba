@@ -41,6 +41,10 @@
 #include "smbprofile.h"
 #include "lib/id_cache.h"
 #include "lib/param/param.h"
+#include "lib/background.h"
+#include "lib/conn_tdb.h"
+#include "../lib/util/pidfile.h"
+#include "lib/smbd_shim.h"
 
 struct smbd_open_socket;
 struct smbd_child_pid;
@@ -184,7 +188,7 @@ static void msg_inject_fault(struct messaging_context *msg,
 		  procid_str_static(&src), sig));
 #endif
 
-	kill(sys_getpid(), sig);
+	kill(getpid(), sig);
 }
 #endif /* DEVELOPER */
 
@@ -247,17 +251,6 @@ static void smbd_parent_id_cache_kill(struct messaging_context *msg_ctx,
 	messaging_send_to_children(msg_ctx, msg_type, data);
 }
 
-static void smbd_parent_id_cache_flush(struct messaging_context *ctx,
-				       void* data,
-				       uint32_t msg_type,
-				       struct server_id srv_id,
-				       DATA_BLOB* msg_data)
-{
-	id_cache_flush_message(ctx, data, msg_type, srv_id, msg_data);
-
-	messaging_send_to_children(ctx, msg_type, msg_data);
-}
-
 static void smbd_parent_id_cache_delete(struct messaging_context *ctx,
 					void* data,
 					uint32_t msg_type,
@@ -267,6 +260,103 @@ static void smbd_parent_id_cache_delete(struct messaging_context *ctx,
 	id_cache_delete_message(ctx, data, msg_type, srv_id, msg_data);
 
 	messaging_send_to_children(ctx, msg_type, msg_data);
+}
+
+struct smbd_parent_notify_state {
+	struct tevent_context *ev;
+	struct messaging_context *msg;
+	uint32_t msgtype;
+	struct notify_context *notify;
+};
+
+static int smbd_parent_notify_cleanup(void *private_data);
+static void smbd_parent_notify_cleanup_done(struct tevent_req *req);
+static void smbd_parent_notify_proxy_done(struct tevent_req *req);
+
+static bool smbd_parent_notify_init(TALLOC_CTX *mem_ctx,
+				    struct messaging_context *msg,
+				    struct tevent_context *ev)
+{
+	struct smbd_parent_notify_state *state;
+	struct tevent_req *req;
+
+	state = talloc(mem_ctx, struct smbd_parent_notify_state);
+	if (state == NULL) {
+		return NULL;
+	}
+	state->msg = msg;
+	state->ev = ev;
+	state->msgtype = MSG_SMB_NOTIFY_CLEANUP;
+
+	state->notify = notify_init(state, msg, ev);
+	if (state->notify == NULL) {
+		goto fail;
+	}
+	req = background_job_send(
+		state, state->ev, state->msg, &state->msgtype, 1,
+		lp_parm_int(-1, "smbd", "notify cleanup interval", 60),
+		smbd_parent_notify_cleanup, state->notify);
+	if (req == NULL) {
+		goto fail;
+	}
+	tevent_req_set_callback(req, smbd_parent_notify_cleanup_done, state);
+
+	if (!lp_clustering()) {
+		return true;
+	}
+
+	req = notify_cluster_proxy_send(state, ev, state->notify);
+	if (req == NULL) {
+		goto fail;
+	}
+	tevent_req_set_callback(req, smbd_parent_notify_proxy_done, state);
+
+	return true;
+fail:
+	TALLOC_FREE(state);
+	return false;
+}
+
+static int smbd_parent_notify_cleanup(void *private_data)
+{
+	struct notify_context *notify = talloc_get_type_abort(
+		private_data, struct notify_context);
+	notify_cleanup(notify);
+	return lp_parm_int(-1, "smbd", "notify cleanup interval", 60);
+}
+
+static void smbd_parent_notify_cleanup_done(struct tevent_req *req)
+{
+	struct smbd_parent_notify_state *state = tevent_req_callback_data(
+		req, struct smbd_parent_notify_state);
+	NTSTATUS status;
+
+	status = background_job_recv(req);
+	TALLOC_FREE(req);
+	DEBUG(1, ("notify cleanup job ended with %s\n", nt_errstr(status)));
+
+	/*
+	 * Provide self-healing: Whatever the error condition was, it
+	 * will have printed it into log.smbd. Just retrying and
+	 * spamming log.smbd once a minute should be fine.
+	 */
+	req = background_job_send(
+		state, state->ev, state->msg, &state->msgtype, 1, 60,
+		smbd_parent_notify_cleanup, state->notify);
+	if (req == NULL) {
+		DEBUG(1, ("background_job_send failed\n"));
+		return;
+	}
+	tevent_req_set_callback(req, smbd_parent_notify_cleanup_done, state);
+}
+
+static void smbd_parent_notify_proxy_done(struct tevent_req *req)
+{
+	int ret;
+
+	ret = notify_cluster_proxy_recv(req);
+	TALLOC_FREE(req);
+	DEBUG(1, ("notify proxy job ended with %s\n", strerror(ret)));
 }
 
 static void smb_parent_force_tdis(struct messaging_context *ctx,
@@ -329,6 +419,24 @@ static void remove_child_pid(struct smbd_parent_context *parent,
 	struct smbd_child_pid *child;
 	struct server_id child_id;
 
+	child_id = pid_to_procid(pid);
+
+	for (child = parent->children; child != NULL; child = child->next) {
+		if (child->pid == pid) {
+			struct smbd_child_pid *tmp = child;
+			DLIST_REMOVE(parent->children, child);
+			TALLOC_FREE(tmp);
+			parent->num_children -= 1;
+			break;
+		}
+	}
+
+	if (child == NULL) {
+		/* not all forked child processes are added to the children list */
+		DEBUG(2, ("Could not find child %d -- ignoring\n", (int)pid));
+		return;
+	}
+
 	if (unclean_shutdown) {
 		/* a child terminated uncleanly so tickle all
 		   processes to see if they can grab any of the
@@ -348,25 +456,10 @@ static void remove_child_pid(struct smbd_parent_context *parent,
 		}
 	}
 
-	child_id = pid_to_procid(pid);
-
 	if (!serverid_deregister(child_id)) {
 		DEBUG(1, ("Could not remove pid %d from serverid.tdb\n",
 			  (int)pid));
 	}
-
-	for (child = parent->children; child != NULL; child = child->next) {
-		if (child->pid == pid) {
-			struct smbd_child_pid *tmp = child;
-			DLIST_REMOVE(parent->children, child);
-			TALLOC_FREE(tmp);
-			parent->num_children -= 1;
-			return;
-		}
-	}
-
-	/* not all forked child processes are added to the children list */
-	DEBUG(1, ("Could not find child %d -- ignoring\n", (int)pid));
 }
 
 /****************************************************************************
@@ -447,7 +540,6 @@ static void smbd_accept_connection(struct tevent_context *ev,
 	struct smbd_open_socket *s = talloc_get_type_abort(private_data,
 				     struct smbd_open_socket);
 	struct messaging_context *msg_ctx = s->parent->msg_ctx;
-	struct smbd_server_connection *sconn = smbd_server_conn;
 	struct sockaddr_storage addr;
 	socklen_t in_addrlen = sizeof(addr);
 	int fd;
@@ -455,7 +547,6 @@ static void smbd_accept_connection(struct tevent_context *ev,
 	uint64_t unique_id;
 
 	fd = accept(s->fd, (struct sockaddr *)(void *)&addr,&in_addrlen);
-	sconn->sock = fd;
 	if (fd == -1 && errno == EINTR)
 		return;
 
@@ -466,15 +557,14 @@ static void smbd_accept_connection(struct tevent_context *ev,
 	}
 
 	if (s->parent->interactive) {
-		tevent_re_initialise(ev);
-		smbd_process(ev, sconn);
+		reinit_after_fork(msg_ctx, ev, true);
+		smbd_process(ev, msg_ctx, fd, true);
 		exit_server_cleanly("end of interactive mode");
 		return;
 	}
 
 	if (!allowable_number_of_smbd_processes(s->parent)) {
 		close(fd);
-		sconn->sock = -1;
 		return;
 	}
 
@@ -484,7 +574,7 @@ static void smbd_accept_connection(struct tevent_context *ev,
 	 */
 	unique_id = serverid_get_random_unique_id();
 
-	pid = sys_fork();
+	pid = fork();
 	if (pid == 0) {
 		NTSTATUS status = NT_STATUS_OK;
 
@@ -503,12 +593,6 @@ static void smbd_accept_connection(struct tevent_context *ev,
 		/* Stop zombies, the parent explicitly handles
 		 * them, counting worker smbds. */
 		CatchChild();
-
-		/* close our standard file
-		   descriptors */
-		if (!debug_get_output_is_stdout()) {
-			close_low_fds(False); /* Don't close stderr */
-		}
 
 		status = reinit_after_fork(msg_ctx,
 					   ev,
@@ -533,25 +617,14 @@ static void smbd_accept_connection(struct tevent_context *ev,
 			smb_panic("reinit_after_fork() failed");
 		}
 
-		smbd_setup_sig_term_handler(sconn);
-		smbd_setup_sig_hup_handler(sconn);
-
-		if (!serverid_register(messaging_server_id(msg_ctx),
-				       FLAG_MSG_GENERAL|FLAG_MSG_SMBD
-				       |FLAG_MSG_DBWRAP
-				       |FLAG_MSG_PRINT_GENERAL)) {
-			exit_server_cleanly("Could not register myself in "
-					    "serverid.tdb");
-		}
-
-		smbd_process(ev, sconn);
+		smbd_process(ev, msg_ctx, fd, false);
 	 exit:
 		exit_server_cleanly("end of child");
 		return;
 	}
 
 	if (pid < 0) {
-		DEBUG(0,("smbd_accept_connection: sys_fork() failed: %s\n",
+		DEBUG(0,("smbd_accept_connection: fork() failed: %s\n",
 			 strerror(errno)));
 	}
 
@@ -565,7 +638,6 @@ static void smbd_accept_connection(struct tevent_context *ev,
 		getpeername failure if we reopen the logs
 		and use %I in the filename.
 	*/
-	sconn->sock = -1;
 
 	if (pid != 0) {
 		add_child_pid(s->parent, pid);
@@ -663,8 +735,8 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 			      const char *smb_ports)
 {
 	int num_interfaces = iface_count();
-	int i;
-	const char *ports;
+	int i,j;
+	const char **ports;
 	unsigned dns_port = 0;
 
 #ifdef HAVE_ATEXIT
@@ -674,16 +746,20 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 	/* Stop zombies */
 	smbd_setup_sig_chld_handler(parent);
 
+	ports = lp_smb_ports();
+
 	/* use a reasonable default set of ports - listing on 445 and 139 */
-	if (!smb_ports) {
-		ports = lp_smb_ports();
-		if (!ports || !*ports) {
-			ports = talloc_strdup(talloc_tos(), SMB_PORTS);
-		} else {
-			ports = talloc_strdup(talloc_tos(), ports);
+	if (smb_ports) {
+		ports = (const char **)str_list_make_v3(talloc_tos(), smb_ports, NULL);
+	}
+
+	for (j = 0; ports && ports[j]; j++) {
+		unsigned port = atoi(ports[j]);
+
+		if (port == 0 || port > 0xffff) {
+			exit_server_cleanly("Invalid port in the config or on "
+					    "the commandline specified!");
 		}
-	} else {
-		ports = talloc_strdup(talloc_tos(), smb_ports);
 	}
 
 	if (lp_interfaces() && lp_bind_interfaces_only()) {
@@ -697,9 +773,6 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 		for(i = 0; i < num_interfaces; i++) {
 			const struct sockaddr_storage *ifss =
 					iface_n_sockaddr_storage(i);
-			char *tok;
-			const char *ptr;
-
 			if (ifss == NULL) {
 				DEBUG(0,("open_sockets_smbd: "
 					"interface %d has NULL IP address !\n",
@@ -707,12 +780,8 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 				continue;
 			}
 
-			for (ptr=ports;
-			     next_token_talloc(talloc_tos(),&ptr, &tok, " \t,");) {
-				unsigned port = atoi(tok);
-				if (port == 0 || port > 0xffff) {
-					continue;
-				}
+			for (j = 0; ports && ports[j]; j++) {
+				unsigned port = atoi(ports[j]);
 
 				/* Keep the first port for mDNS service
 				 * registration.
@@ -734,30 +803,21 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 		/* Just bind to 0.0.0.0 - accept connections
 		   from anywhere. */
 
-		char *tok;
-		const char *ptr;
-		const char *sock_addr = lp_socket_address();
+		const char *sock_addr;
 		char *sock_tok;
 		const char *sock_ptr;
 
-		if (strequal(sock_addr, "0.0.0.0") ||
-		    strequal(sock_addr, "::")) {
 #if HAVE_IPV6
-			sock_addr = "::,0.0.0.0";
+		sock_addr = "::,0.0.0.0";
 #else
-			sock_addr = "0.0.0.0";
+		sock_addr = "0.0.0.0";
 #endif
-		}
 
 		for (sock_ptr=sock_addr;
 		     next_token_talloc(talloc_tos(), &sock_ptr, &sock_tok, " \t,"); ) {
-			for (ptr=ports; next_token_talloc(talloc_tos(), &ptr, &tok, " \t,"); ) {
+			for (j = 0; ports && ports[j]; j++) {
 				struct sockaddr_storage ss;
-
-				unsigned port = atoi(tok);
-				if (port == 0 || port > 0xffff) {
-					continue;
-				}
+				unsigned port = atoi(ports[j]);
 
 				/* Keep the first port for mDNS service
 				 * registration.
@@ -820,8 +880,6 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 			   smb_parent_force_tdis);
 
 	messaging_register(msg_ctx, NULL,
-			   ID_CACHE_FLUSH, smbd_parent_id_cache_flush);
-	messaging_register(msg_ctx, NULL,
 			   ID_CACHE_DELETE, smbd_parent_id_cache_delete);
 	messaging_register(msg_ctx, NULL,
 			   ID_CACHE_KILL, smbd_parent_id_cache_kill);
@@ -855,6 +913,23 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 	}
 
 	return true;
+}
+
+
+/*
+  handle stdin becoming readable when we are in --foreground mode
+ */
+static void smbd_stdin_handler(struct tevent_context *ev,
+			       struct tevent_fd *fde,
+			       uint16_t flags,
+			       void *private_data)
+{
+	char c;
+	if (read(0, &c, 1) != 1) {
+		/* we have reached EOF on stdin, which means the
+		   parent has exited. Shutdown the server */
+		exit_server_cleanly("EOF on stdin");
+	}
 }
 
 static void smbd_parent_loop(struct tevent_context *ev_ctx,
@@ -976,7 +1051,24 @@ extern void build_options(bool screen);
 	NTSTATUS status;
 	struct tevent_context *ev_ctx;
 	struct messaging_context *msg_ctx;
+	struct server_id server_id;
 	struct tevent_signal *se;
+	char *np_dir = NULL;
+	static const struct smbd_shim smbd_shim_fns =
+	{
+		.cancel_pending_lock_requests_by_fid = smbd_cancel_pending_lock_requests_by_fid,
+		.send_stat_cache_delete_message = smbd_send_stat_cache_delete_message,
+		.change_to_root_user = smbd_change_to_root_user,
+
+		.contend_level2_oplocks_begin = smbd_contend_level2_oplocks_begin,
+		.contend_level2_oplocks_end = smbd_contend_level2_oplocks_end,
+
+		.become_root = smbd_become_root,
+		.unbecome_root = smbd_unbecome_root,
+
+		.exit_server = smbd_exit_server,
+		.exit_server_cleanly = smbd_exit_server_cleanly,
+	};
 
 	/*
 	 * Do this before any other talloc operation
@@ -987,6 +1079,8 @@ extern void build_options(bool screen);
 	setup_logging(argv[0], DEBUG_DEFAULT_STDOUT);
 
 	load_case_tables();
+
+	set_smbd_shim(&smbd_shim_fns);
 
 	smbd_init_globals();
 
@@ -1071,7 +1165,7 @@ extern void build_options(bool screen);
 	gain_root_group_privilege();
 
 	fault_setup();
-	dump_core_setup("smbd", lp_logfile());
+	dump_core_setup("smbd", lp_logfile(talloc_tos()));
 
 	/* we are never interested in SIGPIPE */
 	BlockSignals(True,SIGPIPE);
@@ -1153,6 +1247,13 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC
+	    && !lp_parm_bool(-1, "server role check", "inhibit", false)) {
+		DEBUG(0, ("server role = 'active directory domain controller' not compatible with running smbd standalone. \n"));
+		DEBUGADD(0, ("You should start 'samba' instead, and it will control starting smbd if required\n"));
+		exit(1);
+	}
+
 	/* ...NOTE... Log files are working from this point! */
 
 	DEBUG(3,("loaded services\n"));
@@ -1205,8 +1306,11 @@ extern void build_options(bool screen);
 	if (!directory_exist(lp_lockdir()))
 		mkdir(lp_lockdir(), 0755);
 
+	if (!directory_exist(lp_piddir()))
+		mkdir(lp_piddir(), 0755);
+
 	if (is_daemon)
-		pidfile_create("smbd");
+		pidfile_create(lp_piddir(), "smbd");
 
 	status = reinit_after_fork(msg_ctx,
 				   ev_ctx,
@@ -1216,7 +1320,18 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
-	smbd_server_conn->msg_ctx = msg_ctx;
+	if (!interactive) {
+		/*
+		 * Do not initialize the parent-child-pipe before becoming a
+		 * daemon: this is used to detect a died parent in the child
+		 * process.
+		 */
+		status = init_before_fork();
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0, ("init_before_fork failed: %s\n", nt_errstr(status)));
+			exit(1);
+		}
+	}
 
 	parent = talloc_zero(ev_ctx, struct smbd_parent_context);
 	if (!parent) {
@@ -1264,7 +1379,7 @@ extern void build_options(bool screen);
 	}
 
 	if (lp_server_role() == ROLE_DOMAIN_BDC || lp_server_role() == ROLE_DOMAIN_PDC) {
-		struct loadparm_context *lp_ctx = loadparm_init_s3(NULL, loadparm_s3_context());
+		struct loadparm_context *lp_ctx = loadparm_init_s3(NULL, loadparm_s3_helpers());
 		if (!open_schannel_session_store(NULL, lp_ctx)) {
 			DEBUG(0,("ERROR: Samba cannot open schannel store for secured NETLOGON operations.\n"));
 			exit(1);
@@ -1277,12 +1392,21 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
-	if (!sessionid_init()) {
+	server_id = messaging_server_id(msg_ctx);
+	status = smbXsrv_version_global_init(&server_id);
+	if (!NT_STATUS_IS_OK(status)) {
 		exit(1);
 	}
 
-	if (!connections_init(True))
+	status = smbXsrv_session_global_init();
+	if (!NT_STATUS_IS_OK(status)) {
 		exit(1);
+	}
+
+	status = smbXsrv_tcon_global_init();
+	if (!NT_STATUS_IS_OK(status)) {
+		exit(1);
+	}
 
 	if (!locking_init())
 		exit(1);
@@ -1291,7 +1415,7 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
-	if (!notify_internal_parent_init(ev_ctx)) {
+	if (!smbd_parent_notify_init(NULL, msg_ctx, ev_ctx)) {
 		exit(1);
 	}
 
@@ -1311,7 +1435,7 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
-	status = init_system_info();
+	status = init_system_session_info();
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("ERROR: failed to setup system user info: %s.\n",
 			  nt_errstr(status)));
@@ -1323,9 +1447,13 @@ extern void build_options(bool screen);
 		return -1;
 	}
 
-	if (!file_init(smbd_server_conn)) {
-		DEBUG(0, ("ERROR: file_init failed\n"));
+	if (!file_init_global()) {
+		DEBUG(0, ("ERROR: file_init_global() failed\n"));
 		return -1;
+	}
+	status = smbXsrv_open_global_init();
+	if (!NT_STATUS_IS_OK(status)) {
+		exit(1);
 	}
 
 	/* This MUST be done before start_epmd() because otherwise
@@ -1334,6 +1462,18 @@ extern void build_options(bool screen);
 	if (!directory_create_or_exist(lp_ncalrpc_dir(), geteuid(), 0755)) {
 		DEBUG(0, ("Failed to create pipe directory %s - %s\n",
 			  lp_ncalrpc_dir(), strerror(errno)));
+		return -1;
+	}
+
+	np_dir = talloc_asprintf(talloc_tos(), "%s/np", lp_ncalrpc_dir());
+	if (!np_dir) {
+		DEBUG(0, ("%s: Out of memory\n", __location__));
+		return -1;
+	}
+
+	if (!directory_create_or_exist(np_dir, geteuid(), 0700)) {
+		DEBUG(0, ("Failed to create pipe directory %s - %s\n",
+			  np_dir, strerror(errno)));
 		return -1;
 	}
 
@@ -1356,7 +1496,7 @@ extern void build_options(bool screen);
 			start_lsasd(ev_ctx, msg_ctx);
 		}
 
-		if (!_lp_disable_spoolss() &&
+		if (!lp__disable_spoolss() &&
 		    (rpc_spoolss_daemon() != RPC_DAEMON_DISABLED)) {
 			bool bgq = lp_parm_bool(-1, "smbd", "backgroundqueue", true);
 
@@ -1364,7 +1504,7 @@ extern void build_options(bool screen);
 				exit(1);
 			}
 		}
-	} else if (!_lp_disable_spoolss() &&
+	} else if (!lp__disable_spoolss() &&
 		   (rpc_spoolss_daemon() != RPC_DAEMON_DISABLED)) {
 		if (!printing_subsystem_init(ev_ctx, msg_ctx, false, false)) {
 			exit(1);
@@ -1372,18 +1512,18 @@ extern void build_options(bool screen);
 	}
 
 	if (!is_daemon) {
+		int sock;
+
 		/* inetd mode */
 		TALLOC_FREE(frame);
 
 		/* Started from inetd. fd 0 is the socket. */
 		/* We will abort gracefully when the client or remote system
 		   goes away */
-		smbd_server_conn->sock = dup(0);
+		sock = dup(0);
 
-		/* close our standard file descriptors */
-		if (!debug_get_output_is_stdout()) {
-			close_low_fds(False); /* Don't close stderr */
-		}
+		/* close stdin, stdout (if not logging to it), but not stderr */
+		close_low_fds(true, !debug_get_output_is_stdout(), false);
 
 #ifdef HAVE_ATEXIT
 		atexit(killkids);
@@ -1392,7 +1532,7 @@ extern void build_options(bool screen);
 	        /* Stop zombies */
 		smbd_setup_sig_chld_handler(parent);
 
-		smbd_process(ev_ctx, smbd_server_conn);
+		smbd_process(ev_ctx, msg_ctx, sock, true);
 
 		exit_server_cleanly(NULL);
 		return(0);
@@ -1403,11 +1543,22 @@ extern void build_options(bool screen);
 
 	/* do a printer update now that all messaging has been set up,
 	 * before we allow clients to start connecting */
-	printing_subsystem_update(ev_ctx, msg_ctx, false);
+	if (!lp__disable_spoolss() &&
+	    (rpc_spoolss_daemon() != RPC_DAEMON_DISABLED)) {
+		printing_subsystem_update(ev_ctx, msg_ctx, false);
+	}
 
 	TALLOC_FREE(frame);
 	/* make sure we always have a valid stackframe */
 	frame = talloc_stackframe();
+
+	if (!Fork) {
+		/* if we are running in the foreground then look for
+		   EOF on stdin, and exit if it happens. This allows
+		   us to die if the parent process dies
+		*/
+		tevent_add_fd(ev_ctx, parent, 0, TEVENT_FD_READ, smbd_stdin_handler, NULL);
+	}
 
 	smbd_parent_loop(ev_ctx, parent);
 

@@ -13,8 +13,15 @@
 ^samba4.nbt.winsreplication.owned # fails sometimes, timing related
 ^samba3.rpc.spoolss.*printserver.enum_printers_old # fails on some hosts due to timing issues ?
 ^samba3.rpc.spoolss.printer.*addprinterex.print_test # another intermittent failure
-.*printer.*print_test_extended # fails on some hosts due to timing issues ?
-.*printer.*print_test # fails on some hosts due to timing issues ?
-.*rpc.spoolss.printer # seems to be flakey currently, but should be fixed
 ^samba3.rap.printing # fails sometimes on sn-devel
+^samba3.rpc.spoolss.printer.*addprinter.print_test # fails on some hosts due to timing issues ?
+^samba3.rpc.lsa.privileges.lsa.Privileges\(s3dc\) # fails sometimes on sn-devel
 ^samba3.smb2.lock.*.rw-exclusive # another intermittent failure
+^samba4.blackbox.gentest # is flakey due to timing
+^samba3.smb2.acls.INHERITANCE\(plugin_s4_dc\)  # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.smb2.acls.DYNAMIC\(plugin_s4_dc\)  # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.acls.dynamic\(plugin_s4_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.acls.inheritance\(plugin_s4_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.samba3checkfsp.samba3checkfsp\(plugin_s4_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.samba3closeerr.samba3closeerr\(plugin_s4_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba4.nss.test.*using.*winbind # fails sometimes on sn-devel

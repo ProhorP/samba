@@ -542,6 +542,10 @@ bool sd_has_inheritable_components(const struct security_descriptor *parent_ctr,
 	unsigned int i;
 	const struct security_acl *the_acl = parent_ctr->dacl;
 
+	if (the_acl == NULL) {
+		return false;
+	}
+
 	for (i = 0; i < the_acl->num_aces; i++) {
 		const struct security_ace *ace = &the_acl->aces[i];
 
@@ -567,6 +571,7 @@ NTSTATUS se_create_child_secdesc(TALLOC_CTX *ctx,
 	struct security_acl *new_dacl = NULL, *the_acl = NULL;
 	struct security_ace *new_ace_list = NULL;
 	unsigned int new_ace_list_ndx = 0, i;
+	bool set_inherited_flags = (parent_ctr->type & SEC_DESC_DACL_AUTO_INHERITED);
 
 	TALLOC_CTX *frame;
 
@@ -633,7 +638,8 @@ NTSTATUS se_create_child_secdesc(TALLOC_CTX *ctx,
 
 			/* First add the regular ACE entry. */
 			init_sec_ace(new_ace, ptrustee, ace->type,
-				ace->access_mask, 0);
+				ace->access_mask,
+				set_inherited_flags ? SEC_ACE_FLAG_INHERITED_ACE : 0);
 
 			DEBUG(5,("se_create_child_secdesc(): %s:%d/0x%02x/0x%08x"
 				 " inherited as %s:%d/0x%02x/0x%08x\n",
@@ -657,7 +663,8 @@ NTSTATUS se_create_child_secdesc(TALLOC_CTX *ctx,
 		}
 
 		init_sec_ace(new_ace, ptrustee, ace->type,
-			     ace->access_mask, new_flags);
+			     ace->access_mask, new_flags |
+				(set_inherited_flags ? SEC_ACE_FLAG_INHERITED_ACE : 0));
 
 		DEBUG(5, ("se_create_child_secdesc(): %s:%d/0x%02x/0x%08x "
 			  " inherited as %s:%d/0x%02x/0x%08x\n",
@@ -671,6 +678,40 @@ NTSTATUS se_create_child_secdesc(TALLOC_CTX *ctx,
 	}
 
 	talloc_free(frame);
+
+	/*
+	 * remove duplicates
+	 */
+	for (i=1; i < new_ace_list_ndx;) {
+		struct security_ace *ai = &new_ace_list[i];
+		unsigned int remaining, j;
+		bool remove = false;
+
+		for (j=0; j < i; j++) {
+			struct security_ace *aj = &new_ace_list[j];
+
+			if (!sec_ace_equal(ai, aj)) {
+				continue;
+			}
+
+			remove = true;
+			break;
+		}
+
+		if (!remove) {
+			i++;
+			continue;
+		}
+
+		new_ace_list_ndx--;
+		remaining = new_ace_list_ndx - i;
+		if (remaining == 0) {
+			ZERO_STRUCT(new_ace_list[i]);
+			continue;
+		}
+		memmove(&new_ace_list[i], &new_ace_list[i+1],
+			sizeof(new_ace_list[i]) * remaining);
+	}
 
 	/* Create child security descriptor to return */
 	if (new_ace_list_ndx) {
@@ -686,7 +727,8 @@ NTSTATUS se_create_child_secdesc(TALLOC_CTX *ctx,
 
 	*ppsd = make_sec_desc(ctx,
 			SECURITY_DESCRIPTOR_REVISION_1,
-			SEC_DESC_SELF_RELATIVE|SEC_DESC_DACL_PRESENT,
+			SEC_DESC_SELF_RELATIVE|SEC_DESC_DACL_PRESENT|
+				(set_inherited_flags ? SEC_DESC_DACL_AUTO_INHERITED : 0),
 			owner_sid,
 			group_sid,
 			NULL,

@@ -283,6 +283,8 @@ union smb_tcon {
 		} in;
 		struct {
 			uint16_t options;
+			uint32_t max_access;
+			uint32_t guest_max_access;
 			char *dev_type;
 			char *fs_type;
 			uint16_t tid;
@@ -1140,7 +1142,7 @@ union smb_setfileinfo {
 		} in;
 	} unix_link, unix_hlink;
 
-	/* RAW_FILEINFO_SET_SEC_DESC */
+	/* RAW_SFILEINFO_SEC_DESC */
 	struct {
 		enum smb_setfileinfo_level level;
 		struct {
@@ -1344,6 +1346,26 @@ union smb_fsinfo {
 };
 
 
+enum smb_setfsinfo_level {
+		RAW_SETFS_UNIX_INFO                      = SMB_SET_CIFS_UNIX_INFO};
+
+union smb_setfsinfo {
+	/* generic interface */
+	struct {
+		enum smb_fsinfo_level level;
+	} generic;
+
+	/* TRANS2 RAW_QFS_UNIX_INFO interface */
+	struct {
+		enum smb_fsinfo_level level;
+
+		struct {
+			uint16_t major_version;
+			uint16_t minor_version;
+			uint64_t capability;
+		} in;
+	} unix_info;
+};
 
 enum smb_open_level {
 	RAW_OPEN_OPEN,
@@ -1709,6 +1731,14 @@ union smb_open {
 			struct security_descriptor *sec_desc;
 			bool   durable_open;
 			struct smb2_handle *durable_handle;
+
+			/* data for durable handle v2 */
+			bool durable_open_v2;
+			struct GUID create_guid;
+			bool persistent_open;
+			uint32_t timeout;
+			struct smb2_handle *durable_handle_v2;
+
 			bool   query_maximal_access;
 			NTTIME timewarp;
 			bool   query_on_disk_id;
@@ -1742,6 +1772,11 @@ union smb_open {
 			uint8_t on_disk_id[32];
 			struct smb2_lease lease_response;
 			bool durable_open;
+
+			/* durable handle v2 */
+			bool durable_open_v2;
+			bool persistent_open;
+			uint32_t timeout;
 
 			/* tagged blobs in the reply */
 			struct smb2_create_blobs blobs;
@@ -2191,9 +2226,6 @@ enum smb_ioctl_level {
 	RAW_IOCTL_SMB2,
 	RAW_IOCTL_SMB2_NO_HANDLE
 };
-
-/* 2.2.31 SMB2 IOCTL Request */
-#define SMB2_IOCTL_FLAG_IS_FSCTL		0x00000001
 
 /*
   union for ioctl() backend

@@ -519,7 +519,7 @@ static bool wbinfo_list_domains(bool list_all_domains, bool verbose)
 	}
 
 	if (print_all) {
-		d_printf("%-16s%-24s%-12s%-12s%-5s%-5s\n",
+		d_printf("%-16s%-65s%-12s%-12s%-5s%-5s\n",
 			 "Domain Name", "DNS Domain", "Trust Type",
 			 "Transitive", "In", "Out");
 	}
@@ -533,7 +533,7 @@ static bool wbinfo_list_domains(bool list_all_domains, bool verbose)
 			continue;
 		}
 
-		d_printf("%-24s", domain_list[i].dns_name);
+		d_printf("%-65s", domain_list[i].dns_name);
 
 		switch(domain_list[i].trust_type) {
 		case WBC_DOMINFO_TRUSTTYPE_NONE:
@@ -831,16 +831,19 @@ static bool wbinfo_ping_dc(void)
 {
 	wbcErr wbc_status = WBC_ERR_UNKNOWN_FAILURE;
 	struct wbcAuthErrorInfo *error = NULL;
+	char *dcname = NULL;
 
-	wbc_status = wbcPingDc(NULL, &error);
+	wbc_status = wbcPingDc2(NULL, &error, &dcname);
 
-	d_printf("checking the NETLOGON dc connection %s\n",
+	d_printf("checking the NETLOGON dc connection to \"%s\" %s\n",
+		 dcname ? dcname : "",
 		 WBC_ERROR_IS_OK(wbc_status) ? "succeeded" : "failed");
 
 	if (wbc_status == WBC_ERR_AUTH_ERROR) {
 		d_fprintf(stderr, "error code was %s (0x%x)\n",
 			  error->nt_string, error->nt_status);
 		wbcFreeMemory(error);
+		return false;
 	}
 	if (!WBC_ERROR_IS_OK(wbc_status)) {
 		d_fprintf(stderr, "failed to call wbcPingDc: %s\n",
@@ -1389,6 +1392,8 @@ static bool wbinfo_lookup_sids(const char *arg)
 			 domains[names[i].domain_index].short_name,
 			 names[i].name, names[i].type);
 	}
+	wbcFreeMemory(names);
+	wbcFreeMemory(domains);
 	return true;
 }
 
@@ -2369,7 +2374,6 @@ int main(int argc, char **argv, char **envp)
 			break;
 		case 'P':
 			if (!wbinfo_ping_dc()) {
-				d_fprintf(stderr, "Could not ping our DC\n");
 				goto done;
 			}
 			break;

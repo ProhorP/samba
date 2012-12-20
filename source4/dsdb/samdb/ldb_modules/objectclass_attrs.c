@@ -192,7 +192,7 @@ static int attr_handler(struct oc_context *ac)
 		attr = dsdb_attribute_by_lDAPDisplayName(ac->schema,
 							 msg->elements[i].name);
 		if (attr == NULL) {
-			if (ldb_request_get_control(ac->req, LDB_CONTROL_RELAX_OID) &&
+			if (ldb_request_get_control(ac->req, DSDB_CONTROL_DBCHECK) &&
 			    ac->req->operation != LDB_ADD) {
 				/* we allow this for dbcheck to fix
 				   broken attributes */
@@ -219,7 +219,7 @@ static int attr_handler(struct oc_context *ac)
 			werr = attr->syntax->validate_ldb(&syntax_ctx, attr,
 							  &msg->elements[i]);
 			if (!W_ERROR_IS_OK(werr) &&
-			    !ldb_request_get_control(ac->req, LDB_CONTROL_RELAX_OID)) {
+			    !ldb_request_get_control(ac->req, DSDB_CONTROL_DBCHECK)) {
 				ldb_asprintf_errstring(ldb, "objectclass_attrs: attribute '%s' on entry '%s' contains at least one invalid value!",
 						       msg->elements[i].name,
 						       ldb_dn_get_linearized(msg->dn));
@@ -299,6 +299,7 @@ static int attr_handler2(struct oc_context *ac)
 	const struct dsdb_attribute *attr;
 	unsigned int i;
 	bool found;
+	bool isSchemaAttr = false;
 
 	ldb = ldb_module_get_ctx(ac->module);
 
@@ -329,16 +330,18 @@ static int attr_handler2(struct oc_context *ac)
 	 * 3.1.1.5. Unlike other objects in the DS, TDOs may not be created or
 	 *  manipulated by client machines over the LDAPv3 transport."
 	 */
-	if (ldb_req_is_untrusted(ac->req)) {
-		for (i = 0; i < oc_element->num_values; i++) {
-			if ((strcmp((char *)oc_element->values[i].data,
-				    "secret") == 0) ||
-			    (strcmp((char *)oc_element->values[i].data,
-				    "trustedDomain") == 0)) {
+	for (i = 0; i < oc_element->num_values; i++) {
+		char * attname = (char *)oc_element->values[i].data;
+		if (ldb_req_is_untrusted(ac->req)) {
+			if (strcmp(attname, "secret") == 0 ||
+			    strcmp(attname, "trustedDomain") == 0) {
 				ldb_asprintf_errstring(ldb, "objectclass_attrs: LSA objectclasses (entry '%s') cannot be created or changed over LDAP!",
 						       ldb_dn_get_linearized(ac->search_res->message->dn));
 				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
+		}
+		if (strcmp(attname, "attributeSchema") == 0) {
+			isSchemaAttr = true;
 		}
 	}
 
@@ -384,7 +387,7 @@ static int attr_handler2(struct oc_context *ac)
 		attr = dsdb_attribute_by_lDAPDisplayName(ac->schema,
 							 msg->elements[i].name);
 		if (attr == NULL) {
-			if (ldb_request_get_control(ac->req, LDB_CONTROL_RELAX_OID)) {
+			if (ldb_request_get_control(ac->req, DSDB_CONTROL_DBCHECK)) {
 				/* allow this to make it possible for dbcheck
 				   to remove bad attributes */
 				continue;
@@ -405,10 +408,14 @@ static int attr_handler2(struct oc_context *ac)
 			found = str_list_check(harmless_attrs, attr->lDAPDisplayName);
 		}
 		if (!found) {
-			ldb_asprintf_errstring(ldb, "objectclass_attrs: attribute '%s' on entry '%s' does not exist in the specified objectclasses!",
-					       msg->elements[i].name,
-					       ldb_dn_get_linearized(msg->dn));
-			return LDB_ERR_OBJECT_CLASS_VIOLATION;
+			/* we allow this for dbcheck to fix the rest of this broken entry */
+			if (!ldb_request_get_control(ac->req, DSDB_CONTROL_DBCHECK) || 
+			    ac->req->operation == LDB_ADD) {
+				ldb_asprintf_errstring(ldb, "objectclass_attrs: attribute '%s' on entry '%s' does not exist in the specified objectclasses!",
+						       msg->elements[i].name,
+						       ldb_dn_get_linearized(msg->dn));
+				return LDB_ERR_OBJECT_CLASS_VIOLATION;
+			}
 		}
 	}
 
@@ -420,6 +427,31 @@ static int attr_handler2(struct oc_context *ac)
 		return LDB_ERR_OBJECT_CLASS_VIOLATION;
 	}
 
+	if (isSchemaAttr) {
+		/* Before really adding an attribute in the database,
+			* let's check that we can translate it into a dbsd_attribute and
+			* that we can find a valid syntax object.
+			* If not it's better to reject this attribute than not be able
+			* to start samba next time due to schema being unloadable.
+			*/
+		struct dsdb_attribute *att = talloc(ac, struct dsdb_attribute);
+		const struct dsdb_syntax *attrSyntax;
+		WERROR status;
+
+		status= dsdb_attribute_from_ldb(ac->schema, msg, att);
+		if (!W_ERROR_IS_OK(status)) {
+			ldb_set_errstring(ldb,
+						"objectclass: failed to translate the schemaAttribute to a dsdb_attribute");
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+
+		attrSyntax = dsdb_syntax_for_attribute(att);
+		if (!attrSyntax) {
+			ldb_set_errstring(ldb,
+						"objectclass: unknown attribute syntax");
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+	}
 	return ldb_module_done(ac->req, ac->mod_ares->controls,
 			       ac->mod_ares->response, LDB_SUCCESS);
 }
@@ -568,6 +600,9 @@ static int objectclass_attrs_modify(struct ldb_module *module,
 				    struct ldb_request *req)
 {
 	struct ldb_context *ldb;
+	struct ldb_control *sd_propagation_control;
+	int ret;
+
 	struct oc_context *ac;
 
 	ldb = ldb_module_get_ctx(module);
@@ -576,6 +611,21 @@ static int objectclass_attrs_modify(struct ldb_module *module,
 
 	/* do not manipulate our control entries */
 	if (ldb_dn_is_special(req->op.mod.message->dn)) {
+		return ldb_next_request(module, req);
+	}
+
+	sd_propagation_control = ldb_request_get_control(req,
+					DSDB_CONTROL_SEC_DESC_PROPAGATION_OID);
+	if (sd_propagation_control != NULL) {
+		if (req->op.mod.message->num_elements != 1) {
+			return ldb_module_operr(module);
+		}
+		ret = strcmp(req->op.mod.message->elements[0].name,
+			     "nTSecurityDescriptor");
+		if (ret != 0) {
+			return ldb_module_operr(module);
+		}
+
 		return ldb_next_request(module, req);
 	}
 

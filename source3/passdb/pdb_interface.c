@@ -28,6 +28,7 @@
 #include "../librpc/gen_ndr/samr.h"
 #include "../librpc/gen_ndr/drsblobs.h"
 #include "../librpc/gen_ndr/ndr_drsblobs.h"
+#include "../librpc/gen_ndr/idmap.h"
 #include "memcache.h"
 #include "nsswitch/winbind_client.h"
 #include "../libcli/security/security.h"
@@ -194,29 +195,17 @@ static struct pdb_methods *pdb_get_methods_reload( bool reload )
 	static struct pdb_methods *pdb = NULL;
 
 	if ( pdb && reload ) {
-		pdb->free_private_data( &(pdb->private_data) );
+		if (pdb->free_private_data != NULL) {
+			pdb->free_private_data( &(pdb->private_data) );
+		}
 		if ( !NT_STATUS_IS_OK( make_pdb_method_name( &pdb, lp_passdb_backend() ) ) ) {
-			char *msg = NULL;
-			if (asprintf(&msg, "pdb_get_methods_reload: "
-					"failed to get pdb methods for backend %s\n",
-					lp_passdb_backend()) > 0) {
-				smb_panic(msg);
-			} else {
-				smb_panic("pdb_get_methods_reload");
-			}
+			return NULL;
 		}
 	}
 
 	if ( !pdb ) {
 		if ( !NT_STATUS_IS_OK( make_pdb_method_name( &pdb, lp_passdb_backend() ) ) ) {
-			char *msg = NULL;
-			if (asprintf(&msg, "pdb_get_methods_reload: "
-					"failed to get pdb methods for backend %s\n",
-					lp_passdb_backend()) > 0) {
-				smb_panic(msg);
-			} else {
-				smb_panic("pdb_get_methods_reload");
-			}
+			return NULL;
 		}
 	}
 
@@ -225,7 +214,21 @@ static struct pdb_methods *pdb_get_methods_reload( bool reload )
 
 static struct pdb_methods *pdb_get_methods(void)
 {
-	return pdb_get_methods_reload(False);
+	struct pdb_methods *pdb;
+
+	pdb = pdb_get_methods_reload(false);
+	if (!pdb) {
+		char *msg = NULL;
+		if (asprintf(&msg, "pdb_get_methods: "
+			     "failed to get pdb methods for backend %s\n",
+			     lp_passdb_backend()) > 0) {
+			smb_panic(msg);
+		} else {
+			smb_panic("pdb_get_methods");
+		}
+	}
+
+	return pdb;
 }
 
 struct pdb_domain_info *pdb_get_domain_info(TALLOC_CTX *mem_ctx)
@@ -455,11 +458,9 @@ static NTSTATUS pdb_default_create_user(struct pdb_methods *methods,
 		fstring name2;
 
 		if ((acb_info & ACB_NORMAL) && name[strlen(name)-1] != '$') {
-			add_script = talloc_strdup(tmp_ctx,
-					lp_adduser_script());
+			add_script = lp_adduser_script(tmp_ctx);
 		} else {
-			add_script = talloc_strdup(tmp_ctx,
-					lp_addmachine_script());
+			add_script = lp_addmachine_script(tmp_ctx);
 		}
 
 		if (!add_script || add_script[0] == '\0') {
@@ -471,7 +472,9 @@ static NTSTATUS pdb_default_create_user(struct pdb_methods *methods,
 		/* lowercase the username before creating the Unix account for 
 		   compatibility with previous Samba releases */
 		fstrcpy( name2, name );
-		strlower_m( name2 );
+		if (!strlower_m( name2 )) {
+			return NT_STATUS_INVALID_PARAMETER;
+		}
 		add_script = talloc_all_string_sub(tmp_ctx,
 					add_script,
 					"%u",
@@ -553,7 +556,7 @@ static int smb_delete_user(const char *unix_user)
 		return -1;
 	}
 
-	del_script = talloc_strdup(talloc_tos(), lp_deluser_script());
+	del_script = lp_deluser_script(talloc_tos());
 	if (!del_script || !*del_script) {
 		return -1;
 	}
@@ -597,7 +600,9 @@ static NTSTATUS pdb_default_delete_user(struct pdb_methods *methods,
 	   external scripts */
 
 	fstrcpy( username, pdb_get_username(sam_acct) );
-	strlower_m( username );
+	if (!strlower_m( username )) {
+		return status;
+	}
 
 	smb_delete_user( username );
 
@@ -1167,29 +1172,6 @@ NTSTATUS pdb_lookup_rids(const struct dom_sid *domain_sid,
 	return pdb->lookup_rids(pdb, domain_sid, num_rids, rids, names, attrs);
 }
 
-/* 
- * NOTE: pdb_lookup_names is currently (2007-01-12) not used anywhere 
- *       in the samba code.
- *       Unlike _lsa_lookup_sids and _samr_lookup_rids, which eventually 
- *       also ask pdb_lookup_rids, thus looking up a bunch of rids at a time, 
- *       the pdb_ calls _lsa_lookup_names and _samr_lookup_names come
- *       down to are pdb_getsampwnam and pdb_getgrnam instead of
- *       pdb_lookup_names.
- *       But in principle, it the call belongs to the API and might get
- *       used in this context some day. 
- */
-#if 0
-NTSTATUS pdb_lookup_names(const struct dom_sid *domain_sid,
-			  int num_names,
-			  const char **names,
-			  uint32_t *rids,
-			  enum lsa_SidType *attrs)
-{
-	struct pdb_methods *pdb = pdb_get_methods();
-	return pdb->lookup_names(pdb, domain_sid, num_names, names, rids, attrs);
-}
-#endif
-
 bool pdb_get_account_policy(enum pdb_policy_type type, uint32_t *value)
 {
 	struct pdb_methods *pdb = pdb_get_methods();
@@ -1232,11 +1214,10 @@ bool pdb_gid_to_sid(gid_t gid, struct dom_sid *sid)
 	return pdb->gid_to_sid(pdb, gid, sid);
 }
 
-bool pdb_sid_to_id(const struct dom_sid *sid, uid_t *uid, gid_t *gid,
-		   enum lsa_SidType *type)
+bool pdb_sid_to_id(const struct dom_sid *sid, struct unixid *id)
 {
 	struct pdb_methods *pdb = pdb_get_methods();
-	return pdb->sid_to_id(pdb, sid, uid, gid, type);
+	return pdb->sid_to_id(pdb, sid, id);
 }
 
 uint32_t pdb_capabilities(void)
@@ -1318,10 +1299,11 @@ bool pdb_new_rid(uint32_t *rid)
 
 bool initialize_password_db(bool reload, struct tevent_context *tevent_ctx)
 {
-	pdb_tevent_ctx = tevent_ctx;
+	if (tevent_ctx) {
+		pdb_tevent_ctx = tevent_ctx;
+	}
 	return (pdb_get_methods_reload(reload) != NULL);
 }
-
 
 /***************************************************************************
   Default implementations of some functions.
@@ -1387,7 +1369,7 @@ static bool pdb_default_uid_to_sid(struct pdb_methods *methods, uid_t uid,
 	struct passwd *unix_pw;
 	bool ret;
 
-	unix_pw = sys_getpwuid( uid );
+	unix_pw = getpwuid( uid );
 
 	if ( !unix_pw ) {
 		DEBUG(4,("pdb_default_uid_to_sid: host has no idea of uid "
@@ -1439,18 +1421,40 @@ static bool pdb_default_gid_to_sid(struct pdb_methods *methods, gid_t gid,
 	return true;
 }
 
+/**
+ * The "Unix User" and "Unix Group" domains have a special
+ * id mapping that is a rid-algorithm with range starting at 0.
+ */
+bool pdb_sid_to_id_unix_users_and_groups(const struct dom_sid *sid,
+					 struct unixid *id)
+{
+	uint32_t rid;
+
+	id->id = -1;
+
+	if (sid_peek_check_rid(&global_sid_Unix_Users, sid, &rid)) {
+		id->id = rid;
+		id->type = ID_TYPE_UID;
+		return true;
+	}
+
+	if (sid_peek_check_rid(&global_sid_Unix_Groups, sid, &rid)) {
+		id->id = rid;
+		id->type = ID_TYPE_GID;
+		return true;
+	}
+
+	return false;
+}
+
 static bool pdb_default_sid_to_id(struct pdb_methods *methods,
 				  const struct dom_sid *sid,
-				  uid_t *uid, gid_t *gid,
-				  enum lsa_SidType *type)
+				  struct unixid *id)
 {
 	TALLOC_CTX *mem_ctx;
 	bool ret = False;
-	const char *name;
 	uint32_t rid;
-
-	*uid = -1;
-	*gid = -1;
+	id->id = -1;
 
 	mem_ctx = talloc_new(NULL);
 
@@ -1460,27 +1464,41 @@ static bool pdb_default_sid_to_id(struct pdb_methods *methods,
 	}
 
 	if (sid_peek_check_rid(get_global_sam_sid(), sid, &rid)) {
+		const char *name;
+		enum lsa_SidType type;
+		uid_t uid;
+		gid_t gid;
 		/* Here we might have users as well as groups and aliases */
-		ret = lookup_global_sam_rid(mem_ctx, rid, &name, type, uid, gid);
+		ret = lookup_global_sam_rid(mem_ctx, rid, &name, &type, &uid, &gid);
+		if (ret) {
+			switch (type) {
+			case SID_NAME_DOM_GRP:
+			case SID_NAME_ALIAS:
+				id->type = ID_TYPE_GID;
+				id->id = gid;
+				break;
+			case SID_NAME_USER:
+				id->type = ID_TYPE_UID;
+				id->id = uid;
+				break;
+			default:
+				DEBUG(5, ("SID %s is our domain, but is not mapped to a user or group (got %d)\n",
+					  sid_string_dbg(sid), type));
+				ret = false;
+			}
+		} else {
+			DEBUG(5, ("SID %s is or domain, but is unmapped\n",
+				  sid_string_dbg(sid)));
+		}
 		goto done;
 	}
 
-	/* check for "Unix User" */
-
-	if ( sid_peek_check_rid(&global_sid_Unix_Users, sid, &rid) ) {
-		*uid = rid;
-		*type = SID_NAME_USER;
-		ret = True;		
-		goto done;		
-	}
-
-	/* check for "Unix Group" */
-
-	if ( sid_peek_check_rid(&global_sid_Unix_Groups, sid, &rid) ) {
-		*gid = rid;
-		*type = SID_NAME_ALIAS;
-		ret = True;		
-		goto done;		
+	/*
+	 * "Unix User" and "Unix Group"
+	 */
+	ret = pdb_sid_to_id_unix_users_and_groups(sid, id);
+	if (ret == true) {
+		goto done;
 	}
 
 	/* BUILTIN */
@@ -1509,8 +1527,8 @@ static bool pdb_default_sid_to_id(struct pdb_methods *methods,
 			goto done;
 		}
 
-		*gid = map->gid;
-		*type = SID_NAME_ALIAS;
+		id->id = map->gid;
+		id->type = ID_TYPE_GID;
 		ret = True;
 		goto done;
 	}
@@ -1608,7 +1626,7 @@ static NTSTATUS pdb_default_enum_group_members(struct pdb_methods *methods,
 
 		uid_to_sid(&sid, uids[i]);
 
-		if (!sid_check_is_in_our_domain(&sid)) {
+		if (!sid_check_is_in_our_sam(&sid)) {
 			DEBUG(5, ("Inconsistent SAM -- group member uid not "
 				  "in our domain\n"));
 			continue;
@@ -1806,7 +1824,7 @@ static NTSTATUS pdb_default_lookup_rids(struct pdb_methods *methods,
 	}
 
 	/* Should not happen, but better check once too many */
-	if (!sid_check_is_domain(domain_sid)) {
+	if (!sid_check_is_our_sam(domain_sid)) {
 		return NT_STATUS_INVALID_HANDLE;
 	}
 
@@ -1836,65 +1854,6 @@ static NTSTATUS pdb_default_lookup_rids(struct pdb_methods *methods,
 
 	return result;
 }
-
-#if 0
-static NTSTATUS pdb_default_lookup_names(struct pdb_methods *methods,
-					 const struct dom_sid *domain_sid,
-					 int num_names,
-					 const char **names,
-					 uint32_t *rids,
-					 enum lsa_SidType *attrs)
-{
-	int i;
-	NTSTATUS result;
-	bool have_mapped = False;
-	bool have_unmapped = False;
-
-	if (sid_check_is_builtin(domain_sid)) {
-
-		for (i=0; i<num_names; i++) {
-			uint32_t rid;
-
-			if (lookup_builtin_name(names[i], &rid)) {
-				attrs[i] = SID_NAME_ALIAS;
-				rids[i] = rid;
-				DEBUG(5,("lookup_rids: %s:%d\n",
-					 names[i], attrs[i]));
-				have_mapped = True;
-			} else {
-				have_unmapped = True;
-				attrs[i] = SID_NAME_UNKNOWN;
-			}
-		}
-		goto done;
-	}
-
-	/* Should not happen, but better check once too many */
-	if (!sid_check_is_domain(domain_sid)) {
-		return NT_STATUS_INVALID_HANDLE;
-	}
-
-	for (i = 0; i < num_names; i++) {
-		if (lookup_global_sam_name(names[i], 0, &rids[i], &attrs[i])) {
-			DEBUG(5,("lookup_names: %s-> %d:%d\n", names[i],
-				 rids[i], attrs[i]));
-			have_mapped = True;
-		} else {
-			have_unmapped = True;
-			attrs[i] = SID_NAME_UNKNOWN;
-		}
-	}
-
- done:
-
-	result = NT_STATUS_NONE_MAPPED;
-
-	if (have_mapped)
-		result = have_unmapped ? STATUS_SOME_UNMAPPED : NT_STATUS_OK;
-
-	return result;
-}
-#endif
 
 static int pdb_search_destructor(struct pdb_search *search)
 {

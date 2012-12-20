@@ -135,7 +135,13 @@ struct ndr_print {
 #define LIBNDR_FLAG_ALIGN4       (1<<23)
 #define LIBNDR_FLAG_ALIGN8       (1<<24)
 
-#define LIBNDR_ALIGN_FLAGS (LIBNDR_FLAG_ALIGN2|LIBNDR_FLAG_ALIGN4|LIBNDR_FLAG_ALIGN8)
+#define LIBNDR_ALIGN_FLAGS ( 0        | \
+		LIBNDR_FLAG_NOALIGN   | \
+		LIBNDR_FLAG_REMAINING | \
+		LIBNDR_FLAG_ALIGN2    | \
+		LIBNDR_FLAG_ALIGN4    | \
+		LIBNDR_FLAG_ALIGN8    | \
+		0)
 
 #define LIBNDR_PRINT_ARRAY_HEX   (1<<25)
 #define LIBNDR_PRINT_SET_VALUES  (1<<26)
@@ -353,9 +359,9 @@ typedef void (*ndr_print_function_t)(struct ndr_print *, const char *, int, cons
 #include "../libcli/util/error.h"
 #include "librpc/gen_ndr/misc.h"
 
-extern const struct ndr_syntax_id ndr_transfer_syntax;
-extern const struct ndr_syntax_id ndr64_transfer_syntax;
-extern const struct ndr_syntax_id null_ndr_syntax_id;
+extern const struct ndr_syntax_id ndr_transfer_syntax_ndr;
+extern const struct ndr_syntax_id ndr_transfer_syntax_ndr64;
+extern const struct ndr_syntax_id ndr_syntax_id_null;
 
 struct ndr_interface_call_pipe {
 	const char *name;
@@ -555,9 +561,9 @@ NDR_SCALAR_PROTO(double, double)
 enum ndr_err_code ndr_pull_policy_handle(struct ndr_pull *ndr, int ndr_flags, struct policy_handle *r);
 enum ndr_err_code ndr_push_policy_handle(struct ndr_push *ndr, int ndr_flags, const struct policy_handle *r);
 void ndr_print_policy_handle(struct ndr_print *ndr, const char *name, const struct policy_handle *r);
-bool policy_handle_empty(const struct policy_handle *h);
-bool is_valid_policy_hnd(const struct policy_handle *hnd);
-bool policy_handle_equal(const struct policy_handle *hnd1,
+bool ndr_policy_handle_empty(const struct policy_handle *h);
+#define is_valid_policy_hnd(hnd) (!ndr_policy_handle_empty(hnd))
+bool ndr_policy_handle_equal(const struct policy_handle *hnd1,
 			 const struct policy_handle *hnd2);
 
 void ndr_check_padding(struct ndr_pull *ndr, size_t n);
@@ -608,14 +614,12 @@ NTSTATUS GUID_to_ndr_blob(const struct GUID *guid, TALLOC_CTX *mem_ctx, DATA_BLO
 NTSTATUS GUID_from_ndr_blob(const DATA_BLOB *b, struct GUID *guid);
 NTSTATUS GUID_from_data_blob(const DATA_BLOB *s, struct GUID *guid);
 NTSTATUS GUID_from_string(const char *s, struct GUID *guid);
-NTSTATUS NS_GUID_from_string(const char *s, struct GUID *guid);
 struct GUID GUID_zero(void);
 bool GUID_all_zero(const struct GUID *u);
 int GUID_compare(const struct GUID *u1, const struct GUID *u2);
 char *GUID_string(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 char *GUID_string2(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 char *GUID_hexstring(TALLOC_CTX *mem_ctx, const struct GUID *guid);
-char *NS_GUID_string(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 struct GUID GUID_random(void);
 
 _PUBLIC_ enum ndr_err_code ndr_pull_enum_uint8(struct ndr_pull *ndr, int ndr_flags, uint8_t *v);

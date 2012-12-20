@@ -50,8 +50,13 @@ const struct ldb_schema_attribute *dsdb_attribute_handler_override(struct ldb_co
 	}
 	return a->ldb_schema_attribute;
 }
-
-static int dsdb_schema_set_attributes(struct ldb_context *ldb, struct dsdb_schema *schema, bool write_attributes)
+/*
+ * Set the attribute handlers onto the LDB, and potentially write the
+ * @INDEXLIST, @IDXONE and @ATTRIBUTES records.  The @ATTRIBUTES records
+ * are required so we can operate on a schema-less database (say the
+ * backend during emergency fixes) and during the schema load.
+ */
+static int dsdb_schema_set_indices_and_attributes(struct ldb_context *ldb, struct dsdb_schema *schema, bool write_indices_and_attributes)
 {
 	int ret = LDB_SUCCESS;
 	struct ldb_result *res;
@@ -65,7 +70,7 @@ static int dsdb_schema_set_attributes(struct ldb_context *ldb, struct dsdb_schem
 	/* setup our own attribute name to schema handler */
 	ldb_schema_attribute_set_override_handler(ldb, dsdb_attribute_handler_override, schema);
 
-	if (!write_attributes) {
+	if (!write_indices_and_attributes) {
 		return ret;
 	}
 
@@ -454,7 +459,7 @@ int dsdb_set_schema(struct ldb_context *ldb, struct dsdb_schema *schema)
 	}
 
 	/* Set the new attributes based on the new schema */
-	ret = dsdb_schema_set_attributes(ldb, schema, true);
+	ret = dsdb_schema_set_indices_and_attributes(ldb, schema, true);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -469,9 +474,13 @@ static struct dsdb_schema *global_schema;
 
 /**
  * Make this ldb use a specified schema, already fully calculated and belonging to another ldb
+ *
+ * The write_indices_and_attributes controls writing of the @ records
+ * because we cannot write to a database that does not yet exist on
+ * disk.
  */
 int dsdb_reference_schema(struct ldb_context *ldb, struct dsdb_schema *schema,
-			  bool write_attributes)
+			  bool write_indices_and_attributes)
 {
 	int ret;
 	struct dsdb_schema *old_schema;
@@ -495,7 +504,7 @@ int dsdb_reference_schema(struct ldb_context *ldb, struct dsdb_schema *schema,
 		return ret;
 	}
 
-	ret = dsdb_schema_set_attributes(ldb, schema, write_attributes);
+	ret = dsdb_schema_set_indices_and_attributes(ldb, schema, write_indices_and_attributes);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -519,7 +528,7 @@ int dsdb_set_global_schema(struct ldb_context *ldb)
 	}
 
 	/* Set the new attributes based on the new schema */
-	ret = dsdb_schema_set_attributes(ldb, global_schema, false /* Don't write attributes, it's expensive */);
+	ret = dsdb_schema_set_indices_and_attributes(ldb, global_schema, false /* Don't write indices and attributes, it's expensive */);
 	if (ret == LDB_SUCCESS) {
 		/* Keep a reference to this schema, just in case the original copy is replaced */
 		if (talloc_reference(ldb, global_schema) == NULL) {
@@ -665,14 +674,23 @@ int dsdb_schema_fill_extended_dn(struct ldb_context *ldb, struct dsdb_schema *sc
 WERROR dsdb_schema_set_el_from_ldb_msg(struct ldb_context *ldb, struct dsdb_schema *schema,
 				       struct ldb_message *msg)
 {
+	const char* tstring;
+	time_t ts;
+	tstring = ldb_msg_find_attr_as_string(msg, "whenChanged", NULL);
+	/* keep a trace of the ts of the most recently changed object */
+	if (tstring) {
+		ts = ldb_string_to_time(tstring);
+		if (ts > schema->ts_last_change) {
+			schema->ts_last_change = ts;
+		}
+	}
 	if (samdb_find_attribute(ldb, msg,
 				 "objectclass", "attributeSchema") != NULL) {
-		return dsdb_attribute_from_ldb(ldb, schema, msg);
+		return dsdb_set_attribute_from_ldb(ldb, schema, msg);
 	} else if (samdb_find_attribute(ldb, msg,
 				 "objectclass", "classSchema") != NULL) {
-		return dsdb_class_from_ldb(schema, msg);
+		return dsdb_set_class_from_ldb(schema, msg);
 	}
-
 	/* Don't fail on things not classes or attributes */
 	return WERR_OK;
 }
@@ -753,6 +771,7 @@ WERROR dsdb_set_schema_from_ldif(struct ldb_context *ldb,
 		goto failed;
 	}
 
+	schema->ts_last_change = 0;
 	/* load the attribute and class definitions out of df */
 	while ((ldif = ldb_ldif_read_string(ldb, &df))) {
 		talloc_steal(mem_ctx, ldif);

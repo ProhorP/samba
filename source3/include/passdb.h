@@ -33,6 +33,7 @@
 
 #include "../librpc/gen_ndr/lsa.h"
 #include <tevent.h>
+struct unixid;
 
 /* group mapping headers */
 
@@ -183,7 +184,6 @@ enum pdb_elements {
 	PDB_KICKOFFTIME,
 	PDB_BAD_PASSWORD_TIME,
 	PDB_CANCHANGETIME,
-	PDB_MUSTCHANGETIME,
 	PDB_PLAINTEXT_PW,
 	PDB_USERNAME,
 	PDB_FULLNAME,
@@ -267,7 +267,6 @@ struct samu {
 	time_t bad_password_time;     /* last bad password entered */
 	time_t pass_last_set_time;    /* password last set time */
 	time_t pass_can_change_time;  /* password can change time */
-	time_t pass_must_change_time; /* password must change time */
 
 	const char *username;     /* UNIX username string */
 	const char *domain;       /* Windows Domain name */
@@ -563,7 +562,7 @@ struct pdb_methods
 	bool (*gid_to_sid)(struct pdb_methods *methods, gid_t gid,
 			   struct dom_sid *sid);
 	bool (*sid_to_id)(struct pdb_methods *methods, const struct dom_sid *sid,
-			  uid_t *uid, gid_t *gid, enum lsa_SidType *type);
+			  struct unixid *id);
 
 	uint32_t (*capabilities)(struct pdb_methods *methods);
 	bool (*new_rid)(struct pdb_methods *methods, uint32_t *rid);
@@ -752,7 +751,6 @@ bool pdb_set_logoff_time(struct samu *sampass, time_t mytime, enum pdb_value_sta
 bool pdb_set_kickoff_time(struct samu *sampass, time_t mytime, enum pdb_value_state flag);
 bool pdb_set_bad_password_time(struct samu *sampass, time_t mytime, enum pdb_value_state flag);
 bool pdb_set_pass_can_change_time(struct samu *sampass, time_t mytime, enum pdb_value_state flag);
-bool pdb_set_pass_must_change_time(struct samu *sampass, time_t mytime, enum pdb_value_state flag);
 bool pdb_set_pass_last_set_time(struct samu *sampass, time_t mytime, enum pdb_value_state flag);
 bool pdb_set_hours_len(struct samu *sampass, uint32_t len, enum pdb_value_state flag);
 bool pdb_set_logon_divs(struct samu *sampass, uint16_t hours, enum pdb_value_state flag);
@@ -869,8 +867,7 @@ bool pdb_set_account_policy(enum pdb_policy_type type, uint32_t value);
 bool pdb_get_seq_num(time_t *seq_num);
 bool pdb_uid_to_sid(uid_t uid, struct dom_sid *sid);
 bool pdb_gid_to_sid(gid_t gid, struct dom_sid *sid);
-bool pdb_sid_to_id(const struct dom_sid *sid, uid_t *uid, gid_t *gid,
-		   enum lsa_SidType *type);
+bool pdb_sid_to_id(const struct dom_sid *sid, struct unixid *id);
 uint32_t pdb_capabilities(void);
 bool pdb_new_rid(uint32_t *rid);
 bool initialize_password_db(bool reload, struct tevent_context *tevent_ctx);
@@ -911,6 +908,9 @@ NTSTATUS pdb_set_secret(const char *secret_name,
 			DATA_BLOB *secret_old,
 			struct security_descriptor *sd);
 NTSTATUS pdb_delete_secret(const char *secret_name);
+bool pdb_sid_to_id_unix_users_and_groups(const struct dom_sid *sid,
+					 struct unixid *id);
+
 
 /* The following definitions come from passdb/pdb_util.c  */
 
@@ -919,5 +919,21 @@ NTSTATUS create_builtin_administrators(const struct dom_sid *sid);
 
 #include "passdb/machine_sid.h"
 #include "passdb/lookup_sid.h"
+
+/* The following definitions come from passdb/pdb_unixid.c */
+void unixid_from_uid(struct unixid *id, uint32_t some_uid);
+void unixid_from_gid(struct unixid *id, uint32_t some_gid);
+void unixid_from_both(struct unixid *id, uint32_t some_id);
+
+/* The following definitions come from passdb/pdb_secrets.c
+ * and should be used by PDB modules if they need to store
+ * sid/guid information for the domain in secrets database
+ */
+bool PDB_secrets_mark_domain_protected(const char *domain);
+bool PDB_secrets_clear_domain_protection(const char *domain);
+bool PDB_secrets_store_domain_sid(const char *domain, const struct dom_sid  *sid);
+bool PDB_secrets_fetch_domain_sid(const char *domain, struct dom_sid  *sid);
+bool PDB_secrets_store_domain_guid(const char *domain, struct GUID *guid);
+bool PDB_secrets_fetch_domain_guid(const char *domain, struct GUID *guid);
 
 #endif /* _PASSDB_H */

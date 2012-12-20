@@ -31,6 +31,11 @@
 #include "messages.h"
 #include "lib/param/loadparm.h"
 
+static bool snum_is_shared_printer(int snum)
+{
+	return (lp_browseable(snum) && lp_snum_ok(snum) && lp_print_ok(snum));
+}
+
 /**
  * @brief Purge stale printers and reload from pre-populated pcap cache.
  *
@@ -85,20 +90,22 @@ void delete_and_reload_printers(struct tevent_context *ev,
 		}
 
 		/* skip no-printer services */
-		if (!(lp_snum_ok(snum) && lp_print_ok(snum))) {
+		if (!snum_is_shared_printer(snum)) {
 			continue;
 		}
 
 		sname = lp_const_servicename(snum);
-		pname = lp_printername(snum);
+		pname = lp_printername(session_info, snum);
 
 		/* check printer, but avoid removing non-autoloaded printers */
-		if (!pcap_printername_ok(pname) && lp_autoloaded(snum)) {
+		if (lp_autoloaded(snum) && !pcap_printername_ok(pname)) {
 			DEBUG(3, ("removing stale printer %s\n", pname));
 
 			if (is_printer_published(session_info, session_info,
 						 msg_ctx,
-						 NULL, lp_servicename(snum),
+						 NULL,
+						 lp_servicename(session_info,
+								snum),
 						 NULL, &pinfo2)) {
 				nt_printer_publish(session_info,
 						   session_info,
@@ -135,12 +142,13 @@ bool reload_services(struct smbd_server_connection *sconn,
 	bool ret;
 
 	if (lp_loaded()) {
-		char *fname = lp_configfile();
+		char *fname = lp_configfile(talloc_tos());
 		if (file_exist(fname) &&
 		    !strcsequal(fname, get_dyn_CONFIGFILE())) {
 			set_dyn_CONFIGFILE(fname);
 			test = False;
 		}
+		TALLOC_FREE(fname);
 	}
 
 	reopen_logs();
@@ -150,7 +158,11 @@ bool reload_services(struct smbd_server_connection *sconn,
 
 	lp_killunused(sconn, snumused);
 
-	ret = lp_load(get_dyn_CONFIGFILE(), False, False, True, True);
+	ret = lp_load(get_dyn_CONFIGFILE(),
+		      false, /* global only */
+		      false, /* save defaults */
+		      true,  /* add_ipc */
+		      true); /* initialize globals */
 
 	/* perhaps the config filename is now set */
 	if (!test) {

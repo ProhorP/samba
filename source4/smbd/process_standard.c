@@ -29,19 +29,6 @@
 #include "param/param.h"
 #include "ldb_wrap.h"
 
-#ifdef HAVE_SETPROCTITLE
-#ifdef HAVE_SETPROCTITLE_H
-#include <setproctitle.h>
-#endif
-#else
-#define setproctitle none_setproctitle
-static int none_setproctitle(const char *fmt, ...) PRINTF_ATTRIBUTE(1, 2);
-static int none_setproctitle(const char *fmt, ...)
-{
-	return 0;
-}
-#endif
-
 NTSTATUS process_model_standard_init(void);
 
 /* we hold a pipe open in the parent, and the any child
@@ -140,7 +127,7 @@ static void standard_accept_connection(struct tevent_context *ev,
 	talloc_free(c);
 	talloc_free(s);
 
-	/* setup this new connection.  Cluster ID is PID based for this process modal */
+	/* setup this new connection.  Cluster ID is PID based for this process model */
 	new_conn(ev, lp_ctx, sock2, cluster_id(pid, 0), private_data);
 
 	/* we can't return to the top level here, as that event context is gone,
@@ -190,7 +177,7 @@ static void standard_new_task(struct tevent_context *ev,
 
 	setproctitle("task %s server_id[%d]", service_name, (int)pid);
 
-	/* setup this new task.  Cluster ID is PID based for this process modal */
+	/* setup this new task.  Cluster ID is PID based for this process model */
 	new_task(ev, lp_ctx, cluster_id(pid, 0), private_data);
 
 	/* we can't return to the top level here, as that event context is gone,

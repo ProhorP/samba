@@ -360,6 +360,26 @@ int ldb_msg_element_compare(struct ldb_message_element *el1,
 }
 
 /*
+  compare two ldb_message_element structures.
+  Different ordering is considered a mismatch
+*/
+bool ldb_msg_element_equal_ordered(const struct ldb_message_element *el1,
+				   const struct ldb_message_element *el2)
+{
+	unsigned i;
+	if (el1->num_values != el2->num_values) {
+		return false;
+	}
+	for (i=0;i<el1->num_values;i++) {
+		if (ldb_val_equal_exact(&el1->values[i],
+					&el2->values[i]) != 1) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
   compare two ldb_message_element structures
   comparing by element name
 */
@@ -652,6 +672,7 @@ struct ldb_message *ldb_msg_copy(TALLOC_CTX *mem_ctx,
 		el->name = talloc_strdup(msg2->elements, el->name);
 		if (el->name == NULL) goto failed;
 		el->values = talloc_array(msg2->elements, struct ldb_val, el->num_values);
+		if (el->values == NULL) goto failed;
 		for (j=0;j<el->num_values;j++) {
 			el->values[j] = ldb_val_dup(el->values, &values[j]);
 			if (el->values[j].data == NULL && values[j].length != 0) {
@@ -1071,16 +1092,24 @@ int ldb_val_to_time(const struct ldb_val *v, time_t *t)
 {
 	struct tm tm;
 
-	if (v == NULL || !v->data || v->length < 17) {
+	if (v == NULL || !v->data || (v->length != 17 && v->length != 13)) {
 		return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
 	}
 
 	memset(&tm, 0, sizeof(tm));
 
-	if (sscanf((char *)v->data, "%04u%02u%02u%02u%02u%02u.0Z",
-		   &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-		   &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
-		return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+	if (v->length == 13) {
+		if (sscanf((char *)v->data, "%02u%02u%02u%02u%02u%02uZ",
+			&tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+			&tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
+			return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+		}
+	} else {
+		if (sscanf((char *)v->data, "%04u%02u%02u%02u%02u%02u.0Z",
+			&tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+			&tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
+			return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+		}
 	}
 	tm.tm_year -= 1900;
 	tm.tm_mon -= 1;

@@ -46,15 +46,15 @@
 *******************************************************/
 
 static NTSTATUS smb_bytes_talloc_string(TALLOC_CTX *mem_ctx,
-					char *inbuf,
+					const uint8_t *hdr,
 					char **dest,
 					uint8_t *src,
 					size_t srclen,
 					ssize_t *destlen)
 {
 	*destlen = clistr_pull_talloc(mem_ctx,
-				inbuf,
-				SVAL(inbuf, smb_flg2),
+				(const char *)hdr,
+				SVAL(hdr, HDR_FLG2),
 				dest,
 				(char *)src,
 				srclen,
@@ -70,18 +70,6 @@ static NTSTATUS smb_bytes_talloc_string(TALLOC_CTX *mem_ctx,
 		}
 	}
 	return NT_STATUS_OK;
-}
-
-/**
- * Set the user session key for a connection
- * @param cli The cli structure to add it too
- * @param session_key The session key used.  (A copy of this is taken for the cli struct)
- *
- */
-
-static void cli_set_session_key (struct cli_state *cli, const DATA_BLOB session_key) 
-{
-	cli->user_session_key = data_blob(session_key.data, session_key.length);
 }
 
 /****************************************************************************
@@ -108,7 +96,7 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 	uint16_t *vwv;
 	uint8_t *bytes;
 	char *tmp;
-	uint16_t sec_mode = cli_state_security_mode(cli);
+	uint16_t sec_mode = smb1cli_conn_server_security_mode(cli->conn);
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct cli_session_setup_lanman2_state);
@@ -138,7 +126,7 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 			return tevent_req_post(req, ev);
 		}
 
-		if (!SMBencrypt(pass, cli_state_server_challenge(cli),
+		if (!SMBencrypt(pass, smb1cli_conn_server_challenge(cli->conn),
 				(uint8_t *)lm_response.data)) {
 			DEBUG(1, ("Password is > 14 chars in length, and is "
 				  "therefore incompatible with Lanman "
@@ -163,7 +151,7 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 		 * Plaintext mode needed, assume plaintext supplied.
 		 */
 		buf = talloc_array(talloc_tos(), uint8_t, 0);
-		buf = smb_bytes_push_str(buf, cli_ucs2(cli), pass, passlen+1,
+		buf = smb_bytes_push_str(buf, smbXcli_conn_use_unicode(cli->conn), pass, passlen+1,
 					 &converted_size);
 		if (tevent_req_nomem(buf, req)) {
 			return tevent_req_post(req, ev);
@@ -181,7 +169,7 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 	SSVAL(vwv+2, 0, CLI_BUFFER_SIZE);
 	SSVAL(vwv+3, 0, 2);
 	SSVAL(vwv+4, 0, 1);
-	SIVAL(vwv+5, 0, cli_state_server_session_key(cli));
+	SIVAL(vwv+5, 0, smb1cli_conn_server_session_key(cli->conn));
 	SSVAL(vwv+7, 0, lm_response.length);
 
 	bytes = talloc_array(state, uint8_t, lm_response.length);
@@ -197,7 +185,7 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 	if (tevent_req_nomem(tmp, req)) {
 		return tevent_req_post(req, ev);
 	}
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), tmp, strlen(tmp)+1,
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), tmp, strlen(tmp)+1,
 				   NULL);
 	TALLOC_FREE(tmp);
 
@@ -205,10 +193,10 @@ static struct tevent_req *cli_session_setup_lanman2_send(
 	if (tevent_req_nomem(tmp, req)) {
 		return tevent_req_post(req, ev);
 	}
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), tmp, strlen(tmp)+1,
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), tmp, strlen(tmp)+1,
 				   NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Unix", 5, NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Samba", 6, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Unix", 5, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Samba", 6, NULL);
 
 	if (tevent_req_nomem(bytes, req)) {
 		return tevent_req_post(req, ev);
@@ -232,7 +220,7 @@ static void cli_session_setup_lanman2_done(struct tevent_req *subreq)
 	struct cli_state *cli = state->cli;
 	uint32_t num_bytes;
 	uint8_t *in;
-	char *inbuf;
+	uint8_t *inhdr;
 	uint8_t *bytes;
 	uint8_t *p;
 	NTSTATUS status;
@@ -248,14 +236,14 @@ static void cli_session_setup_lanman2_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbuf = (char *)in;
+	inhdr = in + NBT_HDR_SIZE;
 	p = bytes;
 
-	cli_state_set_uid(state->cli, SVAL(inbuf, smb_uid));
+	cli_state_set_uid(state->cli, SVAL(inhdr, HDR_UID));
 	cli->is_guestlogin = ((SVAL(vwv+2, 0) & 1) != 0);
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_os,
 					p,
 					bytes+num_bytes-p,
@@ -268,7 +256,7 @@ static void cli_session_setup_lanman2_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_type,
 					p,
 					bytes+num_bytes-p,
@@ -281,7 +269,7 @@ static void cli_session_setup_lanman2_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_domain,
 					p,
 					bytes+num_bytes-p,
@@ -314,7 +302,7 @@ static NTSTATUS cli_session_setup_lanman2(struct cli_state *cli, const char *use
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -346,7 +334,7 @@ static NTSTATUS cli_session_setup_lanman2(struct cli_state *cli, const char *use
 static uint32_t cli_session_setup_capabilities(struct cli_state *cli,
 					       uint32_t sesssetup_capabilities)
 {
-	uint32_t client_capabilities = cli_state_capabilities(cli);
+	uint32_t client_capabilities = smb1cli_conn_capabilities(cli->conn);
 
 	/*
 	 * We only send capabilities based on the mask for:
@@ -406,7 +394,7 @@ struct tevent_req *cli_session_setup_guest_create(TALLOC_CTX *mem_ctx,
 	SSVAL(vwv+2, 0, CLI_BUFFER_SIZE);
 	SSVAL(vwv+3, 0, 2);
 	SSVAL(vwv+4, 0, cli_state_get_vc_num(cli));
-	SIVAL(vwv+5, 0, cli_state_server_session_key(cli));
+	SIVAL(vwv+5, 0, smb1cli_conn_server_session_key(cli->conn));
 	SSVAL(vwv+7, 0, 0);
 	SSVAL(vwv+8, 0, 0);
 	SSVAL(vwv+9, 0, 0);
@@ -415,12 +403,12 @@ struct tevent_req *cli_session_setup_guest_create(TALLOC_CTX *mem_ctx,
 
 	bytes = talloc_array(state, uint8_t, 0);
 
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "",  1, /* username */
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "",  1, /* username */
 				   NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "", 1, /* workgroup */
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "", 1, /* workgroup */
 				   NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Unix", 5, NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Samba", 6, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Unix", 5, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Samba", 6, NULL);
 
 	if (bytes == NULL) {
 		TALLOC_FREE(req);
@@ -453,7 +441,7 @@ struct tevent_req *cli_session_setup_guest_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	status = cli_smb_req_send(subreq);
+	status = smb1cli_req_chain_submit(&subreq, 1);
 	if (NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
 		return tevent_req_post(req, ev);
@@ -470,7 +458,7 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 	struct cli_state *cli = state->cli;
 	uint32_t num_bytes;
 	uint8_t *in;
-	char *inbuf;
+	uint8_t *inhdr;
 	uint8_t *bytes;
 	uint8_t *p;
 	NTSTATUS status;
@@ -486,14 +474,14 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbuf = (char *)in;
+	inhdr = in + NBT_HDR_SIZE;
 	p = bytes;
 
-	cli_state_set_uid(state->cli, SVAL(inbuf, smb_uid));
+	cli_state_set_uid(state->cli, SVAL(inhdr, HDR_UID));
 	cli->is_guestlogin = ((SVAL(vwv+2, 0) & 1) != 0);
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_os,
 					p,
 					bytes+num_bytes-p,
@@ -506,7 +494,7 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_type,
 					p,
 					bytes+num_bytes-p,
@@ -519,7 +507,7 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_domain,
 					p,
 					bytes+num_bytes-p,
@@ -551,7 +539,7 @@ static NTSTATUS cli_session_setup_guest(struct cli_state *cli)
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -621,7 +609,7 @@ static struct tevent_req *cli_session_setup_plain_send(
 	SSVAL(vwv+2, 0, CLI_BUFFER_SIZE);
 	SSVAL(vwv+3, 0, 2);
 	SSVAL(vwv+4, 0, cli_state_get_vc_num(cli));
-	SIVAL(vwv+5, 0, cli_state_server_session_key(cli));
+	SIVAL(vwv+5, 0, smb1cli_conn_server_session_key(cli->conn));
 	SSVAL(vwv+7, 0, 0);
 	SSVAL(vwv+8, 0, 0);
 	SSVAL(vwv+9, 0, 0);
@@ -629,18 +617,18 @@ static struct tevent_req *cli_session_setup_plain_send(
 	SIVAL(vwv+11, 0, cli_session_setup_capabilities(cli, 0));
 
 	bytes = talloc_array(state, uint8_t, 0);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), pass, strlen(pass)+1,
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), pass, strlen(pass)+1,
 				   &passlen);
 	if (tevent_req_nomem(bytes, req)) {
 		return tevent_req_post(req, ev);
 	}
-	SSVAL(vwv + (cli_ucs2(cli) ? 8 : 7), 0, passlen);
+	SSVAL(vwv + (smbXcli_conn_use_unicode(cli->conn) ? 8 : 7), 0, passlen);
 
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   user, strlen(user)+1, NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   workgroup, strlen(workgroup)+1, NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   "Unix", 5, NULL);
 
 	version = talloc_asprintf(talloc_tos(), "Samba %s",
@@ -648,7 +636,7 @@ static struct tevent_req *cli_session_setup_plain_send(
 	if (tevent_req_nomem(version, req)){
 		return tevent_req_post(req, ev);
 	}
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   version, strlen(version)+1, NULL);
 	TALLOC_FREE(version);
 
@@ -674,7 +662,7 @@ static void cli_session_setup_plain_done(struct tevent_req *subreq)
 	struct cli_state *cli = state->cli;
 	uint32_t num_bytes;
 	uint8_t *in;
-	char *inbuf;
+	uint8_t *inhdr;
 	uint8_t *bytes;
 	uint8_t *p;
 	NTSTATUS status;
@@ -689,14 +677,14 @@ static void cli_session_setup_plain_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbuf = (char *)in;
+	inhdr = in + NBT_HDR_SIZE;
 	p = bytes;
 
-	cli_state_set_uid(state->cli, SVAL(inbuf, smb_uid));
+	cli_state_set_uid(state->cli, SVAL(inhdr, HDR_UID));
 	cli->is_guestlogin = ((SVAL(vwv+2, 0) & 1) != 0);
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_os,
 					p,
 					bytes+num_bytes-p,
@@ -709,7 +697,7 @@ static void cli_session_setup_plain_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_type,
 					p,
 					bytes+num_bytes-p,
@@ -722,7 +710,7 @@ static void cli_session_setup_plain_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_domain,
 					p,
 					bytes+num_bytes-p,
@@ -756,7 +744,7 @@ static NTSTATUS cli_session_setup_plain(struct cli_state *cli,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -834,7 +822,7 @@ static struct tevent_req *cli_session_setup_nt1_send(
 			DATA_BLOB names_blob;
 
 			server_chal =
-				data_blob_const(cli_state_server_challenge(cli),
+				data_blob_const(smb1cli_conn_server_challenge(cli->conn),
 						8);
 
 			/*
@@ -873,7 +861,7 @@ static struct tevent_req *cli_session_setup_nt1_send(
 				return tevent_req_post(req, ev);
 			}
 
-			SMBNTencrypt(pass, cli_state_server_challenge(cli),
+			SMBNTencrypt(pass, smb1cli_conn_server_challenge(cli->conn),
 				     nt_response.data);
 #endif
 			/* non encrypted password supplied. Ignore ntpass. */
@@ -885,7 +873,7 @@ static struct tevent_req *cli_session_setup_nt1_send(
 				}
 
 				if (!SMBencrypt(pass,
-						cli_state_server_challenge(cli),
+						smb1cli_conn_server_challenge(cli->conn),
 						lm_response.data)) {
 					/*
 					 * Oops, the LM response is
@@ -963,7 +951,7 @@ static struct tevent_req *cli_session_setup_nt1_send(
 	SSVAL(vwv+2, 0, CLI_BUFFER_SIZE);
 	SSVAL(vwv+3, 0, 2);
 	SSVAL(vwv+4, 0, cli_state_get_vc_num(cli));
-	SIVAL(vwv+5, 0, cli_state_server_session_key(cli));
+	SIVAL(vwv+5, 0, smb1cli_conn_server_session_key(cli->conn));
 	SSVAL(vwv+7, 0, lm_response.length);
 	SSVAL(vwv+8, 0, nt_response.length);
 	SSVAL(vwv+9, 0, 0);
@@ -985,7 +973,7 @@ static struct tevent_req *cli_session_setup_nt1_send(
 	data_blob_free(&lm_response);
 	data_blob_free(&nt_response);
 
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   user, strlen(user)+1, NULL);
 
 	/*
@@ -995,13 +983,13 @@ static struct tevent_req *cli_session_setup_nt1_send(
 	if (tevent_req_nomem(workgroup_upper, req)) {
 		return tevent_req_post(req, ev);
 	}
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   workgroup_upper, strlen(workgroup_upper)+1,
 				   NULL);
 	TALLOC_FREE(workgroup_upper);
 
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Unix", 5, NULL);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), "Samba", 6, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Unix", 5, NULL);
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), "Samba", 6, NULL);
 	if (tevent_req_nomem(bytes, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -1024,7 +1012,7 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 	struct cli_state *cli = state->cli;
 	uint32_t num_bytes;
 	uint8_t *in;
-	char *inbuf;
+	uint8_t *inhdr;
 	uint8_t *bytes;
 	uint8_t *p;
 	NTSTATUS status;
@@ -1040,14 +1028,14 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbuf = (char *)in;
+	inhdr = in + NBT_HDR_SIZE;
 	p = bytes;
 
-	cli_state_set_uid(state->cli, SVAL(inbuf, smb_uid));
+	cli_state_set_uid(state->cli, SVAL(inhdr, HDR_UID));
 	cli->is_guestlogin = ((SVAL(vwv+2, 0) & 1) != 0);
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_os,
 					p,
 					bytes+num_bytes-p,
@@ -1059,7 +1047,7 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_type,
 					p,
 					bytes+num_bytes-p,
@@ -1071,7 +1059,7 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					inbuf,
+					inhdr,
 					&cli->server_domain,
 					p,
 					bytes+num_bytes-p,
@@ -1086,14 +1074,19 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
-	if (cli_simple_set_signing(cli, state->session_key, state->response)
-	    && !cli_check_sign_mac(cli, (char *)in, 1)) {
+	if (smb1cli_conn_activate_signing(cli->conn, state->session_key, state->response)
+	    && !smb1cli_conn_check_signing(cli->conn, (uint8_t *)in, 1)) {
 		tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return;
 	}
 	if (state->session_key.data) {
-		/* Have plaintext orginal */
-		cli_set_session_key(cli, state->session_key);
+		struct smbXcli_session *session = state->cli->smb1.session;
+
+		status = smb1cli_session_set_session_key(session,
+				state->session_key);
+		if (tevent_req_nterror(req, status)) {
+			return;
+		}
 	}
 	tevent_req_done(req);
 }
@@ -1113,7 +1106,7 @@ static NTSTATUS cli_session_setup_nt1(struct cli_state *cli, const char *user,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -1159,7 +1152,7 @@ struct cli_sesssetup_blob_state {
 	struct iovec *recv_iov;
 
 	NTSTATUS status;
-	char *inbuf;
+	uint8_t *inbuf;
 	DATA_BLOB ret_blob;
 };
 
@@ -1185,7 +1178,7 @@ static struct tevent_req *cli_sesssetup_blob_send(TALLOC_CTX *mem_ctx,
 	state->blob = blob;
 	state->cli = cli;
 
-	if (cli_state_protocol(cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
 		usable_space = UINT16_MAX;
 	} else {
 		usable_space = cli_state_available_size(cli,
@@ -1217,7 +1210,7 @@ static bool cli_sesssetup_blob_next(struct cli_sesssetup_blob_state *state,
 
 	thistime = MIN(state->blob.length, state->max_blob_size);
 
-	if (cli_state_protocol(state->cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
 
 		state->smb2_blob.data = state->blob.data;
 		state->smb2_blob.length = thistime;
@@ -1232,7 +1225,7 @@ static bool cli_sesssetup_blob_next(struct cli_sesssetup_blob_state *state,
 						    0, /* in_flags */
 						    SMB2_CAP_DFS, /* in_capabilities */
 						    0, /* in_channel */
-						    NULL, /* in_previous_session */
+						    0, /* in_previous_session_id */
 						    &state->smb2_blob);
 		if (subreq == NULL) {
 			return false;
@@ -1264,9 +1257,9 @@ static bool cli_sesssetup_blob_next(struct cli_sesssetup_blob_state *state,
 	state->blob.data += thistime;
 	state->blob.length -= thistime;
 
-	state->buf = smb_bytes_push_str(state->buf, cli_ucs2(state->cli),
+	state->buf = smb_bytes_push_str(state->buf, smbXcli_conn_use_unicode(state->cli->conn),
 					"Unix", 5, NULL);
-	state->buf = smb_bytes_push_str(state->buf, cli_ucs2(state->cli),
+	state->buf = smb_bytes_push_str(state->buf, smbXcli_conn_use_unicode(state->cli->conn),
 					"Samba", 6, NULL);
 	if (state->buf == NULL) {
 		return false;
@@ -1295,15 +1288,16 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	NTSTATUS status;
 	uint8_t *p;
 	uint16_t blob_length;
-	uint8_t *inbuf;
+	uint8_t *in;
+	uint8_t *inhdr;
 	ssize_t ret;
 
-	if (cli_state_protocol(state->cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
 		status = smb2cli_session_setup_recv(subreq, state,
 						    &state->recv_iov,
 						    &state->ret_blob);
 	} else {
-		status = cli_smb_recv(subreq, state, &inbuf, 4, &wct, &vwv,
+		status = cli_smb_recv(subreq, state, &in, 4, &wct, &vwv,
 				      &num_bytes, &bytes);
 		TALLOC_FREE(state->buf);
 	}
@@ -1316,12 +1310,13 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 
 	state->status = status;
 
-	if (cli_state_protocol(state->cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
 		goto next;
 	}
 
-	state->inbuf = (char *)inbuf;
-	cli_state_set_uid(state->cli, SVAL(inbuf, smb_uid));
+	state->inbuf = in;
+	inhdr = in + NBT_HDR_SIZE;
+	cli_state_set_uid(state->cli, SVAL(inhdr, HDR_UID));
 	cli->is_guestlogin = ((SVAL(vwv+2, 0) & 1) != 0);
 
 	blob_length = SVAL(vwv+3, 0);
@@ -1334,7 +1329,7 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	p = bytes + blob_length;
 
 	status = smb_bytes_talloc_string(cli,
-					(char *)inbuf,
+					inhdr,
 					&cli->server_os,
 					p,
 					bytes+num_bytes-p,
@@ -1347,7 +1342,7 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					(char *)inbuf,
+					inhdr,
 					&cli->server_type,
 					p,
 					bytes+num_bytes-p,
@@ -1360,7 +1355,7 @@ static void cli_sesssetup_blob_done(struct tevent_req *subreq)
 	p += ret;
 
 	status = smb_bytes_talloc_string(cli,
-					(char *)inbuf,
+					inhdr,
 					&cli->server_domain,
 					p,
 					bytes+num_bytes-p,
@@ -1390,13 +1385,13 @@ next:
 static NTSTATUS cli_sesssetup_blob_recv(struct tevent_req *req,
 					TALLOC_CTX *mem_ctx,
 					DATA_BLOB *pblob,
-					char **pinbuf,
+					uint8_t **pinbuf,
 					struct iovec **precv_iov)
 {
 	struct cli_sesssetup_blob_state *state = tevent_req_data(
 		req, struct cli_sesssetup_blob_state);
 	NTSTATUS status;
-	char *inbuf;
+	uint8_t *inbuf;
 	struct iovec *recv_iov;
 
 	if (tevent_req_is_nterror(req, &status)) {
@@ -1466,7 +1461,7 @@ static struct tevent_req *cli_session_setup_kerberos_send(
 	 * we have to acquire a ticket. To be fixed later :-)
 	 */
 	rc = spnego_gen_krb5_negTokenInit(state, principal, 0, &state->negTokenTarg,
-				     &state->session_key_krb5, 0, NULL);
+				     &state->session_key_krb5, 0, NULL, NULL);
 	if (rc) {
 		DEBUG(1, ("cli_session_setup_kerberos: "
 			  "spnego_gen_krb5_negTokenInit failed: %s\n",
@@ -1481,7 +1476,7 @@ static struct tevent_req *cli_session_setup_kerberos_send(
 		  state->negTokenTarg.length);
 #endif
 
-	if (cli_state_protocol(cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
 		state->cli->smb2.session = smbXcli_session_create(cli,
 								  cli->conn);
 		if (tevent_req_nomem(state->cli->smb2.session, req)) {
@@ -1503,7 +1498,7 @@ static void cli_session_setup_kerberos_done(struct tevent_req *subreq)
 		subreq, struct tevent_req);
 	struct cli_session_setup_kerberos_state *state = tevent_req_data(
 		req, struct cli_session_setup_kerberos_state);
-	char *inbuf = NULL;
+	uint8_t *inbuf = NULL;
 	struct iovec *recv_iov = NULL;
 	NTSTATUS status;
 
@@ -1515,20 +1510,26 @@ static void cli_session_setup_kerberos_done(struct tevent_req *subreq)
 		return;
 	}
 
-	cli_set_session_key(state->cli, state->session_key_krb5);
-
-	if (cli_state_protocol(state->cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
 		struct smbXcli_session *session = state->cli->smb2.session;
-		status = smb2cli_session_update_session_key(session,
+		status = smb2cli_session_set_session_key(session,
 						state->session_key_krb5,
 						recv_iov);
 		if (tevent_req_nterror(req, status)) {
 			return;
 		}
 	} else {
-		if (cli_simple_set_signing(state->cli, state->session_key_krb5,
+		struct smbXcli_session *session = state->cli->smb1.session;
+
+		status = smb1cli_session_set_session_key(session,
+							 state->session_key_krb5);
+		if (tevent_req_nterror(req, status)) {
+			return;
+		}
+
+		if (smb1cli_conn_activate_signing(state->cli->conn, state->session_key_krb5,
 					   data_blob_null)
-		    && !cli_check_sign_mac(state->cli, inbuf, 1)) {
+		    && !smb1cli_conn_check_signing(state->cli->conn, inbuf, 1)) {
 			tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
 			return;
 		}
@@ -1556,7 +1557,7 @@ static ADS_STATUS cli_session_setup_kerberos(struct cli_state *cli,
 	struct tevent_req *req;
 	ADS_STATUS status = ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
 	}
 	ev = tevent_context_init(talloc_tos());
@@ -1646,7 +1647,11 @@ static struct tevent_req *cli_session_setup_ntlmssp_send(
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
 	}
-	status = ntlmssp_set_password(state->ntlmssp_state, pass);
+	if (cli->pw_nt_hash) {
+		status = ntlmssp_set_password_hash(state->ntlmssp_state, pass);
+	} else {
+		status = ntlmssp_set_password(state->ntlmssp_state, pass);
+	}
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
 	}
@@ -1659,7 +1664,7 @@ static struct tevent_req *cli_session_setup_ntlmssp_send(
 	state->blob_out = spnego_gen_negTokenInit(state, OIDs_ntlm, &blob_out, NULL);
 	data_blob_free(&blob_out);
 
-	if (cli_state_protocol(cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
 		state->cli->smb2.session = smbXcli_session_create(cli,
 								  cli->conn);
 		if (tevent_req_nomem(state->cli->smb2.session, req)) {
@@ -1685,7 +1690,7 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 	struct cli_session_setup_ntlmssp_state *state = tevent_req_data(
 		req, struct cli_session_setup_ntlmssp_state);
 	DATA_BLOB blob_in, msg_in, blob_out;
-	char *inbuf = NULL;
+	uint8_t *inbuf = NULL;
 	struct iovec *recv_iov = NULL;
 	bool parse_ret;
 	NTSTATUS status;
@@ -1705,22 +1710,44 @@ static void cli_session_setup_ntlmssp_done(struct tevent_req *subreq)
 				return;
 			}
 		}
-		cli_set_session_key(
-			state->cli, state->ntlmssp_state->session_key);
 
-		if (cli_state_protocol(state->cli) >= PROTOCOL_SMB2_02) {
+		if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
 			struct smbXcli_session *session = state->cli->smb2.session;
-			status = smb2cli_session_update_session_key(session,
+
+			if (ntlmssp_is_anonymous(state->ntlmssp_state)) {
+				/*
+				 * Windows server does not set the
+				 * SMB2_SESSION_FLAG_IS_GUEST nor
+				 * SMB2_SESSION_FLAG_IS_NULL flag.
+				 *
+				 * This fix makes sure we do not try
+				 * to verify a signature on the final
+				 * session setup response.
+				 */
+				TALLOC_FREE(state->ntlmssp_state);
+				tevent_req_done(req);
+				return;
+			}
+
+			status = smb2cli_session_set_session_key(session,
 						state->ntlmssp_state->session_key,
 						recv_iov);
 			if (tevent_req_nterror(req, status)) {
 				return;
 			}
 		} else {
-			if (cli_simple_set_signing(
-				    state->cli, state->ntlmssp_state->session_key,
+			struct smbXcli_session *session = state->cli->smb1.session;
+
+			status = smb1cli_session_set_session_key(session,
+					state->ntlmssp_state->session_key);
+			if (tevent_req_nterror(req, status)) {
+				return;
+			}
+
+			if (smb1cli_conn_activate_signing(
+				    state->cli->conn, state->ntlmssp_state->session_key,
 				    data_blob_null)
-			    && !cli_check_sign_mac(state->cli, inbuf, 1)) {
+			    && !smb1cli_conn_check_signing(state->cli->conn, inbuf, 1)) {
 				tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
 				return;
 			}
@@ -1807,7 +1834,7 @@ static NTSTATUS cli_session_setup_ntlmssp(struct cli_state *cli,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 	ev = tevent_context_init(talloc_tos());
@@ -1849,7 +1876,7 @@ static ADS_STATUS cli_session_setup_spnego(struct cli_state *cli,
 	char *account = NULL;
 	NTSTATUS status;
 
-	server_blob = cli_state_server_gss_blob(cli);
+	server_blob = smbXcli_conn_server_gss_blob(cli->conn);
 	if (server_blob) {
 		blob = data_blob(server_blob->data, server_blob->length);
 	}
@@ -1904,7 +1931,7 @@ static ADS_STATUS cli_session_setup_spnego(struct cli_state *cli,
 
 	if (user && *user && cli->got_kerberos_mechanism && cli->use_kerberos) {
 		ADS_STATUS rc;
-		const char *remote_name = cli_state_remote_name(cli);
+		const char *remote_name = smbXcli_conn_remote_name(cli->conn);
 
 		if (pass && *pass) {
 			int ret;
@@ -1946,7 +1973,8 @@ static ADS_STATUS cli_session_setup_spnego(struct cli_state *cli,
 			} else {
 				principal = kerberos_get_principal_from_service_hostname(talloc_tos(),
 											 "cifs",
-											 remote_name);
+											 remote_name,
+											 lp_realm());
 			}
 
 			if (!principal) {
@@ -2000,7 +2028,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 {
 	char *p;
 	char *user2;
-	uint16_t sec_mode = cli_state_security_mode(cli);
+	uint16_t sec_mode = smb1cli_conn_server_security_mode(cli->conn);
 
 	if (user) {
 		user2 = talloc_strdup(talloc_tos(), user);
@@ -2020,11 +2048,13 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 	    (p=strchr_m(user2,*lp_winbind_separator()))) {
 		*p = 0;
 		user = p+1;
-		strupper_m(user2);
+		if (!strupper_m(user2)) {
+			return NT_STATUS_INVALID_PARAMETER;
+		}
 		workgroup = user2;
 	}
 
-	if (cli_state_protocol(cli) < PROTOCOL_LANMAN1) {
+	if (smbXcli_conn_protocol(cli->conn) < PROTOCOL_LANMAN1) {
 		return NT_STATUS_OK;
 	}
 
@@ -2034,7 +2064,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 
 	/* if its an older server then we have to use the older request format */
 
-	if (cli_state_protocol(cli) < PROTOCOL_NT1) {
+	if (smbXcli_conn_protocol(cli->conn) < PROTOCOL_NT1) {
 		if (!lp_client_lanman_auth() && passlen != 24 && (*pass)) {
 			DEBUG(1, ("Server requested LM password but 'client lanman auth = no'"
 				  " or 'client ntlmv2 auth = yes'\n"));
@@ -2043,7 +2073,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 
 		if ((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0 &&
 		    !lp_client_plaintext_auth() && (*pass)) {
-			DEBUG(1, ("Server requested LM password but 'client plaintext auth = no'"
+			DEBUG(1, ("Server requested PLAINTEXT password but 'client plaintext auth = no'"
 				  " or 'client ntlmv2 auth = yes'\n"));
 			return NT_STATUS_ACCESS_DENIED;
 		}
@@ -2052,7 +2082,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 						 workgroup);
 	}
 
-	if (cli_state_protocol(cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
 		const char *remote_realm = cli_state_remote_realm(cli);
 		ADS_STATUS status = cli_session_setup_spnego(cli, user, pass,
 							     workgroup,
@@ -2082,7 +2112,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 
 	if ((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) == 0) {
 		if (!lp_client_plaintext_auth() && (*pass)) {
-			DEBUG(1, ("Server requested LM password but 'client plaintext auth = no'"
+			DEBUG(1, ("Server requested PLAINTEXT password but 'client plaintext auth = no'"
 				  " or 'client ntlmv2 auth = yes'\n"));
 			return NT_STATUS_ACCESS_DENIED;
 		}
@@ -2091,7 +2121,7 @@ NTSTATUS cli_session_setup(struct cli_state *cli,
 
 	/* if the server supports extended security then use SPNEGO */
 
-	if (cli_state_capabilities(cli) & CAP_EXTENDED_SECURITY) {
+	if (smb1cli_conn_capabilities(cli->conn) & CAP_EXTENDED_SECURITY) {
 		const char *remote_realm = cli_state_remote_realm(cli);
 		ADS_STATUS status = cli_session_setup_spnego(cli, user, pass,
 							     workgroup,
@@ -2181,7 +2211,7 @@ NTSTATUS cli_ulogoff(struct cli_state *cli)
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 	ev = tevent_context_init(talloc_tos());
@@ -2226,7 +2256,8 @@ struct tevent_req *cli_tcon_andx_create(TALLOC_CTX *mem_ctx,
 	uint16_t *vwv;
 	char *tmp = NULL;
 	uint8_t *bytes;
-	uint16_t sec_mode = cli_state_security_mode(cli);
+	uint16_t sec_mode = smb1cli_conn_server_security_mode(cli->conn);
+	uint16_t tcon_flags = 0;
 
 	*psmbreq = NULL;
 
@@ -2265,7 +2296,7 @@ struct tevent_req *cli_tcon_andx_create(TALLOC_CTX *mem_ctx,
 		 * Non-encrypted passwords - convert to DOS codepage before
 		 * encryption.
 		 */
-		SMBencrypt(pass, cli_state_server_challenge(cli), p24);
+		SMBencrypt(pass, smb1cli_conn_server_challenge(cli->conn), p24);
 		passlen = 24;
 		pass = (const char *)p24;
 	} else {
@@ -2275,9 +2306,9 @@ struct tevent_req *cli_tcon_andx_create(TALLOC_CTX *mem_ctx,
 			uint8_t *tmp_pass;
 
 			if (!lp_client_plaintext_auth() && (*pass)) {
-				DEBUG(1, ("Server requested plaintext "
+				DEBUG(1, ("Server requested PLAINTEXT "
 					  "password but "
-					  "'client lanman auth = no' or 'client ntlmv2 auth = yes'\n"));
+					  "'client plaintext auth = no' or 'client ntlmv2 auth = yes'\n"));
 				goto access_denied;
 			}
 
@@ -2302,10 +2333,13 @@ struct tevent_req *cli_tcon_andx_create(TALLOC_CTX *mem_ctx,
 		}
 	}
 
+	tcon_flags |= TCONX_FLAG_EXTENDED_RESPONSE;
+	tcon_flags |= TCONX_FLAG_EXTENDED_SIGNATURES;
+
 	SCVAL(vwv+0, 0, 0xFF);
 	SCVAL(vwv+0, 1, 0);
 	SSVAL(vwv+1, 0, 0);
-	SSVAL(vwv+2, 0, TCONX_FLAG_EXTENDED_RESPONSE);
+	SSVAL(vwv+2, 0, tcon_flags);
 	SSVAL(vwv+3, 0, passlen);
 
 	if (passlen && pass) {
@@ -2318,12 +2352,12 @@ struct tevent_req *cli_tcon_andx_create(TALLOC_CTX *mem_ctx,
 	 * Add the sharename
 	 */
 	tmp = talloc_asprintf_strupper_m(talloc_tos(), "\\\\%s\\%s",
-					 cli_state_remote_name(cli), share);
+					 smbXcli_conn_remote_name(cli->conn), share);
 	if (tmp == NULL) {
 		TALLOC_FREE(req);
 		return NULL;
 	}
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), tmp, strlen(tmp)+1,
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), tmp, strlen(tmp)+1,
 				   NULL);
 	TALLOC_FREE(tmp);
 
@@ -2378,7 +2412,7 @@ struct tevent_req *cli_tcon_andx_send(TALLOC_CTX *mem_ctx,
 	if (subreq == NULL) {
 		return req;
 	}
-	status = cli_smb_req_send(subreq);
+	status = smb1cli_req_chain_submit(&subreq, 1);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
 		return tevent_req_post(req, ev);
@@ -2394,12 +2428,13 @@ static void cli_tcon_andx_done(struct tevent_req *subreq)
 		req, struct cli_tcon_andx_state);
 	struct cli_state *cli = state->cli;
 	uint8_t *in;
-	char *inbuf;
+	uint8_t *inhdr;
 	uint8_t wct;
 	uint16_t *vwv;
 	uint32_t num_bytes;
 	uint8_t *bytes;
 	NTSTATUS status;
+	uint16_t optional_support = 0;
 
 	status = cli_smb_recv(subreq, state, &in, 0, &wct, &vwv,
 			      &num_bytes, &bytes);
@@ -2409,12 +2444,12 @@ static void cli_tcon_andx_done(struct tevent_req *subreq)
 		return;
 	}
 
-	inbuf = (char *)in;
+	inhdr = in + NBT_HDR_SIZE;
 
 	if (num_bytes) {
 		if (clistr_pull_talloc(cli,
-				inbuf,
-				SVAL(inbuf, smb_flg2),
+				(const char *)inhdr,
+				SVAL(inhdr, HDR_FLG2),
 				&cli->dev,
 				bytes,
 				num_bytes,
@@ -2430,7 +2465,7 @@ static void cli_tcon_andx_done(struct tevent_req *subreq)
 		}
 	}
 
-	if ((cli_state_protocol(cli) >= PROTOCOL_NT1) && (num_bytes == 3)) {
+	if ((smbXcli_conn_protocol(cli->conn) >= PROTOCOL_NT1) && (num_bytes == 3)) {
 		/* almost certainly win95 - enable bug fixes */
 		cli->win95 = True;
 	}
@@ -2442,11 +2477,19 @@ static void cli_tcon_andx_done(struct tevent_req *subreq)
 
 	cli->dfsroot = false;
 
-	if ((wct > 2) && (cli_state_protocol(cli) >= PROTOCOL_LANMAN2)) {
-		cli->dfsroot = ((SVAL(vwv+2, 0) & SMB_SHARE_IN_DFS) != 0);
+	if ((wct > 2) && (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_LANMAN2)) {
+		optional_support = SVAL(vwv+2, 0);
 	}
 
-	cli->smb1.tid = SVAL(inbuf,smb_tid);
+	if (optional_support & SMB_SHARE_IN_DFS) {
+		cli->dfsroot = true;
+	}
+
+	if (optional_support & SMB_EXTENDED_SIGNATURES) {
+		smb1cli_session_protect_session_key(cli->smb1.session);
+	}
+
+	cli_state_set_tid(cli, SVAL(inhdr, HDR_TID));
 	tevent_req_done(req);
 }
 
@@ -2463,7 +2506,7 @@ NTSTATUS cli_tcon_andx(struct cli_state *cli, const char *share,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -2497,16 +2540,31 @@ NTSTATUS cli_tcon_andx(struct cli_state *cli, const char *share,
 NTSTATUS cli_tree_connect(struct cli_state *cli, const char *share,
 			  const char *dev, const char *pass, int passlen)
 {
+	NTSTATUS status;
+	uint16_t max_xmit = 0;
+	uint16_t tid = 0;
+
 	cli->share = talloc_strdup(cli, share);
 	if (!cli->share) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (cli_state_protocol(cli) >= PROTOCOL_SMB2_02) {
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
 		return smb2cli_tcon(cli, share);
 	}
 
-	return cli_tcon_andx(cli, share, dev, pass, passlen);
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_LANMAN1) {
+		return cli_tcon_andx(cli, share, dev, pass, passlen);
+	}
+
+	status = cli_raw_tcon(cli, share, pass, dev, &max_xmit, &tid);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	cli_state_set_tid(cli, tid);
+
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
@@ -2554,7 +2612,7 @@ static void cli_tdis_done(struct tevent_req *subreq)
 		tevent_req_nterror(req, status);
 		return;
 	}
-	state->cli->smb1.tid = UINT16_MAX;
+	cli_state_set_tid(state->cli, UINT16_MAX);
 	tevent_req_done(req);
 }
 
@@ -2569,7 +2627,7 @@ NTSTATUS cli_tdis(struct cli_state *cli)
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 	ev = tevent_context_init(talloc_tos());
@@ -2587,27 +2645,6 @@ NTSTATUS cli_tdis(struct cli_state *cli)
 fail:
 	TALLOC_FREE(ev);
 	return status;
-}
-
-struct tevent_req *cli_negprot_send(TALLOC_CTX *mem_ctx,
-				    struct event_context *ev,
-				    struct cli_state *cli,
-				    enum protocol_types max_protocol)
-{
-	return smbXcli_negprot_send(mem_ctx, ev,
-				    cli->conn, cli->timeout,
-				    PROTOCOL_CORE, max_protocol);
-}
-
-NTSTATUS cli_negprot_recv(struct tevent_req *req)
-{
-	return smbXcli_negprot_recv(req);
-}
-
-NTSTATUS cli_negprot(struct cli_state *cli, enum protocol_types max_protocol)
-{
-	return smbXcli_negprot(cli->conn, cli->timeout,
-			       PROTOCOL_CORE, max_protocol);
 }
 
 static NTSTATUS cli_connect_sock(const char *host, int name_type,
@@ -2751,7 +2788,8 @@ NTSTATUS cli_start_connection(struct cli_state **output_cli,
 		return nt_status;
 	}
 
-	nt_status = cli_negprot(cli, PROTOCOL_NT1);
+	nt_status = smbXcli_negprot(cli->conn, cli->timeout, PROTOCOL_CORE,
+				    PROTOCOL_NT1);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(1, ("failed negprot: %s\n", nt_errstr(nt_status)));
 		cli_shutdown(cli);
@@ -2824,8 +2862,8 @@ NTSTATUS cli_full_connection(struct cli_state **output_cli,
 	}
 
 	if (service) {
-		nt_status = cli_tcon_andx(cli, service, service_type, password,
-					  pw_len);
+		nt_status = cli_tree_connect(cli, service, service_type,
+					     password, pw_len);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			DEBUG(1,("failed tcon_X with %s\n", nt_errstr(nt_status)));
 			cli_shutdown(cli);
@@ -2859,20 +2897,20 @@ NTSTATUS cli_raw_tcon(struct cli_state *cli,
 	NTSTATUS status;
 
 	if (!lp_client_plaintext_auth() && (*pass)) {
-		DEBUG(1, ("Server requested plaintext password but 'client "
-			  "plaintext auth' is disabled\n"));
+		DEBUG(1, ("Server requested PLAINTEXT password but 'client plaintext auth = no'"
+			  " or 'client ntlmv2 auth = yes'\n"));
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	bytes = talloc_array(talloc_tos(), uint8_t, 0);
 	bytes = smb_bytes_push_bytes(bytes, 4, NULL, 0);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   service, strlen(service)+1, NULL);
 	bytes = smb_bytes_push_bytes(bytes, 4, NULL, 0);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   pass, strlen(pass)+1, NULL);
 	bytes = smb_bytes_push_bytes(bytes, 4, NULL, 0);
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli),
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn),
 				   dev, strlen(dev)+1, NULL);
 
 	status = cli_smb(talloc_tos(), cli, SMBtcon, 0, 0, NULL,

@@ -45,16 +45,14 @@ extern const char *panic_action;
 /**
  * assert macros 
  */
-#ifdef DEVELOPER
-#define SMB_ASSERT(b) do { if (!(b)) { \
-        DEBUG(0,("PANIC: assert failed at %s(%d): %s\n", \
-		 __FILE__, __LINE__, #b)); smb_panic("assert failed: " #b); }} while(0)
-#else
-/* redefine the assert macro for non-developer builds */
-#define SMB_ASSERT(b) do { if (!(b)) { \
-        DEBUG(0,("PANIC: assert failed at %s(%d): %s\n", \
-	    __FILE__, __LINE__, #b)); }} while (0)
-#endif
+#define SMB_ASSERT(b) \
+do { \
+	if (!(b)) { \
+		DEBUG(0,("PANIC: assert failed at %s(%d): %s\n", \
+			 __FILE__, __LINE__, #b)); \
+		smb_panic("assert failed: " #b); \
+	} \
+} while(0)
 
 #ifndef ABS
 #define ABS(a) ((a)>0?(a):(-(a)))
@@ -78,7 +76,7 @@ _PUBLIC_ void fault_configure(smb_panic_handler_t panic_handler);
 _PUBLIC_ void fault_setup(void);
 _PUBLIC_ void fault_setup_disable(void);
 _PUBLIC_ void dump_core_setup(const char *progname, const char *logfile);
-_PUBLIC_ void smb_panic(const char *reason);
+_PUBLIC_ _NORETURN_ void smb_panic(const char *reason);
 
 
 /**
@@ -113,22 +111,6 @@ void CatchChild(void);
 **/
 void CatchChildLeaveStatus(void);
 
-/* The following definitions come from lib/util/system.c  */
-
-void *sys_memalign( size_t align, size_t size );
-
-/**
- * Wrapper for fork used to invalid pid cache.
- **/
-_PUBLIC_ pid_t sys_fork(void);
-
-/**
- * Wrapper for getpid. Ensures we only do a system call *once*.
- **/
-_PUBLIC_ pid_t sys_getpid(void);
-
-_PUBLIC_ int sys_getpeereid( int s, uid_t *uid);
-
 struct sockaddr;
 
 _PUBLIC_ int sys_getnameinfo(const struct sockaddr *psa,
@@ -138,7 +120,6 @@ _PUBLIC_ int sys_getnameinfo(const struct sockaddr *psa,
 			     char *service,
 			     size_t servlen,
 			     int flags);
-_PUBLIC_ int sys_connect(int fd, const struct sockaddr * addr);
 
 /* The following definitions come from lib/util/genrand.c  */
 /**
@@ -756,6 +737,10 @@ _PUBLIC_ void *realloc_array(void *ptr, size_t el_size, unsigned count, bool fre
 
 void *malloc_array(size_t el_size, unsigned int count);
 
+void *memalign_array(size_t el_size, size_t align, unsigned int count);
+
+void *calloc_array(size_t size, size_t nmemb);
+
 /* The following definitions come from lib/util/fsusage.c  */
 
 
@@ -824,7 +809,7 @@ _PUBLIC_ int idr_remove(struct idr_context *idp, int id);
 /**
  Close the low 3 fd's and open dev/null in their place
 **/
-_PUBLIC_ void close_low_fds(bool stderr_too);
+_PUBLIC_ void close_low_fds(bool stdin_too, bool stdout_too, bool stderr_too);
 
 /**
  Become a daemon, discarding the controlling terminal.
@@ -914,6 +899,21 @@ char *data_path(TALLOC_CTX *mem_ctx, const char *name);
 const char *shlib_ext(void);
 
 struct server_id;
+bool server_id_equal(const struct server_id *p1, const struct server_id *p2);
 char *server_id_str(TALLOC_CTX *mem_ctx, const struct server_id *id);
+struct server_id server_id_from_string(uint32_t local_vnn,
+				       const char *pid_string);
+
+/**
+ * Set the serverid to the special value that represents a disconnected
+ * client for (e.g.) durable handles.
+ */
+void server_id_set_disconnected(struct server_id *id);
+
+/**
+ * check whether a serverid is the special placeholder for
+ * a disconnected client
+ */
+bool server_id_is_disconnected(const struct server_id *id);
 
 #endif /* _SAMBA_UTIL_H_ */

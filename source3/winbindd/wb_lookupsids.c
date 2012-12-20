@@ -123,11 +123,6 @@ struct tevent_req *wb_lookupsids_send(TALLOC_CTX *mem_ctx,
 	state->sids = sids;
 	state->num_sids = num_sids;
 
-	if (num_sids == 0) {
-		tevent_req_done(req);
-		return tevent_req_post(req, ev);
-	}
-
 	state->single_sids = talloc_array(state, uint32_t, num_sids);
 	if (tevent_req_nomem(state->single_sids, req)) {
 		return tevent_req_post(req, ev);
@@ -150,6 +145,11 @@ struct tevent_req *wb_lookupsids_send(TALLOC_CTX *mem_ctx,
 	state->res_names->names = talloc_array(
 		state->res_names, struct lsa_TranslatedName, num_sids);
 	if (tevent_req_nomem(state->res_names->names, req)) {
+		return tevent_req_post(req, ev);
+	}
+
+	if (num_sids == 0) {
+		tevent_req_done(req);
 		return tevent_req_post(req, ev);
 	}
 
@@ -185,7 +185,7 @@ static bool wb_lookupsids_next(struct tevent_req *req,
 
 		d = &state->domains[state->domains_done];
 
-		if (sid_check_is_domain(&d->sid)) {
+		if (sid_check_is_our_sam(&d->sid)) {
 			state->rids.num_rids = d->sids.num_sids;
 			state->rids.rids = talloc_array(state, uint32_t,
 							state->rids.num_rids);
@@ -255,7 +255,7 @@ static bool wb_lookupsids_bulk(const struct dom_sid *sid)
 		return false;
 	}
 
-	if (sid_check_is_in_our_domain(sid)) {
+	if (sid_check_is_in_our_sam(sid)) {
 		/*
 		 * Passdb lookup via lookuprids
 		 */
@@ -645,7 +645,11 @@ NTSTATUS wb_lookupsids_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 	 * if not we have a bug in the code!
 	 *
 	 */
-	SMB_ASSERT(state->res_names->count == state->num_sids);
+	if (state->res_names->count != state->num_sids) {
+		DEBUG(0, ("res_names->count = %d, expected %d\n",
+			  state->res_names->count, state->num_sids));
+		return NT_STATUS_INTERNAL_ERROR;
+	}
 
 	/*
 	 * Not strictly needed, but it might make debugging in the callers

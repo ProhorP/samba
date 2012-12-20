@@ -5,6 +5,10 @@ if [ "x${SUBUNIT_FORMATTER}" = x"" ]; then
 	SUBUNIT_FORMATTER="${PYTHON} -u ${SELFTESTDIR}/format-subunit --prefix=${SELFTESTPREFIX} --immediate"
 fi
 
+if [ x"${FAIL_IMMEDIATELY}" != x"" ]; then
+	FILTER_XFAIL="${FILTER_XFAIL} --fail-immediately"
+fi
+
 cleanup_and_exit() {
 	if test "$1" = 0 -o -z "$1"; then
 		exit 0
@@ -20,7 +24,7 @@ st_test_done() {
 if [ "x${RUN_FROM_BUILD_FARM}" = "xyes" ]; then
 	( rm -f ${SELFTESTPREFIX}/st_done && \
 		${PERL} ${SELFTESTDIR}/selftest.pl \
-	                --binary-mapping=smbtorture3:smbtorture,nmblookup3:nmblookup,smbclient3:smbclient,ntlm_auth3:ntlm_auth \
+	                --binary-mapping=smbtorture3:smbtorture3,nmblookup3:nmblookup,nmblookup4:nmblookup4,smbclient3:smbclient,smbclient4:smbclient4,ntlm_auth3:ntlm_auth,smbtorture4:smbtorture \
 			--prefix=${SELFTESTPREFIX} --target=samba3 \
 			--testlist="${PYTHON} ${SOURCEDIR}/selftest/tests.py|" \
 			--exclude=${SELFTESTDIR}/skip \
@@ -34,7 +38,7 @@ if [ "x${RUN_FROM_BUILD_FARM}" = "xyes" ]; then
 else
 	( rm -f ${SELFTESTPREFIX}/st_done && \
 		${PERL} ${SELFTESTDIR}/selftest.pl \
-	                --binary-mapping=smbtorture3:smbtorture,nmblookup3:nmblookup,smbclient3:smbclient,ntlm_auth3:ntlm_auth \
+	                --binary-mapping=smbtorture3:smbtorture3,nmblookup3:nmblookup,nmblookup4:nmblookup4,smbclient3:smbclient,smbclient4:smbclient4,ntlm_auth3:ntlm_auth,smbtorture4:smbtorture \
 			--prefix=${SELFTESTPREFIX} --target=samba3 \
 			--testlist="${PYTHON} ${SOURCEDIR}/selftest/tests.py|" \
 			--exclude=${SELFTESTDIR}/skip \

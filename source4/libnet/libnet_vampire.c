@@ -162,7 +162,7 @@ NTSTATUS libnet_vampire_cb_prepare_db(void *private_data,
 	settings.server_dn_str = p->dest_dsa->server_dn_str;
 	settings.machine_password = generate_random_password(s, 16, 255);
 	settings.targetdir = s->targetdir;
-
+	settings.use_ntvfs = true;
 	status = provision_bare(s, s->lp_ctx, &settings, &result);
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -788,16 +788,19 @@ NTSTATUS libnet_vampire_cb_store_chunk(void *private_data,
 		const struct dsdb_attribute *sa;
 
 		if (!linked_attributes[i].identifier) {
-			return NT_STATUS_FOOBAR;		
+			DEBUG(0, ("No linked attribute identifier\n"));
+			return NT_STATUS_FOOBAR;
 		}
 
 		if (!linked_attributes[i].value.blob) {
-			return NT_STATUS_FOOBAR;		
+			DEBUG(0, ("No linked attribute value\n"));
+			return NT_STATUS_FOOBAR;
 		}
 
 		sa = dsdb_attribute_by_attributeID_id(s->schema,
 						      linked_attributes[i].attid);
 		if (!sa) {
+			DEBUG(0, ("Unable to find attribute via attribute id %d\n", linked_attributes[i].attid));
 			return NT_STATUS_FOOBAR;
 		}
 

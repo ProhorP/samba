@@ -155,7 +155,7 @@ static int ltdb_dn_list_load(struct ldb_module *module,
 	key.dptr = discard_const_p(unsigned char, ldb_dn_get_linearized(dn));
 	key.dsize = strlen((char *)key.dptr);
 
-	rec = tdb_fetch_compat(ltdb->idxptr->itdb, key);
+	rec = tdb_fetch(ltdb->idxptr->itdb, key);
 	if (rec.dptr == NULL) {
 		goto normal_index;
 	}
@@ -261,7 +261,7 @@ static int ltdb_dn_list_store(struct ldb_module *module, struct ldb_dn *dn,
 	}
 
 	if (ltdb->idxptr->itdb == NULL) {
-		ltdb->idxptr->itdb = tdb_open_compat(NULL, 1000, TDB_INTERNAL, O_RDWR, 0, NULL, NULL);
+		ltdb->idxptr->itdb = tdb_open(NULL, 1000, TDB_INTERNAL, O_RDWR, 0);
 		if (ltdb->idxptr->itdb == NULL) {
 			return LDB_ERR_OPERATIONS_ERROR;
 		}
@@ -270,7 +270,7 @@ static int ltdb_dn_list_store(struct ldb_module *module, struct ldb_dn *dn,
 	key.dptr = discard_const_p(unsigned char, ldb_dn_get_linearized(dn));
 	key.dsize = strlen((char *)key.dptr);
 
-	rec = tdb_fetch_compat(ltdb->idxptr->itdb, key);
+	rec = tdb_fetch(ltdb->idxptr->itdb, key);
 	if (rec.dptr != NULL) {
 		list2 = ltdb_index_idxptr(module, rec, false);
 		if (list2 == NULL) {
@@ -510,6 +510,15 @@ static int ltdb_index_dn_leaf(struct ldb_module *module,
 			      const struct ldb_message *index_list,
 			      struct dn_list *list)
 {
+	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module),
+						    struct ltdb_private);
+	if (ltdb->disallow_dn_filter &&
+	    (ldb_attr_cmp(tree->u.equality.attr, "dn") == 0)) {
+		/* in AD mode we do not support "(dn=...)" search filters */
+		list->dn = NULL;
+		list->count = 0;
+		return LDB_SUCCESS;
+	}
 	if (ldb_attr_dn(tree->u.equality.attr) == 0) {
 		list->dn = talloc_array(list, struct ldb_val, 1);
 		if (list->dn == NULL) {

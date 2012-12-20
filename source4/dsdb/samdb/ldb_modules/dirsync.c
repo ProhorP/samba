@@ -75,7 +75,6 @@ static int dirsync_filter_entry(struct ldb_request *req,
 	uint32_t n;
 	int i;
 	unsigned int size, j;
-	uint32_t deletedattr;
 	struct ldb_val *replMetaData = NULL;
 	struct replPropertyMetaDataBlob rmd;
 	const struct dsdb_attribute *attr;
@@ -118,7 +117,6 @@ static int dirsync_filter_entry(struct ldb_request *req,
 	*/
 	rdn = ldb_dn_get_rdn_name(msg->dn);
 
-	deletedattr = 0;
 	/*
 	 * if objectGUID is asked and we are dealing for the referrals entries and
 	 * the usn searched is 0 then we didn't count the objectGUID as an automatically
@@ -242,7 +240,7 @@ static int dirsync_filter_entry(struct ldb_request *req,
 		talloc_steal(newmsg->elements, el->name);
 		talloc_steal(newmsg->elements, el->values);
 
-		talloc_free(msg);
+		talloc_steal(newmsg->elements, msg);
 		return ldb_module_send_entry(dsc->req, msg, controls);
 	}
 
@@ -655,6 +653,7 @@ skip_link:
 			continue;
 		}
 	}
+	talloc_steal(newmsg->elements, msg);
 
 	/*
 	 * Here we run through the list of attributes returned
@@ -687,10 +686,9 @@ skip_link:
 		if (val > dsc->highestUSN) {
 			dsc->highestUSN = val;
 		}
-		talloc_free(msg);
 		return ldb_module_send_entry(dsc->req, newmsg, controls);
 	} else {
-		talloc_free(msg);
+		talloc_free(newmsg);
 		return LDB_SUCCESS;
 	}
 }
@@ -705,12 +703,10 @@ static int dirsync_create_vector(struct ldb_request *req,
 	struct ldb_result *resVector;
 	const char* attrVector[] = {"replUpToDateVector", NULL };
 	uint64_t highest_usn;
-	struct ldb_dn *nc_root;
 	uint32_t count = 1;
 	int ret;
 	struct drsuapi_DsReplicaCursor *tab;
 
-	nc_root = ldb_get_default_basedn(ldb);
 	ret = ldb_sequence_number(ldb, LDB_SEQ_HIGHEST_SEQ, &highest_usn);
 	if (ret != LDB_SUCCESS) {
 		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR, "Unable to get highest USN from current NC");
@@ -726,9 +722,13 @@ static int dirsync_create_vector(struct ldb_request *req,
 
 
 	ret = dsdb_module_search_dn(dsc->module, dsc, &resVector,
-			nc_root,
+			dsc->nc_root,
 			attrVector,
 			DSDB_FLAG_NEXT_MODULE, req);
+	if (ret != LDB_SUCCESS) {
+		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR,
+				 "Unable to get replUpToDateVector for current NC");
+	}
 
 	if (resVector->count != 0) {
 		DATA_BLOB blob;
@@ -1119,7 +1119,7 @@ static int dirsync_ldb_search(struct ldb_module *module, struct ldb_request *req
 		 */
 		if (ldb_attr_in_list(attrs, "*")) {
 			struct ldb_sd_flags_control *sdctr = talloc_zero(dsc, struct ldb_sd_flags_control);
-			sdctr->secinfo_flags = 0;
+			sdctr->secinfo_flags = 0xF;
 			ret = ldb_request_add_control(req, LDB_CONTROL_SD_FLAGS_OID, false, sdctr);
 			if (ret != LDB_SUCCESS) {
 				return ret;
@@ -1184,7 +1184,7 @@ static int dirsync_ldb_search(struct ldb_module *module, struct ldb_request *req
 		}
 	} else {
 		struct ldb_sd_flags_control *sdctr = talloc_zero(dsc, struct ldb_sd_flags_control);
-		sdctr->secinfo_flags = 0;
+		sdctr->secinfo_flags = 0xF;
 		ret = ldb_request_add_control(req, LDB_CONTROL_SD_FLAGS_OID, false, sdctr);
 		attrs = talloc_array(dsc, const char*, 4);
 		if (attrs == NULL) {

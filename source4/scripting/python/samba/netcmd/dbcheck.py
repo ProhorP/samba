@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Samba4 AD database checker
 #
 # Copyright (C) Andrew Tridgell 2011
@@ -31,7 +29,7 @@ from samba.dbchecker import dbcheck
 
 
 class cmd_dbcheck(Command):
-    """check local AD database for errors"""
+    """Check local AD database for errors."""
     synopsis = "%prog [<DN>] [options]"
 
     takes_optiongroups = {
@@ -117,7 +115,7 @@ class cmd_dbcheck(Command):
             else:
                 error_count = chk.check_database(DN=DN, scope=search_scope,
                         controls=controls, attrs=attrs)
-        except Exception:
+        except:
             if started_transaction:
                 samdb.transaction_cancel()
             raise

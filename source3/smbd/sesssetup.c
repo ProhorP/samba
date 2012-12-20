@@ -36,6 +36,7 @@
 #include "smbprofile.h"
 #include "../libcli/security/security.h"
 #include "auth/gensec/gensec.h"
+#include "lib/conn_tdb.h"
 
 /****************************************************************************
  Add the standard 'Samba' signature to the end of the session setup.
@@ -77,31 +78,33 @@ static int push_signature(uint8 **outbuf)
 ****************************************************************************/
 
 static NTSTATUS check_guest_password(const struct tsocket_address *remote_address,
-				     struct auth_serversupplied_info **server_info)
+				     TALLOC_CTX *mem_ctx, 
+				     struct auth_session_info **session_info)
 {
-	struct auth_context *auth_context;
+	struct auth4_context *auth_context;
 	struct auth_usersupplied_info *user_info = NULL;
-
+	uint8_t chal[8];
 	NTSTATUS nt_status;
-	static unsigned char chal[8] = { 0, };
 
 	DEBUG(3,("Got anonymous request\n"));
 
-	nt_status = make_auth_context_fixed(talloc_tos(), &auth_context, chal);
+	nt_status = make_auth4_context(talloc_tos(), &auth_context);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		return nt_status;
 	}
+
+	auth_context->get_ntlm_challenge(auth_context,
+					 chal);
 
 	if (!make_user_info_guest(remote_address, &user_info)) {
 		TALLOC_FREE(auth_context);
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	nt_status = auth_context->check_ntlm_password(auth_context,
-						user_info,
-						server_info);
-	TALLOC_FREE(auth_context);
+	nt_status = auth_check_password_session_info(auth_context, 
+						     mem_ctx, user_info, session_info);
 	free_user_info(&user_info);
+	TALLOC_FREE(auth_context);
 	return nt_status;
 }
 
@@ -123,16 +126,18 @@ static void reply_sesssetup_and_X_spnego(struct smb_request *req)
 	const char *p2;
 	uint16 data_blob_len = SVAL(req->vwv+7, 0);
 	enum remote_arch_types ra_type = get_remote_arch();
-	int vuid = req->vuid;
-	user_struct *vuser = NULL;
+	uint64_t vuid = req->vuid;
 	NTSTATUS status = NT_STATUS_OK;
 	struct smbd_server_connection *sconn = req->sconn;
 	uint16_t action = 0;
+	NTTIME now = timeval_to_nttime(&req->request_time);
+	struct smbXsrv_session *session = NULL;
+	uint32_t client_caps = IVAL(req->vwv+10, 0);
 
 	DEBUG(3,("Doing spnego session setup\n"));
 
 	if (global_client_caps == 0) {
-		global_client_caps = IVAL(req->vwv+10, 0);
+		global_client_caps = client_caps;
 
 		if (!(global_client_caps & CAP_STATUS32)) {
 			remove_from_common_flags2(FLAGS2_32_BIT_ERROR_CODES);
@@ -192,77 +197,84 @@ static void reply_sesssetup_and_X_spnego(struct smb_request *req)
 		}
 	}
 
-	vuser = get_valid_user_struct(sconn, vuid);
-	if (vuser != NULL) {
-		reply_nterror(req, NT_STATUS_REQUEST_NOT_ACCEPTED);
-		return;
-	}
-
-	/* Do we have a valid vuid now ? */
-	if (!is_partial_auth_vuid(sconn, vuid)) {
-		/* No, start a new authentication setup. */
-		vuid = register_initial_vuid(sconn);
-		if (vuid == UID_FIELD_INVALID) {
-			reply_nterror(req, nt_status_squash(
-					      NT_STATUS_INVALID_PARAMETER));
+	if (vuid != 0) {
+		status = smb1srv_session_lookup(sconn->conn,
+						vuid, now,
+						&session);
+		if (NT_STATUS_EQUAL(status, NT_STATUS_USER_SESSION_DELETED)) {
+			reply_force_doserror(req, ERRSRV, ERRbaduid);
+			return;
+		}
+		if (NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_SESSION_EXPIRED)) {
+			status = NT_STATUS_OK;
+		}
+		if (NT_STATUS_IS_OK(status)) {
+			session->status = NT_STATUS_MORE_PROCESSING_REQUIRED;
+			status = NT_STATUS_MORE_PROCESSING_REQUIRED;
+			TALLOC_FREE(session->gensec);
+		}
+		if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
+			reply_nterror(req, nt_status_squash(status));
 			return;
 		}
 	}
 
-	vuser = get_partial_auth_user_struct(sconn, vuid);
-	/* This MUST be valid. */
-	if (!vuser) {
-		smb_panic("reply_sesssetup_and_X_spnego: invalid vuid.");
+	if (session == NULL) {
+		/* create a new session */
+		status = smbXsrv_session_create(sconn->conn,
+					        now, &session);
+		if (!NT_STATUS_IS_OK(status)) {
+			reply_nterror(req, nt_status_squash(status));
+			return;
+		}
 	}
 
-	if (!vuser->gensec_security) {
-		status = auth_generic_prepare(vuser, sconn->remote_address,
-					      &vuser->gensec_security);
+	if (!session->gensec) {
+		status = auth_generic_prepare(session, sconn->remote_address,
+					      &session->gensec);
 		if (!NT_STATUS_IS_OK(status)) {
-			/* Kill the intermediate vuid */
-			invalidate_vuid(sconn, vuid);
+			TALLOC_FREE(session);
 			reply_nterror(req, nt_status_squash(status));
 			return;
 		}
 
-		gensec_want_feature(vuser->gensec_security, GENSEC_FEATURE_SESSION_KEY);
-		gensec_want_feature(vuser->gensec_security, GENSEC_FEATURE_UNIX_TOKEN);
+		gensec_want_feature(session->gensec, GENSEC_FEATURE_SESSION_KEY);
+		gensec_want_feature(session->gensec, GENSEC_FEATURE_UNIX_TOKEN);
 
-		status = gensec_start_mech_by_oid(vuser->gensec_security, GENSEC_OID_SPNEGO);
+		status = gensec_start_mech_by_oid(session->gensec,
+						  GENSEC_OID_SPNEGO);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Failed to start SPNEGO handler!\n"));
-			/* Kill the intermediate vuid */
-			invalidate_vuid(sconn, vuid);
+			TALLOC_FREE(session);;
 			reply_nterror(req, nt_status_squash(status));
 			return;
 		}
 	}
 
-	status = gensec_update(vuser->gensec_security,
+	become_root();
+	status = gensec_update(session->gensec,
 			       talloc_tos(), NULL,
 			       in_blob, &out_blob);
+	unbecome_root();
 	if (!NT_STATUS_IS_OK(status) &&
 	    !NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
-		/* Kill the intermediate vuid */
-		invalidate_vuid(sconn, vuid);
+		TALLOC_FREE(session);
 		reply_nterror(req, nt_status_squash(status));
 		return;
 	}
 
-	if (NT_STATUS_IS_OK(status)) {
+	if (NT_STATUS_IS_OK(status) && session->global->auth_session_info == NULL) {
 		struct auth_session_info *session_info = NULL;
-		int tmp_vuid;
 
-		status = gensec_session_info(vuser->gensec_security,
-					     talloc_tos(),
+		status = gensec_session_info(session->gensec,
+					     session,
 					     &session_info);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1,("Failed to generate session_info "
 				 "(user and group token) for session setup: %s\n",
 				 nt_errstr(status)));
-			/* Kill the intermediate vuid */
 			data_blob_free(&out_blob);
-			invalidate_vuid(sconn, vuid);
+			TALLOC_FREE(session);
 			reply_nterror(req, nt_status_squash(status));
 			return;
 		}
@@ -271,20 +283,176 @@ static void reply_sesssetup_and_X_spnego(struct smb_request *req)
 			action = 1;
 		}
 
-		/* register_existing_vuid keeps the server info */
-		tmp_vuid = register_existing_vuid(sconn, vuid,
-						  session_info,
-						  data_blob_null);
-		if (tmp_vuid != vuid) {
+		if (session_info->session_key.length > 0) {
+			struct smbXsrv_session *x = session;
+
+			/*
+			 * Note: the SMB1 signing key is not truncated to 16 byte!
+			 */
+			x->global->signing_key =
+				data_blob_dup_talloc(x->global,
+						     session_info->session_key);
+			if (x->global->signing_key.data == NULL) {
+				data_blob_free(&out_blob);
+				TALLOC_FREE(session);
+				reply_nterror(req, NT_STATUS_NO_MEMORY);
+				return;
+			}
+
+			/*
+			 * clear the session key
+			 * the first tcon will add setup the application key
+			 */
+			data_blob_clear_free(&session_info->session_key);
+		}
+
+		session->compat = talloc_zero(session, struct user_struct);
+		if (session->compat == NULL) {
 			data_blob_free(&out_blob);
-			invalidate_vuid(sconn, vuid);
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			return;
+		}
+		session->compat->session = session;
+		session->compat->homes_snum = -1;
+		session->compat->session_info = session_info;
+		session->compat->session_keystr = NULL;
+		session->compat->vuid = session->global->session_wire_id;
+		DLIST_ADD(sconn->users, session->compat);
+		sconn->num_users++;
+
+		if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
+			session->compat->homes_snum =
+				register_homes_share(session_info->unix_info->unix_name);
+		}
+
+		if (srv_is_signing_negotiated(sconn) &&
+		    action == 0 &&
+		    session->global->signing_key.length > 0)
+		{
+			/*
+			 * Try and turn on server signing on the first non-guest
+			 * sessionsetup.
+			 */
+			srv_set_signing(sconn,
+				session->global->signing_key,
+				data_blob_null);
+		}
+
+		set_current_user_info(session_info->unix_info->sanitized_username,
+				      session_info->unix_info->unix_name,
+				      session_info->info->domain_name);
+
+		session->status = NT_STATUS_OK;
+		session->global->auth_session_info = talloc_move(session->global,
+								 &session_info);
+		session->global->auth_session_info_seqnum += 1;
+		session->global->channels[0].auth_session_info_seqnum =
+			session->global->auth_session_info_seqnum;
+		if (client_caps & CAP_DYNAMIC_REAUTH) {
+			session->global->expiration_time =
+				gensec_expire_time(session->gensec);
+		} else {
+			session->global->expiration_time =
+				GENSEC_EXPIRE_TIME_INFINITY;
+		}
+
+		if (!session_claim(session)) {
+			DEBUG(1, ("smb1: Failed to claim session for vuid=%llu\n",
+				  (unsigned long long)session->compat->vuid));
+			data_blob_free(&out_blob);
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_LOGON_FAILURE);
+			return;
+		}
+
+		status = smbXsrv_session_update(session);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0, ("smb1: Failed to update session for vuid=%llu - %s\n",
+				  (unsigned long long)session->compat->vuid,
+				  nt_errstr(status)));
+			data_blob_free(&out_blob);
+			TALLOC_FREE(session);
 			reply_nterror(req, NT_STATUS_LOGON_FAILURE);
 			return;
 		}
 
 		/* current_user_info is changed on new vuid */
 		reload_services(sconn, conn_snum_used, true);
+	} else if (NT_STATUS_IS_OK(status)) {
+		struct auth_session_info *session_info = NULL;
+
+		status = gensec_session_info(session->gensec,
+					     session,
+					     &session_info);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(1,("Failed to generate session_info "
+				 "(user and group token) for session setup: %s\n",
+				 nt_errstr(status)));
+			data_blob_free(&out_blob);
+			TALLOC_FREE(session);
+			reply_nterror(req, nt_status_squash(status));
+			return;
+		}
+
+		if (security_session_user_level(session_info, NULL) < SECURITY_USER) {
+			action = 1;
+		}
+
+		/*
+		 * Keep the application key
+		 */
+		data_blob_clear_free(&session_info->session_key);
+		session_info->session_key =
+			session->global->auth_session_info->session_key;
+		talloc_steal(session_info, session_info->session_key.data);
+		TALLOC_FREE(session->global->auth_session_info);
+
+		session->compat->session_info = session_info;
+
+		session->compat->vuid = session->global->session_wire_id;
+
+		if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
+			session->compat->homes_snum =
+				register_homes_share(session_info->unix_info->unix_name);
+		}
+
+		set_current_user_info(session_info->unix_info->sanitized_username,
+				      session_info->unix_info->unix_name,
+				      session_info->info->domain_name);
+
+		session->status = NT_STATUS_OK;
+		session->global->auth_session_info = talloc_move(session->global,
+								 &session_info);
+		session->global->auth_session_info_seqnum += 1;
+		session->global->channels[0].auth_session_info_seqnum =
+			session->global->auth_session_info_seqnum;
+		if (client_caps & CAP_DYNAMIC_REAUTH) {
+			session->global->expiration_time =
+				gensec_expire_time(session->gensec);
+		} else {
+			session->global->expiration_time =
+				GENSEC_EXPIRE_TIME_INFINITY;
+		}
+
+		status = smbXsrv_session_update(session);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(0, ("smb1: Failed to update session for vuid=%llu - %s\n",
+				  (unsigned long long)session->compat->vuid,
+				  nt_errstr(status)));
+			data_blob_free(&out_blob);
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_LOGON_FAILURE);
+			return;
+		}
+
+		conn_clear_vuid_caches(sconn, session->compat->vuid);
+
+		/* current_user_info is changed on new vuid */
+		reload_services(sconn, conn_snum_used, true);
 	}
+
+	vuid = session->global->session_wire_id;
 
 	reply_outbuf(req, 4, 0);
 
@@ -296,14 +464,14 @@ static void reply_sesssetup_and_X_spnego(struct smb_request *req)
 
 	if (message_push_blob(&req->outbuf, out_blob) == -1) {
 		data_blob_free(&out_blob);
-		invalidate_vuid(sconn, vuid);
+		TALLOC_FREE(session);
 		reply_nterror(req, NT_STATUS_NO_MEMORY);
 		return;
 	}
 	data_blob_free(&out_blob);
 
 	if (push_signature(&req->outbuf) == -1) {
-		invalidate_vuid(sconn, vuid);
+		TALLOC_FREE(session);
 		reply_nterror(req, NT_STATUS_NO_MEMORY);
 		return;
 	}
@@ -320,35 +488,43 @@ struct shutdown_state {
 	struct messaging_context *msg_ctx;
 };
 
-static int shutdown_other_smbds(const struct connections_key *key,
-				const struct connections_data *crec,
+static int shutdown_other_smbds(struct smbXsrv_session_global0 *session,
 				void *private_data)
 {
 	struct shutdown_state *state = (struct shutdown_state *)private_data;
+	struct server_id self_pid = messaging_server_id(state->msg_ctx);
+	struct server_id pid = session->channels[0].server_id;
+	const char *addr = session->channels[0].remote_address;
 
 	DEBUG(10, ("shutdown_other_smbds: %s, %s\n",
-		   server_id_str(talloc_tos(), &crec->pid), crec->addr));
+		   server_id_str(talloc_tos(), &pid), addr));
 
-	if (!process_exists(crec->pid)) {
+	if (!process_exists(pid)) {
 		DEBUG(10, ("process does not exist\n"));
 		return 0;
 	}
 
-	if (procid_is_me(&crec->pid)) {
+	if (serverid_equal(&pid, &self_pid)) {
 		DEBUG(10, ("It's me\n"));
 		return 0;
 	}
 
-	if (strcmp(state->ip, crec->addr) != 0) {
-		DEBUG(10, ("%s does not match %s\n", state->ip, crec->addr));
+	/*
+	 * here we use strstr() because 'addr'
+	 * (session->channels[0].remote_address)
+	 * contains a string like:
+	 * 'ipv4:127.0.0.1:48163'
+	 */
+	if (strstr(addr, state->ip)  == NULL) {
+		DEBUG(10, ("%s does not match %s\n", state->ip, addr));
 		return 0;
 	}
 
 	DEBUG(1, ("shutdown_other_smbds: shutting down pid %u "
-		  "(IP %s)\n", (unsigned int)procid_to_pid(&crec->pid),
+		  "(IP %s)\n", (unsigned int)procid_to_pid(&pid),
 		  state->ip));
 
-	messaging_send(state->msg_ctx, crec->pid, MSG_SHUTDOWN,
+	messaging_send(state->msg_ctx, pid, MSG_SHUTDOWN,
 		       &data_blob_null);
 	return 0;
 }
@@ -372,7 +548,7 @@ static void setup_new_vc_session(struct smbd_server_connection *sconn)
 		}
 		state.ip = addr;
 		state.msg_ctx = sconn->msg_ctx;
-		connections_forall_read(shutdown_other_smbds, &state);
+		smbXsrv_session_global_traverse(shutdown_other_smbds, &state);
 		TALLOC_FREE(addr);
 	}
 }
@@ -383,7 +559,7 @@ static void setup_new_vc_session(struct smbd_server_connection *sconn)
 
 void reply_sesssetup_and_X(struct smb_request *req)
 {
-	int sess_vuid;
+	uint64_t sess_vuid;
 	int smb_bufsize;
 	DATA_BLOB lm_resp;
 	DATA_BLOB nt_resp;
@@ -396,9 +572,11 @@ void reply_sesssetup_and_X(struct smb_request *req)
 	const char *native_lanman;
 	const char *primary_domain;
 	struct auth_usersupplied_info *user_info = NULL;
-	struct auth_serversupplied_info *server_info = NULL;
 	struct auth_session_info *session_info = NULL;
 	uint16 smb_flag2 = req->flags2;
+	uint16_t action = 0;
+	NTTIME now = timeval_to_nttime(&req->request_time);
+	struct smbXsrv_session *session = NULL;
 
 	NTSTATUS nt_status;
 	struct smbd_server_connection *sconn = req->sconn;
@@ -561,11 +739,7 @@ void reply_sesssetup_and_X(struct smb_request *req)
 		if (doencrypt) {
 			lm_resp = data_blob(p, passlen1);
 			nt_resp = data_blob(p+passlen1, passlen2);
-		} else if (lp_security() != SEC_SHARE) {
-			/*
-			 * In share level we should ignore any passwords, so
- 			 * only read them if we're not.
- 			 */
+		} else {
 			char *pass = NULL;
 			bool unic= smb_flag2 & FLAGS2_UNICODE_STRINGS;
 
@@ -673,33 +847,12 @@ void reply_sesssetup_and_X(struct smb_request *req)
 
 	reload_services(sconn, conn_snum_used, true);
 
-	if (lp_security() == SEC_SHARE) {
-		char *sub_user_mapped = NULL;
-		/* In share level we should ignore any passwords */
-
-		data_blob_free(&lm_resp);
-		data_blob_free(&nt_resp);
-		data_blob_clear_free(&plaintext_password);
-
-		(void)map_username(talloc_tos(), sub_user, &sub_user_mapped);
-		if (!sub_user_mapped) {
-			reply_nterror(req, NT_STATUS_NO_MEMORY);
-			END_PROFILE(SMBsesssetupX);
-			return;
-		}
-		fstrcpy(sub_user, sub_user_mapped);
-		add_session_user(sconn, sub_user);
-		add_session_workgroup(sconn, domain);
-		/* Then force it to null for the benfit of the code below */
-		user = "";
-	}
-
 	if (!*user) {
 
-		nt_status = check_guest_password(sconn->remote_address, &server_info);
+		nt_status = check_guest_password(sconn->remote_address, req, &session_info);
 
 	} else if (doencrypt) {
-		struct auth_context *negprot_auth_context = NULL;
+		struct auth4_context *negprot_auth_context = NULL;
 		negprot_auth_context = sconn->smb1.negprot.auth_context;
 		if (!negprot_auth_context) {
 			DEBUG(0, ("reply_sesssetup_and_X:  Attempted encrypted "
@@ -714,15 +867,13 @@ void reply_sesssetup_and_X(struct smb_request *req)
 						sconn->remote_address,
 						lm_resp, nt_resp);
 		if (NT_STATUS_IS_OK(nt_status)) {
-			nt_status = negprot_auth_context->check_ntlm_password(
-					negprot_auth_context,
-					user_info,
-					&server_info);
+			nt_status = auth_check_password_session_info(negprot_auth_context, 
+								     req, user_info, &session_info);
 		}
 	} else {
-		struct auth_context *plaintext_auth_context = NULL;
+		struct auth4_context *plaintext_auth_context = NULL;
 
-		nt_status = make_auth_context_subsystem(
+		nt_status = make_auth4_context(
 			talloc_tos(), &plaintext_auth_context);
 
 		if (NT_STATUS_IS_OK(nt_status)) {
@@ -740,38 +891,16 @@ void reply_sesssetup_and_X(struct smb_request *req)
 			}
 
 			if (NT_STATUS_IS_OK(nt_status)) {
-				nt_status = plaintext_auth_context->check_ntlm_password(
-						plaintext_auth_context,
-						user_info,
-						&server_info);
-
-				TALLOC_FREE(plaintext_auth_context);
+				nt_status = auth_check_password_session_info(plaintext_auth_context, 
+									     req, user_info, &session_info);
 			}
+			TALLOC_FREE(plaintext_auth_context);
 		}
 	}
 
 	free_user_info(&user_info);
 
 	if (!NT_STATUS_IS_OK(nt_status)) {
-		nt_status = do_map_to_guest_server_info(nt_status, &server_info,
-							user, domain);
-	}
-
-	if (!NT_STATUS_IS_OK(nt_status)) {
-		data_blob_free(&nt_resp);
-		data_blob_free(&lm_resp);
-		data_blob_clear_free(&plaintext_password);
-		reply_nterror(req, nt_status_squash(nt_status));
-		END_PROFILE(SMBsesssetupX);
-		return;
-	}
-
-	nt_status = create_local_token(req, server_info, NULL, sub_user, &session_info);
-	TALLOC_FREE(server_info);
-
-	if (!NT_STATUS_IS_OK(nt_status)) {
-		DEBUG(10, ("create_local_token failed: %s\n",
-			   nt_errstr(nt_status)));
 		data_blob_free(&nt_resp);
 		data_blob_free(&lm_resp);
 		data_blob_clear_free(&plaintext_password);
@@ -784,52 +913,166 @@ void reply_sesssetup_and_X(struct smb_request *req)
 
 	/* it's ok - setup a reply */
 	reply_outbuf(req, 3, 0);
+	SSVAL(req->outbuf, smb_vwv0, 0xff); /* andx chain ends */
+	SSVAL(req->outbuf, smb_vwv1, 0);    /* no andx offset */
+
 	if (get_Protocol() >= PROTOCOL_NT1) {
 		push_signature(&req->outbuf);
 		/* perhaps grab OS version here?? */
 	}
 
 	if (security_session_user_level(session_info, NULL) < SECURITY_USER) {
-		SSVAL(req->outbuf,smb_vwv2,1);
+		action = 1;
 	}
 
 	/* register the name and uid as being validated, so further connections
 	   to a uid can get through without a password, on the same VC */
 
-	if (lp_security() == SEC_SHARE) {
-		sess_vuid = UID_FIELD_INVALID;
-		TALLOC_FREE(session_info);
-	} else {
-		/* Ignore the initial vuid. */
-		sess_vuid = register_initial_vuid(sconn);
-		if (sess_vuid == UID_FIELD_INVALID) {
+	nt_status = smbXsrv_session_create(sconn->conn,
+					   now, &session);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		data_blob_free(&nt_resp);
+		data_blob_free(&lm_resp);
+		reply_nterror(req, nt_status_squash(nt_status));
+		END_PROFILE(SMBsesssetupX);
+		return;
+	}
+
+	if (session_info->session_key.length > 0) {
+		uint8_t session_key[16];
+
+		/*
+		 * Note: the SMB1 signing key is not truncated to 16 byte!
+		 */
+		session->global->signing_key =
+			data_blob_dup_talloc(session->global,
+					     session_info->session_key);
+		if (session->global->signing_key.data == NULL) {
 			data_blob_free(&nt_resp);
 			data_blob_free(&lm_resp);
-			reply_nterror(req, nt_status_squash(
-					      NT_STATUS_LOGON_FAILURE));
-			END_PROFILE(SMBsesssetupX);
-			return;
-		}
-		/* register_existing_vuid keeps the session_info */
-		sess_vuid = register_existing_vuid(sconn, sess_vuid,
-					session_info,
-					nt_resp.data ? nt_resp : lm_resp);
-		if (sess_vuid == UID_FIELD_INVALID) {
-			data_blob_free(&nt_resp);
-			data_blob_free(&lm_resp);
-			reply_nterror(req, nt_status_squash(
-					      NT_STATUS_LOGON_FAILURE));
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			END_PROFILE(SMBsesssetupX);
 			return;
 		}
 
-		/* current_user_info is changed on new vuid */
-		reload_services(sconn, conn_snum_used, true);
+		/*
+		 * The application key is truncated/padded to 16 bytes
+		 */
+		ZERO_STRUCT(session_key);
+		memcpy(session_key, session->global->signing_key.data,
+		       MIN(session->global->signing_key.length,
+			   sizeof(session_key)));
+		session->global->application_key =
+			data_blob_talloc(session->global,
+					 session_key,
+					 sizeof(session_key));
+		ZERO_STRUCT(session_key);
+		if (session->global->application_key.data == NULL) {
+			data_blob_free(&nt_resp);
+			data_blob_free(&lm_resp);
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			END_PROFILE(SMBsesssetupX);
+			return;
+		}
+
+		/*
+		 * Place the application key into the session_info
+		 */
+		data_blob_clear_free(&session_info->session_key);
+		session_info->session_key = data_blob_dup_talloc(session_info,
+						session->global->application_key);
+		if (session_info->session_key.data == NULL) {
+			data_blob_free(&nt_resp);
+			data_blob_free(&lm_resp);
+			TALLOC_FREE(session);
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
+			END_PROFILE(SMBsesssetupX);
+			return;
+		}
 	}
+
+	session->compat = talloc_zero(session, struct user_struct);
+	if (session->compat == NULL) {
+		data_blob_free(&nt_resp);
+		data_blob_free(&lm_resp);
+		TALLOC_FREE(session);
+		reply_nterror(req, NT_STATUS_NO_MEMORY);
+		END_PROFILE(SMBsesssetupX);
+		return;
+	}
+	session->compat->session = session;
+	session->compat->homes_snum = -1;
+	session->compat->session_info = session_info;
+	session->compat->session_keystr = NULL;
+	session->compat->vuid = session->global->session_wire_id;
+	DLIST_ADD(sconn->users, session->compat);
+	sconn->num_users++;
+
+	if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
+		session->compat->homes_snum =
+			register_homes_share(session_info->unix_info->unix_name);
+	}
+
+	if (srv_is_signing_negotiated(sconn) &&
+	    action == 0 &&
+	    session->global->signing_key.length > 0)
+	{
+		/*
+		 * Try and turn on server signing on the first non-guest
+		 * sessionsetup.
+		 */
+		srv_set_signing(sconn,
+			session->global->signing_key,
+			nt_resp.data ? nt_resp : lm_resp);
+	}
+
+	set_current_user_info(session_info->unix_info->sanitized_username,
+			      session_info->unix_info->unix_name,
+			      session_info->info->domain_name);
+
+	session->status = NT_STATUS_OK;
+	session->global->auth_session_info = talloc_move(session->global,
+							 &session_info);
+	session->global->auth_session_info_seqnum += 1;
+	session->global->channels[0].auth_session_info_seqnum =
+		session->global->auth_session_info_seqnum;
+	session->global->expiration_time = GENSEC_EXPIRE_TIME_INFINITY;
+
+	nt_status = smbXsrv_session_update(session);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		DEBUG(0, ("smb1: Failed to update session for vuid=%llu - %s\n",
+			  (unsigned long long)session->compat->vuid,
+			  nt_errstr(nt_status)));
+		data_blob_free(&nt_resp);
+		data_blob_free(&lm_resp);
+		TALLOC_FREE(session);
+		reply_nterror(req, nt_status_squash(nt_status));
+		END_PROFILE(SMBsesssetupX);
+		return;
+	}
+
+	if (!session_claim(session)) {
+		DEBUG(1, ("smb1: Failed to claim session for vuid=%llu\n",
+			  (unsigned long long)session->compat->vuid));
+		data_blob_free(&nt_resp);
+		data_blob_free(&lm_resp);
+		TALLOC_FREE(session);
+		reply_nterror(req, NT_STATUS_LOGON_FAILURE);
+		END_PROFILE(SMBsesssetupX);
+		return;
+	}
+
+	/* current_user_info is changed on new vuid */
+	reload_services(sconn, conn_snum_used, true);
+
+	sess_vuid = session->global->session_wire_id;
 
 	data_blob_free(&nt_resp);
 	data_blob_free(&lm_resp);
 
+	SSVAL(req->outbuf,smb_vwv2,action);
 	SSVAL(req->outbuf,smb_uid,sess_vuid);
 	SSVAL(discard_const_p(char, req->inbuf),smb_uid,sess_vuid);
 	req->vuid = sess_vuid;
@@ -841,6 +1084,4 @@ void reply_sesssetup_and_X(struct smb_request *req)
 	sconn->smb1.sessions.done_sesssetup = true;
 
 	END_PROFILE(SMBsesssetupX);
-	chain_reply(req);
-	return;
 }

@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007-2010
 # Copyright (C) Matthias Dieter Wallnoefer 2009
@@ -106,13 +104,13 @@ class SamDB(samba.Ldb):
 
     def toggle_userAccountFlags(self, search_filter, flags, flags_str=None,
                                 on=True, strict=False):
-        """toggle_userAccountFlags
+        """Toggle_userAccountFlags
 
         :param search_filter: LDAP filter to find the user (eg
             samccountname=name)
-        :flags: samba.dsdb.UF_* flags
-        :on: on=True (default) => set, on=False => unset
-        :strict: strict=False (default) ignore if no action is needed
+        :param flags: samba.dsdb.UF_* flags
+        :param on: on=True (default) => set, on=False => unset
+        :param strict: strict=False (default) ignore if no action is needed
                  strict=True raises an Exception if...
         """
         res = self.search(base=self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
@@ -222,25 +220,24 @@ pwdLastSet: 0
                 raise Exception('Unable to find group "%s"' % groupname)
             assert(len(targetgroup) == 1)
             self.delete(targetgroup[0].dn)
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
             self.transaction_commit()
 
-    def add_remove_group_members(self, groupname, listofmembers,
+    def add_remove_group_members(self, groupname, members,
                                   add_members_operation=True):
         """Adds or removes group members
 
         :param groupname: Name of the target group
-        :param listofmembers: Comma-separated list of group members
+        :param members: list of group members
         :param add_members_operation: Defines if its an add or remove
             operation
         """
 
         groupfilter = "(&(sAMAccountName=%s)(objectCategory=%s,%s))" % (
             ldb.binary_encode(groupname), "CN=Group,CN=Schema,CN=Configuration", self.domain_dn())
-        groupmembers = listofmembers.split(',')
 
         self.transaction_start()
         try:
@@ -257,7 +254,7 @@ dn: %s
 changetype: modify
 """ % (str(targetgroup[0].dn))
 
-            for member in groupmembers:
+            for member in members:
                 targetmember = self.search(base=self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
                                     expression="(|(sAMAccountName=%s)(CN=%s))" % (
                     ldb.binary_encode(member), ldb.binary_encode(member)), attrs=[])
@@ -280,7 +277,7 @@ member: %s
             if modified is True:
                 self.modify_ldif(addtargettogroup)
 
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
@@ -406,7 +403,7 @@ member: %s
             if setpassword:
                 self.setpassword("(samAccountName=%s)" % ldb.binary_encode(username), password,
                                  force_password_change_at_next_login_req)
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
@@ -428,12 +425,11 @@ member: %s
                 raise Exception('Unable to find user "%s"' % username)
             assert(len(target) == 1)
             self.delete(target[0].dn)
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
             self.transaction_commit()
-
 
     def setpassword(self, search_filter, password,
             force_change_at_next_login=False, username=None):
@@ -464,11 +460,11 @@ unicodePwd:: %s
 
             if force_change_at_next_login:
                 self.force_password_change_at_next_login(
-                  "(dn=" + str(user_dn) + ")")
+                  "(distinguishedName=" + str(user_dn) + ")")
 
             #  modify the userAccountControl to remove the disabled bit
             self.enable_account(search_filter)
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
@@ -511,7 +507,7 @@ accountExpires: %u
 """ % (user_dn, userAccountControl, accountExpires)
 
             self.modify_ldif(setexp)
-        except Exception:
+        except:
             self.transaction_cancel()
             raise
         else:
@@ -611,11 +607,11 @@ accountExpires: %u
     def load_partition_usn(self, base_dn):
         return dsdb._dsdb_load_partition_usn(self, base_dn)
 
-    def set_schema(self, schema):
-        self.set_schema_from_ldb(schema.ldb)
+    def set_schema(self, schema, write_indices_and_attributes=True):
+        self.set_schema_from_ldb(schema.ldb, write_indices_and_attributes=write_indices_and_attributes)
 
-    def set_schema_from_ldb(self, ldb_conn):
-        dsdb._dsdb_set_schema_from_ldb(self, ldb_conn)
+    def set_schema_from_ldb(self, ldb_conn, write_indices_and_attributes=True):
+        dsdb._dsdb_set_schema_from_ldb(self, ldb_conn, write_indices_and_attributes)
 
     def dsdb_DsReplicaAttribute(self, ldb, ldap_display_name, ldif_elements):
         '''convert a list of attribute values to a DRSUAPI DsReplicaAttribute'''
@@ -664,7 +660,7 @@ accountExpires: %u
             for the given attribute. None if the attribute is not replicated
         """
 
-        res = self.search(expression="dn=%s" % dn,
+        res = self.search(expression="distinguishedName=%s" % dn,
                             scope=ldb.SCOPE_SUBTREE,
                             controls=["search_options:1:2"],
                             attrs=["replPropertyMetaData"])
@@ -686,7 +682,7 @@ accountExpires: %u
 
     def set_attribute_replmetadata_version(self, dn, att, value,
             addifnotexist=False):
-        res = self.search(expression="dn=%s" % dn,
+        res = self.search(expression="distinguishedName=%s" % dn,
                             scope=ldb.SCOPE_SUBTREE,
                             controls=["search_options:1:2"],
                             attrs=["replPropertyMetaData"])
@@ -743,6 +739,12 @@ accountExpires: %u
 
     def get_partitions_dn(self):
         return dsdb._dsdb_get_partitions_dn(self)
+
+    def get_nc_root(self, dn):
+        return dsdb._dsdb_get_nc_root(self, dn)
+
+    def get_wellknown_dn(self, nc_root, wkguid):
+        return dsdb._dsdb_get_wellknown_dn(self, nc_root, wkguid)
 
     def set_minPwdAge(self, value):
         m = ldb.Message()
@@ -841,9 +843,9 @@ accountExpires: %u
         self.transaction_start()
         try:
             seq = super(SamDB, self).sequence_number(seq_type)
-        except Exception:
-             self.transaction_cancel()
-             raise
+        except:
+            self.transaction_cancel()
+            raise
         else:
             self.transaction_commit()
         return seq

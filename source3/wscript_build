@@ -5,8 +5,8 @@ import samba_version, samba3
 
 TDB_LIB_SRC = '''
 	  lib/dbwrap/dbwrap_open.c
-	  lib/dbwrap/dbwrap_tdb.c
           lib/dbwrap/dbwrap_ctdb.c
+          lib/dbwrap/dbwrap_watch.c
           lib/g_lock.c'''
 
 TDB_VALIDATE_SRC = '''lib/tdb_validate.c'''
@@ -41,6 +41,8 @@ REG_PARSE_PRS_SRC = '''registry/reg_parse_prs.c'''
 LIB_SRC = '''
           lib/messages.c lib/messages_local.c
           lib/messages_ctdbd.c lib/ctdb_packet.c lib/ctdbd_conn.c
+	  lib/ctdb_conn.c
+	  lib/msg_channel.c
           lib/id_cache.c
           lib/talloc_dict.c
           lib/serverid.c
@@ -48,7 +50,7 @@ LIB_SRC = '''
           ${TDB_LIB_SRC}
           ../lib/util/debug_s3.c
           lib/dumpcore.c
-          lib/interface.c lib/pidfile.c
+          lib/interface.c
           lib/username.c
           lib/access.c lib/smbrun.c
           lib/wins_srv.c
@@ -56,8 +58,7 @@ LIB_SRC = '''
           lib/ms_fnmatch.c
           lib/tallocmsg.c lib/dmallocmsg.c
           intl/lang_tdb.c
-          lib/conn_tdb.c lib/gencache.c
-          lib/sessionid_tdb.c
+          lib/gencache.c
           lib/events.c
           lib/server_contexts.c
           lib/server_prefork.c
@@ -65,7 +66,8 @@ LIB_SRC = '''
           lib/ldap_escape.c
           lib/fncall.c
           libads/krb5_errs.c lib/system_smbd.c lib/audit.c
-          lib/file_id.c lib/idmap_cache.c'''
+	  lib/tevent_wait.c
+          lib/idmap_cache.c'''
 
 LIB_UTIL_SRC = '''
                lib/system.c
@@ -86,7 +88,7 @@ PARAM_UTIL_SRC = '''param/util.c'''
 PARAM_WITHOUT_REG_SRC = '''param/loadparm.c
                            lib/sharesec.c lib/ldap_debug_handler.c lib/util_names.c'''
 
-KRBCLIENT_SRC = '''libads/kerberos.c libads/ads_status.c libsmb/clikrb5.c'''
+KRBCLIENT_SRC = '''libads/kerberos.c libads/ads_status.c'''
 
 LIBGPO_SRC0 = '''../libgpo/gpo_ldap.c ../libgpo/gpo_ini.c ../libgpo/gpo_util.c
               ../libgpo/gpo_fetch.c libgpo/gpo_filesync.c ../libgpo/gpo_sec.c
@@ -102,7 +104,7 @@ LIBADS_SRC = '''libads/ldap.c
              libads/disp_sec.c libads/ldap_utils.c
              libads/ldap_schema.c libads/util.c libads/ndr.c'''
 
-LIBADS_SERVER_SRC = '''libads/kerberos_verify.c libads/authdata.c'''
+LIBADS_SERVER_SRC = '''libads/authdata.c'''
 
 LIBADS_PRINTER_SRC = '''libads/ldap_printer.c'''
 
@@ -111,7 +113,8 @@ SECRETS_SRC = '''passdb/secrets.c passdb/machine_account_secrets.c
 
 LIBNMB_SRC = '''libsmb/unexpected.c libsmb/namecache.c libsmb/nmblib.c
              libsmb/namequery.c libsmb/conncache.c
-             libads/dns.c libads/sitename_cache.c'''
+
+             libads/sitename_cache.c'''
 
 LIBNTLMSSP_SRC = '''
                libsmb/ntlmssp.c
@@ -127,15 +130,7 @@ LIBSMB_SRC = '''libsmb/clientgen.c libsmb/cliconnect.c libsmb/clifile.c
              libsmb/clistr.c libsmb/cliquota.c libsmb/clifsinfo.c libsmb/clidfs.c
              libsmb/clioplock.c libsmb/clirap2.c
              libsmb/async_smb.c
-             libsmb/clisigning.c
-             libsmb/smb2cli_session.c
              libsmb/smb2cli_tcon.c
-             libsmb/smb2cli_create.c
-             libsmb/smb2cli_close.c
-             libsmb/smb2cli_flush.c
-             libsmb/smb2cli_read.c
-             libsmb/smb2cli_write.c
-             libsmb/smb2cli_query_directory.c
              libsmb/cli_np_tstream.c
              libsmb/reparse_symlink.c
              libsmb/clisymlink.c
@@ -154,17 +149,12 @@ LIBMSRPC_SRC = '''
 # registry-related objects
 #
 
-REG_INIT_BASIC_SRC = '''registry/reg_init_basic.c'''
 REG_INIT_SMBCONF_SRC = '''registry/reg_init_smbconf.c'''
 REG_INIT_FULL_SRC = '''registry/reg_init_full.c'''
 
 REGFIO_SRC = '''registry/regfio.c ${REG_PARSE_PRS_SRC}'''
 
 REG_API_REGF_SRC = '''registry/reg_api_regf.c'''
-
-REGSRCS_SRC = '''registry/reg_objects.c'''
-
-REG_BACKENDS_BASE_SRC = '''registry/reg_backend_db.c'''
 
 REG_BACKENDS_SMBCONF_SRC = '''registry/reg_backend_smbconf.c'''
 
@@ -180,14 +170,14 @@ REG_BACKENDS_EXTRA_SRC = '''registry/reg_backend_printing.c
 REG_BASE_SRC = '''registry/reg_api.c
                registry/reg_dispatcher.c
                registry/reg_cachehook.c
-               ${REGSRCS_SRC}
+               registry/reg_objects.c
                registry/reg_util_internal.c
                lib/util_nttoken.c
-               ${REG_BACKENDS_BASE_SRC}
+               registry/reg_backend_db.c
                registry/reg_parse_internal.c
-	       lib/cbuf.c
+               lib/cbuf.c
                lib/srprs.c
-               ${REG_INIT_BASIC_SRC}'''
+               registry/reg_init_basic.c'''
 
 REG_SMBCONF_SRC = '''
                   ${REG_BACKENDS_SMBCONF_SRC}
@@ -219,13 +209,14 @@ PASSDB_GET_SET_SRC = '''passdb/pdb_get_set.c'''
 
 PASSDB_SRC = '''${PASSDB_GET_SET_SRC} passdb/passdb.c
                 lib/util_wellknown.c lib/util_builtin.c passdb/pdb_compat.c
+                lib/util_sid_passdb.c
                 lib/util_unixsids.c passdb/lookup_sid.c
                 passdb/login_cache.c
                 passdb/account_pol.c ${PRIVILEGES_SRC}
                 lib/util_nscd.c lib/winbind_util.c
                 passdb/pdb_util.c passdb/pdb_interface.c
-                passdb/pdb_ldap_schema.c
-                passdb/pdb_secrets.c'''
+                passdb/pdb_secrets.c
+                passdb/pdb_unixid.c'''
 #FIXME: lib/winbind_util.c probably is not part of PASSDB_SRC
 
 GROUPDB_SRC = '''groupdb/mapping.c groupdb/mapping_tdb.c'''
@@ -233,8 +224,7 @@ GROUPDB_SRC = '''groupdb/mapping.c groupdb/mapping_tdb.c'''
 PROFILE_SRC = '''profile/profile.c'''
 PROFILES_SRC = '''utils/profiles.c'''
 
-OPLOCK_SRC = '''smbd/oplock.c smbd/oplock_irix.c smbd/oplock_linux.c
-             smbd/oplock_onefs.c'''
+OPLOCK_SRC = '''smbd/oplock.c smbd/oplock_irix.c smbd/oplock_linux.c'''
 
 NOTIFY_SRC = '''smbd/notify.c smbd/notify_inotify.c smbd/notify_internal.c'''
 
@@ -274,12 +264,11 @@ WINBINDD_SRC1 = '''winbindd/winbindd.c
                    winbindd/winbindd_ndr.c
                    winbindd/wb_ping.c
                    winbindd/wb_lookupsid.c
-		   winbindd/wb_lookupsids.c
+                   winbindd/wb_lookupsids.c
                    winbindd/wb_lookupname.c
-                   winbindd/wb_sid2uid.c
-                   winbindd/wb_sid2gid.c
                    winbindd/wb_uid2sid.c
                    winbindd/wb_gid2sid.c
+                   winbindd/wb_sids2xids.c
                    winbindd/wb_queryuser.c
                    winbindd/wb_lookupuseraliases.c
                    winbindd/wb_lookupusergroups.c
@@ -295,13 +284,13 @@ WINBINDD_SRC1 = '''winbindd/winbindd.c
                    winbindd/wb_next_grent.c
                    winbindd/wb_dsgetdcname.c
                    winbindd/winbindd_lookupsid.c
-		   winbindd/winbindd_lookupsids.c
+                   winbindd/winbindd_lookupsids.c
                    winbindd/winbindd_lookupname.c
                    winbindd/winbindd_sid_to_uid.c
                    winbindd/winbindd_sid_to_gid.c
                    winbindd/winbindd_uid_to_sid.c
                    winbindd/winbindd_gid_to_sid.c
-		   winbindd/winbindd_sids_to_xids.c
+                   winbindd/winbindd_sids_to_xids.c
                    winbindd/winbindd_allocate_uid.c
                    winbindd/winbindd_allocate_gid.c
                    winbindd/winbindd_getpwsid.c
@@ -358,8 +347,11 @@ SMBD_SRC_SRV = '''smbd/server_reload.c smbd/files.c smbd/connection.c
                smbd/process.c smbd/service.c smbd/error.c
                printing/printspoolss.c printing/spoolssd.c
                lib/sysquotas.c lib/sysquotas_linux.c
-               lib/sysquotas_xfs.c lib/sysquotas_4A.c
+               lib/sysquotas_xfs.c lib/sysquotas_4A.c lib/sysquotas_4B.c
                lib/sysquotas_nfs.c
+               lib/background.c
+               lib/sessionid_tdb.c
+               lib/conn_tdb.c
                smbd/fake_file.c
                smbd/quotas.c smbd/ntquotas.c smbd/msdfs.c
                smbd/aio.c smbd/statvfs.c
@@ -384,7 +376,12 @@ SMBD_SRC_SRV = '''smbd/server_reload.c smbd/files.c smbd/connection.c
                smbd/smb2_getinfo.c
                smbd/smb2_setinfo.c
                smbd/smb2_break.c
+               smbd/smbXsrv_version.c
+               smbd/smbXsrv_session.c
+               smbd/smbXsrv_tcon.c
+               smbd/smbXsrv_open.c
                smbd/server_exit.c
+               smbd/durable.c
                ${MANGLE_SRC}'''
 
 SMBD_SRC_BASE = '''${SMBD_SRC_SRV}
@@ -424,7 +421,7 @@ SWAT_SRC1 = '''web/cgi.c web/diagnose.c web/startstop.c web/statuspage.c
 
 SWAT_SRC = '''${SWAT_SRC1}'''
 
-STATUS_SRC = '''utils/status.c utils/status_profile.c'''
+STATUS_SRC = '''utils/status.c utils/status_profile.c smbd/notify_internal.c'''
 
 SMBCONTROL_SRC = '''utils/smbcontrol.c'''
 
@@ -452,29 +449,12 @@ RPCCLIENT_SRC1 = '''rpcclient/rpcclient.c rpcclient/cmd_lsarpc.c
                     rpcclient/cmd_shutdown.c rpcclient/cmd_test.c
                     rpcclient/cmd_wkssvc.c rpcclient/cmd_ntsvcs.c
                     rpcclient/cmd_drsuapi.c rpcclient/cmd_eventlog.c
-                    rpcclient/cmd_winreg.c'''
+                    rpcclient/cmd_winreg.c rpcclient/cmd_fss.c'''
 
 RPCCLIENT_SRC = '''${RPCCLIENT_SRC1}'''
 
 LIBSMBCLIENT_THREAD_SRC = '''libsmb/libsmb_thread_impl.c
                         libsmb/libsmb_thread_posix.c'''
-
-LIBSMBCLIENT_SRC0 = '''libsmb/libsmb_cache.c
-                    libsmb/libsmb_compat.c
-                    libsmb/libsmb_context.c
-                    libsmb/libsmb_dir.c
-                    libsmb/libsmb_file.c
-                    libsmb/libsmb_misc.c
-                    libsmb/libsmb_path.c
-                    libsmb/libsmb_printjob.c
-                    libsmb/libsmb_server.c
-                    libsmb/libsmb_stat.c
-                    libsmb/libsmb_xattr.c
-                    libsmb/libsmb_setget.c'''
-
-LIBSMBCLIENT_SRC1 = '''${LIBSMBCLIENT_SRC0}'''
-
-LIBSMBCLIENT_SRC = '${LIBSMBCLIENT_SRC1}'
 
 LIBSMBSHAREMODES_SRC0 = 'libsmb/smb_share_modes.c'
 
@@ -498,10 +478,10 @@ LIBNETAPI_SRC0 = '''lib/netapi/netapi.c
 
 LIBNETAPI_SRC = '''${LIBNETAPI_SRC0}'''
 
-CLIENT_SRC1 = '''client/client.c client/clitar.c
-                 client/dnsbrowse.c'''
-
-CLIENT_SRC = '''${CLIENT_SRC1}'''
+CLIENT_SRC = '''
+             client/client.c
+             client/clitar.c
+             client/dnsbrowse.c'''
 
 LIB_SMBCONF_SRC = 'lib/smbconf/smbconf_init.c lib/smbconf/smbconf_reg.c'
 
@@ -542,7 +522,7 @@ NET_SRC1 = '''utils/net.c utils/net_ads.c utils/net_help.c
               utils/net_eventlog.c
               utils/net_printing.c
               utils/net_rpc_trust.c
-	      utils/net_rpc_conf.c
+              utils/net_rpc_conf.c
               registry/reg_parse.c registry/reg_format.c
               registry/reg_import.c
               '''
@@ -562,28 +542,32 @@ SMBTORTURE_SRC1 = '''torture/torture.c torture/nbio.c torture/scanner.c torture/
                 torture/test_async_echo.c
                 torture/test_addrchange.c
                 torture/test_posix_append.c
-		torture/test_nttrans_create.c
-		torture/test_nttrans_fsctl.c
-		torture/test_case_insensitive.c
-		torture/test_notify_online.c
-		torture/test_smb2.c
-		torture/test_authinfo_structs.c
+                torture/test_nttrans_create.c
+                torture/test_nttrans_fsctl.c
+                torture/test_case_insensitive.c
+                torture/test_notify_online.c
+                torture/test_chain3.c
+                torture/test_smb2.c
+                torture/test_authinfo_structs.c
                 torture/test_smbsock_any_connect.c
-		torture/test_cleanup.c
+                torture/test_cleanup.c
+                torture/test_ctdbconn.c
+                torture/test_msg.c
+                torture/test_notify.c
+                lib/tevent_barrier.c
+                torture/test_dbwrap_watch.c
+                torture/test_idmap_tdb_common.c
                 torture/t_strappend.c'''
 
 SMBTORTURE_SRC = '''${SMBTORTURE_SRC1}
         torture/wbc_async.c'''
 
-MASKTEST_SRC = '''torture/masktest.c'''
-
 MSGTEST_SRC = '''torture/msgtest.c'''
-
-LOCKTEST_SRC = '''torture/locktest.c'''
 
 PDBTEST_SRC = '''torture/pdbtest.c'''
 
-VFSTEST_SRC = '''torture/cmd_vfs.c torture/vfstest.c'''
+VFSTEST_SRC = '''torture/cmd_vfs.c torture/vfstest.c
+		torture/vfstest_chain.c'''
 
 LOG2PCAP_SRC = '''utils/log2pcaphex.c'''
 
@@ -651,35 +635,19 @@ bld.SAMBA3_LIBRARY('netapi',
                     libcli_netlogon3
                     LIBCLI_SAMR
                     INIT_SAMR
+                    auth
                     ''',
                     public_headers='../source3/lib/netapi/netapi.h',
-                    pc_files=[],
+                    pc_files='libnet/netapi.pc',
                     vnum='0',
-                    vars=locals())
-
-bld.SAMBA3_LIBRARY('smbclient',
-                    source=LIBSMBCLIENT_SRC,
-                    public_deps='''
-                    talloc
-                    param
-                    libsmb
-                    KRBCLIENT
-                    msrpc3
-                    libcli_lsa3
-                    ''',
-                    public_headers='include/libsmbclient.h',
-                    abi_directory='libsmb/ABI',
-                    abi_match='smbc_*',
-                    vnum='0.1.0',
-                    pc_files='libsmb/smbclient.pc',
                     vars=locals())
 
 bld.SAMBA3_LIBRARY('smbsharemodes',
                     source=LIBSMBSHAREMODES_SRC,
                     public_deps='''talloc tdb_compat''',
-                    deps='''ccan''',
+                    deps='''ccan-hash''',
                     public_headers='include/smb_share_modes.h',
-                    pc_files=[],
+                    pc_files='libsmb/smbsharemodes.pc',
                     vnum='0',
                     vars=locals())
 
@@ -687,11 +655,12 @@ bld.SAMBA3_LIBRARY('nss_wins',
                   source=WINBIND_WINS_NSS_SRC,
                   deps='''param libsmb LIBTSOCKET''',
                   realname='libnss_wins.so.2',
+                  soname='libnss_wins.so',
                   vnum='2')
 
 bld.SAMBA3_LIBRARY('gse',
                    source='librpc/crypto/gse_krb5.c librpc/crypto/gse.c',
-                   deps='KRB5_WRAP gensec param KRBCLIENT secrets3',
+                   deps='krb5samba gensec param KRBCLIENT secrets3',
                    private_library=True)
 
 bld.SAMBA3_LIBRARY('msrpc3',
@@ -705,7 +674,7 @@ bld.SAMBA3_LIBRARY('msrpc3',
 
 bld.SAMBA3_LIBRARY('gpo',
                    source='${LIBGPO_SRC}',
-                   deps='talloc ads TOKEN_UTIL gpext',
+                   deps='talloc ads TOKEN_UTIL gpext auth',
                    vars=locals(),
                    private_library=True)
 
@@ -722,15 +691,56 @@ bld.SAMBA3_SUBSYSTEM('TLDAP',
                     source=TLDAP_SRC,
                     deps='asn1util LIBTSOCKET')
 
+# libpdb.so should not expose internal symbols that are only usable
+# to the statically linked modules that are merged into libpdb.
+# Note that we always filter these symbols out in libpdb, even
+# when modules are not linked statically. In the latter case
+# symbols will not be present in the libpdb anyway so no hurt is
+# done to the version script.
+static_pdb_match = ['tdbsam', 'smbpasswd', 'wbc_sam']
+private_pdb_match = []
+
+# AD DC module when linked statically will pull in few source4/winbind
+# dependencies which are not used outside AD DC module
+static_pdb_match.append('samba_dsdb')
+private_pdb_match.append('!idmap_init')
+private_pdb_match.append('!idmap_sids_to_xids')
+private_pdb_match.append('!idmap_xids_to_sids')
+
+# ldap module is actually three modules merged together: ldapsam, ipa, and nds
+static_pdb_match = static_pdb_match + ['ldap', 'ipa', 'nds']
+ldapsam_pdb_match = ['!priv2ld', '!smbldap_search_domain_info',
+                     '!ldapsam_*', '!groupmap_attr_list*', '!get_userattr_list',
+                     '!dominfo_attr_list', '!get_attr_key2string',
+                     '!sidmap_attr_list', '!attrib_map_*', '!idpool_attr_list',
+                     '!get_attr_list']
+private_pdb_match.append('!pdb_nds_*')
+private_pdb_match.append('!pdb_init_ldapsam')
+private_pdb_match = private_pdb_match + ldapsam_pdb_match
+
+private_pdb_match = private_pdb_match + map(lambda x: '!pdb_%s_init' % x, static_pdb_match)
+
 bld.SAMBA3_LIBRARY('pdb',
                    source=PASSDB_SRC,
                    deps='secrets3 GROUPDB SERVER_MUTEX wbclient LIBCLI_AUTH flag_mapping',
-                   private_library=True,
+                   private_library=False,
+                   pc_files=[],
+                   public_headers_install=True,
                    public_headers='''
 				include/passdb.h
 				passdb/machine_sid.h
 				passdb/lookup_sid.h''',
+                   abi_match=private_pdb_match + ['*'],
+                   abi_directory='passdb/ABI',
+                   vnum='0',
                    vars=locals())
+
+bld.SAMBA3_LIBRARY('smbldaphelper',
+                   source='passdb/pdb_ldap_schema.c passdb/pdb_ldap_util.c',
+                   deps='smbldap secrets3',
+                   allow_undefined_symbols=True,
+                   enabled=bld.CONFIG_SET('HAVE_LDAP'),
+                   private_library=True)
 
 bld.SAMBA3_SUBSYSTEM('SERVER_MUTEX',
                      source=SERVER_MUTEX_SRC,
@@ -746,13 +756,13 @@ bld.SAMBA3_SUBSYSTEM('LOADPARM_CTX',
                      vars=locals())
 
 bld.SAMBA_GENERATOR('param/param_global_h',
-                    source= 'param/loadparm.c ../script/mkparamdefs.pl',
+                    source= '../script/mkparamdefs.pl param/loadparm.c ../lib/param/param_functions.c',
                     target='param/param_global.h',
-                    rule='${PERL} ${SRC[1].abspath(env)} ${SRC[0].abspath(env)} --file ${TGT} --generate-scope=GLOBAL')
+                    rule='${PERL} ${SRC[0].abspath(env)} ${SRC[1].abspath(env)} ${SRC[2].abspath(env)} --file ${TGT} --generate-scope=GLOBAL')
 
 bld.SAMBA3_SUBSYSTEM('param',
                    source=PARAM_WITHOUT_REG_SRC,
-                   deps='samba-util PARAM_UTIL ldap lber LOADPARM_CTX samba3core smbconf param_local_h param/param_global_h''')
+                   deps='samba-util PARAM_UTIL ldap lber LOADPARM_CTX samba3core smbconf param_local_h param/param_global_h cups''')
 
 bld.SAMBA3_PYTHON('pys3param',
                   source='param/pyparam.c',
@@ -776,10 +786,9 @@ bld.SAMBA3_SUBSYSTEM('REG_API_REGF',
 
 bld.SAMBA3_LIBRARY('smbregistry',
                    source=REG_BASE_SRC,
-                   deps='''smbd_shim tdb-wrap3 NDR_SECURITY UTIL_TDB talloc
-                   replace util_reg samba-util security
-                   errors3 adt_tree dbwrap util_str util_sec util_malloc''',
-                   vars=locals(),
+                   deps='''smbd_shim tdb-wrap3 NDR_SECURITY util_tdb talloc
+                   replace util_reg samba-util samba-security
+                   errors3 dbwrap samba3-util''',
                    allow_undefined_symbols=True,
                    private_library=True)
 
@@ -806,12 +815,12 @@ bld.SAMBA3_LIBRARY('util_cmdline',
 
 bld.SAMBA3_SUBSYSTEM('KRBCLIENT',
                     source=KRBCLIENT_SRC,
-                    public_deps='KRB5_WRAP k5crypto LIBTSOCKET CLDAP LIBNMB',
+                    public_deps='krb5samba k5crypto gssapi LIBTSOCKET CLDAP LIBNMB',
                     vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('samba3util',
                    source=LIB_UTIL_SRC,
-                   deps='ndr security NDR_SECURITY samba-util UTIL_TDB',
+                   deps='ndr samba-security NDR_SECURITY samba-util util_tdb ccan-hash',
                    vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('samba3core',
@@ -826,12 +835,8 @@ bld.SAMBA3_SUBSYSTEM('samba3core',
                         PTHREADPOOL
                         interfaces
                         param
-                        util_str
                         dbwrap
-                        util_sec
-                        util_malloc
-                        memcache
-                        ccan
+                        samba3-util
                         errors3''',
                    vars=locals())
 
@@ -884,24 +889,28 @@ bld.SAMBA3_LIBRARY('smbldap',
                     source=SMBLDAP_SRC,
                     deps='ldap lber samba-util param',
                     vars=locals(),
-                    enabled=bld.env.HAVE_LDAP,
-                    private_library=True,
+                    enabled=bld.CONFIG_SET("HAVE_LDAP"),
+                    private_library=False,
+                    abi_directory='lib/ABI',
+                    abi_match='smbldap_*',
+                    pc_files=[],
+                    vnum='0',
                     public_headers='include/smbldap.h include/smb_ldap.h')
 
 bld.SAMBA3_LIBRARY('ads',
                    source=LIBADS_SRC,
-                   deps='cli-ldap-common KRB5_WRAP ldap lber KRBCLIENT param LIBNMB libsmb DCUTIL smbldap',
+                   deps='cli-ldap-common krb5samba ldap lber KRBCLIENT param LIBNMB libsmb DCUTIL smbldap',
                    private_library=True,
                    vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('LIBADS_SERVER',
                     source=LIBADS_SERVER_SRC,
-                    deps='SERVER_MUTEX ndr-krb5pac KRB5_WRAP',
+                    deps='SERVER_MUTEX ndr-krb5pac krb5samba gssapi',
 		    vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('LIBADS_PRINTER',
                     source=LIBADS_PRINTER_SRC,
-                    deps='samba-util',
+                    deps='samba-util krb5samba',
 		    vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('LIBAFS',
@@ -928,7 +937,6 @@ bld.SAMBA3_LIBRARY('smbconf',
                    param
                    samba-util
                    smbregistry
-                   string_init
                    talloc
                    util_reg''',
                    public_headers='../lib/smbconf/smbconf.h',
@@ -937,7 +945,7 @@ bld.SAMBA3_LIBRARY('smbconf',
 
 bld.SAMBA3_LIBRARY('smbd_conn',
                    source='smbd/conn.c',
-                   deps='string_init samba-util namearray',
+                   deps='samba3-util samba-util',
                    private_library=True)
 
 bld.SAMBA3_LIBRARY('smbd_base',
@@ -963,7 +971,12 @@ bld.SAMBA3_LIBRARY('smbd_base',
                     LIBAFS
                     LIBAFS_SETTOKEN
                     RPC_SERVER
-                    ''',
+                    NDR_SMBXSRV
+		    LIBASYS
+                    ccan-hash
+                    NDR_SMB_ACL
+                    netapi
+                    ''' + bld.env['dmapi_lib'],
                     private_library=True,
                     vars=locals())
 
@@ -1019,7 +1032,7 @@ bld.SAMBA3_SUBSYSTEM('LIBNET',
 
 bld.SAMBA3_LIBRARY('net_keytab',
                    source='libnet/libnet_keytab.c',
-                   deps='KRB5_WRAP ads',
+                   deps='krb5samba ads',
                    vars=locals(),
                    private_library=True)
 
@@ -1041,7 +1054,7 @@ bld.SAMBA3_SUBSYSTEM('LIBEVENTLOG',
 
 bld.SAMBA3_SUBSYSTEM('LIBNMB',
                      source=LIBNMB_SRC,
-                     deps='lmhosts resolv',
+                     deps='addns lmhosts resolv',
                      vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('SERVICES',
@@ -1058,7 +1071,8 @@ bld.SAMBA3_SUBSYSTEM('PASSCHANGE',
                     source=PASSCHANGE_SRC,
                     deps='''LIBCLI_SAMR
                     INIT_LSA
-                    msrpc3''',
+                    msrpc3
+                    krb5samba''',
                     vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('SAMBA_VERSION',
@@ -1084,53 +1098,23 @@ bld.SAMBA3_LIBRARY('trusts_util',
 
 bld.SAMBA3_SUBSYSTEM('tdb-wrap3',
                     source='lib/util_tdb.c',
-                    deps='talloc',
+                    deps='talloc samba3-util',
                     vars=locals())
 
-bld.SAMBA3_LIBRARY('dbwrap',
-                   source='lib/dbwrap/dbwrap.c lib/dbwrap/dbwrap_util.c lib/dbwrap/dbwrap_rbt.c',
-                   deps='samba-util UTIL_TDB errors',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('util_malloc',
-                   source='''lib/util_malloc.c''',
-                   deps='samba-util',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('string_init',
-                   source='''lib/string_init.c''',
-                   deps='samba-util',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('util_str',
-                   source='''lib/util_str.c''',
+bld.SAMBA3_LIBRARY('samba3-util',
+                   source='''lib/util_sec.c lib/util_str.c lib/adt_tree.c lib/util_malloc.c lib/memcache.c lib/namearray.c lib/file_id.c''',
                    deps='samba-util charset',
                    private_library=True)
 
-bld.SAMBA3_LIBRARY('util_sec',
-                   source='''lib/util_sec.c''',
-                   deps='samba-util',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('namearray',
-                   source='lib/namearray.c',
-                   deps='samba-util',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('adt_tree',
-                   source='lib/adt_tree.c',
-                   deps='samba-util',
-                   private_library=True)
-
-bld.SAMBA3_LIBRARY('memcache',
-                   source='lib/memcache.c',
-                   deps='samba-util util_malloc',
-                   private_library=True)
+bld.SAMBA_LIBRARY('xattr_tdb',
+                  source='lib/xattr_tdb.c',
+                  deps='NDR_XATTR dbwrap samba3-util',
+                  private_library=True)
 
 bld.SAMBA3_LIBRARY('CHARSET3',
                     source='''lib/charcnv.c lib/fstring.c''',
                     public_deps='ICONV_WRAPPER charset',
-                    deps='samba-util util_str',
+                    deps='samba-util samba3-util',
                    private_library=True)
 
 bld.SAMBA3_SUBSYSTEM('errors3',
@@ -1166,7 +1150,7 @@ bld.SAMBA3_SUBSYSTEM('LIBCLI_WINREG_INTERNAL',
 
 bld.SAMBA3_SUBSYSTEM('RPC_CLIENT_SCHANNEL',
                     source=RPC_CLIENT_SCHANNEL_SRC,
-                    deps='samba-util',
+                    deps='samba-util krb5samba',
                     vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('INIT_LSA',
@@ -1239,6 +1223,7 @@ bld.SAMBA3_BINARY('web/swat',
                  param
                  pdb
                  popt_samba3
+                 smbd_base
                  LOCKING
                  PLAINTEXT_AUTH
                  PASSCHANGE
@@ -1277,10 +1262,11 @@ bld.SAMBA3_BINARY('rpcclient/rpcclient',
                  RPC_NDR_NTSVCS
                  RPC_NDR_EVENTLOG
                  INIT_SAMR
+		 RPC_NDR_FSRVP
                  ''',
                  vars=locals())
 
-bld.SAMBA3_BINARY('client/smbclient' + bld.env.suffix3,
+bld.SAMBA3_BINARY('client/smbclient',
                  source=CLIENT_SRC,
                  deps='''
                  talloc
@@ -1288,10 +1274,10 @@ bld.SAMBA3_BINARY('client/smbclient' + bld.env.suffix3,
                  param
                  ndr-standard
                  SMBREADLINE
-                 smbclient
+                 libsmb
+                 msrpc3
                  RPC_NDR_SRVSVC
-                 cli_smb_common''',
-                 vars=locals())
+                 cli_smb_common''')
 
 bld.SAMBA3_BINARY('net',
                  source=NET_SRC,
@@ -1309,6 +1295,7 @@ bld.SAMBA3_BINARY('net',
                  msrpc3
                  gpo
                  ads
+                 smbd_base
                  LIBADS_SERVER
                  LIBADS_PRINTER
                  SMBREADLINE
@@ -1374,6 +1361,7 @@ bld.SAMBA3_BINARY('smbstatus',
                  talloc
                  param
                  popt_samba3
+                 smbd_base
                  LOCKING
                  PROFILE''',
                  vars=locals())
@@ -1427,7 +1415,7 @@ bld.SAMBA3_BINARY('smbget',
                  smbclient''',
                  vars=locals())
 
-bld.SAMBA3_BINARY('nmblookup' + bld.env.suffix3,
+bld.SAMBA3_BINARY('nmblookup',
                  source=NMBLOOKUP_SRC,
                  deps='''
                  talloc
@@ -1446,7 +1434,11 @@ bld.SAMBA3_BINARY('smbtorture' + bld.env.suffix3,
                  TLDAP
                  RPC_NDR_ECHO
                  WB_REQTRANS
+                 LOCKING
+		 NDR_OPEN_FILES
+		 idmap
                  ''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('smbconftort',
@@ -1455,6 +1447,7 @@ bld.SAMBA3_BINARY('smbconftort',
                  talloc
                  param
                  popt_samba3''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('replacetort',
@@ -1462,19 +1455,12 @@ bld.SAMBA3_BINARY('replacetort',
                  deps='replace replace-test',
                  install=False)
 
-bld.SAMBA3_BINARY('masktest' + bld.env.suffix3,
-                 source=MASKTEST_SRC,
-                 deps='''
-                 talloc
-                 param
-                 libsmb''',
-                 vars=locals())
-
 bld.SAMBA3_BINARY('msgtest',
                  source=MSGTEST_SRC,
                  deps='''
                  talloc
                  param''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('smbcacls',
@@ -1483,7 +1469,8 @@ bld.SAMBA3_BINARY('smbcacls',
                  talloc
                  popt_samba3
                  msrpc3
-                 libcli_lsa3''',
+                 libcli_lsa3
+                 krb5samba''',
                  vars=locals())
 
 bld.SAMBA3_BINARY('smbcquotas',
@@ -1511,21 +1498,15 @@ bld.SAMBA3_BINARY('sharesec',
                  popt_samba3''',
                  vars=locals())
 
-bld.SAMBA3_BINARY('locktest' + bld.env.suffix3,
-                 source=LOCKTEST_SRC,
-                 deps='''
-                 talloc
-                 param
-                 libsmb
-                 LOCKING''',
-                 vars=locals())
-
 bld.SAMBA3_BINARY('pdbtest',
                  source=PDBTEST_SRC,
                  deps='''
                  talloc
                  pdb
-                 popt_samba3''',
+                 popt_samba3
+                 AUTH_COMMON
+                 auth''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('vfstest',
@@ -1534,11 +1515,13 @@ bld.SAMBA3_BINARY('vfstest',
                  vfs
                  popt_samba3
                  SMBREADLINE''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('log2pcap',
                  source=LOG2PCAP_SRC,
                  deps='''talloc popt''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('locktest2',
@@ -1548,11 +1531,13 @@ bld.SAMBA3_BINARY('locktest2',
                  param
                  libsmb
                  LOCKING''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('debug2html',
                  source=DEBUG2HTML_SRC,
                  deps='''talloc popt''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('smbfilter',
@@ -1561,6 +1546,7 @@ bld.SAMBA3_BINARY('smbfilter',
                  talloc
                  param
                  LIBNMB''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('versiontest',
@@ -1568,22 +1554,23 @@ bld.SAMBA3_BINARY('versiontest',
                  deps='''
                  SAMBA_VERSION
                  param''',
+                 install=False,
                  vars=locals())
 
-bld.SAMBA3_BINARY('ntlm_auth' + bld.env.suffix3,
+bld.SAMBA3_BINARY('ntlm_auth',
                  source=NTLM_AUTH_SRC,
                  deps='''
                  talloc
-                 KRB5_WRAP
-                 LIBINIPARSER
-                 SLCACHE
+                 krb5samba
+                 iniparser
                  libsmb
                  popt_samba3
-                 LIBADS_SERVER''',
+                 LIBNTLMSSP gse gensec''',
                  vars=locals())
 
 bld.SAMBA3_BINARY('timelimit',
                  source='script/tests/timelimit.c',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('rpc_open_tcp',
@@ -1591,6 +1578,7 @@ bld.SAMBA3_BINARY('rpc_open_tcp',
                  deps='''
                  talloc
                  msrpc3''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('test_lp_load',
@@ -1599,6 +1587,7 @@ bld.SAMBA3_BINARY('test_lp_load',
                  talloc
                  param
                  popt_samba3''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('dbwrap_tool',
@@ -1613,6 +1602,7 @@ bld.SAMBA3_BINARY('dbwrap_torture',
                  deps='''
                  talloc
                  popt_samba3''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('split_tokens',
@@ -1620,6 +1610,7 @@ bld.SAMBA3_BINARY('split_tokens',
                  deps='''
                  talloc
                  popt_samba3''',
+                 install=False,
                  vars=locals())
 
 bld.SAMBA3_BINARY('vlp',
@@ -1627,19 +1618,37 @@ bld.SAMBA3_BINARY('vlp',
                  deps='''
                  talloc
                  param''',
+                 install=False,
                  vars=locals())
+
+bld.SAMBA3_PYTHON('pysmbd',
+                  source='smbd/pysmbd.c',
+                  deps='smbd_base pyrpc_util',
+                  realname='samba/samba3/smbd.so'
+                  )
+
+bld.SAMBA3_PYTHON('pylibsmb',
+                  source='libsmb/pylibsmb.c',
+                  deps='smbclient samba-credentials',
+                  realname='samba/samba3/libsmb_samba_internal.so'
+                  )
 
 swat_dir = os.path.join(bld.curdir, '../swat')
 swat_files = recursive_dirlist(swat_dir, swat_dir, '*')
+swat_msg_dir = os.path.join(bld.curdir, 'po')
+swat_msg_files = recursive_dirlist(swat_msg_dir, swat_msg_dir, '*.msg')
 bld.INSTALL_FILES('${SWATDIR}', swat_files, base_name='../swat')
+bld.INSTALL_FILES('${CODEPAGEDIR}', swat_msg_files, base_name='po')
 
 ########################## INCLUDES #################################
 
 bld.RECURSE('auth')
 bld.RECURSE('libgpo/gpext')
 bld.RECURSE('lib/pthreadpool')
+bld.RECURSE('lib/asys')
 bld.RECURSE('librpc')
 bld.RECURSE('librpc/idl')
+bld.RECURSE('libsmb')
 bld.RECURSE('modules')
 bld.RECURSE('pam_smbpass')
 bld.RECURSE('passdb')

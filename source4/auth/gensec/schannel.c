@@ -73,7 +73,19 @@ static NTSTATUS schannel_update(struct gensec_security *gensec_security, TALLOC_
 			return NT_STATUS_OK;
 		}
 
-		state->creds = talloc_reference(state, cli_credentials_get_netlogon_creds(gensec_security->credentials));
+		state->creds = cli_credentials_get_netlogon_creds(gensec_security->credentials);
+		if (state->creds == NULL) {
+			return NT_STATUS_INVALID_PARAMETER_MIX;
+		}
+		/*
+		 * We need to create a reference here or we don't get
+		 * updates performed on the credentials if we create a
+		 * copy.
+		 */
+		state->creds = talloc_reference(state, state->creds);
+		if (state->creds == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
 
 		bind_schannel.MessageType = NL_NEGOTIATE_REQUEST;
 #if 0
@@ -229,13 +241,12 @@ static NTSTATUS schannel_start(struct gensec_security *gensec_security)
 {
 	struct schannel_state *state;
 
-	state = talloc(gensec_security, struct schannel_state);
+	state = talloc_zero(gensec_security, struct schannel_state);
 	if (!state) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
 	state->state = SCHANNEL_STATE_START;
-	state->seq_num = 0;
 	gensec_security->private_data = state;
 
 	return NT_STATUS_OK;

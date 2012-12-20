@@ -28,10 +28,10 @@
 static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
 					      struct smbd_smb2_request *smb2req,
+					      struct files_struct *in_fsp,
 					      uint8_t in_file_info_class,
 					      uint8_t in_flags,
 					      uint32_t in_file_index,
-					      uint64_t in_file_id_volatile,
 					      uint32_t in_output_buffer_length,
 					      const char *in_file_name);
 static NTSTATUS smbd_smb2_find_recv(struct tevent_req *req,
@@ -43,12 +43,12 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 {
 	NTSTATUS status;
 	const uint8_t *inbody;
-	int i = req->current_idx;
 	uint8_t in_file_info_class;
 	uint8_t in_flags;
 	uint32_t in_file_index;
 	uint64_t in_file_id_persistent;
 	uint64_t in_file_id_volatile;
+	struct files_struct *in_fsp;
 	uint16_t in_file_name_offset;
 	uint16_t in_file_name_length;
 	DATA_BLOB in_file_name_buffer;
@@ -62,7 +62,7 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	if (!NT_STATUS_IS_OK(status)) {
 		return smbd_smb2_request_error(req, status);
 	}
-	inbody = (const uint8_t *)req->in.vector[i+1].iov_base;
+	inbody = SMBD_SMB2_IN_BODY_PTR(req);
 
 	in_file_info_class		= CVAL(inbody, 0x02);
 	in_flags			= CVAL(inbody, 0x03);
@@ -76,11 +76,11 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	if (in_file_name_offset == 0 && in_file_name_length == 0) {
 		/* This is ok */
 	} else if (in_file_name_offset !=
-		   (SMB2_HDR_BODY + req->in.vector[i+1].iov_len)) {
+		   (SMB2_HDR_BODY + SMBD_SMB2_IN_BODY_LEN(req))) {
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
-	if (in_file_name_length > req->in.vector[i+2].iov_len) {
+	if (in_file_name_length > SMBD_SMB2_IN_DYN_LEN(req)) {
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -95,7 +95,7 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 	/* Take into account the output header. */
 	in_output_buffer_length -= 8;
 
-	in_file_name_buffer.data = (uint8_t *)req->in.vector[i+2].iov_base;
+	in_file_name_buffer.data = SMBD_SMB2_IN_DYN_PTR(req);
 	in_file_name_buffer.length = in_file_name_length;
 
 	ok = convert_string_talloc(req, CH_UTF16, CH_UNIX,
@@ -115,19 +115,16 @@ NTSTATUS smbd_smb2_request_process_find(struct smbd_smb2_request *req)
 		return smbd_smb2_request_error(req, NT_STATUS_OBJECT_NAME_INVALID);
 	}
 
-	if (req->compat_chain_fsp) {
-		/* skip check */
-	} else if (in_file_id_persistent != in_file_id_volatile) {
+	in_fsp = file_fsp_smb2(req, in_file_id_persistent, in_file_id_volatile);
+	if (in_fsp == NULL) {
 		return smbd_smb2_request_error(req, NT_STATUS_FILE_CLOSED);
 	}
 
-	subreq = smbd_smb2_find_send(req,
-				     req->sconn->ev_ctx,
-				     req,
+	subreq = smbd_smb2_find_send(req, req->sconn->ev_ctx,
+				     req, in_fsp,
 				     in_file_info_class,
 				     in_flags,
 				     in_file_index,
-				     in_file_id_volatile,
 				     in_output_buffer_length,
 				     in_file_name_string);
 	if (subreq == NULL) {
@@ -203,18 +200,17 @@ struct smbd_smb2_find_state {
 static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
 					      struct smbd_smb2_request *smb2req,
+					      struct files_struct *fsp,
 					      uint8_t in_file_info_class,
 					      uint8_t in_flags,
 					      uint32_t in_file_index,
-					      uint64_t in_file_id_volatile,
 					      uint32_t in_output_buffer_length,
 					      const char *in_file_name)
 {
 	struct tevent_req *req;
 	struct smbd_smb2_find_state *state;
 	struct smb_request *smbreq;
-	connection_struct *conn = smb2req->tcon->compat_conn;
-	files_struct *fsp;
+	connection_struct *conn = smb2req->tcon->compat;
 	NTSTATUS status;
 	NTSTATUS empty_status;
 	uint32_t info_level;
@@ -237,25 +233,11 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 	state->smb2req = smb2req;
 	state->out_output_buffer = data_blob_null;
 
-	DEBUG(10,("smbd_smb2_find_send: file_id[0x%016llX]\n",
-		  (unsigned long long)in_file_id_volatile));
+	DEBUG(10,("smbd_smb2_find_send: %s - %s\n",
+		  fsp_str_dbg(fsp), fsp_fnum_dbg(fsp)));
 
 	smbreq = smbd_smb2_fake_smb_request(smb2req);
 	if (tevent_req_nomem(smbreq, req)) {
-		return tevent_req_post(req, ev);
-	}
-
-	fsp = file_fsp(smbreq, (uint16_t)in_file_id_volatile);
-	if (fsp == NULL) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
-		return tevent_req_post(req, ev);
-	}
-	if (conn != fsp->conn) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
-		return tevent_req_post(req, ev);
-	}
-	if (smb2req->session->vuid != fsp->vuid) {
-		tevent_req_nterror(req, NT_STATUS_FILE_CLOSED);
 		return tevent_req_post(req, ev);
 	}
 
@@ -278,6 +260,18 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 	}
 
 	if (in_output_buffer_length > smb2req->sconn->smb2.max_trans) {
+		DEBUG(2,("smbd_smb2_find_send: "
+			 "client ignored max trans:%s: 0x%08X: 0x%08X\n",
+			 __location__, in_output_buffer_length,
+			 smb2req->sconn->smb2.max_trans));
+		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		return tevent_req_post(req, ev);
+	}
+
+	status = smbd_smb2_request_verify_creditcharge(smb2req,
+					in_output_buffer_length);
+
+	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 		return tevent_req_post(req, ev);
 	}
@@ -322,6 +316,7 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 		wcard_has_wild = ms_has_wild(in_file_name);
 
 		status = dptr_create(conn,
+				     NULL, /* req */
 				     fsp,
 				     fsp->fsp_name->base_name,
 				     false, /* old_handle */
@@ -373,9 +368,9 @@ static struct tevent_req *smbd_smb2_find_send(TALLOC_CTX *mem_ctx,
 
 	DEBUG(8,("smbd_smb2_find_send: dirpath=<%s> dontdescend=<%s>, "
 		"in_output_buffer_length = %u\n",
-		fsp->fsp_name->base_name, lp_dontdescend(SNUM(conn)),
+		fsp->fsp_name->base_name, lp_dontdescend(talloc_tos(), SNUM(conn)),
 		(unsigned int)in_output_buffer_length ));
-	if (in_list(fsp->fsp_name->base_name,lp_dontdescend(SNUM(conn)),
+	if (in_list(fsp->fsp_name->base_name,lp_dontdescend(talloc_tos(), SNUM(conn)),
 			conn->case_sensitive)) {
 		dont_descend = true;
 	}

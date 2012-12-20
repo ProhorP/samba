@@ -1,9 +1,28 @@
+/*
+   Unix SMB/CIFS implementation.
+
+   Copyright (C) Andrew Bartlett <abartlet@samba.org> 2009
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 #include "includes.h"
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
 #include <hdb.h>
 #include "kdc/samba_kdc.h"
-#include "libnet/libnet.h"
+#include "libnet/libnet_export_keytab.h"
 
 NTSTATUS libnet_export_keytab(struct libnet_context *ctx, TALLOC_CTX *mem_ctx, struct libnet_export_keytab *r)
 {
@@ -44,15 +63,7 @@ NTSTATUS libnet_export_keytab(struct libnet_context *ctx, TALLOC_CTX *mem_ctx, s
 	}
 
 	if (r->in.principal) {
-		/* TODO: Find a way not to have to use a fixed list */
-		krb5_enctype enctypes[] = {
-			KRB5_ENCTYPE_DES_CBC_CRC,
-			KRB5_ENCTYPE_DES_CBC_MD5,
-			KRB5_ENCTYPE_AES128_CTS_HMAC_SHA1_96,
-			KRB5_ENCTYPE_AES256_CTS_HMAC_SHA1_96,
-			KRB5_ENCTYPE_ARCFOUR_HMAC_MD5
-		};
-		ret = kt_copy_one_principal(smb_krb5_context->krb5_context, from_keytab, r->in.keytab_name, r->in.principal, 0, enctypes);
+		ret = kt_copy_one_principal(smb_krb5_context->krb5_context, from_keytab, r->in.keytab_name, r->in.principal, 0, samba_all_enctypes());
 	} else {
 		unlink(r->in.keytab_name);
 		ret = kt_copy(smb_krb5_context->krb5_context, from_keytab, r->in.keytab_name);

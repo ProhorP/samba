@@ -143,11 +143,6 @@ static void send_nt_replies(connection_struct *conn,
 			     + data_alignment_offset);
 
 		/*
-		 * We might have had SMBnttranss in req->inbuf, fix that.
-		 */
-		SCVAL(req->outbuf, smb_com, SMBnttrans);
-
-		/*
 		 * Set total params and data to be sent.
 		 */
 
@@ -284,15 +279,17 @@ static void send_nt_replies(connection_struct *conn,
 ****************************************************************************/
 
 static void nt_open_pipe(char *fname, connection_struct *conn,
-			 struct smb_request *req, int *ppnum)
+			 struct smb_request *req, uint16_t *ppnum)
 {
 	files_struct *fsp;
 	NTSTATUS status;
 
 	DEBUG(4,("nt_open_pipe: Opening pipe %s.\n", fname));
 
-	/* Strip \\ off the name. */
-	fname++;
+	/* Strip \\ off the name if present. */
+	while (fname[0] == '\\') {
+		fname++;
+	}
 
 	status = open_np_file(req, fname, &fsp);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -317,7 +314,7 @@ static void do_ntcreate_pipe_open(connection_struct *conn,
 				  struct smb_request *req)
 {
 	char *fname = NULL;
-	int pnum = -1;
+	uint16_t pnum = FNUM_FIELD_INVALID;
 	char *p = NULL;
 	uint32 flags = IVAL(req->vwv+3, 1);
 	TALLOC_CTX *ctx = talloc_tos();
@@ -352,6 +349,9 @@ static void do_ntcreate_pipe_open(connection_struct *conn,
 		reply_outbuf(req, 34, 0);
 	}
 
+	SSVAL(req->outbuf, smb_vwv0, 0xff); /* andx chain ends */
+	SSVAL(req->outbuf, smb_vwv1, 0);    /* no andx offset */
+
 	p = (char *)req->outbuf + smb_vwv2;
 	p++;
 	SSVAL(p,0,pnum);
@@ -379,8 +379,6 @@ static void do_ntcreate_pipe_open(connection_struct *conn,
 	}
 
 	DEBUG(5,("do_ntcreate_pipe_open: open pipe = %s\n", fname));
-
-	chain_reply(req);
 }
 
 struct case_semantics_state {
@@ -450,7 +448,7 @@ void reply_ntcreate_and_X(struct smb_request *req)
 	/* Breakout the oplock request bits so we can set the
 	   reply bits separately. */
 	uint32 fattr=0;
-	SMB_OFF_T file_len = 0;
+	off_t file_len = 0;
 	int info = 0;
 	files_struct *fsp = NULL;
 	char *p = NULL;
@@ -634,6 +632,9 @@ void reply_ntcreate_and_X(struct smb_request *req)
 		reply_outbuf(req, 34, 0);
 	}
 
+	SSVAL(req->outbuf, smb_vwv0, 0xff); /* andx chain ends */
+	SSVAL(req->outbuf, smb_vwv1, 0);    /* no andx offset */
+
 	p = (char *)req->outbuf + smb_vwv2;
 
 	SCVAL(p, 0, oplock_granted);
@@ -725,10 +726,9 @@ void reply_ntcreate_and_X(struct smb_request *req)
 		SIVAL(p,0,perms);
 	}
 
-	DEBUG(5,("reply_ntcreate_and_X: fnum = %d, open name = %s\n",
-		fsp->fnum, smb_fname_str_dbg(smb_fname)));
+	DEBUG(5,("reply_ntcreate_and_X: %s, open name = %s\n",
+		fsp_fnum_dbg(fsp), smb_fname_str_dbg(smb_fname)));
 
-	chain_reply(req);
  out:
 	END_PROFILE(SMBntcreateX);
 	return;
@@ -746,7 +746,7 @@ static void do_nt_transact_create_pipe(connection_struct *conn,
 {
 	char *fname = NULL;
 	char *params = *ppparams;
-	int pnum = -1;
+	uint16_t pnum = FNUM_FIELD_INVALID;
 	char *p = NULL;
 	NTSTATUS status;
 	size_t param_len;
@@ -830,19 +830,47 @@ static void do_nt_transact_create_pipe(connection_struct *conn,
 	return;
 }
 
+/*********************************************************************
+ Windows seems to do canonicalization of inheritance bits. Do the
+ same.
+*********************************************************************/
+
+static void canonicalize_inheritance_bits(struct security_descriptor *psd)
+{
+	bool set_auto_inherited = false;
+
+	/*
+	 * We need to filter out the
+	 * SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ
+	 * bits. If both are set we store SEC_DESC_DACL_AUTO_INHERITED
+	 * as this alters whether SEC_ACE_FLAG_INHERITED_ACE is set
+	 * when an ACE is inherited. Otherwise we zero these bits out.
+	 * See:
+	 *
+	 * http://social.msdn.microsoft.com/Forums/eu/os_fileservices/thread/11f77b68-731e-407d-b1b3-064750716531
+	 *
+	 * for details.
+	 */
+
+	if ((psd->type & (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ))
+			== (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ)) {
+		set_auto_inherited = true;
+	}
+
+	psd->type &= ~(SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ);
+	if (set_auto_inherited) {
+		psd->type |= SEC_DESC_DACL_AUTO_INHERITED;
+	}
+}
+
 /****************************************************************************
  Internal fn to set security descriptors.
 ****************************************************************************/
 
-NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
+NTSTATUS set_sd(files_struct *fsp, struct security_descriptor *psd,
 		       uint32_t security_info_sent)
 {
-	struct security_descriptor *psd = NULL;
 	NTSTATUS status;
-
-	if (sd_len == 0) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
 
 	if (!CAN_WRITE(fsp->conn)) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -850,12 +878,6 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 
 	if (!lp_nt_acl_support(SNUM(fsp->conn))) {
 		return NT_STATUS_OK;
-	}
-
-	status = unmarshall_sec_desc(talloc_tos(), data, sd_len, &psd);
-
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
 	}
 
 	if (psd->owner_sid == NULL) {
@@ -909,6 +931,8 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 		}
 	}
 
+	canonicalize_inheritance_bits(psd);
+
 	if (DEBUGLEVEL >= 10) {
 		DEBUG(10,("set_sd for file %s\n", fsp_str_dbg(fsp)));
 		NDR_PRINT_DEBUG(security_descriptor, psd);
@@ -919,6 +943,29 @@ NTSTATUS set_sd(files_struct *fsp, uint8_t *data, uint32_t sd_len,
 	TALLOC_FREE(psd);
 
 	return status;
+}
+
+/****************************************************************************
+ Internal fn to set security descriptors from a data blob.
+****************************************************************************/
+
+NTSTATUS set_sd_blob(files_struct *fsp, uint8_t *data, uint32_t sd_len,
+		       uint32_t security_info_sent)
+{
+	struct security_descriptor *psd = NULL;
+	NTSTATUS status;
+
+	if (sd_len == 0) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = unmarshall_sec_desc(talloc_tos(), data, sd_len, &psd);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	return set_sd(fsp, psd, security_info_sent);
 }
 
 /****************************************************************************
@@ -969,7 +1016,7 @@ static void call_nt_transact_create(connection_struct *conn,
 	char *data = *ppdata;
 	/* Breakout the oplock request bits so we can set the reply bits separately. */
 	uint32 fattr=0;
-	SMB_OFF_T file_len = 0;
+	off_t file_len = 0;
 	int info = 0;
 	files_struct *fsp = NULL;
 	char *p = NULL;
@@ -1352,7 +1399,7 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 	files_struct *fsp1,*fsp2;
 	uint32 fattr;
 	int info;
-	SMB_OFF_T ret=-1;
+	off_t ret=-1;
 	NTSTATUS status = NT_STATUS_OK;
 	char *parent;
 
@@ -1467,7 +1514,7 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 	file_set_dosmode(conn, smb_fname_dst, fattr, parent, false);
 	TALLOC_FREE(parent);
 
-	if (ret < (SMB_OFF_T)smb_fname_src->st.st_ex_size) {
+	if (ret < (off_t)smb_fname_src->st.st_ex_size) {
 		status = NT_STATUS_DISK_FULL;
 		goto out;
 	}
@@ -1738,7 +1785,7 @@ static void call_nt_transact_notify_change(connection_struct *conn,
 		}
 	}
 
-	if (fsp->notify->num_changes != 0) {
+	if (change_notify_fsp_has_changes(fsp)) {
 
 		/*
 		 * We've got changes pending, respond immediately
@@ -1858,6 +1905,7 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 {
 	NTSTATUS status;
 	struct security_descriptor *psd = NULL;
+	TALLOC_CTX *frame = talloc_stackframe();
 
 	/*
 	 * Get the permissions to return.
@@ -1865,11 +1913,15 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 
 	if ((security_info_wanted & SECINFO_SACL) &&
 			!(fsp->access_mask & SEC_FLAG_SYSTEM_SECURITY)) {
+		DEBUG(10, ("Access to SACL denied.\n"));
+		TALLOC_FREE(frame);
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
 	if ((security_info_wanted & (SECINFO_DACL|SECINFO_OWNER|SECINFO_GROUP)) &&
 			!(fsp->access_mask & SEC_STD_READ_CONTROL)) {
+		DEBUG(10, ("Access to DACL, OWNER, or GROUP denied.\n"));
+		TALLOC_FREE(frame);
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -1881,15 +1933,16 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 	}
 
 	if (!lp_nt_acl_support(SNUM(conn))) {
-		status = get_null_nt_acl(mem_ctx, &psd);
+		status = get_null_nt_acl(frame, &psd);
 	} else if (security_info_wanted & SECINFO_LABEL) {
 		/* Like W2K3 return a null object. */
-		status = get_null_nt_acl(mem_ctx, &psd);
+		status = get_null_nt_acl(frame, &psd);
 	} else {
 		status = SMB_VFS_FGET_NT_ACL(
-			fsp, security_info_wanted, &psd);
+			fsp, security_info_wanted, frame, &psd);
 	}
 	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(frame);
 		return status;
 	}
 
@@ -1938,7 +1991,7 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 	}
 
 	if (max_data_count < *psd_size) {
-		TALLOC_FREE(psd);
+		TALLOC_FREE(frame);
 		return NT_STATUS_BUFFER_TOO_SMALL;
 	}
 
@@ -1946,11 +1999,11 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 				   ppmarshalled_sd, psd_size);
 
 	if (!NT_STATUS_IS_OK(status)) {
-		TALLOC_FREE(psd);
+		TALLOC_FREE(frame);
 		return status;
 	}
 
-	TALLOC_FREE(psd);
+	TALLOC_FREE(frame);
 	return NT_STATUS_OK;
 }
 
@@ -2099,7 +2152,7 @@ static void call_nt_transact_set_security_desc(connection_struct *conn,
 		return;
 	}
 
-	status = set_sd(fsp, (uint8 *)data, data_count, security_info_sent);
+	status = set_sd_blob(fsp, (uint8 *)data, data_count, security_info_sent);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		reply_nterror(req, status);
@@ -2223,7 +2276,7 @@ static void call_nt_transact_get_user_quota(connection_struct *conn,
 	/* access check */
 	if (get_current_uid(conn) != 0) {
 		DEBUG(1,("get_user_quota: access_denied service [%s] user "
-			 "[%s]\n", lp_servicename(SNUM(conn)),
+			 "[%s]\n", lp_servicename(talloc_tos(), SNUM(conn)),
 			 conn->session_info->unix_info->unix_name));
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return;
@@ -2456,7 +2509,9 @@ static void call_nt_transact_get_user_quota(connection_struct *conn,
 			break;
 
 		default:
-			DEBUG(0,("do_nt_transact_get_user_quota: fnum %d unknown level 0x%04hX\n",fsp->fnum,level));
+			DEBUG(0, ("do_nt_transact_get_user_quota: %s: unknown "
+				  "level 0x%04hX\n",
+				  fsp_fnum_dbg(fsp), level));
 			reply_nterror(req, NT_STATUS_INVALID_LEVEL);
 			return;
 			break;
@@ -2493,7 +2548,7 @@ static void call_nt_transact_set_user_quota(connection_struct *conn,
 	/* access check */
 	if (get_current_uid(conn) != 0) {
 		DEBUG(1,("set_user_quota: access_denied service [%s] user "
-			 "[%s]\n", lp_servicename(SNUM(conn)),
+			 "[%s]\n", lp_servicename(talloc_tos(), SNUM(conn)),
 			 conn->session_info->unix_info->unix_name));
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		return;
@@ -2918,6 +2973,12 @@ void reply_nttranss(struct smb_request *req)
 	START_PROFILE(SMBnttranss);
 
 	show_msg((const char *)req->inbuf);
+
+	/* Windows clients expect all replies to
+	   an NT transact secondary (SMBnttranss 0xA1)
+	   to have a command code of NT transact
+	   (SMBnttrans 0xA0). See bug #8989 for details. */
+	req->cmd = SMBnttrans;
 
 	if (req->wct < 18) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);

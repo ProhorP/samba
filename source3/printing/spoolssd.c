@@ -58,7 +58,7 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 
 static void spoolss_reopen_logs(int child_id)
 {
-	char *lfile = lp_logfile();
+	char *lfile = lp_logfile(talloc_tos());
 	char *ext;
 	int rc;
 
@@ -80,10 +80,12 @@ static void spoolss_reopen_logs(int child_id)
 		if (strstr(lfile, ext) == NULL) {
 			if (child_id) {
 				rc = asprintf(&lfile, "%s.%d",
-					      lp_logfile(), child_id);
+					      lp_logfile(talloc_tos()),
+					      child_id);
 			} else {
 				rc = asprintf(&lfile, "%s.%s",
-					      lp_logfile(), ext);
+					      lp_logfile(talloc_tos()),
+					      ext);
 			}
 		}
 	}
@@ -607,14 +609,14 @@ static void print_queue_forward(struct messaging_context *msg,
 
 static char *get_bq_logfile(void)
 {
-	char *lfile = lp_logfile();
+	char *lfile = lp_logfile(talloc_tos());
 	int rc;
 
 	if (lfile == NULL || lfile[0] == '\0') {
 		rc = asprintf(&lfile, "%s/log.%s.bq",
 					get_dyn_LOGFILEBASE(), DAEMON_NAME);
 	} else {
-		rc = asprintf(&lfile, "%s.bq", lp_logfile());
+		rc = asprintf(&lfile, "%s.bq", lp_logfile(talloc_tos()));
 	}
 	if (rc == -1) {
 		lfile = NULL;
@@ -644,7 +646,7 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 	BlockSignals(true, SIGTERM);
 	BlockSignals(true, SIGHUP);
 
-	pid = sys_fork();
+	pid = fork();
 
 	if (pid == -1) {
 		DEBUG(0, ("Failed to fork SPOOLSS [%s]\n",
@@ -659,9 +661,6 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 		BlockSignals(false, SIGHUP);
 		return pid;
 	}
-
-	/* child */
-	close_low_fds(false);
 
 	status = reinit_after_fork(msg_ctx,
 				   ev_ctx,

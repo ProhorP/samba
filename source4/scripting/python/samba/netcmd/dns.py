@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # DNS management tool
 #
 # Copyright (C) Amitay Isaacs 2011-2012
@@ -21,6 +19,7 @@
 import samba.getopt as options
 from struct import pack
 from socket import inet_ntoa
+import shlex
 
 from samba.netcmd import (
     Command,
@@ -32,9 +31,12 @@ from samba.dcerpc import dnsp, dnsserver
 
 
 def dns_connect(server, lp, creds):
+    if server.lower() == 'localhost':
+        server = '127.0.0.1'
     binding_str = "ncacn_ip_tcp:%s[sign]" % server
     dns_conn = dnsserver.dnsserver(binding_str, lp, creds)
     return dns_conn
+
 
 def bool_string(flag):
     if flag == 0:
@@ -44,6 +46,7 @@ def bool_string(flag):
     else:
         ret = 'UNKNOWN (0x%x)' % flag
     return ret
+
 
 def enum_string(module, enum_defs, value):
     ret = None
@@ -55,6 +58,7 @@ def enum_string(module, enum_defs, value):
         ret = 'UNKNOWN (0x%x)' % value
     return ret
 
+
 def bitmap_string(module, bitmap_defs, value):
     ret = ''
     for b in bitmap_defs:
@@ -64,15 +68,18 @@ def bitmap_string(module, bitmap_defs, value):
         ret = 'NONE'
     return ret
 
+
 def boot_method_string(boot_method):
     enum_defs = [ 'DNS_BOOT_METHOD_UNINITIALIZED', 'DNS_BOOT_METHOD_FILE',
                     'DNS_BOOT_METHOD_REGISTRY', 'DNS_BOOT_METHOD_DIRECTORY' ]
     return enum_string(dnsserver, enum_defs, boot_method)
 
+
 def name_check_flag_string(check_flag):
     enum_defs = [ 'DNS_ALLOW_RFC_NAMES_ONLY', 'DNS_ALLOW_NONRFC_NAMES',
                     'DNS_ALLOW_MULTIBYTE_NAMES', 'DNS_ALLOW_ALL_NAMES' ]
     return enum_string(dnsserver, enum_defs, check_flag)
+
 
 def zone_type_string(zone_type):
     enum_defs = [ 'DNS_ZONE_TYPE_CACHE', 'DNS_ZONE_TYPE_PRIMARY',
@@ -80,25 +87,30 @@ def zone_type_string(zone_type):
                     'DNS_ZONE_TYPE_FORWARDER', 'DNS_ZONE_TYPE_SECONDARY_CACHE' ]
     return enum_string(dnsp, enum_defs, zone_type)
 
+
 def zone_update_string(zone_update):
     enum_defs = [ 'DNS_ZONE_UPDATE_OFF', 'DNS_ZONE_UPDATE_SECURE',
                     'DNS_ZONE_UPDATE_SECURE' ]
     return enum_string(dnsp, enum_defs, zone_update)
+
 
 def zone_secondary_security_string(security):
     enum_defs = [ 'DNS_ZONE_SECSECURE_NO_SECURITY', 'DNS_ZONE_SECSECURE_NS_ONLY',
                     'DNS_ZONE_SECSECURE_LIST_ONLY', 'DNS_ZONE_SECSECURE_NO_XFER' ]
     return enum_string(dnsserver, enum_defs, security)
 
+
 def zone_notify_level_string(notify_level):
     enum_defs = [ 'DNS_ZONE_NOTIFY_OFF', 'DNS_ZONE_NOTIFY_ALL_SECONDARIES',
                     'DNS_ZONE_NOTIFY_LIST_ONLY' ]
     return enum_string(dnsserver, enum_defs, notify_level)
 
+
 def dp_flags_string(dp_flags):
     bitmap_defs = [ 'DNS_DP_AUTOCREATED', 'DNS_DP_LEGACY', 'DNS_DP_DOMAIN_DEFAULT',
                 'DNS_DP_FOREST_DEFAULT', 'DNS_DP_ENLISTED', 'DNS_DP_DELETED' ]
     return bitmap_string(dnsserver, bitmap_defs, dp_flags)
+
 
 def zone_flags_string(flags):
     bitmap_defs = [ 'DNS_RPC_ZONE_PAUSED', 'DNS_RPC_ZONE_SHUTDOWN',
@@ -108,6 +120,7 @@ def zone_flags_string(flags):
                     'DNS_RPC_ZONE_READONLY']
     return bitmap_string(dnsserver, bitmap_defs, flags)
 
+
 def ip4_array_string(array):
     ret = []
     if not array:
@@ -116,6 +129,7 @@ def ip4_array_string(array):
         addr = '%s' % inet_ntoa(pack('i', array.AddrArray[i]))
         ret.append(addr)
     return ret
+
 
 def dns_addr_array_string(array):
     ret = []
@@ -132,6 +146,7 @@ def dns_addr_array_string(array):
             addr = 'UNKNOWN'
         ret.append(addr)
     return ret
+
 
 def dns_type_flag(rec_type):
     rtype = rec_type.upper()
@@ -151,11 +166,14 @@ def dns_type_flag(rec_type):
         record_type = dnsp.DNS_TYPE_MX
     elif rtype == 'SRV':
         record_type = dnsp.DNS_TYPE_SRV
+    elif rtype == 'TXT':
+        record_type = dnsp.DNS_TYPE_TXT
     elif rtype == 'ALL':
         record_type = dnsp.DNS_TYPE_ALL
     else:
         raise CommandError('Unknown type of DNS record %s' % rec_type)
     return record_type
+
 
 def dns_client_version(cli_version):
     version = cli_version.upper()
@@ -168,6 +186,7 @@ def dns_client_version(cli_version):
     else:
         raise CommandError('Unknown client version %s' % cli_version)
     return client_version
+
 
 def print_serverinfo(outf, typeid, serverinfo):
     outf.write('  dwVersion                   : 0x%x\n' % serverinfo.dwVersion)
@@ -325,7 +344,6 @@ def print_enumzones(outf, typeid, zones):
 
 
 def print_dns_record(outf, rec):
-    mesg = 'Unknown: '
     if rec.wType == dnsp.DNS_TYPE_A:
         mesg = 'A: %s' % (rec.data)
     elif rec.wType == dnsp.DNS_TYPE_AAAA:
@@ -349,6 +367,11 @@ def print_dns_record(outf, rec):
     elif rec.wType == dnsp.DNS_TYPE_SRV:
         mesg = 'SRV: %s (%d, %d, %d)' % (rec.data.nameTarget.str, rec.data.wPort,
                                          rec.data.wPriority, rec.data.wWeight)
+    elif rec.wType == dnsp.DNS_TYPE_TXT:
+        slist = ['"%s"' % name.str for name in rec.data.str]
+        mesg = 'TXT: %s' % ','.join(slist)
+    else:
+        mesg = 'Unknown: '
     outf.write('    %s (flags=%x, serial=%d, ttl=%d)\n' % (
                 mesg, rec.dwFlags, rec.dwSerial, rec.dwTtlSeconds))
 
@@ -363,6 +386,11 @@ def print_dnsrecords(outf, records):
                 print_dns_record(outf, dns_rec)
 
 
+#
+# Always create a copy of strings when creating DNS_RPC_RECORDs
+# to overcome the bug in pidl generated python bindings.
+#
+
 class ARecord(dnsserver.DNS_RPC_RECORD):
     def __init__(self, ip_addr, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
                     node_flag=0):
@@ -371,9 +399,12 @@ class ARecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
-        self.data = ip_addr
+        self._ip_addr = ip_addr[:]
+        self.data = self._ip_addr
+
 
 class AAAARecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, ip6_addr, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
                     node_flag=0):
         super(AAAARecord, self).__init__()
@@ -381,9 +412,12 @@ class AAAARecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
-        self.data = ip6_addr
+        self._ip6_addr = ip6_addr[:]
+        self.data = self._ip6_addr
+
 
 class PTRRecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, ptr, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
                  node_flag=0):
         super(PTRRecord, self).__init__()
@@ -391,12 +425,15 @@ class PTRRecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtleSeconds = ttl
+        self._ptr = ptr[:]
         ptr_name = dnsserver.DNS_RPC_NAME()
-        ptr_name.str = ptr
+        ptr_name.str = self._ptr
         ptr_name.len = len(ptr)
         self.data = ptr_name
 
+
 class CNameRecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, cname, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
                     node_flag=0):
         super(CNameRecord, self).__init__()
@@ -404,12 +441,15 @@ class CNameRecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
+        self._cname = cname[:]
         cname_name = dnsserver.DNS_RPC_NAME()
-        cname_name.str = cname
+        cname_name.str = self._cname
         cname_name.len = len(cname)
         self.data = cname_name
 
+
 class NSRecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, dns_server, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
                     node_flag=0):
         super(NSRecord, self).__init__()
@@ -417,17 +457,15 @@ class NSRecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
+        self._dns_server = dns_server[:]
         ns = dnsserver.DNS_RPC_NAME()
-        ns.str = dns_server
+        ns.str = self._dns_server
         ns.len = len(dns_server)
         self.data = ns
 
-#
-# FIXME: In MXRecord, SOARecord, SRVRecord keep a reference to strings
-#        to overcome the bug in pidl generated python bindings.
-#
 
 class MXRecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, mail_server, preference, serial=1, ttl=900,
                  rank=dnsp.DNS_RANK_ZONE, node_flag=0):
         super(MXRecord, self).__init__()
@@ -435,14 +473,16 @@ class MXRecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
+        self._mail_server = mail_server[:]
         mx = dnsserver.DNS_RPC_RECORD_NAME_PREFERENCE()
         mx.wPreference = preference
-        self._mail_server = mail_server
         mx.nameExchange.str = self._mail_server
-        mx.nameExchange.len = len(self._mail_server)
+        mx.nameExchange.len = len(mail_server)
         self.data = mx
 
+
 class SOARecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, mname, rname, serial=1, refresh=900, retry=600,
                  expire=86400, minimum=3600, ttl=3600, rank=dnsp.DNS_RANK_ZONE,
                  node_flag=dnsp.DNS_RPC_FLAG_AUTH_ZONE_ROOT):
@@ -451,20 +491,22 @@ class SOARecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
+        self._mname = mname[:]
+        self._rname = rname[:]
         soa = dnsserver.DNS_RPC_RECORD_SOA()
         soa.dwSerialNo = serial
         soa.dwRefresh = refresh
         soa.dwRetry = retry
         soa.dwExpire = expire
-        self._mname = mname
         soa.NamePrimaryServer.str = self._mname
-        soa.NamePrimaryServer.len = len(self._mname)
-        self._rname = rname
+        soa.NamePrimaryServer.len = len(mname)
         soa.ZoneAdministratorEmail.str = self._rname
-        soa.ZoneAdministratorEmail.len = len(self._rname)
+        soa.ZoneAdministratorEmail.len = len(rname)
         self.data = soa
 
+
 class SRVRecord(dnsserver.DNS_RPC_RECORD):
+
     def __init__(self, target, port, priority=0, weight=100, serial=1, ttl=900,
                 rank=dnsp.DNS_RANK_ZONE, node_flag=0):
         super(SRVRecord, self).__init__()
@@ -472,14 +514,38 @@ class SRVRecord(dnsserver.DNS_RPC_RECORD):
         self.dwFlags = rank | node_flag
         self.dwSerial = serial
         self.dwTtlSeconds = ttl
+        self._target = target[:]
         srv = dnsserver.DNS_RPC_RECORD_SRV()
         srv.wPriority = priority
         srv.wWeight = weight
         srv.wPort = port
-        self._target = target
         srv.nameTarget.str = self._target
-        srv.nameTarget.len = len(self._target)
+        srv.nameTarget.len = len(target)
         self.data = srv
+
+
+class TXTRecord(dnsserver.DNS_RPC_RECORD):
+
+    def __init__(self, slist, serial=1, ttl=900, rank=dnsp.DNS_RANK_ZONE,
+                node_flag=0):
+        super(TXTRecord, self).__init__()
+        self.wType = dnsp.DNS_TYPE_TXT
+        self.dwFlags = rank | node_flag
+        self.dwSerial = serial
+        self.dwTtlSeconds = ttl
+        self._slist = []
+        for s in slist:
+            self._slist.append(s[:])
+        names = []
+        for s in self._slist:
+            name = dnsserver.DNS_RPC_NAME()
+            name.str = s
+            name.len = len(s)
+            names.append(name)
+        txt = dnsserver.DNS_RPC_RECORD_STRING()
+        txt.count = len(slist)
+        txt.str = names
+        self.data = txt
 
 
 # Convert data into a dns record
@@ -524,6 +590,9 @@ def data_to_dns_record(record_type, data):
         minimum = int(tmp[6])
         rec = SOARecord(nameserver, email, serial=serial, refresh=refresh,
                         retry=retry, expire=expire, minimum=minimum)
+    elif record_type == dnsp.DNS_TYPE_TXT:
+        slist = shlex.split(data)
+        rec = TXTRecord(slist)
     else:
         raise CommandError('Unsupported record type')
     return rec
@@ -541,16 +610,9 @@ def dns_record_match(dns_conn, server, zone, name, record_type, data):
     select_flags = dnsserver.DNS_RPC_VIEW_AUTHORITY_DATA
 
     try:
-        buflen, res = dns_conn.DnssrvEnumRecords2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
-                                                    0,
-                                                    server,
-                                                    zone,
-                                                    name,
-                                                    None,
-                                                    record_type,
-                                                    select_flags,
-                                                    None,
-                                                    None)
+        buflen, res = dns_conn.DnssrvEnumRecords2(
+            dnsserver.DNS_CLIENT_VERSION_LONGHORN, 0, server, zone, name, None,
+            record_type, select_flags, None, None)
     except RuntimeError, e:
         return None
 
@@ -599,6 +661,13 @@ def dns_record_match(dns_conn, server, zone, name, record_type, data):
                dns_name_equal(rec.data.ZoneAdministratorEmail,
                               urec.data.ZoneAdministratorEmail):
                 found = True
+        elif record_type == dnsp.DNS_TYPE_TXT:
+            if rec.data.count == urec.data.count:
+                found = True
+                for i in xrange(rec.data.count):
+                    found = found and \
+                            (rec.data.str[i].str == urec.data.str[i].str)
+
         if found:
             rec_match = rec
             break
@@ -607,7 +676,7 @@ def dns_record_match(dns_conn, server, zone, name, record_type, data):
 
 
 class cmd_serverinfo(Command):
-    """Query for Server information"""
+    """Query for Server information."""
 
     synopsis = '%prog <server> [options]'
 
@@ -625,23 +694,21 @@ class cmd_serverinfo(Command):
                 choices=['w2k','dotnet','longhorn'], dest='cli_ver'),
     ]
 
-    def run(self, server, cli_ver, sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, cli_ver, sambaopts=None, credopts=None,
+            versionopts=None):
         self.lp = sambaopts.get_loadparm()
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
         client_version = dns_client_version(cli_ver)
 
-        typeid, res = dns_conn.DnssrvQuery2(client_version,
-                                            0,
-                                            server,
-                                            None,
-                                            'ServerInfo')
+        typeid, res = dns_conn.DnssrvQuery2(client_version, 0, server,
+                                            None, 'ServerInfo')
         print_serverinfo(self.outf, typeid, res)
 
 
 class cmd_zoneinfo(Command):
-    """Query for zone information"""
+    """Query for zone information."""
 
     synopsis = '%prog <server> <zone> [options]'
 
@@ -659,23 +726,21 @@ class cmd_zoneinfo(Command):
                 choices=['w2k','dotnet','longhorn'], dest='cli_ver'),
     ]
 
-    def run(self, server, zone, cli_ver, sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, zone, cli_ver, sambaopts=None, credopts=None,
+            versionopts=None):
         self.lp = sambaopts.get_loadparm()
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
         client_version = dns_client_version(cli_ver)
 
-        typeid, res = dns_conn.DnssrvQuery2(client_version,
-                                            0,
-                                            server,
-                                            zone,
+        typeid, res = dns_conn.DnssrvQuery2(client_version, 0, server, zone,
                                             'ZoneInfo')
         print_zoneinfo(self.outf, typeid, res)
 
 
 class cmd_zonelist(Command):
-    """Query for zones"""
+    """Query for zones."""
 
     synopsis = '%prog <server> [options]'
 
@@ -741,9 +806,7 @@ class cmd_zonelist(Command):
         client_version = dns_client_version(cli_ver)
 
         typeid, res = dns_conn.DnssrvComplexOperation2(client_version,
-                                                        0,
-                                                        server,
-                                                        None,
+                                                        0, server, None,
                                                         'EnumZones',
                                                         dnsserver.DNSSRV_TYPEID_DWORD,
                                                         request_filter)
@@ -756,7 +819,7 @@ class cmd_zonelist(Command):
 
 
 class cmd_zonecreate(Command):
-    """Create a zone"""
+    """Create a zone."""
 
     synopsis = '%prog <server> <zone> [options]'
 
@@ -808,19 +871,14 @@ class cmd_zonecreate(Command):
             zone_create_info.fAging = 0
             zone_create_info.dwDpFlags = dnsserver.DNS_DP_DOMAIN_DEFAULT
 
-        res = dns_conn.DnssrvOperation2(client_version,
-                                        0,
-                                        server,
-                                        None,
-                                        0,
-                                        'ZoneCreate',
-                                        typeid,
+        res = dns_conn.DnssrvOperation2(client_version, 0, server, None,
+                                        0, 'ZoneCreate', typeid,
                                         zone_create_info)
         self.outf.write('Zone %s created successfully\n' % zone)
 
 
 class cmd_zonedelete(Command):
-    """Delete a zone"""
+    """Delete a zone."""
 
     synopsis = '%prog <server> <zone> [options]'
 
@@ -832,7 +890,8 @@ class cmd_zonedelete(Command):
         "credopts": options.CredentialsOptions,
     }
 
-    def run(self, server, zone, sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, zone, sambaopts=None, credopts=None,
+            versionopts=None):
 
         self.lp = sambaopts.get_loadparm()
         self.creds = credopts.get_credentials(self.lp)
@@ -840,11 +899,7 @@ class cmd_zonedelete(Command):
 
         zone = zone.lower()
         res = dns_conn.DnssrvOperation2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
-                                        0,
-                                        server,
-                                        zone,
-                                        0,
-                                        'DeleteZoneFromDs',
+                                        0, server, zone, 0, 'DeleteZoneFromDs',
                                         dnsserver.DNSSRV_TYPEID_NULL,
                                         None)
         self.outf.write('Zone %s delete successfully\n' % zone)
@@ -853,7 +908,7 @@ class cmd_zonedelete(Command):
 class cmd_query(Command):
     """Query a name."""
 
-    synopsis = '%prog <server> <zone> <name> <A|AAAA|CNAME|MX|NS|SOA|SRV|ALL> [options]'
+    synopsis = '%prog <server> <zone> <name> <A|AAAA|CNAME|MX|NS|SOA|SRV|TXT|ALL> [options]'
 
     takes_args = [ 'server', 'zone', 'name', 'rtype' ]
 
@@ -880,9 +935,10 @@ class cmd_query(Command):
                 action='store_true', dest='only_children')
     ]
 
-    def run(self, server, zone, name, rtype, authority=False, cache=False, glue=False,
-                root=False, additional=False, no_children=False, only_children=False,
-                sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, zone, name, rtype, authority=False, cache=False,
+            glue=False, root=False, additional=False, no_children=False,
+            only_children=False, sambaopts=None, credopts=None,
+            versionopts=None):
         record_type = dns_type_flag(rtype)
 
         select_flags = 0
@@ -913,21 +969,14 @@ class cmd_query(Command):
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
-        buflen, res = dns_conn.DnssrvEnumRecords2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
-                                                    0,
-                                                    server,
-                                                    zone,
-                                                    name,
-                                                    None,
-                                                    record_type,
-                                                    select_flags,
-                                                    None,
-                                                    None)
+        buflen, res = dns_conn.DnssrvEnumRecords2(
+                dnsserver.DNS_CLIENT_VERSION_LONGHORN, 0, server, zone, name,
+                None, record_type, select_flags, None, None)
         print_dnsrecords(self.outf, res)
 
 
 class cmd_roothints(Command):
-    """Query root hints"""
+    """Query root hints."""
 
     synopsis = '%prog <server> [<name>] [options]'
 
@@ -939,7 +988,8 @@ class cmd_roothints(Command):
         "credopts": options.CredentialsOptions,
     }
 
-    def run(self, server, name='.', sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, name='.', sambaopts=None, credopts=None,
+            versionopts=None):
         record_type = dnsp.DNS_TYPE_NS
         select_flags = (dnsserver.DNS_RPC_VIEW_ROOT_HINT_DATA |
                         dnsserver.DNS_RPC_VIEW_ADDITIONAL_DATA)
@@ -948,16 +998,9 @@ class cmd_roothints(Command):
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
-        buflen, res = dns_conn.DnssrvEnumRecords2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
-                                                    0,
-                                                    server,
-                                                    '..RootHints',
-                                                    name,
-                                                    None,
-                                                    record_type,
-                                                    select_flags,
-                                                    None,
-                                                    None)
+        buflen, res = dns_conn.DnssrvEnumRecords2(
+            dnsserver.DNS_CLIENT_VERSION_LONGHORN, 0, server, '..RootHints',
+            name, None, record_type, select_flags, None, None)
         print_dnsrecords(self.outf, res)
 
 
@@ -972,9 +1015,10 @@ class cmd_add_record(Command):
          NS     fqdn_string
          MX     "fqdn_string preference"
          SRV    "fqdn_string port priority weight"
+         TXT    "'string1' 'string2' ..."
     """
 
-    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV> <data>'
+    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV|TXT> <data>'
 
     takes_args = [ 'server', 'zone', 'name', 'rtype', 'data' ]
 
@@ -984,9 +1028,10 @@ class cmd_add_record(Command):
         "credopts": options.CredentialsOptions,
     }
 
-    def run(self, server, zone, name, rtype, data, sambaopts=None, credopts=None, versionopts=None):
+    def run(self, server, zone, name, rtype, data, sambaopts=None,
+            credopts=None, versionopts=None):
 
-        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV'):
+        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV','TXT'):
             raise CommandError('Adding record of type %s is not supported' % rtype)
 
         record_type = dns_type_flag(rtype)
@@ -996,7 +1041,8 @@ class cmd_add_record(Command):
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
-        rec_match = dns_record_match(dns_conn, server, zone, name, record_type, data)
+        rec_match = dns_record_match(dns_conn, server, zone, name, record_type,
+                data)
         if rec_match is not None:
             raise CommandError('Record already exists')
 
@@ -1004,12 +1050,7 @@ class cmd_add_record(Command):
         add_rec_buf.rec = rec
 
         dns_conn.DnssrvUpdateRecord2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
-                                        0,
-                                        server,
-                                        zone,
-                                        name,
-                                        add_rec_buf,
-                                        None)
+                                     0, server, zone, name, add_rec_buf, None)
         self.outf.write('Record added successfully\n')
 
 
@@ -1024,9 +1065,10 @@ class cmd_update_record(Command):
          NS     fqdn_string
          MX     "fqdn_string preference"
          SRV    "fqdn_string port priority weight"
+         TXT    "'string1' 'string2' ..."
     """
 
-    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV> <olddata> <newdata>'
+    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV|TXT> <olddata> <newdata>'
 
     takes_args = [ 'server', 'zone', 'name', 'rtype', 'olddata', 'newdata' ]
 
@@ -1039,7 +1081,7 @@ class cmd_update_record(Command):
     def run(self, server, zone, name, rtype, olddata, newdata,
                 sambaopts=None, credopts=None, versionopts=None):
 
-        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV'):
+        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV','TXT'):
             raise CommandError('Updating record of type %s is not supported' % rtype)
 
         record_type = dns_type_flag(rtype)
@@ -1049,7 +1091,8 @@ class cmd_update_record(Command):
         self.creds = credopts.get_credentials(self.lp)
         dns_conn = dns_connect(server, self.lp, self.creds)
 
-        rec_match = dns_record_match(dns_conn, server, zone, name, record_type, olddata)
+        rec_match = dns_record_match(dns_conn, server, zone, name, record_type,
+                olddata)
         if not rec_match:
             raise CommandError('Record does not exist')
 
@@ -1086,9 +1129,10 @@ class cmd_delete_record(Command):
          NS     fqdn_string
          MX     "fqdn_string preference"
          SRV    "fqdn_string port priority weight"
+         TXT    "'string1' 'string2' ..."
     """
 
-    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV> <data>'
+    synopsis = '%prog <server> <zone> <name> <A|AAAA|PTR|CNAME|NS|MX|SRV|TXT> <data>'
 
     takes_args = [ 'server', 'zone', 'name', 'rtype', 'data' ]
 
@@ -1100,7 +1144,7 @@ class cmd_delete_record(Command):
 
     def run(self, server, zone, name, rtype, data, sambaopts=None, credopts=None, versionopts=None):
 
-        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV'):
+        if rtype.upper() not in ('A','AAAA','PTR','CNAME','NS','MX','SRV','TXT'):
             raise CommandError('Deleting record of type %s is not supported' % rtype)
 
         record_type = dns_type_flag(rtype)
@@ -1127,7 +1171,7 @@ class cmd_delete_record(Command):
 
 
 class cmd_dns(SuperCommand):
-    """Domain Name Service (DNS) management"""
+    """Domain Name Service (DNS) management."""
 
     subcommands = {}
     subcommands['serverinfo'] = cmd_serverinfo()

@@ -211,7 +211,7 @@ static bool tdb_data_is_cstr(TDB_DATA d) {
 	if (tdb_data_is_empty(d) || (d.dptr[d.dsize-1] != '\0')) {
 		return false;
 	}
-	return strchr((char *)d.dptr, '\0') == (char *)&d.dptr[d.dsize-1];
+	return strlen((char *)d.dptr) == d.dsize-1;
 }
 
 static char* tdb_data_print(TALLOC_CTX *mem_ctx, TDB_DATA d)
@@ -419,7 +419,10 @@ static bool read_info(struct check_ctx *ctx, const char *key, TDB_DATA val)
 static bool is_all_upper(const char *str) {
 	bool ret;
 	char *tmp = talloc_strdup(talloc_tos(), str);
-	strupper_m(tmp);
+	if (!strupper_m(tmp)) {
+		talloc_free(tmp);
+		return false;
+	}
 	ret = (strcmp(tmp, str) == 0);
 	talloc_free(tmp);
 	return ret;
@@ -698,7 +701,10 @@ static bool normalize_path_internal(char* path, char sep) {
 	}
 	*optr = '\0';
 
-	strupper_m(path);
+	if (!strupper_m(path)) {
+		talloc_free(discard_const(orig));
+		return false;
+	}
 	changed = (strcmp(orig, path) != 0);
 	talloc_free(discard_const(orig));
 	return changed;
@@ -788,7 +794,7 @@ static int check_tdb_action(struct db_record *rec, void *check_ctx)
 		}
 
 		if (invalid_path) {
-			int action;
+			unsigned char action;
 			if (ctx->opt.output == NULL) {
 				action = first_iter ? 'r' : 's';
 			} else if (ctx->opt.automatic) {
@@ -844,7 +850,8 @@ static bool get_version(struct check_ctx *ctx) {
 	uint32_t info_version = 0;
 	NTSTATUS status;
 
-	status = dbwrap_fetch_uint32(ctx->idb, "INFO/version", &info_version);
+	status = dbwrap_fetch_uint32_bystring(ctx->idb, "INFO/version",
+					      &info_version);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Warning: no INFO/version found!\n");
 		/* info_version = guess_version(ctx); */
@@ -923,7 +930,7 @@ dbwrap_store_uint32_verbose(struct db_context *db, const char *key, uint32_t nva
 	uint32_t oval;
 	NTSTATUS status;
 
-	status = dbwrap_fetch_uint32(db, key, &oval);
+	status = dbwrap_fetch_uint32_bystring(db, key, &oval);
 	if (NT_STATUS_IS_OK(status)) {
 		if (nval == oval) {
 			goto done;
@@ -939,7 +946,7 @@ dbwrap_store_uint32_verbose(struct db_context *db, const char *key, uint32_t nva
 		goto done;
 	}
 
-	status = dbwrap_store_uint32(db, key, nval);
+	status = dbwrap_store_uint32_bystring(db, key, nval);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf ("store %s failed: %s\n", key, nt_errstr(status));
 	}
@@ -1258,8 +1265,8 @@ static bool check_ctx_write_new_db(struct check_ctx *ctx) {
 		return false;
 	}
 
-	status = dbwrap_store_uint32(ctx->odb,
-				     "INFO/version", ctx->version);
+	status = dbwrap_store_uint32_bystring(ctx->odb, "INFO/version",
+					      ctx->version);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("write version failed: %s\n", nt_errstr(status)));
 		return false;

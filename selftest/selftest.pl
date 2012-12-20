@@ -16,107 +16,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-=pod
-
-=head1 NAME
-
-selftest - Samba test runner
-
-=head1 SYNOPSIS
-
-selftest --help
-
-selftest [--srcdir=DIR] [--bindir=DIR] [--target=samba|samba3|win] [--socket-wrapper] [--quick] [--exclude=FILE] [--include=FILE] [--one] [--prefix=prefix] [--testlist=FILE] [TESTS]
-
-=head1 DESCRIPTION
-
-A simple test runner. TESTS is a regular expression with tests to run.
-
-=head1 OPTIONS
-
-=over 4
-
-=item I<--help>
-
-Show list of available options.
-
-=item I<--srcdir=DIR>
-
-Source directory.
-
-=item I<--bindir=DIR>
-
-Built binaries directory.
-
-=item I<--prefix=DIR>
-
-Change directory to run tests in. Default is 'st'.
-
-=item I<--target samba|samba3|win>
-
-Specify test target against which to run. Default is 'samba4'.
-
-=item I<--quick>
-
-Run only a limited number of tests. Intended to run in about 30 seconds on 
-moderately recent systems.
-		
-=item I<--socket-wrapper>
-
-Use socket wrapper library for communication with server. Only works 
-when the server is running locally.
-
-Will prevent TCP and UDP ports being opened on the local host but 
-(transparently) redirects these calls to use unix domain sockets.
-
-=item I<--exclude>
-
-Specify a file containing a list of tests that should be skipped. Possible 
-candidates are tests that segfault the server, flip or don't end. 
-
-=item I<--include>
-
-Specify a file containing a list of tests that should be run. Same format 
-as the --exclude flag.
-
-Not includes specified means all tests will be run.
-
-=item I<--one>
-
-Abort as soon as one test fails.
-
-=item I<--testlist>
-
-Load a list of tests from the specified location.
-
-=back
-
-=head1 ENVIRONMENT
-
-=over 4
-
-=item I<SMBD_VALGRIND>
-
-=item I<TORTURE_MAXTIME>
-
-=item I<VALGRIND>
-
-=item I<TLS_ENABLED>
-
-=item I<srcdir>
-
-=back
-
-=head1 LICENSE
-
-selftest is licensed under the GNU General Public License L<http://www.gnu.org/licenses/gpl.html>.
-
-=head1 AUTHOR
-
-Jelmer Vernooij
-
-=cut
-
 use strict;
 
 use FindBin qw($RealBin $Script);
@@ -143,10 +42,10 @@ my $opt_quick = 0;
 my $opt_socket_wrapper = 0;
 my $opt_socket_wrapper_pcap = undef;
 my $opt_socket_wrapper_keep_pcap = undef;
+my $opt_random_order = 0;
 my $opt_one = 0;
 my @opt_exclude = ();
 my @opt_include = ();
-my $opt_verbose = 0;
 my $opt_testenv = 0;
 my $opt_list = 0;
 my $ldap = undef;
@@ -314,7 +213,6 @@ Samba4 Specific:
 Behaviour:
  --quick                    run quick overall test
  --one                      abort when the first test fails
- --verbose                  be verbose
  --testenv                  run a shell in the requested test environment
  --list                     list available tests
 ";
@@ -334,14 +232,14 @@ my $result = GetOptions (
 		'include=s' => \@opt_include,
 		'srcdir=s' => \$srcdir,
 		'bindir=s' => \$bindir,
-		'verbose' => \$opt_verbose,
 		'testenv' => \$opt_testenv,
 		'list' => \$opt_list,
 		'ldap:s' => \$ldap,
 		'resetup-environment' => \$opt_resetup_env,
 		'testlist=s' => \@testlists,
+		'random-order' => \$opt_random_order,
 		'load-list=s' => \$opt_load_list,
-                'binary-mapping=s' => \$opt_binary_mapping
+		'binary-mapping=s' => \$opt_binary_mapping
 	    );
 
 exit(1) if (not $result);
@@ -485,38 +383,7 @@ unless ($opt_list) {
 		$testenv_default = "member";
 		require target::Samba3;
 		$target = new Samba3($bindir, \%binary_mapping, $srcdir_abs, $server_maxtime);
-	} elsif ($opt_target eq "win") {
-		die("Windows tests will not run with socket wrapper enabled.") 
-			if ($opt_socket_wrapper);
-		$testenv_default = "dc";
-		require target::Windows;
-		$target = new Windows();
 	}
-}
-
-#
-# Start a Virtual Distributed Ethernet Switch
-# Returns the pid of the switch.
-#
-sub start_vde_switch($)
-{
-	my ($path) = @_;
-
-	system("vde_switch --pidfile $path/vde.pid --sock $path/vde.sock --daemon");
-
-	open(PID, "$path/vde.pid");
-	<PID> =~ /([0-9]+)/;
-	my $pid = $1;
-	close(PID);
-
-	return $pid;
-}
-
-# Stop a Virtual Distributed Ethernet Switch
-sub stop_vde_switch($)
-{
-	my ($pid) = @_;
-	kill 9, $pid;
 }
 
 sub read_test_regexes($)
@@ -695,11 +562,6 @@ if ($opt_socket_wrapper) {
 } else {
 	$ENV{SELFTEST_INTERFACES} = "";
 }
-if ($opt_verbose) {
-	$ENV{SELFTEST_VERBOSE} = "1";
-} else {
-	$ENV{SELFTEST_VERBOSE} = "";
-}
 if ($opt_quick) {
 	$ENV{SELFTEST_QUICK} = "1";
 } else {
@@ -848,7 +710,12 @@ my @exported_envvars = (
 	"WINBINDD_SOCKET_DIR",
 	"WINBINDD_PRIV_PIPE_DIR",
 	"NMBD_SOCKET_DIR",
-	"LOCAL_PATH"
+	"LOCAL_PATH",
+
+        # nss_wrapper
+        "NSS_WRAPPER_PASSWD",
+        "NSS_WRAPPER_GROUP"
+
 );
 
 $SIG{INT} = $SIG{QUIT} = $SIG{TERM} = sub { 
@@ -960,6 +827,12 @@ sub teardown_env($)
 # This 'global' file needs to be empty when we start
 unlink("$prefix_abs/dns_host_file");
 
+if ($opt_random_order) {
+	require List::Util;
+	my @newtodo = List::Util::shuffle(@todo);
+	@todo = @newtodo;
+}
+
 if ($opt_testenv) {
 	my $testenv_name = $ENV{SELFTEST_TESTENV};
 	$testenv_name = $testenv_default unless defined($testenv_name);
@@ -973,8 +846,13 @@ if ($opt_testenv) {
 
 	my $envvarstr = exported_envvars_str($testenv_vars);
 
-	my $term = ($ENV{TERMINAL} or "xterm -e");
-	system("$term 'echo -e \"
+	my @term = ();
+	if ($ENV{TERMINAL}) {
+	    @term = ($ENV{TERMINAL});
+	} else {
+	    @term = ("xterm", "-e");
+	}
+	my @term_args = ("bash", "-c", "echo -e \"
 Welcome to the Samba4 Test environment '$testenv_name'
 
 This matches the client environment used in make test
@@ -985,7 +863,10 @@ TORTURE_OPTIONS=\$TORTURE_OPTIONS
 SMB_CONF_PATH=\$SMB_CONF_PATH
 
 $envvarstr
-\" && LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH} bash'");
+\" && LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH} bash");
+
+	system(@term, @term_args);
+
 	teardown_env($testenv_name);
 } elsif ($opt_list) {
 	foreach (@todo) {

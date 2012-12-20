@@ -46,7 +46,7 @@ static struct db_context *brlock_db;
  Debug info at level 10 for lock struct.
 ****************************************************************************/
 
-static void print_lock_struct(unsigned int i, struct lock_struct *pls)
+static void print_lock_struct(unsigned int i, const struct lock_struct *pls)
 {
 	DEBUG(10,("[%u]: smblctx = %llu, tid = %u, pid = %s, ",
 			i,
@@ -54,10 +54,10 @@ static void print_lock_struct(unsigned int i, struct lock_struct *pls)
 			(unsigned int)pls->context.tid,
 			server_id_str(talloc_tos(), &pls->context.pid) ));
 
-	DEBUG(10,("start = %.0f, size = %.0f, fnum = %d, %s %s\n",
+	DEBUG(10,("start = %.0f, size = %.0f, fnum = %llu, %s %s\n",
 		(double)pls->start,
 		(double)pls->size,
-		pls->fnum,
+		(unsigned long long)pls->fnum,
 		lock_type_name(pls->lock_type),
 		lock_flav_name(pls->lock_flav) ));
 }
@@ -69,7 +69,7 @@ static void print_lock_struct(unsigned int i, struct lock_struct *pls)
 bool brl_same_context(const struct lock_context *ctx1, 
 			     const struct lock_context *ctx2)
 {
-	return (procid_equal(&ctx1->pid, &ctx2->pid) &&
+	return (serverid_equal(&ctx1->pid, &ctx2->pid) &&
 		(ctx1->smblctx == ctx2->smblctx) &&
 		(ctx1->tid == ctx2->tid));
 }
@@ -252,7 +252,7 @@ NTSTATUS brl_lock_failed(files_struct *fsp, const struct lock_struct *lock, bool
 		return NT_STATUS_FILE_LOCK_CONFLICT;
 	}
 
-	if (procid_equal(&lock->context.pid, &fsp->last_lock_failure.context.pid) &&
+	if (serverid_equal(&lock->context.pid, &fsp->last_lock_failure.context.pid) &&
 			lock->context.tid == fsp->last_lock_failure.context.tid &&
 			lock->fnum == fsp->last_lock_failure.fnum &&
 			lock->start == fsp->last_lock_failure.start) {
@@ -1315,9 +1315,9 @@ bool brl_locktest(struct byte_range_lock *br_lck,
 	if(lp_posix_locking(fsp->conn->params) && (lock_flav == WINDOWS_LOCK)) {
 		ret = is_posix_locked(fsp, &start, &size, &lock_type, WINDOWS_LOCK);
 
-		DEBUG(10,("brl_locktest: posix start=%.0f len=%.0f %s for fnum %d file %s\n",
+		DEBUG(10,("brl_locktest: posix start=%.0f len=%.0f %s for %s file %s\n",
 			(double)start, (double)size, ret ? "locked" : "unlocked",
-			fsp->fnum, fsp_str_dbg(fsp)));
+			fsp_fnum_dbg(fsp), fsp_str_dbg(fsp)));
 
 		/* We need to return the inverse of is_posix_locked. */
 		ret = !ret;
@@ -1381,9 +1381,9 @@ NTSTATUS brl_lockquery(struct byte_range_lock *br_lck,
 	if(lp_posix_locking(fsp->conn->params)) {
 		bool ret = is_posix_locked(fsp, pstart, psize, plock_type, POSIX_LOCK);
 
-		DEBUG(10,("brl_lockquery: posix start=%.0f len=%.0f %s for fnum %d file %s\n",
+		DEBUG(10,("brl_lockquery: posix start=%.0f len=%.0f %s for %s file %s\n",
 			(double)*pstart, (double)*psize, ret ? "locked" : "unlocked",
-			fsp->fnum, fsp_str_dbg(fsp)));
+			fsp_fnum_dbg(fsp), fsp_str_dbg(fsp)));
 
 		if (ret) {
 			/* Hmmm. No clue what to set smblctx to - use -1. */
@@ -1486,8 +1486,8 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 		    struct byte_range_lock *br_lck)
 {
 	files_struct *fsp = br_lck->fsp;
-	uint16 tid = fsp->conn->cnum;
-	int fnum = fsp->fnum;
+	uint32_t tid = fsp->conn->cnum;
+	uint64_t fnum = fsp->fnum;
 	unsigned int i;
 	struct lock_struct *locks = br_lck->lock_data;
 	struct server_id pid = messaging_server_id(fsp->conn->sconn->msg_ctx);
@@ -1500,7 +1500,7 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 		if (!locks_copy) {
 			smb_panic("brl_close_fnum: talloc failed");
 			}
-	} else {	
+	} else {
 		locks_copy = NULL;
 	}
 
@@ -1509,7 +1509,7 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 	for (i=0; i < num_locks_copy; i++) {
 		struct lock_struct *lock = &locks_copy[i];
 
-		if (lock->context.tid == tid && procid_equal(&lock->context.pid, &pid) &&
+		if (lock->context.tid == tid && serverid_equal(&lock->context.pid, &pid) &&
 				(lock->fnum == fnum)) {
 			brl_unlock(msg_ctx,
 				br_lck,
@@ -1520,6 +1520,131 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 				lock->lock_flav);
 		}
 	}
+}
+
+bool brl_mark_disconnected(struct files_struct *fsp)
+{
+	uint32_t tid = fsp->conn->cnum;
+	uint64_t smblctx = fsp->op->global->open_persistent_id;
+	uint64_t fnum = fsp->fnum;
+	unsigned int i;
+	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
+	struct byte_range_lock *br_lck = NULL;
+
+	if (!fsp->op->global->durable) {
+		return false;
+	}
+
+	if (fsp->current_lock_count == 0) {
+		return true;
+	}
+
+	br_lck = brl_get_locks(talloc_tos(), fsp);
+	if (br_lck == NULL) {
+		return false;
+	}
+
+	for (i=0; i < br_lck->num_locks; i++) {
+		struct lock_struct *lock = &br_lck->lock_data[i];
+
+		/*
+		 * as this is a durable handle, we only expect locks
+		 * of the current file handle!
+		 */
+
+		if (lock->context.smblctx != smblctx) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (lock->context.tid != tid) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (!serverid_equal(&lock->context.pid, &self)) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (lock->fnum != fnum) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		server_id_set_disconnected(&lock->context.pid);
+		lock->context.tid = TID_FIELD_INVALID;
+		lock->fnum = FNUM_FIELD_INVALID;
+	}
+
+	br_lck->modified = true;
+	TALLOC_FREE(br_lck);
+	return true;
+}
+
+bool brl_reconnect_disconnected(struct files_struct *fsp)
+{
+	uint32_t tid = fsp->conn->cnum;
+	uint64_t smblctx = fsp->op->global->open_persistent_id;
+	uint64_t fnum = fsp->fnum;
+	unsigned int i;
+	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
+	struct byte_range_lock *br_lck = NULL;
+
+	if (!fsp->op->global->durable) {
+		return false;
+	}
+
+	/* we want to validate ourself */
+	fsp->lockdb_clean = true;
+
+	br_lck = brl_get_locks(talloc_tos(), fsp);
+	if (br_lck == NULL) {
+		return false;
+	}
+
+	if (br_lck->num_locks == 0) {
+		TALLOC_FREE(br_lck);
+		return true;
+	}
+
+	for (i=0; i < br_lck->num_locks; i++) {
+		struct lock_struct *lock = &br_lck->lock_data[i];
+
+		/*
+		 * as this is a durable handle we only expect locks
+		 * of the current file handle!
+		 */
+
+		if (lock->context.smblctx != smblctx) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (lock->context.tid != TID_FIELD_INVALID) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (!server_id_is_disconnected(&lock->context.pid)) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		if (lock->fnum != FNUM_FIELD_INVALID) {
+			TALLOC_FREE(br_lck);
+			return false;
+		}
+
+		lock->context.pid = self;
+		lock->context.tid = tid;
+		lock->fnum = fnum;
+	}
+
+	fsp->current_lock_count = br_lck->num_locks;
+	br_lck->modified = true;
+	TALLOC_FREE(br_lck);
+	return true;
 }
 
 /****************************************************************************
@@ -1587,7 +1712,7 @@ struct brl_forall_cb {
  on each lock.
 ****************************************************************************/
 
-static int traverse_fn(struct db_record *rec, void *state)
+static int brl_traverse_fn(struct db_record *rec, void *state)
 {
 	struct brl_forall_cb *cb = (struct brl_forall_cb *)state;
 	struct lock_struct *locks;
@@ -1666,7 +1791,7 @@ int brl_forall(void (*fn)(struct file_id id, struct server_id pid,
 	}
 	cb.fn = fn;
 	cb.private_data = private_data;
-	status = dbwrap_traverse(brlock_db, traverse_fn, &cb, &count);
+	status = dbwrap_traverse(brlock_db, brl_traverse_fn, &cb, &count);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		return -1;
@@ -1958,7 +2083,7 @@ void brl_revalidate(struct messaging_context *msg_ctx,
 	ZERO_STRUCT(last_pid);
 
 	for (i=0; i<state->num_pids; i++) {
-		if (procid_equal(&last_pid, &state->pids[i])) {
+		if (serverid_equal(&last_pid, &state->pids[i])) {
 			/*
 			 * We've seen that one already
 			 */

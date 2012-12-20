@@ -114,9 +114,8 @@ static int net_g_lock_dump_fn(struct server_id pid, enum g_lock_type lock_type,
 	char *pidstr;
 
 	pidstr = server_id_str(talloc_tos(), &pid);
-	d_printf("%s: %s (%s)\n", pidstr,
-		 (lock_type & 1) ? "WRITE" : "READ",
-		 (lock_type & G_LOCK_PENDING) ? "pending" : "holder");
+	d_printf("%s: %s\n", pidstr,
+		 (lock_type & 1) ? "WRITE" : "READ");
 	TALLOC_FREE(pidstr);
 	return 0;
 }
@@ -126,7 +125,6 @@ static int net_g_lock_dump(struct net_context *c, int argc, const char **argv)
 	struct tevent_context *ev = NULL;
 	struct messaging_context *msg = NULL;
 	struct g_lock_ctx *g_ctx = NULL;
-	NTSTATUS status;
 	int ret = -1;
 
 	if (argc != 1) {
@@ -138,7 +136,7 @@ static int net_g_lock_dump(struct net_context *c, int argc, const char **argv)
 		goto done;
 	}
 
-	status = g_lock_dump(g_ctx, argv[0], net_g_lock_dump_fn, NULL);
+	(void)g_lock_dump(g_ctx, argv[0], net_g_lock_dump_fn, NULL);
 
 	ret = 0;
 done:

@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007
 #
@@ -30,6 +28,7 @@ from samba.tests import TestCase, TestCaseInTempDir
 from samba.dcerpc.security import dom_sid
 import os
 
+
 for p in [ "../../../../../testdata/samba3", "../../../../testdata/samba3" ]:
     DATADIR = os.path.join(os.path.dirname(__file__), p)
     if os.path.exists(DATADIR):
@@ -56,8 +55,8 @@ class RegistryTestCase(TestCase):
         self.assertEquals(["SOFTWARE", "SYSTEM"], self.registry.subkeys("HKLM"))
 
     def test_values(self):
-        self.assertEquals({'DisplayName': (1L, 'E\x00v\x00e\x00n\x00t\x00 \x00L\x00o\x00g\x00\x00\x00'), 
-                           'ErrorControl': (4L, '\x01\x00\x00\x00')}, 
+        self.assertEquals({'DisplayName': (1L, 'E\x00v\x00e\x00n\x00t\x00 \x00L\x00o\x00g\x00\x00\x00'),
+                           'ErrorControl': (4L, '\x01\x00\x00\x00')},
                            self.registry.values("HKLM/SYSTEM/CURRENTCONTROLSET/SERVICES/EVENTLOG"))
 
 

@@ -152,15 +152,15 @@ static void atalk_add_to_list(name_compare_entry **list)
 static void atalk_rrmdir(TALLOC_CTX *ctx, char *path)
 {
 	char *dpath;
-	SMB_STRUCT_DIRENT *dent = 0;
-	SMB_STRUCT_DIR *dir;
+	struct dirent *dent = 0;
+	DIR *dir;
 
 	if (!path) return;
 
-	dir = sys_opendir(path);
+	dir = opendir(path);
 	if (!dir) return;
 
-	while (NULL != (dent = sys_readdir(dir))) {
+	while (NULL != (dent = readdir(dir))) {
 		if (strcmp(dent->d_name, ".") == 0 ||
 		    strcmp(dent->d_name, "..") == 0)
 			continue;
@@ -170,16 +170,16 @@ static void atalk_rrmdir(TALLOC_CTX *ctx, char *path)
 		atalk_unlink_file(dpath);
 	}
 
-	sys_closedir(dir);
+	closedir(dir);
 }
 
 /* Disk operations */
 
 /* Directory operations */
 
-static SMB_STRUCT_DIR *atalk_opendir(struct vfs_handle_struct *handle, const char *fname, const char *mask, uint32 attr)
+static DIR *atalk_opendir(struct vfs_handle_struct *handle, const char *fname, const char *mask, uint32 attr)
 {
-	SMB_STRUCT_DIR *ret = 0;
+	DIR *ret = 0;
 
 	ret = SMB_VFS_NEXT_OPENDIR(handle, fname, mask, attr);
 
@@ -198,9 +198,9 @@ static SMB_STRUCT_DIR *atalk_opendir(struct vfs_handle_struct *handle, const cha
 	return ret;
 }
 
-static SMB_STRUCT_DIR *atalk_fdopendir(struct vfs_handle_struct *handle, files_struct *fsp, const char *mask, uint32 attr)
+static DIR *atalk_fdopendir(struct vfs_handle_struct *handle, files_struct *fsp, const char *mask, uint32 attr)
 {
-	SMB_STRUCT_DIR *ret = 0;
+	DIR *ret = 0;
 
 	ret = SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attr);
 
@@ -229,7 +229,7 @@ static int atalk_rmdir(struct vfs_handle_struct *handle, const char *path)
 	TALLOC_CTX *ctx = 0;
 	char *dpath;
 
-	if (!handle->conn->origpath || !path) goto exit_rmdir;
+	if (!handle->conn->cwd || !path) goto exit_rmdir;
 
 	/* due to there is no way to change bDeleteVetoFiles variable
 	 * from this module, gotta use talloc stuff..
@@ -241,7 +241,7 @@ static int atalk_rmdir(struct vfs_handle_struct *handle, const char *path)
 		goto exit_rmdir;
 
 	if (!(dpath = talloc_asprintf(ctx, "%s/%s%s", 
-	  handle->conn->origpath, path, add ? "/"APPLEDOUBLE : "")))
+	  handle->conn->cwd, path, add ? "/"APPLEDOUBLE : "")))
 		goto exit_rmdir;
 
 	atalk_rrmdir(ctx, dpath);
@@ -272,7 +272,7 @@ static int atalk_rename(struct vfs_handle_struct *handle,
 		return ret;
 	}
 
-	if (atalk_build_paths(talloc_tos(), handle->conn->origpath, oldname,
+	if (atalk_build_paths(talloc_tos(), handle->conn->cwd, oldname,
 			      &adbl_path, &orig_path, &adbl_info,
 			      &orig_info) != 0)
 		goto exit_rename;
@@ -333,7 +333,7 @@ static int atalk_unlink(struct vfs_handle_struct *handle,
 		}
 	}
 
-	if (atalk_build_paths(talloc_tos(), handle->conn->origpath, path,
+	if (atalk_build_paths(talloc_tos(), handle->conn->cwd, path,
 			      &adbl_path, &orig_path,
 			      &adbl_info, &orig_info) != 0)
 		goto exit_unlink;
@@ -368,7 +368,7 @@ static int atalk_chmod(struct vfs_handle_struct *handle, const char *path, mode_
 	if (!(ctx = talloc_init("chmod_file")))
 		return ret;
 
-	if (atalk_build_paths(ctx, handle->conn->origpath, path, &adbl_path,
+	if (atalk_build_paths(ctx, handle->conn->cwd, path, &adbl_path,
 			      &orig_path, &adbl_info, &orig_info) != 0)
 		goto exit_chmod;
 
@@ -400,7 +400,7 @@ static int atalk_chown(struct vfs_handle_struct *handle, const char *path, uid_t
 	if (!(ctx = talloc_init("chown_file")))
 		return ret;
 
-	if (atalk_build_paths(ctx, handle->conn->origpath, path,
+	if (atalk_build_paths(ctx, handle->conn->cwd, path,
 			      &adbl_path, &orig_path,
 			      &adbl_info, &orig_info) != 0)
 		goto exit_chown;
@@ -435,7 +435,7 @@ static int atalk_lchown(struct vfs_handle_struct *handle, const char *path, uid_
 	if (!(ctx = talloc_init("lchown_file")))
 		return ret;
 
-	if (atalk_build_paths(ctx, handle->conn->origpath, path,
+	if (atalk_build_paths(ctx, handle->conn->cwd, path,
 			      &adbl_path, &orig_path,
 			      &adbl_info, &orig_info) != 0)
 		goto exit_lchown;

@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # user management
 #
 # Copyright Jelmer Vernooij 2010 <jelmer@samba.org>
@@ -40,7 +38,7 @@ from samba.netcmd import (
 
 
 class cmd_user_create(Command):
-    """Creates a new user
+    """Create a new user.
 
 This command creates a new user account in the Active Directory domain.  The username specified on the command is the sAMaccountName.
 
@@ -109,11 +107,13 @@ Example3 shows how to create a new user in the OrgUnit organizational unit.
         }
 
     def run(self, username, password=None, credopts=None, sambaopts=None,
-            versionopts=None, H=None, must_change_at_next_login=False, random_password=False,
-            use_username_as_cn=False, userou=None, surname=None, given_name=None, initials=None,
-            profile_path=None, script_path=None, home_drive=None, home_directory=None,
+            versionopts=None, H=None, must_change_at_next_login=False,
+            random_password=False, use_username_as_cn=False, userou=None,
+            surname=None, given_name=None, initials=None, profile_path=None,
+            script_path=None, home_drive=None, home_directory=None,
             job_title=None, department=None, company=None, description=None,
-            mail_address=None, internet_address=None, telephone_number=None, physical_delivery_office=None):
+            mail_address=None, internet_address=None, telephone_number=None,
+            physical_delivery_office=None):
 
         if random_password:
             password = generate_random_password(128, 255)
@@ -122,6 +122,10 @@ Example3 shows how to create a new user in the OrgUnit organizational unit.
             if password is not None and password is not '':
                 break
             password = getpass("New Password: ")
+            passwordverify = getpass("Retype Password: ")
+            if not password == passwordverify:
+                password = None
+                self.outf.write("Sorry, passwords do not match.\n")
 
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
@@ -129,8 +133,7 @@ Example3 shows how to create a new user in the OrgUnit organizational unit.
         try:
             samdb = SamDB(url=H, session_info=system_session(),
                           credentials=creds, lp=lp)
-            samdb.newuser(username, password,
-                          force_password_change_at_next_login_req=must_change_at_next_login,
+            samdb.newuser(username, password, force_password_change_at_next_login_req=must_change_at_next_login,
                           useusernameascn=use_username_as_cn, userou=userou, surname=surname, givenname=given_name, initials=initials,
                           profilepath=profile_path, homedrive=home_drive, scriptpath=script_path, homedirectory=home_directory,
                           jobtitle=job_title, department=department, company=company, description=description,
@@ -145,15 +148,18 @@ Example3 shows how to create a new user in the OrgUnit organizational unit.
 class cmd_user_add(cmd_user_create):
     __doc__ = cmd_user_create.__doc__
     # take this print out after the add subcommand is removed.
-    # the add subcommand is deprecated but left in for now to allow people to migrate to create
+    # the add subcommand is deprecated but left in for now to allow people to
+    # migrate to create
 
     def run(self, *args, **kwargs):
-        self.err.write("\nNote: samba-tool user add is deprecated.  Please use samba-tool user create for the same function.\n")
+        self.err.write(
+            "Note: samba-tool user add is deprecated.  "
+            "Please use samba-tool user create for the same function.\n")
         return super(self, cmd_user_add).run(*args, **kwargs)
 
 
 class cmd_user_delete(Command):
-    """Deletes a user
+    """Delete a user.
 
 This command deletes a user account from the Active Directory domain.  The username specified on the command is the sAMAccountName.
 
@@ -171,7 +177,6 @@ sudo samba-tool user delete User2
 
 Example2 shows how to delete a user in the domain against the local server.   sudo is used so a user may run the command as root.
 
-<<<<<<< HEAD
 """
     synopsis = "%prog <username> [options]"
 
@@ -187,7 +192,8 @@ Example2 shows how to delete a user in the domain against the local server.   su
         "versionopts": options.VersionOptions,
         }
 
-    def run(self, username, credopts=None, sambaopts=None, versionopts=None, H=None):
+    def run(self, username, credopts=None, sambaopts=None, versionopts=None,
+            H=None):
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp, fallback_machine=True)
 
@@ -201,7 +207,7 @@ Example2 shows how to delete a user in the domain against the local server.   su
 
 
 class cmd_user_list(Command):
-    """List all users"""
+    """List all users."""
 
     synopsis = "%prog [options]"
 
@@ -236,7 +242,7 @@ class cmd_user_list(Command):
 
 
 class cmd_user_enable(Command):
-    """Enables a user
+    """Enable an user.
 
 This command enables a user account for logon to an Active Directory domain.  The username specified on the command is the sAMAccountName.  The username may also be specified using the --filter option.
 
@@ -256,10 +262,10 @@ samba-tool user enable Testuser1 --URL=ldap://samba.samdom.example.com --usernam
 
 Example1 shows how to enable a user in the domain against a remote LDAP server.  The --URL parameter is used to specify the remote target server.  The --username= and --password= options are used to pass the username and password of a user that exists on the remote server and is authorized to update that server.
 
-Exampl2:
+Example2:
 su samba-tool user enable Testuser2
 
-Example2 shows how to enable user Testuser2 for use in the domain on the local server.   sudo is used so a user may run the command as root.
+Example2 shows how to enable user Testuser2 for use in the domain on the local server. sudo is used so a user may run the command as root.
 
 Example3:
 samba-tool user enable --filter=samaccountname=Testuser3
@@ -305,7 +311,7 @@ Example3 shows how to enable a user in the domain against a local LDAP server.  
 
 
 class cmd_user_disable(Command):
-    """Disable a user"""
+    """Disable an user."""
 
     synopsis = "%prog (<username>|--filter <filter>) [options]"
 
@@ -343,9 +349,9 @@ class cmd_user_disable(Command):
 
 
 class cmd_user_setexpiry(Command):
-    """Sets the expiration of a user account
+    """Set the expiration of a user account.
 
-This command sets the expiration of a user account.  The username specified on the command is the sAMAccountName.  The username may also be specified using the --filter option.
+The user can either be specified by their sAMAccountName or using the --filter option.
 
 When a user account expires, it becomes disabled and the user is unable to logon.  The administrator may issue the samba-tool user enable command to enable the account for logon.  The permissions and memberships associated with the account are retained when the account is enabled.
 
@@ -356,7 +362,7 @@ samba-tool user setexpiry User1 --days=20 --URL=ldap://samba.samdom.example.com 
 
 Example1 shows how to set the expiration of an account in a remote LDAP server.  The --URL parameter is used to specify the remote target server.  The --username= and --password= options are used to pass the username and password of a user that exists on the remote server and is authorized to update that server.
 
-Exampl2:
+Example2:
 su samba-tool user setexpiry User2
 
 Example2 shows how to set the account expiration of user User2 so it will never expire.  The user in this example resides on the  local server.   sudo is used so a user may run the command as root.
@@ -409,12 +415,16 @@ Example4 shows how to set the account expiration so that it will never expire.  
             # FIXME: Catch more specific exception
             raise CommandError("Failed to set expiry for user '%s': %s" % (
                 username or filter, msg))
-        self.outf.write("Set expiry for user '%s' to %u days\n" % (
-            username or filter, days))
+        if days:
+            self.outf.write("Expiry for user '%s' set to %u days.\n" % (
+                username or filter, days))
+        else:
+            self.outf.write("Expiry for user '%s' disabled.\n" % (
+                username or filter))
 
 
 class cmd_user_password(Command):
-    """Change password for a user account (the one provided in authentication)
+    """Change password for a user account (the one provided in authentication).
 """
 
     synopsis = "%prog [options]"
@@ -441,10 +451,14 @@ class cmd_user_password(Command):
         net = Net(creds, lp, server=credopts.ipaddress)
 
         password = newpassword
-        while 1:
+        while True:
             if password is not None and password is not '':
                 break
             password = getpass("New Password: ")
+            passwordverify = getpass("Retype Password: ")
+            if not password == passwordverify:
+                password = None
+                self.outf.write("Sorry, passwords do not match.\n")
 
         try:
             net.change_password(password)
@@ -455,7 +469,7 @@ class cmd_user_password(Command):
 
 
 class cmd_user_setpassword(Command):
-    """Sets or resets the password of a user account
+    """Set or reset the password of a user account.
 
 This command sets or resets the logon password for a user account.  The username specified on the command is the sAMAccountName.  The username may also be specified using the --filter option.
 
@@ -542,7 +556,7 @@ Example3 shows how an administrator would reset TestUser3 user's password to pas
 
 
 class cmd_user(SuperCommand):
-    """User management"""
+    """User management."""
 
     subcommands = {}
     subcommands["add"] = cmd_user_create()

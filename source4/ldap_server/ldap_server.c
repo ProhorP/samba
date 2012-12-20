@@ -99,10 +99,9 @@ static void ldapsrv_terminate_connection_done(struct tevent_req *subreq)
 	struct ldapsrv_connection *conn =
 		tevent_req_callback_data(subreq,
 		struct ldapsrv_connection);
-	int ret;
 	int sys_errno;
 
-	ret = tstream_disconnect_recv(subreq, &sys_errno);
+	tstream_disconnect_recv(subreq, &sys_errno);
 	TALLOC_FREE(subreq);
 
 	if (conn->sockets.active == conn->sockets.raw) {
@@ -218,9 +217,8 @@ static int ldapsrv_load_limits(struct ldapsrv_connection *conn)
 		int policy_value, s;
 
 		s = sscanf((const char *)el->values[i].data, "%255[^=]=%d", policy_name, &policy_value);
-		if (ret != 2 || policy_value == 0)
+		if (s != 2 || policy_value == 0)
 			continue;
-
 		if (strcasecmp("InitRecvTimeout", policy_name) == 0) {
 			conn->limits.initial_timeout = policy_value;
 			continue;
@@ -907,7 +905,7 @@ static void ldapsrv_task_init(struct task_server *task)
 		task_server_terminate(task, "ldap_server: no LDAP server required in member server configuration", 
 				      false);
 		return;
-	case ROLE_DOMAIN_CONTROLLER:
+	case ROLE_ACTIVE_DIRECTORY_DC:
 		/* Yes, we want an LDAP server */
 		break;
 	}
@@ -938,7 +936,7 @@ static void ldapsrv_task_init(struct task_server *task)
 					   lpcfg_tls_dhpfile(ldap_service, task->lp_ctx),
 					   &ldap_service->tls_params);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0,("ldapsrv failed tstream_tls_patams_server - %s\n",
+		DEBUG(0,("ldapsrv failed tstream_tls_params_server - %s\n",
 			 nt_errstr(status)));
 		goto failed;
 	}

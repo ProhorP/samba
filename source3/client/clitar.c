@@ -45,7 +45,7 @@ static int clipfind(char **aret, int ret, char *tok);
 typedef struct file_info_struct file_info2;
 
 struct file_info_struct {
-	SMB_OFF_T size;
+	off_t size;
 	uint16 mode;
 	uid_t uid;
 	gid_t gid;
@@ -173,7 +173,7 @@ static void writetarheader(int f, const char *aname, uint64_t size, time_t mtime
 	fixtarname(hb.dbuf.name, aname, (l+2 >= NAMSIZ) ? NAMSIZ : l + 2);
 
 	if (lowercase)
-		strlower_m(hb.dbuf.name);
+		(void)strlower_m(hb.dbuf.name);
 
 	/* write out a "standard" tar format header */
 
@@ -821,8 +821,10 @@ static NTSTATUS do_tar(struct cli_state *cli_state, struct file_info *finfo,
 	TALLOC_CTX *ctx = talloc_stackframe();
 	NTSTATUS status = NT_STATUS_OK;
 
-	if (strequal(finfo->name,"..") || strequal(finfo->name,"."))
-		return NT_STATUS_OK;
+	if (strequal(finfo->name,"..") || strequal(finfo->name,".")) {
+		status = NT_STATUS_OK;
+		goto cleanup;
+	}
 
 	/* Is it on the exclude list ? */
 	if (!tar_excl && clipn) {
@@ -835,7 +837,8 @@ static NTSTATUS do_tar(struct cli_state *cli_state, struct file_info *finfo,
 				client_get_cur_dir(),
 				finfo->name);
 		if (!exclaim) {
-			return NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
+			goto cleanup;
 		}
 
 		DEBUG(5, ("...tar_re_search: %d\n", tar_re_search));
@@ -844,7 +847,8 @@ static NTSTATUS do_tar(struct cli_state *cli_state, struct file_info *finfo,
 				(tar_re_search && mask_match_list(exclaim, cliplist, clipn, True))) {
 			DEBUG(3,("Skipping file %s\n", exclaim));
 			TALLOC_FREE(exclaim);
-			return NT_STATUS_OK;
+			status = NT_STATUS_OK;
+			goto cleanup;
 		}
 		TALLOC_FREE(exclaim);
 	}
@@ -856,7 +860,8 @@ static NTSTATUS do_tar(struct cli_state *cli_state, struct file_info *finfo,
 
 		saved_curdir = talloc_strdup(ctx, client_get_cur_dir());
 		if (!saved_curdir) {
-			return NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
+			goto cleanup;
 		}
 
 		DEBUG(5, ("strlen(cur_dir)=%d, \
@@ -869,7 +874,8 @@ strlen(finfo->name)=%d\nname=%s,cur_dir=%s\n",
 				client_get_cur_dir(),
 				finfo->name);
 		if (!new_cd) {
-			return NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
+			goto cleanup;
 		}
 		client_set_cur_dir(new_cd);
 
@@ -888,10 +894,11 @@ strlen(finfo->name)=%d\nname=%s,cur_dir=%s\n",
 				"%s*",
 				client_get_cur_dir());
 		if (!mtar_mask) {
-			return NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
+			goto cleanup;
 		}
 		DEBUG(5, ("Doing list with mtar_mask: %s\n", mtar_mask));
-		status = do_list(mtar_mask, attribute, do_tar, False, True);
+		do_list(mtar_mask, attribute, do_tar, False, True);
 		client_set_cur_dir(saved_curdir);
 		TALLOC_FREE(saved_curdir);
 		TALLOC_FREE(new_cd);
@@ -902,11 +909,15 @@ strlen(finfo->name)=%d\nname=%s,cur_dir=%s\n",
 					client_get_cur_dir(),
 					finfo->name);
 		if (!rname) {
-			return NT_STATUS_NO_MEMORY;
+			status = NT_STATUS_NO_MEMORY;
+			goto cleanup;
 		}
 		status = do_atar(rname,finfo->name,finfo);
 		TALLOC_FREE(rname);
 	}
+
+  cleanup:
+	TALLOC_FREE(ctx);
 	return status;
 }
 
@@ -1968,8 +1979,8 @@ int tar_parseargs(int argc, char *argv[], const char *Optarg, int Optind)
 	} else {
 		if (tar_type=='c' && dry_run) {
 			tarhandle=-1;
-		} else if ((tar_type=='x' && (tarhandle = sys_open(argv[Optind], O_RDONLY, 0)) == -1)
-					|| (tar_type=='c' && (tarhandle=sys_creat(argv[Optind], 0644)) < 0)) {
+		} else if ((tar_type=='x' && (tarhandle = open(argv[Optind], O_RDONLY, 0)) == -1)
+					|| (tar_type=='c' && (tarhandle=creat(argv[Optind], 0644)) < 0)) {
 			DEBUG(0,("Error opening local file %s - %s\n", argv[Optind], strerror(errno)));
 			return(0);
 		}

@@ -69,19 +69,79 @@ static bool test_OpenPolicy(struct dcerpc_binding_handle *b,
 
 	torture_assert_ntstatus_ok(tctx, dcerpc_lsa_OpenPolicy_r(b, tctx, &r),
 				   "OpenPolicy failed");
+
+	torture_assert_ntstatus_ok(tctx,
+				   r.out.result,
+				   "OpenPolicy failed");
+
+	return true;
+}
+
+static bool test_OpenPolicy_fail(struct dcerpc_binding_handle *b,
+				 struct torture_context *tctx)
+{
+	struct lsa_ObjectAttribute attr;
+	struct policy_handle handle;
+	struct lsa_QosInfo qos;
+	struct lsa_OpenPolicy r;
+	uint16_t system_name = '\\';
+	NTSTATUS status;
+
+	torture_comment(tctx, "\nTesting OpenPolicy_fail\n");
+
+	qos.len = 0;
+	qos.impersonation_level = 2;
+	qos.context_mode = 1;
+	qos.effective_only = 0;
+
+	attr.len = 0;
+	attr.root_dir = NULL;
+	attr.object_name = NULL;
+	attr.attributes = 0;
+	attr.sec_desc = NULL;
+	attr.sec_qos = &qos;
+
+	r.in.system_name = &system_name;
+	r.in.attr = &attr;
+	r.in.access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	r.out.handle = &handle;
+
+	status = dcerpc_lsa_OpenPolicy_r(b, tctx, &r);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			torture_comment(tctx,
+					"OpenPolicy correctly returned with "
+					"status: %s\n",
+					nt_errstr(status));
+			return true;
+		}
+
+		torture_assert_ntstatus_equal(tctx,
+					      status,
+					      NT_STATUS_ACCESS_DENIED,
+					      "OpenPolicy return value should "
+					      "be ACCESS_DENIED");
+		return true;
+	}
+
 	if (!NT_STATUS_IS_OK(r.out.result)) {
 		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
 		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
-			torture_comment(tctx, "not considering %s to be an error\n",
+			torture_comment(tctx,
+					"OpenPolicy correctly returned with "
+					"result: %s\n",
 					nt_errstr(r.out.result));
 			return true;
 		}
-		torture_comment(tctx, "OpenPolicy failed - %s\n",
-				nt_errstr(r.out.result));
-		return false;
 	}
 
-	return true;
+	torture_assert_ntstatus_equal(tctx,
+				      r.out.result,
+				      NT_STATUS_OK,
+				      "OpenPolicy return value should be "
+				      "ACCESS_DENIED");
+
+	return false;
 }
 
 
@@ -98,9 +158,7 @@ bool test_lsa_OpenPolicy2_ex(struct dcerpc_binding_handle *b,
 	torture_comment(tctx, "\nTesting OpenPolicy2\n");
 
 	*handle = talloc(tctx, struct policy_handle);
-	if (!*handle) {
-		return false;
-	}
+	torture_assert(tctx, *handle != NULL, "talloc(tctx, struct policy_handle)");
 
 	qos.len = 0;
 	qos.impersonation_level = 2;
@@ -125,19 +183,10 @@ bool test_lsa_OpenPolicy2_ex(struct dcerpc_binding_handle *b,
 	if (!NT_STATUS_IS_OK(expected_status)) {
 		return true;
 	}
-	if (!NT_STATUS_IS_OK(r.out.result)) {
-		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
-		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
-			torture_comment(tctx, "not considering %s to be an error\n",
-					nt_errstr(r.out.result));
-			talloc_free(*handle);
-			*handle = NULL;
-			return true;
-		}
-		torture_comment(tctx, "OpenPolicy2 failed - %s\n",
-				nt_errstr(r.out.result));
-		return false;
-	}
+
+	torture_assert_ntstatus_ok(tctx,
+				   r.out.result,
+				   "OpenPolicy2 failed");
 
 	return true;
 }
@@ -148,6 +197,72 @@ bool test_lsa_OpenPolicy2(struct dcerpc_binding_handle *b,
 			  struct policy_handle **handle)
 {
 	return test_lsa_OpenPolicy2_ex(b, tctx, handle, NT_STATUS_OK);
+}
+
+static bool test_OpenPolicy2_fail(struct dcerpc_binding_handle *b,
+				  struct torture_context *tctx)
+{
+	struct lsa_ObjectAttribute attr;
+	struct policy_handle handle;
+	struct lsa_QosInfo qos;
+	struct lsa_OpenPolicy2 r;
+	NTSTATUS status;
+
+	torture_comment(tctx, "\nTesting OpenPolicy2_fail\n");
+
+	qos.len = 0;
+	qos.impersonation_level = 2;
+	qos.context_mode = 1;
+	qos.effective_only = 0;
+
+	attr.len = 0;
+	attr.root_dir = NULL;
+	attr.object_name = NULL;
+	attr.attributes = 0;
+	attr.sec_desc = NULL;
+	attr.sec_qos = &qos;
+
+	r.in.system_name = "\\";
+	r.in.attr = &attr;
+	r.in.access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	r.out.handle = &handle;
+
+	status = dcerpc_lsa_OpenPolicy2_r(b, tctx, &r);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			torture_comment(tctx,
+					"OpenPolicy2 correctly returned with "
+					"status: %s\n",
+					nt_errstr(status));
+			return true;
+		}
+
+		torture_assert_ntstatus_equal(tctx,
+					      status,
+					      NT_STATUS_ACCESS_DENIED,
+					      "OpenPolicy2 return value should "
+					      "be ACCESS_DENIED");
+		return true;
+	}
+
+	if (!NT_STATUS_IS_OK(r.out.result)) {
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
+		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
+			torture_comment(tctx,
+					"OpenPolicy2 correctly returned with "
+					"result: %s\n",
+					nt_errstr(r.out.result));
+			return true;
+		}
+	}
+
+	torture_assert_ntstatus_equal(tctx,
+				      r.out.result,
+				      NT_STATUS_OK,
+				      "OpenPolicy2 return value should be "
+				      "ACCESS_DENIED");
+
+	return false;
 }
 
 static bool test_LookupNames(struct dcerpc_binding_handle *b,
@@ -204,36 +319,37 @@ static bool test_LookupNames(struct dcerpc_binding_handle *b,
 				       tnames->names[i].name.string);
 			}
 		}
-		torture_comment(tctx, "LookupNames failed - %s\n",
-				nt_errstr(r.out.result));
-		return false;
+		torture_assert_ntstatus_ok(tctx, r.out.result,
+					   "LookupNames failed");
 	} else if (!NT_STATUS_IS_OK(r.out.result)) {
-		torture_comment(tctx, "LookupNames failed - %s\n",
-				nt_errstr(r.out.result));
-		return false;
+		torture_assert_ntstatus_ok(tctx, r.out.result,
+					   "LookupNames failed");
 	}
 
 	for (i=0;i< r.in.num_names;i++) {
-		if (i < count) {
-			if (sids.sids[i].sid_type != tnames->names[input_idx[i]].sid_type) {
-				torture_comment(tctx, "LookupName of %s got unexpected name type: %s\n",
-						tnames->names[input_idx[i]].name.string,
-						sid_type_lookup(sids.sids[i].sid_type));
-				return false;
-			}
-			if ((sids.sids[i].sid_type == SID_NAME_DOMAIN) &&
-			    (sids.sids[i].rid != (uint32_t)-1)) {
-				torture_comment(tctx, "LookupName of %s got unexpected rid: %d\n",
-					tnames->names[input_idx[i]].name.string, sids.sids[i].rid);
-				return false;
-			}
-		} else if (i >=count) {
-			torture_comment(tctx, "LookupName of %s failed to return a result\n",
-			       tnames->names[input_idx[i]].name.string);
-			return false;
+		torture_assert(tctx, (i < count),
+			       talloc_asprintf(tctx,
+			       "LookupName of %s failed to return a result\n",
+			       tnames->names[input_idx[i]].name.string));
+
+		torture_assert_int_equal(tctx,
+					 sids.sids[i].sid_type,
+					 tnames->names[input_idx[i]].sid_type,
+					 talloc_asprintf(tctx,
+					 "LookupName of %s got unexpected name type: %s\n",
+					 tnames->names[input_idx[i]].name.string,
+					 sid_type_lookup(sids.sids[i].sid_type)));
+		if (sids.sids[i].sid_type != SID_NAME_DOMAIN) {
+			continue;
 		}
+		torture_assert_int_equal(tctx,
+					 sids.sids[i].rid,
+					 UINT32_MAX,
+					 talloc_asprintf(tctx,
+					 "LookupName of %s got unexpected rid: %d\n",
+					 tnames->names[input_idx[i]].name.string,
+					 sids.sids[i].rid));
 	}
-	torture_comment(tctx, "\n");
 
 	return true;
 }
@@ -382,6 +498,7 @@ static bool test_LookupNames2(struct dcerpc_binding_handle *b,
 	struct lsa_TransSidArray2 sids;
 	struct lsa_RefDomainList *domains = NULL;
 	struct lsa_String *names;
+	uint32_t *input_idx;
 	uint32_t count = 0;
 	int i;
 
@@ -389,7 +506,6 @@ static bool test_LookupNames2(struct dcerpc_binding_handle *b,
 
 	sids.count = 0;
 	sids.sids = NULL;
-	uint32_t *input_idx;
 
 	r.in.num_names = 0;
 
@@ -543,9 +659,20 @@ static bool test_LookupNames4(struct dcerpc_binding_handle *b,
 
 	torture_assert_ntstatus_ok(tctx, dcerpc_lsa_LookupNames4_r(b, tctx, &r),
 		"LookupNames4 failed");
+
 	if (!NT_STATUS_IS_OK(r.out.result)) {
-		torture_comment(tctx, "LookupNames4 failed - %s\n",
-				nt_errstr(r.out.result));
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_NONE_MAPPED)) {
+			torture_comment(tctx,
+					"LookupNames4 failed: %s - not considered as an error",
+					nt_errstr(r.out.result));
+
+			return true;
+		}
+
+		torture_assert_ntstatus_ok(tctx,
+					   r.out.result,
+					   "LookupNames4 failed");
+
 		return false;
 	}
 
@@ -560,6 +687,72 @@ static bool test_LookupNames4(struct dcerpc_binding_handle *b,
 	torture_comment(tctx, "\n");
 
 	return true;
+}
+
+static bool test_LookupNames4_fail(struct dcerpc_binding_handle *b,
+				   struct torture_context *tctx)
+{
+	struct lsa_LookupNames4 r;
+	struct lsa_TransSidArray3 sids;
+	struct lsa_RefDomainList *domains = NULL;
+	struct lsa_String *names = NULL;
+	uint32_t count = 0;
+	NTSTATUS status;
+
+	torture_comment(tctx, "\nTesting LookupNames4_fail");
+
+	sids.count = 0;
+	sids.sids = NULL;
+
+	r.in.num_names = 0;
+
+	r.in.num_names = count;
+	r.in.names = names;
+	r.in.sids = &sids;
+	r.in.level = 1;
+	r.in.count = &count;
+	r.in.lookup_options = 0;
+	r.in.client_revision = 0;
+	r.out.count = &count;
+	r.out.sids = &sids;
+	r.out.domains = &domains;
+
+	status = dcerpc_lsa_LookupNames4_r(b, tctx, &r);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			torture_comment(tctx,
+					"LookupNames4 correctly returned with "
+					"status: %s\n",
+					nt_errstr(status));
+			return true;
+		}
+
+		torture_assert_ntstatus_equal(tctx,
+					      status,
+					      NT_STATUS_ACCESS_DENIED,
+					      "LookupNames4 return value should "
+					      "be ACCESS_DENIED");
+		return true;
+	}
+
+	if (!NT_STATUS_IS_OK(r.out.result)) {
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
+		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
+			torture_comment(tctx,
+					"LookupSids3 correctly returned with "
+					"result: %s\n",
+					nt_errstr(r.out.result));
+			return true;
+		}
+	}
+
+	torture_assert_ntstatus_equal(tctx,
+				      r.out.result,
+				      NT_STATUS_OK,
+				      "LookupNames4 return value should be "
+				      "ACCESS_DENIED");
+
+	return false;
 }
 
 
@@ -589,11 +782,9 @@ static bool test_LookupSids(struct dcerpc_binding_handle *b,
 
 	torture_assert_ntstatus_ok(tctx, dcerpc_lsa_LookupSids_r(b, tctx, &r),
 		"LookupSids failed");
-	if (!NT_STATUS_IS_OK(r.out.result) &&
-	    !NT_STATUS_EQUAL(r.out.result, STATUS_SOME_UNMAPPED)) {
-		torture_comment(tctx, "LookupSids failed - %s\n",
-				nt_errstr(r.out.result));
-		return false;
+	if (!NT_STATUS_EQUAL(r.out.result, STATUS_SOME_UNMAPPED)) {
+		torture_assert_ntstatus_ok(tctx, r.out.result,
+			"LookupSids failed");
 	}
 
 	torture_comment(tctx, "\n");
@@ -680,25 +871,93 @@ static bool test_LookupSids3(struct dcerpc_binding_handle *b,
 
 	torture_assert_ntstatus_ok(tctx, dcerpc_lsa_LookupSids3_r(b, tctx, &r),
 		"LookupSids3 failed");
+
 	if (!NT_STATUS_IS_OK(r.out.result)) {
-		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
-		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
-			torture_comment(tctx, "not considering %s to be an error\n",
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_NONE_MAPPED)) {
+			torture_comment(tctx,
+					"LookupSids3 failed: %s - not considered as an error",
 					nt_errstr(r.out.result));
+
 			return true;
 		}
-		torture_comment(tctx, "LookupSids3 failed - %s - not considered an error\n",
-				nt_errstr(r.out.result));
+
+		torture_assert_ntstatus_ok(tctx,
+					   r.out.result,
+					   "LookupSids3 failed");
+
 		return false;
 	}
 
 	torture_comment(tctx, "\n");
 
-	if (!test_LookupNames4(b, tctx, &names, false)) {
+	if (!test_LookupNames4(b, tctx, &names, true)) {
 		return false;
 	}
 
 	return true;
+}
+
+static bool test_LookupSids3_fail(struct dcerpc_binding_handle *b,
+				  struct torture_context *tctx,
+				  struct lsa_SidArray *sids)
+{
+	struct lsa_LookupSids3 r;
+	struct lsa_TransNameArray2 names;
+	struct lsa_RefDomainList *domains = NULL;
+	uint32_t count = sids->num_sids;
+	NTSTATUS status;
+
+	torture_comment(tctx, "\nTesting LookupSids3\n");
+
+	names.count = 0;
+	names.names = NULL;
+
+	r.in.sids = sids;
+	r.in.names = &names;
+	r.in.level = 1;
+	r.in.count = &count;
+	r.in.lookup_options = 0;
+	r.in.client_revision = 0;
+	r.out.domains = &domains;
+	r.out.count = &count;
+	r.out.names = &names;
+
+	status = dcerpc_lsa_LookupSids3_r(b, tctx, &r);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			torture_comment(tctx,
+					"LookupSids3 correctly returned with "
+					"status: %s\n",
+					nt_errstr(status));
+			return true;
+		}
+
+		torture_assert_ntstatus_equal(tctx,
+					      status,
+					      NT_STATUS_ACCESS_DENIED,
+					      "LookupSids3 return value should "
+					      "be ACCESS_DENIED");
+		return true;
+	}
+
+	if (!NT_STATUS_IS_OK(r.out.result)) {
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
+		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
+			torture_comment(tctx,
+					"LookupNames4 correctly returned with "
+					"result: %s\n",
+					nt_errstr(r.out.result));
+			return true;
+		}
+	}
+
+	torture_assert_ntstatus_equal(tctx,
+				      r.out.result,
+				      NT_STATUS_OK,
+				      "LookupSids3 return value should be "
+				      "ACCESS_DENIED");
+
+	return false;
 }
 
 bool test_many_LookupSids(struct dcerpc_pipe *p,
@@ -752,43 +1011,40 @@ bool test_many_LookupSids(struct dcerpc_pipe *p,
 		if (!test_LookupNames(b, tctx, handle, &names)) {
 			return false;
 		}
-	} else if (p->conn->security_state.auth_info->auth_type == DCERPC_AUTH_TYPE_SCHANNEL &&
-		   p->conn->security_state.auth_info->auth_level >= DCERPC_AUTH_LEVEL_INTEGRITY &&
-		   (p->binding->transport == NCACN_IP_TCP || p->binding->transport == NCALRPC)) {
-		struct lsa_LookupSids3 r;
-		struct lsa_RefDomainList *domains = NULL;
+	}
+
+	if (p->binding->transport == NCACN_NP) {
+		if (!test_LookupSids3_fail(b, tctx, &sids)) {
+			return false;
+		}
+		if (!test_LookupNames4_fail(b, tctx)) {
+			return false;
+		}
+	} else if (p->binding->transport == NCACN_IP_TCP) {
 		struct lsa_TransNameArray2 names;
 
 		names.count = 0;
 		names.names = NULL;
 
-		torture_comment(tctx, "\nTesting LookupSids3\n");
-
-		r.in.sids = &sids;
-		r.in.names = &names;
-		r.in.level = 1;
-		r.in.count = &count;
-		r.in.lookup_options = 0;
-		r.in.client_revision = 0;
-		r.out.count = &count;
-		r.out.names = &names;
-		r.out.domains = &domains;
-
-		torture_assert_ntstatus_ok(tctx, dcerpc_lsa_LookupSids3_r(b, tctx, &r),
-			"LookupSids3 failed");
-		if (!NT_STATUS_IS_OK(r.out.result)) {
-			if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
-			    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
-				torture_comment(tctx, "not considering %s to be an error\n",
-						nt_errstr(r.out.result));
-				return true;
+		if (p->conn->security_state.auth_info->auth_type == DCERPC_AUTH_TYPE_SCHANNEL &&
+		   p->conn->security_state.auth_info->auth_level >= DCERPC_AUTH_LEVEL_INTEGRITY) {
+			if (!test_LookupSids3(b, tctx, &sids)) {
+				return false;
 			}
-			torture_comment(tctx, "LookupSids3 failed - %s\n",
-					nt_errstr(r.out.result));
-			return false;
-		}
-		if (!test_LookupNames4(b, tctx, &names, false)) {
-			return false;
+			if (!test_LookupNames4(b, tctx, &names, true)) {
+				return false;
+			}
+		} else {
+			/*
+			 * If we don't have a secure channel these tests must
+			 * fail with ACCESS_DENIED.
+			 */
+			if (!test_LookupSids3_fail(b, tctx, &sids)) {
+				return false;
+			}
+			if (!test_LookupNames4_fail(b, tctx)) {
+				return false;
+			}
 		}
 	}
 
@@ -1116,10 +1372,8 @@ static bool test_Delete(struct dcerpc_binding_handle *b,
 	r.in.handle = handle;
 	torture_assert_ntstatus_ok(tctx, dcerpc_lsa_Delete_r(b, tctx, &r),
 		"Delete failed");
-	if (!NT_STATUS_EQUAL(r.out.result, NT_STATUS_NOT_SUPPORTED)) {
-		torture_comment(tctx, "Delete should have failed NT_STATUS_NOT_SUPPORTED - %s\n", nt_errstr(r.out.result));
-		return false;
-	}
+	torture_assert_ntstatus_equal(tctx, r.out.result, NT_STATUS_NOT_SUPPORTED,
+		"Delete should have failed NT_STATUS_NOT_SUPPORTED");
 
 	return true;
 }
@@ -1270,7 +1524,7 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 	bool ret = true;
 	DATA_BLOB session_key;
 	NTTIME old_mtime, new_mtime;
-	DATA_BLOB blob1, blob2;
+	DATA_BLOB blob1;
 	const char *secret1 = "abcdef12345699qwerty";
 	char *secret2;
  	const char *secret3 = "ABCDEF12345699QWERTY";
@@ -1398,8 +1652,6 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 				blob1.data = r4.out.new_val->buf->data;
 				blob1.length = r4.out.new_val->buf->size;
 
-				blob2 = data_blob_talloc(tctx, NULL, blob1.length);
-
 				secret2 = sess_decrypt_string(tctx,
 							      &blob1, &session_key);
 
@@ -1463,8 +1715,6 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 				blob1.data = r6.out.new_val->buf->data;
 				blob1.length = r6.out.new_val->buf->size;
 
-				blob2 = data_blob_talloc(tctx, NULL, blob1.length);
-
 				secret4 = sess_decrypt_string(tctx,
 							      &blob1, &session_key);
 
@@ -1475,8 +1725,6 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 
 				blob1.data = r6.out.old_val->buf->data;
 				blob1.length = r6.out.old_val->buf->length;
-
-				blob2 = data_blob_talloc(tctx, NULL, blob1.length);
 
 				secret2 = sess_decrypt_string(tctx,
 							      &blob1, &session_key);
@@ -1548,8 +1796,6 @@ static bool test_CreateSecret(struct dcerpc_pipe *p,
 			} else {
 				blob1.data = r8.out.old_val->buf->data;
 				blob1.length = r8.out.old_val->buf->size;
-
-				blob2 = data_blob_talloc(tctx, NULL, blob1.length);
 
 				secret6 = sess_decrypt_string(tctx,
 							      &blob1, &session_key);
@@ -3046,6 +3292,58 @@ static bool test_GetUserName(struct dcerpc_binding_handle *b,
 	return ret;
 }
 
+static bool test_GetUserName_fail(struct dcerpc_binding_handle *b,
+				  struct torture_context *tctx)
+{
+	struct lsa_GetUserName r;
+	struct lsa_String *account_name_p = NULL;
+	NTSTATUS status;
+
+	torture_comment(tctx, "\nTesting GetUserName_fail\n");
+
+	r.in.system_name	= "\\";
+	r.in.account_name	= &account_name_p;
+	r.in.authority_name	= NULL;
+	r.out.account_name	= &account_name_p;
+
+	status = dcerpc_lsa_GetUserName_r(b, tctx, &r);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED)) {
+			torture_comment(tctx,
+					"GetUserName correctly returned with "
+					"status: %s\n",
+					nt_errstr(status));
+			return true;
+		}
+
+		torture_assert_ntstatus_equal(tctx,
+					      status,
+					      NT_STATUS_ACCESS_DENIED,
+					      "GetUserName return value should "
+					      "be ACCESS_DENIED");
+		return true;
+	}
+
+	if (!NT_STATUS_IS_OK(r.out.result)) {
+		if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_ACCESS_DENIED) ||
+		    NT_STATUS_EQUAL(r.out.result, NT_STATUS_RPC_PROTSEQ_NOT_SUPPORTED)) {
+			torture_comment(tctx,
+					"GetUserName correctly returned with "
+					"result: %s\n",
+					nt_errstr(r.out.result));
+			return true;
+		}
+	}
+
+	torture_assert_ntstatus_equal(tctx,
+				      r.out.result,
+				      NT_STATUS_OK,
+				      "GetUserName return value should be "
+				      "ACCESS_DENIED");
+
+	return false;
+}
+
 bool test_lsa_Close(struct dcerpc_binding_handle *b,
 		    struct torture_context *tctx,
 		    struct policy_handle *handle)
@@ -3079,7 +3377,7 @@ bool torture_rpc_lsa(struct torture_context *tctx)
         NTSTATUS status;
         struct dcerpc_pipe *p;
 	bool ret = true;
-	struct policy_handle *handle;
+	struct policy_handle *handle = NULL;
 	struct test_join *join = NULL;
 	struct cli_credentials *machine_creds;
 	struct dcerpc_binding_handle *b;
@@ -3089,6 +3387,23 @@ bool torture_rpc_lsa(struct torture_context *tctx)
 		return false;
 	}
 	b = p->binding_handle;
+
+	/* Test lsaLookupSids3 and lsaLookupNames4 over tcpip */
+	if (p->binding->transport == NCACN_IP_TCP) {
+		if (!test_OpenPolicy_fail(b, tctx)) {
+			ret = false;
+		}
+
+		if (!test_OpenPolicy2_fail(b, tctx)) {
+			ret = false;
+		}
+
+		if (!test_many_LookupSids(p, tctx, handle)) {
+			ret = false;
+		}
+
+		return ret;
+	}
 
 	if (!test_OpenPolicy(b, tctx)) {
 		ret = false;
@@ -3164,6 +3479,13 @@ bool torture_rpc_lsa_get_user(struct torture_context *tctx)
 	}
 	b = p->binding_handle;
 
+	if (p->binding->transport == NCACN_IP_TCP) {
+		if (!test_GetUserName_fail(b, tctx)) {
+			ret = false;
+		}
+		return ret;
+	}
+
 	if (!test_GetUserName(b, tctx)) {
 		ret = false;
 	}
@@ -3179,6 +3501,13 @@ static bool testcase_LookupNames(struct torture_context *tctx,
 	struct lsa_TransNameArray tnames;
 	struct lsa_TransNameArray2 tnames2;
 	struct dcerpc_binding_handle *b = p->binding_handle;
+
+	if (p->binding->transport != NCACN_NP &&
+	    p->binding->transport != NCALRPC) {
+		torture_comment(tctx, "testcase_LookupNames is only available "
+				"over NCACN_NP or NCALRPC");
+		return true;
+	}
 
 	if (!test_OpenPolicy(b, tctx)) {
 		ret = false;
@@ -3264,6 +3593,13 @@ static bool testcase_TrustedDomains(struct torture_context *tctx,
 		talloc_get_type_abort(data, struct lsa_trustdom_state);
 	struct dcerpc_binding_handle *b = p->binding_handle;
 
+	if (p->binding->transport != NCACN_NP &&
+	    p->binding->transport != NCALRPC) {
+		torture_comment(tctx, "testcase_TrustedDomains is only available "
+				"over NCACN_NP or NCALRPC");
+		return true;
+	}
+
 	torture_comment(tctx, "Testing %d domains\n", state->num_trusts);
 
 	if (!test_OpenPolicy(b, tctx)) {
@@ -3321,39 +3657,44 @@ struct torture_suite *torture_rpc_lsa_trusted_domains(TALLOC_CTX *mem_ctx)
 static bool testcase_Privileges(struct torture_context *tctx,
 				struct dcerpc_pipe *p)
 {
-	bool ret = true;
 	struct policy_handle *handle;
 	struct dcerpc_binding_handle *b = p->binding_handle;
 
+	if (p->binding->transport != NCACN_NP &&
+	    p->binding->transport != NCALRPC) {
+		torture_skip(tctx, "testcase_Privileges is only available "
+				"over NCACN_NP or NCALRPC");
+	}
+
 	if (!test_OpenPolicy(b, tctx)) {
-		ret = false;
+		return false;
 	}
 
 	if (!test_lsa_OpenPolicy2(b, tctx, &handle)) {
-		ret = false;
+		return false;
 	}
 
 	if (!handle) {
-		ret = false;
+		return false;
 	}
 
 	if (!test_CreateAccount(b, tctx, handle)) {
-		ret = false;
+		return false;
 	}
 
 	if (!test_EnumAccounts(b, tctx, handle)) {
-		ret = false;
+		return false;
 	}
 
 	if (!test_EnumPrivs(b, tctx, handle)) {
-		ret = false;
+		return false;
 	}
 
 	if (!test_lsa_Close(b, tctx, handle)) {
-		ret = false;
+		return false;
 	}
 
-	return ret;
+	return true;
 }
 
 

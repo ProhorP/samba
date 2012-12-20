@@ -41,6 +41,7 @@ static const struct srv_role_tab {
 	{ ROLE_DOMAIN_MEMBER, "ROLE_DOMAIN_MEMBER" },
 	{ ROLE_DOMAIN_BDC, "ROLE_DOMAIN_BDC" },
 	{ ROLE_DOMAIN_PDC, "ROLE_DOMAIN_PDC" },
+	{ ROLE_ACTIVE_DIRECTORY_DC, "ROLE_ACTIVE_DIRECTORY_DC" },
 	{ 0, NULL }
 };
 
@@ -73,31 +74,8 @@ int lp_find_server_role(int server_role, int security, int domain_logons, int do
 	role = ROLE_STANDALONE;
 
 	switch (security) {
-		case SEC_SHARE:
-			if (domain_logons) {
-				DEBUG(0, ("Server's Role (logon server) conflicts with share-level security\n"));
-			}
-			break;
-		case SEC_SERVER:
-			if (domain_logons) {
-				DEBUG(0, ("Server's Role (logon server) conflicts with server-level security\n"));
-			}
-			/* this used to be considered ROLE_DOMAIN_MEMBER but that's just wrong */
-			role = ROLE_STANDALONE;
-			break;
 		case SEC_DOMAIN:
-			if (domain_logons) {
-				DEBUG(1, ("Server's Role (logon server) NOT ADVISED with domain-level security\n"));
-				role = ROLE_DOMAIN_BDC;
-				break;
-			}
-			role = ROLE_DOMAIN_MEMBER;
-			break;
 		case SEC_ADS:
-			if (domain_logons) {
-				role = ROLE_DOMAIN_CONTROLLER;
-				break;
-			}
 			role = ROLE_DOMAIN_MEMBER;
 			break;
 		case SEC_AUTO:
@@ -129,17 +107,12 @@ int lp_find_security(int server_role, int security)
 	}
 
 	switch (server_role) {
-	case ROLE_AUTO:
-	case ROLE_STANDALONE:
-		return SEC_USER;
 	case ROLE_DOMAIN_MEMBER:
 #if (defined(HAVE_ADS) || _SAMBA_BUILD_ >= 4)
 		return SEC_ADS;
 #else
 		return SEC_DOMAIN;
 #endif
-	case ROLE_DOMAIN_PDC:
-	case ROLE_DOMAIN_BDC:
 	default:
 		return SEC_USER;
 	}
@@ -161,21 +134,17 @@ bool lp_is_security_and_server_role_valid(int server_role, int security)
 	case ROLE_AUTO:
 		valid = true;
 		break;
-	case ROLE_STANDALONE:
-		if (security == SEC_SHARE || security == SEC_SERVER || security == SEC_USER) {
-			valid = true;
-		}
-		break;
-
 	case ROLE_DOMAIN_MEMBER:
 		if (security == SEC_ADS || security == SEC_DOMAIN) {
 			valid = true;
 		}
 		break;
 
+	case ROLE_STANDALONE:
 	case ROLE_DOMAIN_PDC:
 	case ROLE_DOMAIN_BDC:
-		if (security == SEC_USER || security == SEC_ADS || security == SEC_DOMAIN) {
+	case ROLE_ACTIVE_DIRECTORY_DC:
+		if (security == SEC_USER) {
 			valid = true;
 		}
 		break;

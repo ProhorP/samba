@@ -32,6 +32,7 @@
 #include "passdb.h"
 #include "libsmb/libsmb.h"
 #include "auth/gensec/gensec.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 enum pipe_auth_type_spnego {
 	PIPE_AUTH_TYPE_SPNEGO_NONE = 0,
@@ -619,6 +620,7 @@ extern struct cmd_set ntsvcs_commands[];
 extern struct cmd_set drsuapi_commands[];
 extern struct cmd_set eventlog_commands[];
 extern struct cmd_set winreg_commands[];
+extern struct cmd_set fss_commands[];
 
 static struct cmd_set *rpcclient_command_list[] = {
 	rpcclient_commands,
@@ -638,6 +640,7 @@ static struct cmd_set *rpcclient_command_list[] = {
 	drsuapi_commands,
 	eventlog_commands,
 	winreg_commands,
+	fss_commands,
 	NULL
 };
 
@@ -707,7 +710,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 				default_transport,
 				oid,
 				pipe_default_auth_level,
-				cli_state_remote_name(cli),
+				smbXcli_conn_remote_name(cli->conn),
 				get_cmdline_auth_info_domain(auth_info),
 				get_cmdline_auth_info_username(auth_info),
 				get_cmdline_auth_info_password(auth_info),
@@ -721,7 +724,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 				default_transport,
 				pipe_default_auth_type,
 				pipe_default_auth_level,
-				cli_state_remote_name(cli),
+				smbXcli_conn_remote_name(cli->conn),
 				get_cmdline_auth_info_domain(auth_info),
 				get_cmdline_auth_info_username(auth_info),
 				get_cmdline_auth_info_password(auth_info),
@@ -956,8 +959,6 @@ out_free:
 
 	poptFreeContext(pc);
 
-	load_interfaces();
-
 	if (!init_names()) {
 		result = 1;
 		goto done;
@@ -967,6 +968,9 @@ out_free:
 
 	if (!lp_load_global(get_dyn_CONFIGFILE()))
 		fprintf(stderr, "Can't load %s\n", get_dyn_CONFIGFILE());
+
+	/* We must load interfaces after we load the smb.conf */
+	load_interfaces();
 
 	/*
 	 * Get password

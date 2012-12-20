@@ -21,7 +21,7 @@
 #include "includes.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "libads/sitename_cache.h"
-#include "libads/dns.h"
+#include "../lib/addns/dnsquery.h"
 #include "../libcli/netlogon/netlogon.h"
 #include "lib/async_req/async_sock.h"
 #include "libsmb/nmblib.h"
@@ -216,7 +216,7 @@ char *saf_fetch( const char *domain )
 
 static void set_socket_addr_v4(struct sockaddr_storage *addr)
 {
-	if (!interpret_string_addr(addr, lp_socket_address(),
+	if (!interpret_string_addr(addr, lp_nbt_client_socket_address(),
 				   AI_NUMERICHOST|AI_PASSIVE)) {
 		zero_sockaddr(addr);
 	}
@@ -1102,14 +1102,14 @@ static void sort_service_list(struct ip_service *servlist, int count)
  Remove any duplicate address/port pairs in the list
  *********************************************************************/
 
-static int remove_duplicate_addrs2(struct ip_service *iplist, int count )
+int remove_duplicate_addrs2(struct ip_service *iplist, int count )
 {
 	int i, j;
 
 	DEBUG(10,("remove_duplicate_addrs2: "
 			"looking for duplicate address/port pairs\n"));
 
-	/* one loop to remove duplicates */
+	/* One loop to set duplicates to a zero addr. */
 	for ( i=0; i<count; i++ ) {
 		if ( is_zero_addr(&iplist[i].ss)) {
 			continue;
@@ -1124,18 +1124,17 @@ static int remove_duplicate_addrs2(struct ip_service *iplist, int count )
 		}
 	}
 
-	/* one loop to clean up any holes we left */
-	/* first ip should never be a zero_ip() */
-	for (i = 0; i<count; ) {
-		if (is_zero_addr(&iplist[i].ss) ) {
-			if (i != count-1) {
-				memmove(&iplist[i], &iplist[i+1],
-					(count - i - 1)*sizeof(iplist[i]));
+	/* Now remove any addresses set to zero above. */
+	for (i = 0; i < count; i++) {
+		while (i < count &&
+				is_zero_addr(&iplist[i].ss)) {
+			if (count-i-1>0) {
+				memmove(&iplist[i],
+					&iplist[i+1],
+					(count-i-1)*sizeof(struct ip_service));
 			}
 			count--;
-			continue;
 		}
-		i++;
 	}
 
 	return count;
@@ -1368,6 +1367,10 @@ static bool name_query_validator(struct packet_struct *p, void *private_data)
 		putip((char *)&ip,&nmb->answers->rdata[2+i*6]);
 		in_addr_to_sockaddr_storage(&addr, ip);
 
+		if (is_zero_addr(&addr)) {
+			continue;
+		}
+
 		for (j=0; j<state->num_addrs; j++) {
 			if (sockaddr_equal(
 				    (struct sockaddr *)(void *)&addr,
@@ -1514,32 +1517,53 @@ NTSTATUS name_query(const char *name, int name_type,
 }
 
 /********************************************************
- convert an array if struct sockaddr_storage to struct ip_service
+ Convert an array if struct sockaddr_storage to struct ip_service
  return false on failure.  Port is set to PORT_NONE;
+ pcount is [in/out] - it is the length of ss_list on input,
+ and the length of return_iplist on output as we remove any
+ zero addresses from ss_list.
 *********************************************************/
 
 static bool convert_ss2service(struct ip_service **return_iplist,
 		const struct sockaddr_storage *ss_list,
-		int count)
+		int *pcount)
 {
 	int i;
+	int orig_count = *pcount;
+	int real_count = 0;
 
-	if ( count==0 || !ss_list )
+	if (orig_count==0 || !ss_list )
 		return False;
+
+	/* Filter out zero addrs. */
+	for ( i=0; i<orig_count; i++ ) {
+		if (is_zero_addr(&ss_list[i])) {
+			continue;
+		}
+		real_count++;
+	}
+	if (real_count==0) {
+		return false;
+	}
 
 	/* copy the ip address; port will be PORT_NONE */
-	if ((*return_iplist = SMB_MALLOC_ARRAY(struct ip_service, count)) ==
+	if ((*return_iplist = SMB_MALLOC_ARRAY(struct ip_service, real_count)) ==
 			NULL) {
 		DEBUG(0,("convert_ip2service: malloc failed "
-			"for %d enetries!\n", count ));
+			"for %d enetries!\n", real_count ));
 		return False;
 	}
 
-	for ( i=0; i<count; i++ ) {
-		(*return_iplist)[i].ss   = ss_list[i];
-		(*return_iplist)[i].port = PORT_NONE;
+	for ( i=0, real_count = 0; i<orig_count; i++ ) {
+		if (is_zero_addr(&ss_list[i])) {
+			continue;
+		}
+		(*return_iplist)[real_count].ss   = ss_list[i];
+		(*return_iplist)[real_count].port = PORT_NONE;
+		real_count++;
 	}
 
+	*pcount = real_count;
 	return true;
 }
 
@@ -2047,7 +2071,7 @@ struct tevent_req *resolve_wins_send(TALLOC_CTX *mem_ctx,
 	}
 
 	/* the address we will be sending from */
-	if (!interpret_string_addr(&src_ss, lp_socket_address(),
+	if (!interpret_string_addr(&src_ss, lp_nbt_client_socket_address(),
 				AI_NUMERICHOST|AI_PASSIVE)) {
 		zero_sockaddr(&src_ss);
 	}
@@ -2254,7 +2278,7 @@ static NTSTATUS resolve_lmhosts(const char *name, int name_type,
 	if (NT_STATUS_IS_OK(status)) {
 		if (convert_ss2service(return_iplist, 
 				       ss_list,
-				       *return_count)) {
+				       return_count)) {
 			talloc_free(ctx);
 			return NT_STATUS_OK;
 		} else {
@@ -2322,7 +2346,7 @@ static NTSTATUS resolve_hosts(const char *name, int name_type,
 		if (NT_STATUS_IS_OK(status)) {
 			if (convert_ss2service(return_iplist,
 					       ss_list,
-					       *return_count)) {
+					       return_count)) {
 				talloc_free(ctx);
 				return NT_STATUS_OK;
 			} else {
@@ -2353,6 +2377,10 @@ static NTSTATUS resolve_hosts(const char *name, int name_type,
 
 		ZERO_STRUCT(ss);
 		memcpy(&ss, res->ai_addr, res->ai_addrlen);
+
+		if (is_zero_addr(&ss)) {
+			continue;
+		}
 
 		*return_count += 1;
 
@@ -2390,12 +2418,13 @@ static NTSTATUS resolve_ads(const char *name,
 			    struct ip_service **return_iplist,
 			    int *return_count)
 {
-	int 			i, j;
+	int 			i;
 	NTSTATUS  		status;
 	TALLOC_CTX		*ctx;
 	struct dns_rr_srv	*dcs = NULL;
 	int			numdcs = 0;
 	int			numaddrs = 0;
+	const char *dns_hosts_file;
 
 	if ((name_type != 0x1c) && (name_type != KDC_NAME_TYPE) &&
 	    (name_type != 0x1b)) {
@@ -2409,23 +2438,27 @@ static NTSTATUS resolve_ads(const char *name,
 
 	/* The DNS code needs fixing to find IPv6 addresses... JRA. */
 
+	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
 	switch (name_type) {
 		case 0x1b:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "PDC for %s using DNS\n", name));
-			status = ads_dns_query_pdc(ctx, name, &dcs, &numdcs);
+			status = ads_dns_query_pdc(ctx, dns_hosts_file,
+						   name, &dcs, &numdcs);
 			break;
 
 		case 0x1c:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "DCs for %s using DNS\n", name));
-			status = ads_dns_query_dcs(ctx, name, sitename, &dcs,
+			status = ads_dns_query_dcs(ctx, dns_hosts_file,
+						   name, sitename, &dcs,
 						   &numdcs);
 			break;
 		case KDC_NAME_TYPE:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "KDCs for %s using DNS\n", name));
-			status = ads_dns_query_kdcs(ctx, name, sitename, &dcs,
+			status = ads_dns_query_kdcs(ctx, dns_hosts_file,
+						    name, sitename, &dcs,
 						    &numdcs);
 			break;
 		default:
@@ -2439,8 +2472,12 @@ static NTSTATUS resolve_ads(const char *name,
 	}
 
 	for (i=0;i<numdcs;i++) {
-		numaddrs += MAX(dcs[i].num_ips,1);
-	}
+		if (!dcs[i].ss_s) {
+			numaddrs += 1;
+		} else {
+			numaddrs += dcs[i].num_ips;
+		}
+        }
 
 	if ((*return_iplist = SMB_MALLOC_ARRAY(struct ip_service, numaddrs)) ==
 			NULL ) {
@@ -2453,42 +2490,77 @@ static NTSTATUS resolve_ads(const char *name,
 	/* now unroll the list of IP addresses */
 
 	*return_count = 0;
-	i = 0;
-	j = 0;
-	while ( i < numdcs && (*return_count<numaddrs) ) {
-		struct ip_service *r = &(*return_iplist)[*return_count];
 
-		r->port = dcs[i].port;
-
+	for (i = 0; i < numdcs && (*return_count<numaddrs); i++ ) {
 		/* If we don't have an IP list for a name, lookup it up */
-
 		if (!dcs[i].ss_s) {
-			interpret_string_addr(&r->ss, dcs[i].hostname, 0);
-			i++;
-			j = 0;
-		} else {
-			/* use the IP addresses from the SRV sresponse */
+			/* We need to get all IP addresses here. */
+			struct addrinfo *res = NULL;
+			struct addrinfo *p;
+			int extra_addrs = 0;
 
-			if ( j >= dcs[i].num_ips ) {
-				i++;
-				j = 0;
+			if (!interpret_string_addr_internal(&res,
+						dcs[i].hostname,
+						0)) {
 				continue;
 			}
-
-			r->ss = dcs[i].ss_s[j];
-			j++;
-		}
-
-		/* make sure it is a valid IP.  I considered checking the
-		 * negative connection cache, but this is the wrong place
-		 * for it. Maybe only as a hack. After think about it, if
-		 * all of the IP addresses returned from DNS are dead, what
-		 * hope does a netbios name lookup have ? The standard reason
-		 * for falling back to netbios lookups is that our DNS server
-		 * doesn't know anything about the DC's   -- jerry */
-
-		if (!is_zero_addr(&r->ss)) {
-			(*return_count)++;
+			/* Add in every IP from the lookup. How
+			   many is that ? */
+			for (p = res; p; p = p->ai_next) {
+				struct sockaddr_storage ss;
+				memcpy(&ss, p->ai_addr, p->ai_addrlen);
+				if (is_zero_addr(&ss)) {
+					continue;
+				}
+				extra_addrs++;
+			}
+			if (extra_addrs > 1) {
+				/* We need to expand the return_iplist array
+				   as we only budgeted for one address. */
+				numaddrs += (extra_addrs-1);
+				*return_iplist = SMB_REALLOC_ARRAY(*return_iplist,
+						struct ip_service,
+						numaddrs);
+				if (*return_iplist == NULL) {
+					if (res) {
+						freeaddrinfo(res);
+					}
+					talloc_destroy(ctx);
+					return NT_STATUS_NO_MEMORY;
+				}
+			}
+			for (p = res; p; p = p->ai_next) {
+				(*return_iplist)[*return_count].port = dcs[i].port;
+				memcpy(&(*return_iplist)[*return_count].ss,
+						p->ai_addr,
+						p->ai_addrlen);
+				if (is_zero_addr(&(*return_iplist)[*return_count].ss)) {
+					continue;
+				}
+				(*return_count)++;
+				/* Should never happen, but still... */
+				if (*return_count>=numaddrs) {
+					break;
+				}
+			}
+			if (res) {
+				freeaddrinfo(res);
+			}
+		} else {
+			/* use all the IP addresses from the SRV sresponse */
+			int j;
+			for (j = 0; j < dcs[i].num_ips; j++) {
+				(*return_iplist)[*return_count].port = dcs[i].port;
+				(*return_iplist)[*return_count].ss = dcs[i].ss_s[j];
+				if (is_zero_addr(&(*return_iplist)[*return_count].ss)) {
+					continue;
+				}
+                                (*return_count)++;
+				/* Should never happen, but still... */
+				if (*return_count>=numaddrs) {
+					break;
+				}
+			}
 		}
 	}
 
@@ -2512,10 +2584,9 @@ NTSTATUS internal_resolve_name(const char *name,
 				const char *sitename,
 				struct ip_service **return_iplist,
 				int *return_count,
-				const char *resolve_order)
+				const char **resolve_order)
 {
-	char *tok;
-	const char *ptr;
+	const char *tok;
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	int i;
 	TALLOC_CTX *frame = NULL;
@@ -2545,6 +2616,10 @@ NTSTATUS internal_resolve_name(const char *name,
 			SAFE_FREE(*return_iplist);
 			return NT_STATUS_INVALID_PARAMETER;
 		}
+		if (is_zero_addr(&(*return_iplist)->ss)) {
+			SAFE_FREE(*return_iplist);
+			return NT_STATUS_UNSUCCESSFUL;
+		}
 		*return_count = 1;
 		return NT_STATUS_OK;
 	}
@@ -2552,6 +2627,8 @@ NTSTATUS internal_resolve_name(const char *name,
 	/* Check name cache */
 
 	if (namecache_fetch(name, name_type, return_iplist, return_count)) {
+		*return_count = remove_duplicate_addrs2(*return_iplist,
+					*return_count );
 		/* This could be a negative response */
 		if (*return_count > 0) {
 			return NT_STATUS_OK;
@@ -2562,21 +2639,22 @@ NTSTATUS internal_resolve_name(const char *name,
 
 	/* set the name resolution order */
 
-	if (strcmp( resolve_order, "NULL") == 0) {
+	if (resolve_order && strcmp(resolve_order[0], "NULL") == 0) {
 		DEBUG(8,("internal_resolve_name: all lookups disabled\n"));
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	if (!resolve_order[0]) {
-		ptr = "host";
-	} else {
-		ptr = resolve_order;
+	if (!resolve_order || !resolve_order[0]) {
+		static const char *host_order[] = { "host", NULL };
+		resolve_order = host_order;
 	}
 
 	/* iterate through the name resolution backends */
 
 	frame = talloc_stackframe();
-	while (next_token_talloc(frame, &ptr, &tok, LIST_SEP)) {
+	for (i=0; resolve_order[i]; i++) {
+		tok = resolve_order[i];
+
 		if((strequal(tok, "host") || strequal(tok, "hosts"))) {
 			status = resolve_hosts(name, name_type, return_iplist,
 					       return_count);
@@ -2619,7 +2697,7 @@ NTSTATUS internal_resolve_name(const char *name,
 				if (NT_STATUS_IS_OK(status)) {
 					if (!convert_ss2service(return_iplist,
 								ss_list,
-								*return_count)) {
+								return_count)) {
 						status = NT_STATUS_NO_MEMORY;
 					}
 					goto done;
@@ -2633,7 +2711,7 @@ NTSTATUS internal_resolve_name(const char *name,
 			if (NT_STATUS_IS_OK(status)) {
 				if (!convert_ss2service(return_iplist,
 							ss_list,
-							*return_count)) {
+							return_count)) {
 					status = NT_STATUS_NO_MEMORY;
 				}
 				goto done;
@@ -2659,10 +2737,7 @@ NTSTATUS internal_resolve_name(const char *name,
 	controllers including the PDC in iplist[1..n].  Iterating over
 	the iplist when the PDC is down will cause two sets of timeouts. */
 
-	if ( *return_count ) {
-		*return_count = remove_duplicate_addrs2(*return_iplist,
-					*return_count );
-	}
+	*return_count = remove_duplicate_addrs2(*return_iplist, *return_count );
 
 	/* Save in name cache */
 	if ( DEBUGLEVEL >= 100 ) {
@@ -2678,7 +2753,9 @@ NTSTATUS internal_resolve_name(const char *name,
 		}
 	}
 
-	namecache_store(name, name_type, *return_count, *return_iplist);
+	if (*return_count) {
+		namecache_store(name, name_type, *return_count, *return_iplist);
+	}
 
 	/* Display some debugging info */
 
@@ -2886,12 +2963,12 @@ bool get_pdc_ip(const char *domain, struct sockaddr_storage *pss)
 	struct ip_service *ip_list = NULL;
 	int count = 0;
 	NTSTATUS status = NT_STATUS_DOMAIN_CONTROLLER_NOT_FOUND;
-
+	static const char *ads_order[] = { "ads", NULL };
 	/* Look up #1B name */
 
 	if (lp_security() == SEC_ADS) {
 		status = internal_resolve_name(domain, 0x1b, NULL, &ip_list,
-					       &count, "ads");
+					       &count, ads_order);
 	}
 
 	if (!NT_STATUS_IS_OK(status) || count == 0) {
@@ -2932,7 +3009,7 @@ static NTSTATUS get_dc_list(const char *domain,
 			enum dc_lookup_type lookup_type,
 			bool *ordered)
 {
-	char *resolve_order = NULL;
+	const char **resolve_order = NULL;
 	char *saf_servername = NULL;
 	char *pserver = NULL;
 	const char *p;
@@ -2963,27 +3040,30 @@ static NTSTATUS get_dc_list(const char *domain,
 	   are disabled and ads_only is True, then set the string to
 	   NULL. */
 
-	resolve_order = talloc_strdup(ctx, lp_name_resolve_order());
+	resolve_order = lp_name_resolve_order();
 	if (!resolve_order) {
 		status = NT_STATUS_NO_MEMORY;
 		goto out;
 	}
-	strlower_m(resolve_order);
 	if (lookup_type == DC_ADS_ONLY)  {
-		if (strstr( resolve_order, "host")) {
-			resolve_order = talloc_strdup(ctx, "ads");
+		if (str_list_check_ci(resolve_order, "host")) {
+			static const char *ads_order[] = { "ads", NULL };
+			resolve_order = ads_order;
 
 			/* DNS SRV lookups used by the ads resolver
 			   are already sorted by priority and weight */
 			*ordered = true;
 		} else {
-                        resolve_order = talloc_strdup(ctx, "NULL");
+			/* this is quite bizarre! */
+			static const char *null_order[] = { "NULL", NULL };
+                        resolve_order = null_order;
 		}
 	} else if (lookup_type == DC_KDC_ONLY) {
+		static const char *kdc_order[] = { "kdc", NULL };
 		/* DNS SRV lookups used by the ads/kdc resolver
 		   are already sorted by priority and weight */
 		*ordered = true;
-		resolve_order = talloc_strdup(ctx, "kdc");
+		resolve_order = kdc_order;
 	}
 	if (!resolve_order) {
 		status = NT_STATUS_NO_MEMORY;
@@ -3049,7 +3129,7 @@ static NTSTATUS get_dc_list(const char *domain,
 	/* if we have no addresses and haven't done the auto lookup, then
 	   just return the list of DC's.  Or maybe we just failed. */
 
-	if ((num_addresses == 0)) {
+	if (num_addresses == 0) {
 		if (done_auto_lookup) {
 			DEBUG(4,("get_dc_list: no servers found\n"));
 			status = NT_STATUS_NO_LOGON_SERVERS;
@@ -3143,10 +3223,7 @@ static NTSTATUS get_dc_list(const char *domain,
 	/* need to remove duplicates in the list if we have any
 	   explicit password servers */
 
-	if (local_count) {
-		local_count = remove_duplicate_addrs2(return_iplist,
-				local_count );
-	}
+	local_count = remove_duplicate_addrs2(return_iplist, local_count );
 
 	/* For DC's we always prioritize IPv4 due to W2K3 not
 	 * supporting LDAP, KRB5 or CLDAP over IPv6. */
@@ -3207,10 +3284,9 @@ NTSTATUS get_sorted_dc_list( const char *domain,
 	*count = 0;
 
 	DEBUG(8,("get_sorted_dc_list: attempting lookup "
-		"for name %s (sitename %s) using [%s]\n",
+		"for name %s (sitename %s)\n",
 		domain,
-		sitename ? sitename : "NULL",
-		(ads_only ? "ads" : lp_name_resolve_order())));
+		 sitename ? sitename : "NULL"));
 
 	if (ads_only) {
 		lookup_type = DC_ADS_ONLY;

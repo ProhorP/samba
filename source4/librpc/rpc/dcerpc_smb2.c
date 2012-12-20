@@ -34,6 +34,7 @@
 struct smb2_private {
 	struct smb2_handle handle;
 	struct smb2_tree *tree;
+	DATA_BLOB session_key;
 	const char *server_name;
 	bool dead;
 };
@@ -388,10 +389,14 @@ static NTSTATUS smb2_session_key(struct dcecli_connection *c, DATA_BLOB *session
 {
 	struct smb2_private *smb = talloc_get_type(c->transport.private_data,
 						   struct smb2_private);
-	*session_key = smb->tree->session->session_key;
-	if (session_key->data == NULL) {
+
+	if (smb == NULL) return NT_STATUS_CONNECTION_DISCONNECTED;
+
+	if (smb->session_key.length == 0) {
 		return NT_STATUS_NO_USER_SESSION_KEY;
 	}
+
+	*session_key = smb->session_key;
 	return NT_STATUS_OK;
 }
 
@@ -411,6 +416,21 @@ struct composite_context *dcerpc_pipe_open_smb2_send(struct dcerpc_pipe *p,
 	struct smb2_create io;
 	struct smb2_request *req;
 	struct dcecli_connection *c = p->conn;
+
+	/* if we don't have a binding on this pipe yet, then create one */
+	if (p->binding == NULL) {
+		NTSTATUS status;
+		const char *r = smbXcli_conn_remote_name(tree->session->transport->conn);
+		char *s;
+		SMB_ASSERT(r != NULL);
+		s = talloc_asprintf(p, "ncacn_np:%s", r);
+		if (s == NULL) return NULL;
+		status = dcerpc_parse_binding(p, s, &p->binding);
+		talloc_free(s);
+		if (!NT_STATUS_IS_OK(status)) {
+			return NULL;
+		}
+	}
 
 	ctx = composite_create(c, c->event_ctx);
 	if (ctx == NULL) return NULL;
@@ -492,6 +512,14 @@ static void pipe_open_recv(struct smb2_request *req)
 					  smbXcli_conn_remote_name(tree->session->transport->conn));
 	if (composite_nomem(smb->server_name, ctx)) return;
 	smb->dead	= false;
+
+	ctx->status = smbXcli_session_application_key(tree->session->smbXcli,
+						      smb, &smb->session_key);
+	if (NT_STATUS_EQUAL(ctx->status, NT_STATUS_NO_USER_SESSION_KEY)) {
+		smb->session_key = data_blob_null;
+		ctx->status = NT_STATUS_OK;
+	}
+	if (!composite_is_ok(ctx)) return;
 
 	c->transport.private_data = smb;
 

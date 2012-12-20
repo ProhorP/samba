@@ -33,6 +33,8 @@
 #include "serverid.h"
 #include "messages.h"
 #include "libcli/security/security.h"
+#include "lib/smbd_shim.h"
+#include "system/filesys.h"
 
 /* List to hold groups of commands */
 static struct cmd_list {
@@ -405,15 +407,15 @@ static void process_file(struct vfs_state *pvfs, char *filename) {
 	}
 }
 
-void exit_server(const char *reason)
+static void vfstest_exit_server(const char * const reason)
 {
 	DEBUG(3,("Server exit (%s)\n", (reason ? reason : "")));
 	exit(0);
 }
 
-void exit_server_cleanly(const char *const reason)
+static void vfstest_exit_server_cleanly(const char * const reason)
 {
-	exit_server("normal exit");
+	vfstest_exit_server("normal exit");
 }
 
 struct smb_request *vfstest_get_smbreq(TALLOC_CTX *mem_ctx,
@@ -446,7 +448,7 @@ int main(int argc, char *argv[])
 {
 	char *cmdstr = NULL;
 	struct cmd_set	**cmd_set;
-	struct vfs_state vfs = { 0, };
+	struct vfs_state *vfs;
 	int i;
 	char *filename = NULL;
 	char cwd[MAXPATHLEN];
@@ -464,6 +466,11 @@ int main(int argc, char *argv[])
 		POPT_COMMON_SAMBA
 		POPT_TABLEEND
 	};
+	static const struct smbd_shim vfstest_shim_fns =
+	{
+		.exit_server = vfstest_exit_server,
+		.exit_server_cleanly = vfstest_exit_server_cleanly,
+	};
 
 	load_case_tables();
 
@@ -477,6 +484,10 @@ int main(int argc, char *argv[])
 
 	poptFreeContext(pc);
 
+	/* we want total control over the permissions on created files,
+	   so set our umask to 0 */
+	umask(0);
+
 	lp_load_initial_only(get_dyn_CONFIGFILE());
 
 	/* TODO: check output */
@@ -485,6 +496,8 @@ int main(int argc, char *argv[])
 	/* the following functions are part of the Samba debugging
 	   facilities.  See lib/debug.c */
 	setup_logging("vfstest", DEBUG_STDOUT);
+
+	set_smbd_shim(&vfstest_shim_fns);
 
 	/* Load command lists */
 
@@ -501,21 +514,22 @@ int main(int argc, char *argv[])
 	init_guest_info();
 	locking_init();
 	serverid_parent_init(NULL);
-	vfs.conn = talloc_zero(NULL, connection_struct);
-	vfs.conn->share_access = FILE_GENERIC_ALL;
-	vfs.conn->params = talloc_zero(vfs.conn, struct share_params);
-	vfs.conn->sconn = talloc_zero(NULL, struct smbd_server_connection);
-	vfs.conn->sconn->msg_ctx = messaging_init(vfs.conn->sconn, ev);
-	vfs.conn->sconn->ev_ctx = ev;
-	serverid_register(messaging_server_id(vfs.conn->sconn->msg_ctx), 0);
-	make_session_info_guest(NULL, &vfs.conn->session_info);
-	file_init(vfs.conn->sconn);
-	set_conn_connectpath(vfs.conn, getcwd(cwd, sizeof(cwd)));
+	vfs = talloc_zero(NULL, struct vfs_state);
+	vfs->conn = talloc_zero(vfs, connection_struct);
+	vfs->conn->share_access = FILE_GENERIC_ALL;
+	vfs->conn->params = talloc_zero(vfs->conn, struct share_params);
+	vfs->conn->sconn = talloc_zero(NULL, struct smbd_server_connection);
+	vfs->conn->sconn->msg_ctx = messaging_init(vfs->conn->sconn, ev);
+	vfs->conn->sconn->ev_ctx = ev;
+	serverid_register(messaging_server_id(vfs->conn->sconn->msg_ctx), 0);
+	make_session_info_guest(NULL, &vfs->conn->session_info);
+	file_init(vfs->conn->sconn);
+	set_conn_connectpath(vfs->conn, getcwd(cwd, sizeof(cwd)));
 	for (i=0; i < 1024; i++)
-		vfs.files[i] = NULL;
+		vfs->files[i] = NULL;
 
 	/* some advanced initialization stuff */
-	smbd_vfs_init(vfs.conn);
+	smbd_vfs_init(vfs->conn);
 
 	if (!posix_locking_init(false)) {
 		return 1;
@@ -523,7 +537,7 @@ int main(int argc, char *argv[])
 
 	/* Do we have a file input? */
 	if (filename && filename[0]) {
-		process_file(&vfs, filename);
+		process_file(vfs, filename);
 		return 0;
 	}
 
@@ -533,7 +547,7 @@ int main(int argc, char *argv[])
 		char    *p = cmdstr;
 
 		while((cmd=next_command(frame, &p)) != NULL) {
-			status = process_cmd(&vfs, cmd);
+			status = process_cmd(vfs, cmd);
 		}
 
 		TALLOC_FREE(cmd);
@@ -552,12 +566,12 @@ int main(int argc, char *argv[])
 		}
 
 		if (line[0] != '\n') {
-			status = process_cmd(&vfs, line);
+			status = process_cmd(vfs, line);
 		}
 		SAFE_FREE(line);
 	}
 
-	TALLOC_FREE(vfs.conn);
+	TALLOC_FREE(vfs);
 	TALLOC_FREE(frame);
 	return NT_STATUS_IS_OK(status) ? 0 : 1;
 }

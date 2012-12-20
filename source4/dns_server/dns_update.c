@@ -26,11 +26,12 @@
 #include "librpc/gen_ndr/ndr_dnsp.h"
 #include <ldb.h>
 #include "param/param.h"
+#include "param/loadparm.h"
 #include "dsdb/samdb/samdb.h"
 #include "dsdb/common/util.h"
 #include "smbd/service_task.h"
 #include "dns_server/dns_server.h"
-#include "dns_server/dns_update.h"
+#include "auth/auth.h"
 
 static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 			     const struct dns_res_rec *rrec,
@@ -285,6 +286,10 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 			     const struct dns_res_rec *rrec,
 			     struct dnsp_DnssrvRpcRecord *r)
 {
+	char *tmp;
+	char *txt_record_txt;
+	char *saveptr = NULL;
+
 	if (rrec->rr_type == DNS_QTYPE_ALL) {
 		return DNS_ERR(FORMAT_ERROR);
 	}
@@ -327,6 +332,10 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 				rrec->rdata.srv_record.target);
 		W_ERROR_HAVE_NO_MEMORY(r->data.srv.nameTarget);
 		break;
+	case DNS_QTYPE_PTR:
+		r->data.ptr = talloc_strdup(mem_ctx, rrec->rdata.ptr_record);
+		W_ERROR_HAVE_NO_MEMORY(r->data.ptr);
+		break;
 	case DNS_QTYPE_MX:
 		r->data.mx.wPriority = rrec->rdata.mx_record.preference;
 		r->data.mx.nameTarget = talloc_strdup(mem_ctx,
@@ -334,8 +343,30 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 		W_ERROR_HAVE_NO_MEMORY(r->data.mx.nameTarget);
 		break;
 	case DNS_QTYPE_TXT:
-		r->data.txt = talloc_strdup(mem_ctx, rrec->rdata.txt_record.txt);
-		W_ERROR_HAVE_NO_MEMORY(r->data.txt);
+		r->data.txt.count = 0;
+		r->data.txt.str = talloc_array(mem_ctx, const char *,
+					       r->data.txt.count);
+		W_ERROR_HAVE_NO_MEMORY(r->data.txt.str);
+
+		txt_record_txt = talloc_strdup(r->data.txt.str,
+					       rrec->rdata.txt_record.txt);
+		W_ERROR_HAVE_NO_MEMORY(txt_record_txt);
+
+		tmp = strtok_r(txt_record_txt, "\"", &saveptr);
+		while (tmp) {
+			if (strcmp(tmp, " ") == 0) {
+				tmp = strtok_r(NULL, "\"", &saveptr);
+				continue;
+			}
+			r->data.txt.str = talloc_realloc(mem_ctx, r->data.txt.str, const char *,
+							r->data.txt.count+1);
+			r->data.txt.str[r->data.txt.count] = talloc_strdup(r->data.txt.str, tmp);
+			W_ERROR_HAVE_NO_MEMORY(r->data.txt.str[r->data.txt.count]);
+
+			r->data.txt.count++;
+			tmp = strtok_r(NULL, "\"", &saveptr);
+		}
+
 		break;
 	default:
 		DEBUG(0, ("Got a qytpe of %d\n", rrec->rr_type));
@@ -351,7 +382,8 @@ done:
 static WERROR handle_one_update(struct dns_server *dns,
 				TALLOC_CTX *mem_ctx,
 				const struct dns_name_question *zone,
-				const struct dns_res_rec *update)
+				const struct dns_res_rec *update,
+				const struct dns_server_tkey *tkey)
 {
 	struct dnsp_DnssrvRpcRecord *recs = NULL;
 	uint16_t rcount = 0;
@@ -360,29 +392,25 @@ static WERROR handle_one_update(struct dns_server *dns,
 	WERROR werror;
 	bool needs_add = false;
 
-	DEBUG(1, ("Looking at record: \n"));
-	NDR_PRINT_DEBUG(dns_res_rec, discard_const(update));
+	DEBUG(2, ("Looking at record: \n"));
+	if (DEBUGLVL(2)) {
+		NDR_PRINT_DEBUG(dns_res_rec, discard_const(update));
+	}
 
 	switch (update->rr_type) {
 	case DNS_QTYPE_A:
-		break;
 	case DNS_QTYPE_NS:
-		break;
 	case DNS_QTYPE_CNAME:
-		break;
 	case DNS_QTYPE_SOA:
-		break;
 	case DNS_QTYPE_PTR:
-		break;
 	case DNS_QTYPE_MX:
-		break;
 	case DNS_QTYPE_AAAA:
-		break;
 	case DNS_QTYPE_SRV:
-		break;
 	case DNS_QTYPE_TXT:
 		break;
 	default:
+		DEBUG(0, ("Can't handle updates of type %u yet\n",
+			  update->rr_type));
 		return DNS_ERR(NOT_IMPLEMENTED);
 	}
 
@@ -406,7 +434,7 @@ static WERROR handle_one_update(struct dns_server *dns,
 			 */
 			for (i = 0; i < rcount; i++) {
 				if (recs[i].wType != DNS_TYPE_CNAME) {
-					DEBUG(0, ("Skipping update\n"));
+					DEBUG(5, ("Skipping update\n"));
 					return WERR_OK;
 				}
 				break;
@@ -437,7 +465,7 @@ static WERROR handle_one_update(struct dns_server *dns,
 			 */
 			for (i = 0; i < rcount; i++) {
 				if (recs[i].wType == DNS_TYPE_CNAME) {
-					DEBUG(0, ("Skipping update\n"));
+					DEBUG(5, ("Skipping update\n"));
 					return WERR_OK;
 				}
 			}
@@ -461,7 +489,7 @@ static WERROR handle_one_update(struct dns_server *dns,
 					 * logic for RFC2136
 					 */
 					if (n <= o) {
-						DEBUG(0, ("Skipping update\n"));
+						DEBUG(5, ("Skipping update\n"));
 						return WERR_OK;
 					}
 					found = true;
@@ -469,7 +497,7 @@ static WERROR handle_one_update(struct dns_server *dns,
 				}
 			}
 			if (!found) {
-				DEBUG(0, ("Skipping update\n"));
+				DEBUG(5, ("Skipping update\n"));
 				return WERR_OK;
 			}
 
@@ -598,6 +626,10 @@ static WERROR handle_one_update(struct dns_server *dns,
 				ZERO_STRUCT(recs[i]);
 			}
 		}
+
+		werror = dns_replace_records(dns, mem_ctx, dn,
+					     needs_add, recs, rcount);
+		W_ERROR_NOT_OK_RETURN(werror);
 	}
 
 	return WERR_OK;
@@ -607,7 +639,8 @@ static WERROR handle_updates(struct dns_server *dns,
 			     TALLOC_CTX *mem_ctx,
 			     const struct dns_name_question *zone,
 			     const struct dns_res_rec *prereqs, uint16_t pcount,
-			     struct dns_res_rec *updates, uint16_t upd_count)
+			     struct dns_res_rec *updates, uint16_t upd_count,
+			     struct dns_server_tkey *tkey)
 {
 	struct ldb_dn *zone_dn = NULL;
 	WERROR werror = WERR_OK;
@@ -615,37 +648,89 @@ static WERROR handle_updates(struct dns_server *dns,
 	uint16_t ri;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 
+	if (tkey != NULL) {
+		ret = ldb_set_opaque(dns->samdb, "sessionInfo", tkey->session_info);
+		if (ret != LDB_SUCCESS) {
+			DEBUG(1, ("unable to set session info\n"));
+			werror = DNS_ERR(SERVER_FAILURE);
+			goto failed;
+		}
+	}
+
 	werror = dns_name2dn(dns, tmp_ctx, zone->name, &zone_dn);
-	W_ERROR_NOT_OK_RETURN(werror);
+	W_ERROR_NOT_OK_GOTO(werror, failed);
 
 	ret = ldb_transaction_start(dns->samdb);
 	if (ret != LDB_SUCCESS) {
-		return DNS_ERR(SERVER_FAILURE);
+		werror = DNS_ERR(SERVER_FAILURE);
+		goto failed;
 	}
 
 	werror = check_prerequisites(dns, tmp_ctx, zone, prereqs, pcount);
 	W_ERROR_NOT_OK_GOTO(werror, failed);
 
-	DEBUG(0, ("update count is %u\n", upd_count));
+	DEBUG(1, ("update count is %u\n", upd_count));
 
 	for (ri = 0; ri < upd_count; ri++) {
 		werror = handle_one_update(dns, tmp_ctx, zone,
-					   &updates[ri]);
+					   &updates[ri], tkey);
 		W_ERROR_NOT_OK_GOTO(werror, failed);
 	}
 
 	ldb_transaction_commit(dns->samdb);
 	TALLOC_FREE(tmp_ctx);
+
+	if (tkey != NULL) {
+		ldb_set_opaque(dns->samdb, "sessionInfo",
+			       system_session(dns->task->lp_ctx));
+	}
+
 	return WERR_OK;
 
 failed:
 	ldb_transaction_cancel(dns->samdb);
+
+	if (tkey != NULL) {
+		ldb_set_opaque(dns->samdb, "sessionInfo",
+			       system_session(dns->task->lp_ctx));
+	}
+
 	TALLOC_FREE(tmp_ctx);
 	return werror;
 
 }
 
+static WERROR dns_update_allowed(struct dns_server *dns,
+				 struct dns_request_state *state,
+				 struct dns_server_tkey **tkey)
+{
+	if (lpcfg_allow_dns_updates(dns->task->lp_ctx) == DNS_UPDATE_ON) {
+		DEBUG(2, ("All updates allowed.\n"));
+		return WERR_OK;
+	}
+
+	if (lpcfg_allow_dns_updates(dns->task->lp_ctx) == DNS_UPDATE_OFF) {
+		DEBUG(2, ("Updates disabled.\n"));
+		return DNS_ERR(REFUSED);
+	}
+
+	if (state->authenticated == false ) {
+		DEBUG(2, ("Update not allowed for unsigned packet.\n"));
+		return DNS_ERR(REFUSED);
+	}
+
+        *tkey = dns_find_tkey(dns->tkeys, state->key_name);
+	if (*tkey == NULL) {
+		DEBUG(0, ("Authenticated, but key not found. Something is wrong.\n"));
+		return DNS_ERR(REFUSED);
+	}
+
+	return WERR_OK;
+}
+
+
 WERROR dns_server_process_update(struct dns_server *dns,
+				 struct dns_request_state *state,
 				 TALLOC_CTX *mem_ctx,
 				 struct dns_name_packet *in,
 				 struct dns_res_rec **prereqs,    uint16_t *prereq_count,
@@ -656,6 +741,7 @@ WERROR dns_server_process_update(struct dns_server *dns,
 	const struct dns_server_zone *z;
 	size_t host_part_len = 0;
 	WERROR werror = DNS_ERR(NOT_IMPLEMENTED);
+	struct dns_server_tkey *tkey = NULL;
 
 	if (in->qdcount != 1) {
 		return DNS_ERR(FORMAT_ERROR);
@@ -672,7 +758,7 @@ WERROR dns_server_process_update(struct dns_server *dns,
 		return DNS_ERR(FORMAT_ERROR);
 	}
 
-	DEBUG(0, ("Got a dns update request.\n"));
+	DEBUG(2, ("Got a dns update request.\n"));
 
 	for (z = dns->zones; z != NULL; z = z->next) {
 		bool match;
@@ -684,13 +770,13 @@ WERROR dns_server_process_update(struct dns_server *dns,
 	}
 
 	if (z == NULL) {
-		DEBUG(0, ("We're not authorative for this zone\n"));
+		DEBUG(1, ("We're not authoritative for this zone\n"));
 		return DNS_ERR(NOTAUTH);
 	}
 
 	if (host_part_len != 0) {
 		/* TODO: We need to delegate this one */
-		DEBUG(0, ("Would have to delegate zones.\n"));
+		DEBUG(1, ("Would have to delegate zone '%s'.\n", zone->name));
 		return DNS_ERR(NOT_IMPLEMENTED);
 	}
 
@@ -700,12 +786,9 @@ WERROR dns_server_process_update(struct dns_server *dns,
 				     *prereq_count);
 	W_ERROR_NOT_OK_RETURN(werror);
 
-	/* TODO: Check if update is allowed, we probably want "always",
-	 * key-based GSSAPI, key-based bind-style TSIG and "never" as
-	 * smb.conf options. */
-	if (lpcfg_allow_dns_updates(dns->task->lp_ctx) != DNS_UPDATE_ON) {
-		DEBUG(0, ("Update not allowed."));
-		return DNS_ERR(REFUSED);
+	werror = dns_update_allowed(dns, state, &tkey);
+	if (!W_ERROR_IS_OK(werror)) {
+		return werror;
 	}
 
 	*update_count = in->nscount;
@@ -713,9 +796,8 @@ WERROR dns_server_process_update(struct dns_server *dns,
 	werror = update_prescan(in->questions, *updates, *update_count);
 	W_ERROR_NOT_OK_RETURN(werror);
 
-
 	werror = handle_updates(dns, mem_ctx, in->questions, *prereqs,
-			        *prereq_count, *updates, *update_count);
+			        *prereq_count, *updates, *update_count, tkey);
 	W_ERROR_NOT_OK_RETURN(werror);
 
 	return werror;

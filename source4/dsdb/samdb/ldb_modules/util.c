@@ -691,14 +691,15 @@ int dsdb_check_optional_feature(struct ldb_module *module, struct GUID op_featur
 	struct ldb_message_element *el;
 	struct ldb_dn *feature_dn;
 
-	feature_dn = samdb_ntds_settings_dn(ldb_module_get_ctx(module));
+	tmp_ctx = talloc_new(ldb);
+
+	feature_dn = samdb_ntds_settings_dn(ldb_module_get_ctx(module), tmp_ctx);
 	if (feature_dn == NULL) {
+		talloc_free(tmp_ctx);
 		return ldb_operr(ldb_module_get_ctx(module));
 	}
 
 	*feature_enabled = false;
-
-	tmp_ctx = talloc_new(ldb);
 
 	ret = dsdb_module_search_dn(module, tmp_ctx, &res, feature_dn, attrs, DSDB_FLAG_NEXT_MODULE, NULL);
 	if (ret != LDB_SUCCESS) {
@@ -1361,4 +1362,34 @@ struct ldb_message_element *dsdb_get_single_valued_attr(const struct ldb_message
 	}
 
 	return el;
+}
+
+/*
+ * This function determines the (last) structural or 88 object class of a passed
+ * "objectClass" attribute - per MS-ADTS 3.1.1.1.4 this is the last value.
+ * Without schema this does not work and hence NULL is returned.
+ */
+const struct dsdb_class *dsdb_get_last_structural_class(const struct dsdb_schema *schema,
+							const struct ldb_message_element *element)
+{
+	const struct dsdb_class *last_class;
+
+	if (schema == NULL) {
+		return NULL;
+	}
+
+	if (element->num_values == 0) {
+		return NULL;
+	}
+
+	last_class = dsdb_class_by_lDAPDisplayName_ldb_val(schema,
+							   &element->values[element->num_values-1]);
+	if (last_class == NULL) {
+		return NULL;
+	}
+	if (last_class->objectClassCategory > 1) {
+		return NULL;
+	}
+
+	return last_class;
 }

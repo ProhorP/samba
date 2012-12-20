@@ -32,6 +32,7 @@
 #include "librpc/gen_ndr/ndr_krb5pac.h"
 #include "libcli/security/security.h"
 #include "dsdb/samdb/samdb.h"
+#include "auth/kerberos/pac_utils.h"
 
 static
 NTSTATUS samba_get_logon_info_pac_blob(TALLOC_CTX *mem_ctx,
@@ -481,7 +482,11 @@ int kdc_check_pac(krb5_context context,
 		}
 	}
 
+#if HDB_ENCTYPE2KEY_TAKES_KEYSET
+	ret = hdb_enctype2key(context, &ent->entry, NULL, etype, &key);
+#else
 	ret = hdb_enctype2key(context, &ent->entry, etype, &key);
+#endif
 
 	if (ret != 0) {
 		return ret;

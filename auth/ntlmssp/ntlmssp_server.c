@@ -131,13 +131,6 @@ NTSTATUS gensec_ntlmssp_server_negotiate(struct gensec_security *gensec_security
 		return NT_STATUS_NOT_IMPLEMENTED;
 	}
 
-	/* Check if we may set the challenge */
-	if (auth_context->challenge_may_be_modified) {
-		if (!auth_context->challenge_may_be_modified(auth_context)) {
-			ntlmssp_state->neg_flags &= ~NTLMSSP_NEGOTIATE_NTLM2;
-		}
-	}
-
 	/* The flags we send back are not just the negotiated flags,
 	 * they are also 'what is in this packet'.  Therfore, we
 	 * operate on 'chal_flags' from here on
@@ -426,7 +419,7 @@ static NTSTATUS ntlmssp_server_check_password(struct gensec_security *gensec_sec
 					      DATA_BLOB *user_session_key, DATA_BLOB *lm_session_key)
 {
 	struct ntlmssp_state *ntlmssp_state = gensec_ntlmssp->ntlmssp_state;
-	struct auth4_context *auth_context = gensec_ntlmssp->gensec_security->auth_context;
+	struct auth4_context *auth_context = gensec_security->auth_context;
 	NTSTATUS nt_status = NT_STATUS_NOT_IMPLEMENTED;
 	struct auth_usersupplied_info *user_info;
 
@@ -441,7 +434,7 @@ static NTSTATUS ntlmssp_server_check_password(struct gensec_security *gensec_sec
 	user_info->client.account_name = ntlmssp_state->user;
 	user_info->client.domain_name = ntlmssp_state->domain;
 	user_info->workstation_name = ntlmssp_state->client.netbios_name;
-	user_info->remote_host = gensec_get_remote_address(gensec_ntlmssp->gensec_security);
+	user_info->remote_host = gensec_get_remote_address(gensec_security);
 
 	user_info->password_state = AUTH_PASSWORD_RESPONSE;
 	user_info->password.response.lanman = ntlmssp_state->lm_resp;
@@ -624,14 +617,13 @@ NTSTATUS gensec_ntlmssp_server_auth(struct gensec_security *gensec_security,
 	struct gensec_ntlmssp_context *gensec_ntlmssp =
 		talloc_get_type_abort(gensec_security->private_data,
 				      struct gensec_ntlmssp_context);
-	struct ntlmssp_state *ntlmssp_state = gensec_ntlmssp->ntlmssp_state;
 	struct ntlmssp_server_auth_state *state;
 	NTSTATUS nt_status;
 
 	/* zero the outbound NTLMSSP packet */
 	*out = data_blob_null;
 
-	state = talloc_zero(ntlmssp_state, struct ntlmssp_server_auth_state);
+	state = talloc_zero(gensec_ntlmssp, struct ntlmssp_server_auth_state);
 	if (state == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -655,10 +647,6 @@ NTSTATUS gensec_ntlmssp_server_auth(struct gensec_security *gensec_security,
 						  &state->user_session_key,
 						  &state->lm_session_key);
 	if (!NT_STATUS_IS_OK(nt_status)) {
-		DEBUG(5,("%s: Checking NTLMSSP password for %s\\%s failed: %s\n",
-			 __location__,
-			 ntlmssp_state->domain, ntlmssp_state->user,
-			 nt_errstr(nt_status)));
 		TALLOC_FREE(state);
 		return nt_status;
 	}

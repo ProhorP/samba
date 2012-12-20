@@ -26,12 +26,14 @@
 #include "librpc/rpc/pyrpc_util.h"
 #include "librpc/ndr/libndr.h"
 #include "lib/messaging/messaging.h"
+#include "lib/messaging/irpc.h"
 #include "lib/events/events.h"
 #include "cluster/cluster.h"
 #include "param/param.h"
 #include "param/pyparam.h"
 #include "librpc/rpc/dcerpc.h"
 #include "librpc/gen_ndr/server_id.h"
+#include <pytalloc.h>
 
 void initmessaging(void);
 
@@ -40,10 +42,14 @@ extern PyTypeObject imessaging_Type;
 static bool server_id_from_py(PyObject *object, struct server_id *server_id)
 {
 	if (!PyTuple_Check(object)) {
-		PyErr_SetString(PyExc_ValueError, "Expected tuple");
-		return false;
-	}
+		if (!py_check_dcerpc_type(object, "server_id", "server_id")) {
 
+			PyErr_SetString(PyExc_ValueError, "Expected tuple or server_id");
+			return false;
+		}
+		*server_id = *pytalloc_get_type(object, struct server_id);
+		return true;
+	}
 	if (PyTuple_Size(object) == 3) {
 		return PyArg_ParseTuple(object, "iii", &server_id->pid, &server_id->task_id, &server_id->vnn);
 	} else {
@@ -215,6 +221,101 @@ static PyObject *py_imessaging_deregister(PyObject *self, PyObject *args, PyObje
 	Py_RETURN_NONE;
 }
 
+static PyObject *py_irpc_servers_byname(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	imessaging_Object *iface = (imessaging_Object *)self;
+	char *server_name;
+	struct server_id *ids;
+	PyObject *pylist;
+	int i;
+	TALLOC_CTX *mem_ctx = talloc_new(NULL);
+	if (!mem_ctx) {
+		PyErr_NoMemory();
+		return NULL;
+	}
+
+	if (!PyArg_ParseTuple(args, "s", &server_name)) {
+		TALLOC_FREE(mem_ctx);
+		return NULL;
+	}
+
+	ids = irpc_servers_byname(iface->msg_ctx, mem_ctx, server_name);
+
+	if (ids == NULL) {
+		TALLOC_FREE(mem_ctx);
+		PyErr_SetString(PyExc_KeyError, "No such name");
+		return NULL;
+	}
+
+	for (i = 0; ids[i].pid != 0; i++) {
+		/* Do nothing */
+	}
+
+	pylist = PyList_New(i);
+	if (pylist == NULL) {
+		TALLOC_FREE(mem_ctx);
+		PyErr_NoMemory();
+		return NULL;
+	}
+	for (i = 0; ids[i].pid; i++) {
+		PyObject *py_server_id;
+		struct server_id *p_server_id = talloc(NULL, struct server_id);
+		if (!p_server_id) {
+			PyErr_NoMemory();
+			return NULL;
+		}
+		*p_server_id = ids[i];
+
+		py_server_id = py_return_ndr_struct("samba.dcerpc.server_id", "server_id", p_server_id, p_server_id);
+		if (!py_server_id) {
+			return NULL;
+		}
+		PyList_SetItem(pylist, i, py_server_id);
+		talloc_unlink(NULL, p_server_id);
+	}
+	TALLOC_FREE(mem_ctx);
+	return pylist;
+}
+
+static PyObject *py_irpc_all_servers(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	imessaging_Object *iface = (imessaging_Object *)self;
+	PyObject *pylist;
+	int i;
+	struct irpc_name_records *records;
+	TALLOC_CTX *mem_ctx = talloc_new(NULL);
+	if (!mem_ctx) {
+		PyErr_NoMemory();
+		return NULL;
+	}
+
+	records = irpc_all_servers(iface->msg_ctx, mem_ctx);
+	if (records == NULL) {
+		return NULL;
+	}
+
+	pylist = PyList_New(records->num_records);
+	if (pylist == NULL) {
+		TALLOC_FREE(mem_ctx);
+		PyErr_NoMemory();
+		return NULL;
+	}
+	for (i = 0; i < records->num_records; i++) {
+		PyObject *py_name_record
+			= py_return_ndr_struct("samba.dcerpc.irpc",
+					       "name_record",
+					       records->names[i],
+					       records->names[i]);
+		if (!py_name_record) {
+			return NULL;
+		}
+		PyList_SetItem(pylist, i,
+			       py_name_record);
+	}
+	TALLOC_FREE(mem_ctx);
+	return pylist;
+}
+
 static PyMethodDef py_imessaging_methods[] = {
 	{ "send", (PyCFunction)py_imessaging_send, METH_VARARGS|METH_KEYWORDS,
 		"S.send(target, msg_type, data) -> None\nSend a message" },
@@ -222,16 +323,29 @@ static PyMethodDef py_imessaging_methods[] = {
 		"S.register(callback, msg_type=None) -> msg_type\nRegister a message handler" },
 	{ "deregister", (PyCFunction)py_imessaging_deregister, METH_VARARGS|METH_KEYWORDS,
 		"S.deregister(callback, msg_type) -> None\nDeregister a message handler" },
+	{ "irpc_servers_byname", (PyCFunction)py_irpc_servers_byname, METH_VARARGS,
+		"S.irpc_servers_byname(name) -> list\nGet list of server_id values that are registered for a particular name" },
+	{ "irpc_all_servers", (PyCFunction)py_irpc_all_servers, METH_NOARGS,
+		"S.irpc_servers_byname() -> list\nGet list of all registered names and the associated server_id values" },
 	{ NULL, NULL, 0, NULL }
 };
 
 static PyObject *py_imessaging_server_id(PyObject *obj, void *closure)
 {
 	imessaging_Object *iface = (imessaging_Object *)obj;
+	PyObject *py_server_id;
 	struct server_id server_id = imessaging_get_server_id(iface->msg_ctx);
+	struct server_id *p_server_id = talloc(NULL, struct server_id);
+	if (!p_server_id) {
+		PyErr_NoMemory();
+		return NULL;
+	}
+	*p_server_id = server_id;
 
-	return Py_BuildValue("(iii)", server_id.pid, server_id.task_id,
-			     server_id.vnn);
+	py_server_id = py_return_ndr_struct("samba.dcerpc.server_id", "server_id", p_server_id, p_server_id);
+	talloc_unlink(NULL, p_server_id);
+
+	return py_server_id;
 }
 
 static PyGetSetDef py_imessaging_getset[] = {

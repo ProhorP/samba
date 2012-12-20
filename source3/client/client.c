@@ -37,6 +37,7 @@
 #include "trans2.h"
 #include "libsmb/nmblib.h"
 #include "include/ntioctl.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #ifndef REGISTER
 #define REGISTER 0
@@ -251,7 +252,7 @@ static int readfile(uint8_t *b, int n, XFILE *f)
 
 struct push_state {
 	XFILE *f;
-	SMB_OFF_T nread;
+	off_t nread;
 };
 
 static size_t push_source(uint8_t *buf, size_t n, void *priv)
@@ -427,7 +428,7 @@ static int do_cd(const char *new_dir)
 	/* Use a trans2_qpathinfo to test directories for modern servers.
 	   Except Win9x doesn't support the qpathinfo_basic() call..... */
 
-	if (cli_state_protocol(targetcli) > PROTOCOL_LANMAN2 && !targetcli->win95) {
+	if (smbXcli_conn_protocol(targetcli->conn) > PROTOCOL_LANMAN2 && !targetcli->win95) {
 
 		status = cli_qpathinfo_basic(targetcli, targetpath, &sbuf,
 					     &attributes);
@@ -1070,9 +1071,9 @@ static int do_get(const char *rname, const char *lname_in, bool reget)
 	bool newhandle = false;
 	struct timespec tp_start;
 	uint16 attr;
-	SMB_OFF_T size;
+	off_t size;
 	off_t start = 0;
-	SMB_OFF_T nread = 0;
+	off_t nread = 0;
 	int rc = 0;
 	struct cli_state *targetcli = NULL;
 	char *targetname = NULL;
@@ -1085,7 +1086,10 @@ static int do_get(const char *rname, const char *lname_in, bool reget)
 	}
 
 	if (lowercase) {
-		strlower_m(lname);
+		if (!strlower_m(lname)) {
+			d_printf("strlower_m %s failed\n", lname);
+			return 1;
+		}
 	}
 
 	status = cli_resolve_path(ctx, "", auth_info, cli, rname, &targetcli,
@@ -1108,16 +1112,16 @@ static int do_get(const char *rname, const char *lname_in, bool reget)
 		handle = fileno(stdout);
 	} else {
 		if (reget) {
-			handle = sys_open(lname, O_WRONLY|O_CREAT, 0644);
+			handle = open(lname, O_WRONLY|O_CREAT, 0644);
 			if (handle >= 0) {
-				start = sys_lseek(handle, 0, SEEK_END);
+				start = lseek(handle, 0, SEEK_END);
 				if (start == -1) {
 					d_printf("Error seeking local file\n");
 					return 1;
 				}
 			}
 		} else {
-			handle = sys_open(lname, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+			handle = open(lname, O_WRONLY|O_CREAT|O_TRUNC, 0644);
 		}
 		newhandle = true;
 	}
@@ -1295,7 +1299,9 @@ static NTSTATUS do_mget(struct cli_state *cli_state, struct file_info *finfo,
 
 	string_replace(finfo->name,'\\','/');
 	if (lowercase) {
-		strlower_m(finfo->name);
+		if (!strlower_m(finfo->name)) {
+			return NT_STATUS_INVALID_PARAMETER;
+		}
 	}
 
 	if (!directory_exist(finfo->name) &&
@@ -1678,7 +1684,7 @@ static int do_allinfo(const char *name)
 {
 	fstring altname;
 	struct timespec b_time, a_time, m_time, c_time;
-	SMB_OFF_T size;
+	off_t size;
 	uint16_t mode;
 	SMB_INO_T ino;
 	NTTIME tmp;
@@ -1751,7 +1757,8 @@ static int do_allinfo(const char *name)
 	}
 
 	status = cli_ntcreate(cli, name, 0,
-			      CREATE_ACCESS_READ, 0,
+			      SEC_FILE_READ_DATA | SEC_FILE_READ_ATTRIBUTE |
+			      SEC_STD_SYNCHRONIZE, 0,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE
 			      |FILE_SHARE_DELETE,
 			      FILE_OPEN, 0x0, 0x0, &fnum);
@@ -1838,7 +1845,7 @@ static int do_put(const char *rname, const char *lname, bool reput)
 	TALLOC_CTX *ctx = talloc_tos();
 	uint16_t fnum;
 	XFILE *f;
-	SMB_OFF_T start = 0;
+	off_t start = 0;
 	int rc = 0;
 	struct timespec tp_start;
 	struct cli_state *targetcli;
@@ -2074,7 +2081,7 @@ static int cmd_select(void)
 static int file_find(struct file_list **list, const char *directory,
 		      const char *expression, bool match)
 {
-	SMB_STRUCT_DIR *dir;
+	DIR *dir;
 	struct file_list *entry;
         struct stat statbuf;
         int ret;
@@ -2082,7 +2089,7 @@ static int file_find(struct file_list **list, const char *directory,
 	bool isdir;
 	const char *dname;
 
-        dir = sys_opendir(directory);
+        dir = opendir(directory);
 	if (!dir)
 		return -1;
 
@@ -2111,14 +2118,14 @@ static int file_find(struct file_list **list, const char *directory,
 
 				if (ret == -1) {
 					SAFE_FREE(path);
-					sys_closedir(dir);
+					closedir(dir);
 					return -1;
 				}
 			}
 			entry = SMB_MALLOC_P(struct file_list);
 			if (!entry) {
 				d_printf("Out of memory in file_find\n");
-				sys_closedir(dir);
+				closedir(dir);
 				return -1;
 			}
 			entry->file_path = path;
@@ -2129,7 +2136,7 @@ static int file_find(struct file_list **list, const char *directory,
 		}
         }
 
-	sys_closedir(dir);
+	closedir(dir);
 	return 0;
 }
 
@@ -2292,12 +2299,12 @@ static int cmd_print(void)
 		rname = talloc_asprintf(ctx,
 					"%s-%d",
 					p+1,
-					(int)sys_getpid());
+					(int)getpid());
 	}
 	if (strequal(lname,"-")) {
 		rname = talloc_asprintf(ctx,
 				"stdin-%d",
-				(int)sys_getpid());
+				(int)getpid());
 	}
 	if (!rname) {
 		return 1;
@@ -3901,6 +3908,62 @@ static int cmd_newer(void)
 }
 
 /****************************************************************************
+ Watch directory changes
+****************************************************************************/
+
+static int cmd_notify(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char *name, *buf;
+	NTSTATUS status;
+	uint16_t fnum;
+
+	name = talloc_strdup(talloc_tos(), client_get_cur_dir());
+	if (name == NULL) {
+		goto fail;
+	}
+	if (!next_token_talloc(talloc_tos(), &cmd_ptr, &buf, NULL)) {
+		goto usage;
+	}
+	name = talloc_asprintf_append(name, "%s", buf);
+	if (name == NULL) {
+		goto fail;
+	}
+	status = cli_ntcreate(
+		cli, name, 0, FILE_READ_DATA, 0,
+		FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+		FILE_OPEN, 0, 0, &fnum);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("Could not open file: %s\n", nt_errstr(status));
+		goto fail;
+	}
+
+	while (1) {
+		uint32_t i, num_changes;
+		struct notify_change *changes;
+
+		status = cli_notify(cli, fnum, 1000, FILE_NOTIFY_CHANGE_ALL,
+				    true,
+				    talloc_tos(), &num_changes, &changes);
+		if (!NT_STATUS_IS_OK(status)) {
+			d_printf("notify returned %s\n",
+				 nt_errstr(status));
+			goto fail;
+		}
+		for (i=0; i<num_changes; i++) {
+			printf("%4.4x %s\n", changes[i].action,
+			       changes[i].name);
+		}
+		TALLOC_FREE(changes);
+	}
+usage:
+	d_printf("notify <file>\n");
+fail:
+	TALLOC_FREE(frame);
+	return 1;
+}
+
+/****************************************************************************
  Set the archive level.
 ****************************************************************************/
 
@@ -4439,7 +4502,7 @@ static int cmd_show_connect( void )
 		return 1;
 	}
 
-	d_printf("//%s/%s\n", cli_state_remote_name(targetcli), targetcli->share);
+	d_printf("//%s/%s\n", smbXcli_conn_remote_name(targetcli->conn), targetcli->share);
 	return 0;
 }
 
@@ -4561,6 +4624,7 @@ static struct {
   {"more",cmd_more,"<remote name> view a remote file with your pager",{COMPL_REMOTE,COMPL_NONE}},  
   {"mput",cmd_mput,"<mask> put all matching files",{COMPL_REMOTE,COMPL_NONE}},
   {"newer",cmd_newer,"<file> only mget files newer than the specified local file",{COMPL_LOCAL,COMPL_NONE}},
+  {"notify",cmd_notify,"<file>Get notified of dir changes",{COMPL_REMOTE,COMPL_NONE}},
   {"open",cmd_open,"<mask> open a file",{COMPL_REMOTE,COMPL_NONE}},
   {"posix", cmd_posix, "turn on all POSIX capabilities", {COMPL_REMOTE,COMPL_NONE}},
   {"posix_encrypt",cmd_posix_encrypt,"<domain> <user> <password> start up transport encryption",{COMPL_REMOTE,COMPL_NONE}},
@@ -4906,6 +4970,7 @@ static char **remote_completion(const char *text, int len)
 
 	info.matches[0] = SMB_STRNDUP(info.matches[1], info.samelen);
 	info.matches[info.count] = NULL;
+	TALLOC_FREE(ctx);
 	return info.matches;
 
 cleanup:
@@ -5443,7 +5508,7 @@ static int do_message_op(struct user_auth_info *a_info)
 	}
 
 	if ( override_logfile )
-		setup_logging( lp_logfile(), DEBUG_FILE );
+		setup_logging( lp_logfile(talloc_tos()), DEBUG_FILE );
 
 	if (!lp_load_client(get_dyn_CONFIGFILE())) {
 		fprintf(stderr, "%s: Can't load %s - run testparm to debug it\n",
@@ -5482,7 +5547,7 @@ static int do_message_op(struct user_auth_info *a_info)
 	}
 
 	if(new_name_resolve_order)
-		lp_set_name_resolve_order(new_name_resolve_order);
+		lp_set_cmdline("name resolve order", new_name_resolve_order);
 
 	if (!tar_type && !query_host && !service && !message) {
 		poptPrintUsage(pc, stderr, 0);
@@ -5499,10 +5564,8 @@ static int do_message_op(struct user_auth_info *a_info)
 	if (tar_type) {
 		if (cmdstr)
 			process_command_string(cmdstr);
-		return do_tar_op(base_directory);
-	}
-
-	if (query_host && *query_host) {
+		rc = do_tar_op(base_directory);
+	} else if (query_host && *query_host) {
 		char *qhost = query_host;
 		char *slash;
 
@@ -5520,15 +5583,11 @@ static int do_message_op(struct user_auth_info *a_info)
 			sscanf(p, "%x", &name_type);
 		}
 
-		return do_host_query(qhost);
-	}
-
-	if (message) {
-		return do_message_op(auth_info);
-	}
-
-	if (process(base_directory)) {
-		return 1;
+		rc = do_host_query(qhost);
+	} else if (message) {
+		rc = do_message_op(auth_info);
+	} else if (process(base_directory)) {
+		rc = 1;
 	}
 
 	TALLOC_FREE(frame);

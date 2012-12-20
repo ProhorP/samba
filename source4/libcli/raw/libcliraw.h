@@ -156,6 +156,7 @@ struct smbcli_session {
 	
 	/* after a session setup the server provides us with
 	   a vuid identifying the security context */
+	struct smbXcli_session *smbXcli;
 	uint16_t vuid;
 
 	/* default pid for this session */
@@ -164,8 +165,6 @@ struct smbcli_session {
 	/* the flags2 for each packet - this allows
 	   the user to control these for torture testing */
 	uint16_t flags2;
-
-	DATA_BLOB user_session_key;
 
 	/* the spnego context if we use extented security */
 	struct gensec_security *gensec;
@@ -187,6 +186,7 @@ struct smbcli_tree {
 	/* session layer info */
 	struct smbcli_session *session;
 
+	struct smbXcli_tcon *smbXcli;
 	uint16_t tid;			/* tree id, aka cnum */
 	char *device;
 	char *fs_type;
@@ -280,6 +280,7 @@ struct smbcli_request *smb_raw_open_send(struct smbcli_tree *tree, union smb_ope
 bool smbcli_transport_process(struct smbcli_transport *transport);
 const char *smbcli_errstr(struct smbcli_tree *tree);
 NTSTATUS smb_raw_fsinfo(struct smbcli_tree *tree, TALLOC_CTX *mem_ctx, union smb_fsinfo *fsinfo);
+NTSTATUS smb_raw_setfsinfo(struct smbcli_tree *tree, TALLOC_CTX *mem_ctx, union smb_setfsinfo *set_fsinfo);
 NTSTATUS smb_raw_pathinfo(struct smbcli_tree *tree, TALLOC_CTX *mem_ctx, union smb_fileinfo *parms);
 NTSTATUS smb_raw_shadow_data(struct smbcli_tree *tree, TALLOC_CTX *mem_ctx, struct smb_shadow_copy *info);
 NTSTATUS smb_raw_fileinfo(struct smbcli_tree *tree, TALLOC_CTX *mem_ctx, union smb_fileinfo *parms);

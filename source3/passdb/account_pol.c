@@ -233,7 +233,7 @@ bool init_account_policy(void)
 		}
 	}
 
-	status = dbwrap_fetch_uint32(db, vstring, &version);
+	status = dbwrap_fetch_uint32_bystring(db, vstring, &version);
 	if (!NT_STATUS_IS_OK(status)) {
 		version = 0;
 	}
@@ -250,7 +250,7 @@ bool init_account_policy(void)
 		return false;
 	}
 
-	status = dbwrap_fetch_uint32(db, vstring, &version);
+	status = dbwrap_fetch_uint32_bystring(db, vstring, &version);
 	if (!NT_STATUS_IS_OK(status)) {
 		version = 0;
 	}
@@ -266,7 +266,8 @@ bool init_account_policy(void)
 	}
 
 	if (version != DATABASE_VERSION) {
-		status = dbwrap_store_uint32(db, vstring, DATABASE_VERSION);
+		status = dbwrap_store_uint32_bystring(db, vstring,
+						      DATABASE_VERSION);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("dbwrap_store_uint32 failed: %s\n",
 				  nt_errstr(status)));
@@ -340,7 +341,7 @@ bool account_policy_get(enum pdb_policy_type type, uint32_t *value)
 		return False;
 	}
 
-	status = dbwrap_fetch_uint32(db, name, &regval);
+	status = dbwrap_fetch_uint32_bystring(db, name, &regval);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("account_policy_get: tdb_fetch_uint32 failed for type %d (%s), returning 0\n", type, name));
 		return False;
@@ -374,7 +375,7 @@ bool account_policy_set(enum pdb_policy_type type, uint32_t value)
 		return False;
 	}
 
-	status = dbwrap_trans_store_uint32(db, name, value);
+	status = dbwrap_trans_store_uint32_bystring(db, name, value);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("store_uint32 failed for type %d (%s) on value "
 			  "%u: %s\n", type, name, value, nt_errstr(status)));

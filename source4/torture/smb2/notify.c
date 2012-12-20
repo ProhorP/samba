@@ -23,6 +23,7 @@
 #include "includes.h"
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #include "torture/torture.h"
 #include "torture/smb2/proto.h"
@@ -367,7 +368,7 @@ static bool torture_smb2_notify_dir(struct torture_context *torture,
 	notify.smb2.in.file.handle = h1;
 	req = smb2_notify_send(tree1, &(notify.smb2));
 
-	status = smb2_util_unlink(tree1, BASEDIR "\\nonexistant.txt");
+	status = smb2_util_unlink(tree1, BASEDIR "\\nonexistent.txt");
 	CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 
 	/* (1st unlink) as the 2nd notify directly returns,
@@ -400,7 +401,7 @@ static bool torture_smb2_notify_dir(struct torture_context *torture,
 		"(3rd notify) this notify will only see the 1st unlink\n");
 	req = smb2_notify_send(tree1, &(notify.smb2));
 
-	status = smb2_util_unlink(tree1, BASEDIR "\\nonexistant.txt");
+	status = smb2_util_unlink(tree1, BASEDIR "\\nonexistent.txt");
 	CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 
 	for (i=1;i<count;i++) {
@@ -1819,8 +1820,17 @@ static struct smb2_tree *secondary_tcon(struct smb2_tree *tree,
 		return NULL;
 	}
 
-	tree1->tid = tcon.smb2.out.tid;
-	torture_comment(tctx,"tid1=%d tid2=%d\n", tree->tid, tree1->tid);
+	smb2cli_tcon_set_values(tree1->smbXcli,
+				tree1->session->smbXcli,
+				tcon.smb2.out.tid,
+				tcon.smb2.out.share_type,
+				tcon.smb2.out.flags,
+				tcon.smb2.out.capabilities,
+				tcon.smb2.out.access_mask);
+
+	torture_comment(tctx,"tid1=%d tid2=%d\n",
+			smb2cli_tcon_current_id(tree->smbXcli),
+			smb2cli_tcon_current_id(tree1->smbXcli));
 
 	return tree1;
 }

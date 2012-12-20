@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2007-2008
 #
@@ -107,7 +105,7 @@ class Ldb(_Ldb):
         # Allow admins to force non-sync ldb for all databases
         if lp is not None:
             nosync_p = lp.get("nosync", "ldb")
-            if nosync_p is not None and nosync_p == True:
+            if nosync_p is not None and nosync_p:
                 flags |= ldb.FLG_NOSYNC
 
         self.set_create_perms(0600)
@@ -300,14 +298,18 @@ def setup_file(template, fname, subst_vars=None):
     finally:
         f.close()
 
+MAX_NETBIOS_NAME_LEN = 15
+def is_valid_netbios_char(c):
+    return (c.isalnum() or c in " !#$%&'()-.@^_{}~")
+
 
 def valid_netbios_name(name):
     """Check whether a name is valid as a NetBIOS name. """
     # See crh's book (1.4.1.1)
-    if len(name) > 15:
+    if len(name) > MAX_NETBIOS_NAME_LEN:
         return False
     for x in name:
-        if not x.isalnum() and not x in " !#$%&'()-.@^_{}~":
+        if not is_valid_netbios_char(x):
             return False
     return True
 
@@ -347,7 +349,7 @@ def dn_from_dns_name(dnsdomain):
     """return a DN from a DNS name domain/forest root"""
     return "DC=" + ",DC=".join(dnsdomain.split("."))
 
-from samba import _glue
+import _glue
 version = _glue.version
 interface_ips = _glue.interface_ips
 set_debug_level = _glue.set_debug_level

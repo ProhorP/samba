@@ -35,7 +35,7 @@ interface messaging
 		MSG_REQ_DMALLOC_LOG_CHANGED	= 0x000C,
 		MSG_SHUTDOWN			= 0x000D,
 
-		ID_CACHE_FLUSH			= 0x000E,
+		/* ID_CACHE_FLUSH		= 0x000E, obsoleted */
 		ID_CACHE_DELETE			= 0x000F,
 		ID_CACHE_KILL			= 0x0010,
 
@@ -85,6 +85,9 @@ interface messaging
 		/*Close a specific file given a share entry. */
 		MSG_SMB_CLOSE_FILE		= 0x0313,
 
+		/* Trigger a notify cleanup run */
+		MSG_SMB_NOTIFY_CLEANUP		= 0x0314,
+
 		/* winbind messages */
 		MSG_WINBIND_FINISHED		= 0x0401,
 		MSG_WINBIND_FORGET_STATE	= 0x0402,
@@ -100,9 +103,13 @@ interface messaging
 		/* event messages */
 		MSG_DUMP_EVENT_LIST		= 0x0500,
 
+		/* smbXsrv messages */
+		MSG_SMBXSRV_SESSION_CLOSE	= 0x0600,
+
 		/* dbwrap messages 4001-4999 (0x0FA0 - 0x1387) */
 		/* MSG_DBWRAP_TDB2_CHANGES		= 4001, */
-		MSG_DBWRAP_G_LOCK_RETRY		= 4002
+		MSG_DBWRAP_G_LOCK_RETRY		= 4002,
+		MSG_DBWRAP_MODIFIED		= 4003
 	} messaging_type;
 
 	/* messaging struct sent across the sockets and stored in the tdb */

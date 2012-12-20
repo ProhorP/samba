@@ -59,8 +59,6 @@ struct auth_serversupplied_info *make_server_info(TALLOC_CTX *mem_ctx)
 *****************************************************************************/
 
 NTSTATUS serverinfo_to_SamInfo2(struct auth_serversupplied_info *server_info,
-				uint8_t *pipe_session_key,
-				size_t pipe_session_key_len,
 				struct netr_SamInfo2 *sam2)
 {
 	struct netr_SamInfo3 *info3;
@@ -75,20 +73,12 @@ NTSTATUS serverinfo_to_SamInfo2(struct auth_serversupplied_info *server_info,
 		       server_info->session_key.data,
 		       MIN(sizeof(info3->base.key.key),
 			   server_info->session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.key.key,
-				      pipe_session_key, 16);
-		}
 	}
 	if (server_info->lm_session_key.length) {
 		memcpy(info3->base.LMSessKey.key,
 		       server_info->lm_session_key.data,
 		       MIN(sizeof(info3->base.LMSessKey.key),
 			   server_info->lm_session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.LMSessKey.key,
-				      pipe_session_key, 8);
-		}
 	}
 
 	sam2->base = info3->base;
@@ -102,8 +92,6 @@ NTSTATUS serverinfo_to_SamInfo2(struct auth_serversupplied_info *server_info,
 *****************************************************************************/
 
 NTSTATUS serverinfo_to_SamInfo3(const struct auth_serversupplied_info *server_info,
-				uint8_t *pipe_session_key,
-				size_t pipe_session_key_len,
 				struct netr_SamInfo3 *sam3)
 {
 	struct netr_SamInfo3 *info3;
@@ -118,20 +106,12 @@ NTSTATUS serverinfo_to_SamInfo3(const struct auth_serversupplied_info *server_in
 		       server_info->session_key.data,
 		       MIN(sizeof(info3->base.key.key),
 			   server_info->session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.key.key,
-				      pipe_session_key, 16);
-		}
 	}
 	if (server_info->lm_session_key.length) {
 		memcpy(info3->base.LMSessKey.key,
 		       server_info->lm_session_key.data,
 		       MIN(sizeof(info3->base.LMSessKey.key),
 			   server_info->lm_session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.LMSessKey.key,
-				      pipe_session_key, 8);
-		}
 	}
 
 	sam3->base = info3->base;
@@ -148,8 +128,6 @@ NTSTATUS serverinfo_to_SamInfo3(const struct auth_serversupplied_info *server_in
 *****************************************************************************/
 
 NTSTATUS serverinfo_to_SamInfo6(struct auth_serversupplied_info *server_info,
-				uint8_t *pipe_session_key,
-				size_t pipe_session_key_len,
 				struct netr_SamInfo6 *sam6)
 {
 	struct pdb_domain_info *dominfo;
@@ -176,20 +154,12 @@ NTSTATUS serverinfo_to_SamInfo6(struct auth_serversupplied_info *server_info,
 		       server_info->session_key.data,
 		       MIN(sizeof(info3->base.key.key),
 			   server_info->session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.key.key,
-				      pipe_session_key, 16);
-		}
 	}
 	if (server_info->lm_session_key.length) {
 		memcpy(info3->base.LMSessKey.key,
 		       server_info->lm_session_key.data,
 		       MIN(sizeof(info3->base.LMSessKey.key),
 			   server_info->lm_session_key.length));
-		if (pipe_session_key) {
-			arcfour_crypt(info3->base.LMSessKey.key,
-				      pipe_session_key, 8);
-		}
 	}
 
 	sam6->base = info3->base;
@@ -263,11 +233,6 @@ static NTSTATUS group_sids_to_info3(struct netr_SamInfo3 *info3,
 	for (i = 0; i < num_sids; i++) {
 		ok = sid_peek_check_rid(domain_sid, &sids[i], &rid);
 		if (ok) {
-
-			/* if it is the primary gid, skip it, we
-			 * obviously already have it */
-			if (info3->base.primary_gid == rid) continue;
-
 			/* store domain group rid */
 			groups->rids[groups->count].rid = rid;
 			groups->rids[groups->count].attributes = attributes;

@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # DRS utility code
 #
 # Copyright Andrew Tridgell 2010
@@ -248,7 +246,7 @@ class drs_Replicate(object):
 
         while True:
             (level, ctr) = self.drs.DsGetNCChanges(self.drs_handle, req_level, req)
-            if ctr.first_object == None and ctr.object_count != 0:
+            if ctr.first_object is None and ctr.object_count != 0:
                 raise RuntimeError("DsGetNCChanges: NULL first_object with object_count=%u" % (ctr.object_count))
             self.net.replicate_chunk(self.replication_state, level, ctr,
                 schema=schema, req_level=req_level, req=req)

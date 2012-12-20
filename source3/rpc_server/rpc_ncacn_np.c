@@ -139,24 +139,13 @@ static NTSTATUS rpcint_dispatch(struct pipes_struct *p,
 	}
 
 	if (p->fault_state) {
-		p->fault_state = false;
-		data_blob_free(&p->out_data.rdata);
-		talloc_free_children(p->mem_ctx);
-		return NT_STATUS_RPC_CALL_FAILED;
-	}
+		NTSTATUS status;
 
-	if (p->bad_handle_fault_state) {
-		p->bad_handle_fault_state = false;
+		status = NT_STATUS(p->fault_state);
+		p->fault_state = 0;
 		data_blob_free(&p->out_data.rdata);
 		talloc_free_children(p->mem_ctx);
-		return NT_STATUS_RPC_SS_CONTEXT_MISMATCH;
-	}
-
-	if (p->rng_fault_state) {
-		p->rng_fault_state = false;
-		data_blob_free(&p->out_data.rdata);
-		talloc_free_children(p->mem_ctx);
-		return NT_STATUS_RPC_PROCNUM_OUT_OF_RANGE;
+		return status;
 	}
 
 	*out_data = p->out_data.rdata;
@@ -477,7 +466,7 @@ NTSTATUS rpc_pipe_open_internal(TALLOC_CTX *mem_ctx,
 	}
 
 	result->abstract_syntax = *abstract_syntax;
-	result->transfer_syntax = ndr_transfer_syntax;
+	result->transfer_syntax = ndr_transfer_syntax_ndr;
 
 	if (remote_address == NULL) {
 		struct tsocket_address *local;
@@ -622,7 +611,11 @@ struct np_proxy_state *make_external_rpc_pipe_p(TALLOC_CTX *mem_ctx,
 				       &result->allocation_size);
 	TALLOC_FREE(subreq);
 	if (ret != 0) {
-		DEBUG(0, ("tstream_npa_connect_recv  to %s for pipe %s and "
+		int l = 1;
+		if (errno == ENOENT) {
+			l = 2;
+		}
+		DEBUG(l, ("tstream_npa_connect_recv  to %s for pipe %s and "
 			  "user %s\\%s failed: %s\n",
 			  socket_np_dir, pipe_name, session_info_t->session_info->info->domain_name,
 			  session_info_t->session_info->info->account_name,
@@ -675,7 +668,7 @@ static NTSTATUS rpc_pipe_open_external(TALLOC_CTX *mem_ctx,
 	}
 
 	result->abstract_syntax = *abstract_syntax;
-	result->transfer_syntax = ndr_transfer_syntax;
+	result->transfer_syntax = ndr_transfer_syntax_ndr;
 
 	result->desthost = get_myname(result);
 	result->srv_name_slash = talloc_asprintf_strupper_m(

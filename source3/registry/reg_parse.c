@@ -34,7 +34,6 @@
 #include "reg_format.h"
 
 #include <stdio.h>
-#include <wchar.h>
 #include <talloc.h>
 #include <stdbool.h>
 #include <string.h>
@@ -791,12 +790,12 @@ handle_iconv_errno(int err, const char* obuf, size_t linenum,
 	DEBUG(0, ("Illegal multibyte sequence at line %lu: %s",
 		  (long unsigned)(linenum+1), pos));
 
-	assert(ilen > 0);
+	assert((*ilen) > 0);
 	do {
 		size_t il = 1;
 		DEBUGADD(0, ("<%02x>", (unsigned char)**iptr));
 
-		if (olen > 0) {
+		if ((*olen) > 0) {
 			*(*optr)++ = '\?';
 			(*iptr)++;
 			/* Todo: parametrize, e.g. skip: *optr++ = *iptr++; */
@@ -934,7 +933,8 @@ int reg_parse_file(const char* fname, const struct reg_parse_callback* cb,
 
 	fd = open(fname, O_RDONLY);
 	if (fd < 0) {
-		DEBUG(0, ("reg_parse_file: open failed: %s\n", strerror(errno)));
+		DEBUG(0, ("reg_parse_file: open %s failed: %s\n", fname,
+			  strerror(errno)));
 		return -1;
 	}
 

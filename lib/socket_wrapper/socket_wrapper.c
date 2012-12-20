@@ -154,7 +154,7 @@
 /* This limit is to avoid broadcast sendto() needing to stat too many
  * files.  It may be raised (with a performance cost) to up to 254
  * without changing the format above */
-#define MAX_WRAPPED_INTERFACES 32
+#define MAX_WRAPPED_INTERFACES 40
 
 #ifdef HAVE_IPV6
 /*
@@ -2506,7 +2506,7 @@ int swrap_readv(int s, const struct iovec *vector, size_t count)
 	return ret;
 }
 
-int swrap_writev(int s, const struct iovec *vector, size_t count)
+ssize_t swrap_writev(int s, const struct iovec *vector, size_t count)
 {
 	struct msghdr msg;
 	struct iovec tmp;

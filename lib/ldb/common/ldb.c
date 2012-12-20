@@ -60,7 +60,6 @@ static void ldb_tevent_debug(void *context, enum tevent_debug_level level,
 {
 	struct ldb_context *ldb = talloc_get_type(context, struct ldb_context);
 	enum ldb_debug_level ldb_level = LDB_DEBUG_FATAL;
-	char *s = NULL;
 
 	switch (level) {
 	case TEVENT_DEBUG_FATAL:
@@ -77,10 +76,10 @@ static void ldb_tevent_debug(void *context, enum tevent_debug_level level,
 		break;
 	};
 
-	vasprintf(&s, fmt, ap);
-	if (!s) return;
-	ldb_debug(ldb, ldb_level, "tevent: %s", s);
-	free(s);
+	/* There isn't a tevent: prefix here because to add it means
+	 * actually printing the string, and most of the time we don't
+	 * want to show it */
+	ldb_vdebug(ldb, ldb_level, fmt, ap);
 }
 
 /*
@@ -727,6 +726,7 @@ static void ldb_trace_request(struct ldb_context *ldb, struct ldb_request *req)
 {
 	TALLOC_CTX *tmp_ctx = talloc_new(req);
 	unsigned int i;
+	struct ldb_ldif ldif;
 
 	switch (req->operation) {
 	case LDB_SEARCH:
@@ -766,18 +766,36 @@ static void ldb_trace_request(struct ldb_context *ldb, struct ldb_request *req)
 		ldb_debug_add(ldb, " data: %s\n", req->op.extended.data?"yes":"no");
 		break;
 	case LDB_ADD:
+		ldif.changetype = LDB_CHANGETYPE_ADD;
+		ldif.msg = discard_const_p(struct ldb_message, req->op.add.message);
+
 		ldb_debug_add(ldb, "ldb_trace_request: ADD\n");
+
+		/* 
+		 * The choice to call
+		 * ldb_ldif_write_redacted_trace_string() is CRITICAL
+		 * for security.  It ensures that we do not output
+		 * passwords into debug logs 
+		 */
+
 		ldb_debug_add(req->handle->ldb, "%s\n", 
-			      ldb_ldif_message_string(req->handle->ldb, tmp_ctx, 
-						      LDB_CHANGETYPE_ADD, 
-						      req->op.add.message));
+			      ldb_ldif_write_redacted_trace_string(req->handle->ldb, tmp_ctx, &ldif));
 		break;
 	case LDB_MODIFY:
+		ldif.changetype = LDB_CHANGETYPE_MODIFY;
+		ldif.msg = discard_const_p(struct ldb_message, req->op.mod.message);
+
 		ldb_debug_add(ldb, "ldb_trace_request: MODIFY\n");
+
+		/* 
+		 * The choice to call
+		 * ldb_ldif_write_redacted_trace_string() is CRITICAL
+		 * for security.  It ensures that we do not output
+		 * passwords into debug logs 
+		 */
+
 		ldb_debug_add(req->handle->ldb, "%s\n", 
-			      ldb_ldif_message_string(req->handle->ldb, tmp_ctx, 
-						      LDB_CHANGETYPE_ADD, 
-						      req->op.mod.message));
+			      ldb_ldif_write_redacted_trace_string(req->handle->ldb, tmp_ctx, &ldif));
 		break;
 	case LDB_REQ_REGISTER_CONTROL:
 		ldb_debug_add(ldb, "ldb_trace_request: REGISTER_CONTROL\n");

@@ -260,9 +260,29 @@ const char *lpcfg_sam_name(struct loadparm_context *lp_ctx)
 	switch (lpcfg_server_role(lp_ctx)) {
 	case ROLE_DOMAIN_BDC:
 	case ROLE_DOMAIN_PDC:
+	case ROLE_ACTIVE_DIRECTORY_DC:
 		return lpcfg_workgroup(lp_ctx);
 	default:
 		return lpcfg_netbios_name(lp_ctx);
 	}
 }
 
+void lpcfg_default_kdc_policy(struct loadparm_context *lp_ctx,
+				time_t *svc_tkt_lifetime,
+				time_t *usr_tkt_lifetime,
+				time_t *renewal_lifetime)
+{
+	long val;
+
+	val = lpcfg_parm_long(lp_ctx, NULL,
+				"kdc", "service ticket lifetime", 10);
+	*svc_tkt_lifetime = val * 60 * 60;
+
+	val = lpcfg_parm_long(lp_ctx, NULL,
+				"kdc", "user ticket lifetime", 10);
+	*usr_tkt_lifetime = val * 60 * 60;
+
+	val = lpcfg_parm_long(lp_ctx, NULL,
+				"kdc", "renewal lifetime", 24 * 7);
+	*renewal_lifetime = val * 60 * 60;
+}

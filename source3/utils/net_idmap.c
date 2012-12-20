@@ -79,7 +79,8 @@ static const char* net_idmap_dbfile(struct net_context *c)
 			d_fprintf(stderr, _("Out of memory!\n"));
 		}
 	} else if (strequal(lp_idmap_backend(), "tdb2")) {
-		dbfile = lp_parm_talloc_string(-1, "tdb", "idmap2.tdb", NULL);
+		dbfile = lp_parm_talloc_string(talloc_tos(),
+					       -1, "tdb", "idmap2.tdb", NULL);
 		if (dbfile == NULL) {
 			dbfile = talloc_asprintf(talloc_tos(), "%s/idmap2.tdb",
 						 lp_private_dir());
@@ -285,7 +286,8 @@ static int net_idmap_restore(struct net_context *c, int argc, const char **argv)
 				break;
 			}
 		} else if (sscanf(line, "USER HWM %lu", &idval) == 1) {
-			status = dbwrap_store_int32(db, "USER HWM", idval);
+			status = dbwrap_store_int32_bystring(
+				db, "USER HWM", idval);
 			if (!NT_STATUS_IS_OK(status)) {
 				d_fprintf(stderr,
 					  _("Could not store USER HWM: %s\n"),
@@ -293,7 +295,8 @@ static int net_idmap_restore(struct net_context *c, int argc, const char **argv)
 				break;
 			}
 		} else if (sscanf(line, "GROUP HWM %lu", &idval) == 1) {
-			status = dbwrap_store_int32(db, "GROUP HWM", idval);
+			status = dbwrap_store_int32_bystring(
+				db, "GROUP HWM", idval);
 			if (!NT_STATUS_IS_OK(status)) {
 				d_fprintf(stderr,
 					  _("Could not store GROUP HWM: %s\n"),
@@ -489,7 +492,11 @@ static bool idmap_store_secret(const char *backend,
 
 	if (r < 0) return false;
 
-	strupper_m(tmp); /* make sure the key is case insensitive */
+	/* make sure the key is case insensitive */
+	if (!strupper_m(tmp)) {
+		free(tmp);
+		return false;
+	}
 	ret = secrets_store_generic(tmp, identity, secret);
 
 	free(tmp);

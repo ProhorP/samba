@@ -26,6 +26,7 @@
 #include "param/param.h"
 #include "lib/tsocket/tsocket.h"
 #include "dfs_server/dfs_server_ad.h"
+#include "lib/util/util_net.h"
 
 #define MAX_DFS_RESPONSE 56*1024 /* 56 Kb */
 
@@ -49,8 +50,7 @@ static NTSTATUS fill_normal_dfs_referraltype(TALLOC_CTX *mem_ctx,
 	ZERO_STRUCTP(ref);
 	switch (version) {
 	case 4:
-		version = 3;
-# if 0
+		ref->version = version;
 		/* For the moment there is a bug with XP that don't seems to appriciate much
 		 * level4 so we return just level 3 for everyone
 		 */
@@ -75,7 +75,6 @@ static NTSTATUS fill_normal_dfs_referraltype(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_NO_MEMORY;
 		}
 		return NT_STATUS_OK;
-#endif
 	case 3:
 		ref->version = version;
 		ref->referral.v3.server_type = DFS_SERVER_NON_ROOT;
@@ -117,6 +116,13 @@ static NTSTATUS fill_domain_dfs_referraltype(TALLOC_CTX *mem_ctx,
 		DEBUG(8, ("Called fill_domain_dfs_referraltype\n"));
 		ref->version = version;
 		ref->referral.v3.server_type = DFS_SERVER_NON_ROOT;
+#if 0
+		/* We use to have variable size, on Windows 2008R2 it's the same
+		 * and it seems that it gives better results so ... let's use the same
+		 * size.
+		 *
+		 * Additional note: XP SP2 will ask for version 3 and SP3 for version 4.
+		 */
 		/*
 		 * It's hard coded ... don't think it's a good way but the
 		 * sizeof return not the correct values
@@ -130,8 +136,11 @@ static NTSTATUS fill_domain_dfs_referraltype(TALLOC_CTX *mem_ctx,
 		} else {
 			ref->referral.v3.size = 34;
 		}
+#endif
+		/* As seen in w2k8r2 it always return the null GUID */
+		ref->referral.v3.size = 34;
 		ref->referral.v3.entry_flags = DFS_FLAG_REFERRAL_DOMAIN_RESP;
-		ref->referral.v3.ttl = 600; /* As w2k3 */
+		ref->referral.v3.ttl = 600; /* As w2k3 and w2k8r2*/
 		ref->referral.v3.referrals.r2.special_name = talloc_strdup(mem_ctx,
 									domain);
 		if (ref->referral.v3.referrals.r2.special_name == NULL) {
@@ -224,15 +233,15 @@ static NTSTATUS get_dcs_insite(TALLOC_CTX *ctx, struct ldb_context *ldb,
 			NT_STATUS_HAVE_NO_MEMORY_AND_FREE(list->names[list->count], r);
 		} else {
 			char *tmp;
-			const char *acct = ldb_msg_find_attr_as_string(r2->msgs[0], "sAMAccountName", NULL);
-			if (acct == NULL) {
+			const char *aname = ldb_msg_find_attr_as_string(r2->msgs[0], "sAMAccountName", NULL);
+			if (aname == NULL) {
 				DEBUG(2,(__location__ ": sAMAccountName missing on %s\n",
 					 ldb_dn_get_linearized(dn)));
 				talloc_free(r);
 				return NT_STATUS_INTERNAL_ERROR;
 			}
 
-			tmp = talloc_strdup(list->names, acct);
+			tmp = talloc_strdup(list->names, aname);
 			NT_STATUS_HAVE_NO_MEMORY_AND_FREE(tmp, r);
 
 			/* Netbios name is also the sAMAccountName for
@@ -439,7 +448,7 @@ static NTSTATUS dodomain_referral(struct loadparm_context *lp_ctx,
 	/* In the future this needs to be fetched from the ldb */
 	uint32_t found_domain = 2;
 
-	if (lpcfg_server_role(lp_ctx) != ROLE_DOMAIN_CONTROLLER) {
+	if (lpcfg_server_role(lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC) {
 		DEBUG(10 ,("Received a domain referral request on a non DC\n"));
 		return NT_STATUS_INVALID_PARAMETER;
 	}
@@ -521,7 +530,7 @@ static NTSTATUS dodc_referral(struct loadparm_context *lp_ctx,
 	struct dfs_referral_type *referrals;
 	const char *referral_str;
 
-	if (lpcfg_server_role(lp_ctx) != ROLE_DOMAIN_CONTROLLER) {
+	if (lpcfg_server_role(lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
@@ -632,7 +641,7 @@ static NTSTATUS dosysvol_referral(struct loadparm_context *lp_ctx,
 	NTSTATUS status;
 	struct dfs_referral_type *referrals;
 
-	if (lpcfg_server_role(lp_ctx) != ROLE_DOMAIN_CONTROLLER) {
+	if (lpcfg_server_role(lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
@@ -808,7 +817,14 @@ NTSTATUS dfs_server_ad_get_referrals(struct loadparm_context *lp_ctx,
 		 * handle it here.
 		 */
 		return NT_STATUS_NOT_FOUND;
+	}
 
+	if (is_ipaddress(server_name)) {
+		/*
+		 * If it is not domain related do not
+		 * handle it here.
+		 */
+		return NT_STATUS_NOT_FOUND;
 	}
 
 	if ((strcasecmp_m(server_name, netbios_domain) != 0) &&

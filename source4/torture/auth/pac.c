@@ -31,6 +31,7 @@
 #include "param/param.h"
 #include "librpc/gen_ndr/ndr_krb5pac.h"
 #include "torture/auth/proto.h"
+#include "auth/kerberos/pac_utils.h"
 
 static bool torture_pac_self_check(struct torture_context *tctx)
 {
@@ -67,7 +68,7 @@ static bool torture_pac_self_check(struct torture_context *tctx)
 	generate_random_buffer(server_bytes, 16);
 	generate_random_buffer(krbtgt_bytes, 16);
 
-	ret = krb5_keyblock_init(smb_krb5_context->krb5_context,
+	ret = smb_krb5_keyblock_init_contents(smb_krb5_context->krb5_context,
 				 ENCTYPE_ARCFOUR_HMAC,
 				 server_bytes, sizeof(server_bytes),
 				 &server_keyblock);
@@ -76,7 +77,7 @@ static bool torture_pac_self_check(struct torture_context *tctx)
 						   smb_get_krb5_error_message(smb_krb5_context->krb5_context, 
 									      ret, mem_ctx)));
 
-	ret = krb5_keyblock_init(smb_krb5_context->krb5_context,
+	ret = smb_krb5_keyblock_init_contents(smb_krb5_context->krb5_context,
 				 ENCTYPE_ARCFOUR_HMAC,
 				 krbtgt_bytes, sizeof(krbtgt_bytes),
 				 &krbtgt_keyblock);
@@ -347,7 +348,7 @@ static bool torture_pac_saved_check(struct torture_context *tctx)
 		torture_fail(tctx, "(saved test) Could not interpret krbsrv key");
 	}
 
-	ret = krb5_keyblock_init(smb_krb5_context->krb5_context,
+	ret = smb_krb5_keyblock_init_contents(smb_krb5_context->krb5_context,
 				 ENCTYPE_ARCFOUR_HMAC,
 				 krbsrv_bytes->hash, sizeof(krbsrv_bytes->hash),
 				 &server_keyblock);
@@ -358,7 +359,7 @@ static bool torture_pac_saved_check(struct torture_context *tctx)
 								  ret, mem_ctx)));
 
 	if (krbtgt_bytes) {
-		ret = krb5_keyblock_init(smb_krb5_context->krb5_context,
+		ret = smb_krb5_keyblock_init_contents(smb_krb5_context->krb5_context,
 					 ENCTYPE_ARCFOUR_HMAC,
 					 krbtgt_bytes->hash, sizeof(krbtgt_bytes->hash),
 					 &krbtgt_keyblock);

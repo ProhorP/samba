@@ -41,7 +41,7 @@
 WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 {
 	WERROR status;
-	static const char *attrs[] = { "hasMasterNCs", "msDs-hasMasterNCs", "hasPartialReplicaNCs", "msDS-HasFullReplicaNCs", NULL };
+	static const char *attrs[] = { "hasMasterNCs", "msDS-hasMasterNCs", "hasPartialReplicaNCs", "msDS-HasFullReplicaNCs", NULL };
 	unsigned int a;
 	int ret;
 	TALLOC_CTX *tmp_ctx;
@@ -52,7 +52,7 @@ WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 	tmp_ctx = talloc_new(s);
 	W_ERROR_HAVE_NO_MEMORY(tmp_ctx);
 
-	ntds_dn = samdb_ntds_settings_dn(s->samdb);
+	ntds_dn = samdb_ntds_settings_dn(s->samdb, tmp_ctx);
 	if (!ntds_dn) {
 		DEBUG(1,(__location__ ": Unable to find ntds_dn: %s\n", ldb_errstring(s->samdb)));
 		talloc_free(tmp_ctx);
@@ -128,31 +128,15 @@ WERROR dreplsrv_load_partitions(struct dreplsrv_service *s)
 /*
   Check if particular SPN exists for an account
  */
-static bool dreplsrv_spn_exists(struct ldb_context *samdb, struct ldb_dn *ntds_dn,
+static bool dreplsrv_spn_exists(struct ldb_context *samdb, struct ldb_dn *account_dn,
 				const char *principal_name)
 {
 	TALLOC_CTX *tmp_ctx;
-	const char *attrs[] = { "serverReference", NULL };
 	const char *attrs_empty[] = { NULL };
 	int ret;
 	struct ldb_result *res;
-	struct ldb_dn *account_dn;
 
 	tmp_ctx = talloc_new(samdb);
-
-	ret = dsdb_search_dn(samdb, tmp_ctx, &res, ntds_dn, attrs, 0);
-	if (ret != LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
-		return false;
-	}
-
-	account_dn = ldb_msg_find_attr_as_dn(samdb, tmp_ctx, res->msgs[0], "serverReference");
-	if (account_dn == NULL) {
-		talloc_free(tmp_ctx);
-		return false;
-	}
-
-	talloc_free(res);
 
 	ret = dsdb_search(samdb, tmp_ctx, &res, account_dn, LDB_SCOPE_BASE, attrs_empty,
 			0, "servicePrincipalName=%s",
@@ -176,11 +160,11 @@ NTSTATUS dreplsrv_get_target_principal(struct dreplsrv_service *s,
 {
 	TALLOC_CTX *tmp_ctx;
 	struct ldb_result *res;
-	const char *attrs_server[] = { "dNSHostName", NULL };
+	const char *attrs_server[] = { "dNSHostName", "serverReference", NULL };
 	const char *attrs_ntds[] = { "msDS-HasDomainNCs", "hasMasterNCs", NULL };
 	int ret;
 	const char *hostname, *dnsdomain=NULL;
-	struct ldb_dn *ntds_dn, *server_dn;
+	struct ldb_dn *ntds_dn, *server_dn, *computer_dn;
 	struct ldb_dn *forest_dn, *nc_dn;
 
 	*target_principal = NULL;
@@ -221,7 +205,8 @@ NTSTATUS dreplsrv_get_target_principal(struct dreplsrv_service *s,
 	}
 
 	hostname = ldb_msg_find_attr_as_string(res->msgs[0], "dNSHostName", NULL);
-	if (hostname != NULL) {
+	computer_dn = ldb_msg_find_attr_as_dn(s->samdb, tmp_ctx, res->msgs[0], "serverReference");
+	if (hostname != NULL && computer_dn != NULL) {
 		char *local_principal;
 
 		/*
@@ -234,7 +219,7 @@ NTSTATUS dreplsrv_get_target_principal(struct dreplsrv_service *s,
 		local_principal = talloc_asprintf(mem_ctx, "GC/%s/%s",
 						    hostname,
 						    samdb_dn_to_dns_domain(tmp_ctx, forest_dn));
-		if (dreplsrv_spn_exists(s->samdb, ntds_dn, local_principal)) {
+		if (dreplsrv_spn_exists(s->samdb, computer_dn, local_principal)) {
 			*target_principal = local_principal;
 			talloc_free(tmp_ctx);
 			return NT_STATUS_OK;
@@ -428,6 +413,11 @@ static WERROR dreplsrv_partition_add_source_dsa(struct dreplsrv_service *s,
 	return WERR_OK;
 }
 
+/**
+ * Find a partition when given a NC
+ * If the NC can't be found it will return BAD_NC
+ * Initial checks for invalid parameters have to be done beforehand
+ */
 WERROR dreplsrv_partition_find_for_nc(struct dreplsrv_service *s,
 				      struct GUID *nc_guid,
 				      struct dom_sid *nc_sid,
@@ -444,8 +434,8 @@ WERROR dreplsrv_partition_find_for_nc(struct dreplsrv_service *s,
 	valid_sid  = nc_sid && !dom_sid_equal(&null_sid, nc_sid);
 	valid_guid = nc_guid && !GUID_all_zero(nc_guid);
 
-	if (!valid_sid && !valid_guid && !nc_dn_str) {
-		return WERR_DS_DRA_INVALID_PARAMETER;
+	if (!valid_sid && !valid_guid && (!nc_dn_str)) {
+		return WERR_DS_DRA_BAD_NC;
 	}
 
 	for (p = s->partitions; p; p = p->next) {

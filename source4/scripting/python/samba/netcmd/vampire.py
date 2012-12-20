@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Vampire
 #
 # Copyright Jelmer Vernooij 2010 <jelmer@samba.org>
@@ -31,7 +29,7 @@ from samba.netcmd import (
 
 
 class cmd_vampire(Command):
-    """Join and synchronise a remote AD domain to the local server"""
+    """Join and synchronise a remote AD domain to the local server."""
     synopsis = "%prog [options] <domain>"
 
     takes_optiongroups = {

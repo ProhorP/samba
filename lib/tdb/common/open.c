@@ -313,12 +313,36 @@ _PUBLIC_ struct tdb_context *tdb_open_ex(const char *name, int hash_size, int td
 	if ((tdb_flags & TDB_CLEAR_IF_FIRST) &&
 	    (!tdb->read_only) &&
 	    (locked = (tdb_nest_lock(tdb, ACTIVE_LOCK, F_WRLCK, TDB_LOCK_NOWAIT|TDB_LOCK_PROBE) == 0))) {
-		open_flags |= O_CREAT;
-		if (ftruncate(tdb->fd, 0) == -1) {
+		int ret;
+		ret = tdb_brlock(tdb, F_WRLCK, FREELIST_TOP, 0,
+				 TDB_LOCK_WAIT);
+		if (ret == -1) {
 			TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_open_ex: "
-				 "failed to truncate %s: %s\n",
+				 "tdb_brlock failed for %s: %s\n",
 				 name, strerror(errno)));
-			goto fail; /* errno set by ftruncate */
+			goto fail;
+		}
+		ret = tdb_new_database(tdb, hash_size);
+		if (ret == -1) {
+			TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_open_ex: "
+				 "tdb_new_database failed for %s: %s\n",
+				 name, strerror(errno)));
+			tdb_unlockall(tdb);
+			goto fail;
+		}
+		ret = tdb_brunlock(tdb, F_WRLCK, FREELIST_TOP, 0);
+		if (ret == -1) {
+			TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_open_ex: "
+				 "tdb_unlockall failed for %s: %s\n",
+				 name, strerror(errno)));
+			goto fail;
+		}
+		ret = lseek(tdb->fd, 0, SEEK_SET);
+		if (ret == -1) {
+			TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_open_ex: "
+				 "lseek failed for %s: %s\n",
+				 name, strerror(errno)));
+			goto fail;
 		}
 	}
 
@@ -587,7 +611,9 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
 		TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_reopen: file dev/inode has changed!\n"));
 		goto fail;
 	}
-	tdb_mmap(tdb);
+	if (tdb_mmap(tdb) != 0) {
+		goto fail;
+	}
 #endif /* fake pread or pwrite */
 
 	/* We may still think we hold the active lock. */

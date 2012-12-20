@@ -58,6 +58,13 @@ bool test_netlogon_ex_ops(struct dcerpc_pipe *p, struct torture_context *tctx,
 	int flags = CLI_CRED_NTLM_AUTH;
 	struct dcerpc_binding_handle *b = p->binding_handle;
 
+	struct netr_UserSessionKey key;
+	struct netr_LMSessionKey LMSessKey;
+	uint32_t validation_levels[] = { 2, 3 };
+	struct netr_SamBaseInfo *base;
+	const char *crypto_alg = "";
+	bool can_do_validation_6 = true;
+
 	if (lpcfg_client_lanman_auth(tctx->lp_ctx)) {
 		flags |= CLI_CRED_LANMAN_AUTH;
 	}
@@ -102,23 +109,120 @@ bool test_netlogon_ex_ops(struct dcerpc_pipe *p, struct torture_context *tctx,
 
 	r.in.server_name = talloc_asprintf(tctx, "\\\\%s", dcerpc_server_name(p));
 	r.in.computer_name = cli_credentials_get_workstation(credentials);
-	r.in.logon_level = 2;
+	r.in.logon_level = NetlogonNetworkInformation;
 	r.in.logon= &logon;
 	r.in.flags = &_flags;
 	r.out.validation = &validation;
 	r.out.authoritative = &authoritative;
 	r.out.flags = &_flags;
 
+	/*
+	- retrieve level6
+	- save usrsession and lmsession key
+	- retrieve level 2
+	- calculate, compare
+	- retrieve level 3
+	- calculate, compare
+	*/
+
+	if (creds) {
+		if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+			crypto_alg = "AES";
+		} else if (creds->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
+			crypto_alg = "ARCFOUR";
+		}
+	}
+
+	r.in.validation_level = 6;
+
 	torture_comment(tctx,
-			"Testing LogonSamLogonEx with name %s\n",
-			ninfo.identity_info.account_name.string);
+			"Testing LogonSamLogonEx with name %s using %s and validation_level: %d\n",
+			ninfo.identity_info.account_name.string, crypto_alg,
+			r.in.validation_level);
 
-	for (i=2;i<3;i++) {
-		r.in.validation_level = i;
+	torture_assert_ntstatus_ok(tctx,
+		dcerpc_netr_LogonSamLogonEx_r(b, tctx, &r),
+		"LogonSamLogonEx failed");
+	if (NT_STATUS_EQUAL(r.out.result, NT_STATUS_INVALID_INFO_CLASS)) {
+		can_do_validation_6 = false;
+	} else {
+		torture_assert_ntstatus_ok(tctx, r.out.result,
+			"LogonSamLogonEx failed");
 
-		torture_assert_ntstatus_ok(tctx, dcerpc_netr_LogonSamLogonEx_r(b, tctx, &r),
-			"LogonSamLogon failed");
-		torture_assert_ntstatus_ok(tctx, r.out.result, "LogonSamLogon failed");
+		key = r.out.validation->sam6->base.key;
+		LMSessKey = r.out.validation->sam6->base.LMSessKey;
+
+		DEBUG(1,("unencrypted session keys from validation_level 6:\n"));
+		dump_data(1, r.out.validation->sam6->base.key.key, 16);
+		dump_data(1, r.out.validation->sam6->base.LMSessKey.key, 8);
+	}
+
+	for (i=0; i < ARRAY_SIZE(validation_levels); i++) {
+
+		r.in.validation_level = validation_levels[i];
+
+		torture_comment(tctx,
+			"Testing LogonSamLogonEx with name %s using %s and validation_level: %d\n",
+			ninfo.identity_info.account_name.string, crypto_alg,
+			r.in.validation_level);
+
+		torture_assert_ntstatus_ok(tctx,
+			dcerpc_netr_LogonSamLogonEx_r(b, tctx, &r),
+			"LogonSamLogonEx failed");
+		torture_assert_ntstatus_ok(tctx, r.out.result,
+			"LogonSamLogonEx failed");
+
+		if (creds == NULL) {
+			/* when this test is called without creds no point in
+			 * testing the session keys */
+			continue;
+		}
+
+		switch (validation_levels[i]) {
+		case 2:
+			base = &r.out.validation->sam2->base;
+			break;
+		case 3:
+			base = &r.out.validation->sam3->base;
+			break;
+		default:
+			break;
+		}
+
+		DEBUG(1,("encrypted keys validation_level %d:\n",
+			validation_levels[i]));
+		dump_data(1, base->key.key, 16);
+		dump_data(1, base->LMSessKey.key, 8);
+
+		if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+			netlogon_creds_aes_decrypt(creds, base->key.key, 16);
+			netlogon_creds_aes_decrypt(creds, base->LMSessKey.key, 8);
+		} else if (creds->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
+			netlogon_creds_arcfour_crypt(creds, base->key.key, 16);
+			netlogon_creds_arcfour_crypt(creds, base->LMSessKey.key, 8);
+		}
+
+		DEBUG(1,("decryped keys validation_level %d\n",
+			validation_levels[i]));
+
+		dump_data(1, base->key.key, 16);
+		dump_data(1, base->LMSessKey.key, 8);
+
+		if (!can_do_validation_6) {
+			/* we cant compare against unencrypted keys */
+			continue;
+		}
+
+		torture_assert_mem_equal(tctx,
+					 base->key.key,
+					 key.key,
+					 16,
+					 "unexpected user session key\n");
+		torture_assert_mem_equal(tctx,
+					 base->LMSessKey.key,
+					 LMSessKey.key,
+					 8,
+					 "unexpected LM session key\n");
 	}
 
 	return true;
@@ -323,6 +427,10 @@ static bool test_schannel(struct torture_context *tctx,
 	torture_assert(tctx, test_netlogon_ex_ops(p_netlogon, tctx, credentials, creds),
 		"Failed to process schannel secured NETLOGON EX ops");
 
+	/* we *MUST* use ncacn_np for openpolicy etc. */
+	transport = b->transport;
+	b->transport = NCACN_NP;
+
 	/* Swap the binding details from SAMR to LSARPC */
 	status = dcerpc_epm_map_binding(tctx, b, &ndr_table_lsarpc, tctx->ev, tctx->lp_ctx);
 	torture_assert_ntstatus_ok(tctx, status, "epm map");
@@ -337,6 +445,8 @@ static bool test_schannel(struct torture_context *tctx,
 
 	talloc_free(p_lsa);
 	p_lsa = NULL;
+
+	b->transport = transport;
 
 	/* we *MUST* use ncacn_ip_tcp for lookupsids3/lookupnames4 */
 	transport = b->transport;
@@ -449,10 +559,14 @@ bool torture_rpc_schannel(struct torture_context *torture)
 		{ ACB_WSTRUST,   DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_AUTO},
 		{ ACB_WSTRUST,   DCERPC_SCHANNEL | DCERPC_SIGN | DCERPC_SCHANNEL_128},
 		{ ACB_WSTRUST,   DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_128 },
+		{ ACB_WSTRUST,   DCERPC_SCHANNEL | DCERPC_SIGN | DCERPC_SCHANNEL_AES},
+		{ ACB_WSTRUST,   DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_AES },
 		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SIGN | DCERPC_SCHANNEL_AUTO},
 		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_AUTO},
 		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SIGN | DCERPC_SCHANNEL_128 },
-		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_128 }
+		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_128 },
+		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SIGN | DCERPC_SCHANNEL_AES },
+		{ ACB_SVRTRUST,  DCERPC_SCHANNEL | DCERPC_SEAL | DCERPC_SCHANNEL_AES }
 	};
 	int i;
 
@@ -646,7 +760,7 @@ static bool torture_schannel_bench_start(struct torture_schannel_bench_conn *con
 
 	conn->r.in.server_name = talloc_asprintf(conn->tmp, "\\\\%s", dcerpc_server_name(conn->pipe));
 	conn->r.in.computer_name = cli_credentials_get_workstation(conn->wks_creds);
-	conn->r.in.logon_level = 2;
+	conn->r.in.logon_level = NetlogonNetworkInformation;
 	conn->r.in.logon = talloc(conn->tmp, union netr_LogonLevel);
 	conn->r.in.logon->network = &conn->ninfo;
 	conn->r.in.flags = talloc(conn->tmp, uint32_t);

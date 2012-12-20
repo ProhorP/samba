@@ -23,7 +23,6 @@
 #include "serverid.h"
 #include "messages.h"
 #include "ntdomain.h"
-#include <libgen.h>
 
 #include "lib/id_cache.h"
 
@@ -62,7 +61,7 @@ void start_lsasd(struct tevent_context *ev_ctx,
 
 static void lsasd_reopen_logs(int child_id)
 {
-	char *lfile = lp_logfile();
+	char *lfile = lp_logfile(talloc_tos());
 	char *extension;
 	int rc;
 
@@ -83,11 +82,11 @@ static void lsasd_reopen_logs(int child_id)
 		if (strstr(lfile, extension) == NULL) {
 			if (child_id) {
 				rc = asprintf(&lfile, "%s.%d",
-						lp_logfile(),
+						lp_logfile(talloc_tos()),
 						child_id);
 			} else {
 				rc = asprintf(&lfile, "%s.%s",
-						lp_logfile(),
+						lp_logfile(talloc_tos()),
 						extension);
 			}
 		}
@@ -455,7 +454,8 @@ static void lsasd_handle_client(struct tevent_req *req)
 				    sd,
 				    NULL);
 	} else if (tsocket_address_is_unix(srv_addr)) {
-		char *p;
+		const char *p;
+		const char *b;
 
 		p = tsocket_address_unix_path(srv_addr, tmp_ctx);
 		if (p == NULL) {
@@ -463,22 +463,25 @@ static void lsasd_handle_client(struct tevent_req *req)
 			return;
 		}
 
-		if (strstr(p, "/np/")) {
-			p = basename(p);
+		b = strrchr(p, '/');
+		if (b != NULL) {
+			b++;
+		} else {
+			b = p;
+		}
 
+		if (strstr(p, "/np/")) {
 			named_pipe_accept_function(data->ev_ctx,
 						   data->msg_ctx,
-						   p,
+						   b,
 						   sd,
 						   lsasd_client_terminated,
 						   data);
 		} else {
-			p = basename(p);
-
 			dcerpc_ncacn_accept(data->ev_ctx,
 					    data->msg_ctx,
 					    NCALRPC,
-					    p,
+					    b,
 					    cli_addr,
 					    srv_addr,
 					    sd,
@@ -858,7 +861,7 @@ void start_lsasd(struct tevent_context *ev_ctx,
 	BlockSignals(true, SIGTERM);
 	BlockSignals(true, SIGHUP);
 
-	pid = sys_fork();
+	pid = fork();
 	if (pid == -1) {
 		DEBUG(0, ("Failed to fork LSASD [%s], aborting ...\n",
 			   strerror(errno)));
@@ -874,9 +877,6 @@ void start_lsasd(struct tevent_context *ev_ctx,
 
 		return;
 	}
-
-	/* child */
-	close_low_fds(false);
 
 	/* save the parent process id so the children can use it later */
 	parent_id = procid_self();
@@ -933,21 +933,21 @@ void start_lsasd(struct tevent_context *ev_ctx,
 
 	status = rpc_lsarpc_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register winreg rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register lsarpc rpc inteface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_samr_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsasd rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register samr rpc inteface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_netlogon_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsasd rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register netlogon rpc inteface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

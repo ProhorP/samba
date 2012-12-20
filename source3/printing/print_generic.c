@@ -73,7 +73,7 @@ static int print_run_command(int snum, const char* printername, bool do_sub,
 
 	if (do_sub && snum != -1) {
 		syscmd = talloc_sub_advanced(ctx,
-				lp_servicename(snum),
+				lp_servicename(talloc_tos(), snum),
 				current_user_info.unix_name,
 				"",
 				current_user.ut.gid,
@@ -117,8 +117,8 @@ static int generic_job_pause(int snum, struct printjob *pjob)
 	
 	/* need to pause the spooled entry */
 	slprintf(jobstr, sizeof(jobstr)-1, "%d", pjob->sysjob);
-	return print_run_command(snum, lp_printername(snum), True,
-				 lp_lppausecommand(snum), NULL,
+	return print_run_command(snum, lp_printername(talloc_tos(), snum), True,
+				 lp_lppausecommand(talloc_tos(), snum), NULL,
 				 "%j", jobstr,
 				 NULL);
 }
@@ -132,17 +132,75 @@ static int generic_job_resume(int snum, struct printjob *pjob)
 
 	/* need to pause the spooled entry */
 	slprintf(jobstr, sizeof(jobstr)-1, "%d", pjob->sysjob);
-	return print_run_command(snum, lp_printername(snum), True,
-				 lp_lpresumecommand(snum), NULL,
+	return print_run_command(snum, lp_printername(talloc_tos(), snum), True,
+				 lp_lpresumecommand(talloc_tos(), snum), NULL,
 				 "%j", jobstr,
 				 NULL);
+}
+
+/****************************************************************************
+get the current list of queued jobs
+****************************************************************************/
+static int generic_queue_get(const char *printer_name,
+                             enum printing_types printing_type,
+                             char *lpq_command,
+                             print_queue_struct **q,
+                             print_status_struct *status)
+{
+	char **qlines;
+	int fd;
+	int numlines, i, qcount;
+	print_queue_struct *queue = NULL;
+
+	/* never do substitution when running the 'lpq command' since we can't
+	   get it rigt when using the background update daemon.  Make the caller
+	   do it before passing off the command string to us here. */
+
+	print_run_command(-1, printer_name, False, lpq_command, &fd, NULL);
+
+	if (fd == -1) {
+		DEBUG(5,("generic_queue_get: Can't read print queue status for printer %s\n",
+			printer_name ));
+		return 0;
+	}
+
+	numlines = 0;
+	qlines = fd_lines_load(fd, &numlines,0,NULL);
+	close(fd);
+
+	/* turn the lpq output into a series of job structures */
+	qcount = 0;
+	ZERO_STRUCTP(status);
+	if (numlines && qlines) {
+		queue = SMB_MALLOC_ARRAY(print_queue_struct, numlines+1);
+		if (!queue) {
+			TALLOC_FREE(qlines);
+			*q = NULL;
+			return 0;
+		}
+		memset(queue, '\0', sizeof(print_queue_struct)*(numlines+1));
+
+		for (i=0; i<numlines; i++) {
+			/* parse the line */
+			if (parse_lpq_entry(printing_type,qlines[i],
+					    &queue[qcount],status,qcount==0)) {
+				qcount++;
+			}
+		}
+	}
+
+	TALLOC_FREE(qlines);
+        *q = queue;
+	return qcount;
 }
 
 /****************************************************************************
  Submit a file for printing - called from print_job_end()
 ****************************************************************************/
 
-static int generic_job_submit(int snum, struct printjob *pjob)
+static int generic_job_submit(int snum, struct printjob *pjob,
+			      enum printing_types printing_type,
+			      char *lpq_cmd)
 {
 	int ret = -1;
 	char *current_directory = NULL;
@@ -152,6 +210,8 @@ static int generic_job_submit(int snum, struct printjob *pjob)
 	char *jobname = NULL;
 	TALLOC_CTX *ctx = talloc_tos();
 	fstring job_page_count, job_size;
+	print_queue_struct *q;
+	print_status_struct status;
 
 	/* we print from the directory path to give the best chance of
            parsing the lpq output */
@@ -194,14 +254,44 @@ static int generic_job_submit(int snum, struct printjob *pjob)
 	slprintf(job_size, sizeof(job_size)-1, "%lu", (unsigned long)pjob->size);
 
 	/* send it to the system spooler */
-	ret = print_run_command(snum, lp_printername(snum), True,
-			lp_printcommand(snum), NULL,
+	ret = print_run_command(snum, lp_printername(talloc_tos(), snum), True,
+			lp_printcommand(talloc_tos(), snum), NULL,
 			"%s", p,
 			"%J", jobname,
 			"%f", p,
 			"%z", job_size,
 			"%c", job_page_count,
 			NULL);
+	if (ret != 0) {
+		ret = -1;
+		goto out;
+	}
+
+	/*
+	 * check the queue for the newly submitted job, this allows us to
+	 * determine the backend job identifier (sysjob).
+	 */
+	pjob->sysjob = -1;
+	ret = generic_queue_get(lp_printername(talloc_tos(), snum),
+				printing_type, lpq_cmd, &q, &status);
+	if (ret > 0) {
+		int i;
+		for (i = 0; i < ret; i++) {
+			if (strcmp(q[i].fs_file, p) == 0) {
+				pjob->sysjob = q[i].sysjob;
+				DEBUG(5, ("new job %u (%s) matches sysjob %d\n",
+					  pjob->jobid, jobname, pjob->sysjob));
+				break;
+			}
+		}
+		SAFE_FREE(q);
+		ret = 0;
+	}
+	if (pjob->sysjob == -1) {
+		DEBUG(2, ("failed to get sysjob for job %u (%s), tracking as "
+			  "Unix job\n", pjob->jobid, jobname));
+	}
+
 
  out:
 
@@ -212,70 +302,13 @@ static int generic_job_submit(int snum, struct printjob *pjob)
         return ret;
 }
 
-
-/****************************************************************************
-get the current list of queued jobs
-****************************************************************************/
-static int generic_queue_get(const char *printer_name, 
-                             enum printing_types printing_type,
-                             char *lpq_command,
-                             print_queue_struct **q, 
-                             print_status_struct *status)
-{
-	char **qlines;
-	int fd;
-	int numlines, i, qcount;
-	print_queue_struct *queue = NULL;
-	
-	/* never do substitution when running the 'lpq command' since we can't
-	   get it rigt when using the background update daemon.  Make the caller 
-	   do it before passing off the command string to us here. */
-
-	print_run_command(-1, printer_name, False, lpq_command, &fd, NULL);
-
-	if (fd == -1) {
-		DEBUG(5,("generic_queue_get: Can't read print queue status for printer %s\n",
-			printer_name ));
-		return 0;
-	}
-	
-	numlines = 0;
-	qlines = fd_lines_load(fd, &numlines,0,NULL);
-	close(fd);
-
-	/* turn the lpq output into a series of job structures */
-	qcount = 0;
-	ZERO_STRUCTP(status);
-	if (numlines && qlines) {
-		queue = SMB_MALLOC_ARRAY(print_queue_struct, numlines+1);
-		if (!queue) {
-			TALLOC_FREE(qlines);
-			*q = NULL;
-			return 0;
-		}
-		memset(queue, '\0', sizeof(print_queue_struct)*(numlines+1));
-
-		for (i=0; i<numlines; i++) {
-			/* parse the line */
-			if (parse_lpq_entry(printing_type,qlines[i],
-					    &queue[qcount],status,qcount==0)) {
-				qcount++;
-			}
-		}		
-	}
-
-	TALLOC_FREE(qlines);
-        *q = queue;
-	return qcount;
-}
-
 /****************************************************************************
  pause a queue
 ****************************************************************************/
 static int generic_queue_pause(int snum)
 {
-	return print_run_command(snum, lp_printername(snum), True,
-				 lp_queuepausecommand(snum), NULL, NULL);
+	return print_run_command(snum, lp_printername(talloc_tos(), snum), True,
+				 lp_queuepausecommand(talloc_tos(), snum), NULL, NULL);
 }
 
 /****************************************************************************
@@ -283,8 +316,8 @@ static int generic_queue_pause(int snum)
 ****************************************************************************/
 static int generic_queue_resume(int snum)
 {
-	return print_run_command(snum, lp_printername(snum), True,
-				 lp_queueresumecommand(snum), NULL, NULL);
+	return print_run_command(snum, lp_printername(talloc_tos(), snum), True,
+				 lp_queueresumecommand(talloc_tos(), snum), NULL, NULL);
 }
 
 /****************************************************************************

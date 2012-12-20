@@ -292,15 +292,15 @@ static struct dcesrv_handle *create_rpc_handle_internal(struct pipes_struct *p,
 	/* something random */
 	SSVAL(rpc_hnd->wire_handle.uuid.node, 0, t);
 	/* something more random */
-	SIVAL(rpc_hnd->wire_handle.uuid.node, 2, sys_getpid());
+	SIVAL(rpc_hnd->wire_handle.uuid.node, 2, getpid());
 
 	DLIST_ADD(p->pipe_handles->handles, rpc_hnd);
 	p->pipe_handles->count++;
 
 	*hnd = rpc_hnd->wire_handle;
 
-	DEBUG(4, ("Opened policy hnd[%d] ", (int)p->pipe_handles->count));
-	dump_data(4, (uint8_t *)hnd, sizeof(*hnd));
+	DEBUG(6, ("Opened policy hnd[%d] ", (int)p->pipe_handles->count));
+	dump_data(6, (uint8_t *)hnd, sizeof(*hnd));
 
 	return rpc_hnd;
 }
@@ -334,8 +334,8 @@ static struct dcesrv_handle *find_policy_by_hnd_internal(struct pipes_struct *p,
 	count = 0;
 	for (h = p->pipe_handles->handles; h != NULL; h = h->next) {
 		if (memcmp(&h->wire_handle, hnd, sizeof(*hnd)) == 0) {
-			DEBUG(4,("Found policy hnd[%u] ", count));
-			dump_data(4, (const uint8 *)hnd, sizeof(*hnd));
+			DEBUG(6,("Found policy hnd[%u] ", count));
+			dump_data(6, (const uint8 *)hnd, sizeof(*hnd));
 			if (data_p) {
 				*data_p = h->data;
 			}
@@ -347,7 +347,7 @@ static struct dcesrv_handle *find_policy_by_hnd_internal(struct pipes_struct *p,
 	DEBUG(4,("Policy not found: "));
 	dump_data(4, (const uint8_t *)hnd, sizeof(*hnd));
 
-	p->bad_handle_fault_state = true;
+	p->fault_state = DCERPC_FAULT_CONTEXT_MISMATCH;
 
 	return NULL;
 }
@@ -383,7 +383,7 @@ bool close_policy_hnd(struct pipes_struct *p, struct policy_handle *hnd)
 		return false;
 	}
 
-	DEBUG(3,("Closed policy\n"));
+	DEBUG(6,("Closed policy\n"));
 
 	p->pipe_handles->count--;
 

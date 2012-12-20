@@ -76,30 +76,54 @@ NTSTATUS ntlmssp_set_username(struct ntlmssp_state *ntlmssp_state, const char *u
  */
 NTSTATUS ntlmssp_set_password(struct ntlmssp_state *ntlmssp_state, const char *password)
 {
+	uint8_t lm_hash[16];
+	uint8_t nt_hash[16];
+
 	TALLOC_FREE(ntlmssp_state->lm_hash);
 	TALLOC_FREE(ntlmssp_state->nt_hash);
-	if (!password) {
+
+	if (password == NULL) {
 		return NT_STATUS_OK;
-	} else {
-		uint8_t lm_hash[16];
-		uint8_t nt_hash[16];
+	}
 
-		if (E_deshash(password, lm_hash)) {
-			ntlmssp_state->lm_hash = (uint8_t *)
-				talloc_memdup(ntlmssp_state, lm_hash, 16);
-			if (!ntlmssp_state->lm_hash) {
-				return NT_STATUS_NO_MEMORY;
-			}
-		}
-
-		E_md4hash(password, nt_hash);
-
-		ntlmssp_state->nt_hash = (uint8_t *)
-			talloc_memdup(ntlmssp_state, nt_hash, 16);
-		if (!ntlmssp_state->nt_hash) {
-			TALLOC_FREE(ntlmssp_state->lm_hash);
+	if (E_deshash(password, lm_hash)) {
+		ntlmssp_state->lm_hash = (uint8_t *)
+			talloc_memdup(ntlmssp_state, lm_hash, 16);
+		if (!ntlmssp_state->lm_hash) {
 			return NT_STATUS_NO_MEMORY;
 		}
+	}
+
+	E_md4hash(password, nt_hash);
+
+	ntlmssp_state->nt_hash = (uint8_t *)
+		talloc_memdup(ntlmssp_state, nt_hash, 16);
+	if (!ntlmssp_state->nt_hash) {
+		TALLOC_FREE(ntlmssp_state->lm_hash);
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	return NT_STATUS_OK;
+}
+
+NTSTATUS ntlmssp_set_password_hash(struct ntlmssp_state *state,
+				   const char *pwhash)
+{
+	char nt_hash[16];
+	size_t converted;
+
+	converted = strhex_to_str(
+		nt_hash, sizeof(nt_hash), pwhash, strlen(pwhash));
+	if (converted != sizeof(nt_hash)) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	TALLOC_FREE(state->lm_hash);
+	TALLOC_FREE(state->nt_hash);
+
+	state->nt_hash = (uint8_t *)talloc_memdup(state, nt_hash, 16);
+	if (!state->nt_hash) {
+		return NT_STATUS_NO_MEMORY;
 	}
 	return NT_STATUS_OK;
 }
@@ -307,6 +331,21 @@ static NTSTATUS ntlmssp3_client_initial(struct ntlmssp_state *ntlmssp_state,
 	return NT_STATUS_MORE_PROCESSING_REQUIRED;
 }
 
+bool ntlmssp_is_anonymous(struct ntlmssp_state *ntlmssp_state)
+{
+	const char *user = ntlmssp_state->user;
+
+	if (user == NULL) {
+		return true;
+	}
+
+	if (strlen(user) == 0) {
+		return true;
+	}
+
+	return false;
+}
+
 /**
  * Next state function for the Challenge Packet.  Generate an auth packet.
  *
@@ -332,8 +371,9 @@ static NTSTATUS ntlmssp3_client_challenge(struct ntlmssp_state *ntlmssp_state,
 	DATA_BLOB session_key = data_blob_null;
 	DATA_BLOB encrypted_session_key = data_blob_null;
 	NTSTATUS nt_status = NT_STATUS_OK;
+	bool anon = ntlmssp_is_anonymous(ntlmssp_state);
 
-	if (ntlmssp_state->use_ccache) {
+	if (!anon && ntlmssp_state->use_ccache) {
 		struct wbcCredentialCacheParams params;
 		struct wbcCredentialCacheInfo *info = NULL;
 		struct wbcAuthErrorInfo *error = NULL;
@@ -466,7 +506,7 @@ noccache:
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	if (!ntlmssp_state->nt_hash) {
+	if (anon || !ntlmssp_state->nt_hash) {
 		static const uint8_t zeros[16] = {0, };
 		/* do nothing - blobs are zero length */
 

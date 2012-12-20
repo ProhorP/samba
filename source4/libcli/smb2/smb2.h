@@ -106,7 +106,7 @@ struct smb2_transport {
 */
 struct smb2_tree {
 	struct smb2_session *session;
-	uint32_t tid;
+	struct smbXcli_tcon *smbXcli;
 };
 
 /*
@@ -115,8 +115,6 @@ struct smb2_tree {
 struct smb2_session {
 	struct smb2_transport *transport;
 	struct gensec_security *gensec;
-	uint32_t pid;
-	DATA_BLOB session_key;
 	struct smbXcli_session *smbXcli;
 };
 

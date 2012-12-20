@@ -22,6 +22,7 @@
 #include "../lib/util/tevent_ntstatus.h"
 #include "async_smb.h"
 #include "trans2.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /****************************************************************************
  Calculate a safe next_entry_offset.
@@ -77,16 +78,18 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 				return pdata_end - base;
 			}
 			finfo->ctime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+4, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+4, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->atime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+8, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+8, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->mtime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+12, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+12, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->size = IVAL(p,16);
 			finfo->mode = CVAL(p,24);
 			len = CVAL(p, 26);
 			p += 27;
-			p += align_string(base_ptr, p, 0);
+			if (recv_flags2 & FLAGS2_UNICODE_STRINGS) {
+				p += ucs2_align(base_ptr, p, STR_UNICODE);
+			}
 
 			/* We can safely use len here (which is required by OS/2)
 			 * and the NAS-BASIC server instead of +2 or +1 as the
@@ -126,11 +129,11 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 				return pdata_end - base;
 			}
 			finfo->ctime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+4, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+4, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->atime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+8, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+8, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->mtime_ts = convert_time_t_to_timespec(
-				make_unix_date2(p+12, cli_state_server_time_zone(cli)));
+				make_unix_date2(p+12, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->size = IVAL(p,16);
 			finfo->mode = CVAL(p,24);
 			len = CVAL(p, 30);
@@ -248,7 +251,7 @@ static bool interpret_short_filename(TALLOC_CTX *ctx,
 	finfo->mode = CVAL(p,21);
 
 	/* this date is converted to GMT by make_unix_date */
-	finfo->ctime_ts.tv_sec = make_unix_date(p+22, cli_state_server_time_zone(cli));
+	finfo->ctime_ts.tv_sec = make_unix_date(p+22, smb1cli_conn_server_time_zone(cli->conn));
 	finfo->ctime_ts.tv_nsec = 0;
 	finfo->mtime_ts.tv_sec = finfo->atime_ts.tv_sec = finfo->ctime_ts.tv_sec;
 	finfo->mtime_ts.tv_nsec = finfo->atime_ts.tv_nsec = 0;
@@ -323,7 +326,7 @@ static struct tevent_req *cli_list_old_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 	bytes[0] = 4;
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(cli), mask,
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(cli->conn), mask,
 				   strlen(mask)+1, NULL);
 
 	bytes = smb_bytes_push_bytes(bytes, 5, (const uint8_t *)&zero, 2);
@@ -427,7 +430,7 @@ static void cli_list_old_done(struct tevent_req *subreq)
 		return;
 	}
 	bytes[0] = 4;
-	bytes = smb_bytes_push_str(bytes, cli_ucs2(state->cli), "",
+	bytes = smb_bytes_push_str(bytes, smbXcli_conn_use_unicode(state->cli->conn), "",
 				   1, NULL);
 	bytes = smb_bytes_push_bytes(bytes, 5, state->search_status,
 				     sizeof(state->search_status));
@@ -487,7 +490,7 @@ NTSTATUS cli_list_old(struct cli_state *cli, const char *mask,
 	struct file_info *finfo;
 	size_t i, num_finfo;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -590,7 +593,7 @@ static struct tevent_req *cli_list_trans_send(TALLOC_CTX *mem_ctx,
 	SSVAL(state->param, 6, state->info_level);
 	SIVAL(state->param, 8, 0);
 
-	state->param = trans2_bytes_push_str(state->param, cli_ucs2(cli),
+	state->param = trans2_bytes_push_str(state->param, smbXcli_conn_use_unicode(cli->conn),
 					     state->mask, strlen(state->mask)+1,
 					     NULL);
 	if (tevent_req_nomem(state->param, req)) {
@@ -773,7 +776,7 @@ static void cli_list_trans_done(struct tevent_req *subreq)
 		data_blob_free(&last_name_raw);
 	} else {
 		state->param = trans2_bytes_push_str(state->param,
-						     cli_ucs2(state->cli),
+						     smbXcli_conn_use_unicode(state->cli->conn),
 						     state->mask,
 						     strlen(state->mask)+1,
 						     NULL);
@@ -822,7 +825,7 @@ NTSTATUS cli_list_trans(struct cli_state *cli, const char *mask,
 	struct file_info *finfo = NULL;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -879,7 +882,7 @@ struct tevent_req *cli_list_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	if (cli_state_protocol(cli) <= PROTOCOL_LANMAN1) {
+	if (smbXcli_conn_protocol(cli->conn) <= PROTOCOL_LANMAN1) {
 		subreq = cli_list_old_send(state, ev, cli, mask, attribute);
 		state->recv_fn = cli_list_old_recv;
 	} else {
@@ -938,7 +941,7 @@ NTSTATUS cli_list(struct cli_state *cli, const char *mask, uint16 attribute,
 	size_t i, num_finfo;
 	uint16_t info_level;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -950,7 +953,7 @@ NTSTATUS cli_list(struct cli_state *cli, const char *mask, uint16 attribute,
 		goto fail;
 	}
 
-	info_level = (cli_state_capabilities(cli) & CAP_NT_SMBS)
+	info_level = (smb1cli_conn_capabilities(cli->conn) & CAP_NT_SMBS)
 		? SMB_FIND_FILE_BOTH_DIRECTORY_INFO : SMB_FIND_INFO_STANDARD;
 
 	req = cli_list_send(frame, ev, cli, mask, attribute, info_level);

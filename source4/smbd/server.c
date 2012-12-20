@@ -34,7 +34,7 @@
 #include "libcli/auth/schannel.h"
 #include "smbd/process_model.h"
 #include "param/secrets.h"
-#include "smbd/pidfile.h"
+#include "lib/util/pidfile.h"
 #include "param/param.h"
 #include "dsdb/samdb/samdb.h"
 #include "auth/session.h"
@@ -225,7 +225,10 @@ static NTSTATUS setup_parent_messaging(struct tevent_context *event_ctx,
 			      cluster_id(0, SAMBA_PARENT_TASKID), event_ctx, false);
 	NT_STATUS_HAVE_NO_MEMORY(msg);
 
-	irpc_add_name(msg, "samba");
+	status = irpc_add_name(msg, "samba");
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
 
 	status = IRPC_REGISTER(msg, irpc, SAMBA_TERMINATE,
 			       samba_terminate, NULL);
@@ -392,7 +395,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 		return 1;
 	}
 
-	if (lpcfg_server_role(cmdline_lp_ctx) == ROLE_DOMAIN_CONTROLLER) {
+	if (lpcfg_server_role(cmdline_lp_ctx) == ROLE_ACTIVE_DIRECTORY_DC) {
 		if (!open_schannel_session_store(talloc_autofree_context(), cmdline_lp_ctx)) {
 			DEBUG(0,("ERROR: Samba cannot open schannel store for secured NETLOGON operations.\n"));
 			exit(1);
@@ -449,6 +452,17 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 				 max_runtime_handler,
 				 discard_const(binary_name));
 	}
+
+	if (lpcfg_server_role(cmdline_lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC
+	    && !lpcfg_parm_bool(cmdline_lp_ctx, NULL, "server role check", "inhibit", false)
+	    && !str_list_check_ci(lpcfg_server_services(cmdline_lp_ctx), "smb") 
+	    && !str_list_check_ci(lpcfg_dcerpc_endpoint_servers(cmdline_lp_ctx), "remote")
+	    && !str_list_check_ci(lpcfg_dcerpc_endpoint_servers(cmdline_lp_ctx), "mapiproxy")) {
+		DEBUG(0, ("At this time the 'samba' binary should only be used for either:\n"));
+		DEBUGADD(0, ("'server role = active directory domain controller' or to access the ntvfs file server with 'server services = +smb' or the rpc proxy with 'dcerpc endpoint servers = remote'\n"));
+		DEBUGADD(0, ("You should start smbd/nmbd/winbindd instead for domain member and standalone file server tasks\n"));
+		exit(1);
+	};
 
 	prime_ldb_databases(event_ctx);
 

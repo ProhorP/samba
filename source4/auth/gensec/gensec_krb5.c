@@ -39,6 +39,9 @@
 #include "param/param.h"
 #include "auth/auth_sam_reply.h"
 #include "lib/util/util_net.h"
+#include "../lib/util/asn1.h"
+#include "auth/kerberos/pac_utils.h"
+#include "gensec_krb5_util.h"
 
 _PUBLIC_ NTSTATUS gensec_krb5_init(void);
 
@@ -259,7 +262,7 @@ static NTSTATUS gensec_krb5_common_client_start(struct gensec_security *gensec_s
 	gensec_krb5_state->ap_req_options = AP_OPTS_USE_SUBKEY;
 
 	if (gensec_krb5_state->gssapi) {
-		/* The Fake GSSAPI modal emulates Samba3, which does not do mutual authentication */
+		/* The Fake GSSAPI model emulates Samba3, which does not do mutual authentication */
 		if (gensec_setting_bool(gensec_security->settings, "gensec_fake_gssapi_krb5", "mutual", false)) {
 			gensec_krb5_state->ap_req_options |= AP_OPTS_MUTUAL_REQUIRED;
 		}
@@ -392,25 +395,75 @@ static NTSTATUS gensec_fake_gssapi_krb5_client_start(struct gensec_security *gen
 	return gensec_krb5_common_client_start(gensec_security, true);
 }
 
-/**
- * Check if the packet is one for this mechansim
- * 
- * @param gensec_security GENSEC state
- * @param in The request, as a DATA_BLOB
- * @return Error, INVALID_PARAMETER if it's not a packet for us
- *                or NT_STATUS_OK if the packet is ok. 
- */
 
-static NTSTATUS gensec_fake_gssapi_krb5_magic(struct gensec_security *gensec_security, 
-				  const DATA_BLOB *in) 
+/*
+  generate a krb5 GSS-API wrapper packet given a ticket
+*/
+static DATA_BLOB gensec_gssapi_gen_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLOB *ticket, const uint8_t tok_id[2])
 {
-	if (gensec_gssapi_check_oid(in, GENSEC_OID_KERBEROS5)) {
-		return NT_STATUS_OK;
-	} else {
-		return NT_STATUS_INVALID_PARAMETER;
+	struct asn1_data *data;
+	DATA_BLOB ret;
+
+	data = asn1_init(mem_ctx);
+	if (!data || !ticket->data) {
+		return data_blob(NULL,0);
 	}
+
+	asn1_push_tag(data, ASN1_APPLICATION(0));
+	asn1_write_OID(data, GENSEC_OID_KERBEROS5);
+
+	asn1_write(data, tok_id, 2);
+	asn1_write(data, ticket->data, ticket->length);
+	asn1_pop_tag(data);
+
+	if (data->has_error) {
+		DEBUG(1,("Failed to build krb5 wrapper at offset %d\n", (int)data->ofs));
+		asn1_free(data);
+		return data_blob(NULL,0);
+	}
+
+	ret = data_blob_talloc(mem_ctx, data->data, data->length);
+	asn1_free(data);
+
+	return ret;
 }
 
+/*
+  parse a krb5 GSS-API wrapper packet giving a ticket
+*/
+static bool gensec_gssapi_parse_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLOB *blob, DATA_BLOB *ticket, uint8_t tok_id[2])
+{
+	bool ret;
+	struct asn1_data *data = asn1_init(mem_ctx);
+	int data_remaining;
+
+	if (!data) {
+		return false;
+	}
+
+	asn1_load(data, *blob);
+	asn1_start_tag(data, ASN1_APPLICATION(0));
+	asn1_check_OID(data, GENSEC_OID_KERBEROS5);
+
+	data_remaining = asn1_tag_remaining(data);
+
+	if (data_remaining < 3) {
+		data->has_error = true;
+	} else {
+		asn1_read(data, tok_id, 2);
+		data_remaining -= 2;
+		*ticket = data_blob_talloc(mem_ctx, NULL, data_remaining);
+		asn1_read(data, ticket->data, ticket->length);
+	}
+
+	asn1_end_tag(data);
+
+	ret = !data->has_error;
+
+	asn1_free(data);
+
+	return ret;
+}
 
 /**
  * Next state function for the Krb5 GENSEC mechanism
@@ -807,7 +860,7 @@ static const struct gensec_security_ops gensec_fake_gssapi_krb5_security_ops = {
 	.client_start   = gensec_fake_gssapi_krb5_client_start,
 	.server_start   = gensec_fake_gssapi_krb5_server_start,
 	.update 	= gensec_krb5_update,
-	.magic   	= gensec_fake_gssapi_krb5_magic,
+	.magic   	= gensec_magic_check_krb5_oid,
 	.session_key	= gensec_krb5_session_key,
 	.session_info	= gensec_krb5_session_info,
 	.have_feature   = gensec_krb5_have_feature,

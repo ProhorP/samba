@@ -27,10 +27,11 @@
 #include "auth/gensec/gensec.h"
 #include "lib/param/param.h"
 #ifdef HAVE_KRB5
-#include "libcli/auth/krb5_wrap.h"
+#include "auth/kerberos/pac_utils.h"
 #endif
 #include "librpc/crypto/gse.h"
 #include "auth/credentials/credentials.h"
+#include "lib/param/loadparm.h"
 
 static NTSTATUS auth3_generate_session_info_pac(struct auth4_context *auth_ctx,
 						TALLOC_CTX *mem_ctx,
@@ -42,9 +43,7 @@ static NTSTATUS auth3_generate_session_info_pac(struct auth4_context *auth_ctx,
 						struct auth_session_info **session_info)
 {
 	TALLOC_CTX *tmp_ctx;
-	struct PAC_DATA *pac_data = NULL;
 	struct PAC_LOGON_INFO *logon_info = NULL;
-	unsigned int i;
 	bool is_mapped;
 	bool is_guest;
 	char *ntuser;
@@ -62,34 +61,12 @@ static NTSTATUS auth3_generate_session_info_pac(struct auth4_context *auth_ctx,
 
 	if (pac_blob) {
 #ifdef HAVE_KRB5
-		status = kerberos_decode_pac(tmp_ctx,
-				     *pac_blob,
-				     NULL, NULL, NULL, NULL, 0, &pac_data);
+		status = kerberos_pac_logon_info(tmp_ctx, *pac_blob, NULL, NULL,
+						 NULL, NULL, 0, &logon_info);
 #else
 		status = NT_STATUS_ACCESS_DENIED;
 #endif
 		if (!NT_STATUS_IS_OK(status)) {
-			goto done;
-		}
-
-		/* get logon name and logon info */
-		for (i = 0; i < pac_data->num_buffers; i++) {
-			struct PAC_BUFFER *data_buf = &pac_data->buffers[i];
-
-			switch (data_buf->type) {
-			case PAC_TYPE_LOGON_INFO:
-				if (!data_buf->info) {
-					break;
-				}
-				logon_info = data_buf->info->logon_info.info;
-				break;
-			default:
-				break;
-			}
-		}
-		if (!logon_info) {
-			DEBUG(1, ("Invalid PAC data, missing logon info!\n"));
-			status = NT_STATUS_NOT_FOUND;
 			goto done;
 		}
 	}
@@ -165,7 +142,6 @@ static struct auth4_context *make_auth4_context_s3(TALLOC_CTX *mem_ctx, struct a
 	auth4_context->generate_session_info = auth3_generate_session_info;
 	auth4_context->get_ntlm_challenge = auth3_get_challenge;
 	auth4_context->set_ntlm_challenge = auth3_set_challenge;
-	auth4_context->challenge_may_be_modified = auth3_may_set_challenge;
 	auth4_context->check_ntlm_password = auth3_check_password;
 	auth4_context->private_data = talloc_steal(auth4_context, auth_context);
 	return auth4_context;
@@ -239,7 +215,7 @@ NTSTATUS auth_generic_prepare(TALLOC_CTX *mem_ctx,
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		lp_ctx = loadparm_init_s3(tmp_ctx, loadparm_s3_context());
+		lp_ctx = loadparm_init_s3(tmp_ctx, loadparm_s3_helpers());
 		if (lp_ctx == NULL) {
 			DEBUG(10, ("loadparm_init_s3 failed\n"));
 			TALLOC_FREE(tmp_ctx);
@@ -292,11 +268,12 @@ NTSTATUS auth_generic_prepare(TALLOC_CTX *mem_ctx,
 
 		gensec_init();
 
-		gensec_settings->backends[idx++] = gensec_security_by_oid(NULL, GENSEC_OID_NTLMSSP);
-
-#if defined(HAVE_KRB5) && defined(HAVE_GSS_WRAP_IOV)
+		/* These need to be in priority order, krb5 before NTLMSSP */
+#if defined(HAVE_KRB5)
 		gensec_settings->backends[idx++] = &gensec_gse_krb5_security_ops;
 #endif
+
+		gensec_settings->backends[idx++] = gensec_security_by_oid(NULL, GENSEC_OID_NTLMSSP);
 
 		gensec_settings->backends[idx++] = gensec_security_by_oid(NULL,
 							GENSEC_OID_SPNEGO);

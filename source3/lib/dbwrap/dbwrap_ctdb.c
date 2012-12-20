@@ -20,8 +20,9 @@
 
 #include "includes.h"
 #include "system/filesys.h"
-#include "lib/util/tdb_wrap.h"
+#include "lib/tdb_wrap/tdb_wrap.h"
 #include "util_tdb.h"
+#include "dbwrap/dbwrap.h"
 #include "dbwrap/dbwrap_ctdb.h"
 #include "dbwrap/dbwrap_rbt.h"
 #include "lib/param/param.h"
@@ -69,7 +70,7 @@ struct db_ctdb_transaction_handle {
 struct db_ctdb_ctx {
 	struct db_context *db;
 	struct tdb_wrap *wtdb;
-	uint32 db_id;
+	uint32_t db_id;
 	struct db_ctdb_transaction_handle *transaction;
 	struct g_lock_ctx *lock_ctx;
 };
@@ -523,7 +524,8 @@ static struct db_record *db_ctdb_fetch_locked_transaction(struct db_ctdb_ctx *ct
 	result->private_data = ctx->transaction;
 
 	result->key.dsize = key.dsize;
-	result->key.dptr = (uint8 *)talloc_memdup(result, key.dptr, key.dsize);
+	result->key.dptr = (uint8_t *)talloc_memdup(result, key.dptr,
+						    key.dsize);
 	if (result->key.dptr == NULL) {
 		DEBUG(0, ("talloc failed\n"));
 		TALLOC_FREE(result);
@@ -549,7 +551,7 @@ static struct db_record *db_ctdb_fetch_locked_transaction(struct db_ctdb_ctx *ct
 	result->value.dptr = NULL;
 
 	if ((result->value.dsize != 0)
-	    && !(result->value.dptr = (uint8 *)talloc_memdup(
+	    && !(result->value.dptr = (uint8_t *)talloc_memdup(
 			 result, ctdb_data.dptr + sizeof(struct ctdb_ltdb_header),
 			 result->value.dsize))) {
 		DEBUG(0, ("talloc failed\n"));
@@ -994,22 +996,62 @@ static int db_ctdb_record_destr(struct db_record* data)
 	if (threshold != 0) {
 		double timediff = timeval_elapsed(&crec->lock_time);
 		if ((timediff * 1000) > threshold) {
-			DEBUG(0, ("Held tdb lock %f seconds\n", timediff));
+			const char *key;
+
+			key = hex_encode_talloc(data,
+						(unsigned char *)data->key.dptr,
+						data->key.dsize);
+			DEBUG(0, ("Held tdb lock on db %s, key %s %f seconds\n",
+				  tdb_name(crec->ctdb_ctx->wtdb->tdb), key,
+				  timediff));
 		}
 	}
 
 	return 0;
 }
 
+/**
+ * Check whether we have a valid local copy of the given record,
+ * either for reading or for writing.
+ */
+static bool db_ctdb_can_use_local_copy(TDB_DATA ctdb_data, bool read_only)
+{
+	struct ctdb_ltdb_header *hdr;
+
+	if (ctdb_data.dptr == NULL)
+		return false;
+
+	if (ctdb_data.dsize < sizeof(struct ctdb_ltdb_header))
+		return false;
+
+	hdr = (struct ctdb_ltdb_header *)ctdb_data.dptr;
+
+#ifdef HAVE_CTDB_WANT_READONLY_DECL
+	if (hdr->dmaster != get_my_vnn()) {
+		/* If we're not dmaster, it must be r/o copy. */
+		return read_only && (hdr->flags & CTDB_REC_RO_HAVE_READONLY);
+	}
+
+	/*
+	 * If we want write access, no one may have r/o copies.
+	 */
+	return read_only || !(hdr->flags & CTDB_REC_RO_HAVE_DELEGATIONS);
+#else
+	return (hdr->dmaster == get_my_vnn());
+#endif
+}
+
 static struct db_record *fetch_locked_internal(struct db_ctdb_ctx *ctx,
 					       TALLOC_CTX *mem_ctx,
-					       TDB_DATA key)
+					       TDB_DATA key,
+					       bool tryonly)
 {
 	struct db_record *result;
 	struct db_ctdb_rec *crec;
 	NTSTATUS status;
 	TDB_DATA ctdb_data;
 	int migrate_attempts = 0;
+	int lockret;
 
 	if (!(result = talloc(mem_ctx, struct db_record))) {
 		DEBUG(0, ("talloc failed\n"));
@@ -1022,11 +1064,13 @@ static struct db_record *fetch_locked_internal(struct db_ctdb_ctx *ctx,
 		return NULL;
 	}
 
+	result->db = ctx->db;
 	result->private_data = (void *)crec;
 	crec->ctdb_ctx = ctx;
 
 	result->key.dsize = key.dsize;
-	result->key.dptr = (uint8 *)talloc_memdup(result, key.dptr, key.dsize);
+	result->key.dptr = (uint8_t *)talloc_memdup(result, key.dptr,
+						    key.dsize);
 	if (result->key.dptr == NULL) {
 		DEBUG(0, ("talloc failed\n"));
 		TALLOC_FREE(result);
@@ -1047,7 +1091,10 @@ again:
 		TALLOC_FREE(keystr);
 	}
 
-	if (tdb_chainlock(ctx->wtdb->tdb, key) != 0) {
+	lockret = tryonly
+		? tdb_chainlock_nonblock(ctx->wtdb->tdb, key)
+		: tdb_chainlock(ctx->wtdb->tdb, key);
+	if (lockret != 0) {
 		DEBUG(3, ("tdb_chainlock failed\n"));
 		TALLOC_FREE(result);
 		return NULL;
@@ -1064,23 +1111,25 @@ again:
 	 * take the shortcut and just return it.
 	 */
 
-	if ((ctdb_data.dptr == NULL) ||
-	    (ctdb_data.dsize < sizeof(struct ctdb_ltdb_header)) ||
-	    ((struct ctdb_ltdb_header *)ctdb_data.dptr)->dmaster != get_my_vnn()
-#if 0
-	    || (random() % 2 != 0)
-#endif
-) {
+	if (!db_ctdb_can_use_local_copy(ctdb_data, false)) {
 		SAFE_FREE(ctdb_data.dptr);
 		tdb_chainunlock(ctx->wtdb->tdb, key);
 		talloc_set_destructor(result, NULL);
 
+		if (tryonly && (migrate_attempts != 0)) {
+			DEBUG(5, ("record migrated away again\n"));
+			TALLOC_FREE(result);
+			return NULL;
+		}
+
 		migrate_attempts += 1;
 
-		DEBUG(10, ("ctdb_data.dptr = %p, dmaster = %u (%u)\n",
+		DEBUG(10, ("ctdb_data.dptr = %p, dmaster = %u (%u) %u\n",
 			   ctdb_data.dptr, ctdb_data.dptr ?
 			   ((struct ctdb_ltdb_header *)ctdb_data.dptr)->dmaster : -1,
-			   get_my_vnn()));
+			   get_my_vnn(),
+			   ctdb_data.dptr ?
+			   ((struct ctdb_ltdb_header *)ctdb_data.dptr)->flags : 0));
 
 		status = ctdbd_migrate(messaging_ctdbd_connection(), ctx->db_id,
 				       key);
@@ -1095,7 +1144,11 @@ again:
 	}
 
 	if (migrate_attempts > 10) {
-		DEBUG(0, ("db_ctdb_fetch_locked needed %d attempts\n",
+		DEBUG(0, ("db_ctdb_fetch_locked for %s key %s needed %d "
+			  "attempts\n", tdb_name(ctx->wtdb->tdb),
+			  hex_encode_talloc(talloc_tos(),
+					    (unsigned char *)key.dptr,
+					    key.dsize),
 			  migrate_attempts));
 	}
 
@@ -1107,7 +1160,7 @@ again:
 	result->value.dptr = NULL;
 
 	if ((result->value.dsize != 0)
-	    && !(result->value.dptr = (uint8 *)talloc_memdup(
+	    && !(result->value.dptr = (uint8_t *)talloc_memdup(
 			 result, ctdb_data.dptr + sizeof(crec->header),
 			 result->value.dsize))) {
 		DEBUG(0, ("talloc failed\n"));
@@ -1134,7 +1187,25 @@ static struct db_record *db_ctdb_fetch_locked(struct db_context *db,
 		return db_ctdb_fetch_locked_persistent(ctx, mem_ctx, key);
 	}
 
-	return fetch_locked_internal(ctx, mem_ctx, key);
+	return fetch_locked_internal(ctx, mem_ctx, key, false);
+}
+
+static struct db_record *db_ctdb_try_fetch_locked(struct db_context *db,
+						  TALLOC_CTX *mem_ctx,
+						  TDB_DATA key)
+{
+	struct db_ctdb_ctx *ctx = talloc_get_type_abort(db->private_data,
+							struct db_ctdb_ctx);
+
+	if (ctx->transaction != NULL) {
+		return db_ctdb_fetch_locked_transaction(ctx, mem_ctx, key);
+	}
+
+	if (db->persistent) {
+		return db_ctdb_fetch_locked_persistent(ctx, mem_ctx, key);
+	}
+
+	return fetch_locked_internal(ctx, mem_ctx, key, true);
 }
 
 /*
@@ -1164,15 +1235,13 @@ static NTSTATUS db_ctdb_fetch(struct db_context *db, TALLOC_CTX *mem_ctx,
 	 * take the shortcut and just return it.
 	 * we bypass the dmaster check for persistent databases
 	 */
-	if ((ctdb_data.dptr != NULL) &&
-	    (ctdb_data.dsize >= sizeof(struct ctdb_ltdb_header)) &&
-	    ((struct ctdb_ltdb_header *)ctdb_data.dptr)->dmaster == get_my_vnn())
-	{
-		/* we are the dmaster - avoid the ctdb protocol op */
-
+	if (db_ctdb_can_use_local_copy(ctdb_data, true)) {
+		/*
+		 * We have a valid local copy - avoid the ctdb protocol op
+		 */
 		data->dsize = ctdb_data.dsize - sizeof(struct ctdb_ltdb_header);
 
-		data->dptr = (uint8 *)talloc_memdup(
+		data->dptr = (uint8_t *)talloc_memdup(
 			mem_ctx, ctdb_data.dptr+sizeof(struct ctdb_ltdb_header),
 			data->dsize);
 
@@ -1186,9 +1255,14 @@ static NTSTATUS db_ctdb_fetch(struct db_context *db, TALLOC_CTX *mem_ctx,
 
 	SAFE_FREE(ctdb_data.dptr);
 
-	/* we weren't able to get it locally - ask ctdb to fetch it for us */
+	/*
+	 * We weren't able to get it locally - ask ctdb to fetch it for us.
+	 * If we already had *something*, it's probably worth making a local
+	 * read-only copy.
+	 */
 	status = ctdbd_fetch(messaging_ctdbd_connection(), ctx->db_id, key,
-			     mem_ctx, data);
+			     mem_ctx, data,
+			     ctdb_data.dsize >= sizeof(struct ctdb_ltdb_header));
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5, ("ctdbd_fetch failed: %s\n", nt_errstr(status)));
 	}
@@ -1218,6 +1292,7 @@ struct traverse_state {
 	struct db_context *db;
 	int (*fn)(struct db_record *rec, void *private_data);
 	void *private_data;
+	int count;
 };
 
 static void traverse_callback(TDB_DATA key, TDB_DATA data, void *private_data)
@@ -1274,6 +1349,7 @@ static int db_ctdb_traverse(struct db_context *db,
 				      void *private_data),
 			    void *private_data)
 {
+	NTSTATUS status;
         struct db_ctdb_ctx *ctx = talloc_get_type_abort(db->private_data,
                                                         struct db_ctdb_ctx);
 	struct traverse_state state;
@@ -1281,6 +1357,7 @@ static int db_ctdb_traverse(struct db_context *db,
 	state.db = db;
 	state.fn = fn;
 	state.private_data = private_data;
+	state.count = 0;
 
 	if (db->persistent) {
 		struct tdb_context *ltdb = ctx->wtdb->tdb;
@@ -1300,7 +1377,6 @@ static int db_ctdb_traverse(struct db_context *db,
 			struct db_context *newkeys = db_open_rbt(talloc_tos());
 			struct ctdb_marshall_buffer *mbuf = ctx->transaction->m_write;
 			struct ctdb_rec_data *rec=NULL;
-			NTSTATUS status;
 			int i;
 			int count = 0;
 
@@ -1332,9 +1408,11 @@ static int db_ctdb_traverse(struct db_context *db,
 		return ret;
 	}
 
-
-	ctdbd_traverse(ctx->db_id, traverse_callback, &state);
-	return 0;
+	status = ctdbd_traverse(ctx->db_id, traverse_callback, &state);
+	if (!NT_STATUS_IS_OK(status)) {
+		return -1;
+	}
+	return state.count;
 }
 
 static NTSTATUS db_ctdb_store_deny(struct db_record *rec, TDB_DATA data, int flag)
@@ -1357,6 +1435,7 @@ static void traverse_read_callback(TDB_DATA key, TDB_DATA data, void *private_da
 	rec.delete_rec = db_ctdb_delete_deny;
 	rec.private_data = state->db;
 	state->fn(&rec, state->private_data);
+	state->count++;
 }
 
 static int traverse_persistent_callback_read(TDB_CONTEXT *tdb, TDB_DATA kbuf, TDB_DATA dbuf,
@@ -1388,6 +1467,7 @@ static int traverse_persistent_callback_read(TDB_CONTEXT *tdb, TDB_DATA kbuf, TD
 	rec.value.dsize -= sizeof(struct ctdb_ltdb_header);
 	rec.value.dptr += sizeof(struct ctdb_ltdb_header);
 
+	state->count++;
 	return state->fn(&rec, state->private_data);
 }
 
@@ -1396,6 +1476,7 @@ static int db_ctdb_traverse_read(struct db_context *db,
 					   void *private_data),
 				 void *private_data)
 {
+	NTSTATUS status;
         struct db_ctdb_ctx *ctx = talloc_get_type_abort(db->private_data,
                                                         struct db_ctdb_ctx);
 	struct traverse_state state;
@@ -1403,6 +1484,7 @@ static int db_ctdb_traverse_read(struct db_context *db,
 	state.db = db;
 	state.fn = fn;
 	state.private_data = private_data;
+	state.count = 0;
 
 	if (db->persistent) {
 		/* for persistent databases we don't need to do a ctdb traverse,
@@ -1410,8 +1492,11 @@ static int db_ctdb_traverse_read(struct db_context *db,
 		return tdb_traverse_read(ctx->wtdb->tdb, traverse_persistent_callback_read, &state);
 	}
 
-	ctdbd_traverse(ctx->db_id, traverse_read_callback, &state);
-	return 0;
+	status = ctdbd_traverse(ctx->db_id, traverse_read_callback, &state);
+	if (!NT_STATUS_IS_OK(status)) {
+		return -1;
+	}
+	return state.count;
 }
 
 static int db_ctdb_get_seqnum(struct db_context *db)
@@ -1421,11 +1506,14 @@ static int db_ctdb_get_seqnum(struct db_context *db)
 	return tdb_get_seqnum(ctx->wtdb->tdb);
 }
 
-static int db_ctdb_get_flags(struct db_context *db)
+static void db_ctdb_id(struct db_context *db, const uint8_t **id,
+		       size_t *idlen)
 {
-        struct db_ctdb_ctx *ctx = talloc_get_type_abort(db->private_data,
-                                                        struct db_ctdb_ctx);
-	return tdb_get_flags(ctx->wtdb->tdb);
+	struct db_ctdb_ctx *ctx = talloc_get_type_abort(
+		db->private_data, struct db_ctdb_ctx);
+
+	*id = (uint8_t *)&ctx->db_id;
+	*idlen = sizeof(ctx->db_id);
 }
 
 struct db_context *db_open_ctdb(TALLOC_CTX *mem_ctx,
@@ -1479,6 +1567,7 @@ struct db_context *db_open_ctdb(TALLOC_CTX *mem_ctx,
 	db_path = ctdbd_dbpath(conn, db_ctdb, db_ctdb->db_id);
 
 	result->persistent = ((tdb_flags & TDB_CLEAR_IF_FIRST) == 0);
+	result->lock_order = lock_order;
 
 	/* only pass through specific flags */
 	tdb_flags &= TDB_SEQNUM;
@@ -1503,7 +1592,7 @@ struct db_context *db_open_ctdb(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	lp_ctx = loadparm_init_s3(db_path, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(db_path, loadparm_s3_helpers());
 
 	db_ctdb->wtdb = tdb_wrap_open(db_ctdb, db_path, hash_size, tdb_flags,
 				      O_RDWR, 0, lp_ctx);
@@ -1527,14 +1616,16 @@ struct db_context *db_open_ctdb(TALLOC_CTX *mem_ctx,
 
 	result->private_data = (void *)db_ctdb;
 	result->fetch_locked = db_ctdb_fetch_locked;
+	result->try_fetch_locked = db_ctdb_try_fetch_locked;
 	result->parse_record = db_ctdb_parse_record;
 	result->traverse = db_ctdb_traverse;
 	result->traverse_read = db_ctdb_traverse_read;
 	result->get_seqnum = db_ctdb_get_seqnum;
-	result->get_flags = db_ctdb_get_flags;
 	result->transaction_start = db_ctdb_transaction_start;
 	result->transaction_commit = db_ctdb_transaction_commit;
 	result->transaction_cancel = db_ctdb_transaction_cancel;
+	result->id = db_ctdb_id;
+	result->stored_callback = NULL;
 
 	DEBUG(3,("db_open_ctdb: opened database '%s' with dbid 0x%x\n",
 		 name, db_ctdb->db_id));

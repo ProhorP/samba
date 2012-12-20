@@ -80,7 +80,7 @@ struct tevent_req *cli_trans_send(
 		additional_flags |= FLAG_CASELESS_PATHNAMES;
 	}
 
-	if ((cli_state_capabilities(cli) & CAP_DFS) && cli->dfsroot) {
+	if ((smb1cli_conn_capabilities(cli->conn) & CAP_DFS) && cli->dfsroot) {
 		additional_flags2 |= FLAGS2_DFS_PATHNAMES;
 	}
 
@@ -89,7 +89,9 @@ struct tevent_req *cli_trans_send(
 					additional_flags, clear_flags,
 					additional_flags2, clear_flags2,
 					cli->timeout,
-					cli->smb1.pid, cli->smb1.tid, cli->smb1.uid,
+					cli->smb1.pid,
+					cli->smb1.tcon,
+					cli->smb1.session,
 					pipe_name, fid, function, flags,
 					setup, num_setup, max_setup,
 					param, num_param, max_param,
@@ -174,7 +176,7 @@ NTSTATUS cli_trans(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		additional_flags |= FLAG_CASELESS_PATHNAMES;
 	}
 
-	if ((cli_state_capabilities(cli) & CAP_DFS) && cli->dfsroot) {
+	if ((smb1cli_conn_capabilities(cli->conn) & CAP_DFS) && cli->dfsroot) {
 		additional_flags2 |= FLAGS2_DFS_PATHNAMES;
 	}
 
@@ -183,7 +185,9 @@ NTSTATUS cli_trans(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 			       additional_flags, clear_flags,
 			       additional_flags2, clear_flags2,
 			       cli->timeout,
-			       cli->smb1.pid, cli->smb1.tid, cli->smb1.uid,
+			       cli->smb1.pid,
+			       cli->smb1.tcon,
+			       cli->smb1.session,
 			       pipe_name, fid, function, flags,
 			       setup, num_setup, max_setup,
 			       param, num_param, max_param,

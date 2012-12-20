@@ -189,15 +189,17 @@ int find_service(TALLOC_CTX *ctx, const char *service_in, char **p_service_out)
 	}
 
 	/* Is it a usershare service ? */
-	if (iService < 0 && *lp_usershare_path()) {
+	if (iService < 0 && *lp_usershare_path(talloc_tos())) {
 		/* Ensure the name is canonicalized. */
-		strlower_m(*p_service_out);
+		if (!strlower_m(*p_service_out)) {
+			goto fail;
+		}
 		iService = load_usershare_service(*p_service_out);
 	}
 
 	/* just possibly it's a default service? */
 	if (iService < 0) {
-		char *pdefservice = lp_defaultservice();
+		char *pdefservice = lp_defaultservice(talloc_tos());
 		if (pdefservice &&
 				*pdefservice &&
 				!strequal(pdefservice, *p_service_out)

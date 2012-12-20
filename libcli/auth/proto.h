@@ -16,6 +16,8 @@ void netlogon_creds_des_decrypt_LMKey(struct netlogon_creds_CredentialState *cre
 void netlogon_creds_des_encrypt(struct netlogon_creds_CredentialState *creds, struct samr_Password *pass);
 void netlogon_creds_des_decrypt(struct netlogon_creds_CredentialState *creds, struct samr_Password *pass);
 void netlogon_creds_arcfour_crypt(struct netlogon_creds_CredentialState *creds, uint8_t *data, size_t len);
+void netlogon_creds_aes_encrypt(struct netlogon_creds_CredentialState *creds, uint8_t *data, size_t len);
+void netlogon_creds_aes_decrypt(struct netlogon_creds_CredentialState *creds, uint8_t *data, size_t len);
 
 /*****************************************************************
 The above functions are common to the client and server interface
@@ -109,7 +111,6 @@ bool E_deshash(const char *passwd, uint8_t p16[16]);
 void nt_lm_owf_gen(const char *pwd, uint8_t nt_p16[16], uint8_t p16[16]);
 bool ntv2_owf_gen(const uint8_t owf[16],
 		  const char *user_in, const char *domain_in,
-		  bool upper_case_domain, /* Transform the domain into UPPER case */
 		  uint8_t kr_buf[16]);
 void SMBOWFencrypt(const uint8_t passwd[16], const uint8_t *c8, uint8_t p24[24]);
 void SMBNTencrypt_hash(const uint8_t nt_hash[16], const uint8_t *c8, uint8_t *p24);

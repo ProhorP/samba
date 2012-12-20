@@ -20,7 +20,7 @@
 #ifndef _PARAM_H /* _PARAM_H */
 #define _PARAM_H 
 
-struct loadparm_s3_context;
+struct loadparm_s3_helpers;
 
 struct parmlist_entry;
 
@@ -48,7 +48,7 @@ struct smbcli_session_options;
 struct gensec_settings;
 
 #ifdef CONFIG_H_IS_FROM_SAMBA
-#include "param/param_proto.h"
+#include "lib/param/param_proto.h"
 #endif
 
 const char **lpcfg_interfaces(struct loadparm_context *);
@@ -93,6 +93,9 @@ int lpcfg_parm_bytes(struct loadparm_context *lp_ctx,
 unsigned long lpcfg_parm_ulong(struct loadparm_context *lp_ctx,
 			    struct loadparm_service *service, const char *type,
 			    const char *option, unsigned long default_v);
+long lpcfg_parm_long(struct loadparm_context *lp_ctx,
+		     struct loadparm_service *service, const char *type,
+		     const char *option, long default_v);
 double lpcfg_parm_double(struct loadparm_context *lp_ctx,
 		      struct loadparm_service *service, const char *type,
 		      const char *option, double default_v);
@@ -296,6 +299,11 @@ struct smb_iconv_handle *smb_iconv_handle_reinit_lp(TALLOC_CTX *mem_ctx,
 							      struct smb_iconv_handle *old_ic);
 
 const char *lpcfg_sam_name(struct loadparm_context *lp_ctx);
+
+void lpcfg_default_kdc_policy(struct loadparm_context *lp_ctx,
+				time_t *svc_tkt_lifetime,
+				time_t *usr_tkt_lifetime,
+				time_t *renewal_lifetime);
 
 /* The following definitions come from lib/version.c  */
 

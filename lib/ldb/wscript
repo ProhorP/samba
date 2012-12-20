@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 APPNAME = 'ldb'
-VERSION = '1.1.4'
+VERSION = '1.1.13'
 
 blddir = 'bin'
 
@@ -16,32 +16,28 @@ sys.path.insert(0, srcdir + '/buildtools/wafsamba')
 import wafsamba, samba_dist, Options
 
 samba_dist.DIST_DIRS('''lib/ldb:. lib/replace:lib/replace lib/talloc:lib/talloc
-                        lib/tdb:lib/tdb lib/tdb2:lib/tdb2 lib/tdb_compat:lib/tdb_compat lib/ccan:lib/ccan lib/tevent:lib/tevent lib/popt:lib/popt
+                        lib/tdb:lib/tdb lib/tdb:lib/tdb lib/tevent:lib/tevent lib/popt:lib/popt
                         buildtools:buildtools''')
 
 
 def set_options(opt):
     opt.BUILTIN_DEFAULT('replace')
     opt.PRIVATE_EXTENSION_DEFAULT('ldb', noextension='ldb')
-    opt.RECURSE('lib/tdb_compat')
+    opt.RECURSE('lib/tdb')
     opt.RECURSE('lib/tevent')
     opt.RECURSE('lib/replace')
     opt.tool_options('python') # options for disabling pyc or pyo compilation
 
 def configure(conf):
-    conf.RECURSE('lib/tdb_compat')
+    conf.RECURSE('lib/tdb')
     conf.RECURSE('lib/tevent')
     conf.RECURSE('lib/popt')
     conf.RECURSE('lib/replace')
-    conf.RECURSE('lib/tdb_compat')
     conf.find_program('python', var='PYTHON')
     conf.find_program('xsltproc', var='XSLTPROC')
     conf.check_tool('python')
     conf.check_python_version((2,4,2))
     conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=True)
-
-    # This make #include <ccan/...> work.
-    conf.ADD_EXTRA_INCLUDES('''#lib''')
 
     # where does the default LIBDIR end up? in conf.env somewhere?
     #
@@ -68,7 +64,7 @@ def configure(conf):
 
         # we don't want any libraries or modules to rely on runtime
         # resolution of symbols
-        if sys.platform != "openbsd4":
+        if sys.platform != "openbsd4" and sys.platform != "openbsd5":
             conf.ADD_LDFLAGS('-Wl,-no-undefined', testflags=True)
 
     conf.DEFINE('HAVE_CONFIG_H', 1, add_to_cflags=True)
@@ -78,11 +74,10 @@ def configure(conf):
     conf.SAMBA_CHECK_UNDEFINED_SYMBOL_FLAGS()
 
 def build(bld):
-    bld.RECURSE('lib/tdb_compat')
     bld.RECURSE('lib/tevent')
     bld.RECURSE('lib/popt')
     bld.RECURSE('lib/replace')
-    bld.RECURSE('lib/tdb_compat')
+    bld.RECURSE('lib/tdb')
 
     if bld.env.standalone_ldb:
         private_library = False
@@ -238,14 +233,14 @@ def build(bld):
                          init_function='ldb_tdb_init',
                          module_init_name='ldb_init_module',
                          internal_module=False,
-                         deps='tdb_compat ldb',
+                         deps='tdb ldb',
                          subsystem='ldb')
 
         # have a separate subsystem for common/ldb.c, so it can rebuild
         # for install with a different -DLDB_MODULESDIR=
         bld.SAMBA_SUBSYSTEM('LIBLDB_MAIN',
                             'common/ldb.c',
-                            deps='tevent tdb_compat',
+                            deps='tevent tdb',
                             includes='include',
                             cflags=['-DLDB_MODULESDIR=\"%s\"' % modules_dir])
 
@@ -271,7 +266,7 @@ def test(ctx):
     shutil.rmtree(test_prefix, ignore_errors=True)
     os.makedirs(test_prefix)
     os.environ['TEST_DATA_PREFIX'] = test_prefix
-    cmd = 'tests/test-tdb.sh'
+    cmd = 'tests/test-tdb.sh %s' % Utils.g_module.blddir
     ret = samba_utils.RUN_COMMAND(cmd)
     print("testsuite returned %d" % ret)
     # FIXME: Run python testsuite

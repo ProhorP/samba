@@ -27,7 +27,7 @@
 #include "lib/socket/socket.h"
 #include "librpc/gen_ndr/ndr_irpc.h"
 #include "lib/messaging/irpc.h"
-#include "lib/util/tdb_wrap.h"
+#include "lib/tdb_wrap/tdb_wrap.h"
 #include "../lib/util/unix_privs.h"
 #include "librpc/rpc/dcerpc.h"
 #include "../lib/tdb_compat/tdb_compat.h"
@@ -663,7 +663,13 @@ struct imessaging_context *imessaging_client_init(TALLOC_CTX *mem_ctx,
 {
 	struct server_id id;
 	ZERO_STRUCT(id);
-	id.pid = random() % 0x10000000;
+	id.pid = getpid();
+	id.task_id = generate_random();
+	id.vnn = NONCLUSTER_VNN;
+
+	/* This is because we are not in the s3 serverid database */
+	id.unique_id = SERVERID_UNIQUE_ID_NOT_TO_VERIFY;
+
 	return imessaging_init(mem_ctx, lp_ctx, id, ev, true);
 }
 /*
@@ -977,6 +983,77 @@ struct server_id *irpc_servers_byname(struct imessaging_context *msg_ctx,
 	talloc_free(t);
 
 	return ret;
+}
+
+static int all_servers_func(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *state)
+{
+	struct irpc_name_records *name_records = talloc_get_type(state, struct irpc_name_records);
+	struct irpc_name_record *name_record;
+	int i;
+
+	name_records->names
+		= talloc_realloc(name_records, name_records->names,
+				 struct irpc_name_record *, name_records->num_records+1);
+	if (!name_records->names) {
+		return -1;
+	}
+
+	name_records->names[name_records->num_records] = name_record
+		= talloc(name_records->names,
+			 struct irpc_name_record);
+	if (!name_record) {
+		return -1;
+	}
+
+	name_records->num_records++;
+
+	name_record->name
+		= talloc_strndup(name_record,
+				 (const char *)key.dptr, key.dsize);
+	if (!name_record->name) {
+		return -1;
+	}
+
+	name_record->count = data.dsize / sizeof(struct server_id);
+	name_record->ids = talloc_array(name_record,
+					struct server_id,
+					name_record->count);
+	if (name_record->ids == NULL) {
+		return -1;
+	}
+	for (i=0;i<name_record->count;i++) {
+		name_record->ids[i] = ((struct server_id *)data.dptr)[i];
+	}
+	return 0;
+}
+
+/*
+  return a list of server ids for a server name
+*/
+struct irpc_name_records *irpc_all_servers(struct imessaging_context *msg_ctx,
+					   TALLOC_CTX *mem_ctx)
+{
+	struct tdb_wrap *t;
+	int ret;
+	struct irpc_name_records *name_records = talloc_zero(mem_ctx, struct irpc_name_records);
+	if (name_records == NULL) {
+		return NULL;
+	}
+
+	t = irpc_namedb_open(msg_ctx);
+	if (t == NULL) {
+		return NULL;
+	}
+
+	ret = tdb_traverse_read(t->tdb, all_servers_func, name_records);
+	if (ret == -1) {
+		talloc_free(t);
+		return NULL;
+	}
+
+	talloc_free(t);
+
+	return name_records;
 }
 
 /*

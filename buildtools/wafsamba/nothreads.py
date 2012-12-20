@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # encoding: utf-8
 # Thomas Nagy, 2005-2008 (ita)
 
@@ -133,8 +132,10 @@ class Parallel(object):
                 self.frozen = []
             elif not self.count:
                 (jobs, tmp) = self.manager.get_next_set()
-                if jobs != None: self.maxjobs = jobs
-                if tmp: self.outstanding += tmp
+                if jobs is not None:
+                    self.maxjobs = jobs
+                if tmp:
+                    self.outstanding += tmp
                 break
 
     def get_out(self):

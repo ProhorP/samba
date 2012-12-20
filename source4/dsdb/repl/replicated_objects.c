@@ -202,7 +202,10 @@ WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 	uint32_t i;
 	struct ldb_message *msg;
 	struct replPropertyMetaDataBlob *md;
+	int instanceType;
+	struct ldb_message_element *instanceType_e = NULL;
 	struct ldb_val guid_value;
+	struct ldb_val parent_guid_value;
 	NTTIME whenChanged = 0;
 	time_t whenChanged_t;
 	const char *whenChanged_s;
@@ -255,7 +258,7 @@ WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 
 	msg->num_elements	= in->object.attribute_ctr.num_attributes;
 	msg->elements		= talloc_array(msg, struct ldb_message_element,
-					       msg->num_elements);
+					       msg->num_elements + 1); /* +1 because of the RDN attribute */
 	W_ERROR_HAVE_NO_MEMORY(msg->elements);
 
 	md = talloc(mem_ctx, struct replPropertyMetaDataBlob);
@@ -285,6 +288,13 @@ WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 		if (dsdb_attid_in_list(ignore_attids, a->attid)) {
 			attr_count--;
 			continue;
+		}
+
+		if (a->attid == DRSUAPI_ATTID_instanceType) {
+			if (instanceType_e != NULL) {
+				return WERR_FOOBAR;
+			}
+			instanceType_e = e;
 		}
 
 		for (j=0; j<a->value_ctr.num_values; j++) {
@@ -351,18 +361,47 @@ WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 
 	}
 
+	if (instanceType_e == NULL) {
+		return WERR_FOOBAR;
+	}
+
+	instanceType = ldb_msg_find_attr_as_int(msg, "instanceType", 0);
 	if (dsdb_repl_flags & DSDB_REPL_FLAG_PARTIAL_REPLICA) {
 		/* the instanceType type for partial_replica
 		   replication is sent via DRS with TYPE_WRITE set, but
 		   must be used on the client with TYPE_WRITE removed
 		*/
-		int instanceType = ldb_msg_find_attr_as_int(msg, "instanceType", 0);
 		if (instanceType & INSTANCE_TYPE_WRITE) {
+			/*
+			 * Make sure we do not change the order
+			 * of msg->elements!
+			 *
+			 * That's why we use
+			 * instanceType_e->num_values = 0
+			 * instead of
+			 * ldb_msg_remove_attr(msg, "instanceType");
+			 */
+			struct ldb_message_element *e;
+
+			e = ldb_msg_find_element(msg, "instanceType");
+			if (e != instanceType_e) {
+				DEBUG(0,("instanceType_e[%p] changed to e[%p]\n",
+					 instanceType_e, e));
+				return WERR_FOOBAR;
+			}
+
+			instanceType_e->num_values = 0;
+
 			instanceType &= ~INSTANCE_TYPE_WRITE;
-			ldb_msg_remove_attr(msg, "instanceType");
 			if (ldb_msg_add_fmt(msg, "instanceType", "%d", instanceType) != LDB_SUCCESS) {
 				return WERR_INTERNAL_ERROR;
 			}
+		}
+	} else {
+		if (!(instanceType & INSTANCE_TYPE_WRITE)) {
+			DEBUG(0, ("Refusing to replicate %s from a read-only repilca into a read-write replica!\n",
+				  ldb_dn_get_linearized(msg->dn)));
+			return WERR_DS_DRA_SOURCE_IS_PARTIAL_REPLICA;
 		}
 	}
 
@@ -375,8 +414,18 @@ WERROR dsdb_convert_object_ex(struct ldb_context *ldb,
 		return ntstatus_to_werror(nt_status);
 	}
 
+	if (in->parent_object_guid) {
+		nt_status = GUID_to_ndr_blob(in->parent_object_guid, msg, &parent_guid_value);
+		if (!NT_STATUS_IS_OK(nt_status)) {
+			return ntstatus_to_werror(nt_status);
+		}
+	} else {
+		parent_guid_value = data_blob_null;
+	}
+
 	out->msg		= msg;
 	out->guid_value		= guid_value;
+	out->parent_guid_value	= parent_guid_value;
 	out->when_changed	= whenChanged_s;
 	out->meta_data		= md;
 	return WERR_OK;
@@ -504,8 +553,16 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	WERROR werr;
 	struct ldb_result *ext_res;
 	struct dsdb_schema *cur_schema = NULL;
+	struct dsdb_schema *new_schema = NULL;
 	int ret;
 	uint64_t seq_num1, seq_num2;
+	bool used_global_schema = false;
+
+	TALLOC_CTX *tmp_ctx = talloc_new(objects);
+	if (!tmp_ctx) {
+		DEBUG(0,("Failed to start talloc\n"));
+		return WERR_NOMEM;
+	}
 
 	/* TODO: handle linked attributes */
 
@@ -522,6 +579,7 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0,(__location__ " Failed to load partition uSN\n"));
 		ldb_transaction_cancel(ldb);
+		TALLOC_FREE(tmp_ctx);
 		return WERR_FOOBAR;		
 	}
 
@@ -533,7 +591,8 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	 */
 	if (working_schema) {
 		/* store current schema so we can fall back in case of failure */
-		cur_schema = dsdb_get_schema(ldb, working_schema);
+		cur_schema = dsdb_get_schema(ldb, tmp_ctx);
+		used_global_schema = dsdb_uses_global_schema(ldb);
 
 		ret = dsdb_reference_schema(ldb, working_schema, false);
 		if (ret != LDB_SUCCESS) {
@@ -541,6 +600,7 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 				 ldb_strerror(ret)));
 			/* TODO: Map LDB Error to NTSTATUS? */
 			ldb_transaction_cancel(ldb);
+			TALLOC_FREE(tmp_ctx);
 			return WERR_INTERNAL_ERROR;
 		}
 	}
@@ -548,14 +608,16 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	ret = ldb_extended(ldb, DSDB_EXTENDED_REPLICATED_OBJECTS_OID, objects, &ext_res);
 	if (ret != LDB_SUCCESS) {
 		/* restore previous schema */
-		if (cur_schema ) {
+		if (used_global_schema) { 
+			dsdb_set_global_schema(ldb);
+		} else if (cur_schema) {
 			dsdb_reference_schema(ldb, cur_schema, false);
-			dsdb_make_schema_global(ldb, cur_schema);
 		}
 
 		DEBUG(0,("Failed to apply records: %s: %s\n",
 			 ldb_errstring(ldb), ldb_strerror(ret)));
 		ldb_transaction_cancel(ldb);
+		TALLOC_FREE(tmp_ctx);
 		return WERR_FOOBAR;
 	}
 	talloc_free(ext_res);
@@ -567,12 +629,14 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 							      working_schema);
 		if (!W_ERROR_IS_OK(werr)) {
 			/* restore previous schema */
-			if (cur_schema ) {
+			if (used_global_schema) { 
+				dsdb_set_global_schema(ldb);
+			} else if (cur_schema ) {
 				dsdb_reference_schema(ldb, cur_schema, false);
-				dsdb_make_schema_global(ldb, cur_schema);
 			}
 			DEBUG(0,("Failed to save updated prefixMap: %s\n",
 				 win_errstr(werr)));
+			TALLOC_FREE(tmp_ctx);
 			return werr;
 		}
 	}
@@ -580,24 +644,28 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	ret = ldb_transaction_prepare_commit(ldb);
 	if (ret != LDB_SUCCESS) {
 		/* restore previous schema */
-		if (cur_schema ) {
+		if (used_global_schema) { 
+			dsdb_set_global_schema(ldb);
+		} else if (cur_schema ) {
 			dsdb_reference_schema(ldb, cur_schema, false);
-			dsdb_make_schema_global(ldb, cur_schema);
 		}
 		DEBUG(0,(__location__ " Failed to prepare commit of transaction: %s\n",
 			 ldb_errstring(ldb)));
+		TALLOC_FREE(tmp_ctx);
 		return WERR_FOOBAR;
 	}
 
 	ret = dsdb_load_partition_usn(ldb, objects->partition_dn, &seq_num2, NULL);
 	if (ret != LDB_SUCCESS) {
 		/* restore previous schema */
-		if (cur_schema ) {
+		if (used_global_schema) { 
+			dsdb_set_global_schema(ldb);
+		} else if (cur_schema ) {
 			dsdb_reference_schema(ldb, cur_schema, false);
-			dsdb_make_schema_global(ldb, cur_schema);
 		}
 		DEBUG(0,(__location__ " Failed to load partition uSN\n"));
 		ldb_transaction_cancel(ldb);
+		TALLOC_FREE(tmp_ctx);
 		return WERR_FOOBAR;		
 	}
 
@@ -611,11 +679,13 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	ret = ldb_transaction_commit(ldb);
 	if (ret != LDB_SUCCESS) {
 		/* restore previous schema */
-		if (cur_schema ) {
+		if (used_global_schema) { 
+			dsdb_set_global_schema(ldb);
+		} else if (cur_schema ) {
 			dsdb_reference_schema(ldb, cur_schema, false);
-			dsdb_make_schema_global(ldb, cur_schema);
 		}
 		DEBUG(0,(__location__ " Failed to commit transaction\n"));
+		TALLOC_FREE(tmp_ctx);
 		return WERR_FOOBAR;
 	}
 
@@ -624,11 +694,83 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 	 * a schema cache being refreshed from database.
 	 */
 	if (working_schema) {
-		cur_schema = dsdb_get_schema(ldb, NULL);
-		/* TODO: What we do in case dsdb_get_schema() fail?
-		 *       We can't fallback at this point anymore */
-		if (cur_schema) {
-			dsdb_make_schema_global(ldb, cur_schema);
+		struct ldb_message *msg;
+		struct ldb_request *req;
+
+		/* Force a reload */
+		working_schema->last_refresh = 0;
+		new_schema = dsdb_get_schema(ldb, tmp_ctx);
+		/* TODO: 
+		 * If dsdb_get_schema() fails, we just fall back
+		 * to what we had.  However, the database is probably
+		 * unable to operate for other users from this
+		 * point... */
+		if (new_schema && used_global_schema) {
+			dsdb_make_schema_global(ldb, new_schema);
+		} else if (used_global_schema) { 
+			DEBUG(0,("Failed to re-load schema after commit of transaction\n"));
+			dsdb_set_global_schema(ldb);
+			TALLOC_FREE(tmp_ctx);
+			return WERR_INTERNAL_ERROR;
+		} else {
+			DEBUG(0,("Failed to re-load schema after commit of transaction\n"));
+			dsdb_reference_schema(ldb, cur_schema, false);
+			TALLOC_FREE(tmp_ctx);
+			return WERR_INTERNAL_ERROR;
+		}
+		msg = ldb_msg_new(tmp_ctx);
+		if (msg == NULL) {
+			TALLOC_FREE(tmp_ctx);
+			return WERR_NOMEM;
+		}
+		msg->dn = ldb_dn_new(msg, ldb, "");
+		if (msg->dn == NULL) {
+			TALLOC_FREE(tmp_ctx);
+			return WERR_NOMEM;
+		}
+
+		ret = ldb_msg_add_string(msg, "schemaUpdateNow", "1");
+		if (ret != LDB_SUCCESS) {
+			TALLOC_FREE(tmp_ctx);
+			return WERR_INTERNAL_ERROR;
+		}
+
+		ret = ldb_build_mod_req(&req, ldb, objects,
+				msg,
+				LDB_SCOPE_BASE,
+				NULL,
+				ldb_op_default_callback,
+				NULL);
+
+		if (ret != LDB_SUCCESS) {
+			TALLOC_FREE(tmp_ctx);
+			return WERR_DS_DRA_INTERNAL_ERROR;
+		}
+
+		ret = ldb_transaction_start(ldb);
+		if (ret != LDB_SUCCESS) {
+			TALLOC_FREE(tmp_ctx);
+			DEBUG(0, ("Autotransaction start failed\n"));
+			return WERR_DS_DRA_INTERNAL_ERROR;
+		}
+
+		ret = ldb_request(ldb, req);
+		if (ret == LDB_SUCCESS) {
+			ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+		}
+
+		if (ret == LDB_SUCCESS) {
+			ret = ldb_transaction_commit(ldb);
+		} else {
+			DEBUG(0, ("Schema update now failed: %s\n",
+				  ldb_errstring(ldb)));
+			ldb_transaction_cancel(ldb);
+		}
+
+		if (ret != LDB_SUCCESS) {
+			DEBUG(0, ("Commit failed: %s\n", ldb_errstring(ldb)));
+			TALLOC_FREE(tmp_ctx);
+			return WERR_DS_INTERNAL_FAILURE;
 		}
 	}
 
@@ -636,6 +778,7 @@ WERROR dsdb_replicated_objects_commit(struct ldb_context *ldb,
 		 objects->num_objects, objects->linked_attributes_count,
 		 ldb_dn_get_linearized(objects->partition_dn)));
 		 
+	TALLOC_FREE(tmp_ctx);
 	return WERR_OK;
 }
 

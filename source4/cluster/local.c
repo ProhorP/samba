@@ -22,8 +22,7 @@
 #include "includes.h"
 #include "cluster/cluster.h"
 #include "cluster/cluster_private.h"
-#include "tdb_compat.h"
-#include "lib/util/tdb_wrap.h"
+#include "lib/tdb_wrap/tdb_wrap.h"
 #include "system/filesys.h"
 #include "param/param.h"
 #include "librpc/gen_ndr/server_id.h"
@@ -37,6 +36,9 @@ static struct server_id local_id(struct cluster_ops *ops, uint64_t pid, uint32_t
 	ZERO_STRUCT(server_id);
 	server_id.pid = pid;
 	server_id.task_id = task_id;
+	server_id.vnn = NONCLUSTER_VNN;
+	/* This is because we are not in the s3 serverid database */
+	server_id.unique_id = SERVERID_UNIQUE_ID_NOT_TO_VERIFY;
 	return server_id;
 }
 

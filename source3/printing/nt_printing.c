@@ -199,7 +199,7 @@ static int get_file_version(files_struct *fsp, char *fname,uint32 *major, uint32
 	}
 
 	/* Skip OEM header (if any) and the DOS stub to start of Windows header */
-	if (SMB_VFS_LSEEK(fsp, SVAL(buf,DOS_HEADER_LFANEW_OFFSET), SEEK_SET) == (SMB_OFF_T)-1) {
+	if (SMB_VFS_LSEEK(fsp, SVAL(buf,DOS_HEADER_LFANEW_OFFSET), SEEK_SET) == (off_t)-1) {
 		DEBUG(3,("get_file_version: File [%s] too short, errno = %d\n",
 				fname, errno));
 		/* Assume this isn't an error... the file just looks sort of like a PE/NE file */
@@ -222,7 +222,7 @@ static int get_file_version(files_struct *fsp, char *fname,uint32 *major, uint32
 		/* Just skip over optional header to get to section table */
 		if (SMB_VFS_LSEEK(fsp,
 				SVAL(buf,PE_HEADER_OPTIONAL_HEADER_SIZE)-(NE_HEADER_SIZE-PE_HEADER_SIZE),
-				SEEK_CUR) == (SMB_OFF_T)-1) {
+				SEEK_CUR) == (off_t)-1) {
 			DEBUG(3,("get_file_version: File [%s] Windows optional header too short, errno = %d\n",
 				fname, errno));
 			goto error_exit;
@@ -266,7 +266,7 @@ static int get_file_version(files_struct *fsp, char *fname,uint32 *major, uint32
 				}
 
 				/* Seek to the start of the .rsrc section info */
-				if (SMB_VFS_LSEEK(fsp, section_pos, SEEK_SET) == (SMB_OFF_T)-1) {
+				if (SMB_VFS_LSEEK(fsp, section_pos, SEEK_SET) == (off_t)-1) {
 					DEBUG(3,("get_file_version: PE file [%s] too short for section info, errno = %d\n",
 							fname, errno));
 					goto error_exit;
@@ -616,9 +616,12 @@ static uint32 get_correct_cversion(struct auth_session_info *session_info,
 		return -1;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+	nt_status = create_conn_struct(talloc_tos(),
+				       server_event_context(),
+				       server_messaging_context(),
+				       &conn,
 				       printdollar_snum,
-				       lp_pathname(printdollar_snum),
+				       lp_pathname(talloc_tos(), printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("get_correct_cversion: create_conn_struct "
@@ -1000,9 +1003,12 @@ WERROR move_driver_to_download_area(struct auth_session_info *session_info,
 		return WERR_NO_SUCH_SHARE;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+	nt_status = create_conn_struct(talloc_tos(),
+				       server_event_context(),
+				       server_messaging_context(),
+				       &conn,
 				       printdollar_snum,
-				       lp_pathname(printdollar_snum),
+				       lp_pathname(talloc_tos(), printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("move_driver_to_download_area: create_conn_struct "
@@ -1200,7 +1206,7 @@ bool printer_driver_in_use(TALLOC_CTX *mem_ctx,
 		}
 
 		result = winreg_get_printer(mem_ctx, b,
-					    lp_servicename(snum),
+					    lp_servicename(talloc_tos(), snum),
 					    &pinfo2);
 		if (!W_ERROR_IS_OK(result)) {
 			continue; /* skip */
@@ -1533,9 +1539,12 @@ bool delete_driver_files(const struct auth_session_info *session_info,
 		return false;
 	}
 
-	nt_status = create_conn_struct(talloc_tos(), smbd_server_conn, &conn,
+	nt_status = create_conn_struct(talloc_tos(),
+				       server_event_context(),
+				       server_messaging_context(),
+				       &conn,
 				       printdollar_snum,
-				       lp_pathname(printdollar_snum),
+				       lp_pathname(talloc_tos(), printdollar_snum),
 				       session_info, &oldcwd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0,("delete_driver_files: create_conn_struct "
@@ -1618,7 +1627,7 @@ bool delete_driver_files(const struct auth_session_info *session_info,
 	2: file doesn't exist
 	3: can't allocate memory
 	4: can't free memory
-	5: non existant struct
+	5: non existent struct
 */
 
 /*
@@ -1719,7 +1728,7 @@ bool print_access_check(const struct auth_session_info *session_info,
 
 	/* Get printer name */
 
-	pname = lp_printername(snum);
+	pname = lp_printername(talloc_tos(), snum);
 
 	if (!pname || !*pname) {
 		errno = EACCES;
@@ -1773,17 +1782,6 @@ bool print_access_check(const struct auth_session_info *session_info,
 				 &access_granted);
 
 	DEBUG(4, ("access check was %s\n", NT_STATUS_IS_OK(status) ? "SUCCESS" : "FAILURE"));
-
-        /* see if we need to try the printer admin list */
-
-        if (!NT_STATUS_IS_OK(status) &&
-	    (token_contains_name_in_list(uidtoname(session_info->unix_token->uid),
-					 session_info->info->domain_name,
-					 NULL, session_info->security_token,
-					 lp_printer_admin(snum)))) {
-		talloc_destroy(mem_ctx);
-		return True;
-        }
 
 	talloc_destroy(mem_ctx);
 

@@ -4,7 +4,6 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <err.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -109,12 +108,16 @@ struct agent *prepare_external_agent(void)
 	int command[2], response[2];
 	char name[1+PATH_MAX];
 
-	if (pipe(command) != 0 || pipe(response) != 0)
-		return NULL;
+	if (pipe(command) != 0 || pipe(response) != 0) {
+		fprintf(stderr, "pipe failed: %s\n", strerror(errno));
+		exit(1);
+	}
 
 	pid = fork();
-	if (pid < 0)
-		return NULL;
+	if (pid < 0) {
+		fprintf(stderr, "fork failed: %s\n", strerror(errno));
+		exit(1);
+	}
 
 	if (pid != 0) {
 		struct agent *agent = malloc(sizeof(*agent));
@@ -138,7 +141,7 @@ struct agent *prepare_external_agent(void)
 		result = do_operation(name[0], name+1);
 		if (write(response[1], &result, sizeof(result))
 		    != sizeof(result))
-			err(1, "Writing response");
+			abort();
 	}
 	exit(0);
 }

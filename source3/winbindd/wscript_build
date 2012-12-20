@@ -11,16 +11,10 @@ IDMAP_TDB2_SRC = '''idmap_tdb2.c'''
 IDMAP_HASH_SRC = '''idmap_hash/idmap_hash.c
                     idmap_hash/mapfile.c'''
 
-IDMAP_ADEX_SRC = '''idmap_adex/idmap_adex.c
-                    idmap_adex/cell_util.c
-                    idmap_adex/likewise_cell.c
-                    idmap_adex/provider_unified.c
-                    idmap_adex/gc_util.c
-                    idmap_adex/domain_util.c'''
 IDMAP_AUTORID_SRC = '''idmap_autorid.c'''
 
 IDMAP_RW_SRC = 'idmap_rw.c'
-IDMAP_SRC = 'idmap.c idmap_util.c ${IDMAP_RW_SRC}'
+IDMAP_SRC = 'idmap.c idmap_util.c idmap_tdb_common.c ${IDMAP_RW_SRC}'
 
 bld.SAMBA3_LIBRARY('idmap',
                    source=IDMAP_SRC,
@@ -29,30 +23,25 @@ bld.SAMBA3_LIBRARY('idmap',
                    allow_undefined_symbols=True,
                    private_library=True)
 
-bld.SAMBA3_SUBSYSTEM('IDMAP_ADEX',
-                    source=IDMAP_ADEX_SRC,
-                    deps='ads',
-                    vars=locals(),
-                    enabled=bld.env.HAVE_LDAP)
-
 bld.SAMBA3_SUBSYSTEM('IDMAP_HASH',
                     source=IDMAP_HASH_SRC,
-                    deps='samba-util',
+                    deps='samba-util krb5samba',
                     vars=locals())
 
 bld.SAMBA3_SUBSYSTEM('IDMAP_AD',
                     source=IDMAP_AD_SRC,
-                    deps='ads',
+                    deps='ads nss_info',
                     vars=locals(),
-                    enabled=bld.env.HAVE_LDAP)
+                    enabled=bld.CONFIG_SET("HAVE_LDAP"))
 
 bld.SAMBA3_MODULE('idmap_ad',
                  subsystem='idmap',
+                 allow_undefined_symbols=True,
                  source='',
                  deps='IDMAP_AD',
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_ad'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad' and bld.env.HAVE_LDAP))
+                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.CONFIG_SET("HAVE_LDAP"))
 
 bld.SAMBA3_MODULE('idmap_rid',
                  subsystem='idmap',
@@ -73,10 +62,10 @@ bld.SAMBA3_MODULE('idmap_passdb',
 bld.SAMBA3_MODULE('idmap_ldap',
                  subsystem='idmap',
                  source=IDMAP_LDAP_SRC,
-                 deps='smbldap',
+                 deps='smbldap smbldaphelper pdb',
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_ldap'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ldap') and bld.env.HAVE_LDAP)
+                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ldap') and bld.CONFIG_SET("HAVE_LDAP"))
 
 bld.SAMBA3_MODULE('idmap_nss',
                  subsystem='idmap',
@@ -111,15 +100,6 @@ bld.SAMBA3_MODULE('idmap_hash',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_hash'),
                  enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_hash'))
 
-bld.SAMBA3_MODULE('idmap_adex',
-                 subsystem='idmap',
-                 source='',
-                 deps='IDMAP_ADEX',
-                 allow_undefined_symbols=True,
-                 init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_adex'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_adex') and bld.env.HAVE_LDAP)
-
 bld.SAMBA3_MODULE('idmap_autorid',
                  subsystem='idmap',
                  source=IDMAP_AUTORID_SRC,
@@ -142,19 +122,10 @@ bld.SAMBA3_LIBRARY('nss_info',
 bld.SAMBA3_MODULE('nss_info_template',
                  subsystem='nss_info',
                  source=NSS_INFO_TEMPLATE_SRC,
-                 deps='samba-util',
+                 deps='samba-util krb5samba',
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('nss_info_template'),
                  enabled=bld.SAMBA3_IS_ENABLED_MODULE('nss_info_template'))
-
-bld.SAMBA3_MODULE('nss_info_adex',
-                 subsystem='nss_info',
-                 source='',
-                 deps='IDMAP_ADEX',
-                 allow_undefined_symbols=True,
-                 init_function='',
-                 internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_adex'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_adex') and bld.env.HAVE_LDAP)
 
 bld.SAMBA3_MODULE('nss_info_hash',
                  subsystem='nss_info',
@@ -172,7 +143,7 @@ bld.SAMBA3_MODULE('nss_info_rfc2307',
                  allow_undefined_symbols=True,
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_ad'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.env.HAVE_LDAP)
+                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.CONFIG_SET("HAVE_LDAP"))
 
 bld.SAMBA3_MODULE('nss_info_sfu20',
                  subsystem='nss_info',
@@ -181,7 +152,7 @@ bld.SAMBA3_MODULE('nss_info_sfu20',
                  allow_undefined_symbols=True,
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_ad'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.env.HAVE_LDAP)
+                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.CONFIG_SET("HAVE_LDAP"))
 
 bld.SAMBA3_MODULE('nss_info_sfu',
                  subsystem='nss_info',
@@ -190,4 +161,4 @@ bld.SAMBA3_MODULE('nss_info_sfu',
                  allow_undefined_symbols=True,
                  init_function='',
                  internal_module=bld.SAMBA3_IS_STATIC_MODULE('idmap_ad'),
-                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.env.HAVE_LDAP)
+                 enabled=bld.SAMBA3_IS_ENABLED_MODULE('idmap_ad') and bld.CONFIG_SET("HAVE_LDAP"))

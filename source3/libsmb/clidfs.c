@@ -25,6 +25,7 @@
 #include "msdfs.h"
 #include "trans2.h"
 #include "libsmb/nmblib.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /********************************************************************
  Important point.
@@ -128,6 +129,9 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 	if (get_cmdline_auth_info_use_ccache(auth_info)) {
 		flags |= CLI_FULL_CONNECTION_USE_CCACHE;
 	}
+	if (get_cmdline_auth_info_use_pw_nt_hash(auth_info)) {
+		flags |= CLI_FULL_CONNECTION_USE_NT_HASH;
+	}
 
 	status = cli_connect_nb(
 		server, NULL, port, name_type, NULL,
@@ -146,7 +150,8 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 	}
 	DEBUG(4,(" session request ok\n"));
 
-	status = cli_negprot(c, max_protocol);
+	status = smbXcli_negprot(c->conn, c->timeout, PROTOCOL_CORE,
+				 max_protocol);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("protocol negotiation failed: %s\n",
@@ -207,7 +212,7 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 	   here before trying to connect to the original share.
 	   cli_check_msdfs_proxy() will fail if it is a normal share. */
 
-	if ((cli_state_capabilities(c) & CAP_DFS) &&
+	if ((smb1cli_conn_capabilities(c->conn) & CAP_DFS) &&
 			cli_check_msdfs_proxy(ctx, c, sharename,
 				&newserver, &newshare,
 				force_encrypt,
@@ -329,7 +334,7 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
 	/* Search to the start of the list. */
 	for (p = cli; p; p = DLIST_PREV(p)) {
 		const char *remote_name =
-			cli_state_remote_name(p);
+			smbXcli_conn_remote_name(p->conn);
 
 		if (strequal(server, remote_name) &&
 				strequal(share,p->share)) {
@@ -340,7 +345,7 @@ static struct cli_state *cli_cm_find(struct cli_state *cli,
 	/* Search to the end of the list. */
 	for (p = cli->next; p; p = p->next) {
 		const char *remote_name =
-			cli_state_remote_name(p);
+			smbXcli_conn_remote_name(p->conn);
 
 		if (strequal(server, remote_name) &&
 				strequal(share,p->share)) {
@@ -412,7 +417,7 @@ void cli_cm_display(struct cli_state *cli)
 
 	for (i=0; cli; cli = cli->next,i++ ) {
 		d_printf("%d:\tserver=%s, share=%s\n",
-			i, cli_state_remote_name(cli), cli->share);
+			i, smbXcli_conn_remote_name(cli->conn), cli->share);
 	}
 }
 
@@ -579,7 +584,7 @@ static char *cli_dfs_make_full_path(TALLOC_CTX *ctx,
 	}
 	return talloc_asprintf(ctx, "%c%s%c%s%c%s",
 			path_sep,
-			cli_state_remote_name(cli),
+			smbXcli_conn_remote_name(cli->conn),
 			path_sep,
 			cli->share,
 			path_sep,
@@ -595,10 +600,10 @@ static bool cli_dfs_check_error(struct cli_state *cli, NTSTATUS expected,
 {
 	/* only deal with DS when we negotiated NT_STATUS codes and UNICODE */
 
-	if (!(cli_state_capabilities(cli) & CAP_UNICODE)) {
+	if (!(smb1cli_conn_capabilities(cli->conn) & CAP_UNICODE)) {
 		return false;
 	}
-	if (!(cli_state_capabilities(cli) & CAP_STATUS32)) {
+	if (!(smb1cli_conn_capabilities(cli->conn) & CAP_STATUS32)) {
 		return false;
 	}
 	if (NT_STATUS_EQUAL(status, expected)) {
@@ -646,7 +651,7 @@ NTSTATUS cli_dfs_get_referral(TALLOC_CTX *ctx,
 	}
 	SSVAL(param, 0, 0x03);	/* max referral level */
 
-	param = trans2_bytes_push_str(param, cli_ucs2(cli),
+	param = trans2_bytes_push_str(param, smbXcli_conn_use_unicode(cli->conn),
 				      path, strlen(path)+1,
 				      NULL);
 	if (!param) {
@@ -859,12 +864,12 @@ NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
 
 	status = cli_cm_open(ctx,
 			     rootcli,
-			     cli_state_remote_name(rootcli),
+			     smbXcli_conn_remote_name(rootcli->conn),
 			     "IPC$",
 			     dfs_auth_info,
 			     false,
-			     cli_state_encryption_on(rootcli),
-			     cli_state_protocol(rootcli),
+			     smb1cli_conn_encryption_on(rootcli->conn),
+			     smbXcli_conn_protocol(rootcli->conn),
 			     0,
 			     0x20,
 			     &cli_ipc);
@@ -914,8 +919,8 @@ NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
 			     share,
 			     dfs_auth_info,
 			     false,
-			     cli_state_encryption_on(rootcli),
-			     cli_state_protocol(rootcli),
+			     smb1cli_conn_encryption_on(rootcli->conn),
+			     smbXcli_conn_protocol(rootcli->conn),
 			     0,
 			     0x20,
 			     targetcli);
@@ -1044,7 +1049,7 @@ bool cli_check_msdfs_proxy(TALLOC_CTX *ctx,
 		return false;
 	}
 
-	remote_name = cli_state_remote_name(cli);
+	remote_name = smbXcli_conn_remote_name(cli->conn);
 	cnum = cli_state_get_tid(cli);
 
 	/* special case.  never check for a referral on the IPC$ share */

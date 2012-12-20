@@ -59,7 +59,7 @@ static void count_fds(struct tevent_context *ev,
 	int max_fd = 0;
 
 	for (fde = ev->fd_events; fde != NULL; fde = fde->next) {
-		if (fde->flags & (EVENT_FD_READ|EVENT_FD_WRITE)) {
+		if (fde->flags & (TEVENT_FD_READ|TEVENT_FD_WRITE)) {
 			num_fds += 1;
 			if (fde->fd > max_fd) {
 				max_fd = fde->fd;
@@ -126,7 +126,7 @@ bool event_add_to_poll_args(struct tevent_context *ev, TALLOC_CTX *mem_ctx,
 	for (fde = ev->fd_events; fde; fde = fde->next) {
 		struct pollfd *pfd;
 
-		if ((fde->flags & (EVENT_FD_READ|EVENT_FD_WRITE)) == 0) {
+		if ((fde->flags & (TEVENT_FD_READ|TEVENT_FD_WRITE)) == 0) {
 			continue;
 		}
 
@@ -146,10 +146,10 @@ bool event_add_to_poll_args(struct tevent_context *ev, TALLOC_CTX *mem_ctx,
 
 		pfd->fd = fde->fd;
 
-		if (fde->flags & EVENT_FD_READ) {
+		if (fde->flags & TEVENT_FD_READ) {
 			pfd->events |= (POLLIN|POLLHUP);
 		}
-		if (fde->flags & EVENT_FD_WRITE) {
+		if (fde->flags & TEVENT_FD_WRITE) {
 			pfd->events |= POLLOUT;
 		}
 	}
@@ -238,7 +238,7 @@ bool run_events_poll(struct tevent_context *ev, int pollrtn,
 		struct pollfd *pfd;
 		uint16 flags = 0;
 
-		if ((fde->flags & (EVENT_FD_READ|EVENT_FD_WRITE)) == 0) {
+		if ((fde->flags & (TEVENT_FD_READ|TEVENT_FD_WRITE)) == 0) {
 			continue;
 		}
 
@@ -434,11 +434,13 @@ static void s3_event_debug(void *context, enum tevent_debug_level level,
 		break;
 
 	};
-	if (vasprintf(&s, fmt, ap) == -1) {
-		return;
+	if (CHECK_DEBUGLVL(samba_level)) {
+		if (vasprintf(&s, fmt, ap) == -1) {
+			return;
+		}
+		DEBUG(samba_level, ("s3_event: %s", s));
+		free(s);
 	}
-	DEBUG(samba_level, ("s3_event: %s", s));
-	free(s);
 }
 
 struct tevent_context *s3_tevent_context_init(TALLOC_CTX *mem_ctx)
@@ -456,15 +458,15 @@ struct tevent_context *s3_tevent_context_init(TALLOC_CTX *mem_ctx)
 }
 
 struct idle_event {
-	struct timed_event *te;
+	struct tevent_timer *te;
 	struct timeval interval;
 	char *name;
 	bool (*handler)(const struct timeval *now, void *private_data);
 	void *private_data;
 };
 
-static void smbd_idle_event_handler(struct event_context *ctx,
-				    struct timed_event *te,
+static void smbd_idle_event_handler(struct tevent_context *ctx,
+				    struct tevent_timer *te,
 				    struct timeval now,
 				    void *private_data)
 {
@@ -487,15 +489,15 @@ static void smbd_idle_event_handler(struct event_context *ctx,
 	DEBUG(10,("smbd_idle_event_handler: %s %p rescheduled\n",
 		  event->name, event->te));
 
-	event->te = event_add_timed(ctx, event,
-				    timeval_sum(&now, &event->interval),
-				    smbd_idle_event_handler, event);
+	event->te = tevent_add_timer(ctx, event,
+				     timeval_sum(&now, &event->interval),
+				     smbd_idle_event_handler, event);
 
 	/* We can't do much but fail here. */
 	SMB_ASSERT(event->te != NULL);
 }
 
-struct idle_event *event_add_idle(struct event_context *event_ctx,
+struct idle_event *event_add_idle(struct tevent_context *event_ctx,
 				  TALLOC_CTX *mem_ctx,
 				  struct timeval interval,
 				  const char *name,
@@ -522,9 +524,9 @@ struct idle_event *event_add_idle(struct event_context *event_ctx,
 		return NULL;
 	}
 
-	result->te = event_add_timed(event_ctx, result,
-				     timeval_sum(&now, &interval),
-				     smbd_idle_event_handler, result);
+	result->te = tevent_add_timer(event_ctx, result,
+				      timeval_sum(&now, &interval),
+				      smbd_idle_event_handler, result);
 	if (result->te == NULL) {
 		DEBUG(0, ("event_add_timed failed\n"));
 		TALLOC_FREE(result);

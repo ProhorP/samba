@@ -45,7 +45,7 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "messages.h"
-#include "lib/util/tdb_wrap.h"
+#include "lib/tdb_wrap/tdb_wrap.h"
 #include "lib/param/param.h"
 
 struct messaging_tdb_context {
@@ -77,6 +77,16 @@ static void messaging_tdb_signal_handler(struct tevent_context *ev_ctx,
 	message_dispatch(ctx->msg_ctx);
 }
 
+void *messaging_tdb_event(TALLOC_CTX *mem_ctx, struct messaging_context *msg,
+			  struct tevent_context *ev)
+{
+	struct messaging_tdb_context *msg_tdb = talloc_get_type_abort(
+		msg->local->private_data, struct messaging_tdb_context);
+
+	return tevent_add_signal(ev, mem_ctx, SIGUSR1, 0,
+				 messaging_tdb_signal_handler, msg_tdb);
+}
+
 /****************************************************************************
  Initialise the messaging functions. 
 ****************************************************************************/
@@ -94,7 +104,7 @@ NTSTATUS messaging_tdb_init(struct messaging_context *msg_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	lp_ctx = loadparm_init_s3(result, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(result, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return NT_STATUS_INTERNAL_ERROR;
@@ -148,7 +158,7 @@ bool messaging_tdb_parent_init(TALLOC_CTX *mem_ctx)
 	struct tdb_wrap *db;
 	struct loadparm_context *lp_ctx;
 
-	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return false;
@@ -208,7 +218,7 @@ static NTSTATUS messaging_tdb_fetch(TDB_CONTEXT *msg_tdb,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	data = tdb_fetch_compat(msg_tdb, key);
+	data = tdb_fetch(msg_tdb, key);
 
 	if (data.dptr == NULL) {
 		*presult = result;

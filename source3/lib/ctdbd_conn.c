@@ -21,10 +21,10 @@
 #include "includes.h"
 #include "util_tdb.h"
 #include "serverid.h"
+#include "ctdbd_conn.h"
 
 #ifdef CLUSTER_SUPPORT
 
-#include "ctdbd_conn.h"
 #include "ctdb_packet.h"
 #include "messages.h"
 
@@ -53,9 +53,9 @@
 
 struct ctdbd_connection {
 	struct messaging_context *msg_ctx;
-	uint32 reqid;
-	uint32 our_vnn;
-	uint64 rand_srvid;
+	uint32_t reqid;
+	uint32_t our_vnn;
+	uint64_t rand_srvid;
 	struct ctdb_packet_context *pkt;
 	struct fd_event *fde;
 
@@ -73,8 +73,8 @@ static uint32_t ctdbd_next_reqid(struct ctdbd_connection *conn)
 }
 
 static NTSTATUS ctdbd_control(struct ctdbd_connection *conn,
-			      uint32_t vnn, uint32 opcode, 
-			      uint64_t srvid, uint32_t flags, TDB_DATA data, 
+			      uint32_t vnn, uint32_t opcode,
+			      uint64_t srvid, uint32_t flags, TDB_DATA data,
 			      TALLOC_CTX *mem_ctx, TDB_DATA *outdata,
 			      int *cstatus);
 
@@ -120,7 +120,7 @@ NTSTATUS register_with_ctdbd(struct ctdbd_connection *conn, uint64_t srvid)
 /*
  * get our vnn from the cluster
  */
-static NTSTATUS get_cluster_vnn(struct ctdbd_connection *conn, uint32 *vnn)
+static NTSTATUS get_cluster_vnn(struct ctdbd_connection *conn, uint32_t *vnn)
 {
 	int32_t cstatus=-1;
 	NTSTATUS status;
@@ -187,7 +187,7 @@ fail:
 	return ret;
 }
 
-uint32 ctdbd_vnn(const struct ctdbd_connection *conn)
+uint32_t ctdbd_vnn(const struct ctdbd_connection *conn)
 {
 	return conn->our_vnn;
 }
@@ -203,10 +203,7 @@ static NTSTATUS ctdbd_connect(TALLOC_CTX *mem_ctx,
 	const char *sockname = lp_ctdbd_socket();
 	struct sockaddr_un addr;
 	int fd;
-
-	if (!sockname || !*sockname) {
-		sockname = CTDB_PATH;
-	}
+	socklen_t salen;
 
 	fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd == -1) {
@@ -218,7 +215,8 @@ static NTSTATUS ctdbd_connect(TALLOC_CTX *mem_ctx,
 	addr.sun_family = AF_UNIX;
 	strncpy(addr.sun_path, sockname, sizeof(addr.sun_path));
 
-	if (sys_connect(fd, (struct sockaddr *)(void *)&addr) == -1) {
+	salen = sizeof(struct sockaddr_un);
+	if (connect(fd, (struct sockaddr *)(void *)&addr, salen) == -1) {
 		DEBUG(1, ("connect(%s) failed: %s\n", sockname,
 			  strerror(errno)));
 		close(fd);
@@ -242,13 +240,13 @@ static bool ctdb_req_complete(const uint8_t *buf, size_t available,
 			      size_t *length,
 			      void *private_data)
 {
-	uint32 msglen;
+	uint32_t msglen;
 
 	if (available < sizeof(msglen)) {
 		return False;
 	}
 
-	msglen = *((uint32 *)buf);
+	msglen = *((const uint32_t *)buf);
 
 	DEBUG(11, ("msglen = %d\n", msglen));
 
@@ -373,7 +371,7 @@ static NTSTATUS ctdb_packet_fd_read_sync(struct ctdb_packet_context *ctx)
  * messages that might come in between.
  */
 
-static NTSTATUS ctdb_read_req(struct ctdbd_connection *conn, uint32 reqid,
+static NTSTATUS ctdb_read_req(struct ctdbd_connection *conn, uint32_t reqid,
 			      TALLOC_CTX *mem_ctx, void *result)
 {
 	struct ctdb_req_header *hdr;
@@ -576,7 +574,7 @@ NTSTATUS ctdbd_messaging_connection(TALLOC_CTX *mem_ctx,
 		return status;
 	}
 
-	status = register_with_ctdbd(conn, (uint64_t)sys_getpid());
+	status = register_with_ctdbd(conn, (uint64_t)getpid());
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
 	}
@@ -663,7 +661,7 @@ static NTSTATUS ctdb_handle_message(uint8_t *buf, size_t length,
 	}
 
 	/* only messages to our pid or the broadcast are valid here */
-	if (msg->srvid != sys_getpid() && msg->srvid != MSG_SRVID_SAMBA) {
+	if (msg->srvid != getpid() && msg->srvid != MSG_SRVID_SAMBA) {
 		DEBUG(0,("Got unexpected message with srvid=%llu\n", 
 			 (unsigned long long)msg->srvid));
 		TALLOC_FREE(buf);
@@ -742,32 +740,37 @@ NTSTATUS ctdbd_register_msg_ctx(struct ctdbd_connection *conn,
  */
 
 NTSTATUS ctdbd_messaging_send(struct ctdbd_connection *conn,
-			      uint32 dst_vnn, uint64 dst_srvid,
+			      uint32_t dst_vnn, uint64_t dst_srvid,
 			      struct messaging_rec *msg)
 {
-	struct ctdb_req_message r;
-	TALLOC_CTX *mem_ctx;
 	DATA_BLOB blob;
 	NTSTATUS status;
 	enum ndr_err_code ndr_err;
 
-	if (!(mem_ctx = talloc_init("ctdbd_messaging_send"))) {
-		DEBUG(0, ("talloc failed\n"));
-		return NT_STATUS_NO_MEMORY;
-	}
-
 	ndr_err = ndr_push_struct_blob(
-		&blob, mem_ctx, msg,
+		&blob, talloc_tos(), msg,
 		(ndr_push_flags_fn_t)ndr_push_messaging_rec);
 
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		DEBUG(0, ("ndr_push_struct_blob failed: %s\n",
 			  ndr_errstr(ndr_err)));
-		status = ndr_map_error2ntstatus(ndr_err);
-		goto fail;
+		return ndr_map_error2ntstatus(ndr_err);
 	}
 
-	r.hdr.length = offsetof(struct ctdb_req_message, data) + blob.length;
+	status = ctdbd_messaging_send_blob(conn, dst_vnn, dst_srvid,
+					   blob.data, blob.length);
+	TALLOC_FREE(blob.data);
+	return status;
+}
+
+NTSTATUS ctdbd_messaging_send_blob(struct ctdbd_connection *conn,
+				   uint32_t dst_vnn, uint64_t dst_srvid,
+				   const uint8_t *buf, size_t buflen)
+{
+	struct ctdb_req_message r;
+	NTSTATUS status;
+
+	r.hdr.length = offsetof(struct ctdb_req_message, data) + buflen;
 	r.hdr.ctdb_magic = CTDB_MAGIC;
 	r.hdr.ctdb_version = CTDB_VERSION;
 	r.hdr.generation = 1;
@@ -776,7 +779,7 @@ NTSTATUS ctdbd_messaging_send(struct ctdbd_connection *conn,
 	r.hdr.srcnode    = conn->our_vnn;
 	r.hdr.reqid      = 0;
 	r.srvid          = dst_srvid;
-	r.datalen        = blob.length;
+	r.datalen        = buflen;
 
 	DEBUG(10, ("ctdbd_messaging_send: Sending ctdb packet\n"));
 	ctdb_packet_dump(&r.hdr);
@@ -784,33 +787,28 @@ NTSTATUS ctdbd_messaging_send(struct ctdbd_connection *conn,
 	status = ctdb_packet_send(
 		conn->pkt, 2,
 		data_blob_const(&r, offsetof(struct ctdb_req_message, data)),
-		blob);
+		data_blob_const(buf, buflen));
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("ctdb_packet_send failed: %s\n", nt_errstr(status)));
-		goto fail;
+		return status;
 	}
 
 	status = ctdb_packet_flush(conn->pkt);
-
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("write to ctdbd failed: %s\n", nt_errstr(status)));
 		cluster_fatal("cluster dispatch daemon msg write error\n");
 	}
-
-	status = NT_STATUS_OK;
- fail:
-	TALLOC_FREE(mem_ctx);
-	return status;
+	return NT_STATUS_OK;
 }
 
 /*
  * send/recv a generic ctdb control message
  */
 static NTSTATUS ctdbd_control(struct ctdbd_connection *conn,
-			      uint32_t vnn, uint32 opcode, 
-			      uint64_t srvid, uint32_t flags, 
-			      TDB_DATA data, 
+			      uint32_t vnn, uint32_t opcode,
+			      uint64_t srvid, uint32_t flags,
+			      TDB_DATA data,
 			      TALLOC_CTX *mem_ctx, TDB_DATA *outdata,
 			      int *cstatus)
 {
@@ -906,7 +904,7 @@ static NTSTATUS ctdbd_control(struct ctdbd_connection *conn,
 /*
  * see if a remote process exists
  */
-bool ctdbd_process_exists(struct ctdbd_connection *conn, uint32 vnn, pid_t pid)
+bool ctdbd_process_exists(struct ctdbd_connection *conn, uint32_t vnn, pid_t pid)
 {
 	struct server_id id;
 	bool result;
@@ -1057,6 +1055,7 @@ static bool ctdb_collect_vnns(TALLOC_CTX *mem_ctx,
 
 	vnn_indexes = talloc_array(mem_ctx, unsigned, num_pids);
 	if (vnn_indexes == NULL) {
+		DEBUG(1, ("talloc_array failed\n"));
 		goto fail;
 	}
 
@@ -1081,6 +1080,7 @@ static bool ctdb_collect_vnns(TALLOC_CTX *mem_ctx,
 		vnns = talloc_realloc(mem_ctx, vnns, struct ctdb_vnn_list,
 				      num_vnns+1);
 		if (vnns == NULL) {
+			DEBUG(1, ("talloc_realloc failed\n"));
 			goto fail;
 		}
 		vnns[num_vnns].vnn = vnn;
@@ -1093,11 +1093,13 @@ static bool ctdb_collect_vnns(TALLOC_CTX *mem_ctx,
 
 		vnn->srvids = talloc_array(vnns, uint64_t, vnn->num_srvids);
 		if (vnn->srvids == NULL) {
+			DEBUG(1, ("talloc_array failed\n"));
 			goto fail;
 		}
 		vnn->pid_indexes = talloc_array(vnns, unsigned,
 						vnn->num_srvids);
 		if (vnn->pid_indexes == NULL) {
+			DEBUG(1, ("talloc_array failed\n"));
 			goto fail;
 		}
 	}
@@ -1132,6 +1134,7 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 
 	if (!ctdb_collect_vnns(talloc_tos(), pids, num_pids,
 			       &vnns, &num_vnns)) {
+		DEBUG(1, ("ctdb_collect_vnns failed\n"));
 		goto fail;
 	}
 
@@ -1168,16 +1171,16 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 					       data)),
 			data_blob_const(vnn->srvids, req.datalen));
 		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(10, ("ctdb_packet_send failed: %s\n",
-				   nt_errstr(status)));
+			DEBUG(1, ("ctdb_packet_send failed: %s\n",
+				  nt_errstr(status)));
 			goto fail;
 		}
 	}
 
 	status = ctdb_packet_flush(conn->pkt);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(10, ("ctdb_packet_flush failed: %s\n",
-			   nt_errstr(status)));
+		DEBUG(1, ("ctdb_packet_flush failed: %s\n",
+			  nt_errstr(status)));
 		goto fail;
 	}
 
@@ -1187,16 +1190,18 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 		struct ctdb_reply_control *reply = NULL;
 		struct ctdb_vnn_list *vnn;
 		uint32_t reqid;
+		uint8_t *reply_data;
 
 		status = ctdb_read_req(conn, 0, talloc_tos(), (void *)&reply);
 		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(10, ("ctdb_read_req failed: %s\n",
-				   nt_errstr(status)));
+			DEBUG(1, ("ctdb_read_req failed: %s\n",
+				  nt_errstr(status)));
 			goto fail;
 		}
 
 		if (reply->hdr.operation != CTDB_REPLY_CONTROL) {
-			DEBUG(10, ("Received invalid reply\n"));
+			DEBUG(1, ("Received invalid reply %u\n",
+				  (unsigned)reply->hdr.operation));
 			goto fail;
 		}
 
@@ -1210,8 +1215,8 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 			}
 		}
 		if (i == num_vnns) {
-			DEBUG(10, ("Received unknown reqid number %u\n",
-				   (unsigned)reqid));
+			DEBUG(1, ("Received unknown reqid number %u\n",
+				  (unsigned)reqid));
 			goto fail;
 		}
 
@@ -1223,9 +1228,26 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 			   (unsigned)vnn->vnn, vnn->num_srvids,
 			   (unsigned)reply->datalen));
 
-		if (reply->datalen < ((vnn->num_srvids+7)/8)) {
-			DEBUG(10, ("Received short reply\n"));
-			goto fail;
+		if (reply->datalen >= ((vnn->num_srvids+7)/8)) {
+			/*
+			 * Got a real reply
+			 */
+			reply_data = reply->data;
+		} else {
+			/*
+			 * Got an error reply
+			 */
+			DEBUG(5, ("Received short reply len %d, status %u, "
+				  "errorlen %u\n",
+				  (unsigned)reply->datalen,
+				  (unsigned)reply->status,
+				  (unsigned)reply->errorlen));
+			dump_data(5, reply->data, reply->errorlen);
+
+			/*
+			 * This will trigger everything set to false
+			 */
+			reply_data = NULL;
 		}
 
 		for (i=0; i<vnn->num_srvids; i++) {
@@ -1236,7 +1258,9 @@ bool ctdb_serverids_exist(struct ctdbd_connection *conn,
 				results[idx] = true;
 				continue;
 			}
-			results[idx] = ((reply->data[i/8] & (1<<(i%8))) != 0);
+			results[idx] =
+				(reply_data != NULL) &&
+				((reply_data[i/8] & (1<<(i%8))) != 0);
 		}
 
 		TALLOC_FREE(reply);
@@ -1286,8 +1310,7 @@ NTSTATUS ctdbd_db_attach(struct ctdbd_connection *conn,
 	int32_t cstatus;
 	bool persistent = (tdb_flags & TDB_CLEAR_IF_FIRST) == 0;
 
-	data.dptr = (uint8_t*)name;
-	data.dsize = strlen(name)+1;
+	data = string_term_tdb_data(name);
 
 	status = ctdbd_control(conn, CTDB_CURRENT_NODE,
 			       persistent
@@ -1331,7 +1354,7 @@ NTSTATUS ctdbd_db_attach(struct ctdbd_connection *conn,
 /*
  * force the migration of a record to this node
  */
-NTSTATUS ctdbd_migrate(struct ctdbd_connection *conn, uint32 db_id,
+NTSTATUS ctdbd_migrate(struct ctdbd_connection *conn, uint32_t db_id,
 		       TDB_DATA key)
 {
 	struct ctdb_req_call req;
@@ -1391,14 +1414,22 @@ NTSTATUS ctdbd_migrate(struct ctdbd_connection *conn, uint32 db_id,
 }
 
 /*
- * remotely fetch a record without locking it or forcing a migration
+ * remotely fetch a record (read-only)
  */
-NTSTATUS ctdbd_fetch(struct ctdbd_connection *conn, uint32 db_id,
-		     TDB_DATA key, TALLOC_CTX *mem_ctx, TDB_DATA *data)
+NTSTATUS ctdbd_fetch(struct ctdbd_connection *conn, uint32_t db_id,
+		     TDB_DATA key, TALLOC_CTX *mem_ctx, TDB_DATA *data,
+		     bool local_copy)
 {
 	struct ctdb_req_call req;
 	struct ctdb_reply_call *reply;
 	NTSTATUS status;
+	uint32_t flags;
+
+#ifdef HAVE_CTDB_WANT_READONLY_DECL
+	flags = local_copy ? CTDB_WANT_READONLY : 0;
+#else
+	flags = 0;
+#endif
 
 	ZERO_STRUCT(req);
 
@@ -1407,7 +1438,7 @@ NTSTATUS ctdbd_fetch(struct ctdbd_connection *conn, uint32 db_id,
 	req.hdr.ctdb_version = CTDB_VERSION;
 	req.hdr.operation    = CTDB_REQ_CALL;
 	req.hdr.reqid        = ctdbd_next_reqid(conn);
-	req.flags            = 0;
+	req.flags            = flags;
 	req.callid           = CTDB_FETCH_FUNC;
 	req.db_id            = db_id;
 	req.keylen           = key.dsize;
@@ -1531,7 +1562,7 @@ static NTSTATUS ctdb_traverse_handler(uint8_t *buf, size_t length,
   everything in-line.
 */
 
-NTSTATUS ctdbd_traverse(uint32 db_id,
+NTSTATUS ctdbd_traverse(uint32_t db_id,
 			void (*fn)(TDB_DATA key, TDB_DATA data,
 				   void *private_data),
 			void *private_data)
@@ -1639,7 +1670,8 @@ static void smbd_ctdb_canonicalize_ip(const struct sockaddr_storage *in,
 #ifdef HAVE_IPV6
 	if (in->ss_family == AF_INET6) {
 		const char prefix[12] = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff };
-		const struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)in;
+		const struct sockaddr_in6 *in6 =
+			(const struct sockaddr_in6 *)in;
 		struct sockaddr_in *out4 = (struct sockaddr_in *)out;
 		if (memcmp(&in6->sin6_addr, prefix, 12) == 0) {
 			memset(out, 0, sizeof(*out));
@@ -1739,8 +1771,8 @@ NTSTATUS ctdbd_register_reconfigure(struct ctdbd_connection *conn)
 /*
   call a control on the local node
  */
-NTSTATUS ctdbd_control_local(struct ctdbd_connection *conn, uint32 opcode, 
-			     uint64_t srvid, uint32_t flags, TDB_DATA data, 
+NTSTATUS ctdbd_control_local(struct ctdbd_connection *conn, uint32_t opcode,
+			     uint64_t srvid, uint32_t flags, TDB_DATA data,
 			     TALLOC_CTX *mem_ctx, TDB_DATA *outdata,
 			     int *cstatus)
 {
@@ -1789,6 +1821,15 @@ NTSTATUS ctdb_unwatch(struct ctdbd_connection *conn)
 			  nt_errstr(status)));
 	}
 	return status;
+}
+
+#else
+
+NTSTATUS ctdbd_messaging_send_blob(struct ctdbd_connection *conn,
+				   uint32_t dst_vnn, uint64_t dst_srvid,
+				   const uint8_t *buf, size_t buflen)
+{
+	return NT_STATUS_NOT_IMPLEMENTED;
 }
 
 #endif

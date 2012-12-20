@@ -52,15 +52,6 @@ static void drepl_role_callback(struct dreplsrv_service *service,
 	irpc_send_reply(fsmo->msg, NT_STATUS_OK);
 }
 
-static bool fsmo_master_equal(struct ldb_dn *ntds_dn, struct ldb_dn *role_owner_dn)
-{
-	if (ldb_dn_compare(ntds_dn, role_owner_dn) == 0) {
-		DEBUG(0,("\nWe are the FSMO master.\n"));
-		return true;
-	}
-	return false;
-}
-
 /*
   see which role is we are asked to assume, initialize data and send request
  */
@@ -69,23 +60,20 @@ NTSTATUS drepl_take_FSMO_role(struct irpc_message *msg,
 {
 	struct dreplsrv_service *service = talloc_get_type(msg->private_data,
 							   struct dreplsrv_service);
-	struct ldb_dn *role_owner_dn, *fsmo_role_dn, *ntds_dn;
+	struct ldb_dn *role_owner_dn, *fsmo_role_dn;
 	TALLOC_CTX *tmp_ctx = talloc_new(service);
 	uint64_t fsmo_info = 0;
 	enum drsuapi_DsExtendedOperation extended_op = DRSUAPI_EXOP_NONE;
 	WERROR werr;
 	enum drepl_role_master role = r->in.role;
 	struct fsmo_role_state *fsmo;
-
-	ntds_dn = samdb_ntds_settings_dn(service->samdb);
-	if (!ntds_dn) {
-		r->out.result = WERR_DS_DRA_INTERNAL_ERROR;
-		return NT_STATUS_OK;
-	}
+	bool is_us;
+	int ret;
 
 	werr = dsdb_get_fsmo_role_info(tmp_ctx, service->samdb, role,
 				       &fsmo_role_dn, &role_owner_dn);
 	if (!W_ERROR_IS_OK(werr)) {
+		talloc_free(tmp_ctx);
 		r->out.result = werr;
 		return NT_STATUS_OK;
 	}
@@ -106,15 +94,27 @@ NTSTATUS drepl_take_FSMO_role(struct irpc_message *msg,
 		DEBUG(2,("Unknown role %u in role transfer\n",
 			 (unsigned)role));
 		r->out.result = WERR_DS_DRA_INTERNAL_ERROR;
+		talloc_free(tmp_ctx);
 		return NT_STATUS_OK;
 	}
 
-	if (fsmo_master_equal(ntds_dn, role_owner_dn) ||
+	ret = samdb_dn_is_our_ntdsa(service->samdb, role_owner_dn, &is_us);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(0,("FSMO role check failed (failed to confirm if our ntdsDsa) for DN %s and owner %s \n",
+			 ldb_dn_get_linearized(fsmo_role_dn),
+			 ldb_dn_get_linearized(role_owner_dn)));
+		talloc_free(tmp_ctx);
+		r->out.result = WERR_DS_DRA_INTERNAL_ERROR;
+		return NT_STATUS_OK;
+	}
+	
+	if (is_us || 
 	    (extended_op == DRSUAPI_EXOP_NONE)) {
 		DEBUG(0,("FSMO role check failed for DN %s and owner %s \n",
 			 ldb_dn_get_linearized(fsmo_role_dn),
 			 ldb_dn_get_linearized(role_owner_dn)));
 		r->out.result = WERR_OK;
+		talloc_free(tmp_ctx);
 		return NT_STATUS_OK;
 	}
 
@@ -134,11 +134,13 @@ NTSTATUS drepl_take_FSMO_role(struct irpc_message *msg,
 					 fsmo);
 	if (!W_ERROR_IS_OK(werr)) {
 		r->out.result = werr;
+		talloc_free(tmp_ctx);
 		return NT_STATUS_OK;
 	}
 
 	/* mark this message to be answered later */
 	msg->defer_reply = true;
 	dreplsrv_run_pending_ops(service);
+	talloc_free(tmp_ctx);
 	return NT_STATUS_OK;
 }

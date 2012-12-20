@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2011
 #
@@ -18,6 +16,8 @@
 #
 
 """The main samba-tool command implementation."""
+
+from samba import getopt as options
 
 from samba.netcmd import SuperCommand
 from samba.netcmd.dbcheck import cmd_dbcheck
@@ -38,10 +38,15 @@ from samba.netcmd.testparm import cmd_testparm
 from samba.netcmd.time import cmd_time
 from samba.netcmd.user import cmd_user
 from samba.netcmd.vampire import cmd_vampire
+from samba.netcmd.processes import cmd_processes
 
 
 class cmd_sambatool(SuperCommand):
     """Main samba administration tool."""
+
+    takes_optiongroups = {
+        "versionopts": options.VersionOptions,
+        }
 
     subcommands = {}
     subcommands["dbcheck"] =  cmd_dbcheck()
@@ -62,3 +67,4 @@ class cmd_sambatool(SuperCommand):
     subcommands["time"] = cmd_time()
     subcommands["user"] = cmd_user()
     subcommands["vampire"] = cmd_vampire()
+    subcommands["processes"] = cmd_processes()

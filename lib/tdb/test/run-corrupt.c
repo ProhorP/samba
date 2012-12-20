@@ -1,4 +1,3 @@
-#define _XOPEN_SOURCE 500
 #include "../common/tdb_private.h"
 #include "../common/io.c"
 #include "../common/tdb.c"
@@ -12,7 +11,6 @@
 #include "../common/hash.c"
 #include "tap-interface.h"
 #include <stdlib.h>
-#include <err.h>
 #include "logging.h"
 
 static int check(TDB_DATA key, TDB_DATA data, void *private)
@@ -43,11 +41,15 @@ static void tdb_flip_bit(struct tdb_context *tdb, unsigned int bit)
 		((unsigned char *)tdb->map_ptr)[off] ^= mask;
 	else {
 		unsigned char c;
-		if (pread(tdb->fd, &c, 1, off) != 1)
-			err(1, "pread");
+		if (pread(tdb->fd, &c, 1, off) != 1) {
+			fprintf(stderr, "pread: %s\n", strerror(errno));
+			exit(1);
+		}
 		c ^= mask;
-		if (pwrite(tdb->fd, &c, 1, off) != 1)
-			err(1, "pwrite");
+		if (pwrite(tdb->fd, &c, 1, off) != 1) {
+			fprintf(stderr, "pwrite: %s\n", strerror(errno));
+			exit(1);
+		}
 	}
 }
 

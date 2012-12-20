@@ -100,7 +100,7 @@ static void smbd_smb2_request_create_done(struct tevent_req *tsubreq);
 NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 {
 	const uint8_t *inbody;
-	int i = smb2req->current_idx;
+	const struct iovec *indyniov;
 	uint8_t in_oplock_level;
 	uint32_t in_impersonation_level;
 	uint32_t in_desired_access;
@@ -130,7 +130,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	if (!NT_STATUS_IS_OK(status)) {
 		return smbd_smb2_request_error(smb2req, status);
 	}
-	inbody = (const uint8_t *)smb2req->in.vector[i+1].iov_base;
+	inbody = SMBD_SMB2_IN_BODY_PTR(smb2req);
 
 	in_oplock_level		= CVAL(inbody, 0x03);
 	in_impersonation_level	= IVAL(inbody, 0x04);
@@ -152,7 +152,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 	 *       overlap
 	 */
 
-	dyn_offset = SMB2_HDR_BODY + smb2req->in.vector[i+1].iov_len;
+	dyn_offset = SMB2_HDR_BODY + SMBD_SMB2_IN_BODY_LEN(smb2req);
 
 	if (in_name_offset == 0 && in_name_length == 0) {
 		/* This is ok */
@@ -163,18 +163,19 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 		name_offset = in_name_offset - dyn_offset;
 	}
 
-	if (name_offset > smb2req->in.vector[i+2].iov_len) {
+	indyniov = SMBD_SMB2_IN_DYN_IOV(smb2req);
+
+	if (name_offset > indyniov->iov_len) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
 	}
 
-	name_available_length = smb2req->in.vector[i+2].iov_len - name_offset;
+	name_available_length = indyniov->iov_len - name_offset;
 
 	if (in_name_length > name_available_length) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
 	}
 
-	in_name_buffer.data = (uint8_t *)smb2req->in.vector[i+2].iov_base +
-			      name_offset;
+	in_name_buffer.data = (uint8_t *)indyniov->iov_base + name_offset;
 	in_name_buffer.length = in_name_length;
 
 	if (in_context_offset == 0 && in_context_length == 0) {
@@ -186,18 +187,18 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 		context_offset = in_context_offset - dyn_offset;
 	}
 
-	if (context_offset > smb2req->in.vector[i+2].iov_len) {
+	if (context_offset > indyniov->iov_len) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
 	}
 
-	context_available_length = smb2req->in.vector[i+2].iov_len - context_offset;
+	context_available_length = indyniov->iov_len - context_offset;
 
 	if (in_context_length > context_available_length) {
 		return smbd_smb2_request_error(smb2req, NT_STATUS_INVALID_PARAMETER);
 	}
 
-	in_context_buffer.data = (uint8_t *)smb2req->in.vector[i+2].iov_base +
-				  context_offset;
+	in_context_buffer.data = (uint8_t *)indyniov->iov_base +
+		context_offset;
 	in_context_buffer.length = in_context_length;
 
 	/*
@@ -256,7 +257,7 @@ NTSTATUS smbd_smb2_request_process_create(struct smbd_smb2_request *smb2req)
 
 static uint64_t get_mid_from_smb2req(struct smbd_smb2_request *smb2req)
 {
-	uint8_t *reqhdr = (uint8_t *)smb2req->out.vector[smb2req->current_idx].iov_base;
+	uint8_t *reqhdr = SMBD_SMB2_OUT_HDR_PTR(smb2req);
 	return BVAL(reqhdr, SMB2_HDR_MESSAGE_ID);
 }
 
@@ -282,19 +283,6 @@ static void smbd_smb2_request_create_done(struct tevent_req *tsubreq)
 	uint16_t out_context_buffer_offset = 0;
 	NTSTATUS status;
 	NTSTATUS error; /* transport error */
-
-	if (smb2req->cancelled) {
-		uint64_t mid = get_mid_from_smb2req(smb2req);
-		DEBUG(10,("smbd_smb2_request_create_done: cancelled mid %llu\n",
-			(unsigned long long)mid ));
-		error = smbd_smb2_request_error(smb2req, NT_STATUS_CANCELLED);
-		if (!NT_STATUS_IS_OK(error)) {
-			smbd_server_connection_terminate(smb2req->sconn,
-				nt_errstr(error));
-			return;
-		}
-		return;
-	}
 
 	status = smbd_smb2_create_recv(tsubreq,
 				       smb2req,
@@ -389,6 +377,7 @@ static void smbd_smb2_request_create_done(struct tevent_req *tsubreq)
 struct smbd_smb2_create_state {
 	struct smbd_smb2_request *smb2req;
 	struct smb_request *smb1req;
+	bool open_was_deferred;
 	struct timed_event *te;
 	struct tevent_immediate *im;
 	struct timeval request_time;
@@ -430,10 +419,13 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 	struct timespec write_time_ts;
 	struct smb2_create_blobs out_context_blobs;
 	int requested_oplock_level;
+	struct smb2_create_blob *dhnc = NULL;
+	struct smb2_create_blob *dh2c = NULL;
+	struct smbXsrv_open *op = NULL;
 
 	ZERO_STRUCT(out_context_blobs);
 
-	if(lp_fake_oplocks(SNUM(smb2req->tcon->compat_conn))) {
+	if(lp_fake_oplocks(SNUM(smb2req->tcon->compat))) {
 		requested_oplock_level = SMB2_OPLOCK_LEVEL_NONE;
 	} else {
 		requested_oplock_level = in_oplock_level;
@@ -467,17 +459,51 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			in_name ));
 	}
 
+	dhnc = smb2_create_blob_find(&in_context_blobs,
+				     SMB2_CREATE_TAG_DHNC);
+
+	if (dhnc) {
+		if (dhnc->data.length != 16) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+		if (in_context_blobs.num_blobs != 1) {
+			/*
+			 * DHNC should be the only one.
+			 */
+			tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+			return tevent_req_post(req, ev);
+		}
+	}
+
+	dh2c = smb2_create_blob_find(&in_context_blobs,
+				     SMB2_CREATE_TAG_DH2C);
+	if (dh2c) {
+		if (dh2c->data.length != 36) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+		if (in_context_blobs.num_blobs != 1) {
+			/*
+			 * DH2C should be the only one.
+			 */
+			tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+			return tevent_req_post(req, ev);
+		}
+	}
+
 	if (IS_IPC(smb1req->conn)) {
 		const char *pipe_name = in_name;
+
+		if (dhnc || dh2c) {
+			/* durable handles are not supported on IPC$ */
+			tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+			return tevent_req_post(req, ev);
+		}
 
 		if (!lp_nt_pipe_support()) {
 			tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
 			return tevent_req_post(req, ev);
-		}
-
-		/* Strip \\ off the name. */
-		if (pipe_name[0] == '\\') {
-			pipe_name++;
 		}
 
 		status = open_np_file(smb1req, pipe_name, &result);
@@ -487,6 +513,12 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		}
 		info = FILE_WAS_OPENED;
 	} else if (CAN_PRINT(smb1req->conn)) {
+		if (dhnc || dh2c) {
+			/* durable handles are not supported on printers */
+			tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+			return tevent_req_post(req, ev);
+		}
+
 		status = file_new(smb1req, smb1req->conn, &result);
 		if(!NT_STATUS_IS_OK(status)) {
 			tevent_req_nterror(req, status);
@@ -503,7 +535,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		info = FILE_WAS_CREATED;
 	} else {
 		char *fname;
-		struct smb_filename *smb_fname = NULL;
 		struct smb2_create_blob *exta = NULL;
 		struct ea_list *ea_list = NULL;
 		struct smb2_create_blob *mxac = NULL;
@@ -511,11 +542,16 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		struct smb2_create_blob *secd = NULL;
 		struct security_descriptor *sec_desc = NULL;
 		struct smb2_create_blob *dhnq = NULL;
-		struct smb2_create_blob *dhnc = NULL;
 		struct smb2_create_blob *alsi = NULL;
 		uint64_t allocation_size = 0;
 		struct smb2_create_blob *twrp = NULL;
 		struct smb2_create_blob *qfid = NULL;
+		struct GUID create_guid = GUID_zero();
+		bool update_open = false;
+		bool durable_requested = false;
+		uint32_t durable_timeout_msec = 0;
+		bool do_durable_reconnect = false;
+		struct smb2_create_blob *dh2q = NULL;
 
 		exta = smb2_create_blob_find(&in_context_blobs,
 					     SMB2_CREATE_TAG_EXTA);
@@ -525,14 +561,14 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 					     SMB2_CREATE_TAG_SECD);
 		dhnq = smb2_create_blob_find(&in_context_blobs,
 					     SMB2_CREATE_TAG_DHNQ);
-		dhnc = smb2_create_blob_find(&in_context_blobs,
-					     SMB2_CREATE_TAG_DHNC);
 		alsi = smb2_create_blob_find(&in_context_blobs,
 					     SMB2_CREATE_TAG_ALSI);
 		twrp = smb2_create_blob_find(&in_context_blobs,
 					     SMB2_CREATE_TAG_TWRP);
 		qfid = smb2_create_blob_find(&in_context_blobs,
 					     SMB2_CREATE_TAG_QFID);
+		dh2q = smb2_create_blob_find(&in_context_blobs,
+					     SMB2_CREATE_TAG_DH2Q);
 
 		fname = talloc_strdup(state, in_name);
 		if (tevent_req_nomem(fname, req)) {
@@ -540,11 +576,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		}
 
 		if (exta) {
-			if (dhnc) {
-				tevent_req_nterror(req,NT_STATUS_OBJECT_NAME_NOT_FOUND);
-				return tevent_req_post(req, ev);
-			}
-
 			ea_list = read_nttrans_ea_list(mem_ctx,
 				(const char *)exta->data.data, exta->data.length);
 			if (!ea_list) {
@@ -555,11 +586,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		}
 
 		if (mxac) {
-			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
-				return tevent_req_post(req, ev);
-			}
-
 			if (mxac->data.length == 0) {
 				max_access_time = 0;
 			} else if (mxac->data.length == 8) {
@@ -572,11 +598,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 		if (secd) {
 			enum ndr_err_code ndr_err;
-
-			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
-				return tevent_req_post(req, ev);
-			}
 
 			sec_desc = talloc_zero(state, struct security_descriptor);
 			if (tevent_req_nomem(sec_desc, req)) {
@@ -595,37 +616,146 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		}
 
 		if (dhnq) {
-			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
-				return tevent_req_post(req, ev);
-			}
-
 			if (dhnq->data.length != 16) {
 				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 				return tevent_req_post(req, ev);
 			}
-			/*
-			 * we don't support durable handles yet
-			 * and have to ignore this
-			 */
-		}
 
-		if (dhnc) {
-			if (dhnc->data.length != 16) {
+			if (dh2q) {
 				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 				return tevent_req_post(req, ev);
 			}
-			/* we don't support durable handles yet */
-			tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
-			return tevent_req_post(req, ev);
+
+			/*
+			 * durable handle request is processed below.
+			 */
+			durable_requested = true;
+			/*
+			 * Set the timeout to 16 mins.
+			 *
+			 * TODO: test this against Windows 2012
+			 *       as the default for durable v2 is 1 min.
+			 */
+			durable_timeout_msec = (16*60*1000);
 		}
 
-		if (alsi) {
-			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+		if (dh2q) {
+			const uint8_t *p = dh2q->data.data;
+			uint32_t durable_v2_timeout = 0;
+			DATA_BLOB create_guid_blob;
+
+			if (dh2q->data.length != 32) {
+				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 				return tevent_req_post(req, ev);
 			}
 
+			if (dhnq) {
+				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+				return tevent_req_post(req, ev);
+			}
+
+			durable_v2_timeout = IVAL(p, 0);
+			create_guid_blob = data_blob_const(p + 16, 16);
+
+			status = GUID_from_ndr_blob(&create_guid_blob,
+						    &create_guid);
+			if (tevent_req_nterror(req, status)) {
+				return tevent_req_post(req, ev);
+			}
+			/*
+			 * we need to store the create_guid later
+			 */
+			update_open = true;
+
+			/*
+			 * durable handle v2 request processed below
+			 */
+			durable_requested = true;
+			durable_timeout_msec = durable_v2_timeout;
+			if (durable_timeout_msec == 0) {
+				/*
+				 * Set the timeout to 1 min as default.
+				 *
+				 * This matches Windows 2012.
+				 */
+				durable_timeout_msec = (60*1000);
+			}
+		}
+
+		if (dhnc) {
+			NTTIME now = timeval_to_nttime(&smb2req->request_time);
+			uint64_t persistent_id;
+
+			persistent_id = BVAL(dhnc->data.data, 0);
+
+			status = smb2srv_open_recreate(smb2req->sconn->conn,
+						smb1req->conn->session_info,
+						persistent_id, create_guid,
+						now, &op);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(3, ("smbd_smb2_create_send: "
+					  "smb2srv_open_recreate v1 failed: %s\n",
+					  nt_errstr(status)));
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+
+			DEBUG(10, ("smb2_create_send: DHNC: %s recreate the "
+				   "smb2srv_open struct for a durable handle.\n",
+				   op->global->durable ? "did" : "could not"));
+
+			if (!op->global->durable) {
+				talloc_free(op);
+				tevent_req_nterror(req,
+					NT_STATUS_OBJECT_NAME_NOT_FOUND);
+				return tevent_req_post(req, ev);
+			}
+
+			do_durable_reconnect = true;
+		}
+
+		if (dh2c) {
+			const uint8_t *p = dh2c->data.data;
+			NTTIME now = timeval_to_nttime(&smb2req->request_time);
+			uint64_t persistent_id;
+			DATA_BLOB create_guid_blob;
+
+			persistent_id = BVAL(p, 0);
+			create_guid_blob = data_blob_const(p + 16, 16);
+
+			status = GUID_from_ndr_blob(&create_guid_blob,
+						    &create_guid);
+			if (tevent_req_nterror(req, status)) {
+				return tevent_req_post(req, ev);
+			}
+
+			status = smb2srv_open_recreate(smb2req->sconn->conn,
+						       smb1req->conn->session_info,
+						       persistent_id, create_guid,
+						       now, &op);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(3, ("smbd_smb2_create_send: "
+					  "smb2srv_open_recreate v2 failed: %s\n",
+					  nt_errstr(status)));
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+
+			DEBUG(10, ("smb2_create_send: DH2C: %s recreate the "
+				   "smb2srv_open struct for a durable handle.\n",
+				   op->global->durable ? "did" : "could not"));
+
+			if (!op->global->durable) {
+				talloc_free(op);
+				tevent_req_nterror(req,
+					NT_STATUS_OBJECT_NAME_NOT_FOUND);
+				return tevent_req_post(req, ev);
+			}
+
+			do_durable_reconnect = true;
+		}
+
+		if (alsi) {
 			if (alsi->data.length != 8) {
 				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
 				return tevent_req_post(req, ev);
@@ -637,11 +767,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			NTTIME nttime;
 			time_t t;
 			struct tm *tm;
-
-			if (dhnc) {
-				tevent_req_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
-				return tevent_req_post(req, ev);
-			}
 
 			if (twrp->data.length != 8) {
 				tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -678,57 +803,110 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		in_create_options &= ~(0x10);/* NTCREATEX_OPTIONS_SYNC_ALERT */
 		in_create_options &= ~(0x20);/* NTCREATEX_OPTIONS_ASYNC_ALERT */
 
-                /*
-		 * For a DFS path the function parse_dfs_path()
-		 * will do the path processing.
-		 */
+		in_file_attributes &= ~FILE_FLAG_POSIX_SEMANTICS;
 
-		if (!(smb1req->flags2 & FLAGS2_DFS_PATHNAMES)) {
-			/* convert '\\' into '/' */
-			status = check_path_syntax(fname);
+		DEBUG(10, ("smbd_smb2_create_send: open execution phase\n"));
+
+		/*
+		 * For the backend file open procedure, there are
+		 * two possible modes: durable_reconnect or not.
+		 */
+		if (do_durable_reconnect) {
+			DATA_BLOB new_cookie = data_blob_null;
+
+			status = SMB_VFS_DURABLE_RECONNECT(smb1req->conn,
+						smb1req,
+						op,
+						op->global->backend_cookie,
+						op, &result, &new_cookie);
+			if (!NT_STATUS_IS_OK(status)) {
+				NTSTATUS return_status;
+
+				return_status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+
+				DEBUG(3, ("smbd_smb2_create_send: "
+					  "durable_reconnect failed: %s => %s\n",
+					  nt_errstr(status),
+					  nt_errstr(return_status)));
+
+				tevent_req_nterror(req, return_status);
+				return tevent_req_post(req, ev);
+			}
+
+			data_blob_free(&op->global->backend_cookie);
+			op->global->backend_cookie = new_cookie;
+
+			op->status = NT_STATUS_OK;
+			op->global->disconnect_time = 0;
+
+			status = smbXsrv_open_update(op);
 			if (!NT_STATUS_IS_OK(status)) {
 				tevent_req_nterror(req, status);
 				return tevent_req_post(req, ev);
 			}
-		}
 
-		status = filename_convert(req,
-					  smb1req->conn,
-					  smb1req->flags2 & FLAGS2_DFS_PATHNAMES,
-					  fname,
-					  0,
-					  NULL,
-					  &smb_fname);
-		if (!NT_STATUS_IS_OK(status)) {
-			tevent_req_nterror(req, status);
-			return tevent_req_post(req, ev);
-		}
+			info = FILE_WAS_OPENED;
+		} else {
+			struct smb_filename *smb_fname = NULL;
 
-		in_file_attributes &= ~FILE_FLAG_POSIX_SEMANTICS;
+			/*
+			 * For a DFS path the function parse_dfs_path()
+			 * will do the path processing.
+			 */
 
-		status = SMB_VFS_CREATE_FILE(smb1req->conn,
-					     smb1req,
-					     0, /* root_dir_fid */
-					     smb_fname,
-					     in_desired_access,
-					     in_share_access,
-					     in_create_disposition,
-					     in_create_options,
-					     in_file_attributes,
-					     map_smb2_oplock_levels_to_samba(requested_oplock_level),
-					     allocation_size,
-					     0, /* private_flags */
-					     sec_desc,
-					     ea_list,
-					     &result,
-					     &info);
-		if (!NT_STATUS_IS_OK(status)) {
-			if (open_was_deferred(smb1req->sconn, smb1req->mid)) {
-				return req;
+			if (!(smb1req->flags2 & FLAGS2_DFS_PATHNAMES)) {
+				/* convert '\\' into '/' */
+				status = check_path_syntax(fname);
+				if (!NT_STATUS_IS_OK(status)) {
+					tevent_req_nterror(req, status);
+					return tevent_req_post(req, ev);
+				}
 			}
-			tevent_req_nterror(req, status);
-			return tevent_req_post(req, ev);
+
+			status = filename_convert(req,
+						  smb1req->conn,
+						  smb1req->flags2 & FLAGS2_DFS_PATHNAMES,
+						  fname,
+						  0,    /* unix_convert flags */
+						  NULL, /* ppath_contains_wcards */
+						  &smb_fname);
+			if (!NT_STATUS_IS_OK(status)) {
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+
+			status = SMB_VFS_CREATE_FILE(smb1req->conn,
+						     smb1req,
+						     0, /* root_dir_fid */
+						     smb_fname,
+						     in_desired_access,
+						     in_share_access,
+						     in_create_disposition,
+						     in_create_options,
+						     in_file_attributes,
+						     map_smb2_oplock_levels_to_samba(requested_oplock_level),
+						     allocation_size,
+						     0, /* private_flags */
+						     sec_desc,
+						     ea_list,
+						     &result,
+						     &info);
+			if (!NT_STATUS_IS_OK(status)) {
+				if (open_was_deferred(smb1req->sconn, smb1req->mid)) {
+					return req;
+				}
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+			op = result->op;
 		}
+
+		/*
+		 * here we have op == result->op
+		 */
+
+		DEBUG(10, ("smbd_smb2_create_send: "
+			   "response construction phase\n"));
 
 		if (mxac) {
 			NTTIME last_write_time;
@@ -759,6 +937,67 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 			}
 		}
 
+		if (durable_requested &&
+		    BATCH_OPLOCK_TYPE(result->oplock_type))
+		{
+			status = SMB_VFS_DURABLE_COOKIE(result,
+						op,
+						&op->global->backend_cookie);
+			if (!NT_STATUS_IS_OK(status)) {
+				op->global->backend_cookie = data_blob_null;
+			}
+		}
+		if (op->global->backend_cookie.length > 0) {
+			update_open = true;
+
+			op->global->durable = true;
+			op->global->durable_timeout_msec = durable_timeout_msec;
+		}
+
+		if (update_open) {
+			op->global->create_guid = create_guid;
+
+			status = smbXsrv_open_update(op);
+			DEBUG(10, ("smb2_create_send: smbXsrv_open_update "
+				   "returned %s\n",
+				   nt_errstr(status)));
+			if (!NT_STATUS_IS_OK(status)) {
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+		}
+
+		if (dhnq && op->global->durable) {
+			uint8_t p[8] = { 0, };
+			DATA_BLOB blob = data_blob_const(p, sizeof(p));
+
+			status = smb2_create_blob_add(state,
+						      &out_context_blobs,
+						      SMB2_CREATE_TAG_DHNQ,
+						      blob);
+			if (!NT_STATUS_IS_OK(status)) {
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+		}
+
+		if (dh2q && op->global->durable) {
+			uint8_t p[8] = { 0, };
+			DATA_BLOB blob = data_blob_const(p, sizeof(p));
+			uint32_t durable_v2_response_flags = 0;
+
+			SIVAL(p, 0, op->global->durable_timeout_msec);
+			SIVAL(p, 4, durable_v2_response_flags);
+
+			status = smb2_create_blob_add(state, &out_context_blobs,
+						      SMB2_CREATE_TAG_DH2Q,
+						      blob);
+			if (!NT_STATUS_IS_OK(status)) {
+				tevent_req_nterror(req, status);
+				return tevent_req_post(req, ev);
+			}
+		}
+
 		if (qfid) {
 			uint8_t p[32];
 			uint64_t file_index = get_FileIndex(result->conn,
@@ -786,7 +1025,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 	smb2req->compat_chain_fsp = smb1req->chain_fsp;
 
-	if(lp_fake_oplocks(SNUM(smb2req->tcon->compat_conn))) {
+	if(lp_fake_oplocks(SNUM(smb2req->tcon->compat))) {
 		state->out_oplock_level	= in_oplock_level;
 	} else {
 		state->out_oplock_level	= map_samba_oplock_levels_to_smb2(result->oplock_type);
@@ -825,9 +1064,12 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 	if (state->out_file_attributes == 0) {
 		state->out_file_attributes = FILE_ATTRIBUTE_NORMAL;
 	}
-	state->out_file_id_persistent = result->fnum;
-	state->out_file_id_volatile = result->fnum;
+	state->out_file_id_persistent = result->op->global->open_persistent_id;
+	state->out_file_id_volatile = result->op->global->open_volatile_id;
 	state->out_context_blobs = out_context_blobs;
+
+	DEBUG(10,("smbd_smb2_create_send: %s - %s\n",
+		  fsp_str_dbg(result), fsp_fnum_dbg(result)));
 
 	tevent_req_done(req);
 	return tevent_req_post(req, ev);
@@ -962,7 +1204,7 @@ bool open_was_deferred_smb2(struct smbd_server_connection *sconn, uint64_t mid)
 		return false;
 	}
 	/* It's not in progress if there's no timeout event. */
-	if (!state->te) {
+	if (!state->open_was_deferred) {
 		return false;
 	}
 
@@ -993,6 +1235,7 @@ static void remove_deferred_open_message_smb2_internal(struct smbd_smb2_request 
 		"mid %llu\n",
 		(unsigned long long)mid ));
 
+	state->open_was_deferred = false;
 	/* Ensure we don't have any outstanding timer event. */
 	TALLOC_FREE(state->te);
 	/* Ensure we don't have any outstanding immediate event. */
@@ -1036,7 +1279,7 @@ static void smbd_smb2_create_request_dispatch_immediate(struct tevent_context *c
 	}
 }
 
-void schedule_deferred_open_message_smb2(
+bool schedule_deferred_open_message_smb2(
 	struct smbd_server_connection *sconn, uint64_t mid)
 {
 	struct smbd_smb2_create_state *state = NULL;
@@ -1048,18 +1291,18 @@ void schedule_deferred_open_message_smb2(
 		DEBUG(10,("schedule_deferred_open_message_smb2: "
 			"can't find mid %llu\n",
 			(unsigned long long)mid ));
-		return;
+		return false;
 	}
 	if (!smb2req->subreq) {
-		return;
+		return false;
 	}
 	if (!tevent_req_is_in_progress(smb2req->subreq)) {
-		return;
+		return false;
 	}
 	state = tevent_req_data(smb2req->subreq,
 			struct smbd_smb2_create_state);
 	if (!state) {
-		return;
+		return false;
 	}
 
 	/* Ensure we don't have any outstanding timer event. */
@@ -1069,7 +1312,7 @@ void schedule_deferred_open_message_smb2(
 
 	/*
 	 * This is subtle. We must null out the callback
-	 * before resheduling, else the first call to
+	 * before rescheduling, else the first call to
 	 * tevent_req_nterror() causes the _receive()
 	 * function to be called, this causing tevent_req_post()
 	 * to crash.
@@ -1080,7 +1323,7 @@ void schedule_deferred_open_message_smb2(
 	if (!state->im) {
 		smbd_server_connection_terminate(smb2req->sconn,
 			nt_errstr(NT_STATUS_NO_MEMORY));
-		return;
+		return false;
 	}
 
 	DEBUG(10,("schedule_deferred_open_message_smb2: "
@@ -1091,6 +1334,8 @@ void schedule_deferred_open_message_smb2(
 			smb2req->sconn->ev_ctx,
 			smbd_smb2_create_request_dispatch_immediate,
 			smb2req);
+
+	return true;
 }
 
 /*********************************************************
@@ -1127,7 +1372,7 @@ static void smb2_deferred_open_timer(struct event_context *ev,
 
 	/*
 	 * This is subtle. We must null out the callback
-	 * before resheduling, else the first call to
+	 * before rescheduling, else the first call to
 	 * tevent_req_nterror() causes the _receive()
 	 * function to be called, this causing tevent_req_post()
 	 * to crash.
@@ -1160,12 +1405,17 @@ static bool smbd_smb2_create_cancel(struct tevent_req *req)
 	smb2req = state->smb2req;
 	mid = get_mid_from_smb2req(smb2req);
 
+	if (is_deferred_open_async(state->private_data.data)) {
+		/* Can't cancel an async create. */
+		return false;
+	}
+
 	remove_deferred_open_entry(state->id, mid,
 				   messaging_server_id(smb2req->sconn->msg_ctx));
 	remove_deferred_open_message_smb2_internal(smb2req, mid);
-	smb2req->cancelled = true;
 
-	tevent_req_done(req);
+	tevent_req_defer_callback(req, smb2req->sconn->ev_ctx);
+	tevent_req_nterror(req, NT_STATUS_CANCELLED);
 	return true;
 }
 
@@ -1208,6 +1458,7 @@ bool push_deferred_open_message_smb2(struct smbd_smb2_request *smb2req,
 				&end_time,
 				true) ));
 
+	state->open_was_deferred = true;
 	state->te = tevent_add_timer(smb2req->sconn->ev_ctx,
 				state,
 				end_time,

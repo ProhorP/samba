@@ -4,7 +4,8 @@
    tdb utility functions
 
    Copyright (C) Andrew Tridgell 1992-2006
-   
+   Copyright (C) Volker Lendecke 2007-2011
+
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 3 of the License, or
@@ -20,7 +21,8 @@
 */
 
 #include "includes.h"
-#include "../lib/tdb_compat/tdb_compat.h"
+#include "system/filesys.h"
+#include "../lib/tdb/include/tdb.h"
 #include "../lib/util/util_tdb.h"
 
 /* these are little tdb utility functions that are meant to make
@@ -116,7 +118,7 @@ int32_t tdb_fetch_int32_byblob(struct tdb_context *tdb, TDB_DATA key)
 	TDB_DATA data;
 	int32_t ret;
 
-	data = tdb_fetch_compat(tdb, key);
+	data = tdb_fetch(tdb, key);
 	if (!data.dptr || data.dsize != sizeof(int32_t)) {
 		SAFE_FREE(data.dptr);
 		return -1;
@@ -173,7 +175,7 @@ bool tdb_fetch_uint32_byblob(struct tdb_context *tdb, TDB_DATA key, uint32_t *va
 {
 	TDB_DATA data;
 
-	data = tdb_fetch_compat(tdb, key);
+	data = tdb_fetch(tdb, key);
 	if (!data.dptr || data.dsize != sizeof(uint32_t)) {
 		SAFE_FREE(data.dptr);
 		return false;
@@ -245,7 +247,7 @@ TDB_DATA tdb_fetch_bystring(struct tdb_context *tdb, const char *keystr)
 {
 	TDB_DATA key = string_term_tdb_data(keystr);
 
-	return tdb_fetch_compat(tdb, key);
+	return tdb_fetch(tdb, key);
 }
 
 /****************************************************************************
@@ -300,6 +302,84 @@ int32_t tdb_change_int32_atomic(struct tdb_context *tdb, const char *keystr, int
 	return ret;
 }
 
+static sig_atomic_t gotalarm;
+
+/***************************************************************
+ Signal function to tell us we timed out.
+****************************************************************/
+
+static void gotalarm_sig(int signum)
+{
+	gotalarm = 1;
+}
+
+/****************************************************************************
+ Lock a chain with timeout (in seconds).
+****************************************************************************/
+
+static int tdb_chainlock_with_timeout_internal( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout, int rw_type)
+{
+	/* Allow tdb_chainlock to be interrupted by an alarm. */
+	int ret;
+	gotalarm = 0;
+
+	if (timeout) {
+		CatchSignal(SIGALRM, gotalarm_sig);
+		tdb_setalarm_sigptr(tdb, &gotalarm);
+		alarm(timeout);
+	}
+
+	if (rw_type == F_RDLCK)
+		ret = tdb_chainlock_read(tdb, key);
+	else
+		ret = tdb_chainlock(tdb, key);
+
+	if (timeout) {
+		alarm(0);
+		tdb_setalarm_sigptr(tdb, NULL);
+		CatchSignal(SIGALRM, SIG_IGN);
+		if (gotalarm && (ret != 0)) {
+			DEBUG(0,("tdb_chainlock_with_timeout_internal: alarm (%u) timed out for key %s in tdb %s\n",
+				timeout, key.dptr, tdb_name(tdb)));
+			/* TODO: If we time out waiting for a lock, it might
+			 * be nice to use F_GETLK to get the pid of the
+			 * process currently holding the lock and print that
+			 * as part of the debugging message. -- mbp */
+			return -1;
+		}
+	}
+
+	return ret == 0 ? 0 : -1;
+}
+
+/****************************************************************************
+ Write lock a chain. Return non-zero if timeout or lock failed.
+****************************************************************************/
+
+int tdb_chainlock_with_timeout( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout)
+{
+	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_WRLCK);
+}
+
+int tdb_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval,
+				   int timeout)
+{
+	TDB_DATA key = string_term_tdb_data(keyval);
+
+	return tdb_chainlock_with_timeout(tdb, key, timeout);
+}
+
+/****************************************************************************
+ Read lock a chain by string. Return non-zero if timeout or lock failed.
+****************************************************************************/
+
+int tdb_read_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval, unsigned int timeout)
+{
+	TDB_DATA key = string_term_tdb_data(keyval);
+
+	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_RDLCK);
+}
+
 /****************************************************************************
  Atomic unsigned integer change. Returns old value. To create, set initial value in *oldval. 
 ****************************************************************************/
@@ -350,4 +430,62 @@ int tdb_traverse_delete_fn(struct tdb_context *the_tdb, TDB_DATA key, TDB_DATA d
                      void *state)
 {
     return tdb_delete(the_tdb, key);
+}
+
+/****************************************************************************
+ Return an NTSTATUS from a TDB_ERROR
+****************************************************************************/
+
+NTSTATUS map_nt_error_from_tdb(enum TDB_ERROR err)
+{
+	NTSTATUS result = NT_STATUS_INTERNAL_ERROR;
+
+	switch (err) {
+	case TDB_SUCCESS:
+		result = NT_STATUS_OK;
+		break;
+	case TDB_ERR_CORRUPT:
+		result = NT_STATUS_INTERNAL_DB_CORRUPTION;
+		break;
+	case TDB_ERR_IO:
+		result = NT_STATUS_UNEXPECTED_IO_ERROR;
+		break;
+	case TDB_ERR_OOM:
+		result = NT_STATUS_NO_MEMORY;
+		break;
+	case TDB_ERR_EXISTS:
+		result = NT_STATUS_OBJECT_NAME_COLLISION;
+		break;
+
+	case TDB_ERR_LOCK:
+		/*
+		 * TDB_ERR_LOCK is very broad, we could for example
+		 * distinguish between fcntl locks and invalid lock
+		 * sequences. So NT_STATUS_FILE_LOCK_CONFLICT is a
+		 * compromise.
+		 */
+		result = NT_STATUS_FILE_LOCK_CONFLICT;
+		break;
+
+	case TDB_ERR_NOLOCK:
+	case TDB_ERR_LOCK_TIMEOUT:
+		/*
+		 * These two ones in the enum are not actually used
+		 */
+		result = NT_STATUS_FILE_LOCK_CONFLICT;
+		break;
+	case TDB_ERR_NOEXIST:
+		result = NT_STATUS_NOT_FOUND;
+		break;
+	case TDB_ERR_EINVAL:
+		result = NT_STATUS_INVALID_PARAMETER;
+		break;
+	case TDB_ERR_RDONLY:
+		result = NT_STATUS_ACCESS_DENIED;
+		break;
+	case TDB_ERR_NESTING:
+		result = NT_STATUS_INTERNAL_ERROR;
+		break;
+	};
+	return result;
 }

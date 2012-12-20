@@ -27,6 +27,7 @@
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
 #include "auth/gensec/gensec.h"
+#include "auth/credentials/credentials.h"
 #include "../libcli/smb/smbXcli_base.h"
 #include "../source3/libsmb/smb2cli.h"
 
@@ -49,8 +50,6 @@ struct smb2_session *smb2_session_init(struct smb2_transport *transport,
 	} else {
 		session->transport = talloc_reference(session, transport);
 	}
-
-	session->pid = getpid();
 
 	session->smbXcli = smbXcli_session_create(session, transport->conn);
 	if (session->smbXcli == NULL) {
@@ -75,6 +74,8 @@ struct smb2_session_setup_spnego_state {
 	struct tevent_context *ev;
 	struct smb2_session *session;
 	struct cli_credentials *credentials;
+	uint64_t previous_session_id;
+	bool reauth;
 	NTSTATUS gensec_status;
 	DATA_BLOB in_secblob;
 	DATA_BLOB out_secblob;
@@ -85,13 +86,16 @@ static void smb2_session_setup_spnego_done(struct tevent_req *subreq);
 /*
   a composite function that does a full SPNEGO session setup
  */
-struct tevent_req *smb2_session_setup_spnego_send(TALLOC_CTX *mem_ctx,
-						  struct tevent_context *ev,
-						  struct smb2_session *session,
-						  struct cli_credentials *credentials)
+struct tevent_req *smb2_session_setup_spnego_send(
+				TALLOC_CTX *mem_ctx,
+				struct tevent_context *ev,
+				struct smb2_session *session,
+				struct cli_credentials *credentials,
+				uint64_t previous_session_id)
 {
 	struct tevent_req *req;
 	struct smb2_session_setup_spnego_state *state;
+	uint64_t current_session_id;
 	const char *chosen_oid;
 	struct tevent_req *subreq;
 	NTSTATUS status;
@@ -109,6 +113,12 @@ struct tevent_req *smb2_session_setup_spnego_send(TALLOC_CTX *mem_ctx,
 	state->ev = ev;
 	state->session = session;
 	state->credentials = credentials;
+	state->previous_session_id = previous_session_id;
+
+	current_session_id = smb2cli_session_current_id(state->session->smbXcli);
+	if (current_session_id != 0) {
+		state->reauth = true;
+	}
 
 	server_gss_blob = smbXcli_conn_server_gss_blob(session->transport->conn);
 	if (server_gss_blob) {
@@ -159,7 +169,7 @@ struct tevent_req *smb2_session_setup_spnego_send(TALLOC_CTX *mem_ctx,
 					    0, /* in_flags */
 					    0, /* in_capabilities */
 					    0, /* in_channel */
-					    NULL, /* in_previous_session */
+					    state->previous_session_id,
 					    &state->in_secblob);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
@@ -213,15 +223,36 @@ static void smb2_session_setup_spnego_done(struct tevent_req *subreq)
 	}
 
 	if (NT_STATUS_IS_OK(peer_status) && NT_STATUS_IS_OK(state->gensec_status)) {
-		status = gensec_session_key(session->gensec, session,
-					    &session->session_key);
+		DATA_BLOB session_key;
+
+		if (state->reauth) {
+			tevent_req_done(req);
+			return;
+		}
+
+		if (cli_credentials_is_anonymous(state->credentials)) {
+			/*
+			 * Windows server does not set the
+			 * SMB2_SESSION_FLAG_IS_GUEST nor
+			 * SMB2_SESSION_FLAG_IS_NULL flag.
+			 *
+			 * This fix makes sure we do not try
+			 * to verify a signature on the final
+			 * session setup response.
+			 */
+			tevent_req_done(req);
+			return;
+		}
+
+		status = gensec_session_key(session->gensec, state,
+					    &session_key);
 		if (tevent_req_nterror(req, status)) {
 			return;
 		}
 
-		status = smb2cli_session_update_session_key(session->smbXcli,
-							    session->session_key,
-							    recv_iov);
+		status = smb2cli_session_set_session_key(session->smbXcli,
+							 session_key,
+							 recv_iov);
 		if (tevent_req_nterror(req, status)) {
 			return;
 		}
@@ -237,7 +268,7 @@ static void smb2_session_setup_spnego_done(struct tevent_req *subreq)
 					    0, /* in_flags */
 					    0, /* in_capabilities */
 					    0, /* in_channel */
-					    NULL, /* in_previous_session */
+					    state->previous_session_id,
 					    &state->in_secblob);
 	if (tevent_req_nomem(subreq, req)) {
 		return;
@@ -257,7 +288,8 @@ NTSTATUS smb2_session_setup_spnego_recv(struct tevent_req *req)
   sync version of smb2_session_setup_spnego
 */
 NTSTATUS smb2_session_setup_spnego(struct smb2_session *session, 
-				   struct cli_credentials *credentials)
+				   struct cli_credentials *credentials,
+				   uint64_t previous_session_id)
 {
 	struct tevent_req *subreq;
 	NTSTATUS status;
@@ -270,7 +302,8 @@ NTSTATUS smb2_session_setup_spnego(struct smb2_session *session,
 	}
 
 	subreq = smb2_session_setup_spnego_send(frame, ev,
-						session, credentials);
+						session, credentials,
+						previous_session_id);
 	if (subreq == NULL) {
 		TALLOC_FREE(frame);
 		return NT_STATUS_NO_MEMORY;

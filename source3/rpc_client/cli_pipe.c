@@ -29,12 +29,14 @@
 #include "../auth/ntlmssp/ntlmssp.h"
 #include "auth_generic.h"
 #include "librpc/gen_ndr/ndr_dcerpc.h"
+#include "librpc/gen_ndr/ndr_netlogon_c.h"
 #include "librpc/rpc/dcerpc.h"
 #include "rpc_dce.h"
 #include "cli_pipe.h"
 #include "libsmb/libsmb.h"
 #include "auth/gensec/gensec.h"
 #include "auth/credentials/credentials.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_RPC_CLI
@@ -1543,9 +1545,15 @@ struct rpc_pipe_bind_state {
 	DATA_BLOB rpc_out;
 	bool auth3;
 	uint32_t rpc_call_id;
+	struct netr_Authenticator auth;
+	struct netr_Authenticator return_auth;
+	struct netlogon_creds_CredentialState *creds;
+	union netr_Capabilities capabilities;
+	struct netr_LogonGetCapabilities r;
 };
 
 static void rpc_pipe_bind_step_one_done(struct tevent_req *subreq);
+static void rpc_pipe_bind_step_two_trigger(struct tevent_req *req);
 static NTSTATUS rpc_bind_next_send(struct tevent_req *req,
 				   struct rpc_pipe_bind_state *state,
 				   DATA_BLOB *credentials);
@@ -1648,9 +1656,12 @@ static void rpc_pipe_bind_step_one_done(struct tevent_req *subreq)
 
 	case DCERPC_AUTH_TYPE_NONE:
 	case DCERPC_AUTH_TYPE_NCALRPC_AS_SYSTEM:
-	case DCERPC_AUTH_TYPE_SCHANNEL:
 		/* Bind complete. */
 		tevent_req_done(req);
+		return;
+
+	case DCERPC_AUTH_TYPE_SCHANNEL:
+		rpc_pipe_bind_step_two_trigger(req);
 		return;
 
 	case DCERPC_AUTH_TYPE_NTLMSSP:
@@ -1727,6 +1738,150 @@ err_out:
 	DEBUG(0,("cli_finish_bind_auth: unknown auth type %u\n",
 		 (unsigned int)state->cli->auth->auth_type));
 	tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
+}
+
+static void rpc_pipe_bind_step_two_done(struct tevent_req *subreq);
+
+static void rpc_pipe_bind_step_two_trigger(struct tevent_req *req)
+{
+	struct rpc_pipe_bind_state *state =
+		tevent_req_data(req,
+				struct rpc_pipe_bind_state);
+	struct dcerpc_binding_handle *b = state->cli->binding_handle;
+	struct schannel_state *schannel_auth =
+		talloc_get_type_abort(state->cli->auth->auth_ctx,
+				      struct schannel_state);
+	struct tevent_req *subreq;
+
+	if (schannel_auth == NULL ||
+	    !ndr_syntax_id_equal(&state->cli->abstract_syntax,
+				 &ndr_table_netlogon.syntax_id)) {
+		tevent_req_done(req);
+		return;
+	}
+
+	ZERO_STRUCT(state->return_auth);
+
+	state->creds = netlogon_creds_copy(state, schannel_auth->creds);
+	if (state->creds == NULL) {
+		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
+		return;
+	}
+
+	netlogon_creds_client_authenticator(state->creds, &state->auth);
+
+	state->r.in.server_name = state->cli->srv_name_slash;
+	state->r.in.computer_name = state->creds->computer_name;
+	state->r.in.credential = &state->auth;
+	state->r.in.query_level = 1;
+	state->r.in.return_authenticator = &state->return_auth;
+
+	state->r.out.capabilities = &state->capabilities;
+	state->r.out.return_authenticator = &state->return_auth;
+
+	subreq = dcerpc_netr_LogonGetCapabilities_r_send(talloc_tos(),
+							 state->ev,
+							 b,
+							 &state->r);
+	if (subreq == NULL) {
+		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
+		return;
+	}
+
+	tevent_req_set_callback(subreq, rpc_pipe_bind_step_two_done, req);
+	return;
+}
+
+static void rpc_pipe_bind_step_two_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req =
+		tevent_req_callback_data(subreq,
+					 struct tevent_req);
+	struct rpc_pipe_bind_state *state =
+		tevent_req_data(req,
+				struct rpc_pipe_bind_state);
+	NTSTATUS status;
+
+	status = dcerpc_netr_LogonGetCapabilities_r_recv(subreq, talloc_tos());
+	TALLOC_FREE(subreq);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_RPC_PROCNUM_OUT_OF_RANGE)) {
+		if (state->cli->dc->negotiate_flags &
+		    NETLOGON_NEG_SUPPORTS_AES) {
+			DEBUG(5, ("AES is not supported and the error was %s\n",
+				  nt_errstr(status)));
+			tevent_req_nterror(req,
+					   NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
+		}
+
+		/* This is probably NT */
+		DEBUG(5, ("We are checking against an NT - %s\n",
+			  nt_errstr(status)));
+		tevent_req_done(req);
+		return;
+	} else if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("dcerpc_netr_LogonGetCapabilities_r_recv failed with %s\n",
+			  nt_errstr(status)));
+		tevent_req_nterror(req, status);
+		return;
+	}
+
+	if (NT_STATUS_EQUAL(state->r.out.result, NT_STATUS_NOT_IMPLEMENTED)) {
+		if (state->creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
+			/* This means AES isn't supported. */
+			DEBUG(5, ("AES is not supported and the error was %s\n",
+				  nt_errstr(state->r.out.result)));
+			tevent_req_nterror(req,
+					   NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
+		}
+
+		/* This is probably an old Samba version */
+		DEBUG(5, ("We are checking against an old Samba version - %s\n",
+			  nt_errstr(state->r.out.result)));
+		tevent_req_done(req);
+		return;
+	}
+
+	/* We need to check the credential state here, cause win2k3 and earlier
+	 * returns NT_STATUS_NOT_IMPLEMENTED */
+	if (!netlogon_creds_client_check(state->creds,
+					 &state->r.out.return_authenticator->cred)) {
+		/*
+		 * Server replied with bad credential. Fail.
+		 */
+		DEBUG(0,("rpc_pipe_bind_step_two_done: server %s "
+			 "replied with bad credential\n",
+			 state->cli->desthost));
+		tevent_req_nterror(req, NT_STATUS_UNSUCCESSFUL);
+		return;
+	}
+
+	TALLOC_FREE(state->cli->dc);
+	state->cli->dc = talloc_steal(state->cli, state->creds);
+
+	if (!NT_STATUS_IS_OK(state->r.out.result)) {
+		DEBUG(0, ("dcerpc_netr_LogonGetCapabilities_r_recv failed with %s\n",
+			  nt_errstr(state->r.out.result)));
+		tevent_req_nterror(req, state->r.out.result);
+		return;
+	}
+
+	if (state->creds->negotiate_flags !=
+	    state->r.out.capabilities->server_capabilities) {
+		DEBUG(0, ("The client capabilities don't match the server "
+			  "capabilities: local[0x%08X] remote[0x%08X]\n",
+			  state->creds->negotiate_flags,
+			  state->capabilities.server_capabilities));
+		tevent_req_nterror(req,
+				   NT_STATUS_INVALID_NETWORK_RESPONSE);
+		return;
+	}
+
+	/* TODO: Add downgrade dectection. */
+
+	tevent_req_done(req);
+	return;
 }
 
 static NTSTATUS rpc_bind_next_send(struct tevent_req *req,
@@ -2243,13 +2398,12 @@ NTSTATUS rpccli_schannel_bind_data(TALLOC_CTX *mem_ctx, const char *domain,
 		goto fail;
 	}
 
-	schannel_auth = talloc(result, struct schannel_state);
+	schannel_auth = talloc_zero(result, struct schannel_state);
 	if (schannel_auth == NULL) {
 		goto fail;
 	}
 
 	schannel_auth->state = SCHANNEL_STATE_START;
-	schannel_auth->seq_num = 0;
 	schannel_auth->initiator = true;
 	schannel_auth->creds = netlogon_creds_copy(result, creds);
 
@@ -2266,6 +2420,7 @@ NTSTATUS rpccli_schannel_bind_data(TALLOC_CTX *mem_ctx, const char *domain,
  * Create an rpc pipe client struct, connecting to a tcp port.
  */
 static NTSTATUS rpc_pipe_open_tcp_port(TALLOC_CTX *mem_ctx, const char *host,
+				       const struct sockaddr_storage *ss_addr,
 				       uint16_t port,
 				       const struct ndr_syntax_id *abstract_syntax,
 				       struct rpc_pipe_client **presult)
@@ -2281,7 +2436,7 @@ static NTSTATUS rpc_pipe_open_tcp_port(TALLOC_CTX *mem_ctx, const char *host,
 	}
 
 	result->abstract_syntax = *abstract_syntax;
-	result->transfer_syntax = ndr_transfer_syntax;
+	result->transfer_syntax = ndr_transfer_syntax_ndr;
 
 	result->desthost = talloc_strdup(result, host);
 	result->srv_name_slash = talloc_asprintf_strupper_m(
@@ -2294,9 +2449,13 @@ static NTSTATUS rpc_pipe_open_tcp_port(TALLOC_CTX *mem_ctx, const char *host,
 	result->max_xmit_frag = RPC_MAX_PDU_FRAG_LEN;
 	result->max_recv_frag = RPC_MAX_PDU_FRAG_LEN;
 
-	if (!resolve_name(host, &addr, 0, false)) {
-		status = NT_STATUS_NOT_FOUND;
-		goto fail;
+	if (ss_addr == NULL) {
+		if (!resolve_name(host, &addr, NBT_NAME_SERVER, false)) {
+			status = NT_STATUS_NOT_FOUND;
+			goto fail;
+		}
+	} else {
+		addr = *ss_addr;
 	}
 
 	status = open_socket_out(&addr, port, 60*1000, &fd);
@@ -2333,6 +2492,7 @@ static NTSTATUS rpc_pipe_open_tcp_port(TALLOC_CTX *mem_ctx, const char *host,
  * target host.
  */
 static NTSTATUS rpc_pipe_get_tcp_port(const char *host,
+				      const struct sockaddr_storage *addr,
 				      const struct ndr_syntax_id *abstract_syntax,
 				      uint16_t *pport)
 {
@@ -2363,7 +2523,7 @@ static NTSTATUS rpc_pipe_get_tcp_port(const char *host,
 	}
 
 	/* open the connection to the endpoint mapper */
-	status = rpc_pipe_open_tcp_port(tmp_ctx, host, 135,
+	status = rpc_pipe_open_tcp_port(tmp_ctx, host, addr, 135,
 					&ndr_table_epmapper.syntax_id,
 					&epm_pipe);
 
@@ -2477,18 +2637,19 @@ done:
  * host.
  */
 NTSTATUS rpc_pipe_open_tcp(TALLOC_CTX *mem_ctx, const char *host,
+			   const struct sockaddr_storage *addr,
 			   const struct ndr_syntax_id *abstract_syntax,
 			   struct rpc_pipe_client **presult)
 {
 	NTSTATUS status;
 	uint16_t port = 0;
 
-	status = rpc_pipe_get_tcp_port(host, abstract_syntax, &port);
+	status = rpc_pipe_get_tcp_port(host, addr, abstract_syntax, &port);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
 
-	return rpc_pipe_open_tcp_port(mem_ctx, host, port,
+	return rpc_pipe_open_tcp_port(mem_ctx, host, addr, port,
 					abstract_syntax, presult);
 }
 
@@ -2503,6 +2664,7 @@ NTSTATUS rpc_pipe_open_ncalrpc(TALLOC_CTX *mem_ctx, const char *socket_path,
 	struct sockaddr_un addr;
 	NTSTATUS status;
 	int fd;
+	socklen_t salen;
 
 	result = talloc_zero(mem_ctx, struct rpc_pipe_client);
 	if (result == NULL) {
@@ -2510,7 +2672,7 @@ NTSTATUS rpc_pipe_open_ncalrpc(TALLOC_CTX *mem_ctx, const char *socket_path,
 	}
 
 	result->abstract_syntax = *abstract_syntax;
-	result->transfer_syntax = ndr_transfer_syntax;
+	result->transfer_syntax = ndr_transfer_syntax_ndr;
 
 	result->desthost = get_myname(result);
 	result->srv_name_slash = talloc_asprintf_strupper_m(
@@ -2532,8 +2694,9 @@ NTSTATUS rpc_pipe_open_ncalrpc(TALLOC_CTX *mem_ctx, const char *socket_path,
 	ZERO_STRUCT(addr);
 	addr.sun_family = AF_UNIX;
 	strlcpy(addr.sun_path, socket_path, sizeof(addr.sun_path));
+	salen = sizeof(struct sockaddr_un);
 
-	if (sys_connect(fd, (struct sockaddr *)(void *)&addr) == -1) {
+	if (connect(fd, (struct sockaddr *)(void *)&addr, salen) == -1) {
 		DEBUG(0, ("connect(%s) failed: %s\n", socket_path,
 			  strerror(errno)));
 		close(fd);
@@ -2606,8 +2769,8 @@ static NTSTATUS rpc_pipe_open_np(struct cli_state *cli,
 	}
 
 	result->abstract_syntax = *abstract_syntax;
-	result->transfer_syntax = ndr_transfer_syntax;
-	result->desthost = talloc_strdup(result, cli_state_remote_name(cli));
+	result->transfer_syntax = ndr_transfer_syntax_ndr;
+	result->desthost = talloc_strdup(result, smbXcli_conn_remote_name(cli->conn));
 	result->srv_name_slash = talloc_asprintf_strupper_m(
 		result, "\\\\%s", result->desthost);
 
@@ -2660,7 +2823,9 @@ static NTSTATUS cli_rpc_pipe_open(struct cli_state *cli,
 {
 	switch (transport) {
 	case NCACN_IP_TCP:
-		return rpc_pipe_open_tcp(NULL, cli_state_remote_name(cli),
+		return rpc_pipe_open_tcp(NULL,
+					 smbXcli_conn_remote_name(cli->conn),
+					 smbXcli_conn_remote_sockaddr(cli->conn),
 					 interface, presult);
 	case NCACN_NP:
 		return rpc_pipe_open_np(cli, interface, presult);
@@ -2706,9 +2871,22 @@ NTSTATUS cli_rpc_pipe_open_noauth_transport(struct cli_state *cli,
 
 	auth->user_name = talloc_strdup(auth, cli->user_name);
 	auth->domain = talloc_strdup(auth, cli->domain);
-	auth->user_session_key = data_blob_talloc(auth,
-		cli->user_session_key.data,
-		cli->user_session_key.length);
+
+	if (transport == NCACN_NP) {
+		struct smbXcli_session *session;
+
+		if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+			session = cli->smb2.session;
+		} else {
+			session = cli->smb1.session;
+		}
+
+		status = smbXcli_session_application_key(session, auth,
+						&auth->transport_session_key);
+		if (!NT_STATUS_IS_OK(status)) {
+			auth->transport_session_key = data_blob_null;
+		}
+	}
 
 	if ((auth->user_name == NULL) || (auth->domain == NULL)) {
 		TALLOC_FREE(result);
@@ -2857,10 +3035,12 @@ NTSTATUS cli_rpc_pipe_open_schannel_with_key(struct cli_state *cli,
 	 * The credentials on a new netlogon pipe are the ones we are passed
 	 * in - copy them over
 	 */
-	result->dc = netlogon_creds_copy(result, *pdc);
 	if (result->dc == NULL) {
-		TALLOC_FREE(result);
-		return NT_STATUS_NO_MEMORY;
+		result->dc = netlogon_creds_copy(result, *pdc);
+		if (result->dc == NULL) {
+			TALLOC_FREE(result);
+			return NT_STATUS_NO_MEMORY;
+		}
 	}
 
 	DEBUG(10,("cli_rpc_pipe_open_schannel_with_key: opened pipe %s to machine %s "
@@ -2976,8 +3156,8 @@ NTSTATUS cli_get_session_key(TALLOC_CTX *mem_ctx,
 		break;
 	case DCERPC_AUTH_TYPE_NCALRPC_AS_SYSTEM:
 	case DCERPC_AUTH_TYPE_NONE:
-		sk = data_blob_const(a->user_session_key.data,
-				     a->user_session_key.length);
+		sk = data_blob_const(a->transport_session_key.data,
+				     a->transport_session_key.length);
 		make_dup = true;
 		break;
 	default:

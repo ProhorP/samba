@@ -30,6 +30,7 @@
 #include "messages.h"
 #include <ccan/hash/hash.h>
 #include "libcli/security/security.h"
+#include "serverid.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -124,6 +125,35 @@ bool socket_exist(const char *fname)
 uint64_t get_file_size_stat(const SMB_STRUCT_STAT *sbuf)
 {
 	return sbuf->st_ex_size;
+}
+
+/****************************************************************************
+ Check two stats have identical dev and ino fields.
+****************************************************************************/
+
+bool check_same_dev_ino(const SMB_STRUCT_STAT *sbuf1,
+                        const SMB_STRUCT_STAT *sbuf2)
+{
+	if (sbuf1->st_ex_dev != sbuf2->st_ex_dev ||
+			sbuf1->st_ex_ino != sbuf2->st_ex_ino) {
+		return false;
+	}
+	return true;
+}
+
+/****************************************************************************
+ Check if a stat struct is identical for use.
+****************************************************************************/
+
+bool check_same_stat(const SMB_STRUCT_STAT *sbuf1,
+			const SMB_STRUCT_STAT *sbuf2)
+{
+	if (sbuf1->st_ex_uid != sbuf2->st_ex_uid ||
+			sbuf1->st_ex_gid != sbuf2->st_ex_gid ||
+			!check_same_dev_ino(sbuf1, sbuf2)) {
+		return false;
+	}
+	return true;
 }
 
 /*******************************************************************
@@ -320,12 +350,12 @@ char *clean_name(TALLOC_CTX *ctx, const char *s)
  Write data into an fd at a given offset. Ignore seek errors.
 ********************************************************************/
 
-ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, SMB_OFF_T pos)
+ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, off_t pos)
 {
 	size_t total=0;
 	ssize_t ret;
 
-	if (pos == (SMB_OFF_T)-1) {
+	if (pos == (off_t)-1) {
 		return write_data(fd, buffer, N);
 	}
 #if defined(HAVE_PWRITE) || defined(HAVE_PRWITE64)
@@ -347,7 +377,7 @@ ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, SMB_OFF_T pos
 	return (ssize_t)total;
 #else
 	/* Use lseek and write_data. */
-	if (sys_lseek(fd, pos, SEEK_SET) == -1) {
+	if (lseek(fd, pos, SEEK_SET) == -1) {
 		if (errno != ESPIPE) {
 			return -1;
 		}
@@ -356,12 +386,57 @@ ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, SMB_OFF_T pos
 #endif
 }
 
+static int reinit_after_fork_pipe[2] = { -1, -1 };
+
+NTSTATUS init_before_fork(void)
+{
+	int ret;
+
+	ret = pipe(reinit_after_fork_pipe);
+	if (ret == -1) {
+		NTSTATUS status;
+
+		status = map_nt_error_from_unix_common(errno);
+
+		DEBUG(0, ("Error creating child_pipe: %s\n",
+			  nt_errstr(status)));
+
+		return status;
+	}
+
+	return NT_STATUS_OK;
+}
+
+/**
+ * Detect died parent by detecting EOF on the pipe
+ */
+static void reinit_after_fork_pipe_handler(struct tevent_context *ev,
+					   struct tevent_fd *fde,
+					   uint16_t flags,
+					   void *private_data)
+{
+	char c;
+
+	if (sys_read(reinit_after_fork_pipe[0], &c, 1) != 1) {
+		/*
+		 * we have reached EOF on stdin, which means the
+		 * parent has exited. Shutdown the server
+		 */
+		(void)kill(getpid(), SIGTERM);
+	}
+}
+
 
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 			   struct event_context *ev_ctx,
 			   bool parent_longlived)
 {
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (reinit_after_fork_pipe[1] != -1) {
+		close(reinit_after_fork_pipe[1]);
+		reinit_after_fork_pipe[1] = -1;
+	}
 
 	/* Reset the state of the random
 	 * number generation system, so
@@ -378,6 +453,17 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 
 	if (ev_ctx && tevent_re_initialise(ev_ctx) != 0) {
 		smb_panic(__location__ ": Failed to re-initialise event context");
+	}
+
+	if (reinit_after_fork_pipe[0] != -1) {
+		struct tevent_fd *fde;
+
+		fde = tevent_add_fd(ev_ctx, ev_ctx /* TALLOC_CTX */,
+				    reinit_after_fork_pipe[0], TEVENT_FD_READ,
+				    reinit_after_fork_pipe_handler, NULL);
+		if (fde == NULL) {
+			smb_panic(__location__ ": Failed to add reinit_after_fork pipe event");
+		}
 	}
 
 	if (msg_ctx) {
@@ -584,7 +670,7 @@ char *automount_lookup(TALLOC_CTX *ctx, const char *user_name)
 	char *nis_result;     /* yp_match inits this */
 	int nis_result_len;  /* and set this */
 	char *nis_domain;     /* yp_get_default_domain inits this */
-	char *nis_map = (char *)lp_nis_home_map_name();
+	char *nis_map = lp_nis_home_map_name(talloc_tos());
 
 	if ((nis_error = yp_get_default_domain(&nis_domain)) != 0) {
 		DEBUG(3, ("YP Error: %s\n", yperr_string(nis_error)));
@@ -621,92 +707,9 @@ char *automount_lookup(TALLOC_CTX *ctx, const char *user_name)
 #endif /* WITH_NISPLUS_HOME */
 #endif
 
-/****************************************************************************
- Check if a process exists. Does this work on all unixes?
-****************************************************************************/
-
 bool process_exists(const struct server_id pid)
 {
-	if (procid_is_me(&pid)) {
-		return True;
-	}
-
-	if (procid_is_local(&pid)) {
-		return (kill(pid.pid,0) == 0 || errno != ESRCH);
-	}
-
-#ifdef CLUSTER_SUPPORT
-	return ctdbd_process_exists(messaging_ctdbd_connection(),
-				    pid.vnn, pid.pid);
-#else
-	return False;
-#endif
-}
-
-bool processes_exist(const struct server_id *pids, int num_pids,
-		     bool *results)
-{
-	struct server_id *remote_pids = NULL;
-	int *remote_idx = NULL;
-	bool *remote_results = NULL;
-	int i, num_remote_pids;
-	bool result = false;
-
-	remote_pids = talloc_array(talloc_tos(), struct server_id, num_pids);
-	if (remote_pids == NULL) {
-		goto fail;
-	}
-	remote_idx = talloc_array(talloc_tos(), int, num_pids);
-	if (remote_idx == NULL) {
-		goto fail;
-	}
-	remote_results = talloc_array(talloc_tos(), bool, num_pids);
-	if (remote_results == NULL) {
-		goto fail;
-	}
-
-	num_remote_pids = 0;
-
-	for (i=0; i<num_pids; i++) {
-		if (procid_is_me(&pids[i])) {
-			results[i] = true;
-			continue;
-		}
-		if (procid_is_local(&pids[i])) {
-			results[i] = ((kill(pids[i].pid,0) == 0) ||
-				      (errno != ESRCH));
-			continue;
-		}
-
-		remote_pids[num_remote_pids] = pids[i];
-		remote_idx[num_remote_pids] = i;
-		num_remote_pids += 1;
-	}
-
-	if (num_remote_pids != 0) {
-#ifdef CLUSTER_SUPPORT
-		if (!ctdb_processes_exist(messaging_ctdbd_connection(),
-					  remote_pids, num_remote_pids,
-					  remote_results)) {
-			goto fail;
-		}
-#else
-		for (i=0; i<num_remote_pids; i++) {
-			remote_results[i] = false;
-		}
-#endif
-
-		for (i=0; i<num_remote_pids; i++) {
-			results[remote_idx[i]] = remote_results[i];
-		}
-	}
-
-	result = true;
-fail:
-	TALLOC_FREE(remote_results);
-	TALLOC_FREE(remote_idx);
-	TALLOC_FREE(remote_pids);
-	return result;
+	return serverid_exists(&pid);
 }
 
 /*******************************************************************
@@ -788,7 +791,7 @@ gid_t nametogid(const char *name)
 	if ((p != name) && (*p == '\0'))
 		return g;
 
-	grp = sys_getgrnam(name);
+	grp = getgrnam(name);
 	if (grp)
 		return(grp->gr_gid);
 	return (gid_t)-1;
@@ -804,7 +807,7 @@ void smb_panic_s3(const char *why)
 	int result;
 
 	DEBUG(0,("PANIC (pid %llu): %s\n",
-		    (unsigned long long)sys_getpid(), why));
+		    (unsigned long long)getpid(), why));
 	log_stack_trace();
 
 #if defined(HAVE_PRCTL) && defined(PR_SET_PTRACER)
@@ -814,7 +817,7 @@ void smb_panic_s3(const char *why)
 	prctl(PR_SET_PTRACER, getpid(), 0, 0, 0);
 #endif
 
-	cmd = lp_panic_action();
+	cmd = lp_panic_action(talloc_tos());
 	if (cmd && *cmd) {
 		DEBUG(0, ("smb_panic(): calling panic action [%s]\n", cmd));
 		result = system(cmd);
@@ -973,15 +976,15 @@ libunwind_failed:
   A readdir wrapper which just returns the file name.
  ********************************************************************/
 
-const char *readdirname(SMB_STRUCT_DIR *p)
+const char *readdirname(DIR *p)
 {
-	SMB_STRUCT_DIRENT *ptr;
+	struct dirent *ptr;
 	char *dname;
 
 	if (!p)
 		return(NULL);
 
-	ptr = (SMB_STRUCT_DIRENT *)sys_readdir(p);
+	ptr = (struct dirent *)readdir(p);
 	if (!ptr)
 		return(NULL);
 
@@ -1157,9 +1160,9 @@ void set_namearray(name_compare_entry **ppname_array, const char *namelist_in)
  F_UNLCK in *ptype if the region is unlocked). False if the call failed.
 ****************************************************************************/
 
-bool fcntl_getlock(int fd, SMB_OFF_T *poffset, SMB_OFF_T *pcount, int *ptype, pid_t *ppid)
+bool fcntl_getlock(int fd, off_t *poffset, off_t *pcount, int *ptype, pid_t *ppid)
 {
-	SMB_STRUCT_FLOCK lock;
+	struct flock lock;
 	int ret;
 
 	DEBUG(8,("fcntl_getlock fd=%d offset=%.0f count=%.0f type=%d\n",
@@ -1171,7 +1174,7 @@ bool fcntl_getlock(int fd, SMB_OFF_T *poffset, SMB_OFF_T *pcount, int *ptype, pi
 	lock.l_len = *pcount;
 	lock.l_pid = 0;
 
-	ret = sys_fcntl_ptr(fd,SMB_F_GETLK,&lock);
+	ret = sys_fcntl_ptr(fd,F_GETLK,&lock);
 
 	if (ret == -1) {
 		int sav = errno;
@@ -1807,8 +1810,14 @@ bool unix_wild_match(const char *pattern, const char *string)
 		TALLOC_FREE(ctx);
 		return false;
 	}
-	strlower_m(p2);
-	strlower_m(s2);
+	if (!strlower_m(p2)) {
+		TALLOC_FREE(ctx);
+		return false;
+	}
+	if (!strlower_m(s2)) {
+		TALLOC_FREE(ctx);
+		return false;
+	}
 
 	/* Remove any *? and ** from the pattern as they are meaningless */
 	for(p = p2; *p; p++) {
@@ -1929,7 +1938,7 @@ static uint32 my_vnn = NONCLUSTER_VNN;
 
 void set_my_vnn(uint32 vnn)
 {
-	DEBUG(10, ("vnn pid %d = %u\n", (int)sys_getpid(), (unsigned int)vnn));
+	DEBUG(10, ("vnn pid %d = %u\n", (int)getpid(), (unsigned int)vnn));
 	my_vnn = vnn;
 }
 
@@ -1957,29 +1966,54 @@ struct server_id pid_to_procid(pid_t pid)
 
 struct server_id procid_self(void)
 {
-	return pid_to_procid(sys_getpid());
+	return pid_to_procid(getpid());
 }
 
-bool procid_equal(const struct server_id *p1, const struct server_id *p2)
+static struct idr_context *task_id_tree;
+
+static int free_task_id(struct server_id *server_id)
 {
-	if (p1->pid != p2->pid)
-		return False;
-	if (p1->task_id != p2->task_id)
-		return False;
-	if (p1->vnn != p2->vnn)
-		return False;
-	return True;
+	idr_remove(task_id_tree, server_id->task_id);
+	return 0;
 }
 
-bool cluster_id_equal(const struct server_id *id1,
-		      const struct server_id *id2)
+/* Return a server_id with a unique task_id element.  Free the
+ * returned pointer to de-allocate the task_id via a talloc destructor
+ * (ie, use talloc_free()) */
+struct server_id *new_server_id_task(TALLOC_CTX *mem_ctx)
 {
-	return procid_equal(id1, id2);
+	struct server_id *server_id;
+	int task_id;
+	if (!task_id_tree) {
+		task_id_tree = idr_init(NULL);
+		if (!task_id_tree) {
+			return NULL;
+		}
+	}
+
+	server_id = talloc(mem_ctx, struct server_id);
+
+	if (!server_id) {
+		return NULL;
+	}
+	*server_id = procid_self();
+
+	/* 0 is the default server_id, so we need to start with 1 */
+	task_id = idr_get_new_above(task_id_tree, server_id, 1, INT32_MAX);
+
+	if (task_id == -1) {
+		talloc_free(server_id);
+		return NULL;
+	}
+
+	talloc_set_destructor(server_id, free_task_id);
+	server_id->task_id = task_id;
+	return server_id;
 }
 
 bool procid_is_me(const struct server_id *pid)
 {
-	if (pid->pid != sys_getpid())
+	if (pid->pid != getpid())
 		return False;
 	if (pid->task_id != 0)
 		return False;
@@ -1990,36 +2024,7 @@ bool procid_is_me(const struct server_id *pid)
 
 struct server_id interpret_pid(const char *pid_string)
 {
-	struct server_id result;
-	unsigned long long pid;
-	unsigned int vnn, task_id = 0;
-
-	ZERO_STRUCT(result);
-
-	/* We accept various forms with 1, 2 or 3 component forms
-	 * because the server_id_str() can print different forms, and
-	 * we want backwards compatibility for scripts that may call
-	 * smbclient. */
-	if (sscanf(pid_string, "%u:%llu.%u", &vnn, &pid, &task_id) == 3) {
-		result.vnn = vnn;
-		result.pid = pid;
-		result.task_id = task_id;
-	} else if (sscanf(pid_string, "%u:%llu", &vnn, &pid) == 2) {
-		result.vnn = vnn;
-		result.pid = pid;
-		result.task_id = 0;
-	} else if (sscanf(pid_string, "%llu.%u", &pid, &task_id) == 2) {
-		result.vnn = get_my_vnn();
-		result.pid = pid;
-		result.task_id = task_id;
-	} else if (sscanf(pid_string, "%llu", &pid) == 1) {
-		result.vnn = get_my_vnn();
-		result.pid = pid;
-	} else {
-		result.vnn = NONCLUSTER_VNN;
-		result.pid = (uint64_t)-1;
-	}
-	return result;
+	return server_id_from_string(get_my_vnn(), pid_string);
 }
 
 char *procid_str_static(const struct server_id *pid)
@@ -2162,17 +2167,6 @@ const char *strip_hostname(const char *s)
 	if (s[0] == '\\') s++;
 
 	return s;
-}
-
-bool tevent_req_poll_ntstatus(struct tevent_req *req,
-			      struct tevent_context *ev,
-			      NTSTATUS *status)
-{
-	bool ret = tevent_req_poll(req, ev);
-	if (!ret) {
-		*status = map_nt_error_from_unix(errno);
-	}
-	return ret;
 }
 
 bool any_nt_status_not_ok(NTSTATUS err1, NTSTATUS err2, NTSTATUS *result)
@@ -2391,11 +2385,32 @@ bool map_open_params_to_ntcreate(const char *smb_base_fname,
 
 }
 
+/*************************************************************************
+ Return a talloced copy of a struct security_unix_token. NULL on fail.
+*************************************************************************/
 
-void init_modules(void)
+struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct security_unix_token *tok)
 {
-	/* FIXME: This can cause undefined symbol errors :
-	 *  smb_register_vfs() isn't available in nmbd, for example */
-	if(lp_preload_modules())
-		smb_load_modules(lp_preload_modules());
+	struct security_unix_token *cpy;
+
+	cpy = talloc(ctx, struct security_unix_token);
+	if (!cpy) {
+		return NULL;
+	}
+
+	cpy->uid = tok->uid;
+	cpy->gid = tok->gid;
+	cpy->ngroups = tok->ngroups;
+	if (tok->ngroups) {
+		/* Make this a talloc child of cpy. */
+		cpy->groups = (gid_t *)talloc_memdup(
+			cpy, tok->groups, tok->ngroups * sizeof(gid_t));
+		if (!cpy->groups) {
+			TALLOC_FREE(cpy);
+			return NULL;
+		}
+	} else {
+		cpy->groups = NULL;
+	}
+	return cpy;
 }

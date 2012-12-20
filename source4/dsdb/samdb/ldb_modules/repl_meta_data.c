@@ -661,13 +661,6 @@ static int replmd_ldb_message_element_attid_sort(const struct ldb_message_elemen
 	a1 = dsdb_attribute_by_lDAPDisplayName(schema, e1->name);
 	a2 = dsdb_attribute_by_lDAPDisplayName(schema, e2->name);
 
-	/*
-	 * TODO: remove this check, we should rely on e1 and e2 having valid attribute names
-	 *       in the schema
-	 */
-	if (!a1 || !a2) {
-		return strcasecmp(e1->name, e2->name);
-	}
 	if (a1->attributeID_id == a2->attributeID_id) {
 		return 0;
 	}
@@ -751,6 +744,7 @@ static int replmd_add_fix_la(struct ldb_module *module, struct ldb_message_eleme
  */
 static int replmd_add(struct ldb_module *module, struct ldb_request *req)
 {
+	struct samldb_msds_intid_persistant *msds_intid_struct;
 	struct ldb_context *ldb;
         struct ldb_control *control;
 	struct replmd_replicated_request *ac;
@@ -1053,7 +1047,14 @@ static int replmd_add(struct ldb_module *module, struct ldb_request *req)
 	if (control) {
 		control->critical = 0;
 	}
+	if (ldb_dn_compare_base(ac->schema->base_dn, req->op.add.message->dn) != 0) {
 
+		/* Update the usn in the SAMLDB_MSDS_INTID_OPAQUE opaque */
+		msds_intid_struct = (struct samldb_msds_intid_persistant *) ldb_get_opaque(ldb, SAMLDB_MSDS_INTID_OPAQUE);
+		if (msds_intid_struct) {
+			msds_intid_struct->usn = ac->seq_num;
+		}
+	}
 	/* go on with the call chain */
 	return ldb_next_request(module, down_req);
 }
@@ -1383,7 +1384,8 @@ static int replmd_update_rpmd(struct ldb_module *module,
 		struct ldb_message_element *el;
 
 		/*if we are RODC and this is a DRSR update then its ok*/
-		if (!ldb_request_get_control(req, DSDB_CONTROL_REPLICATED_UPDATE_OID)) {
+		if (!ldb_request_get_control(req, DSDB_CONTROL_REPLICATED_UPDATE_OID)
+		    && !ldb_request_get_control(req, DSDB_CONTROL_DBCHECK_MODIFY_RO_REPLICA)) {
 			unsigned instanceType;
 
 			ret = samdb_rodc(ldb, rodc);
@@ -2294,6 +2296,7 @@ static int replmd_modify_handle_linked_attribs(struct ldb_module *module,
 
 static int replmd_modify(struct ldb_module *module, struct ldb_request *req)
 {
+	struct samldb_msds_intid_persistant *msds_intid_struct;
 	struct ldb_context *ldb;
 	struct replmd_replicated_request *ac;
 	struct ldb_request *down_req;
@@ -2303,9 +2306,25 @@ static int replmd_modify(struct ldb_module *module, struct ldb_request *req)
 	bool is_urgent = false, rodc = false;
 	unsigned int functional_level;
 	const DATA_BLOB *guid_blob;
+	struct ldb_control *sd_propagation_control;
 
 	/* do not manipulate our control entries */
 	if (ldb_dn_is_special(req->op.mod.message->dn)) {
+		return ldb_next_request(module, req);
+	}
+
+	sd_propagation_control = ldb_request_get_control(req,
+					DSDB_CONTROL_SEC_DESC_PROPAGATION_OID);
+	if (sd_propagation_control != NULL) {
+		if (req->op.mod.message->num_elements != 1) {
+			return ldb_module_operr(module);
+		}
+		ret = strcmp(req->op.mod.message->elements[0].name,
+			     "nTSecurityDescriptor");
+		if (ret != 0) {
+			return ldb_module_operr(module);
+		}
+
 		return ldb_next_request(module, req);
 	}
 
@@ -2423,6 +2442,14 @@ static int replmd_modify(struct ldb_module *module, struct ldb_request *req)
 			talloc_free(ac);
 			ldb_operr(ldb);
 			return ret;
+		}
+	}
+
+	if (!ldb_dn_compare_base(ac->schema->base_dn, msg->dn)) {
+		/* Update the usn in the SAMLDB_MSDS_INTID_OPAQUE opaque */
+		msds_intid_struct = (struct samldb_msds_intid_persistant *) ldb_get_opaque(ldb, SAMLDB_MSDS_INTID_OPAQUE);
+		if (msds_intid_struct) {
+			msds_intid_struct->usn = ac->seq_num;
 		}
 	}
 
@@ -2790,7 +2817,6 @@ static int replmd_delete(struct ldb_module *module, struct ldb_request *req)
 						OBJECT_TOMBSTONE=4, OBJECT_REMOVED=5 };
 	enum deletion_state deletion_state, next_deletion_state;
 	bool enabled;
-	int functional_level;
 
 	if (ldb_dn_is_special(req->op.del.dn)) {
 		return ldb_next_request(module, req);
@@ -2806,8 +2832,6 @@ static int replmd_delete(struct ldb_module *module, struct ldb_request *req)
 	if (!schema) {
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
-
-	functional_level = dsdb_functional_level(ldb);
 
 	old_dn = ldb_dn_copy(tmp_ctx, req->op.del.dn);
 
@@ -2972,7 +2996,7 @@ static int replmd_delete(struct ldb_module *module, struct ldb_request *req)
 			talloc_free(tmp_ctx);
 			return ret;
 		}
-		msg->elements[el_count++].flags = LDB_FLAG_MOD_ADD;
+		msg->elements[el_count++].flags = LDB_FLAG_MOD_REPLACE;
 	}
 
 	switch (next_deletion_state){
@@ -3311,11 +3335,14 @@ failed:
   callback for conflict DN handling where we have renamed the incoming
   record. After renaming it, we need to ensure the change of name and
   rDN for the incoming record is seen as an originating update by this DC.
+
+  This also handles updating lastKnownParent for entries sent to lostAndFound
  */
 static int replmd_op_name_modify_callback(struct ldb_request *req, struct ldb_reply *ares)
 {
 	struct replmd_replicated_request *ar =
 		talloc_get_type_abort(req->context, struct replmd_replicated_request);
+	struct ldb_dn *conflict_dn;
 	int ret;
 
 	if (ares->error != LDB_SUCCESS) {
@@ -3323,22 +3350,61 @@ static int replmd_op_name_modify_callback(struct ldb_request *req, struct ldb_re
 		return replmd_op_callback(req, ares);
 	}
 
+	switch (req->operation) {
+	case LDB_ADD:
+		conflict_dn = req->op.add.message->dn;
+		break;
+	case LDB_MODIFY:
+		conflict_dn = req->op.mod.message->dn;
+		break;
+	default:
+		smb_panic("replmd_op_name_modify_callback called in unknown circumstances");
+	}
+
 	/* perform a modify of the rDN and name of the record */
-	ret = replmd_name_modify(ar, req, req->op.add.message->dn);
+	ret = replmd_name_modify(ar, req, conflict_dn);
 	if (ret != LDB_SUCCESS) {
 		ares->error = ret;
 		return replmd_op_callback(req, ares);
+	}
+
+	if (ar->objs->objects[ar->index_current].last_known_parent) {
+		struct ldb_message *msg = ldb_msg_new(req);
+		if (msg == NULL) {
+			ldb_module_oom(ar->module);
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+
+		msg->dn = req->op.add.message->dn;
+
+		ret = ldb_msg_add_steal_string(msg, "lastKnownParent",
+					       ldb_dn_get_extended_linearized(msg, ar->objs->objects[ar->index_current].last_known_parent, 1));
+		if (ret != LDB_SUCCESS) {
+			DEBUG(0,(__location__ ": Failed to add lastKnownParent string to the msg\n"));
+			ldb_module_oom(ar->module);
+			return ret;
+		}
+		msg->elements[0].flags = LDB_FLAG_MOD_REPLACE;
+
+		ret = dsdb_module_modify(ar->module, msg, DSDB_FLAG_OWN_MODULE, req);
+		if (ret != LDB_SUCCESS) {
+			DEBUG(0,(__location__ ": Failed to modify lastKnownParent of lostAndFound DN '%s' - %s",
+				 ldb_dn_get_linearized(msg->dn),
+				 ldb_errstring(ldb_module_get_ctx(ar->module))));
+			return ret;
+		}
+		TALLOC_FREE(msg);
 	}
 
 	return replmd_op_callback(req, ares);
 }
 
 /*
-  callback for replmd_replicated_apply_add()
+  callback for replmd_replicated_apply_add() and replmd_replicated_handle_rename()
   This copes with the creation of conflict records in the case where
   the DN exists, but with a different objectGUID
  */
-static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *ares)
+static int replmd_op_possible_conflict_callback(struct ldb_request *req, struct ldb_reply *ares, int (*callback)(struct ldb_request *req, struct ldb_reply *ares))
 {
 	struct ldb_dn *conflict_dn;
 	struct replmd_replicated_request *ar =
@@ -3346,27 +3412,43 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 	struct ldb_result *res;
 	const char *attrs[] = { "replPropertyMetaData", "objectGUID", NULL };
 	int ret;
-	const struct ldb_val *rmd_value, *omd_value;
-	struct replPropertyMetaDataBlob omd, rmd;
+	const struct ldb_val *omd_value;
+	struct replPropertyMetaDataBlob omd, *rmd;
 	enum ndr_err_code ndr_err;
 	bool rename_incoming_record, rodc;
 	struct replPropertyMetaData1 *rmd_name, *omd_name;
+	struct ldb_message *msg;
+
+	req->callback = callback;
 
 	if (ares->error != LDB_ERR_ENTRY_ALREADY_EXISTS) {
 		/* call the normal callback for everything except
 		   conflicts */
-		return replmd_op_callback(req, ares);
+		return ldb_module_done(req, ares->controls, ares->response, ares->error);
 	}
 
 	ret = samdb_rodc(ldb_module_get_ctx(ar->module), &rodc);
 	if (ret != LDB_SUCCESS) {
-		return ret;
+		ldb_asprintf_errstring(ldb_module_get_ctx(ar->module), "Failed to determine if we are an RODC when attempting to form conflict DN: %s", ldb_errstring(ldb_module_get_ctx(ar->module)));
+		return ldb_module_done(req, ares->controls, ares->response, LDB_ERR_OPERATIONS_ERROR);
 	}
- 	/*
+	/*
 	 * we have a conflict, and need to decide if we will keep the
 	 * new record or the old record
 	 */
-	conflict_dn = req->op.add.message->dn;
+
+	msg = ar->objs->objects[ar->index_current].msg;
+
+	switch (req->operation) {
+	case LDB_ADD:
+		conflict_dn = msg->dn;
+		break;
+	case LDB_RENAME:
+		conflict_dn = req->op.rename.newdn;
+		break;
+	default:
+		return ldb_module_done(req, ares->controls, ares->response, ldb_module_operr(ar->module));
+	}
 
 	if (rodc) {
 		/*
@@ -3381,12 +3463,6 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 				       ldb_dn_get_linearized(conflict_dn));
 		goto failed;
 	}
-
- 	/*
-	 * we have a conflict, and need to decide if we will keep the
-	 * new record or the old record
-	 */
-	conflict_dn = req->op.add.message->dn;
 
 	/*
 	 * first we need the replPropertyMetaData attribute from the
@@ -3418,28 +3494,11 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 		goto failed;
 	}
 
-	/*
-	 * and the replPropertyMetaData attribute from the
-	 * new record
-	 */
-	rmd_value = ldb_msg_find_ldb_val(req->op.add.message, "replPropertyMetaData");
-	if (rmd_value == NULL) {
-		DEBUG(0,(__location__ ": Unable to find replPropertyMetaData for new record '%s'\n",
-			 ldb_dn_get_linearized(conflict_dn)));
-		goto failed;
-	}
-
-	ndr_err = ndr_pull_struct_blob(rmd_value, req, &rmd,
-				       (ndr_pull_flags_fn_t)ndr_pull_replPropertyMetaDataBlob);
-	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-		DEBUG(0,(__location__ ": Failed to parse new replPropertyMetaData for %s\n",
-			 ldb_dn_get_linearized(conflict_dn)));
-		goto failed;
-	}
+	rmd = ar->objs->objects[ar->index_current].meta_data;
 
 	/* we decide which is newer based on the RPMD on the name
 	   attribute.  See [MS-DRSR] ResolveNameConflict */
-	rmd_name = replmd_replPropertyMetaData1_find_attid(&rmd, DRSUAPI_ATTID_name);
+	rmd_name = replmd_replPropertyMetaData1_find_attid(rmd, DRSUAPI_ATTID_name);
 	omd_name = replmd_replPropertyMetaData1_find_attid(&omd, DRSUAPI_ATTID_name);
 	if (!rmd_name || !omd_name) {
 		DEBUG(0,(__location__ ": Failed to find name attribute in replPropertyMetaData for %s\n",
@@ -3447,14 +3506,32 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 		goto failed;
 	}
 
-	rename_incoming_record = !replmd_replPropertyMetaData1_is_newer(omd_name, rmd_name);
+	rename_incoming_record = !(ar->objs->dsdb_repl_flags & DSDB_REPL_FLAG_PRIORITISE_INCOMING) &&
+		!replmd_replPropertyMetaData1_is_newer(omd_name, rmd_name);
 
 	if (rename_incoming_record) {
 		struct GUID guid;
 		struct ldb_dn *new_dn;
 		struct ldb_message *new_msg;
 
-		guid = samdb_result_guid(req->op.add.message, "objectGUID");
+		/*
+		 * We want to run the original callback here, which
+		 * will return LDB_ERR_ENTRY_ALREADY_EXISTS to the
+		 * caller, which will in turn know to rename the
+		 * incoming record.  The error string is set in case
+		 * this isn't handled properly at some point in the
+		 * future.
+		 */
+		if (req->operation == LDB_RENAME) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+					       "Unable to handle incoming renames where this would "
+					       "create a conflict. Incoming record is %s (caller to handle)\n",
+					       ldb_dn_get_extended_linearized(req, conflict_dn, 1));
+
+			goto failed;
+		}
+
+		guid = samdb_result_guid(msg, "objectGUID");
 		if (GUID_all_zero(&guid)) {
 			DEBUG(0,(__location__ ": Failed to find objectGUID for conflicting incoming record %s\n",
 				 ldb_dn_get_linearized(conflict_dn)));
@@ -3472,7 +3549,7 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 
 		/* re-submit the request, but with a different
 		   callback, so we don't loop forever. */
-		new_msg = ldb_msg_copy_shallow(req, req->op.add.message);
+		new_msg = ldb_msg_copy_shallow(req, msg);
 		if (!new_msg) {
 			goto failed;
 			DEBUG(0,(__location__ ": Failed to copy conflict DN message for %s\n",
@@ -3524,8 +3601,6 @@ static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *are
 			goto failed;
 		}
 
-		req->callback = replmd_op_callback;
-
 		return ldb_next_request(ar->module, req);
 	}
 
@@ -3534,7 +3609,36 @@ failed:
 	 * will stop with an error, but there is not much else we can
 	 * do
 	 */
-	return replmd_op_callback(req, ares);
+	return ldb_module_done(req, ares->controls, ares->response, ares->error);
+}
+
+/*
+  callback for replmd_replicated_apply_add()
+  This copes with the creation of conflict records in the case where
+  the DN exists, but with a different objectGUID
+ */
+static int replmd_op_add_callback(struct ldb_request *req, struct ldb_reply *ares)
+{
+	struct replmd_replicated_request *ar =
+		talloc_get_type_abort(req->context, struct replmd_replicated_request);
+
+	if (ar->objs->objects[ar->index_current].last_known_parent) {
+		/* This is like a conflict DN, where we put the object in LostAndFound
+		   see MS-DRSR 4.1.10.6.10 FindBestParentObject */
+		return replmd_op_possible_conflict_callback(req, ares, replmd_op_name_modify_callback);
+	}
+
+	return replmd_op_possible_conflict_callback(req, ares, replmd_op_callback);
+}
+
+/*
+  callback for replmd_replicated_handle_rename()
+  This copes with the creation of conflict records in the case where
+  the DN exists, but with a different objectGUID
+ */
+static int replmd_op_rename_callback(struct ldb_request *req, struct ldb_reply *ares)
+{
+	return replmd_op_possible_conflict_callback(req, ares, ldb_modify_default_callback);
 }
 
 /*
@@ -3550,6 +3654,7 @@ static int replmd_replicated_apply_add(struct replmd_replicated_request *ar)
 	struct ldb_val md_value;
 	unsigned int i;
 	int ret;
+	bool remote_isDeleted = false;
 
 	/*
 	 * TODO: check if the parent object exist
@@ -3603,6 +3708,9 @@ static int replmd_replicated_apply_add(struct replmd_replicated_request *ar)
 		}
 	}
 
+	remote_isDeleted = ldb_msg_find_attr_as_bool(msg,
+						     "isDeleted", false);
+
 	/*
 	 * the meta data array is already sorted by the caller
 	 */
@@ -3621,6 +3729,15 @@ static int replmd_replicated_apply_add(struct replmd_replicated_request *ar)
 	}
 
 	replmd_ldb_message_sort(msg, ar->schema);
+
+	if (!remote_isDeleted) {
+		ret = dsdb_module_schedule_sd_propagation(ar->module,
+							  ar->objs->partition_dn,
+							  msg->dn, true);
+		if (ret != LDB_SUCCESS) {
+			return replmd_replicated_request_error(ar, ret);
+		}
+	}
 
 	if (DEBUGLVL(4)) {
 		char *s = ldb_ldif_message_string(ldb, ar, LDB_CHANGETYPE_ADD, msg);
@@ -3657,6 +3774,158 @@ static int replmd_replicated_apply_add(struct replmd_replicated_request *ar)
 	return ldb_next_request(ar->module, change_req);
 }
 
+static int replmd_replicated_apply_search_for_parent_callback(struct ldb_request *req,
+							      struct ldb_reply *ares)
+{
+	struct replmd_replicated_request *ar = talloc_get_type(req->context,
+					       struct replmd_replicated_request);
+	int ret;
+
+	if (!ares) {
+		return ldb_module_done(ar->req, NULL, NULL,
+					LDB_ERR_OPERATIONS_ERROR);
+	}
+	if (ares->error != LDB_SUCCESS &&
+	    ares->error != LDB_ERR_NO_SUCH_OBJECT) {
+		return ldb_module_done(ar->req, ares->controls,
+					ares->response, ares->error);
+	}
+
+	switch (ares->type) {
+	case LDB_REPLY_ENTRY:
+	{
+		struct ldb_message *parent_msg = ares->message;
+		struct ldb_message *msg = ar->objs->objects[ar->index_current].msg;
+		struct ldb_dn *parent_dn;
+		int comp_num;
+
+		if (!ldb_msg_check_string_attribute(msg, "isDeleted", "TRUE")
+		    && ldb_msg_check_string_attribute(parent_msg, "isDeleted", "TRUE")) {
+			/* Per MS-DRSR 4.1.10.6.10
+			 * FindBestParentObject we need to move this
+			 * new object under a deleted object to
+			 * lost-and-found */
+			struct ldb_dn *nc_root;
+
+			ret = dsdb_find_nc_root(ldb_module_get_ctx(ar->module), msg, msg->dn, &nc_root);
+			if (ret == LDB_ERR_NO_SUCH_OBJECT) {
+				ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+						       "No suitable NC root found for %s.  "
+						       "We need to move this object because parent object %s "
+						       "is deleted, but this object is not.",
+						       ldb_dn_get_linearized(msg->dn),
+						       ldb_dn_get_linearized(parent_msg->dn));
+				return ldb_module_done(ar->req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
+			} else if (ret != LDB_SUCCESS) {
+				ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+						       "Unable to find NC root for %s: %s. "
+						       "We need to move this object because parent object %s "
+						       "is deleted, but this object is not.",
+						       ldb_dn_get_linearized(msg->dn),
+						       ldb_errstring(ldb_module_get_ctx(ar->module)),
+						       ldb_dn_get_linearized(parent_msg->dn));
+				return ldb_module_done(ar->req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
+			}
+			
+			ret = dsdb_wellknown_dn(ldb_module_get_ctx(ar->module), msg,
+						nc_root,
+						DS_GUID_LOSTANDFOUND_CONTAINER,
+						&parent_dn);
+			if (ret != LDB_SUCCESS) {
+				ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+						       "Unable to find LostAndFound Container for %s "
+						       "in partition %s: %s. "
+						       "We need to move this object because parent object %s "
+						       "is deleted, but this object is not.",
+						       ldb_dn_get_linearized(msg->dn), ldb_dn_get_linearized(nc_root),
+						       ldb_errstring(ldb_module_get_ctx(ar->module)),
+						       ldb_dn_get_linearized(parent_msg->dn));
+				return ldb_module_done(ar->req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
+			}
+			ar->objs->objects[ar->index_current].last_known_parent
+				= talloc_steal(ar->objs->objects[ar->index_current].msg, parent_msg->dn);
+		} else {
+			parent_dn = parent_msg->dn;
+		}
+
+		comp_num = ldb_dn_get_comp_num(msg->dn);
+		if (comp_num > 1) {
+			if (!ldb_dn_remove_base_components(msg->dn, comp_num - 1)) {
+				talloc_free(ares);
+				return ldb_module_done(ar->req, NULL, NULL, ldb_module_operr(ar->module));
+			}
+		}
+		if (!ldb_dn_add_base(msg->dn, parent_dn)) {
+			talloc_free(ares);
+			return ldb_module_done(ar->req, NULL, NULL, ldb_module_operr(ar->module));
+		}
+		break;
+	}
+	case LDB_REPLY_REFERRAL:
+		/* we ignore referrals */
+		break;
+
+	case LDB_REPLY_DONE:
+		ret = replmd_replicated_apply_add(ar);
+		if (ret != LDB_SUCCESS) {
+			return ldb_module_done(ar->req, NULL, NULL, ret);
+		}
+	}
+
+	talloc_free(ares);
+	return LDB_SUCCESS;
+}
+
+/*
+ * Look for the parent object, so we put the new object in the right place
+ */
+
+static int replmd_replicated_apply_search_for_parent(struct replmd_replicated_request *ar)
+{
+	struct ldb_context *ldb;
+	int ret;
+	char *tmp_str;
+	char *filter;
+	struct ldb_request *search_req;
+	static const char *attrs[] = {"isDeleted", NULL};
+
+	ldb = ldb_module_get_ctx(ar->module);
+
+	if (!ar->objs->objects[ar->index_current].parent_guid_value.data) {
+		return replmd_replicated_apply_add(ar);
+	}
+
+	tmp_str = ldb_binary_encode(ar, ar->objs->objects[ar->index_current].parent_guid_value);
+	if (!tmp_str) return replmd_replicated_request_werror(ar, WERR_NOMEM);
+
+	filter = talloc_asprintf(ar, "(objectGUID=%s)", tmp_str);
+	if (!filter) return replmd_replicated_request_werror(ar, WERR_NOMEM);
+	talloc_free(tmp_str);
+
+	ret = ldb_build_search_req(&search_req,
+				   ldb,
+				   ar,
+				   ar->objs->partition_dn,
+				   LDB_SCOPE_SUBTREE,
+				   filter,
+				   attrs,
+				   NULL,
+				   ar,
+				   replmd_replicated_apply_search_for_parent_callback,
+				   ar->req);
+	LDB_REQ_SET_LOCATION(search_req);
+
+	ret = dsdb_request_add_controls(search_req, 
+					DSDB_SEARCH_SHOW_RECYCLED|
+					DSDB_SEARCH_SHOW_DELETED|
+					DSDB_SEARCH_SHOW_EXTENDED_DN);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
+	return ldb_next_request(ar->module, search_req);
+}
+
 /*
   handle renames that come in over DRS replication
  */
@@ -3664,10 +3933,13 @@ static int replmd_replicated_handle_rename(struct replmd_replicated_request *ar,
 					   struct ldb_message *msg,
 					   struct replPropertyMetaDataBlob *rmd,
 					   struct replPropertyMetaDataBlob *omd,
-					   struct ldb_request *parent)
+					   struct ldb_request *parent,
+					   bool *renamed)
 {
 	struct replPropertyMetaData1 *md_remote;
 	struct replPropertyMetaData1 *md_local;
+
+	*renamed = true;
 
 	if (ldb_dn_compare(msg->dn, ar->search_msg->dn) == 0) {
 		/* no rename */
@@ -3683,16 +3955,53 @@ static int replmd_replicated_handle_rename(struct replmd_replicated_request *ar,
 	md_local  = replmd_replPropertyMetaData1_find_attid(omd, DRSUAPI_ATTID_name);
 	/* if there is no name attribute then we have to assume the
 	   object we've received is in fact newer */
-	if (!md_remote || !md_local ||
+	if (ar->objs->dsdb_repl_flags & DSDB_REPL_FLAG_PRIORITISE_INCOMING ||
+	    !md_remote || !md_local ||
 	    replmd_replPropertyMetaData1_is_newer(md_local, md_remote)) {
+		struct ldb_request *req;
+		int ret;
+		TALLOC_CTX *tmp_ctx = talloc_new(msg);
+		struct ldb_result *res;
+
 		DEBUG(4,("replmd_replicated_request rename %s => %s\n",
 			 ldb_dn_get_linearized(ar->search_msg->dn),
 			 ldb_dn_get_linearized(msg->dn)));
+
+
+		res = talloc_zero(tmp_ctx, struct ldb_result);
+		if (!res) {
+			talloc_free(tmp_ctx);
+			return ldb_oom(ldb_module_get_ctx(ar->module));
+		}
+
 		/* pass rename to the next module
 		 * so it doesn't appear as an originating update */
-		return dsdb_module_rename(ar->module,
-					  ar->search_msg->dn, msg->dn,
-					  DSDB_FLAG_NEXT_MODULE | DSDB_MODIFY_RELAX, parent);
+		ret = ldb_build_rename_req(&req, ldb_module_get_ctx(ar->module), tmp_ctx,
+					   ar->search_msg->dn, msg->dn,
+					   NULL,
+					   ar,
+					   replmd_op_rename_callback,
+					   parent);
+		LDB_REQ_SET_LOCATION(req);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return ret;
+		}
+
+		ret = dsdb_request_add_controls(req, DSDB_MODIFY_RELAX);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return ret;
+		}
+
+		ret = ldb_next_request(ar->module, req);
+
+		if (ret == LDB_SUCCESS) {
+			ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+		}
+
+		talloc_free(tmp_ctx);
+		return ret;
 	}
 
 	/* we're going to keep our old object */
@@ -3718,9 +4027,17 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 	uint32_t j,ni=0;
 	unsigned int removed_attrs = 0;
 	int ret;
+	int (*callback)(struct ldb_request *req, struct ldb_reply *ares) = replmd_op_callback;
+	bool isDeleted = false;
+	bool local_isDeleted = false;
+	bool remote_isDeleted = false;
+	bool take_remote_isDeleted = false;
+	bool sd_updated = false;
+	bool renamed = false;
 
 	ldb = ldb_module_get_ctx(ar->module);
 	msg = ar->objs->objects[ar->index_current].msg;
+
 	rmd = ar->objs->objects[ar->index_current].meta_data;
 	ZERO_STRUCT(omd);
 	omd.version = 1;
@@ -3740,9 +4057,54 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 		}
 	}
 
+	local_isDeleted = ldb_msg_find_attr_as_bool(ar->search_msg,
+						    "isDeleted", false);
+	remote_isDeleted = ldb_msg_find_attr_as_bool(msg,
+						     "isDeleted", false);
+
 	/* handle renames that come in over DRS */
-	ret = replmd_replicated_handle_rename(ar, msg, rmd, &omd, ar->req);
-	if (ret != LDB_SUCCESS) {
+	ret = replmd_replicated_handle_rename(ar, msg, rmd, &omd,
+					      ar->req, &renamed);
+
+	/*
+	 * This particular error code means that we already tried the
+	 * conflict algrorithm, and the existing record name was newer, so we
+	 * need to rename the incoming record
+	 */
+	if (ret == LDB_ERR_ENTRY_ALREADY_EXISTS) {
+		struct GUID guid;
+		NTSTATUS status;
+		struct ldb_dn *new_dn;
+		status = GUID_from_ndr_blob(&ar->objs->objects[ar->index_current].guid_value, &guid);
+		/* This really, really can't fail */
+		SMB_ASSERT(NT_STATUS_IS_OK(status));
+
+		new_dn = replmd_conflict_dn(msg, msg->dn, &guid);
+		if (new_dn == NULL) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+								  "Failed to form conflict DN for %s\n",
+								  ldb_dn_get_linearized(msg->dn));
+
+			return replmd_replicated_request_werror(ar, WERR_NOMEM);
+		}
+
+		ret = dsdb_module_rename(ar->module, ar->search_msg->dn, new_dn,
+					 DSDB_FLAG_NEXT_MODULE, ar->req);
+		if (ret != LDB_SUCCESS) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(ar->module),
+					       "Failed to rename incoming conflicting dn '%s' (was '%s') to '%s' - %s\n",
+					       ldb_dn_get_linearized(msg->dn),
+					       ldb_dn_get_linearized(ar->search_msg->dn),
+					       ldb_dn_get_linearized(new_dn),
+					       ldb_errstring(ldb_module_get_ctx(ar->module)));
+			return replmd_replicated_request_werror(ar, WERR_DS_DRA_DB_ERROR);
+		}
+
+		/* Set the callback to one that will fix up the name to be a conflict DN */
+		callback = replmd_op_name_modify_callback;
+		msg->dn = new_dn;
+		renamed = true;
+	} else if (ret != LDB_SUCCESS) {
 		ldb_debug(ldb, LDB_DEBUG_FATAL,
 			  "replmd_replicated_request rename %s => %s failed - %s\n",
 			  ldb_dn_get_linearized(ar->search_msg->dn),
@@ -3799,6 +4161,16 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 					}
 				}
 				nmd.ctr.ctr1.array[j].local_usn = ar->seq_num;
+				switch (nmd.ctr.ctr1.array[j].attid) {
+				case DRSUAPI_ATTID_ntSecurityDescriptor:
+					sd_updated = true;
+					break;
+				case DRSUAPI_ATTID_isDeleted:
+					take_remote_isDeleted = true;
+					break;
+				default:
+					break;
+				}
 				found = true;
 				break;
 			}
@@ -3828,6 +4200,16 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 			}
 		}
 		nmd.ctr.ctr1.array[ni].local_usn = ar->seq_num;
+		switch (nmd.ctr.ctr1.array[ni].attid) {
+		case DRSUAPI_ATTID_ntSecurityDescriptor:
+			sd_updated = true;
+			break;
+		case DRSUAPI_ATTID_isDeleted:
+			take_remote_isDeleted = true;
+			break;
+		default:
+			break;
+		}
 		ni++;
 	}
 
@@ -3861,6 +4243,25 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 
 	ldb_debug(ldb, LDB_DEBUG_TRACE, "replmd_replicated_apply_merge[%u]: replace %u attributes\n",
 		  ar->index_current, msg->num_elements);
+
+	if (take_remote_isDeleted) {
+		isDeleted = remote_isDeleted;
+	} else {
+		isDeleted = local_isDeleted;
+	}
+
+	if (renamed) {
+		sd_updated = true;
+	}
+
+	if (sd_updated && !isDeleted) {
+		ret = dsdb_module_schedule_sd_propagation(ar->module,
+							  ar->objs->partition_dn,
+							  msg->dn, true);
+		if (ret != LDB_SUCCESS) {
+			return ldb_operr(ldb);
+		}
+	}
 
 	/* create the meta data value */
 	ndr_err = ndr_push_struct_blob(&nmd_value, msg, &nmd,
@@ -3906,7 +4307,7 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 				msg,
 				ar->controls,
 				ar,
-				replmd_op_callback,
+				callback,
 				ar->req);
 	LDB_REQ_SET_LOCATION(change_req);
 	if (ret != LDB_SUCCESS) return replmd_replicated_request_error(ar, ret);
@@ -3947,10 +4348,12 @@ static int replmd_replicated_apply_search_callback(struct ldb_request *req,
 		break;
 
 	case LDB_REPLY_DONE:
+		ar->objs->objects[ar->index_current].last_known_parent = NULL;
+
 		if (ar->search_msg != NULL) {
 			ret = replmd_replicated_apply_merge(ar);
 		} else {
-			ret = replmd_replicated_apply_add(ar);
+			ret = replmd_replicated_apply_search_for_parent(ar);
 		}
 		if (ret != LDB_SUCCESS) {
 			return ldb_module_done(ar->req, NULL, NULL, ret);

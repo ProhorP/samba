@@ -217,8 +217,6 @@ static void add_afs_ace(struct afs_acl *acl,
 	DEBUG(10, ("add_afs_ace: Added %s entry for %s with rights %d\n",
 		   ace->positive?"positive":"negative",
 		   ace->name, ace->rights));
-
-	return;
 }
 
 /* AFS ACLs in string form are a long string of fields delimited with \n.
@@ -316,16 +314,22 @@ static bool unparse_afs_acl(struct afs_acl *acl, char *acl_str)
 	}
 
 	fstr_sprintf(line, "%d\n", positives);
-	strlcat(acl_str, line, MAXSIZE);
+	if (strlcat(acl_str, line, MAXSIZE) >= MAXSIZE) {
+		return false;
+	}
 
 	fstr_sprintf(line, "%d\n", negatives);
-	strlcat(acl_str, line, MAXSIZE);
+	if (strlcat(acl_str, line, MAXSIZE) >= MAXSIZE) {
+		return false;
+	}
 
 	ace = acl->acelist;
 
 	while (ace != NULL) {
 		fstr_sprintf(line, "%s\t%d\n", ace->name, ace->rights);
-		strlcat(acl_str, line, MAXSIZE);
+		if (strlcat(acl_str, line, MAXSIZE) >= MAXSIZE) {
+			return false;
+		}
 		ace = ace->next;
 	}
 	return true;
@@ -389,8 +393,6 @@ static void afs_to_nt_dir_rights(uint32 afs_rights, uint32 *nt_rights,
 		/* Only lookup right */
 		*flag = SEC_ACE_FLAG_CONTAINER_INHERIT;
 	}
-
-	return;
 }
 
 #define AFS_FILE_RIGHTS (PRSFS_READ|PRSFS_WRITE|PRSFS_LOCK)
@@ -416,7 +418,6 @@ static void split_afs_acl(struct afs_acl *acl,
 				    ace->rights & AFS_DIR_RIGHTS);
 		}
 	}
-	return;
 }
 
 static bool same_principal(struct afs_ace *x, struct afs_ace *y)
@@ -593,6 +594,7 @@ static uint32 nt_to_afs_file_rights(const char *filename, const struct security_
 static size_t afs_to_nt_acl_common(struct afs_acl *afs_acl,
 				   SMB_STRUCT_STAT *psbuf,
 				   uint32 security_info,
+				   TALLOC_CTX *mem_ctx,
 				   struct security_descriptor **ppdesc)
 {
 	struct security_ace *nt_ace_list;
@@ -600,7 +602,6 @@ static size_t afs_to_nt_acl_common(struct afs_acl *afs_acl,
 	struct security_acl *psa = NULL;
 	int good_aces;
 	size_t sd_size;
-	TALLOC_CTX *mem_ctx = talloc_tos();
 
 	struct afs_ace *afs_ace;
 
@@ -662,6 +663,7 @@ static size_t afs_to_nt_acl(struct afs_acl *afs_acl,
 			    struct connection_struct *conn,
 			    struct smb_filename *smb_fname,
 			    uint32 security_info,
+			     TALLOC_CTX *mem_ctx,
 			    struct security_descriptor **ppdesc)
 {
 	int ret;
@@ -677,12 +679,13 @@ static size_t afs_to_nt_acl(struct afs_acl *afs_acl,
 	}
 
 	return afs_to_nt_acl_common(afs_acl, &smb_fname->st, security_info,
-				    ppdesc);
+				    mem_ctx, ppdesc);
 }
 
 static size_t afs_fto_nt_acl(struct afs_acl *afs_acl,
 			     struct files_struct *fsp,
 			     uint32 security_info,
+			     TALLOC_CTX *mem_ctx,
 			     struct security_descriptor **ppdesc)
 {
 	SMB_STRUCT_STAT sbuf;
@@ -690,7 +693,7 @@ static size_t afs_fto_nt_acl(struct afs_acl *afs_acl,
 	if (fsp->fh->fd == -1) {
 		/* Get the stat struct for the owner info. */
 		return afs_to_nt_acl(afs_acl, fsp->conn, fsp->fsp_name,
-				     security_info, ppdesc);
+				     security_info, mem_ctx, ppdesc);
 	}
 
 	if(SMB_VFS_FSTAT(fsp, &sbuf) != 0) {
@@ -803,7 +806,9 @@ static bool nt_to_afs_acl(const char *filename,
 				if (tmp == NULL) {
 					return false;
 				}
-				strlower_m(tmp);
+				if (!strlower_m(tmp)) {
+					return false;
+				}
 				name = tmp;
 			}
 
@@ -1005,6 +1010,7 @@ static NTSTATUS afs_set_nt_acl(vfs_handle_struct *handle, files_struct *fsp,
 static NTSTATUS afsacl_fget_nt_acl(struct vfs_handle_struct *handle,
 				   struct files_struct *fsp,
 				   uint32 security_info,
+				   TALLOC_CTX *mem_ctx,
 				   struct security_descriptor **ppdesc)
 {
 	struct afs_acl acl;
@@ -1018,7 +1024,7 @@ static NTSTATUS afsacl_fget_nt_acl(struct vfs_handle_struct *handle,
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	sd_size = afs_fto_nt_acl(&acl, fsp, security_info, ppdesc);
+	sd_size = afs_fto_nt_acl(&acl, fsp, security_info, mem_ctx, ppdesc);
 
 	free_afs_acl(&acl);
 
@@ -1026,7 +1032,8 @@ static NTSTATUS afsacl_fget_nt_acl(struct vfs_handle_struct *handle,
 }
 
 static NTSTATUS afsacl_get_nt_acl(struct vfs_handle_struct *handle,
-				  const char *name,  uint32 security_info,
+				  const char *name, uint32 security_info,
+				  TALLOC_CTX *mem_ctx,
 				  struct security_descriptor **ppdesc)
 {
 	struct afs_acl acl;
@@ -1050,7 +1057,7 @@ static NTSTATUS afsacl_get_nt_acl(struct vfs_handle_struct *handle,
 	}
 
 	sd_size = afs_to_nt_acl(&acl, handle->conn, smb_fname, security_info,
-				ppdesc);
+				mem_ctx, ppdesc);
 	TALLOC_FREE(smb_fname);
 
 	free_afs_acl(&acl);

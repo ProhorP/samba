@@ -1,6 +1,5 @@
 /* We should be able to tdb_check a O_RDONLY tdb, and we were previously allowed
  * to tdb_check() inside a transaction (though that's paranoia!). */
-#define _XOPEN_SOURCE 500
 #include "../common/tdb_private.h"
 #include "../common/io.c"
 #include "../common/tdb.c"
@@ -14,7 +13,6 @@
 #include "../common/hash.c"
 #include "tap-interface.h"
 #include <stdlib.h>
-#include <err.h>
 #include "logging.h"
 
 int main(int argc, char *argv[])

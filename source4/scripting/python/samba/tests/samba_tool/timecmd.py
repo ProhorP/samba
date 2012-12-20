@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) Sean Dague <sdague@linux.vnet.ibm.com> 2011
 #
@@ -38,7 +36,7 @@ class TimeCmdTestCase(SambaToolCmdTest):
         self.assertTrue((servertime > (now - delta) and (servertime < (now + delta)), "Time is now"))
 
     def test_timefail(self):
-        """Run time against a non-existant server, and make sure it fails"""
+        """Run time against a non-existent server, and make sure it fails"""
         (result, out, err) = self.runcmd("time", "notaserver")
         self.assertEquals(result, -1, "check for result code")
         self.assertTrue(err.strip().endswith("NT_STATUS_OBJECT_NAME_NOT_FOUND"), "ensure right error string")

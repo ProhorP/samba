@@ -4,6 +4,7 @@
    test suite for SMB2 durable opens
 
    Copyright (C) Stefan Metzmacher 2008
+   Copyright (C) Michael Adam 2011-2012
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -22,13 +23,22 @@
 #include "includes.h"
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
+#include "../libcli/smb/smbXcli_base.h"
 #include "torture/torture.h"
 #include "torture/smb2/proto.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #define CHECK_VAL(v, correct) do { \
 	if ((v) != (correct)) { \
-		torture_result(tctx, TORTURE_FAIL, "(%s): wrong value for %s got 0x%x - should be 0x%x\n", \
-				__location__, #v, (int)v, (int)correct); \
+		torture_result(tctx, TORTURE_FAIL, "(%s): wrong value for %s got 0x%llx - should be 0x%llx\n", \
+				__location__, #v, (unsigned long long)v, (unsigned long long)correct); \
+		ret = false; \
+	}} while (0)
+
+#define CHECK_NOT_VAL(v, correct) do { \
+	if ((v) == (correct)) { \
+		torture_result(tctx, TORTURE_FAIL, "(%s): wrong value for %s got 0x%llx - should not be 0x%llx\n", \
+				__location__, #v, (unsigned long long)v, (unsigned long long)correct); \
 		ret = false; \
 	}} while (0)
 
@@ -49,6 +59,16 @@
 		CHECK_VAL((__io)->out.reserved2, 0);			\
 	} while(0)
 
+#define CHECK_CREATED_SIZE(__io, __created, __attribute, __alloc_size, __size)	\
+	do {									\
+		CHECK_VAL((__io)->out.create_action, NTCREATEX_ACTION_ ## __created); \
+		CHECK_VAL((__io)->out.alloc_size, (__alloc_size));		\
+		CHECK_VAL((__io)->out.size, (__size));				\
+		CHECK_VAL((__io)->out.file_attr, (__attribute));		\
+		CHECK_VAL((__io)->out.reserved2, 0);				\
+	} while(0)
+
+
 
 /**
  * basic durable_open test.
@@ -67,7 +87,7 @@ struct durable_open_vs_oplock {
 #define NUM_OPLOCK_TYPES 4
 #define NUM_SHARE_MODES 8
 #define NUM_OPLOCK_OPEN_TESTS ( NUM_OPLOCK_TYPES * NUM_SHARE_MODES )
-struct durable_open_vs_oplock durable_open_vs_oplock_table[NUM_OPLOCK_OPEN_TESTS] =
+static struct durable_open_vs_oplock durable_open_vs_oplock_table[NUM_OPLOCK_OPEN_TESTS] =
 {
 	{ "", "", false },
 	{ "", "R", false },
@@ -106,10 +126,10 @@ struct durable_open_vs_oplock durable_open_vs_oplock_table[NUM_OPLOCK_OPEN_TESTS
 	{ "b", "RWD", true },
 };
 
-static bool test_one_durable_open_open1(struct torture_context *tctx,
-					struct smb2_tree *tree,
-					const char *fname,
-					struct durable_open_vs_oplock test)
+static bool test_one_durable_open_open_oplock(struct torture_context *tctx,
+					      struct smb2_tree *tree,
+					      const char *fname,
+					      struct durable_open_vs_oplock test)
 {
 	NTSTATUS status;
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
@@ -143,8 +163,8 @@ done:
 	return ret;
 }
 
-bool test_durable_open_open1(struct torture_context *tctx,
-			     struct smb2_tree *tree)
+bool test_durable_open_open_oplock(struct torture_context *tctx,
+				   struct smb2_tree *tree)
 {
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
 	char fname[256];
@@ -152,17 +172,17 @@ bool test_durable_open_open1(struct torture_context *tctx,
 	int i;
 
 	/* Choose a random name in case the state is left a little funky. */
-	snprintf(fname, 256, "durable_open_open1_%s.dat", generate_random_str(tctx, 8));
+	snprintf(fname, 256, "durable_open_open_oplock_%s.dat", generate_random_str(tctx, 8));
 
 	smb2_util_unlink(tree, fname);
 
 	/* test various oplock levels with durable open */
 
 	for (i = 0; i < NUM_OPLOCK_OPEN_TESTS; i++) {
-		ret = test_one_durable_open_open1(tctx,
-						  tree,
-						  fname,
-						  durable_open_vs_oplock_table[i]);
+		ret = test_one_durable_open_open_oplock(tctx,
+							tree,
+							fname,
+							durable_open_vs_oplock_table[i]);
 		if (ret == false) {
 			goto done;
 		}
@@ -192,7 +212,7 @@ struct durable_open_vs_lease {
 
 #define NUM_LEASE_TYPES 5
 #define NUM_LEASE_OPEN_TESTS ( NUM_LEASE_TYPES * NUM_SHARE_MODES )
-struct durable_open_vs_lease durable_open_vs_lease_table[NUM_LEASE_OPEN_TESTS] =
+static struct durable_open_vs_lease durable_open_vs_lease_table[NUM_LEASE_OPEN_TESTS] =
 {
 	{ "", "", false },
 	{ "", "R", false },
@@ -240,10 +260,10 @@ struct durable_open_vs_lease durable_open_vs_lease_table[NUM_LEASE_OPEN_TESTS] =
 	{ "RHW", "RWD", true },
 };
 
-static bool test_one_durable_open_open2(struct torture_context *tctx,
-					struct smb2_tree *tree,
-					const char *fname,
-					struct durable_open_vs_lease test)
+static bool test_one_durable_open_open_lease(struct torture_context *tctx,
+					     struct smb2_tree *tree,
+					     const char *fname,
+					     struct durable_open_vs_lease test)
 {
 	NTSTATUS status;
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
@@ -253,6 +273,12 @@ static bool test_one_durable_open_open2(struct torture_context *tctx,
 	struct smb2_create io;
 	struct smb2_lease ls;
 	uint64_t lease;
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
 
 	smb2_util_unlink(tree, fname);
 
@@ -285,16 +311,22 @@ done:
 	return ret;
 }
 
-bool test_durable_open_open2(struct torture_context *tctx,
-			     struct smb2_tree *tree)
+bool test_durable_open_open_lease(struct torture_context *tctx,
+				  struct smb2_tree *tree)
 {
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
 	char fname[256];
 	bool ret = true;
 	int i;
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
 
 	/* Choose a random name in case the state is left a little funky. */
-	snprintf(fname, 256, "durable_open_open2_%s.dat", generate_random_str(tctx, 8));
+	snprintf(fname, 256, "durable_open_open_lease_%s.dat", generate_random_str(tctx, 8));
 
 	smb2_util_unlink(tree, fname);
 
@@ -302,10 +334,10 @@ bool test_durable_open_open2(struct torture_context *tctx,
 	/* test various oplock levels with durable open */
 
 	for (i = 0; i < NUM_LEASE_OPEN_TESTS; i++) {
-		ret = test_one_durable_open_open2(tctx,
-						  tree,
-						  fname,
-						  durable_open_vs_lease_table[i]);
+		ret = test_one_durable_open_open_lease(tctx,
+						       tree,
+						       fname,
+						       durable_open_vs_lease_table[i]);
 		if (ret == false) {
 			goto done;
 		}
@@ -421,14 +453,14 @@ bool test_durable_open_reopen2(struct torture_context *tctx,
 	}
 
 	ZERO_STRUCT(io2);
-	io2.in.fname = fname;
+	/* the path name is ignored by the server */
+	io2.in.fname = "__non_existing_fname__";
 	io2.in.durable_handle = h;
 	h = NULL;
 
 	status = smb2_create(tree, mem_ctx, &io2);
 	CHECK_STATUS(status, NT_STATUS_OK);
 	CHECK_CREATED(&io2, EXISTED, FILE_ATTRIBUTE_ARCHIVE);
-	CHECK_VAL(io2.out.durable_open, true);
 	CHECK_VAL(io2.out.oplock_level, smb2_util_oplock_level("b"));
 	_h = io2.out.file.handle;
 	h = &_h;
@@ -446,6 +478,80 @@ done:
 
 	return ret;
 }
+
+/**
+ * basic test for doing a durable open
+ * tcp disconnect, reconnect with a session reconnect and
+ * do a durable reopen (succeeds)
+ */
+bool test_durable_open_reopen2a(struct torture_context *tctx,
+			        struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	char fname[256];
+	struct smb2_handle _h;
+	struct smb2_handle *h = NULL;
+	struct smb2_create io1, io2;
+	uint64_t previous_session_id;
+	bool ret = true;
+
+	/* Choose a random name in case the state is left a little funky. */
+	snprintf(fname, 256, "durable_open_reopen2_%s.dat",
+		 generate_random_str(tctx, 8));
+
+	smb2_util_unlink(tree, fname);
+
+	smb2_oplock_create_share(&io1, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io1.in.durable_open = true;
+
+	status = smb2_create(tree, mem_ctx, &io1);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io1.out.file.handle;
+	h = &_h;
+	CHECK_CREATED(&io1, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io1.out.durable_open, true);
+	CHECK_VAL(io1.out.oplock_level, smb2_util_oplock_level("b"));
+
+	/* disconnect, reconnect and then do durable reopen */
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+	talloc_free(tree);
+	tree = NULL;
+
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io2);
+	io2.in.fname = fname;
+	io2.in.durable_handle = h;
+	h = NULL;
+
+	status = smb2_create(tree, mem_ctx, &io2);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_CREATED(&io2, EXISTED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io2.out.oplock_level, smb2_util_oplock_level("b"));
+	_h = io2.out.file.handle;
+	h = &_h;
+
+done:
+	if (h != NULL) {
+		smb2_util_close(tree, *h);
+	}
+
+	smb2_util_unlink(tree, fname);
+
+	talloc_free(tree);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
 
 /**
  * basic test for doing a durable open:
@@ -529,6 +635,7 @@ bool test_durable_open_reopen4(struct torture_context *tctx,
 	struct smb2_create io1, io2;
 	bool ret = true;
 	struct smb2_transport *transport;
+	struct smb2_session *session2;
 	struct smb2_tree *tree2;
 
 	/* Choose a random name in case the state is left a little funky. */
@@ -551,25 +658,30 @@ bool test_durable_open_reopen4(struct torture_context *tctx,
 	CHECK_VAL(io1.out.durable_open, true);
 	CHECK_VAL(io1.out.oplock_level, smb2_util_oplock_level("b"));
 
-	/* disconnect, reconnect and then do durable reopen */
+	/*
+	 * do a session logoff, establish a new session and tree
+	 * connect on the same transport, and try a durable reopen
+	 */
 	transport = tree->session->transport;
 	status = smb2_logoff(tree->session);
 	CHECK_STATUS(status, NT_STATUS_OK);
 
-	if (!torture_smb2_session_setup(tctx, transport, mem_ctx, &tree->session)) {
+	if (!torture_smb2_session_setup(tctx, transport,
+					0, /* previous_session_id */
+					mem_ctx, &session2))
+	{
 		torture_warning(tctx, "session setup failed.\n");
 		ret = false;
 		goto done;
 	}
 
-	ZERO_STRUCT(io2);
-	io2.in.fname = fname;
-	io2.in.durable_handle = h;
+	/*
+	 * the session setup has talloc-stolen the transport,
+	 * so we can safely free the old tree+session for clarity
+	 */
+	TALLOC_FREE(tree);
 
-	status = smb2_create(tree, mem_ctx, &io2);
-	CHECK_STATUS(status, NT_STATUS_NETWORK_NAME_DELETED);
-
-	if (!torture_smb2_tree_connect(tctx, tree->session, mem_ctx, &tree2)) {
+	if (!torture_smb2_tree_connect(tctx, session2, mem_ctx, &tree2)) {
 		torture_warning(tctx, "tree connect failed.\n");
 		ret = false;
 		goto done;
@@ -578,6 +690,7 @@ bool test_durable_open_reopen4(struct torture_context *tctx,
 	ZERO_STRUCT(io2);
 	io2.in.fname = fname;
 	io2.in.durable_handle = h;
+	h = NULL;
 
 	status = smb2_create(tree2, mem_ctx, &io2);
 	CHECK_STATUS(status, NT_STATUS_OK);
@@ -585,7 +698,84 @@ bool test_durable_open_reopen4(struct torture_context *tctx,
 	_h = io2.out.file.handle;
 	h = &_h;
 	CHECK_CREATED(&io2, EXISTED, FILE_ATTRIBUTE_ARCHIVE);
-	CHECK_VAL(io2.out.durable_open, true);
+	CHECK_VAL(io2.out.oplock_level, smb2_util_oplock_level("b"));
+
+done:
+	if (h != NULL) {
+		smb2_util_close(tree2, *h);
+	}
+
+	smb2_util_unlink(tree2, fname);
+
+	talloc_free(tree);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
+bool test_durable_open_delete_on_close1(struct torture_context *tctx,
+					struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	char fname[256];
+	struct smb2_handle _h;
+	struct smb2_handle *h = NULL;
+	struct smb2_create io1, io2;
+	bool ret = true;
+	uint8_t b = 0;
+
+	/* Choose a random name in case the state is left a little funky. */
+	snprintf(fname, 256, "durable_open_delete_on_close1_%s.dat",
+		 generate_random_str(tctx, 8));
+
+	smb2_util_unlink(tree, fname);
+
+	smb2_oplock_create_share(&io1, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io1.in.durable_open = true;
+	io1.in.create_options |= NTCREATEX_OPTIONS_DELETE_ON_CLOSE;
+
+	status = smb2_create(tree, mem_ctx, &io1);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io1.out.file.handle;
+	h = &_h;
+	CHECK_CREATED(&io1, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io1.out.durable_open, true);
+	CHECK_VAL(io1.out.oplock_level, smb2_util_oplock_level("b"));
+
+	status = smb2_util_write(tree, *h, &b, 0, 1);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	/* disconnect, leaving the durable handle in place */
+	TALLOC_FREE(tree);
+
+	if (!torture_smb2_connection(tctx, &tree)) {
+		torture_warning(tctx, "could not reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	/*
+	 * Open the file on the new connection again
+	 * and check that it has been newly created,
+	 * i.e. delete on close was effective on the disconnected handle.
+	 * Also check that the file is really empty,
+	 * the previously written byte gone.
+	 */
+	smb2_oplock_create_share(&io2, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io2.in.create_options |= NTCREATEX_OPTIONS_DELETE_ON_CLOSE;
+
+	status = smb2_create(tree, mem_ctx, &io2);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io2.out.file.handle;
+	h = &_h;
+	CHECK_CREATED_SIZE(&io2, CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0);
+	CHECK_VAL(io2.out.durable_open, false);
 	CHECK_VAL(io2.out.oplock_level, smb2_util_oplock_level("b"));
 
 done:
@@ -593,7 +783,115 @@ done:
 		smb2_util_close(tree, *h);
 	}
 
-	smb2_util_unlink(tree2, fname);
+	smb2_util_unlink(tree, fname);
+
+	talloc_free(tree);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
+
+bool test_durable_open_delete_on_close2(struct torture_context *tctx,
+					struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	char fname[256];
+	struct smb2_handle _h;
+	struct smb2_handle *h = NULL;
+	struct smb2_create io;
+	bool ret = true;
+	uint8_t b = 0;
+	uint64_t previous_session_id;
+	uint64_t alloc_size_step;
+
+	/* Choose a random name in case the state is left a little funky. */
+	snprintf(fname, 256, "durable_open_delete_on_close2_%s.dat",
+		 generate_random_str(tctx, 8));
+
+	smb2_util_unlink(tree, fname);
+
+	smb2_oplock_create_share(&io, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io.in.durable_open = true;
+	io.in.create_options |= NTCREATEX_OPTIONS_DELETE_ON_CLOSE;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io.out.file.handle;
+	h = &_h;
+	CHECK_CREATED(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io.out.durable_open, true);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+
+	status = smb2_util_write(tree, *h, &b, 0, 1);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+
+	/* disconnect, leaving the durable handle in place */
+	TALLOC_FREE(tree);
+
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "could not reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = h;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io.out.file.handle;
+	h = &_h;
+	alloc_size_step = io.out.alloc_size;
+	CHECK_CREATED_SIZE(&io, EXISTED, FILE_ATTRIBUTE_ARCHIVE, alloc_size_step, 1);
+	CHECK_VAL(io.out.durable_open, false);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+
+	/* close the file, thereby deleting it */
+	smb2_util_close(tree, *h);
+	status = smb2_logoff(tree->session);
+	TALLOC_FREE(tree);
+
+	if (!torture_smb2_connection(tctx, &tree)) {
+		torture_warning(tctx, "could not reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	/*
+	 * Open the file on the new connection again
+	 * and check that it has been newly created,
+	 * i.e. delete on close was effective on the reconnected handle.
+	 * Also check that the file is really empty,
+	 * the previously written byte gone.
+	 */
+	smb2_oplock_create_share(&io, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io.in.durable_open = true;
+	io.in.create_options |= NTCREATEX_OPTIONS_DELETE_ON_CLOSE;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io.out.file.handle;
+	h = &_h;
+	CHECK_CREATED_SIZE(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0);
+	CHECK_VAL(io.out.durable_open, true);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+
+done:
+	if (h != NULL) {
+		smb2_util_close(tree, *h);
+	}
+
+	smb2_util_unlink(tree, fname);
 
 	talloc_free(tree);
 
@@ -607,37 +905,37 @@ done:
    regarding the position information on the handle
 */
 bool test_durable_open_file_position(struct torture_context *tctx,
-				     struct smb2_tree *tree1,
-				     struct smb2_tree *tree2)
+				     struct smb2_tree *tree)
 {
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
-	struct smb2_handle h1, h2;
-	struct smb2_create io1, io2;
+	struct smb2_handle h;
+	struct smb2_create io;
 	NTSTATUS status;
 	const char *fname = "durable_open_position.dat";
 	union smb_fileinfo qfinfo;
 	union smb_setfileinfo sfinfo;
 	bool ret = true;
 	uint64_t pos;
+	uint64_t previous_session_id;
 
-	smb2_util_unlink(tree1, fname);
+	smb2_util_unlink(tree, fname);
 
-	smb2_oplock_create(&io1, fname, SMB2_OPLOCK_LEVEL_BATCH);
-	io1.in.durable_open = true;
+	smb2_oplock_create(&io, fname, SMB2_OPLOCK_LEVEL_BATCH);
+	io.in.durable_open = true;
 
-	status = smb2_create(tree1, mem_ctx, &io1);
+	status = smb2_create(tree, mem_ctx, &io);
 	CHECK_STATUS(status, NT_STATUS_OK);
-	h1 = io1.out.file.handle;
-	CHECK_CREATED(&io1, CREATED, FILE_ATTRIBUTE_ARCHIVE);
-	CHECK_VAL(io1.out.durable_open, true);
-	CHECK_VAL(io1.out.oplock_level, SMB2_OPLOCK_LEVEL_BATCH);
+	h = io.out.file.handle;
+	CHECK_CREATED(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io.out.durable_open, true);
+	CHECK_VAL(io.out.oplock_level, SMB2_OPLOCK_LEVEL_BATCH);
 
 	/* TODO: check extra blob content */
 
 	ZERO_STRUCT(qfinfo);
 	qfinfo.generic.level = RAW_FILEINFO_POSITION_INFORMATION;
-	qfinfo.generic.in.file.handle = h1;
-	status = smb2_getinfo_file(tree1, mem_ctx, &qfinfo);
+	qfinfo.generic.in.file.handle = h;
+	status = smb2_getinfo_file(tree, mem_ctx, &qfinfo);
 	CHECK_STATUS(status, NT_STATUS_OK);
 	CHECK_VAL(qfinfo.position_information.out.position, 0);
 	pos = qfinfo.position_information.out.position;
@@ -646,65 +944,74 @@ bool test_durable_open_file_position(struct torture_context *tctx,
 
 	ZERO_STRUCT(sfinfo);
 	sfinfo.generic.level = RAW_SFILEINFO_POSITION_INFORMATION;
-	sfinfo.generic.in.file.handle = h1;
+	sfinfo.generic.in.file.handle = h;
 	sfinfo.position_information.in.position = 0x1000;
-	status = smb2_setinfo_file(tree1, &sfinfo);
+	status = smb2_setinfo_file(tree, &sfinfo);
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	ZERO_STRUCT(qfinfo);
 	qfinfo.generic.level = RAW_FILEINFO_POSITION_INFORMATION;
-	qfinfo.generic.in.file.handle = h1;
-	status = smb2_getinfo_file(tree1, mem_ctx, &qfinfo);
+	qfinfo.generic.in.file.handle = h;
+	status = smb2_getinfo_file(tree, mem_ctx, &qfinfo);
 	CHECK_STATUS(status, NT_STATUS_OK);
 	CHECK_VAL(qfinfo.position_information.out.position, 0x1000);
 	pos = qfinfo.position_information.out.position;
 	torture_comment(tctx, "position: %llu\n",
 			(unsigned long long)pos);
 
-	talloc_free(tree1);
-	tree1 = NULL;
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+
+	/* tcp disconnect */
+	talloc_free(tree);
+	tree = NULL;
+
+	/* do a session reconnect */
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
 
 	ZERO_STRUCT(qfinfo);
 	qfinfo.generic.level = RAW_FILEINFO_POSITION_INFORMATION;
-	qfinfo.generic.in.file.handle = h1;
-	status = smb2_getinfo_file(tree2, mem_ctx, &qfinfo);
+	qfinfo.generic.in.file.handle = h;
+	status = smb2_getinfo_file(tree, mem_ctx, &qfinfo);
 	CHECK_STATUS(status, NT_STATUS_FILE_CLOSED);
 
-	ZERO_STRUCT(io2);
-	io2.in.fname = fname;
-	io2.in.durable_handle = &h1;
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = &h;
 
-	status = smb2_create(tree2, mem_ctx, &io2);
+	status = smb2_create(tree, mem_ctx, &io);
 	CHECK_STATUS(status, NT_STATUS_OK);
-	CHECK_VAL(io2.out.durable_open, true);
-	CHECK_VAL(io2.out.oplock_level, SMB2_OPLOCK_LEVEL_BATCH);
-	CHECK_VAL(io2.out.reserved, 0x00);
-	CHECK_VAL(io2.out.create_action, NTCREATEX_ACTION_EXISTED);
-	CHECK_VAL(io2.out.alloc_size, 0);
-	CHECK_VAL(io2.out.size, 0);
-	CHECK_VAL(io2.out.file_attr, FILE_ATTRIBUTE_ARCHIVE);
-	CHECK_VAL(io2.out.reserved2, 0);
+	CHECK_VAL(io.out.oplock_level, SMB2_OPLOCK_LEVEL_BATCH);
+	CHECK_VAL(io.out.reserved, 0x00);
+	CHECK_VAL(io.out.create_action, NTCREATEX_ACTION_EXISTED);
+	CHECK_VAL(io.out.alloc_size, 0);
+	CHECK_VAL(io.out.size, 0);
+	CHECK_VAL(io.out.file_attr, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_VAL(io.out.reserved2, 0);
 
-	h2 = io2.out.file.handle;
+	h = io.out.file.handle;
 
 	ZERO_STRUCT(qfinfo);
 	qfinfo.generic.level = RAW_FILEINFO_POSITION_INFORMATION;
-	qfinfo.generic.in.file.handle = h2;
-	status = smb2_getinfo_file(tree2, mem_ctx, &qfinfo);
+	qfinfo.generic.in.file.handle = h;
+	status = smb2_getinfo_file(tree, mem_ctx, &qfinfo);
 	CHECK_STATUS(status, NT_STATUS_OK);
 	CHECK_VAL(qfinfo.position_information.out.position, 0x1000);
 	pos = qfinfo.position_information.out.position;
 	torture_comment(tctx, "position: %llu\n",
 			(unsigned long long)pos);
 
-	smb2_util_close(tree2, h2);
+	smb2_util_close(tree, h);
 
 	talloc_free(mem_ctx);
 
-	smb2_util_unlink(tree2, fname);
+	smb2_util_unlink(tree, fname);
+
 done:
-	talloc_free(tree1);
-	talloc_free(tree2);
+	talloc_free(tree);
 
 	return ret;
 }
@@ -798,6 +1105,12 @@ bool test_durable_open_lease(struct torture_context *tctx,
 	char fname[256];
 	bool ret = true;
 	uint64_t lease1, lease2;
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree1->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
 
 	/*
 	 * Choose a random name and random lease in case the state is left a
@@ -881,11 +1194,89 @@ bool test_durable_open_lease(struct torture_context *tctx,
 	return ret;
 }
 
+bool test_durable_open_lock_oplock(struct torture_context *tctx,
+				   struct smb2_tree *tree)
+{
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	struct smb2_create io;
+	struct smb2_handle h;
+	struct smb2_lock lck;
+	struct smb2_lock_element el[2];
+	NTSTATUS status;
+	char fname[256];
+	bool ret = true;
+
+	/*
+	 */
+	snprintf(fname, 256, "durable_open_oplock_lock_%s.dat", generate_random_str(tctx, 8));
+
+	/* Clean slate */
+	smb2_util_unlink(tree, fname);
+
+	/* Create with lease */
+
+	smb2_oplock_create_share(&io, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io.in.durable_open = true;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	h = io.out.file.handle;
+	CHECK_CREATED(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+
+	CHECK_VAL(io.out.durable_open, true);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+
+	ZERO_STRUCT(lck);
+	ZERO_STRUCT(el);
+	lck.in.locks		= el;
+	lck.in.lock_count	= 0x0001;
+	lck.in.lock_sequence	= 0x00000000;
+	lck.in.file.handle	= h;
+	el[0].offset		= 0;
+	el[0].length		= 1;
+	el[0].reserved		= 0x00000000;
+	el[0].flags		= SMB2_LOCK_FLAG_EXCLUSIVE;
+	status = smb2_lock(tree, &lck);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	/* Disconnect/Reconnect. */
+	talloc_free(tree);
+	tree = NULL;
+
+	if (!torture_smb2_connection(tctx, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = &h;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	h = io.out.file.handle;
+
+	lck.in.file.handle	= h;
+	el[0].flags		= SMB2_LOCK_FLAG_UNLOCK;
+	status = smb2_lock(tree, &lck);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+ done:
+	smb2_util_close(tree, h);
+	smb2_util_unlink(tree, fname);
+	talloc_free(tree);
+
+	return ret;
+}
+
 /*
   Open, take BRL, disconnect, reconnect.
 */
-bool test_durable_open_lock(struct torture_context *tctx,
-			    struct smb2_tree *tree)
+bool test_durable_open_lock_lease(struct torture_context *tctx,
+				  struct smb2_tree *tree)
 {
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
 	struct smb2_create io;
@@ -897,13 +1288,19 @@ bool test_durable_open_lock(struct torture_context *tctx,
 	char fname[256];
 	bool ret = true;
 	uint64_t lease;
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
 
 	/*
 	 * Choose a random name and random lease in case the state is left a
 	 * little funky.
 	 */
 	lease = random();
-	snprintf(fname, 256, "durable_open_lock_%s.dat", generate_random_str(tctx, 8));
+	snprintf(fname, 256, "durable_open_lease_lock_%s.dat", generate_random_str(tctx, 8));
 
 	/* Clean slate */
 	smb2_util_unlink(tree, fname);
@@ -979,7 +1376,7 @@ bool test_durable_open_lock(struct torture_context *tctx,
  * reconnect after an open, the oplock/lease tests above will certainly
  * demonstrate an error on reconnect.
  */
-bool test_durable_open_open_lease(struct torture_context *tctx,
+bool test_durable_open_open2_lease(struct torture_context *tctx,
 				  struct smb2_tree *tree1,
 				  struct smb2_tree *tree2)
 {
@@ -991,13 +1388,19 @@ bool test_durable_open_open_lease(struct torture_context *tctx,
 	char fname[256];
 	bool ret = true;
 	uint64_t lease;
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree1->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
 
 	/*
 	 * Choose a random name and random lease in case the state is left a
 	 * little funky.
 	 */
 	lease = random();
-	snprintf(fname, 256, "durable_open_open_lease_%s.dat",
+	snprintf(fname, 256, "durable_open_open2_lease_%s.dat",
 		 generate_random_str(tctx, 8));
 
 	/* Clean slate */
@@ -1075,25 +1478,22 @@ bool test_durable_open_open_lease(struct torture_context *tctx,
  * reconnect after an open, the oplock/lease tests above will certainly
  * demonstrate an error on reconnect.
  */
-bool test_durable_open_open_oplock(struct torture_context *tctx,
-				   struct smb2_tree *tree1,
-				   struct smb2_tree *tree2)
+bool test_durable_open_open2_oplock(struct torture_context *tctx,
+				    struct smb2_tree *tree1,
+				    struct smb2_tree *tree2)
 {
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
 	struct smb2_create io1, io2;
-	struct smb2_lease ls;
 	struct smb2_handle h1, h2;
 	NTSTATUS status;
 	char fname[256];
 	bool ret = true;
-	uint64_t lease;
 
 	/*
 	 * Choose a random name and random lease in case the state is left a
 	 * little funky.
 	 */
-	lease = random();
-	snprintf(fname, 256, "durable_open_open_oplock_%s.dat",
+	snprintf(fname, 256, "durable_open_open2_oplock_%s.dat",
 		 generate_random_str(tctx, 8));
 
 	/* Clean slate */
@@ -1132,7 +1532,6 @@ bool test_durable_open_open_oplock(struct torture_context *tctx,
 	ZERO_STRUCT(io1);
 	io1.in.fname = fname;
 	io1.in.durable_handle = &h1;
-	io1.in.lease_request = &ls;
 
 	status = smb2_create(tree1, mem_ctx, &io1);
 	CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
@@ -1150,26 +1549,176 @@ bool test_durable_open_open_oplock(struct torture_context *tctx,
 	return ret;
 }
 
+/**
+ * test behaviour with initial allocation size
+ */
+bool test_durable_open_alloc_size(struct torture_context *tctx,
+				  struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	char fname[256];
+	struct smb2_handle _h;
+	struct smb2_handle *h = NULL;
+	struct smb2_create io;
+	bool ret = true;
+	uint64_t previous_session_id;
+	uint64_t alloc_size_step;
+	uint64_t initial_alloc_size = 0x100;
+	const uint8_t *b = NULL;
+
+	/* Choose a random name in case the state is left a little funky. */
+	snprintf(fname, 256, "durable_open_alloc_size_%s.dat",
+		 generate_random_str(tctx, 8));
+
+	smb2_util_unlink(tree, fname);
+
+	smb2_oplock_create_share(&io, fname,
+				 smb2_util_share_access(""),
+				 smb2_util_oplock_level("b"));
+	io.in.durable_open = true;
+	io.in.alloc_size = initial_alloc_size;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	_h = io.out.file.handle;
+	h = &_h;
+	CHECK_NOT_VAL(io.out.alloc_size, 0);
+	alloc_size_step = io.out.alloc_size;
+	CHECK_CREATED_SIZE(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE,
+			   alloc_size_step, 0);
+	CHECK_VAL(io.out.durable_open, true);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+
+	/* prepare buffer */
+	b = talloc_zero_size(mem_ctx, alloc_size_step);
+	CHECK_NOT_VAL(b, NULL);
+
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+
+	/* disconnect, reconnect and then do durable reopen */
+	talloc_free(tree);
+	tree = NULL;
+
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = h;
+	h = NULL;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_CREATED_SIZE(&io, EXISTED, FILE_ATTRIBUTE_ARCHIVE,
+			   alloc_size_step, 0);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+	_h = io.out.file.handle;
+	h = &_h;
+
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+
+	/* write one byte */
+	status = smb2_util_write(tree, *h, b, 0, 1);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	/* disconnect, reconnect and then do durable reopen */
+	talloc_free(tree);
+	tree = NULL;
+
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = h;
+	h = NULL;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_CREATED_SIZE(&io, EXISTED, FILE_ATTRIBUTE_ARCHIVE,
+			   alloc_size_step, 1);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+	_h = io.out.file.handle;
+	h = &_h;
+
+	previous_session_id = smb2cli_session_current_id(tree->session->smbXcli);
+
+	/* write more byte than initial allocation size */
+	status = smb2_util_write(tree, *h, b, 1, alloc_size_step);
+
+	/* disconnect, reconnect and then do durable reopen */
+	talloc_free(tree);
+	tree = NULL;
+
+	if (!torture_smb2_connection_ext(tctx, previous_session_id, &tree)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = h;
+	h = NULL;
+
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_CREATED_SIZE(&io, EXISTED, FILE_ATTRIBUTE_ARCHIVE,
+			   alloc_size_step * 2, alloc_size_step + 1);
+	CHECK_VAL(io.out.oplock_level, smb2_util_oplock_level("b"));
+	_h = io.out.file.handle;
+	h = &_h;
+
+done:
+	if (h != NULL) {
+		smb2_util_close(tree, *h);
+	}
+
+	smb2_util_unlink(tree, fname);
+
+	talloc_free(tree);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
+
 struct torture_suite *torture_smb2_durable_open_init(void)
 {
 	struct torture_suite *suite =
 	    torture_suite_create(talloc_autofree_context(), "durable-open");
 
-	torture_suite_add_1smb2_test(suite, "open1", test_durable_open_open1);
-	torture_suite_add_1smb2_test(suite, "open2", test_durable_open_open2);
+	torture_suite_add_1smb2_test(suite, "open-oplock", test_durable_open_open_oplock);
+	torture_suite_add_1smb2_test(suite, "open-lease", test_durable_open_open_lease);
 	torture_suite_add_1smb2_test(suite, "reopen1", test_durable_open_reopen1);
 	torture_suite_add_1smb2_test(suite, "reopen2", test_durable_open_reopen2);
+	torture_suite_add_1smb2_test(suite, "reopen2a", test_durable_open_reopen2a);
 	torture_suite_add_1smb2_test(suite, "reopen3", test_durable_open_reopen3);
 	torture_suite_add_1smb2_test(suite, "reopen4", test_durable_open_reopen4);
-	torture_suite_add_2smb2_test(suite, "file-position",
+	torture_suite_add_1smb2_test(suite, "delete_on_close1",
+				     test_durable_open_delete_on_close1);
+	torture_suite_add_1smb2_test(suite, "delete_on_close2",
+				     test_durable_open_delete_on_close2);
+	torture_suite_add_1smb2_test(suite, "file-position",
 	    test_durable_open_file_position);
 	torture_suite_add_2smb2_test(suite, "oplock", test_durable_open_oplock);
 	torture_suite_add_2smb2_test(suite, "lease", test_durable_open_lease);
-	torture_suite_add_1smb2_test(suite, "lock", test_durable_open_lock);
-	torture_suite_add_2smb2_test(suite, "open-lease",
-				     test_durable_open_open_lease);
-	torture_suite_add_2smb2_test(suite, "open-oplock",
-				     test_durable_open_open_oplock);
+	torture_suite_add_1smb2_test(suite, "lock-oplock", test_durable_open_lock_oplock);
+	torture_suite_add_1smb2_test(suite, "lock-lease", test_durable_open_lock_lease);
+	torture_suite_add_2smb2_test(suite, "open2-lease",
+				     test_durable_open_open2_lease);
+	torture_suite_add_2smb2_test(suite, "open2-oplock",
+				     test_durable_open_open2_oplock);
+	torture_suite_add_1smb2_test(suite, "alloc-size",
+				     test_durable_open_alloc_size);
 
 	suite->description = talloc_strdup(suite, "SMB2-DURABLE-OPEN tests");
 

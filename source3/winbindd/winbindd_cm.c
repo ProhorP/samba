@@ -77,6 +77,8 @@
 #include "passdb.h"
 #include "messages.h"
 #include "auth/gensec/gensec.h"
+#include "../libcli/smb/smbXcli_base.h"
+#include "lib/param/loadparm.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -188,7 +190,7 @@ static bool fork_child_dc_connect(struct winbindd_domain *domain)
 	struct dc_name_ip *dcs = NULL;
 	int num_dcs = 0;
 	TALLOC_CTX *mem_ctx = NULL;
-	pid_t parent_pid = sys_getpid();
+	pid_t parent_pid = getpid();
 	char *lfile = NULL;
 	NTSTATUS status;
 
@@ -206,7 +208,7 @@ static bool fork_child_dc_connect(struct winbindd_domain *domain)
 		domain->dc_probe_pid = (pid_t)-1;
 	}
 
-	domain->dc_probe_pid = sys_fork();
+	domain->dc_probe_pid = fork();
 
 	if (domain->dc_probe_pid == (pid_t)-1) {
 		DEBUG(0, ("fork_child_dc_connect: Could not fork: %s\n", strerror(errno)));
@@ -765,7 +767,10 @@ static NTSTATUS get_trust_creds(const struct winbindd_domain *domain,
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		strupper_m(*machine_krb5_principal);
+		if (!strupper_m(*machine_krb5_principal)) {
+			SAFE_FREE(machine_krb5_principal);
+			return NT_STATUS_INVALID_PARAMETER;
+		}
 	}
 
 	return NT_STATUS_OK;
@@ -782,6 +787,8 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 				      struct cli_state **cli,
 				      bool *retry)
 {
+	bool try_spnego = false;
+	bool try_ipc_auth = false;
 	char *machine_password = NULL;
 	char *machine_krb5_principal = NULL;
 	char *machine_account = NULL;
@@ -824,17 +831,22 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 
 	cli_set_timeout(*cli, 10000); /* 10 seconds */
 
-	result = cli_negprot(*cli, PROTOCOL_NT1);
+	result = smbXcli_negprot((*cli)->conn, (*cli)->timeout, PROTOCOL_CORE,
+				 PROTOCOL_LATEST);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		DEBUG(1, ("cli_negprot failed: %s\n", nt_errstr(result)));
 		goto done;
 	}
 
-	if (!is_dc_trusted_domain_situation(domain->name) &&
-	    cli_state_protocol(*cli) >= PROTOCOL_NT1 &&
-	    cli_state_capabilities(*cli) & CAP_EXTENDED_SECURITY)
-	{
+	if (smbXcli_conn_protocol((*cli)->conn) >= PROTOCOL_NT1 &&
+	    smb1cli_conn_capabilities((*cli)->conn) & CAP_EXTENDED_SECURITY) {
+		try_spnego = true;
+	} else if (smbXcli_conn_protocol((*cli)->conn) >= PROTOCOL_SMB2_02) {
+		try_spnego = true;
+	}
+
+	if (!is_dc_trusted_domain_situation(domain->name) && try_spnego) {
 		result = get_trust_creds(domain, &machine_password,
 					 &machine_account,
 					 &machine_krb5_principal);
@@ -911,9 +923,16 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 
 	cm_get_ipc_userpass(&ipc_username, &ipc_domain, &ipc_password);
 
-	sec_mode = cli_state_security_mode(*cli);
-	if (((sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) != 0) &&
-	    (strlen(ipc_username) > 0)) {
+	sec_mode = smb1cli_conn_server_security_mode((*cli)->conn);
+
+	try_ipc_auth = false;
+	if (try_spnego) {
+		try_ipc_auth = true;
+	} else if (sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) {
+		try_ipc_auth = true;
+	}
+
+	if (try_ipc_auth && (strlen(ipc_username) > 0)) {
 
 		/* Only try authenticated if we have a username */
 
@@ -959,6 +978,17 @@ static NTSTATUS cm_prepare_connection(const struct winbindd_domain *domain,
 	goto done;
 
  session_setup_done:
+
+	/*
+	 * This should be a short term hack until
+	 * dynamic re-authentication is implemented.
+	 *
+	 * See Bug 9175 - winbindd doesn't recover from
+	 * NT_STATUS_NETWORK_SESSION_EXPIRED
+	 */
+	if (smbXcli_conn_protocol((*cli)->conn) >= PROTOCOL_SMB2_02) {
+		smbXcli_session_set_disconnect_expired((*cli)->smb2.session);
+	}
 
 	/* cache the server name for later connections */
 
@@ -1145,10 +1175,11 @@ static bool dcip_to_name(TALLOC_CTX *mem_ctx,
 		}
 
 		ads_destroy( &ads );
+		return false;
 	}
 #endif
 
-	status = nbt_getdc(winbind_messaging_context(), pss, domain->name,
+	status = nbt_getdc(winbind_messaging_context(), 10, pss, domain->name,
 			   &domain->sid, nt_version, mem_ctx, &nt_version,
 			   &dc_name, NULL);
 	if (NT_STATUS_IS_OK(status)) {
@@ -1266,10 +1297,17 @@ static bool get_dcs(TALLOC_CTX *mem_ctx, struct winbindd_domain *domain,
 		iplist_size = 0;
         }
 
-	/* Try standard netbios queries if no ADS */
+	/* Try standard netbios queries if no ADS and fall back to DNS queries
+	 * if alt_name is available */
 	if (*num_dcs == 0) {
 		get_sorted_dc_list(domain->name, NULL, &ip_list, &iplist_size,
-		       False);
+		       false);
+		if (iplist_size == 0) {
+			if (domain->alt_name != NULL) {
+				get_sorted_dc_list(domain->alt_name, NULL, &ip_list,
+				       &iplist_size, true);
+			}
+		}
 
 		for ( i=0; i<iplist_size; i++ ) {
 			char addr[INET6_ADDRSTRLEN];
@@ -1410,7 +1448,7 @@ static void store_current_dc_in_gencache(const char *domain_name,
 	}
 
 	print_sockaddr(addr, sizeof(addr),
-		       cli_state_remote_sockaddr(cli));
+		       smbXcli_conn_remote_sockaddr(cli->conn));
 
 	key = current_dc_key(talloc_tos(), domain_name);
 	if (key == NULL) {
@@ -1560,6 +1598,10 @@ static NTSTATUS cm_open_connection(struct winbindd_domain *domain,
 
 		result = cm_prepare_connection(domain, fd, domain->dcname,
 			&new_conn->cli, &retry);
+		if (!NT_STATUS_IS_OK(result)) {
+			/* Don't leak the smb connection socket */
+			close(fd);
+		}
 
 		if (!retry)
 			break;
@@ -1676,7 +1718,7 @@ void close_conns_after_fork(void)
 		 * requests in invalidate_cm_connection()
 		 */
 		if (cli_state_is_connected(domain->conn.cli)) {
-			cli_state_disconnect(domain->conn.cli);
+			smbXcli_conn_disconnect(domain->conn.cli->conn, NT_STATUS_OK);
 		}
 
 		invalidate_cm_connection(&domain->conn);
@@ -1720,12 +1762,6 @@ static NTSTATUS init_dc_connection_network(struct winbindd_domain *domain)
 
 	/* Internal connections never use the network. */
 	if (domain->internal) {
-		domain->initialized = True;
-		return NT_STATUS_OK;
-	}
-
-	if (!winbindd_can_contact_domain(domain)) {
-		invalidate_cm_connection(&domain->conn);
 		domain->initialized = True;
 		return NT_STATUS_OK;
 	}
@@ -2143,7 +2179,7 @@ NTSTATUS cm_connect_sam(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 	char *machine_account = NULL;
 	char *domain_name = NULL;
 
-	if (sid_check_is_domain(&domain->sid)) {
+	if (sid_check_is_our_sam(&domain->sid)) {
 		return open_internal_samr_conn(mem_ctx, domain, cli, sam_handle);
 	}
 
@@ -2197,7 +2233,7 @@ NTSTATUS cm_connect_sam(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 					  NCACN_NP,
 					  GENSEC_OID_NTLMSSP,
 					  DCERPC_AUTH_LEVEL_PRIVACY,
-					  cli_state_remote_name(conn->cli),
+					  smbXcli_conn_remote_name(conn->cli->conn),
 					  domain_name,
 					  machine_account,
 					  machine_password,
@@ -2436,7 +2472,7 @@ NTSTATUS cm_connect_lsa(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 		(conn->cli, &ndr_table_lsarpc, NCACN_NP,
 		 GENSEC_OID_NTLMSSP,
 		 DCERPC_AUTH_LEVEL_PRIVACY,
-		 cli_state_remote_name(conn->cli),
+		 smbXcli_conn_remote_name(conn->cli->conn),
 		 conn->cli->domain, conn->cli->user_name, conn->cli->password,
 		 &conn->lsa_pipe);
 
@@ -2529,6 +2565,37 @@ NTSTATUS cm_connect_lsa(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 }
 
 /****************************************************************************
+Open a LSA connection to a DC, suiteable for LSA lookup calls.
+****************************************************************************/
+
+NTSTATUS cm_connect_lsat(struct winbindd_domain *domain,
+			 TALLOC_CTX *mem_ctx,
+			 struct rpc_pipe_client **cli,
+			 struct policy_handle *lsa_policy)
+{
+	NTSTATUS status;
+
+	if (domain->can_do_ncacn_ip_tcp) {
+		status = cm_connect_lsa_tcp(domain, mem_ctx, cli);
+		if (NT_STATUS_EQUAL(status, NT_STATUS_ACCESS_DENIED) ||
+		    NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR) ||
+		    NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_ACCESS_DENIED)) {
+			invalidate_cm_connection(&domain->conn);
+			status = cm_connect_lsa_tcp(domain, mem_ctx, cli);
+		}
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		return NT_STATUS_OK;
+	}
+
+	status = cm_connect_lsa(domain, mem_ctx, cli, lsa_policy);
+
+	return status;
+}
+
+/****************************************************************************
  Open the netlogon pipe to this DC. Use schannel if specified in client conf.
  session key stored in conn->netlogon_pipe->dc->sess_key.
 ****************************************************************************/
@@ -2539,7 +2606,7 @@ NTSTATUS cm_connect_netlogon(struct winbindd_domain *domain,
 	struct winbindd_cm_conn *conn;
 	NTSTATUS result;
 
-	uint32_t neg_flags = NETLOGON_NEG_AUTH2_ADS_FLAGS;
+	uint32_t neg_flags = NETLOGON_NEG_AUTH2_ADS_FLAGS | NETLOGON_NEG_SUPPORTS_AES;
 	uint8  mach_pwd[16];
 	enum netr_SchannelType sec_chan_type;
 	const char *account_name;
@@ -2707,10 +2774,10 @@ void winbind_msg_ip_dropped(struct messaging_context *msg_ctx,
 		}
 
 		print_sockaddr(sockaddr, sizeof(sockaddr),
-			       cli_state_local_sockaddr(domain->conn.cli));
+			       smbXcli_conn_local_sockaddr(domain->conn.cli->conn));
 
 		if (strequal(sockaddr, addr)) {
-			cli_state_disconnect(domain->conn.cli);
+			smbXcli_conn_disconnect(domain->conn.cli->conn, NT_STATUS_OK);
 		}
 	}
 	TALLOC_FREE(freeit);

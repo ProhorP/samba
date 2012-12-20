@@ -684,12 +684,12 @@ static WERROR getncchanges_rid_alloc(struct drsuapi_bind_state *b_state,
 				     struct drsuapi_DsGetNCChangesRequest10 *req10,
 				     struct drsuapi_DsGetNCChangesCtr6 *ctr6)
 {
-	struct ldb_dn *rid_manager_dn, *fsmo_role_dn, *req_dn;
+	struct ldb_dn *rid_manager_dn, *req_dn;
 	int ret;
 	struct ldb_context *ldb = b_state->sam_ctx;
 	struct ldb_result *ext_res;
-	struct ldb_dn *base_dn;
 	struct dsdb_fsmo_extended_op *exop;
+	bool is_us;
 
 	/*
 	  steps:
@@ -715,15 +715,14 @@ static WERROR getncchanges_rid_alloc(struct drsuapi_bind_state *b_state,
 	}
 
 	/* find the DN of the RID Manager */
-	ret = samdb_reference_dn(ldb, mem_ctx, rid_manager_dn, "fSMORoleOwner", &fsmo_role_dn);
+	ret = samdb_reference_dn_is_our_ntdsa(ldb, rid_manager_dn, "fSMORoleOwner", &is_us);
 	if (ret != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to find fSMORoleOwner in RID Manager object - %s\n",
-			 ldb_errstring(ldb)));
+		DEBUG(0,("Failed to find fSMORoleOwner in RID Manager object\n"));
 		ctr6->extended_ret = DRSUAPI_EXOP_ERR_FSMO_NOT_OWNER;
 		return WERR_DS_DRA_INTERNAL_ERROR;
 	}
 
-	if (ldb_dn_compare(samdb_ntds_settings_dn(ldb), fsmo_role_dn) != 0) {
+	if (!is_us) {
 		/* we're not the RID Manager - go away */
 		DEBUG(0,(__location__ ": RID Alloc request when not RID Manager\n"));
 		ctr6->extended_ret = DRSUAPI_EXOP_ERR_FSMO_NOT_OWNER;
@@ -768,8 +767,6 @@ static WERROR getncchanges_rid_alloc(struct drsuapi_bind_state *b_state,
 	}
 
 	talloc_free(ext_res);
-
-	base_dn = ldb_get_default_basedn(ldb);
 
 	DEBUG(2,("Allocated RID pool for server %s\n",
 		 GUID_string(mem_ctx, &req10->destination_dsa_guid)));
@@ -885,7 +882,8 @@ static WERROR getncchanges_repl_secret(struct drsuapi_bind_state *b_state,
 				       TALLOC_CTX *mem_ctx,
 				       struct drsuapi_DsGetNCChangesRequest10 *req10,
 				       struct dom_sid *user_sid,
-				       struct drsuapi_DsGetNCChangesCtr6 *ctr6)
+				       struct drsuapi_DsGetNCChangesCtr6 *ctr6,
+				       bool has_get_all_changes)
 {
 	struct drsuapi_DsReplicaObjectIdentifier *ncRoot = req10->naming_context;
 	struct ldb_dn *obj_dn, *rodc_dn, *krbtgt_link_dn;
@@ -900,7 +898,7 @@ static WERROR getncchanges_repl_secret(struct drsuapi_bind_state *b_state,
 		 drs_ObjectIdentifier_to_string(mem_ctx, ncRoot)));
 
 	/*
-	 * we need to work out if we will allow this RODC to
+	 * we need to work out if we will allow this DC to
 	 * replicate the secrets for this object
 	 *
 	 * see 4.1.10.5.14 GetRevealSecretsPolicyForUser for details
@@ -911,6 +909,30 @@ static WERROR getncchanges_repl_secret(struct drsuapi_bind_state *b_state,
 		/* this operation needs system level access */
 		ctr6->extended_ret = DRSUAPI_EXOP_ERR_ACCESS_DENIED;
 		return WERR_DS_DRA_SOURCE_DISABLED;
+	}
+
+	/*
+	 * In MS-DRSR.pdf 5.99 IsGetNCChangesPermissionGranted
+	 *
+	 * The pseudo code indicate
+	 * revealsecrets = true
+	 * if IsRevealSecretRequest(msgIn) then
+	 *   if AccessCheckCAR(ncRoot, Ds-Replication-Get-Changes-All) = false
+	 *   then
+	 *     if (msgIn.ulExtendedOp = EXOP_REPL_SECRETS) then
+	 *     <... check if this account is ok to be replicated on this DC ...>
+	 *     <... and if not reveal secrets = no ...>
+	 *     else
+	 *       reveal secrets = false
+	 *     endif
+	 *   endif
+	 * endif
+	 *
+	 * Which basically means that if you have GET_ALL_CHANGES rights (~== RWDC)
+	 * then you can do EXOP_REPL_SECRETS
+	 */
+	if (has_get_all_changes) {
+		goto allowed;
 	}
 
 	obj_dn = drs_ObjectIdentifier_to_dn(mem_ctx, b_state->sam_ctx_system, ncRoot);
@@ -984,20 +1006,21 @@ static WERROR getncchanges_repl_secret(struct drsuapi_bind_state *b_state,
 
 	/* default deny */
 denied:
-	DEBUG(2,(__location__ ": Denied RODC secret replication for %s by RODC %s\n",
+	DEBUG(2,(__location__ ": Denied single object with secret replication for %s by RODC %s\n",
 		 ldb_dn_get_linearized(obj_dn), ldb_dn_get_linearized(rodc_res->msgs[0]->dn)));
 	ctr6->extended_ret = DRSUAPI_EXOP_ERR_NONE;
 	return WERR_DS_DRA_ACCESS_DENIED;
 
 allowed:
-	DEBUG(2,(__location__ ": Allowed RODC secret replication for %s by RODC %s\n",
-		 ldb_dn_get_linearized(obj_dn), ldb_dn_get_linearized(rodc_res->msgs[0]->dn)));
+	DEBUG(2,(__location__ ": Allowed single object with secret replication for %s by %s %s\n",
+		 ldb_dn_get_linearized(obj_dn), has_get_all_changes?"RWDC":"RODC",
+		 ldb_dn_get_linearized(rodc_res->msgs[0]->dn)));
 	ctr6->extended_ret = DRSUAPI_EXOP_ERR_SUCCESS;
 	req10->highwatermark.highest_usn = 0;
 	return WERR_OK;
 
 failed:
-	DEBUG(2,(__location__ ": Failed RODC secret replication for %s by RODC %s\n",
+	DEBUG(2,(__location__ ": Failed single secret replication for %s by RODC %s\n",
 		 ldb_dn_get_linearized(obj_dn), dom_sid_string(mem_ctx, user_sid)));
 	ctr6->extended_ret = DRSUAPI_EXOP_ERR_NONE;
 	return WERR_DS_DRA_BAD_DN;
@@ -1019,7 +1042,6 @@ static WERROR getncchanges_repl_obj(struct drsuapi_bind_state *b_state,
 		 drs_ObjectIdentifier_to_string(mem_ctx, ncRoot)));
 
 	ctr6->extended_ret = DRSUAPI_EXOP_ERR_SUCCESS;
-	req10->highwatermark.highest_usn = 0;
 	return WERR_OK;
 }
 
@@ -1034,11 +1056,12 @@ static WERROR getncchanges_change_master(struct drsuapi_bind_state *b_state,
 					 struct drsuapi_DsGetNCChangesRequest10 *req10,
 					 struct drsuapi_DsGetNCChangesCtr6 *ctr6)
 {
-	struct ldb_dn *fsmo_role_dn, *req_dn, *ntds_dn;
+	struct ldb_dn *req_dn, *ntds_dn;
 	int ret;
 	unsigned int i;
 	struct ldb_context *ldb = b_state->sam_ctx;
 	struct ldb_message *msg;
+	bool is_us;
 
 	/*
 	  steps:
@@ -1056,17 +1079,17 @@ static WERROR getncchanges_change_master(struct drsuapi_bind_state *b_state,
 	}
 
 	/* retrieve the current role owner */
-	ret = samdb_reference_dn(ldb, mem_ctx, req_dn, "fSMORoleOwner", &fsmo_role_dn);
+	/* find the DN of the RID Manager */
+	ret = samdb_reference_dn_is_our_ntdsa(ldb, req_dn, "fSMORoleOwner", &is_us);
 	if (ret != LDB_SUCCESS) {
-		DEBUG(0,(__location__ ": Failed to find fSMORoleOwner in context - %s\n",
-			 ldb_errstring(ldb)));
+		DEBUG(0,("Failed to find fSMORoleOwner in RID Manager object\n"));
 		ctr6->extended_ret = DRSUAPI_EXOP_ERR_FSMO_NOT_OWNER;
 		return WERR_DS_DRA_INTERNAL_ERROR;
 	}
 
-	if (ldb_dn_compare(samdb_ntds_settings_dn(ldb), fsmo_role_dn) != 0) {
-		/* we're not the current owner - go away */
-		DEBUG(0,(__location__ ": FSMO transfer request when not owner\n"));
+	if (!is_us) {
+		/* we're not the RID Manager - go away */
+		DEBUG(0,(__location__ ": RID Alloc request when not RID Manager\n"));
 		ctr6->extended_ret = DRSUAPI_EXOP_ERR_FSMO_NOT_OWNER;
 		return WERR_OK;
 	}
@@ -1440,6 +1463,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 	time_t max_wait;
 	time_t start = time(NULL);
 	bool max_wait_reached = false;
+	bool has_get_all_changes = false;
 
 	DCESRV_PULL_HANDLE_WERR(h, r->in.bind_handle, DRSUAPI_BIND_HANDLE);
 	b_state = h->data;
@@ -1541,6 +1565,8 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 							 GUID_DRS_GET_ALL_CHANGES);
 		if (!W_ERROR_IS_OK(werr)) {
 			return werr;
+		} else {
+			has_get_all_changes = true;
 		}
 	}
 
@@ -1608,7 +1634,10 @@ allowed:
 			search_dn = ldb_get_default_basedn(sam_ctx);
 			break;
 		case DRSUAPI_EXOP_REPL_SECRET:
-			werr = getncchanges_repl_secret(b_state, mem_ctx, req10, user_sid, &r->out.ctr->ctr6);
+			werr = getncchanges_repl_secret(b_state, mem_ctx, req10,
+						        user_sid,
+						        &r->out.ctr->ctr6,
+						        has_get_all_changes);
 			r->out.result = werr;
 			W_ERROR_NOT_OK_RETURN(werr);
 			break;

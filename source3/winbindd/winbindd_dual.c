@@ -36,6 +36,7 @@
 #include "system/select.h"
 #include "messages.h"
 #include "../lib/util/tevent_unix.h"
+#include "lib/param/loadparm.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -455,10 +456,10 @@ void setup_child(struct winbindd_domain *domain, struct winbindd_child *child,
 	if (logprefix && logname) {
 		char *logbase = NULL;
 
-		if (*lp_logfile()) {
+		if (*lp_logfile(talloc_tos())) {
 			char *end = NULL;
 
-			if (asprintf(&logbase, "%s", lp_logfile()) < 0) {
+			if (asprintf(&logbase, "%s", lp_logfile(talloc_tos())) < 0) {
 				smb_panic("Internal error: asprintf failed");
 			}
 
@@ -1312,11 +1313,11 @@ static bool fork_domain_child(struct winbindd_child *child)
 	}
 
 	ZERO_STRUCT(state);
-	state.pid = sys_getpid();
+	state.pid = getpid();
 	state.request = &request;
 	state.response = &response;
 
-	child->pid = sys_fork();
+	child->pid = fork();
 
 	if (child->pid == -1) {
 		DEBUG(0, ("Could not fork: %s\n", strerror(errno)));
@@ -1353,7 +1354,7 @@ static bool fork_domain_child(struct winbindd_child *child)
 	/* Child */
 	child_domain = child->domain;
 
-	DEBUG(10, ("Child process %d\n", (int)sys_getpid()));
+	DEBUG(10, ("Child process %d\n", (int)getpid()));
 
 	state.sock = fdpair[0];
 	close(fdpair[1]);

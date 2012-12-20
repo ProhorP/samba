@@ -31,6 +31,7 @@
 #include "secrets.h"
 #include "rpc_client/init_lsa.h"
 #include "libsmb/libsmb.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /* Macro for checking RPC error codes to make things more readable */
 
@@ -122,7 +123,7 @@ NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
 		} else {
 			DEBUG(0,("net_rpc_join_ok: failed to get schannel session "
 					"key from server %s for domain %s. Error was %s\n",
-				cli_state_remote_name(cli), domain, nt_errstr(ntret) ));
+				smbXcli_conn_remote_name(cli->conn), domain, nt_errstr(ntret) ));
 			cli_shutdown(cli);
 			return ntret;
 		}
@@ -143,7 +144,7 @@ NTSTATUS net_rpc_join_ok(struct net_context *c, const char *domain,
 	if (!NT_STATUS_IS_OK(ntret)) {
 		DEBUG(0,("net_rpc_join_ok: failed to open schannel session "
 				"on netlogon pipe to server %s for domain %s. Error was %s\n",
-			cli_state_remote_name(cli), domain, nt_errstr(ntret) ));
+			smbXcli_conn_remote_name(cli->conn), domain, nt_errstr(ntret) ));
 		/*
 		 * Note: here, we have:
 		 * (pipe_hnd != NULL) if and only if NT_STATUS_IS_OK(ntret)
@@ -185,6 +186,7 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 
 	/* Password stuff */
 
+	DATA_BLOB session_key = data_blob_null;
 	char *clear_trust_password = NULL;
 	struct samr_CryptPassword crypt_pwd;
 	uchar md4_trust_password[16];
@@ -288,6 +290,13 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 
 	b = pipe_hnd->binding_handle;
 
+	status = cli_get_session_key(mem_ctx, pipe_hnd, &session_key);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0,("Error getting session_key of SAM pipe. Error was %s\n",
+			nt_errstr(status)));
+		goto done;
+	}
+
 	CHECK_DCERPC_ERR(dcerpc_samr_Connect2(b, mem_ctx,
 					      pipe_hnd->desthost,
 					      SAMR_ACCESS_ENUM_DOMAINS
@@ -312,7 +321,10 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 		status = NT_STATUS_NO_MEMORY;
 		goto done;
 	}
-	strlower_m(acct_name);
+	if (!strlower_m(acct_name)) {
+		status = NT_STATUS_INVALID_PARAMETER;
+		goto done;
+	}
 
 	init_lsa_String(&lsa_acct_name, acct_name);
 
@@ -395,7 +407,7 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 	/* Set password on machine account */
 
 	init_samr_CryptPassword(clear_trust_password,
-				&cli->user_session_key,
+				&session_key,
 				&crypt_pwd);
 
 	set_info.info24.password = crypt_pwd;
@@ -500,7 +512,10 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 
 	/* Now store the secret in the secrets database */
 
-	strupper_m(discard_const_p(char, domain));
+	if (!strupper_m(discard_const_p(char, domain))) {
+		DEBUG(0, ("strupper_m %s failed\n", domain));
+		goto done;
+	}
 
 	if (!secrets_store_domain_sid(domain, domain_sid)) {
 		DEBUG(0, ("error storing domain sid for %s\n", domain));
@@ -512,8 +527,8 @@ int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
 	}
 
 	/* double-check, connection from scratch */
-	status = net_rpc_join_ok(c, domain, cli_state_remote_name(cli),
-				 cli_state_remote_sockaddr(cli));
+	status = net_rpc_join_ok(c, domain, smbXcli_conn_remote_name(cli->conn),
+				 smbXcli_conn_remote_sockaddr(cli->conn));
 	retval = NT_STATUS_IS_OK(status) ? 0 : -1;
 
 done:
@@ -531,6 +546,7 @@ done:
 	cli_shutdown(cli);
 
 	TALLOC_FREE(clear_trust_password);
+	data_blob_clear_free(&session_key);
 
 	return retval;
 }

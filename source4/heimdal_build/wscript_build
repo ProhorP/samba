@@ -209,7 +209,7 @@ def HEIMDAL_GENERATOR(name, rule, source='', target='',
         name=name)
 
 
-def HEIMDAL_LIBRARY(libname, source, deps, vnum, version_script, includes='', cflags=''):
+def HEIMDAL_LIBRARY(libname, source, deps, vnum, version_script, includes=''):
     '''define a Heimdal library'''
 
     obj_target = libname + '.objlist'
@@ -221,7 +221,6 @@ def HEIMDAL_LIBRARY(libname, source, deps, vnum, version_script, includes='', cf
                         source         = source,
                         deps           = deps,
                         includes       = includes,
-                        cflags         = cflags,
                         group          = 'main')
 
     if not SET_TARGET_TYPE(bld, libname, "LIBRARY"):
@@ -670,7 +669,7 @@ if not bld.CONFIG_SET("USING_SYSTEM_KRB5"):
     HEIMDAL_LIBRARY('krb5', KRB5_SOURCE,
         version_script='lib/krb5/version-script.map',
                         includes='../heimdal/lib/krb5 ../heimdal/lib/asn1 ../heimdal/include',
-                deps='roken wind asn1 hx509 hcrypto intl com_err HEIMDAL_CONFIG heimbase',
+                deps='roken wind asn1 hx509 hcrypto intl com_err HEIMDAL_CONFIG heimbase execinfo',
                 vnum='26.0.0',
                         )
     KRB5_PROTO_SOURCE = KRB5_SOURCE + ['lib/krb5/expand_path.c', 'lib/krb5/plugin.c', 'lib/krb5/context.c']

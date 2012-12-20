@@ -32,35 +32,41 @@ bool srv_check_sign_mac(struct smbd_server_connection *conn,
 			const char *inbuf, uint32_t *seqnum,
 			bool trusted_channel)
 {
+	const uint8_t *inhdr;
+	size_t len;
+
 	/* Check if it's a non-session message. */
 	if(CVAL(inbuf,0)) {
 		return true;
 	}
 
+	len = smb_len(inbuf);
+	inhdr = (const uint8_t *)inbuf + NBT_HDR_SIZE;
+
 	if (trusted_channel) {
 		NTSTATUS status;
 
-		if (smb_len(inbuf) < (smb_ss_field + 8 - 4)) {
+		if (len < (HDR_SS_FIELD + 8)) {
 			DEBUG(1,("smb_signing_check_pdu: Can't check signature "
 				 "on short packet! smb_len = %u\n",
-				 smb_len(inbuf)));
+				 (unsigned)len));
 			return false;
 		}
 
-		status = NT_STATUS(IVAL(inbuf, smb_ss_field + 4));
+		status = NT_STATUS(IVAL(inhdr, HDR_SS_FIELD + 4));
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(1,("smb_signing_check_pdu: trusted channel passed %s\n",
 				 nt_errstr(status)));
 			return false;
 		}
 
-		*seqnum = IVAL(inbuf, smb_ss_field);
+		*seqnum = IVAL(inhdr, HDR_SS_FIELD);
 		return true;
 	}
 
 	*seqnum = smb_signing_next_seqnum(conn->smb1.signing_state, false);
 	return smb_signing_check_pdu(conn->smb1.signing_state,
-				     (const uint8_t *)inbuf,
+				     inhdr, len,
 				     *seqnum);
 }
 
@@ -71,12 +77,18 @@ bool srv_check_sign_mac(struct smbd_server_connection *conn,
 void srv_calculate_sign_mac(struct smbd_server_connection *conn,
 			    char *outbuf, uint32_t seqnum)
 {
+	uint8_t *outhdr;
+	size_t len;
+
 	/* Check if it's a non-session message. */
 	if(CVAL(outbuf,0)) {
 		return;
 	}
 
-	smb_signing_sign_pdu(conn->smb1.signing_state, (uint8_t *)outbuf, seqnum);
+	len = smb_len(outbuf);
+	outhdr = (uint8_t *)outbuf + NBT_HDR_SIZE;
+
+	smb_signing_sign_pdu(conn->smb1.signing_state, outhdr, len, seqnum);
 }
 
 
@@ -186,7 +198,7 @@ bool srv_init_signing(struct smbd_server_connection *conn)
 		struct smbd_shm_signing *s;
 
 		/* setup the signing state in shared memory */
-		s = talloc_zero(server_event_context(), struct smbd_shm_signing);
+		s = talloc_zero(conn, struct smbd_shm_signing);
 		if (s == NULL) {
 			return false;
 		}
@@ -208,7 +220,7 @@ bool srv_init_signing(struct smbd_server_connection *conn)
 		return true;
 	}
 
-	conn->smb1.signing_state = smb_signing_init(server_event_context(),
+	conn->smb1.signing_state = smb_signing_init(conn,
 						    allowed, desired, mandatory);
 	if (!conn->smb1.signing_state) {
 		return false;

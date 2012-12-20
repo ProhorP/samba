@@ -760,8 +760,8 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	io->g.aes_256 = data_blob_talloc(io->ac,
-					 key.keyvalue.data,
-					 key.keyvalue.length);
+					 KRB5_KEY_DATA(&key),
+					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
 	if (!io->g.aes_256.data) {
 		return ldb_oom(ldb);
@@ -785,8 +785,8 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	io->g.aes_128 = data_blob_talloc(io->ac,
-					 key.keyvalue.data,
-					 key.keyvalue.length);
+					 KRB5_KEY_DATA(&key),
+					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
 	if (!io->g.aes_128.data) {
 		return ldb_oom(ldb);
@@ -810,8 +810,8 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	io->g.des_md5 = data_blob_talloc(io->ac,
-					 key.keyvalue.data,
-					 key.keyvalue.length);
+					 KRB5_KEY_DATA(&key),
+					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
 	if (!io->g.des_md5.data) {
 		return ldb_oom(ldb);
@@ -835,8 +835,8 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	io->g.des_crc = data_blob_talloc(io->ac,
-					 key.keyvalue.data,
-					 key.keyvalue.length);
+					 KRB5_KEY_DATA(&key),
+					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
 	if (!io->g.des_crc.data) {
 		return ldb_oom(ldb);
@@ -1954,6 +1954,19 @@ static int check_password_restrictions(struct setup_password_fields_io *io)
 		return LDB_SUCCESS;
 	}
 
+	/* Password minimum age: yes, this is a minus. The ages are in negative 100nsec units! */
+	if ((io->u.pwdLastSet - io->ac->status->domain_data.minPwdAge > io->g.last_set) &&
+	    !io->ac->pwd_reset)
+	{
+		ret = LDB_ERR_CONSTRAINT_VIOLATION;
+		ldb_asprintf_errstring(ldb,
+			"%08X: %s - check_password_restrictions: "
+			"password is too young to change!",
+			W_ERROR_V(WERR_PASSWORD_RESTRICTION),
+			ldb_strerror(ret));
+		return ret;
+	}
+
 	/*
 	 * Fundamental password checks done by the call
 	 * "samdb_check_password".
@@ -2059,17 +2072,6 @@ static int check_password_restrictions(struct setup_password_fields_io *io)
 		ldb_asprintf_errstring(ldb,
 			"%08X: %s - check_password_restrictions: "
 			"password can't be changed on this account!",
-			W_ERROR_V(WERR_PASSWORD_RESTRICTION),
-			ldb_strerror(ret));
-		return ret;
-	}
-
-	/* Password minimum age: yes, this is a minus. The ages are in negative 100nsec units! */
-	if (io->u.pwdLastSet - io->ac->status->domain_data.minPwdAge > io->g.last_set) {
-		ret = LDB_ERR_CONSTRAINT_VIOLATION;
-		ldb_asprintf_errstring(ldb,
-			"%08X: %s - check_password_restrictions: "
-			"password is too young to change!",
 			W_ERROR_V(WERR_PASSWORD_RESTRICTION),
 			ldb_strerror(ret));
 		return ret;
@@ -2187,11 +2189,6 @@ static int setup_io(struct ph_context *ac,
 	io->u.restrictions = !(io->u.userAccountControl
 		& (UF_INTERDOMAIN_TRUST_ACCOUNT | UF_WORKSTATION_TRUST_ACCOUNT
 			| UF_SERVER_TRUST_ACCOUNT));
-
-	if ((io->u.userAccountControl & UF_PASSWD_NOTREQD) != 0) {
-		/* see [MS-ADTS] 2.2.15 */
-		io->u.restrictions = 0;
-	}
 
 	if (ac->userPassword) {
 		ret = msg_find_old_and_new_pwd_val(orig_msg, "userPassword",
@@ -2760,12 +2757,6 @@ static int password_hash_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_next_request(module, req);
 	}
 
-	/* If the caller is manipulating the local passwords directly, let them pass */
-	if (ldb_dn_compare_base(ldb_dn_new(req, ldb, LOCAL_BASE),
-				req->op.add.message->dn) == 0) {
-		return ldb_next_request(module, req);
-	}
-
 	bypass = ldb_request_get_control(req,
 					 DSDB_CONTROL_BYPASS_PASSWORD_HASH_OID);
 	if (bypass != NULL) {
@@ -2959,12 +2950,6 @@ static int password_hash_modify(struct ldb_module *module, struct ldb_request *r
 		return ldb_next_request(module, req);
 	}
 	
-	/* If the caller is manipulating the local passwords directly, let them pass */
-	if (ldb_dn_compare_base(ldb_dn_new(req, ldb, LOCAL_BASE),
-				req->op.mod.message->dn) == 0) {
-		return ldb_next_request(module, req);
-	}
-
 	bypass = ldb_request_get_control(req,
 					 DSDB_CONTROL_BYPASS_PASSWORD_HASH_OID);
 	if (bypass != NULL) {

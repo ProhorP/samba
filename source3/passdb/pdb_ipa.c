@@ -121,10 +121,10 @@ static char *get_account_dn(const char *name)
 
 	if (name[strlen(name)-1] == '$') {
 		dn = talloc_asprintf(talloc_tos(), "uid=%s,%s", escape_name,
-				     lp_ldap_machine_suffix());
+				     lp_ldap_machine_suffix(talloc_tos()));
 	} else {
 		dn = talloc_asprintf(talloc_tos(), "uid=%s,%s", escape_name,
-				     lp_ldap_user_suffix());
+				     lp_ldap_user_suffix(talloc_tos()));
 	}
 
 	SAFE_FREE(escape_name);
@@ -165,7 +165,7 @@ static bool get_trusted_domain_int(struct ldapsam_privates *ldap_state,
 	TALLOC_FREE(base_dn);
 
 	if (result != NULL) {
-		talloc_autofree_ldapmsg(mem_ctx, result);
+		smbldap_talloc_autofree_ldapmsg(mem_ctx, result);
 	}
 
 	if (rc == LDAP_NO_SUCH_OBJECT) {
@@ -586,7 +586,7 @@ static NTSTATUS ipasam_set_trusted_domain(struct pdb_methods *methods,
 				      &td->trust_forest_trust_info);
 	}
 
-	talloc_autofree_ldapmod(talloc_tos(), mods);
+	smbldap_talloc_autofree_ldapmod(talloc_tos(), mods);
 
 	trusted_dn = trusted_domain_dn(ldap_state, domain);
 	if (trusted_dn == NULL) {
@@ -671,7 +671,7 @@ static NTSTATUS ipasam_enum_trusted_domains(struct pdb_methods *methods,
 	TALLOC_FREE(base_dn);
 
 	if (result != NULL) {
-		talloc_autofree_ldapmsg(mem_ctx, result);
+		smbldap_talloc_autofree_ldapmsg(mem_ctx, result);
 	}
 
 	if (rc == LDAP_NO_SUCH_OBJECT) {
@@ -787,7 +787,9 @@ static struct pdb_domain_info *pdb_ipasam_get_domain_info(struct pdb_methods *pd
 	if (info->dns_domain == NULL) {
 		goto fail;
 	}
-	strlower_m(info->dns_domain);
+	if (!strlower_m(info->dns_domain)) {
+		goto fail;
+	}
 	info->dns_forest = talloc_strdup(info, info->dns_domain);
 
 	/* we expect a domain SID to have 4 sub IDs */
@@ -1301,7 +1303,6 @@ static NTSTATUS ipasam_create_dom_group(struct pdb_methods *pdb_methods,
 {
 	NTSTATUS status;
 	struct ldapsam_privates *ldap_state;
-	int ldap_op = LDAP_MOD_REPLACE;
 	char *dn;
 	uint32_t has_objectclass = 0;
 
@@ -1312,11 +1313,8 @@ static NTSTATUS ipasam_create_dom_group(struct pdb_methods *pdb_methods,
 	}
 
 	status = find_group(ldap_state, name, &dn, &has_objectclass);
-	if (NT_STATUS_IS_OK(status)) {
-		ldap_op = LDAP_MOD_REPLACE;
-	} else if (NT_STATUS_EQUAL(status, NT_STATUS_NO_SUCH_USER)) {
-		ldap_op = LDAP_MOD_ADD;
-	} else {
+	if (!NT_STATUS_IS_OK(status) &&
+			!NT_STATUS_EQUAL(status, NT_STATUS_NO_SUCH_USER)) {
 		return status;
 	}
 
@@ -1368,11 +1366,11 @@ static NTSTATUS ipasam_create_user(struct pdb_methods *pdb_methods,
 		if (name[strlen(name)-1] == '$') {
 			dn = talloc_asprintf(tmp_ctx, "uid=%s,%s",
 					     escape_username,
-					     lp_ldap_machine_suffix());
+					     lp_ldap_machine_suffix(talloc_tos()));
 		} else {
 			dn = talloc_asprintf(tmp_ctx, "uid=%s,%s",
 					     escape_username,
-					     lp_ldap_user_suffix());
+					     lp_ldap_user_suffix(talloc_tos()));
 		}
 		SAFE_FREE(escape_username);
 		if (!dn) {
@@ -1418,18 +1416,18 @@ static NTSTATUS pdb_ipa_init_secrets(struct pdb_methods *m)
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	secrets_clear_domain_protection(dom_info->name);
-	ret = secrets_store_domain_sid(dom_info->name,
+	PDB_secrets_clear_domain_protection(dom_info->name);
+	ret = PDB_secrets_store_domain_sid(dom_info->name,
 				       &dom_info->sid);
 	if (!ret) {
 		goto done;
 	}
-	ret = secrets_store_domain_guid(dom_info->name,
+	ret = PDB_secrets_store_domain_guid(dom_info->name,
 				        &dom_info->guid);
 	if (!ret) {
 		goto done;
 	}
-	ret = secrets_mark_domain_protected(dom_info->name);
+	ret = PDB_secrets_mark_domain_protected(dom_info->name);
 	if (!ret) {
 		goto done;
 	}

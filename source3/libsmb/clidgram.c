@@ -26,6 +26,7 @@
 #include "libsmb/nmblib.h"
 #include "messages.h"
 #include "librpc/gen_ndr/samr.h"
+#include "../lib/util/pidfile.h"
 
 /*
  * cli_send_mailslot, send a mailslot for client code ...
@@ -327,7 +328,7 @@ struct tevent_req *nbt_getdc_send(TALLOC_CTX *mem_ctx,
 	if (tevent_req_nomem(state->my_mailslot, req)) {
 		return tevent_req_post(req, ev);
 	}
-	state->nmbd_pid = pidfile_pid("nmbd");
+	state->nmbd_pid = pidfile_pid(lp_piddir(), "nmbd");
 	if (state->nmbd_pid == 0) {
 		DEBUG(3, ("No nmbd found\n"));
 		tevent_req_nterror(req, NT_STATUS_NOT_SUPPORTED);
@@ -437,6 +438,7 @@ NTSTATUS nbt_getdc_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 }
 
 NTSTATUS nbt_getdc(struct messaging_context *msg_ctx,
+		   uint32_t timeout_in_seconds,
 		   const struct sockaddr_storage *dc_addr,
 		   const char *domain_name,
 		   const struct dom_sid *sid,
@@ -458,6 +460,10 @@ NTSTATUS nbt_getdc(struct messaging_context *msg_ctx,
 	req = nbt_getdc_send(ev, ev, msg_ctx, dc_addr, domain_name,
 			     sid, nt_version);
 	if (req == NULL) {
+		goto fail;
+	}
+	if (!tevent_req_set_endtime(req, ev,
+			timeval_current_ofs(timeout_in_seconds, 0))) {
 		goto fail;
 	}
 	if (!tevent_req_poll_ntstatus(req, ev, &status)) {

@@ -4,6 +4,7 @@
 
    Copyright (C) Wilco Baan Hofman 2006
    Copyright (C) Jelmer Vernooij 2006
+   Copyright (C) Andrew Bartlett 2012
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -27,6 +28,10 @@
 #include "../librpc/gen_ndr/drsblobs.h"
 #include "../librpc/gen_ndr/ndr_drsblobs.h"
 #include "../libcli/security/dom_sid.h"
+#include "../libcli/auth/libcli_auth.h"
+#include "../auth/common_auth.h"
+#include "lib/tsocket/tsocket.h"
+#include "include/auth.h"
 
 #define TRUST_DOM "trustdom"
 #define TRUST_PWD "trustpwd1232"
@@ -38,6 +43,7 @@ static bool samu_correct(struct samu *s1, struct samu *s2)
 	uint32 s1_len, s2_len;
 	const char *s1_buf, *s2_buf;
 	const uint8 *d1_buf, *d2_buf;
+	const struct dom_sid *s1_sid, *s2_sid;
 
 	/* Check Unix username */
 	s1_buf = pdb_get_username(s1);
@@ -128,13 +134,17 @@ static bool samu_correct(struct samu *s1, struct samu *s2)
 
 	/* Check logoff time */
 	if (pdb_get_logoff_time(s1) != pdb_get_logoff_time(s2)) {
-		DEBUG(0, ("Logoff time is not written correctly\n"));
+		DEBUG(0, ("Logoff time is not written correctly: %s vs %s \n",
+			  http_timestring(talloc_tos(), pdb_get_logoff_time(s1)),
+			  http_timestring(talloc_tos(), pdb_get_logoff_time(s2))));
 		ret = False;
 	}
 
 	/* Check kickoff time */
-	if (pdb_get_kickoff_time(s1) != pdb_get_logoff_time(s2)) {
-		DEBUG(0, ("Kickoff time is not written correctly\n"));
+	if (pdb_get_kickoff_time(s1) != pdb_get_kickoff_time(s2)) {
+		DEBUG(0, ("Kickoff time is not written correctly: %s vs %s \n",
+			  http_timestring(talloc_tos(), pdb_get_kickoff_time(s1)),
+			  http_timestring(talloc_tos(), pdb_get_kickoff_time(s2))));
 		ret = False;
 	}
 
@@ -146,13 +156,17 @@ static bool samu_correct(struct samu *s1, struct samu *s2)
 
 	/* Check password last set time */
 	if (pdb_get_pass_last_set_time(s1) != pdb_get_pass_last_set_time(s2)) {
-		DEBUG(0, ("Password last set time is not written correctly\n"));
+		DEBUG(0, ("Password last set time is not written correctly: %s vs %s \n",
+			  http_timestring(talloc_tos(), pdb_get_pass_last_set_time(s1)),
+			  http_timestring(talloc_tos(), pdb_get_pass_last_set_time(s2))));
 		ret = False;
 	}
 
 	/* Check password can change time */
 	if (pdb_get_pass_can_change_time(s1) != pdb_get_pass_can_change_time(s2)) {
-		DEBUG(0, ("Password can change time is not written correctly\n"));
+		DEBUG(0, ("Password can change time is not written correctly %s vs %s \n",
+			  http_timestring(talloc_tos(), pdb_get_pass_can_change_time(s1)),
+			  http_timestring(talloc_tos(), pdb_get_pass_can_change_time(s2))));
 		ret = False;
 	}
 
@@ -225,9 +239,109 @@ static bool samu_correct(struct samu *s1, struct samu *s2)
 		ret = False;
 	}
 
-	/* TODO Check user and group sids */
+	/* Check user and group sids */
+	s1_sid = pdb_get_user_sid(s1);
+	s2_sid = pdb_get_user_sid(s2);
+	if (s2_sid == NULL && s1_sid != NULL) {
+		DEBUG(0, ("USER SID not set\n"));
+		ret = False;
+	} else if (s1_sid == NULL) {
+		/* Do nothing */
+	} else if (!dom_sid_equal(s1_sid, s2_sid)) {
+		DEBUG(0, ("USER SID is not written correctly\n"));
+		ret = False;
+	}
 
 	return ret;	
+}
+
+static bool test_auth(TALLOC_CTX *mem_ctx, struct samu *pdb_entry)
+{
+	struct auth_usersupplied_info *user_info;
+	struct auth_context *auth_context;
+	static const uint8_t challenge_8[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+	DATA_BLOB challenge = data_blob_const(challenge_8, sizeof(challenge_8));
+	struct tsocket_address *tsocket_address;
+	unsigned char local_nt_response[24];
+	DATA_BLOB nt_resp = data_blob_const(local_nt_response, sizeof(local_nt_response));
+	unsigned char local_nt_session_key[16];
+	struct netr_SamInfo3 *info3_sam, *info3_auth;
+	struct auth_serversupplied_info *server_info;
+	NTSTATUS status;
+	
+	SMBOWFencrypt(pdb_get_nt_passwd(pdb_entry), challenge_8,
+		      local_nt_response);
+	SMBsesskeygen_ntv1(pdb_get_nt_passwd(pdb_entry), local_nt_session_key);
+
+	if (tsocket_address_inet_from_strings(NULL, "ip", NULL, 0, &tsocket_address) != 0) {
+		return False;
+	}
+	
+	status = make_user_info(&user_info, pdb_get_username(pdb_entry), pdb_get_username(pdb_entry), 
+				pdb_get_domain(pdb_entry), pdb_get_domain(pdb_entry), lp_netbios_name(), 
+				tsocket_address, NULL, &nt_resp, NULL, NULL, NULL, 
+				AUTH_PASSWORD_RESPONSE);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("Failed to test authentication with check_sam_security_info3: %s\n", nt_errstr(status)));
+		return False;
+	}
+
+	status = check_sam_security_info3(&challenge, NULL, user_info, &info3_sam);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("Failed to test authentication with check_sam_security_info3: %s\n", nt_errstr(status)));
+		return False;
+	}
+
+	if (memcmp(info3_sam->base.key.key, local_nt_session_key, 16) != 0) {
+		DEBUG(0, ("Returned NT session key is incorrect\n"));
+		return False;
+	}
+
+	status = make_auth_context_fixed(NULL, &auth_context, challenge.data);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("Failed to test authentication with check_sam_security_info3: %s\n", nt_errstr(status)));
+		return False;
+	}
+	
+	status = auth_check_ntlm_password(auth_context, user_info, &server_info);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("Failed to test authentication with auth module: %s\n", nt_errstr(status)));
+		return False;
+	}
+	
+	info3_auth = talloc_zero(mem_ctx, struct netr_SamInfo3);
+	if (info3_auth == NULL) {
+		return False;
+	}
+
+	status = serverinfo_to_SamInfo3(server_info, info3_auth);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("serverinfo_to_SamInfo3 failed: %s\n",
+			  nt_errstr(status)));
+		return False;
+	}
+
+	if (memcmp(info3_auth->base.key.key, local_nt_session_key, 16) != 0) {
+		DEBUG(0, ("Returned NT session key is incorrect\n"));
+		return False;
+	}
+
+	if (!dom_sid_equal(info3_sam->base.domain_sid, info3_auth->base.domain_sid)) {
+		DEBUG(0, ("domain_sid in SAM info3 %s does not match domain_sid in AUTH info3 %s\n", 
+			  dom_sid_string(NULL, info3_sam->base.domain_sid),
+			  dom_sid_string(NULL, info3_auth->base.domain_sid)));
+		return False;
+	}
+	
+	/* TODO: 
+	 * Compre more details from the two info3 structures,
+	 * then test that an expired/disabled/pwdmustchange account
+	 * returns the correct errors
+	 */
+
+	return True;
 }
 
 static bool test_trusted_domains(TALLOC_CTX *ctx,
@@ -339,6 +453,8 @@ int main(int argc, char **argv)
 		POPT_TABLEEND
 	};
 
+	ctx = talloc_stackframe();
+
 	load_case_tables();
 
 	pc = poptGetContext("pdbtest", argc, (const char **) argv,
@@ -353,6 +469,7 @@ int main(int argc, char **argv)
 	/* Load configuration */
 	lp_load_global(get_dyn_CONFIGFILE());
 	setup_logging("pdbtest", DEBUG_STDOUT);
+	init_names();
 
 	if (backend == NULL) {
 		backend = lp_passdb_backend();
@@ -363,8 +480,6 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Error initializing '%s': %s\n", backend, get_friendly_nt_error_msg(rv));
 		exit(1);
 	}
-
-	ctx = talloc_init("PDBTEST");
 
 	if (!(out = samu_new(ctx))) {
 		fprintf(stderr, "Can't create samu structure.\n");
@@ -381,6 +496,8 @@ int main(int argc, char **argv)
 	pdb_set_profile_path(out, "\\\\torture\\profile", PDB_SET);
 	pdb_set_homedir(out, "\\\\torture\\home", PDB_SET);
 	pdb_set_logon_script(out, "torture_script.cmd", PDB_SET);
+
+	pdb_set_acct_ctrl(out, ACB_NORMAL, PDB_SET);
 
 	pdb_get_account_policy(PDB_POLICY_PASSWORD_HISTORY, &history);
 	if (history * PW_HISTORY_ENTRY_LEN < NT_HASH_LEN) {
@@ -409,17 +526,17 @@ int main(int argc, char **argv)
 	pdb_get_account_policy(PDB_POLICY_MIN_PASSWORD_AGE, &min_age);
 	pdb_set_pass_last_set_time(out, time(NULL), PDB_SET);
 
-	if (expire == 0 || expire == (uint32)-1) {
-		pdb_set_pass_must_change_time(out, get_time_t_max(), PDB_SET);
-	} else {
-		pdb_set_pass_must_change_time(out, time(NULL)+expire, PDB_SET);
-	}
-
 	if (min_age == (uint32)-1) {
 		pdb_set_pass_can_change_time(out, 0, PDB_SET);
 	} else {
 		pdb_set_pass_can_change_time(out, time(NULL)+min_age, PDB_SET);
 	}
+
+	pdb_set_logon_time(out, time(NULL)-3600, PDB_SET);
+
+	pdb_set_logoff_time(out, time(NULL), PDB_SET);
+
+	pdb_set_kickoff_time(out, time(NULL)+3600, PDB_SET);
 
 	/* Create account */
 	if (!NT_STATUS_IS_OK(rv = pdb->add_sam_account(pdb, out))) {
@@ -434,14 +551,16 @@ int main(int argc, char **argv)
 	}
 
 	/* Get account information through getsampwnam() */
-	if (NT_STATUS_IS_ERR(pdb->getsampwnam(pdb, in, out->username))) {
-		fprintf(stderr, "Error getting sampw of added user %s.\n",
-				out->username);
+	rv = pdb->getsampwnam(pdb, in, out->username);
+	if (NT_STATUS_IS_ERR(rv)) {
+		fprintf(stderr, "Error getting sampw of added user %s: %s\n",
+			out->username, nt_errstr(rv));
 		if (!NT_STATUS_IS_OK(rv = pdb->delete_sam_account(pdb, out))) {
 			fprintf(stderr, "Error in delete_sam_account %s\n", 
 					get_friendly_nt_error_msg(rv));
 		}
 		TALLOC_FREE(ctx);
+		exit(1);
 	}
 
 	/* Verify integrity */
@@ -451,6 +570,14 @@ int main(int argc, char **argv)
 		printf("User info NOT written correctly\n");
 		error = True;
 	}
+
+	if (test_auth(ctx, out)) {
+		printf("Authentication module test passed\n");
+	} else {
+		printf("Authentication module test failed!\n");
+		error = True;
+	}
+			
 
 	/* Delete account */
 	if (!NT_STATUS_IS_OK(rv = pdb->delete_sam_account(pdb, out))) {

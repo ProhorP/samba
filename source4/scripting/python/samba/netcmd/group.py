@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Adds a new user to a Samba4 server
 # Copyright Jelmer Vernooij 2008
 #
@@ -22,6 +20,8 @@
 import samba.getopt as options
 from samba.netcmd import Command, SuperCommand, CommandError, Option
 import ldb
+from samba.ndr import ndr_unpack
+from samba.dcerpc import security
 
 from getpass import getpass
 from samba.auth import system_session
@@ -40,7 +40,7 @@ distribution_group = dict({"Domain": GTYPE_DISTRIBUTION_DOMAIN_LOCAL_GROUP, "Glo
 
 
 class cmd_group_add(Command):
-    """Creates a new AD group
+    """Creates a new AD group.
 
 This command creates a new Active Directory group.  The groupname specified on the command is a unique sAMAccountName.
 
@@ -96,9 +96,9 @@ Example2 adds a new distribution group to the local server.  The command is run 
             group_type=None, description=None, mail_address=None, notes=None):
 
         if (group_type or "Security") == "Security":
-              gtype = security_group.get(group_scope, GTYPE_SECURITY_GLOBAL_GROUP)
+            gtype = security_group.get(group_scope, GTYPE_SECURITY_GLOBAL_GROUP)
         else:
-              gtype = distribution_group.get(group_scope, GTYPE_DISTRIBUTION_GLOBAL_GROUP)
+            gtype = distribution_group.get(group_scope, GTYPE_DISTRIBUTION_GLOBAL_GROUP)
 
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp, fallback_machine=True)
@@ -115,7 +115,7 @@ Example2 adds a new distribution group to the local server.  The command is run 
 
 
 class cmd_group_delete(Command):
-    """Deletes an AD group
+    """Deletes an AD group.
 
 The command deletes an existing AD group from the Active Directory domain.  The groupname specified on the command is the sAMAccountName.
 
@@ -165,7 +165,7 @@ Example2 deletes group Group2 from the local server.  The command is run under r
 
 
 class cmd_group_add_members(Command):
-    """Add members to an AD group
+    """Add members to an AD group.
 
 This command adds one or more members to an existing Active Directory group.  The command accepts one or more group member names seperated by commas.  A group member may be a user or computer account or another Active Directory group.
 
@@ -206,7 +206,9 @@ Example2 shows how to add a single user account, User2, to the supergroup AD gro
         try:
             samdb = SamDB(url=H, session_info=system_session(),
                           credentials=creds, lp=lp)
-            samdb.add_remove_group_members(groupname, listofmembers, add_members_operation=True)
+            groupmembers = listofmembers.split(',')
+            samdb.add_remove_group_members(groupname, groupmembers,
+                    add_members_operation=True)
         except Exception, e:
             # FIXME: catch more specific exception
             raise CommandError('Failed to add members "%s" to group "%s"' % (
@@ -215,7 +217,7 @@ Example2 shows how to add a single user account, User2, to the supergroup AD gro
 
 
 class cmd_group_remove_members(Command):
-    """Remove members from an AD group
+    """Remove members from an AD group.
 
 This command removes one or more members from an existing Active Directory group.  The command accepts one or more group member names seperated by commas.  A group member may be a user or computer account or another Active Directory group that is a member of the group specified on the command.
 
@@ -256,18 +258,119 @@ Example2 shows how to remove a single user account, User2, from the supergroup A
         try:
             samdb = SamDB(url=H, session_info=system_session(),
                           credentials=creds, lp=lp)
-            samdb.add_remove_group_members(groupname, listofmembers, add_members_operation=False)
+            samdb.add_remove_group_members(groupname, listofmembers.split(","),
+                    add_members_operation=False)
         except Exception, e:
             # FIXME: Catch more specific exception
             raise CommandError('Failed to remove members "%s" from group "%s"' % (listofmembers, groupname), e)
         self.outf.write("Removed members from group %s\n" % groupname)
 
 
+class cmd_group_list(Command):
+    """List all groups."""
+
+    synopsis = "%prog [options]"
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+
+        samdb = SamDB(url=H, session_info=system_session(),
+            credentials=creds, lp=lp)
+
+        domain_dn = samdb.domain_dn()
+        res = samdb.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                    expression=("(objectClass=group)"),
+                    attrs=["samaccountname"])
+        if (len(res) == 0):
+            return
+
+        for msg in res:
+            self.outf.write("%s\n" % msg.get("samaccountname", idx=0))
+
+
+class cmd_group_list_members(Command):
+    """List all members of an AD group.
+
+This command lists members from an existing Active Directory group. The command accepts one group name.
+
+Example1:
+samba-tool group listmembers \"Domain Users\" -H ldap://samba.samdom.example.com -Uadministrator%passw0rd
+"""
+
+    synopsis = "%prog <groupname> [options]"
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server", type=str,
+               metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    takes_args = ["groupname"]
+
+    def run(self, groupname, credopts=None, sambaopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+
+        try:
+            samdb = SamDB(url=H, session_info=system_session(),
+                          credentials=creds, lp=lp)
+
+            search_filter = "(&(objectClass=group)(samaccountname=%s))" % groupname
+            res = samdb.search(samdb.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                               expression=(search_filter),
+                               attrs=["objectSid"])
+
+            if (len(res) != 1):
+                return
+
+            group_dn = res[0].get('dn', idx=0)
+            object_sid = res[0].get('objectSid', idx=0)
+
+            object_sid = ndr_unpack(security.dom_sid, object_sid)
+            (group_dom_sid, rid) = object_sid.split()
+
+            search_filter = "(|(primaryGroupID=%s)(memberOf=%s))" % (rid, group_dn)
+            res = samdb.search(samdb.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                               expression=(search_filter),
+                               attrs=["samAccountName", "cn"])
+
+            if (len(res) == 0):
+                return
+
+            for msg in res:
+                member_name = msg.get("samAccountName", idx=0)
+                if member_name is None:
+                    member_name = msg.get("cn", idx=0)
+                self.outf.write("%s\n" % member_name)
+
+        except Exception, e:
+            raise CommandError('Failed to list members of "%s" group ' % groupname, e)
+
+
 class cmd_group(SuperCommand):
-    """Group management"""
+    """Group management."""
 
     subcommands = {}
     subcommands["add"] = cmd_group_add()
     subcommands["delete"] = cmd_group_delete()
     subcommands["addmembers"] = cmd_group_add_members()
     subcommands["removemembers"] = cmd_group_remove_members()
+    subcommands["list"] = cmd_group_list()
+    subcommands["listmembers"] = cmd_group_list_members()

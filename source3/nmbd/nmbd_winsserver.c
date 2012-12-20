@@ -217,7 +217,7 @@ static TDB_DATA name_to_key(const struct nmb_name *nmbname)
 	memset(keydata, '\0', sizeof(keydata));
 
 	pull_ascii_nstring(keydata, sizeof(unstring), nmbname->name);
-	strupper_m(keydata);
+	(void)strupper_m(keydata);
 	keydata[sizeof(unstring)] = nmbname->name_type;
 	key.dptr = (uint8 *)keydata;
 	key.dsize = sizeof(keydata);
@@ -461,7 +461,7 @@ static void get_global_id_and_update(uint64_t *current_id, bool update)
 static void wins_hook(const char *operation, struct name_record *namerec, int ttl)
 {
 	char *command = NULL;
-	char *cmd = lp_wins_hook();
+	char *cmd = lp_wins_hook(talloc_tos());
 	char *p, *namestr;
 	int i;
 	TALLOC_CTX *ctx = talloc_tos();
@@ -1038,7 +1038,7 @@ static void wins_register_query_success(struct subnet_record *subrec,
 	DEBUG(3,("wins_register_query_success: Original client at IP %s still wants the \
 name %s. Rejecting registration request.\n", inet_ntoa(ip), nmb_namestr(question_name) ));
 
-	send_wins_name_registration_response(RFS_ERR, 0, orig_reg_packet);
+	send_wins_name_registration_response(ACT_ERR, 0, orig_reg_packet);
 
 	orig_reg_packet->locked = False;
 	free_packet(orig_reg_packet);
@@ -2092,7 +2092,7 @@ void wins_process_name_query_request(struct subnet_record *subrec,
 	 * Name not found in WINS - try a dns query if it's a 0x20 name.
 	 */
 
-	if(lp_dns_proxy() && ((question->name_type == 0x20) || question->name_type == 0)) {
+	if(lp_wins_dns_proxy() && ((question->name_type == 0x20) || question->name_type == 0)) {
 		DEBUG(3,("wins_process_name_query: name query for name %s not found - doing dns lookup.\n",
 				nmb_namestr(question) ));
 
@@ -2470,7 +2470,7 @@ void wins_write_database(time_t t, bool background)
 	/* We will do the writing in a child process to ensure that the parent doesn't block while this is done */
 	if (background) {
 		CatchChild();
-		if (sys_fork()) {
+		if (fork()) {
 			return;
 		}
 		if (tdb_reopen(wins_tdb)) {
@@ -2487,7 +2487,7 @@ void wins_write_database(time_t t, bool background)
 	/* This is safe as the 0 length means "don't expand". */
 	all_string_sub(fname,"//", "/", 0);
 
-	if (asprintf(&fnamenew, "%s.%u", fname, (unsigned int)sys_getpid()) < 0) {
+	if (asprintf(&fnamenew, "%s.%u", fname, (unsigned int)getpid()) < 0) {
 		goto err_exit;
 	}
 

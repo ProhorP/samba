@@ -39,7 +39,7 @@ static int partition_metadata_get_uint64(struct ldb_module *module,
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
 
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata tdb not initialized");
 	}
@@ -54,14 +54,14 @@ static int partition_metadata_get_uint64(struct ldb_module *module,
 	tdb_key.dptr = (uint8_t *)discard_const_p(char, key);
 	tdb_key.dsize = strlen(key);
 
-	tdb_data = tdb_fetch_compat(tdb, tdb_key);
+	tdb_data = tdb_fetch(tdb, tdb_key);
 	if (!tdb_data.dptr) {
 		if (tdb_error(tdb) == TDB_ERR_NOEXIST) {
 			*value = default_value;
 			return LDB_SUCCESS;
 		} else {
 			return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-						tdb_errorstr_compat(tdb));
+						tdb_errorstr(tdb));
 		}
 	}
 
@@ -98,7 +98,7 @@ static int partition_metadata_set_uint64(struct ldb_module *module,
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
 
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata tdb not initialized");
 	}
@@ -131,13 +131,45 @@ static int partition_metadata_set_uint64(struct ldb_module *module,
 	if (tdb_store(tdb, tdb_key, tdb_data, tdb_flag) != 0) {
 		talloc_free(tmp_ctx);
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-					tdb_errorstr_compat(tdb));
+					tdb_errorstr(tdb));
 	}
 
 	talloc_free(tmp_ctx);
 
 	return LDB_SUCCESS;
 }
+
+int partition_metadata_inc_schema_sequence(struct ldb_module *module)
+{
+	struct partition_private_data *data;
+	int ret;
+	uint64_t value;
+
+	data = talloc_get_type_abort(ldb_module_get_private(module),
+				    struct partition_private_data);
+	if (!data || !data->metadata) {
+		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
+					"partition_metadata: metadata not initialized");
+	}
+
+	if (data->metadata->in_transaction == 0) {
+		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
+					"partition_metadata: increment sequence number without transaction");
+	}
+	ret = partition_metadata_get_uint64(module, DSDB_METADATA_SCHEMA_SEQ_NUM, &value, 0);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
+	value++;
+	ret = partition_metadata_set_uint64(module, DSDB_METADATA_SCHEMA_SEQ_NUM, value, false);
+	if (ret == LDB_ERR_OPERATIONS_ERROR) {
+		/* Modify failed, let's try the add */
+		ret = partition_metadata_set_uint64(module, DSDB_METADATA_SCHEMA_SEQ_NUM, value, true);
+	}
+	return ret;
+}
+
 
 
 /*
@@ -228,68 +260,13 @@ static int partition_metadata_open(struct ldb_module *module, bool create)
  */
 static int partition_metadata_set_sequence_number(struct ldb_module *module)
 {
-	struct partition_private_data *data;
-	struct ldb_result *res;
-	struct ldb_request *req;
-	struct ldb_seqnum_request *seq;
-	struct ldb_seqnum_result *seqr;
-	struct ldb_extended *ext;
-	TALLOC_CTX *tmp_ctx;
 	int ret;
 	uint64_t seq_number;
 
-	data = talloc_get_type_abort(ldb_module_get_private(module),
-				    struct partition_private_data);
-	if (!data || !data->metadata) {
-		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-					"partition_metadata: metadata not initialized");
-	}
-
-	tmp_ctx = talloc_new(data->metadata);
-	if (tmp_ctx == NULL) {
-		return ldb_module_oom(module);
-	}
-
-	res = talloc_zero(tmp_ctx, struct ldb_result);
-	if (res == NULL) {
-		talloc_free(tmp_ctx);
-		return ldb_module_oom(module);
-	}
-
-	seq = talloc_zero(tmp_ctx, struct ldb_seqnum_request);
-	if (seq == NULL) {
-		talloc_free(tmp_ctx);
-		return ldb_module_oom(module);
-	}
-	seq->type = LDB_SEQ_HIGHEST_SEQ;
-
-	/* Build an extended request, so it can be passed to each partition in
-	   partition_sequence_number_from_partitions() */
-	ret = ldb_build_extended_req(&req,
-				     ldb_module_get_ctx(module),
-				     tmp_ctx,
-				     LDB_EXTENDED_SEQUENCE_NUMBER,
-				     seq,
-				     NULL,
-				     res,
-				     ldb_extended_default_callback,
-				     NULL);
-	LDB_REQ_SET_LOCATION(req);
+	ret = partition_sequence_number_from_partitions(module, &seq_number);
 	if (ret != LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
 		return ret;
 	}
-
-	ret = partition_sequence_number_from_partitions(module, req, &ext);
-	if (ret != LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
-		return ret;
-	}
-
-	seqr = talloc_get_type_abort(ext->data, struct ldb_seqnum_result);
-	seq_number = seqr->seq_num;
-
-	talloc_free(tmp_ctx);
 
 	return partition_metadata_set_uint64(module, LDB_METADATA_SEQ_NUM, seq_number, true);
 }
@@ -359,7 +336,7 @@ int partition_metadata_sequence_number_increment(struct ldb_module *module, uint
 
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				    struct partition_private_data);
-	if (!data && !data->metadata) {
+	if (!data || !data->metadata) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata not initialized");
 	}
@@ -390,7 +367,7 @@ int partition_metadata_start_trans(struct ldb_module *module)
 
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata not initialized");
 	}
@@ -398,7 +375,7 @@ int partition_metadata_start_trans(struct ldb_module *module)
 
 	if (tdb_transaction_start(tdb) != 0) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-					tdb_errorstr_compat(tdb));
+					tdb_errorstr(tdb));
 	}
 
 	data->metadata->in_transaction++;
@@ -417,7 +394,7 @@ int partition_metadata_prepare_commit(struct ldb_module *module)
 
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata not initialized");
 	}
@@ -430,7 +407,7 @@ int partition_metadata_prepare_commit(struct ldb_module *module)
 
 	if (tdb_transaction_prepare_commit(tdb) != 0) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-					tdb_errorstr_compat(tdb));
+					tdb_errorstr(tdb));
 	}
 
 	return LDB_SUCCESS;
@@ -447,7 +424,7 @@ int partition_metadata_end_trans(struct ldb_module *module)
 
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata not initialized");
 	}
@@ -462,7 +439,7 @@ int partition_metadata_end_trans(struct ldb_module *module)
 
 	if (tdb_transaction_commit(tdb) != 0) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-					tdb_errorstr_compat(tdb));
+					tdb_errorstr(tdb));
 	}
 
 	return LDB_SUCCESS;
@@ -479,7 +456,7 @@ int partition_metadata_del_trans(struct ldb_module *module)
 
 	data = talloc_get_type_abort(ldb_module_get_private(module),
 				     struct partition_private_data);
-	if (!data && !data->metadata && !data->metadata->db) {
+	if (!data || !data->metadata || !data->metadata->db) {
 		return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
 					"partition_metadata: metadata not initialized");
 	}

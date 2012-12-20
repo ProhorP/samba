@@ -77,16 +77,13 @@ struct cli_state {
 	bool dfsroot;
 	bool backup_intent;
 
-	/* the session key for this CLI, outside
-	   any per-pipe authenticaion */
-	DATA_BLOB user_session_key;
-
 	/* The list of pipes currently open on this connection. */
 	struct rpc_pipe_client *pipe_list;
 
 	bool use_kerberos;
 	bool fallback_after_kerberos;
 	bool use_ccache;
+	bool pw_nt_hash;
 	bool got_kerberos_mechanism; /* Server supports krb5 in SPNEGO. */
 
 	bool use_oplocks; /* should we use oplocks? */
@@ -102,20 +99,13 @@ struct cli_state {
 	struct {
 		uint16_t pid;
 		uint16_t vc_num;
-		uint16_t tid;
-		uint16_t uid;
+		struct smbXcli_session *session;
+		struct smbXcli_tcon *tcon;
 	} smb1;
 
 	struct {
-		uint32_t pid;
-		uint32_t tid;
 		struct smbXcli_session *session;
-
-		/* SMB2 tcon */
-		uint8_t share_type;
-		uint32_t share_flags;
-		uint32_t share_capabilities;
-		uint32_t maximal_access;
+		struct smbXcli_tcon *tcon;
 	} smb2;
 };
 
@@ -141,5 +131,6 @@ struct file_info {
 #define CLI_FULL_CONNECTION_USE_CCACHE 0x0040
 #define CLI_FULL_CONNECTION_FORCE_DOS_ERRORS 0x0080
 #define CLI_FULL_CONNECTION_FORCE_ASCII 0x0100
+#define CLI_FULL_CONNECTION_USE_NT_HASH 0x0200
 
 #endif /* _CLIENT_H */

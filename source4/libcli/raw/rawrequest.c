@@ -146,6 +146,8 @@ struct smbcli_request *smbcli_request_setup_session(struct smbcli_session *sessi
 
 	if (!req) return NULL;
 
+	smb1cli_session_set_id(session->smbXcli, session->vuid);
+
 	req->session = session;
 
 	SSVAL(req->out.hdr, HDR_FLG2, session->flags2);
@@ -167,6 +169,8 @@ struct smbcli_request *smbcli_request_setup(struct smbcli_tree *tree,
 
 	req = smbcli_request_setup_session(tree->session, command, wct, buflen);
 	if (req) {
+		smb1cli_tcon_set_id(tree->smbXcli, tree->tid);
+
 		req->tree = tree;
 		SSVAL(req->out.hdr,HDR_TID,tree->tid);
 	}

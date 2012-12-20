@@ -23,7 +23,7 @@
 #include "util_tdb.h"
 #include "dbwrap/dbwrap.h"
 #include "dbwrap/dbwrap_open.h"
-#include "lib/util/tdb_wrap.h"
+#include "lib/tdb_wrap/tdb_wrap.h"
 #include "lib/param/param.h"
 #include "ctdbd_conn.h"
 #include "messages.h"
@@ -44,7 +44,7 @@ bool serverid_parent_init(TALLOC_CTX *mem_ctx)
 	struct tdb_wrap *db;
 	struct loadparm_context *lp_ctx;
 
-	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_context());
+	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
 	if (lp_ctx == NULL) {
 		DEBUG(0, ("loadparm_init_s3 failed\n"));
 		return false;
@@ -251,84 +251,205 @@ static void server_exists_parse(TDB_DATA key, TDB_DATA data, void *priv)
 
 bool serverid_exists(const struct server_id *id)
 {
-	struct db_context *db;
-	struct serverid_exists_state state;
-	struct serverid_key key;
-	TDB_DATA tdbkey;
-	NTSTATUS status;
+	bool result = false;
+	bool ok = false;
 
-	if (procid_is_me(id)) {
-		return true;
-	}
-
-	if (!process_exists(*id)) {
+	ok = serverids_exist(id, 1, &result);
+	if (!ok) {
 		return false;
 	}
 
-	if (id->unique_id == SERVERID_UNIQUE_ID_NOT_TO_VERIFY) {
-		return true;
-	}
-
-	db = serverid_db();
-	if (db == NULL) {
-		return false;
-	}
-
-	serverid_fill_key(id, &key);
-	tdbkey = make_tdb_data((uint8_t *)&key, sizeof(key));
-
-	state.id = id;
-	state.exists = false;
-
-	status = dbwrap_parse_record(db, tdbkey, server_exists_parse, &state);
-	if (!NT_STATUS_IS_OK(status)) {
-		return false;
-	}
-	return state.exists;
+	return result;
 }
 
 bool serverids_exist(const struct server_id *ids, int num_ids, bool *results)
 {
+	int *todo_idx = NULL;
+	struct server_id *todo_ids = NULL;
+	bool *todo_results = NULL;
+	int todo_num = 0;
+	int *remote_idx = NULL;
+	int remote_num = 0;
+	int *verify_idx = NULL;
+	int verify_num = 0;
+	int t, idx;
+	bool result = false;
 	struct db_context *db;
-	int i;
-
-#ifdef HAVE_CTDB_CONTROL_CHECK_SRVIDS_DECL
-	if (lp_clustering()) {
-		return ctdb_serverids_exist(messaging_ctdbd_connection(),
-					    ids, num_ids, results);
-	}
-#endif
-	if (!processes_exist(ids, num_ids, results)) {
-		return false;
-	}
 
 	db = serverid_db();
 	if (db == NULL) {
 		return false;
 	}
 
-	for (i=0; i<num_ids; i++) {
+	todo_idx = talloc_array(talloc_tos(), int, num_ids);
+	if (todo_idx == NULL) {
+		goto fail;
+	}
+	todo_ids = talloc_array(talloc_tos(), struct server_id, num_ids);
+	if (todo_ids == NULL) {
+		goto fail;
+	}
+	todo_results = talloc_array(talloc_tos(), bool, num_ids);
+	if (todo_results == NULL) {
+		goto fail;
+	}
+
+	remote_idx = talloc_array(talloc_tos(), int, num_ids);
+	if (remote_idx == NULL) {
+		goto fail;
+	}
+	verify_idx = talloc_array(talloc_tos(), int, num_ids);
+	if (verify_idx == NULL) {
+		goto fail;
+	}
+
+	for (idx=0; idx<num_ids; idx++) {
+		results[idx] = false;
+
+		if (server_id_is_disconnected(&ids[idx])) {
+			continue;
+		}
+
+		if (procid_is_me(&ids[idx])) {
+			results[idx] = true;
+			continue;
+		}
+
+		if (procid_is_local(&ids[idx])) {
+			bool exists = process_exists_by_pid(ids[idx].pid);
+
+			if (!exists) {
+				continue;
+			}
+
+			if (ids[idx].unique_id == SERVERID_UNIQUE_ID_NOT_TO_VERIFY) {
+				results[idx] = true;
+				continue;
+			}
+
+			verify_idx[verify_num] = idx;
+			verify_num += 1;
+			continue;
+		}
+
+		if (!lp_clustering()) {
+			continue;
+		}
+
+		remote_idx[remote_num] = idx;
+		remote_num += 1;
+	}
+
+#ifdef HAVE_CTDB_CONTROL_CHECK_SRVIDS_DECL
+	if (remote_num != 0) {
+		int old_remote_num = remote_num;
+
+		remote_num = 0;
+		todo_num = 0;
+
+		for (t=0; t<old_remote_num; t++) {
+			idx = remote_idx[t];
+
+			if (ids[idx].unique_id == SERVERID_UNIQUE_ID_NOT_TO_VERIFY) {
+				remote_idx[remote_num] = idx;
+				remote_num += 1;
+				continue;
+			}
+
+			todo_idx[todo_num] = idx;
+			todo_ids[todo_num] = ids[idx];
+			todo_results[todo_num] = false;
+			todo_num += 1;
+		}
+
+		/*
+		 * Note: this only uses CTDB_CONTROL_CHECK_SRVIDS
+		 * to verify that the server_id still exists,
+		 * which means only the server_id.unique_id and
+		 * server_id.vnn are verified, while server_id.pid
+		 * is not verified at all.
+		 *
+		 * TODO: do we want to verify server_id.pid somehow?
+		 */
+		if (!ctdb_serverids_exist(messaging_ctdbd_connection(),
+					  todo_ids, todo_num, todo_results))
+		{
+			goto fail;
+		}
+
+		for (t=0; t<todo_num; t++) {
+			idx = todo_idx[t];
+
+			results[idx] = todo_results[t];
+		}
+	}
+#endif
+
+	if (remote_num != 0) {
+		todo_num = 0;
+
+		for (t=0; t<remote_num; t++) {
+			idx = remote_idx[t];
+			todo_idx[todo_num] = idx;
+			todo_ids[todo_num] = ids[idx];
+			todo_results[todo_num] = false;
+			todo_num += 1;
+		}
+
+#ifdef CLUSTER_SUPPORT
+		if (!ctdb_processes_exist(messaging_ctdbd_connection(),
+					  todo_ids, todo_num,
+					  todo_results)) {
+			goto fail;
+		}
+#endif
+
+		for (t=0; t<todo_num; t++) {
+			idx = todo_idx[t];
+
+			if (!todo_results[t]) {
+				continue;
+			}
+
+			if (ids[idx].unique_id == SERVERID_UNIQUE_ID_NOT_TO_VERIFY) {
+				results[idx] = true;
+				continue;
+			}
+
+			verify_idx[verify_num] = idx;
+			verify_num += 1;
+		}
+	}
+
+	for (t=0; t<verify_num; t++) {
 		struct serverid_exists_state state;
 		struct serverid_key key;
 		TDB_DATA tdbkey;
+		NTSTATUS status;
 
-		if (ids[i].unique_id == SERVERID_UNIQUE_ID_NOT_TO_VERIFY) {
-			results[i] = true;
-			continue;
-		}
-		if (!results[i]) {
-			continue;
-		}
+		idx = verify_idx[t];
 
-		serverid_fill_key(&ids[i], &key);
+		serverid_fill_key(&ids[idx], &key);
 		tdbkey = make_tdb_data((uint8_t *)&key, sizeof(key));
 
-		state.id = &ids[i];
+		state.id = &ids[idx];
 		state.exists = false;
-		dbwrap_parse_record(db, tdbkey, server_exists_parse, &state);
-		results[i] = state.exists;
+		status = dbwrap_parse_record(db, tdbkey, server_exists_parse, &state);
+		if (!NT_STATUS_IS_OK(status)) {
+			results[idx] = false;
+			continue;
+		}
+		results[idx] = state.exists;
 	}
-	return true;
+
+	result = true;
+fail:
+	TALLOC_FREE(verify_idx);
+	TALLOC_FREE(remote_idx);
+	TALLOC_FREE(todo_results);
+	TALLOC_FREE(todo_ids);
+	TALLOC_FREE(todo_idx);
+	return result;
 }
 
 static bool serverid_rec_parse(const struct db_record *rec,

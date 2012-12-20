@@ -1,8 +1,10 @@
 #include "../common/tdb_private.h"
 
-/* Speed up the tests: setting TDB_NOSYNC removed recovery altogether. */
+/* Speed up the tests, but do the actual sync tests. */
+static unsigned int sync_counts = 0;
 static inline int fake_fsync(int fd)
 {
+	sync_counts++;
 	return 0;
 }
 #define fsync fake_fsync
@@ -10,6 +12,7 @@ static inline int fake_fsync(int fd)
 #ifdef MS_SYNC
 static inline int fake_msync(void *addr, size_t length, int flags)
 {
+	sync_counts++;
 	return 0;
 }
 #define msync fake_msync
@@ -18,6 +21,7 @@ static inline int fake_msync(void *addr, size_t length, int flags)
 #ifdef HAVE_FDATASYNC
 static inline int fake_fdatasync(int fd)
 {
+	sync_counts++;
 	return 0;
 }
 #define fdatasync fake_fdatasync
@@ -35,7 +39,6 @@ static inline int fake_fdatasync(int fd)
 #include "../common/hash.c"
 #include "tap-interface.h"
 #include <stdlib.h>
-#include <err.h>
 #include "logging.h"
 
 static void write_record(struct tdb_context *tdb, size_t extra_len,
@@ -59,7 +62,10 @@ int main(int argc, char *argv[])
 	struct tdb_record rec;
 	tdb_off_t off;
 
-	plan_tests(4);
+	/* Do *not* suppress sync for this test; we do it ourselves. */
+	unsetenv("TDB_NO_FSYNC");
+
+	plan_tests(5);
 	tdb = tdb_open_ex("run-transaction-expand.tdb",
 			  1024, TDB_CLEAR_IF_FIRST,
 			  O_CREAT|O_TRUNC|O_RDWR, 0600, &taplogctx, NULL);
@@ -74,8 +80,8 @@ int main(int argc, char *argv[])
 
 	tdb_ofs_read(tdb, TDB_RECOVERY_HEAD, &off);
 	tdb_read(tdb, off, &rec, sizeof(rec), DOCONV());
-	diag("TDB size = %zu, recovery = %u-%u",
-	     (size_t)tdb->map_size, off, off + sizeof(rec) + rec.rec_len);
+	diag("TDB size = %zu, recovery = %llu-%llu",
+	     (size_t)tdb->map_size, (unsigned long long)off, (unsigned long long)(off + sizeof(rec) + rec.rec_len));
 
 	/* We should only be about 5 times larger than largest record. */
 	ok1(tdb->map_size < 6 * i * getpagesize());
@@ -98,11 +104,14 @@ int main(int argc, char *argv[])
 
 	tdb_ofs_read(tdb, TDB_RECOVERY_HEAD, &off);
 	tdb_read(tdb, off, &rec, sizeof(rec), DOCONV());
-	diag("TDB size = %zu, recovery = %u-%u",
-	     (size_t)tdb->map_size, off, off + sizeof(rec) + rec.rec_len);
+	diag("TDB size = %zu, recovery = %llu-%llu",
+	     (size_t)tdb->map_size, (unsigned long long)off, (unsigned long long)(off + sizeof(rec) + rec.rec_len));
 
 	/* We should only be about 4 times larger than largest record. */
 	ok1(tdb->map_size < 5 * i * getpagesize());
+
+	/* We should have synchronized multiple times. */
+	ok1(sync_counts);
 	tdb_close(tdb);
 	free(data.dptr);
 

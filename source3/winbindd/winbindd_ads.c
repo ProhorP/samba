@@ -78,14 +78,14 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
 		}
 	}
 
-	/* we don't want this to affect the users ccache */
-	setenv("KRB5CCNAME", "MEMORY:winbind_ccache", 1);
-
 	ads = ads_init(domain->alt_name, domain->name, NULL);
 	if (!ads) {
 		DEBUG(1,("ads_init for domain %s failed\n", domain->name));
 		return NULL;
 	}
+
+	/* we don't want ads operations to affect the default ccache */
+	ads->auth.ccache_name = SMB_STRDUP("MEMORY:winbind_ccache");
 
 	/* the machine acct password might have change - fetch it every time */
 
@@ -99,7 +99,10 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
 			return NULL;
 		}
 		ads->auth.realm = SMB_STRDUP( ads->server.realm );
-		strupper_m( ads->auth.realm );
+		if (!strupper_m( ads->auth.realm )) {
+			ads_destroy( &ads );
+			return NULL;
+		}
 	}
 	else {
 		struct winbindd_domain *our_domain = domain;
@@ -114,7 +117,10 @@ static ADS_STRUCT *ads_cached_connection(struct winbindd_domain *domain)
 
 		if ( our_domain->alt_name[0] != '\0' ) {
 			ads->auth.realm = SMB_STRDUP( our_domain->alt_name );
-			strupper_m( ads->auth.realm );
+			if (!strupper_m( ads->auth.realm )) {
+				ads_destroy( &ads );
+				return NULL;
+			}
 		}
 		else
 			ads->auth.realm = SMB_STRDUP( lp_realm() );
@@ -188,8 +194,12 @@ static NTSTATUS query_user_list(struct winbindd_domain *domain,
 	}
 
 	rc = ads_search_retry(ads, &res, "(objectCategory=user)", attrs);
-	if (!ADS_ERR_OK(rc) || !res) {
+	if (!ADS_ERR_OK(rc)) {
 		DEBUG(1,("query_user_list ads_search: %s\n", ads_errstr(rc)));
+		status = ads_ntstatus(rc);
+	} else if (!res) {
+		DEBUG(1,("query_user_list ads_search returned NULL res\n"));
+
 		goto done;
 	}
 
@@ -340,8 +350,12 @@ static NTSTATUS enum_dom_groups(struct winbindd_domain *domain,
 	}
 
 	rc = ads_search_retry(ads, &res, filter, attrs);
-	if (!ADS_ERR_OK(rc) || !res) {
+	if (!ADS_ERR_OK(rc)) {
+		status = ads_ntstatus(rc);
 		DEBUG(1,("enum_dom_groups ads_search: %s\n", ads_errstr(rc)));
+		goto done;
+	} else if (!res) {
+		DEBUG(1,("enum_dom_groups ads_search returned NULL res\n"));
 		goto done;
 	}
 
@@ -489,7 +503,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 
 	/* try netsamlogon cache first */
 
-	if (winbindd_use_cache() && (user = netsamlogon_cache_get( mem_ctx, sid )) != NULL )
+	if ( (user = netsamlogon_cache_get( mem_ctx, sid )) != NULL ) 
 	{
 		DEBUG(5,("query_user: Cache lookup succeeded for %s\n", 
 			 sid_string_dbg(sid)));
@@ -550,10 +564,14 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 	}
 	rc = ads_search_retry(ads, &msg, ldap_exp, attrs);
 	SAFE_FREE(ldap_exp);
-	if (!ADS_ERR_OK(rc) || !msg) {
+	if (!ADS_ERR_OK(rc)) {
 		DEBUG(1,("query_user(sid=%s) ads_search: %s\n",
 			 sid_string_dbg(sid), ads_errstr(rc)));
 		return ads_ntstatus(rc);
+	} else if (!msg) {
+		DEBUG(1,("query_user(sid=%s) ads_search returned NULL res\n",
+			 sid_string_dbg(sid)));
+		return NT_STATUS_INTERNAL_ERROR;
 	}
 
 	count = ads_count_replies(ads, msg);
@@ -662,10 +680,14 @@ static NTSTATUS lookup_usergroups_member(struct winbindd_domain *domain,
 
 	rc = ads_search_retry(ads, &res, ldap_exp, group_attrs);
 
-	if (!ADS_ERR_OK(rc) || !res) {
+	if (!ADS_ERR_OK(rc)) {
 		DEBUG(1,("lookup_usergroups ads_search member=%s: %s\n", user_dn, ads_errstr(rc)));
 		return ads_ntstatus(rc);
+	} else if (!res) {
+		DEBUG(1,("lookup_usergroups ads_search returned NULL res\n"));
+		return NT_STATUS_INTERNAL_ERROR;
 	}
+
 
 	count = ads_count_replies(ads, res);
 

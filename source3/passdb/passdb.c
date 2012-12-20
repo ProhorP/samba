@@ -93,7 +93,6 @@ struct samu *samu_new( TALLOC_CTX *ctx )
 	user->pass_can_change_time  = (time_t)0;
 	user->logoff_time           = get_time_t_max();
 	user->kickoff_time          = get_time_t_max();
-	user->pass_must_change_time = get_time_t_max();
 	user->fields_present        = 0x00ffffff;
 	user->logon_divs = 168; 	/* hours per week */
 	user->hours_len = 21; 		/* 21 times 8 bits = 168 */
@@ -382,9 +381,7 @@ uint32_t pdb_decode_acct_ctrl(const char *p)
 void pdb_sethexpwd(char p[33], const unsigned char *pwd, uint32_t acct_ctrl)
 {
 	if (pwd != NULL) {
-		int i;
-		for (i = 0; i < 16; i++)
-			slprintf(&p[i*2], 3, "%02X", pwd[i]);
+		hex_encode_buf(p, pwd, 16);
 	} else {
 		if (acct_ctrl & ACB_PWNOTREQ)
 			strlcpy(p, "NO PASSWORDXXXXXXXXXXXXXXXXXXXXX", 33);
@@ -433,10 +430,7 @@ bool pdb_gethexpwd(const char *p, unsigned char *pwd)
 void pdb_sethexhours(char *p, const unsigned char *hours)
 {
 	if (hours != NULL) {
-		int i;
-		for (i = 0; i < 21; i++) {
-			slprintf(&p[i*2], 3, "%02X", hours[i]);
-		}
+		hex_encode_buf(p, hours, 21);
 	} else {
 		strlcpy(p, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 44);
 	}
@@ -629,7 +623,7 @@ bool lookup_global_sam_name(const char *name, int flags, uint32_t *rid,
 		TALLOC_FREE(sam_account);
 
 		if (ret) {
-			if (!sid_check_is_in_our_domain(&user_sid)) {
+			if (!sid_check_is_in_our_sam(&user_sid)) {
 				DEBUG(0, ("User %s with invalid SID %s in passdb\n",
 					  name, sid_string_dbg(&user_sid)));
 				return False;
@@ -660,7 +654,7 @@ bool lookup_global_sam_name(const char *name, int flags, uint32_t *rid,
 	}
 
 	/* BUILTIN groups are looked up elsewhere */
-	if (!sid_check_is_in_our_domain(&map->sid)) {
+	if (!sid_check_is_in_our_sam(&map->sid)) {
 		DEBUG(10, ("Found group %s (%s) not in our domain -- "
 			   "ignoring.", name, sid_string_dbg(&map->sid)));
 		TALLOC_FREE(map);
@@ -1028,7 +1022,6 @@ static bool init_samu_from_buffer_v0(struct samu *sampass, uint8_t *buf, uint32_
 	pdb_set_logoff_time(sampass, logoff_time, PDB_SET);
 	pdb_set_kickoff_time(sampass, kickoff_time, PDB_SET);
 	pdb_set_pass_can_change_time(sampass, pass_can_change_time, PDB_SET);
-	pdb_set_pass_must_change_time(sampass, pass_must_change_time, PDB_SET);
 	pdb_set_pass_last_set_time(sampass, pass_last_set_time, PDB_SET);
 
 	pdb_set_username(sampass, username, PDB_SET); 
@@ -1219,7 +1212,6 @@ static bool init_samu_from_buffer_v1(struct samu *sampass, uint8_t *buf, uint32_
 	/* Change from V0 is addition of bad_password_time field. */
 	pdb_set_bad_password_time(sampass, bad_password_time, PDB_SET);
 	pdb_set_pass_can_change_time(sampass, pass_can_change_time, PDB_SET);
-	pdb_set_pass_must_change_time(sampass, pass_must_change_time, PDB_SET);
 	pdb_set_pass_last_set_time(sampass, pass_last_set_time, PDB_SET);
 
 	pdb_set_username(sampass, username, PDB_SET); 
@@ -1410,7 +1402,6 @@ static bool init_samu_from_buffer_v2(struct samu *sampass, uint8_t *buf, uint32_
 	pdb_set_kickoff_time(sampass, kickoff_time, PDB_SET);
 	pdb_set_bad_password_time(sampass, bad_password_time, PDB_SET);
 	pdb_set_pass_can_change_time(sampass, pass_can_change_time, PDB_SET);
-	pdb_set_pass_must_change_time(sampass, pass_must_change_time, PDB_SET);
 	pdb_set_pass_last_set_time(sampass, pass_last_set_time, PDB_SET);
 
 	pdb_set_username(sampass, username, PDB_SET); 
@@ -1646,7 +1637,6 @@ static bool init_samu_from_buffer_v3(struct samu *sampass, uint8_t *buf, uint32_
 	pdb_set_kickoff_time(sampass, convert_uint32_t_to_time_t(kickoff_time), PDB_SET);
 	pdb_set_bad_password_time(sampass, convert_uint32_t_to_time_t(bad_password_time), PDB_SET);
 	pdb_set_pass_can_change_time(sampass, convert_uint32_t_to_time_t(pass_can_change_time), PDB_SET);
-	pdb_set_pass_must_change_time(sampass, convert_uint32_t_to_time_t(pass_must_change_time), PDB_SET);
 	pdb_set_pass_last_set_time(sampass, convert_uint32_t_to_time_t(pass_last_set_time), PDB_SET);
 
 	pdb_set_username(sampass, username, PDB_SET); 

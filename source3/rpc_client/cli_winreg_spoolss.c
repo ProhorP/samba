@@ -56,126 +56,124 @@
 
 /*        FLAGS,                NAME,                              with,   height,   left, top, right, bottom */
 static const struct spoolss_FormInfo1 builtin_forms1[] = {
-	{ SPOOLSS_FORM_BUILTIN, "10x11",                          {0x3e030,0x44368}, {0x0,0x0,0x3e030,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "10x14",                          {0x3e030,0x56d10}, {0x0,0x0,0x3e030,0x56d10} },
-	{ SPOOLSS_FORM_BUILTIN, "11x17",                          {0x44368,0x696b8}, {0x0,0x0,0x44368,0x696b8} },
-	{ SPOOLSS_FORM_BUILTIN, "12x11",                          {0x4a724,0x443e1}, {0x0,0x0,0x4a724,0x443e1} },
-	{ SPOOLSS_FORM_BUILTIN, "15x11",                          {0x5d048,0x44368}, {0x0,0x0,0x5d048,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "6 3/4 Envelope",                 {0x167ab,0x284ec}, {0x0,0x0,0x167ab,0x284ec} },
-	{ SPOOLSS_FORM_BUILTIN, "9x11",                           {0x37cf8,0x44368}, {0x0,0x0,0x37cf8,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "A0",                             {0xcd528,0x122488},{0x0,0x0,0xcd528,0x122488} },
-	{ SPOOLSS_FORM_BUILTIN, "A1",                             {0x91050,0xcd528}, {0x0,0x0,0x91050,0xcd528} },
-	{ SPOOLSS_FORM_BUILTIN, "A2",                             {0x668a0,0x91050}, {0x0,0x0,0x668a0,0x91050} },
-	{ SPOOLSS_FORM_BUILTIN, "A3 Extra Transverse",            {0x4e9d0,0x6ca48}, {0x0,0x0,0x4e9d0,0x6ca48} },
-	{ SPOOLSS_FORM_BUILTIN, "A3 Extra",                       {0x4e9d0,0x6ca48}, {0x0,0x0,0x4e9d0,0x6ca48} },
-	{ SPOOLSS_FORM_BUILTIN, "A3 Rotated",                     {0x668a0,0x48828}, {0x0,0x0,0x668a0,0x48828} },
-	{ SPOOLSS_FORM_BUILTIN, "A3 Transverse",                  {0x48828,0x668a0}, {0x0,0x0,0x48828,0x668a0} },
-	{ SPOOLSS_FORM_BUILTIN, "A3",                             {0x48828,0x668a0}, {0x0,0x0,0x48828,0x668a0} },
-	{ SPOOLSS_FORM_BUILTIN, "A4 Extra",                       {0x397c2,0x4eb16}, {0x0,0x0,0x397c2,0x4eb16} },
-	{ SPOOLSS_FORM_BUILTIN, "A4 Plus",                        {0x33450,0x50910}, {0x0,0x0,0x33450,0x50910} },
-	{ SPOOLSS_FORM_BUILTIN, "A4 Rotated",                     {0x48828,0x33450}, {0x0,0x0,0x48828,0x33450} },
-	{ SPOOLSS_FORM_BUILTIN, "A4 Small",                       {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
-	{ SPOOLSS_FORM_BUILTIN, "A4 Transverse",                  {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
-	{ SPOOLSS_FORM_BUILTIN, "A4",                             {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
-	{ SPOOLSS_FORM_BUILTIN, "A5 Extra",                       {0x2a7b0,0x395f8}, {0x0,0x0,0x2a7b0,0x395f8} },
-	{ SPOOLSS_FORM_BUILTIN, "A5 Rotated",                     {0x33450,0x24220}, {0x0,0x0,0x33450,0x24220} },
-	{ SPOOLSS_FORM_BUILTIN, "A5 Transverse",                  {0x24220,0x33450}, {0x0,0x0,0x24220,0x33450} },
-	{ SPOOLSS_FORM_BUILTIN, "A5",                             {0x24220,0x33450}, {0x0,0x0,0x24220,0x33450} },
-	{ SPOOLSS_FORM_BUILTIN, "A6 Rotated",                     {0x24220,0x19a28}, {0x0,0x0,0x24220,0x19a28} },
-	{ SPOOLSS_FORM_BUILTIN, "A6",                             {0x19a28,0x24220}, {0x0,0x0,0x19a28,0x24220} },
-	{ SPOOLSS_FORM_BUILTIN, "B4 (ISO)",                       {0x3d090,0x562e8}, {0x0,0x0,0x3d090,0x562e8} },
-	{ SPOOLSS_FORM_BUILTIN, "B4 (JIS) Rotated",               {0x58de0,0x3ebe8}, {0x0,0x0,0x58de0,0x3ebe8} },
-	{ SPOOLSS_FORM_BUILTIN, "B4 (JIS)",                       {0x3ebe8,0x58de0}, {0x0,0x0,0x3ebe8,0x58de0} },
-	{ SPOOLSS_FORM_BUILTIN, "B5 (ISO) Extra",                 {0x31128,0x43620}, {0x0,0x0,0x31128,0x43620} },
-	{ SPOOLSS_FORM_BUILTIN, "B5 (JIS) Rotated",               {0x3ebe8,0x2c6f0}, {0x0,0x0,0x3ebe8,0x2c6f0} },
-	{ SPOOLSS_FORM_BUILTIN, "B5 (JIS) Transverse",            {0x2c6f0,0x3ebe8}, {0x0,0x0,0x2c6f0,0x3ebe8} },
-	{ SPOOLSS_FORM_BUILTIN, "B5 (JIS)",                       {0x2c6f0,0x3ebe8}, {0x0,0x0,0x2c6f0,0x3ebe8} },
-	{ SPOOLSS_FORM_BUILTIN, "B6 (JIS) Rotated",               {0x2c6f0,0x1f400}, {0x0,0x0,0x2c6f0,0x1f400} },
-	{ SPOOLSS_FORM_BUILTIN, "B6 (JIS)",                       {0x1f400,0x2c6f0}, {0x0,0x0,0x1f400,0x2c6f0} },
-	{ SPOOLSS_FORM_BUILTIN, "C size sheet",                   {0x696b8,0x886d0}, {0x0,0x0,0x696b8,0x886d0} },
-	{ SPOOLSS_FORM_BUILTIN, "D size sheet",                   {0x886d0,0xd2d70}, {0x0,0x0,0x886d0,0xd2d70} },
-	{ SPOOLSS_FORM_BUILTIN, "Double Japan Postcard Rotated",  {0x24220,0x30d40}, {0x0,0x0,0x24220,0x30d40} },
-	{ SPOOLSS_FORM_BUILTIN, "E size sheet",                   {0xd2d70,0x110da0},{0x0,0x0,0xd2d70,0x110da0} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope #10",                   {0x19947,0x3ae94}, {0x0,0x0,0x19947,0x3ae94} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope #11",                   {0x1be7c,0x40565}, {0x0,0x0,0x1be7c,0x40565} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope #12",                   {0x1d74a,0x44368}, {0x0,0x0,0x1d74a,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope #14",                   {0x1f018,0x47504}, {0x0,0x0,0x1f018,0x47504} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope #9",                    {0x18079,0x37091}, {0x0,0x0,0x18079,0x37091} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope B4",                    {0x3d090,0x562e8}, {0x0,0x0,0x3d090,0x562e8} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope B5",                    {0x2af80,0x3d090}, {0x0,0x0,0x2af80,0x3d090} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope B6",                    {0x2af80,0x1e848}, {0x0,0x0,0x2af80,0x1e848} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope C3",                    {0x4f1a0,0x6fd10}, {0x0,0x0,0x4f1a0,0x6fd10} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope C4",                    {0x37e88,0x4f1a0}, {0x0,0x0,0x37e88,0x4f1a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope C5",                    {0x278d0,0x37e88}, {0x0,0x0,0x278d0,0x37e88} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope C6",                    {0x1bd50,0x278d0}, {0x0,0x0,0x1bd50,0x278d0} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope C65",                   {0x1bd50,0x37e88}, {0x0,0x0,0x1bd50,0x37e88} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope DL",                    {0x1adb0,0x35b60}, {0x0,0x0,0x1adb0,0x35b60} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope Invite",                {0x35b60,0x35b60}, {0x0,0x0,0x35b60,0x35b60} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope Monarch",               {0x18079,0x2e824}, {0x0,0x0,0x18079,0x2e824} },
-	{ SPOOLSS_FORM_BUILTIN, "Envelope",                       {0x1adb0,0x38270}, {0x0,0x0,0x1adb0,0x38270} },
-	{ SPOOLSS_FORM_BUILTIN, "Executive",                      {0x2cf56,0x411cc}, {0x0,0x0,0x2cf56,0x411cc} },
-	{ SPOOLSS_FORM_BUILTIN, "Folio",                          {0x34b5c,0x509d8}, {0x0,0x0,0x34b5c,0x509d8} },
-	{ SPOOLSS_FORM_BUILTIN, "German Legal Fanfold",           {0x34b5c,0x509d8}, {0x0,0x0,0x34b5c,0x509d8} },
-	{ SPOOLSS_FORM_BUILTIN, "German Std Fanfold",             {0x34b5c,0x4a6a0}, {0x0,0x0,0x34b5c,0x4a6a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope Chou #3 Rotated", {0x395f8,0x1d4c0}, {0x0,0x0,0x395f8,0x1d4c0} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope Chou #4 Rotated", {0x320c8,0x15f90}, {0x0,0x0,0x320c8,0x15f90} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope Kaku #2 Rotated", {0x510e0,0x3a980}, {0x0,0x0,0x510e0,0x3a980} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope Kaku #3 Rotated", {0x43a08,0x34bc0}, {0x0,0x0,0x43a08,0x34bc0} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope You #4 Rotated",  {0x395f8,0x19a28}, {0x0,0x0,0x395f8,0x19a28} },
-	{ SPOOLSS_FORM_BUILTIN, "Japan Envelope You #4",          {0x19a28,0x395f8}, {0x0,0x0,0x19a28,0x395f8} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Double Postcard",       {0x30d40,0x24220}, {0x0,0x0,0x30d40,0x24220} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Envelope Chou #3",      {0x1d4c0,0x395f8}, {0x0,0x0,0x1d4c0,0x395f8} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Envelope Chou #4",      {0x15f90,0x320c8}, {0x0,0x0,0x15f90,0x320c8} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Envelope Kaku #2",      {0x3a980,0x510e0}, {0x0,0x0,0x3a980,0x510e0} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Envelope Kaku #3",      {0x34bc0,0x43a08}, {0x0,0x0,0x34bc0,0x43a08} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Postcard Rotated",      {0x24220,0x186a0}, {0x0,0x0,0x24220,0x186a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Japanese Postcard",              {0x186a0,0x24220}, {0x0,0x0,0x186a0,0x24220} },
-	{ SPOOLSS_FORM_BUILTIN, "Ledger",                         {0x696b8,0x44368}, {0x0,0x0,0x696b8,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "Legal Extra",                    {0x3ae94,0x5d048}, {0x0,0x0,0x3ae94,0x5d048} },
-	{ SPOOLSS_FORM_BUILTIN, "Legal",                          {0x34b5c,0x56d10}, {0x0,0x0,0x34b5c,0x56d10} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Extra Transverse",        {0x3ae94,0x4a6a0}, {0x0,0x0,0x3ae94,0x4a6a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Extra",                   {0x3ae94,0x4a6a0}, {0x0,0x0,0x3ae94,0x4a6a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Plus",                    {0x34b5c,0x4eb16}, {0x0,0x0,0x34b5c,0x4eb16} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Rotated",                 {0x44368,0x34b5c}, {0x0,0x0,0x44368,0x34b5c} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Small",                   {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter Transverse",              {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "Letter",                         {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "Note",                           {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 16K Rotated",                {0x3f7a0,0x2de60}, {0x0,0x0,0x3f7a0,0x2de60} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 16K",                        {0x2de60,0x3f7a0}, {0x0,0x0,0x2de60,0x3f7a0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 32K Rotated",                {0x2cec0,0x1fbd0}, {0x0,0x0,0x2cec0,0x1fbd0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 32K",                        {0x1fbd0,0x2cec0}, {0x0,0x0,0x1fbd0,0x2cec0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 32K(Big) Rotated",           {0x318f8,0x222e0}, {0x0,0x0,0x318f8,0x222e0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC 32K(Big)",                   {0x222e0,0x318f8}, {0x0,0x0,0x222e0,0x318f8} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #1 Rotated",        {0x28488,0x18e70}, {0x0,0x0,0x28488,0x18e70} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #1",                {0x18e70,0x28488}, {0x0,0x0,0x18e70,0x28488} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #10 Rotated",       {0x6fd10,0x4f1a0}, {0x0,0x0,0x6fd10,0x4f1a0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #10",               {0x4f1a0,0x6fd10}, {0x0,0x0,0x4f1a0,0x6fd10} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #2 Rotated",        {0x2af80,0x18e70}, {0x0,0x0,0x2af80,0x18e70} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #2",                {0x18e70,0x2af80}, {0x0,0x0,0x18e70,0x2af80} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #3 Rotated",        {0x2af80,0x1e848}, {0x0,0x0,0x2af80,0x1e848} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #3",                {0x1e848,0x2af80}, {0x0,0x0,0x1e848,0x2af80} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #4 Rotated",        {0x32c80,0x1adb0}, {0x0,0x0,0x32c80,0x1adb0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #4",                {0x1adb0,0x32c80}, {0x0,0x0,0x1adb0,0x32c80} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #5 Rotated",        {0x35b60,0x1adb0}, {0x0,0x0,0x35b60,0x1adb0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #5",                {0x1adb0,0x35b60}, {0x0,0x0,0x1adb0,0x35b60} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #6 Rotated",        {0x38270,0x1d4c0}, {0x0,0x0,0x38270,0x1d4c0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #6",                {0x1d4c0,0x38270}, {0x0,0x0,0x1d4c0,0x38270} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #7 Rotated",        {0x38270,0x27100}, {0x0,0x0,0x38270,0x27100} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #7",                {0x27100,0x38270}, {0x0,0x0,0x27100,0x38270} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #8 Rotated",        {0x4b708,0x1d4c0}, {0x0,0x0,0x4b708,0x1d4c0} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #8",                {0x1d4c0,0x4b708}, {0x0,0x0,0x1d4c0,0x4b708} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #9 Rotated",        {0x4f1a0,0x37e88}, {0x0,0x0,0x4f1a0,0x37e88} },
-	{ SPOOLSS_FORM_BUILTIN, "PRC Envelope #9",                {0x37e88,0x4f1a0}, {0x0,0x0,0x37e88,0x4f1a0} },
-	{ SPOOLSS_FORM_BUILTIN, "Quarto",                         {0x347d8,0x43238}, {0x0,0x0,0x347d8,0x43238} },
-	{ SPOOLSS_FORM_BUILTIN, "Reserved48",                     {0x1,0x1},         {0x0,0x0,0x1,0x1} },
-	{ SPOOLSS_FORM_BUILTIN, "Reserved49",                     {0x1,0x1},         {0x0,0x0,0x1,0x1} },
-	{ SPOOLSS_FORM_BUILTIN, "Statement",                      {0x221b4,0x34b5c}, {0x0,0x0,0x221b4,0x34b5c} },
-	{ SPOOLSS_FORM_BUILTIN, "Super A",                        {0x376b8,0x56ea0}, {0x0,0x0,0x376b8,0x56ea0} },
-	{ SPOOLSS_FORM_BUILTIN, "Super B",                        {0x4a768,0x76e58}, {0x0,0x0,0x4a768,0x76e58} },
-	{ SPOOLSS_FORM_BUILTIN, "Tabloid Extra",                  {0x4a6a0,0x6f9f0}, {0x0,0x0,0x4a6a0,0x6f9f0} },
-	{ SPOOLSS_FORM_BUILTIN, "Tabloid",                        {0x44368,0x696b8}, {0x0,0x0,0x44368,0x696b8} },
-	{ SPOOLSS_FORM_BUILTIN, "US Std Fanfold",                 {0x5c3e1,0x44368}, {0x0,0x0,0x5c3e1,0x44368} }
+        { SPOOLSS_FORM_BUILTIN, "Letter",                         {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Small",                   {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Tabloid",                        {0x44368,0x696b8}, {0x0,0x0,0x44368,0x696b8} },
+        { SPOOLSS_FORM_BUILTIN, "Ledger",                         {0x696b8,0x44368}, {0x0,0x0,0x696b8,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Legal",                          {0x34b5c,0x56d10}, {0x0,0x0,0x34b5c,0x56d10} },
+        { SPOOLSS_FORM_BUILTIN, "Statement",                      {0x221b4,0x34b5c}, {0x0,0x0,0x221b4,0x34b5c} },
+        { SPOOLSS_FORM_BUILTIN, "Executive",                      {0x2cf56,0x411cc}, {0x0,0x0,0x2cf56,0x411cc} },
+        { SPOOLSS_FORM_BUILTIN, "A3",                             {0x48828,0x668a0}, {0x0,0x0,0x48828,0x668a0} },
+        { SPOOLSS_FORM_BUILTIN, "A4",                             {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
+        { SPOOLSS_FORM_BUILTIN, "A4 Small",                       {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
+        { SPOOLSS_FORM_BUILTIN, "A5",                             {0x24220,0x33450}, {0x0,0x0,0x24220,0x33450} },
+        { SPOOLSS_FORM_BUILTIN, "B4 (JIS)",                       {0x3ebe8,0x58de0}, {0x0,0x0,0x3ebe8,0x58de0} },
+        { SPOOLSS_FORM_BUILTIN, "B5 (JIS)",                       {0x2c6f0,0x3ebe8}, {0x0,0x0,0x2c6f0,0x3ebe8} },
+        { SPOOLSS_FORM_BUILTIN, "Folio",                          {0x34b5c,0x509d8}, {0x0,0x0,0x34b5c,0x509d8} },
+        { SPOOLSS_FORM_BUILTIN, "Quarto",                         {0x347d8,0x43238}, {0x0,0x0,0x347d8,0x43238} },
+        { SPOOLSS_FORM_BUILTIN, "10x14",                          {0x3e030,0x56d10}, {0x0,0x0,0x3e030,0x56d10} },
+        { SPOOLSS_FORM_BUILTIN, "11x17",                          {0x44368,0x696b8}, {0x0,0x0,0x44368,0x696b8} },
+        { SPOOLSS_FORM_BUILTIN, "Note",                           {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope #9",                    {0x18079,0x37091}, {0x0,0x0,0x18079,0x37091} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope #10",                   {0x19947,0x3ae94}, {0x0,0x0,0x19947,0x3ae94} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope #11",                   {0x1be7c,0x40565}, {0x0,0x0,0x1be7c,0x40565} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope #12",                   {0x1d74a,0x44368}, {0x0,0x0,0x1d74a,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope #14",                   {0x1f018,0x47504}, {0x0,0x0,0x1f018,0x47504} },
+        { SPOOLSS_FORM_BUILTIN, "C size sheet",                   {0x696b8,0x886d0}, {0x0,0x0,0x696b8,0x886d0} },
+        { SPOOLSS_FORM_BUILTIN, "D size sheet",                   {0x886d0,0xd2d70}, {0x0,0x0,0x886d0,0xd2d70} },
+        { SPOOLSS_FORM_BUILTIN, "E size sheet",                   {0xd2d70,0x110da0},{0x0,0x0,0xd2d70,0x110da0} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope DL",                    {0x1adb0,0x35b60}, {0x0,0x0,0x1adb0,0x35b60} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope C5",                    {0x278d0,0x37e88}, {0x0,0x0,0x278d0,0x37e88} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope C3",                    {0x4f1a0,0x6fd10}, {0x0,0x0,0x4f1a0,0x6fd10} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope C4",                    {0x37e88,0x4f1a0}, {0x0,0x0,0x37e88,0x4f1a0} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope C6",                    {0x1bd50,0x278d0}, {0x0,0x0,0x1bd50,0x278d0} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope C65",                   {0x1bd50,0x37e88}, {0x0,0x0,0x1bd50,0x37e88} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope B4",                    {0x3d090,0x562e8}, {0x0,0x0,0x3d090,0x562e8} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope B5",                    {0x2af80,0x3d090}, {0x0,0x0,0x2af80,0x3d090} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope B6",                    {0x2af80,0x1e848}, {0x0,0x0,0x2af80,0x1e848} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope",                       {0x1adb0,0x38270}, {0x0,0x0,0x1adb0,0x38270} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope Monarch",               {0x18079,0x2e824}, {0x0,0x0,0x18079,0x2e824} },
+        { SPOOLSS_FORM_BUILTIN, "6 3/4 Envelope",                 {0x167ab,0x284ec}, {0x0,0x0,0x167ab,0x284ec} },
+        { SPOOLSS_FORM_BUILTIN, "US Std Fanfold",                 {0x5c3e1,0x44368}, {0x0,0x0,0x5c3e1,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "German Std Fanfold",             {0x34b5c,0x4a6a0}, {0x0,0x0,0x34b5c,0x4a6a0} },
+        { SPOOLSS_FORM_BUILTIN, "German Legal Fanfold",           {0x34b5c,0x509d8}, {0x0,0x0,0x34b5c,0x509d8} },
+        { SPOOLSS_FORM_BUILTIN, "B4 (ISO)",                       {0x3d090,0x562e8}, {0x0,0x0,0x3d090,0x562e8} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Postcard",              {0x186a0,0x24220}, {0x0,0x0,0x186a0,0x24220} },
+        { SPOOLSS_FORM_BUILTIN, "9x11",                           {0x37cf8,0x44368}, {0x0,0x0,0x37cf8,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "10x11",                          {0x3e030,0x44368}, {0x0,0x0,0x3e030,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "15x11",                          {0x5d048,0x44368}, {0x0,0x0,0x5d048,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "Envelope Invite",                {0x35b60,0x35b60}, {0x0,0x0,0x35b60,0x35b60} },
+        { SPOOLSS_FORM_BUILTIN, "Reserved48",                     {0x1,0x1},         {0x0,0x0,0x1,0x1} },
+        { SPOOLSS_FORM_BUILTIN, "Reserved49",                     {0x1,0x1},         {0x0,0x0,0x1,0x1} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Extra",                   {0x3ae94,0x4a6a0}, {0x0,0x0,0x3ae94,0x4a6a0} },
+        { SPOOLSS_FORM_BUILTIN, "Legal Extra",                    {0x3ae94,0x5d048}, {0x0,0x0,0x3ae94,0x5d048} },
+        { SPOOLSS_FORM_BUILTIN, "Tabloid Extra",                  {0x4a6a0,0x6f9f0}, {0x0,0x0,0x4a6a0,0x6f9f0} },
+        { SPOOLSS_FORM_BUILTIN, "A4 Extra",                       {0x397c2,0x4eb16}, {0x0,0x0,0x397c2,0x4eb16} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Transverse",              {0x34b5c,0x44368}, {0x0,0x0,0x34b5c,0x44368} },
+        { SPOOLSS_FORM_BUILTIN, "A4 Transverse",                  {0x33450,0x48828}, {0x0,0x0,0x33450,0x48828} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Extra Transverse",        {0x3ae94,0x4a6a0}, {0x0,0x0,0x3ae94,0x4a6a0} },
+        { SPOOLSS_FORM_BUILTIN, "Super A",                        {0x376b8,0x56ea0}, {0x0,0x0,0x376b8,0x56ea0} },
+        { SPOOLSS_FORM_BUILTIN, "Super B",                        {0x4a768,0x76e58}, {0x0,0x0,0x4a768,0x76e58} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Plus",                    {0x34b5c,0x4eb16}, {0x0,0x0,0x34b5c,0x4eb16} },
+        { SPOOLSS_FORM_BUILTIN, "A4 Plus",                        {0x33450,0x50910}, {0x0,0x0,0x33450,0x50910} },
+        { SPOOLSS_FORM_BUILTIN, "A5 Transverse",                  {0x24220,0x33450}, {0x0,0x0,0x24220,0x33450} },
+        { SPOOLSS_FORM_BUILTIN, "B5 (JIS) Transverse",            {0x2c6f0,0x3ebe8}, {0x0,0x0,0x2c6f0,0x3ebe8} },
+        { SPOOLSS_FORM_BUILTIN, "A3 Extra",                       {0x4e9d0,0x6ca48}, {0x0,0x0,0x4e9d0,0x6ca48} },
+        { SPOOLSS_FORM_BUILTIN, "A5 Extra",                       {0x2a7b0,0x395f8}, {0x0,0x0,0x2a7b0,0x395f8} },
+        { SPOOLSS_FORM_BUILTIN, "B5 (ISO) Extra",                 {0x31128,0x43620}, {0x0,0x0,0x31128,0x43620} },
+        { SPOOLSS_FORM_BUILTIN, "A2",                             {0x668a0,0x91050}, {0x0,0x0,0x668a0,0x91050} },
+        { SPOOLSS_FORM_BUILTIN, "A3 Transverse",                  {0x48828,0x668a0}, {0x0,0x0,0x48828,0x668a0} },
+        { SPOOLSS_FORM_BUILTIN, "A3 Extra Transverse",            {0x4e9d0,0x6ca48}, {0x0,0x0,0x4e9d0,0x6ca48} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Double Postcard",       {0x30d40,0x24220}, {0x0,0x0,0x30d40,0x24220} },
+        { SPOOLSS_FORM_BUILTIN, "A6",                             {0x19a28,0x24220}, {0x0,0x0,0x19a28,0x24220} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope Kaku #2 Rotated", {0x510e0,0x3a980}, {0x0,0x0,0x510e0,0x3a980} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope Kaku #3 Rotated", {0x43a08,0x34bc0}, {0x0,0x0,0x43a08,0x34bc0} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope Chou #3 Rotated", {0x395f8,0x1d4c0}, {0x0,0x0,0x395f8,0x1d4c0} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope Chou #4 Rotated", {0x320c8,0x15f90}, {0x0,0x0,0x320c8,0x15f90} },
+        { SPOOLSS_FORM_BUILTIN, "Letter Rotated",                 {0x44368,0x34b5c}, {0x0,0x0,0x44368,0x34b5c} },
+        { SPOOLSS_FORM_BUILTIN, "A3 Rotated",                     {0x668a0,0x48828}, {0x0,0x0,0x668a0,0x48828} },
+        { SPOOLSS_FORM_BUILTIN, "A4 Rotated",                     {0x48828,0x33450}, {0x0,0x0,0x48828,0x33450} },
+        { SPOOLSS_FORM_BUILTIN, "A5 Rotated",                     {0x33450,0x24220}, {0x0,0x0,0x33450,0x24220} },
+        { SPOOLSS_FORM_BUILTIN, "B4 (JIS) Rotated",               {0x58de0,0x3ebe8}, {0x0,0x0,0x58de0,0x3ebe8} },
+        { SPOOLSS_FORM_BUILTIN, "B5 (JIS) Rotated",               {0x3ebe8,0x2c6f0}, {0x0,0x0,0x3ebe8,0x2c6f0} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Postcard Rotated",      {0x24220,0x186a0}, {0x0,0x0,0x24220,0x186a0} },
+        { SPOOLSS_FORM_BUILTIN, "Double Japan Postcard Rotated",  {0x24220,0x30d40}, {0x0,0x0,0x24220,0x30d40} },
+        { SPOOLSS_FORM_BUILTIN, "A6 Rotated",                     {0x24220,0x19a28}, {0x0,0x0,0x24220,0x19a28} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Envelope Kaku #2",      {0x3a980,0x510e0}, {0x0,0x0,0x3a980,0x510e0} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Envelope Kaku #3",      {0x34bc0,0x43a08}, {0x0,0x0,0x34bc0,0x43a08} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Envelope Chou #3",      {0x1d4c0,0x395f8}, {0x0,0x0,0x1d4c0,0x395f8} },
+        { SPOOLSS_FORM_BUILTIN, "Japanese Envelope Chou #4",      {0x15f90,0x320c8}, {0x0,0x0,0x15f90,0x320c8} },
+        { SPOOLSS_FORM_BUILTIN, "B6 (JIS)",                       {0x1f400,0x2c6f0}, {0x0,0x0,0x1f400,0x2c6f0} },
+        { SPOOLSS_FORM_BUILTIN, "B6 (JIS) Rotated",               {0x2c6f0,0x1f400}, {0x0,0x0,0x2c6f0,0x1f400} },
+        { SPOOLSS_FORM_BUILTIN, "12x11",                          {0x4a724,0x443e1}, {0x0,0x0,0x4a724,0x443e1} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope You #4",          {0x19a28,0x395f8}, {0x0,0x0,0x19a28,0x395f8} },
+        { SPOOLSS_FORM_BUILTIN, "Japan Envelope You #4 Rotated",  {0x395f8,0x19a28}, {0x0,0x0,0x395f8,0x19a28} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 16K",                        {0x2de60,0x3f7a0}, {0x0,0x0,0x2de60,0x3f7a0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 32K",                        {0x1fbd0,0x2cec0}, {0x0,0x0,0x1fbd0,0x2cec0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 32K(Big)",                   {0x222e0,0x318f8}, {0x0,0x0,0x222e0,0x318f8} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #1",                {0x18e70,0x28488}, {0x0,0x0,0x18e70,0x28488} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #2",                {0x18e70,0x2af80}, {0x0,0x0,0x18e70,0x2af80} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #3",                {0x1e848,0x2af80}, {0x0,0x0,0x1e848,0x2af80} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #4",                {0x1adb0,0x32c80}, {0x0,0x0,0x1adb0,0x32c80} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #5",                {0x1adb0,0x35b60}, {0x0,0x0,0x1adb0,0x35b60} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #6",                {0x1d4c0,0x38270}, {0x0,0x0,0x1d4c0,0x38270} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #7",                {0x27100,0x38270}, {0x0,0x0,0x27100,0x38270} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #8",                {0x1d4c0,0x4b708}, {0x0,0x0,0x1d4c0,0x4b708} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #9",                {0x37e88,0x4f1a0}, {0x0,0x0,0x37e88,0x4f1a0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #10",               {0x4f1a0,0x6fd10}, {0x0,0x0,0x4f1a0,0x6fd10} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 16K Rotated",                {0x3f7a0,0x2de60}, {0x0,0x0,0x3f7a0,0x2de60} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 32K Rotated",                {0x2cec0,0x1fbd0}, {0x0,0x0,0x2cec0,0x1fbd0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC 32K(Big) Rotated",           {0x318f8,0x222e0}, {0x0,0x0,0x318f8,0x222e0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #1 Rotated",        {0x28488,0x18e70}, {0x0,0x0,0x28488,0x18e70} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #2 Rotated",        {0x2af80,0x18e70}, {0x0,0x0,0x2af80,0x18e70} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #3 Rotated",        {0x2af80,0x1e848}, {0x0,0x0,0x2af80,0x1e848} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #4 Rotated",        {0x32c80,0x1adb0}, {0x0,0x0,0x32c80,0x1adb0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #5 Rotated",        {0x35b60,0x1adb0}, {0x0,0x0,0x35b60,0x1adb0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #6 Rotated",        {0x38270,0x1d4c0}, {0x0,0x0,0x38270,0x1d4c0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #7 Rotated",        {0x38270,0x27100}, {0x0,0x0,0x38270,0x27100} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #8 Rotated",        {0x4b708,0x1d4c0}, {0x0,0x0,0x4b708,0x1d4c0} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #9 Rotated",        {0x4f1a0,0x37e88}, {0x0,0x0,0x4f1a0,0x37e88} },
+        { SPOOLSS_FORM_BUILTIN, "PRC Envelope #10 Rotated",       {0x6fd10,0x4f1a0}, {0x0,0x0,0x6fd10,0x4f1a0} }
 };
 
 /********************************************************************
@@ -936,6 +934,7 @@ WERROR winreg_update_printer(TALLOC_CTX *mem_ctx,
 	DATA_BLOB blob;
 	char *path;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -1318,15 +1317,11 @@ WERROR winreg_update_printer(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -1351,6 +1346,7 @@ WERROR winreg_get_printer(TALLOC_CTX *mem_ctx,
 	char *path;
 	NTSTATUS status;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	const char **enum_names = NULL;
 	enum winreg_Type *enum_types = NULL;
 	DATA_BLOB *enum_data_blobs = NULL;
@@ -1598,15 +1594,11 @@ WERROR winreg_get_printer(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -1625,6 +1617,7 @@ WERROR winreg_get_printer_secdesc(TALLOC_CTX *mem_ctx,
 	TALLOC_CTX *tmp_ctx;
 	NTSTATUS status;
 	WERROR result;
+	WERROR ignore;
 
 	tmp_ctx = talloc_stackframe();
 	if (tmp_ctx == NULL) {
@@ -1666,7 +1659,6 @@ WERROR winreg_get_printer_secdesc(TALLOC_CTX *mem_ctx,
 	}
 	if (!W_ERROR_IS_OK(result)) {
 		if (W_ERROR_EQUAL(result, WERR_BADFILE)) {
-			WERROR ignore;
 
 			if (is_valid_policy_hnd(&key_hnd)) {
 				dcerpc_winreg_CloseKey(winreg_handle,
@@ -1764,15 +1756,11 @@ create_default:
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	talloc_free(tmp_ctx);
@@ -1792,6 +1780,7 @@ WERROR winreg_set_printer_secdesc(TALLOC_CTX *mem_ctx,
 	TALLOC_CTX *tmp_ctx;
 	NTSTATUS status;
 	WERROR result;
+	WERROR ignore;
 
 	tmp_ctx = talloc_stackframe();
 	if (tmp_ctx == NULL) {
@@ -1882,15 +1871,11 @@ WERROR winreg_set_printer_secdesc(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	talloc_free(tmp_ctx);
@@ -1912,6 +1897,7 @@ WERROR winreg_set_printer_dataex(TALLOC_CTX *mem_ctx,
 	struct winreg_String wvalue = { 0, };
 	char *path;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -1961,15 +1947,11 @@ WERROR winreg_set_printer_dataex(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -1995,6 +1977,7 @@ WERROR winreg_get_printer_dataex(TALLOC_CTX *mem_ctx,
 	uint32_t data_in_size = 0;
 	uint32_t value_len = 0;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -2049,6 +2032,8 @@ WERROR winreg_get_printer_dataex(TALLOC_CTX *mem_ctx,
 		goto done;
 	}
 	if (!W_ERROR_IS_OK(result)) {
+		DEBUG(2, ("winreg_get_printer_dataex: Could not query value %s: %s\n",
+			  value, win_errstr(result)));
 		goto done;
 	}
 
@@ -2075,6 +2060,8 @@ WERROR winreg_get_printer_dataex(TALLOC_CTX *mem_ctx,
 		goto done;
 	}
 	if (!W_ERROR_IS_OK(result)) {
+		DEBUG(2, ("winreg_get_printer_dataex: Could not query value %s: %s\n",
+			  value, win_errstr(result)));
 		goto done;
 	}
 
@@ -2086,15 +2073,11 @@ WERROR winreg_get_printer_dataex(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2117,6 +2100,7 @@ WERROR winreg_enum_printer_dataex(TALLOC_CTX *mem_ctx,
 	uint32_t num_values = 0;
 	char *path;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 	const char **enum_names = NULL;
 	enum winreg_Type *enum_types = NULL;
@@ -2197,15 +2181,11 @@ WERROR winreg_enum_printer_dataex(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2224,6 +2204,7 @@ WERROR winreg_delete_printer_dataex(TALLOC_CTX *mem_ctx,
 	struct winreg_String wvalue = { 0, };
 	char *path;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 
 	TALLOC_CTX *tmp_ctx;
@@ -2269,15 +2250,11 @@ WERROR winreg_delete_printer_dataex(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2299,6 +2276,7 @@ WERROR winreg_enum_printer_key(TALLOC_CTX *mem_ctx,
 	uint32_t num_subkeys = -1;
 
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 
 	TALLOC_CTX *tmp_ctx;
@@ -2353,15 +2331,11 @@ WERROR winreg_enum_printer_key(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2379,6 +2353,7 @@ WERROR winreg_delete_printer_key(TALLOC_CTX *mem_ctx,
 	char *keyname;
 	char *path;
 	WERROR result;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -2451,15 +2426,11 @@ WERROR winreg_delete_printer_key(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2475,6 +2446,7 @@ WERROR winreg_printer_update_changeid(TALLOC_CTX *mem_ctx,
 	char *path;
 	NTSTATUS status;
 	WERROR result;
+	WERROR ignore;
 	TALLOC_CTX *tmp_ctx;
 
 	tmp_ctx = talloc_stackframe();
@@ -2520,15 +2492,11 @@ WERROR winreg_printer_update_changeid(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2546,6 +2514,7 @@ WERROR winreg_printer_get_changeid(TALLOC_CTX *mem_ctx,
 	char *path;
 	NTSTATUS status;
 	WERROR result;
+	WERROR ignore;
 	TALLOC_CTX *tmp_ctx;
 
 	tmp_ctx = talloc_stackframe();
@@ -2597,15 +2566,11 @@ WERROR winreg_printer_get_changeid(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2631,6 +2596,7 @@ WERROR winreg_printer_addform1(TALLOC_CTX *mem_ctx,
 	union spoolss_FormInfo *info = NULL;
 	uint32_t i;
 	WERROR result;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -2699,15 +2665,11 @@ WERROR winreg_printer_addform1(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(info);
@@ -2728,6 +2690,7 @@ WERROR winreg_printer_enumforms1(TALLOC_CTX *mem_ctx,
 	uint32_t num_builtin = ARRAY_SIZE(builtin_forms1);
 	uint32_t i;
 	WERROR result;
+	WERROR ignore;
 	NTSTATUS status;
 	const char **enum_names = NULL;
 	enum winreg_Type *enum_types = NULL;
@@ -2849,15 +2812,11 @@ WERROR winreg_printer_enumforms1(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(enum_values);
@@ -2875,6 +2834,7 @@ WERROR winreg_printer_deleteform1(TALLOC_CTX *mem_ctx,
 	uint32_t num_builtin = ARRAY_SIZE(builtin_forms1);
 	uint32_t i;
 	WERROR result = WERR_OK;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -2928,15 +2888,11 @@ WERROR winreg_printer_deleteform1(TALLOC_CTX *mem_ctx,
 	}
 
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);
@@ -2949,7 +2905,8 @@ WERROR winreg_printer_setform1(TALLOC_CTX *mem_ctx,
 			       struct spoolss_AddFormInfo1 *form)
 {
 	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
-	struct policy_handle hive_hnd, key_hnd;
+	struct policy_handle hive_hnd = { 0, };
+	struct policy_handle key_hnd = { 0, };
 	struct winreg_String wvalue = { 0, };
 	DATA_BLOB blob;
 	uint32_t num_builtin = ARRAY_SIZE(builtin_forms1);
@@ -3055,6 +3012,7 @@ WERROR winreg_printer_getform1(TALLOC_CTX *mem_ctx,
 	uint32_t num_builtin = ARRAY_SIZE(builtin_forms1);
 	uint32_t i;
 	WERROR result;
+	WERROR ignore;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
 
@@ -3157,15 +3115,11 @@ WERROR winreg_printer_getform1(TALLOC_CTX *mem_ctx,
 
 	result = WERR_OK;
 done:
-	if (winreg_handle != NULL) {
-		WERROR ignore;
-
-		if (is_valid_policy_hnd(&key_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
-		}
-		if (is_valid_policy_hnd(&hive_hnd)) {
-			dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
-		}
+	if (is_valid_policy_hnd(&key_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &key_hnd, &ignore);
+	}
+	if (is_valid_policy_hnd(&hive_hnd)) {
+		dcerpc_winreg_CloseKey(winreg_handle, tmp_ctx, &hive_hnd, &ignore);
 	}
 
 	TALLOC_FREE(tmp_ctx);

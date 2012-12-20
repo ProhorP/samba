@@ -59,14 +59,14 @@ struct dlz_bind9_data {
 	char *update_name;
 
 	/* helper functions from the dlz_dlopen driver */
-	void (*log)(int level, const char *fmt, ...);
-	isc_result_t (*putrr)(dns_sdlzlookup_t *handle, const char *type,
-			      dns_ttl_t ttl, const char *data);
-	isc_result_t (*putnamedrr)(dns_sdlzlookup_t *handle, const char *name,
-				   const char *type, dns_ttl_t ttl, const char *data);
-	isc_result_t (*writeable_zone)(dns_view_t *view, const char *zone_name);
+	log_t *log;
+	dns_sdlz_putrr_t *putrr;
+	dns_sdlz_putnamedrr_t *putnamedrr;
+	dns_dlz_writeablezone_t *writeable_zone;
 };
 
+static struct dlz_bind9_data *dlz_bind9_state = NULL;
+static int dlz_bind9_state_ref_count = 0;
 
 static const char *zone_prefixes[] = {
 	"CN=MicrosoftDNS,DC=DomainDnsZones",
@@ -110,6 +110,9 @@ static bool b9_format(struct dlz_bind9_data *state,
 		      struct dnsp_DnssrvRpcRecord *rec,
 		      const char **type, const char **data)
 {
+	uint32_t i;
+	char *tmp;
+
 	switch (rec->wType) {
 	case DNS_TYPE_A:
 		*type = "a";
@@ -128,7 +131,11 @@ static bool b9_format(struct dlz_bind9_data *state,
 
 	case DNS_TYPE_TXT:
 		*type = "txt";
-		*data = rec->data.txt;
+		tmp = talloc_asprintf(mem_ctx, "\"%s\"", rec->data.txt.str[0]);
+		for (i=1; i<rec->data.txt.count; i++) {
+			tmp = talloc_asprintf_append(tmp, " \"%s\"", rec->data.txt.str[i]);
+		}
+		*data = tmp;
 		break;
 
 	case DNS_TYPE_PTR:
@@ -271,7 +278,7 @@ static bool b9_parse(struct dlz_bind9_data *state,
 		     struct dnsp_DnssrvRpcRecord *rec)
 {
 	char *full_name, *dclass, *type;
-	char *str, *saveptr=NULL;
+	char *str, *tmp, *saveptr=NULL;
 	int i;
 
 	str = talloc_strdup(rec, rdatastr);
@@ -312,7 +319,21 @@ static bool b9_parse(struct dlz_bind9_data *state,
 		break;
 
 	case DNS_TYPE_TXT:
-		DNS_PARSE_STR(rec->data.txt, NULL, "\t", saveptr);
+		rec->data.txt.count = 0;
+		rec->data.txt.str = talloc_array(rec, const char *, rec->data.txt.count);
+		tmp = strtok_r(NULL, "\t", &saveptr);
+		while (tmp) {
+			rec->data.txt.str = talloc_realloc(rec, rec->data.txt.str, const char *,
+							rec->data.txt.count+1);
+			if (tmp[0] == '"') {
+				/* Strip quotes */
+				rec->data.txt.str[rec->data.txt.count] = talloc_strndup(rec, &tmp[1], strlen(tmp)-2);
+			} else {
+				rec->data.txt.str[rec->data.txt.count] = talloc_strdup(rec, tmp);
+			}
+			rec->data.txt.count++;
+			tmp = strtok_r(NULL, " ", &saveptr);
+		}
 		break;
 
 	case DNS_TYPE_PTR:
@@ -358,7 +379,8 @@ static bool b9_parse(struct dlz_bind9_data *state,
 
 	/* we should be at the end of the buffer now */
 	if (strtok_r(NULL, "\t ", &saveptr) != NULL) {
-		state->log(ISC_LOG_ERROR, "samba b9_parse: expected data at end of string for '%s'");
+		state->log(ISC_LOG_ERROR, "samba b9_parse: unexpected data at end of string for '%s'",
+		           rdatastr);
 		return false;
 	}
 
@@ -366,7 +388,7 @@ static bool b9_parse(struct dlz_bind9_data *state,
 }
 
 /*
-  send a resource recond to bind9
+  send a resource record to bind9
  */
 static isc_result_t b9_putrr(struct dlz_bind9_data *state,
 			     void *handle, struct dnsp_DnssrvRpcRecord *rec,
@@ -406,7 +428,7 @@ static isc_result_t b9_putrr(struct dlz_bind9_data *state,
 
 
 /*
-  send a named resource recond to bind9
+  send a named resource record to bind9
  */
 static isc_result_t b9_putnamedrr(struct dlz_bind9_data *state,
 				  void *handle, const char *name,
@@ -511,6 +533,32 @@ static NTSTATUS b9_generate_session_info_pac(struct auth4_context *auth_context,
 	return status;
 }
 
+/* Callback for the DEBUG() system, to catch the remaining messages */
+static void b9_debug(void *private_ptr, int msg_level, const char *msg)
+{
+	static const int isc_log_map[] = {
+		ISC_LOG_CRITICAL, /* 0 */
+		ISC_LOG_ERROR,    /* 1 */
+		ISC_LOG_WARNING,   /* 2 */
+		ISC_LOG_NOTICE    /* 3 */
+	};
+	struct dlz_bind9_data *state = private_ptr;
+	int     isc_log_level;
+	
+	if (msg_level >= ARRAY_SIZE(isc_log_map) || msg_level < 0) {
+		isc_log_level = ISC_LOG_INFO;
+	} else {
+		isc_log_level = isc_log_map[msg_level];
+	}
+	state->log(isc_log_level, "samba_dlz: %s", msg);
+}
+
+static int dlz_state_debug_unregister(struct dlz_bind9_data *state)
+{
+	/* Stop logging (to the bind9 logs) */
+	debug_set_callback(NULL, NULL);
+	return 0;
+}
 
 /*
   called to initialise the driver
@@ -526,10 +574,18 @@ _PUBLIC_ isc_result_t dlz_create(const char *dlzname,
 	struct ldb_dn *dn;
 	NTSTATUS nt_status;
 
+	if (dlz_bind9_state != NULL) {
+		*dbdata = dlz_bind9_state;
+		dlz_bind9_state_ref_count++;
+		return ISC_R_SUCCESS;
+	}
+
 	state = talloc_zero(NULL, struct dlz_bind9_data);
 	if (state == NULL) {
 		return ISC_R_NOMEMORY;
 	}
+
+	talloc_set_destructor(state, dlz_state_debug_unregister);
 
 	/* fill in the helper functions */
 	va_start(ap, dbdata);
@@ -541,8 +597,8 @@ _PUBLIC_ isc_result_t dlz_create(const char *dlzname,
 	/* Do not install samba signal handlers */
 	fault_setup_disable();
 
-	/* Start logging */
-	setup_logging("samba_dlz", DEBUG_DEFAULT_STDERR);
+	/* Start logging (to the bind9 logs) */
+	debug_set_callback(state, b9_debug);
 
 	state->ev_ctx = s4_event_context_init(state);
 	if (state->ev_ctx == NULL) {
@@ -618,6 +674,8 @@ _PUBLIC_ isc_result_t dlz_create(const char *dlzname,
 	state->auth_context->generate_session_info_pac = b9_generate_session_info_pac;
 
 	*dbdata = state;
+	dlz_bind9_state = state;
+	dlz_bind9_state_ref_count++;
 
 	return ISC_R_SUCCESS;
 
@@ -633,7 +691,13 @@ _PUBLIC_ void dlz_destroy(void *dbdata)
 {
 	struct dlz_bind9_data *state = talloc_get_type_abort(dbdata, struct dlz_bind9_data);
 	state->log(ISC_LOG_INFO, "samba_dlz: shutting down");
-	talloc_free(state);
+
+	dlz_bind9_state_ref_count--;
+	if (dlz_bind9_state_ref_count == 0) {
+		talloc_unlink(state, state->samdb);
+		talloc_free(state);
+		dlz_bind9_state = NULL;
+	}
 }
 
 
@@ -800,8 +864,15 @@ static isc_result_t dlz_lookup_types(struct dlz_bind9_data *state,
 /*
   lookup one record
  */
+#ifdef BIND_VERSION_9_8
 _PUBLIC_ isc_result_t dlz_lookup(const char *zone, const char *name,
 				 void *dbdata, dns_sdlzlookup_t *lookup)
+#else
+_PUBLIC_ isc_result_t dlz_lookup(const char *zone, const char *name,
+				 void *dbdata, dns_sdlzlookup_t *lookup,
+				 dns_clientinfomethods_t *methods,
+				 dns_clientinfo_t *clientinfo)
+#endif
 {
 	struct dlz_bind9_data *state = talloc_get_type_abort(dbdata, struct dlz_bind9_data);
 	return dlz_lookup_types(state, zone, name, lookup, NULL);
@@ -1076,6 +1147,11 @@ _PUBLIC_ isc_result_t dlz_configure(dns_view_t *view, void *dbdata)
 			if (zone == NULL) {
 				continue;
 			}
+			/* Ignore zones that are not handled in BIND */
+			if ((strcmp(zone, "RootDNSServers") == 0) ||
+			    (strcmp(zone, "..TrustAnchors") == 0)) {
+				continue;
+			}
 			zone_dn = ldb_dn_copy(tmp_ctx, dn);
 			if (zone_dn == NULL) {
 				talloc_free(tmp_ctx);
@@ -1136,7 +1212,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	tmp_ctx = talloc_new(NULL);
 	if (tmp_ctx == NULL) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: no memory");
-		return false;
+		return ISC_FALSE;
 	}
 
 	ap_req = data_blob_const(keydata, keydatalen);
@@ -1144,7 +1220,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	if (!server_credentials) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to init server credentials");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	cli_credentials_set_krb5_context(server_credentials, state->smb_krb5_ctx);
@@ -1158,7 +1234,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to obtain server credentials from %s",
 			   keytab_name);
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 	talloc_free(keytab_name);
 
@@ -1168,7 +1244,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to start gensec server");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	gensec_set_credentials(gensec_ctx, server_credentials);
@@ -1177,21 +1253,21 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to start spnego");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	nt_status = gensec_update(gensec_ctx, tmp_ctx, state->ev_ctx, ap_req, &ap_req);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: spnego update failed");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	nt_status = gensec_session_info(gensec_ctx, tmp_ctx, &session_info);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to create session info");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	/* Get the DN from name */
@@ -1199,7 +1275,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	if (result != ISC_R_SUCCESS) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: failed to find name %s", name);
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	/* make sure the dn exists, or find parent dn in case new object is being added */
@@ -1214,7 +1290,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 		talloc_free(res);
 	} else {
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	/* Do ACL check */
@@ -1226,7 +1302,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 			"samba_dlz: disallowing update of signer=%s name=%s type=%s error=%s",
 			signer, name, type, ldb_strerror(ldb_ret));
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 
 	/* Cache session_info, so it can be used in the actual add/delete operation */
@@ -1234,7 +1310,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 	if (state->update_name == NULL) {
 		state->log(ISC_LOG_ERROR, "samba_dlz: memory allocation error");
 		talloc_free(tmp_ctx);
-		return false;
+		return ISC_FALSE;
 	}
 	state->session_info = talloc_steal(state, session_info);
 
@@ -1242,7 +1318,7 @@ _PUBLIC_ isc_boolean_t dlz_ssumatch(const char *signer, const char *name, const 
 		   signer, name, tcpaddr, type, key);
 
 	talloc_free(tmp_ctx);
-	return true;
+	return ISC_TRUE;
 }
 
 
@@ -1307,6 +1383,9 @@ static bool dns_name_equal(const char *name1, const char *name2)
 static bool b9_record_match(struct dlz_bind9_data *state,
 			    struct dnsp_DnssrvRpcRecord *rec1, struct dnsp_DnssrvRpcRecord *rec2)
 {
+	bool status;
+	int i;
+
 	if (rec1->wType != rec2->wType) {
 		return false;
 	}
@@ -1324,9 +1403,14 @@ static bool b9_record_match(struct dlz_bind9_data *state,
 	case DNS_TYPE_CNAME:
 		return dns_name_equal(rec1->data.cname, rec2->data.cname);
 	case DNS_TYPE_TXT:
-		return strcmp(rec1->data.txt, rec2->data.txt) == 0;
+		status = (rec1->data.txt.count == rec2->data.txt.count);
+		if (!status) return status;
+		for (i=0; i<rec1->data.txt.count; i++) {
+			status &= (strcmp(rec1->data.txt.str[i], rec2->data.txt.str[i]) == 0);
+		}
+		return status;
 	case DNS_TYPE_PTR:
-		return strcmp(rec1->data.ptr, rec2->data.ptr) == 0;
+		return dns_name_equal(rec1->data.ptr, rec2->data.ptr);
 	case DNS_TYPE_NS:
 		return dns_name_equal(rec1->data.ns, rec2->data.ns);
 
@@ -1373,7 +1457,7 @@ static bool b9_set_session_info(struct dlz_bind9_data *state, const char *name)
 		return false;
 	}
 
-	/* Do not use client credentials, if we not updating the client specified name */
+	/* Do not use client credentials, if we're not updating the client specified name */
 	if (strcmp(state->update_name, name) != 0) {
 		return true;
 	}
@@ -1458,17 +1542,20 @@ _PUBLIC_ isc_result_t dlz_addrdataset(const char *name, const char *rdatastr, vo
 		return result;
 	}
 
+	el = ldb_msg_find_element(res->msgs[0], "dnsRecord");
+	if (el == NULL) {
+		ret = ldb_msg_add_empty(res->msgs[0], "dnsRecord", LDB_FLAG_MOD_ADD, &el);
+		if (ret != LDB_SUCCESS) {
+			state->log(ISC_LOG_ERROR, "samba_dlz: failed to add dnsRecord for %s",
+				   ldb_dn_get_linearized(dn));
+			talloc_free(rec);
+			return ISC_R_FAILURE;
+		}
+	}
+
 	/* there are existing records. We need to see if this will
 	 * replace a record or add to it
 	 */
-	el = ldb_msg_find_element(res->msgs[0], "dnsRecord");
-	if (el == NULL) {
-		state->log(ISC_LOG_ERROR, "samba_dlz: no dnsRecord attribute for %s",
-			   ldb_dn_get_linearized(dn));
-		talloc_free(rec);
-		return ISC_R_FAILURE;
-	}
-
 	for (i=0; i<el->num_values; i++) {
 		struct dnsp_DnssrvRpcRecord rec2;
 
@@ -1614,9 +1701,10 @@ _PUBLIC_ isc_result_t dlz_subrdataset(const char *name, const char *rdatastr, vo
 	}
 
 	if (el->num_values == 0) {
-		ldb_msg_remove_element(res->msgs[0], el);
+		el->flags = LDB_FLAG_MOD_DELETE;
+	} else {
+		el->flags = LDB_FLAG_MOD_REPLACE;
 	}
-	el->flags = LDB_FLAG_MOD_REPLACE;
 	ret = ldb_modify(state->samdb, res->msgs[0]);
 
 	b9_reset_session_info(state);
@@ -1719,9 +1807,10 @@ _PUBLIC_ isc_result_t dlz_delrdataset(const char *name, const char *type, void *
 	}
 
 	if (el->num_values == 0) {
-		ldb_msg_remove_element(res->msgs[0], el);
+		el->flags = LDB_FLAG_MOD_DELETE;
+	} else {
+		el->flags = LDB_FLAG_MOD_REPLACE;
 	}
-	el->flags = LDB_FLAG_MOD_REPLACE;
 	ret = ldb_modify(state->samdb, res->msgs[0]);
 
 	b9_reset_session_info(state);

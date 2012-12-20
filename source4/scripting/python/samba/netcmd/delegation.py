@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # delegation management
 #
 # Copyright Matthieu Patou mat@samba.org 2010
@@ -57,15 +55,15 @@ class cmd_delegation_show(Command):
         # TODO once I understand how, use the domain info to naildown
         # to the correct domain
         (cleanedaccount, realm, domain) = _get_user_realm_domain(accountname)
-        
-        res = sam.search(expression="sAMAccountName=%s" % 
+
+        res = sam.search(expression="sAMAccountName=%s" %
                     ldb.binary_encode(cleanedaccount),
                     scope=ldb.SCOPE_SUBTREE,
                     attrs=["userAccountControl", "msDS-AllowedToDelegateTo"])
         if len(res) == 0:
             raise CommandError("Unable to find account name '%s'" % accountname)
         assert(len(res) == 1)
-        
+
         uac = int(res[0].get("userAccountControl")[0])
         allowed = res[0].get("msDS-AllowedToDelegateTo")
 
@@ -93,7 +91,8 @@ class cmd_delegation_for_any_service(Command):
 
     takes_args = ["accountname", "onoff"]
 
-    def run(self, accountname, onoff, credopts=None, sambaopts=None, versionopts=None):
+    def run(self, accountname, onoff, credopts=None, sambaopts=None,
+            versionopts=None):
 
         on = False
         if onoff == "on":
@@ -135,7 +134,8 @@ class cmd_delegation_for_any_protocol(Command):
 
     takes_args = ["accountname", "onoff"]
 
-    def run(self, accountname, onoff, credopts=None, sambaopts=None, versionopts=None):
+    def run(self, accountname, onoff, credopts=None, sambaopts=None,
+            versionopts=None):
 
         on = False
         if onoff == "on":
@@ -165,7 +165,7 @@ class cmd_delegation_for_any_protocol(Command):
 
 
 class cmd_delegation_add_service(Command):
-    """Add a service principal as msDS-AllowedToDelegateTo"""
+    """Add a service principal as msDS-AllowedToDelegateTo."""
 
     synopsis = "%prog <accountname> <principal> [options]"
 
@@ -177,7 +177,8 @@ class cmd_delegation_add_service(Command):
 
     takes_args = ["accountname", "principal"]
 
-    def run(self, accountname, principal, credopts=None, sambaopts=None, versionopts=None):
+    def run(self, accountname, principal, credopts=None, sambaopts=None,
+            versionopts=None):
 
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
@@ -188,13 +189,13 @@ class cmd_delegation_add_service(Command):
         # to the correct domain
         (cleanedaccount, realm, domain) = _get_user_realm_domain(accountname)
 
-        res = sam.search(expression="sAMAccountName=%s" % 
+        res = sam.search(expression="sAMAccountName=%s" %
                          ldb.binary_encode(cleanedaccount),
                          scope=ldb.SCOPE_SUBTREE,
                          attrs=["msDS-AllowedToDelegateTo"])
         if len(res) == 0:
             raise CommandError("Unable to find account name '%s'" % accountname)
-        assert(len(res) == 1)    
+        assert(len(res) == 1)
 
         msg = ldb.Message()
         msg.dn = res[0].dn
@@ -208,7 +209,7 @@ class cmd_delegation_add_service(Command):
 
 
 class cmd_delegation_del_service(Command):
-    """Delete a service principal as msDS-AllowedToDelegateTo"""
+    """Delete a service principal as msDS-AllowedToDelegateTo."""
 
     synopsis = "%prog <accountname> <principal> [options]"
 
@@ -220,7 +221,8 @@ class cmd_delegation_del_service(Command):
 
     takes_args = ["accountname", "principal"]
 
-    def run(self, accountname, principal, credopts=None, sambaopts=None, versionopts=None):
+    def run(self, accountname, principal, credopts=None, sambaopts=None,
+            versionopts=None):
 
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
@@ -231,13 +233,13 @@ class cmd_delegation_del_service(Command):
         # to the correct domain
         (cleanedaccount, realm, domain) = _get_user_realm_domain(accountname)
 
-        res = sam.search(expression="sAMAccountName=%s" % 
+        res = sam.search(expression="sAMAccountName=%s" %
                          ldb.binary_encode(cleanedaccount),
                          scope=ldb.SCOPE_SUBTREE,
                          attrs=["msDS-AllowedToDelegateTo"])
         if len(res) == 0:
             raise CommandError("Unable to find account name '%s'" % accountname)
-        assert(len(res) == 1)       
+        assert(len(res) == 1)
 
         msg = ldb.Message()
         msg.dn = res[0].dn
@@ -251,7 +253,7 @@ class cmd_delegation_del_service(Command):
 
 
 class cmd_delegation(SuperCommand):
-    """Delegation management"""
+    """Delegation management."""
 
     subcommands = {}
     subcommands["show"] = cmd_delegation_show()

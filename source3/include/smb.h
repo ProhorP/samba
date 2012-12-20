@@ -33,11 +33,7 @@
 #define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2012"
 
 
-#if defined(LARGE_SMB_OFF_T)
 #define BUFFER_SIZE (128*1024)
-#else /* no large readwrite possible */
-#define BUFFER_SIZE (0xFFFF)
-#endif
 
 #define SAFETY_MARGIN 1024
 #define LARGE_WRITEX_HDR_SIZE 65
@@ -116,11 +112,6 @@
 #define OPENX_FILE_CREATE_IF_NOT_EXIST 0x10
 #define OPENX_FILE_FAIL_IF_NOT_EXIST 0
 
-typedef union unid_t {
-	uid_t uid;
-	gid_t gid;
-} unid_t;
-
 /* pipe string names */
 
 #ifndef MAXSUBAUTHS
@@ -131,30 +122,6 @@ typedef union unid_t {
 
 #include "librpc/gen_ndr/security.h"
 
-typedef struct write_cache {
-	SMB_OFF_T file_size;
-	SMB_OFF_T offset;
-	size_t alloc_size;
-	size_t data_size;
-	char *data;
-} write_cache;
-
-struct fd_handle {
-	size_t ref_count;
-	int fd;
-	uint64_t position_information;
-	SMB_OFF_T pos;
-	uint32 private_options;	/* NT Create options, but we only look at
-				 * NTCREATEX_OPTIONS_PRIVATE_DENY_DOS and
-				 * NTCREATEX_OPTIONS_PRIVATE_DENY_FCB and
-				 * NTCREATEX_OPTIONS_PRIVATE_DELETE_ON_CLOSE
-				 * for print files *only*, where
-				 * DELETE_ON_CLOSE is not stored in the share
-				 * mode database.
-				 */
-	unsigned long gen_id;
-};
-
 struct idle_event;
 struct share_mode_entry;
 struct uuid;
@@ -162,20 +129,6 @@ struct named_mutex;
 struct wb_context;
 struct rpc_cli_smbd_conn;
 struct fncall_context;
-
-struct share_mode_lock {
-	struct share_mode_data *data;
-};
-
-struct vfs_fsp_data {
-    struct vfs_fsp_data *next;
-    struct vfs_handle_struct *owner;
-    void (*destroy)(void *p_data);
-    void *_dummy_;
-    /* NOTE: This structure contains four pointers so that we can guarantee
-     * that the end of the structure is always both 4-byte and 8-byte aligned.
-     */
-};
 
 /* the basic packet size, assuming no words or bytes */
 #define smb_size 39
@@ -186,315 +139,28 @@ struct notify_change {
 };
 
 struct notify_mid_map;
-struct notify_entry;
+struct notify_db_entry;
 struct notify_event;
 struct notify_change_request;
 struct sys_notify_backend;
 struct sys_notify_context {
 	struct event_context *ev;
-	struct connection_struct *conn;
 	void *private_data; 	/* For use by the system backend */
 };
 
-struct notify_change_buf {
-	/*
-	 * If no requests are pending, changes are queued here. Simple array,
-	 * we only append.
-	 */
-
-	/*
-	 * num_changes == -1 means that we have got a catch-all change, when
-	 * asked we just return NT_STATUS_OK without specific changes.
-	 */
-	int num_changes;
-	struct notify_change *changes;
-
-	/*
-	 * If no changes are around requests are queued here. Using a linked
-	 * list, because we have to append at the end and delete from the top.
-	 */
-	struct notify_change_request *requests;
-};
-
-struct print_file_data {
-	char *svcname;
-	char *docname;
-	char *filename;
-	struct policy_handle handle;
-	uint32_t jobid;
-	uint16 rap_jobid;
-};
-
-typedef struct files_struct {
-	struct files_struct *next, *prev;
-	int fnum;
-	struct connection_struct *conn;
-	struct fd_handle *fh;
-	unsigned int num_smb_operations;
-	struct file_id file_id;
-	uint64_t initial_allocation_size; /* Faked up initial allocation on disk. */
-	uint16 file_pid;
-	uint16 vuid;
-	write_cache *wcp;
-	struct timeval open_time;
-	uint32 access_mask;		/* NTCreateX access bits (FILE_READ_DATA etc.) */
-	uint32 share_access;		/* NTCreateX share constants (FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE). */
-
-	bool update_write_time_triggered;
-	struct timed_event *update_write_time_event;
-	bool update_write_time_on_close;
-	struct timespec close_write_time;
-	bool write_time_forced;
-
-	int oplock_type;
-	int sent_oplock_break;
-	struct timed_event *oplock_timeout;
-	struct lock_struct last_lock_failure;
-	int current_lock_count; /* Count the number of outstanding locks and pending locks. */
-
-	struct share_mode_entry *pending_break_messages;
-	int num_pending_break_messages;
-
-	bool can_lock;
-	bool can_read;
-	bool can_write;
-	bool modified;
-	bool is_directory;
-	bool aio_write_behind;
-	bool lockdb_clean;
-	bool initial_delete_on_close; /* Only set at NTCreateX if file was created. */
-	bool delete_on_close;
-	bool posix_open;
-	bool is_sparse;
-	struct smb_filename *fsp_name;
-	uint32_t name_hash;		/* Jenkins hash of full pathname. */
-
-	struct vfs_fsp_data *vfs_extension;
-	struct fake_file_handle *fake_file_handle;
-
-	struct notify_change_buf *notify;
-
-	struct files_struct *base_fsp; /* placeholder for delete on close */
-
-	/*
-	 * Read-only cached brlock record, thrown away when the
-	 * brlock.tdb seqnum changes. This avoids fetching data from
-	 * the brlock.tdb on every read/write call.
-	 */
-	int brlock_seqnum;
-	struct byte_range_lock *brlock_rec;
-
-	struct dptr_struct *dptr;
-
-	/* if not NULL, means this is a print file */
-	struct print_file_data *print_file;
-
-} files_struct;
-
 #include "ntquotas.h"
 #include "sysquotas.h"
-
-struct vuid_cache_entry {
-	struct auth_session_info *session_info;
-	uint16_t vuid;
-	bool read_only;
-};
-
-struct vuid_cache {
-	unsigned int next_entry;
-	struct vuid_cache_entry array[VUID_CACHE_SIZE];
-};
-
-typedef struct {
-	char *name;
-	bool is_wild;
-} name_compare_entry;
-
-struct trans_state {
-	struct trans_state *next, *prev;
-	uint16 vuid;
-	uint64_t mid;
-
-	uint32 max_param_return;
-	uint32 max_data_return;
-	uint32 max_setup_return;
-
-	uint8 cmd;		/* SMBtrans or SMBtrans2 */
-
-	char *name;		/* for trans requests */
-	uint16 call;		/* for trans2 and nttrans requests */
-
-	bool close_on_completion;
-	bool one_way;
-
-	unsigned int setup_count;
-	uint16 *setup;
-
-	size_t received_data;
-	size_t received_param;
-
-	size_t total_param;
-	char *param;
-
-	size_t total_data;
-	char *data;
-};
-
-/*
- * Info about an alternate data stream
- */
-
-struct stream_struct {
-	SMB_OFF_T size;
-	SMB_OFF_T alloc_size;
-	char *name;
-};
 
 /* Include VFS stuff */
 
 #include "smb_acls.h"
 #include "vfs.h"
 
-struct dfree_cached_info {
-	time_t last_dfree_time;
-	uint64_t dfree_ret;
-	uint64_t bsize;
-	uint64_t dfree;
-	uint64_t dsize;
-};
-
-struct dptr_struct;
-
-struct share_params {
-	int service;
-};
-
-typedef struct connection_struct {
-	struct connection_struct *next, *prev;
-	struct smbd_server_connection *sconn; /* can be NULL */
-	unsigned cnum; /* an index passed over the wire */
-	struct share_params *params;
-	bool force_user;
-	struct vuid_cache vuid_cache;
-	bool printer;
-	bool ipc;
-	bool read_only; /* Attributes for the current user of the share. */
-	uint32_t share_access;
-	/* Does this filesystem honor
-	   sub second timestamps on files
-	   and directories when setting time ? */
-	enum timestamp_set_resolution ts_res;
-	char *connectpath;
-	char *origpath;
-
-	struct vfs_handle_struct *vfs_handles;		/* for the new plugins */
-
-	/*
-	 * This represents the user information on this connection. Depending
-	 * on the vuid using this tid, this might change per SMB request.
-	 */
-	struct auth_session_info *session_info;
-
-	/*
-	 * If the "force group" parameter is set, this is the primary gid that
-	 * may be used in the users token, depending on the vuid using this tid.
-	 */
-	gid_t force_group_gid;
-
-	uint16 vuid; /* vuid of user who *opened* this connection, or UID_FIELD_INVALID */
-
-	time_t lastused;
-	time_t lastused_count;
-	bool used;
-	int num_files_open;
-	unsigned int num_smb_operations; /* Count of smb operations on this tree. */
-	int encrypt_level;
-	bool encrypted_tid;
-
-	/* Semantics requested by the client or forced by the server config. */
-	bool case_sensitive;
-	bool case_preserve;
-	bool short_case_preserve;
-
-	/* Semantics provided by the underlying filesystem. */
-	int fs_capabilities;
-	/* Device number of the directory of the share mount.
-	   Used to ensure unique FileIndex returns. */
-	SMB_DEV_T base_share_dev;
-
-	name_compare_entry *hide_list; /* Per-share list of files to return as hidden. */
-	name_compare_entry *veto_list; /* Per-share list of files to veto (never show). */
-	name_compare_entry *veto_oplock_list; /* Per-share list of files to refuse oplocks on. */       
-	name_compare_entry *aio_write_behind_list; /* Per-share list of files to use aio write behind on. */       
-	struct dfree_cached_info *dfree_info;
-	struct trans_state *pending_trans;
-	struct notify_context *notify_ctx;
-
-	struct rpc_pipe_client *spoolss_pipe;
-
-} connection_struct;
-
 struct current_user {
-	connection_struct *conn;
-	uint16 vuid;
+	struct connection_struct *conn;
+	uint64_t vuid; /* SMB2 compat */
 	struct security_unix_token ut;
 	struct security_token *nt_user_token;
-};
-
-struct smbd_smb2_request;
-
-struct smb_request {
-	uint8_t cmd;
-	uint16 flags2;
-	uint16 smbpid;
-	uint64_t mid; /* For compatibility with SMB2. */
-	uint32_t seqnum;
-	uint16 vuid;
-	uint16 tid;
-	uint8  wct;
-	const uint16_t *vwv;
-	uint16_t buflen;
-	const uint8_t *buf;
-	const uint8 *inbuf;
-
-	/*
-	 * Async handling in the main smb processing loop is directed by
-	 * outbuf: reply_xxx routines indicate sync behaviour by putting their
-	 * reply into "outbuf". If they leave it as NULL, they take of it
-	 * themselves, possibly later.
-	 *
-	 * If async handling is wanted, the reply_xxx routine must make sure
-	 * that it talloc_move()s the smb_req somewhere else.
-	 */
-	uint8 *outbuf;
-
-	size_t unread_bytes;
-	bool encrypted;
-	connection_struct *conn;
-	struct smbd_server_connection *sconn;
-	struct smb_perfcount_data pcd;
-
-	/*
-	 * Chained request handling
-	 */
-	struct files_struct *chain_fsp;
-
-	/*
-	 * Here we collect the outbufs from the chain handlers
-	 */
-	uint8_t *chain_outbuf;
-
-	/*
-	 * state information for async smb handling
-	 */
-	void *async_priv;
-
-	bool done;
-
-	/*
-	 * Back pointer to smb2 request.
-	 */
-	struct smbd_smb2_request *smb2req;
 };
 
 /* Defines for the sent_oplock_break field above. */
@@ -565,31 +231,6 @@ Offset  Data			length.
 
 #define NT_HASH_LEN 16
 #define LM_HASH_LEN 16
-
-/* key and data in the connections database - used in smbstatus and smbd */
-struct connections_key {
-	struct server_id pid;
-	int cnum;
-	fstring name;
-};
-
-struct connections_data {
-	int magic;
-	struct server_id pid;
-	int cnum;
-	uid_t uid;
-	gid_t gid;
-	char servicename[FSTRING_LEN];
-	char addr[24];
-	char machine[FSTRING_LEN];
-	time_t start;
-
-	/*
-	 * This field used to hold the msg_flags. For compatibility reasons,
-	 * keep the data structure in the tdb file the same.
-	 */
-	uint32 unused_compatitibility_field;
-};
 
 /* offsets into message for common items */
 #define smb_com		(NBT_HDR_SIZE+HDR_COM)
@@ -752,10 +393,6 @@ struct connections_data {
 #define smb_ntcreate_ImpersonationLevel (smb_vwv0 + 43)
 #define smb_ntcreate_SecurityFlags (smb_vwv0 + 47)
 
-/* this is used on a TConX. I'm not sure the name is very helpful though */
-#define SMB_SUPPORT_SEARCH_BITS        0x0001
-#define SMB_SHARE_IN_DFS               0x0002
-
 /* Named pipe write mode flags. Used in writeX calls. */
 #define PIPE_RAW_MODE 0x4
 #define PIPE_START_MESSAGE 0x8
@@ -912,6 +549,14 @@ struct connections_data {
 #define FILE_NOTIFY_CHANGE_NAME \
 	(FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_DIR_NAME)
 
+#define FILE_NOTIFY_CHANGE_ALL \
+	(FILE_NOTIFY_CHANGE_FILE_NAME   | FILE_NOTIFY_CHANGE_DIR_NAME | \
+	 FILE_NOTIFY_CHANGE_ATTRIBUTES  | FILE_NOTIFY_CHANGE_SIZE | \
+	 FILE_NOTIFY_CHANGE_LAST_WRITE  | FILE_NOTIFY_CHANGE_LAST_ACCESS | \
+	 FILE_NOTIFY_CHANGE_CREATION    | FILE_NOTIFY_CHANGE_EA | \
+	 FILE_NOTIFY_CHANGE_SECURITY	| FILE_NOTIFY_CHANGE_STREAM_NAME | \
+	 FILE_NOTIFY_CHANGE_STREAM_SIZE | FILE_NOTIFY_CHANGE_STREAM_WRITE)
+
 /* change notify action results */
 #define NOTIFY_ACTION_ADDED 1
 #define NOTIFY_ACTION_REMOVED 2
@@ -966,9 +611,6 @@ char *strdup(char *s);
 #define BROWSER_ELECTION_VERSION	0x010f
 #define BROWSER_CONSTANT	0xaa55
 
-/* TCONX Flag (smb_vwv2). */
-#define TCONX_FLAG_EXTENDED_RESPONSE	0x8
-
 /* File Status Flags. See:
 
 http://msdn.microsoft.com/en-us/library/cc246334(PROT.13).aspx
@@ -978,50 +620,22 @@ http://msdn.microsoft.com/en-us/library/cc246334(PROT.13).aspx
 #define NO_SUBSTREAMS		0x2
 #define NO_REPARSETAG		0x4
 
-/* printing types */
-enum printing_types {PRINT_BSD,PRINT_SYSV,PRINT_AIX,PRINT_HPUX,
-		     PRINT_QNX,PRINT_PLP,PRINT_LPRNG,PRINT_SOFTQ,
-		     PRINT_CUPS,PRINT_LPRNT,PRINT_LPROS2,PRINT_IPRINT
-#if defined(DEVELOPER) || defined(ENABLE_BUILD_FARM_HACKS)
-,PRINT_TEST,PRINT_VLP
-#endif /* DEVELOPER */
-};
-
-/* LDAP SSL options */
-enum ldap_ssl_types {LDAP_SSL_OFF, LDAP_SSL_START_TLS};
-
-/* LDAP PASSWD SYNC methods */
-enum ldap_passwd_sync_types {LDAP_PASSWD_SYNC_ON, LDAP_PASSWD_SYNC_OFF, LDAP_PASSWD_SYNC_ONLY};
-
-/*
- * This should be under the HAVE_KRB5 flag but since they're used
- * in lp_kerberos_method(), they ned to be always available
- * If you add any entries to KERBEROS_VERIFY defines, please modify USE.*KEYTAB macros
- * so they remain accurate.
- */
-
-#define KERBEROS_VERIFY_SECRETS 0
-#define KERBEROS_VERIFY_SYSTEM_KEYTAB 1
-#define KERBEROS_VERIFY_DEDICATED_KEYTAB 2
-#define KERBEROS_VERIFY_SECRETS_AND_KEYTAB 3
-
 /* Remote architectures we know about. */
 enum remote_arch_types {RA_UNKNOWN, RA_WFWG, RA_OS2, RA_WIN95, RA_WINNT,
 			RA_WIN2K, RA_WINXP, RA_WIN2K3, RA_VISTA,
 			RA_SAMBA, RA_CIFSFS, RA_WINXP64, RA_OSX};
 
-/* case handling */
-enum case_handling {CASE_LOWER,CASE_UPPER};
-
-/* ACL compatibility */
-enum acl_compatibility {ACL_COMPAT_AUTO, ACL_COMPAT_WINNT, ACL_COMPAT_WIN2K};
 /*
- * Global value meaing that the smb_uid field should be
+ * Global value meaning that the smb_uid field should be
  * ingored (in share level security and protocol level == CORE)
  */
 
 #define UID_FIELD_INVALID 0
 #define VUID_OFFSET 100 /* Amount to bias returned vuid numbers */
+
+#define TID_FIELD_INVALID 0
+
+#define FNUM_FIELD_INVALID 0
 
 /* 
  * Size of buffer to use when moving files across filesystems. 
@@ -1208,45 +822,6 @@ struct node_status_extra {
 	/* There really is more here ... */ 
 };
 
-typedef struct user_struct {
-	struct user_struct *next, *prev;
-	uint16 vuid; /* Tag for this entry. */
-
-	char *session_keystr; /* used by utmp and pam session code.  
-				 TDB key string */
-	int homes_snum;
-
-	struct auth_session_info *session_info;
-
-	struct gensec_security *gensec_security;
-} user_struct;
-
-/*
-   Do you want session setups at user level security with a invalid
-   password to be rejected or allowed in as guest? WinNT rejects them
-   but it can be a pain as it means "net view" needs to use a password
-
-   You have 3 choices in the setting of map_to_guest:
-
-   "NEVER_MAP_TO_GUEST" means session setups with an invalid password
-   are rejected. This is the default.
-
-   "MAP_TO_GUEST_ON_BAD_USER" means session setups with an invalid password
-   are rejected, unless the username does not exist, in which case it
-   is treated as a guest login
-
-   "MAP_TO_GUEST_ON_BAD_PASSWORD" means session setups with an invalid password
-   are treated as a guest login
-
-   Note that map_to_guest only has an effect in user or server
-   level security.
-*/
-
-#define NEVER_MAP_TO_GUEST 		0
-#define MAP_TO_GUEST_ON_BAD_USER 	1
-#define MAP_TO_GUEST_ON_BAD_PASSWORD 	2
-#define MAP_TO_GUEST_ON_BAD_UID 	3
-
 #define SAFE_NETBIOS_CHARS ". -_"
 
 /* The maximum length of a trust account password.
@@ -1287,9 +862,6 @@ struct ea_list {
 /* Prefix for xattrs storing streams. */
 #define SAMBA_XATTR_MARKER "user.SAMBA_STREAMS"
 
-/* map readonly options */
-enum mapreadonly_options {MAP_READONLY_NO, MAP_READONLY_YES, MAP_READONLY_PERMISSIONS};
-
 /* usershare error codes. */
 enum usershare_err {
 		USERSHARE_OK=0,
@@ -1321,39 +893,6 @@ struct smb_extended_info {
 	NTTIME samba_gitcommitdate;
 	char   samba_version_string[SAMBA_EXTENDED_INFO_VERSION_STRING_LENGTH];
 };
-
-/* time info */
-struct smb_file_time {
-	struct timespec mtime;
-	struct timespec atime;
-	struct timespec ctime;
-	struct timespec create_time;
-};
-
-/*
- * unix_convert_flags
- */
-#define UCF_SAVE_LCOMP			0x00000001
-#define UCF_ALWAYS_ALLOW_WCARD_LCOMP	0x00000002
-#define UCF_COND_ALLOW_WCARD_LCOMP	0x00000004
-#define UCF_POSIX_PATHNAMES		0x00000008
-#define UCF_UNIX_NAME_LOOKUP		0x00000010
-
-/*
- * smb_filename
- */
-struct smb_filename {
-	char *base_name;
-	char *stream_name;
-	char *original_lcomp;
-	SMB_STRUCT_STAT st;
-};
-
-/* Used to keep track of deferred opens. */
-struct deferred_open_record;
-
-/* Used inside aio code. */
-struct aio_extra;
 
 /*
  * Reasons for cache flush.

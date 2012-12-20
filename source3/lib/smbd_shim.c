@@ -1,6 +1,6 @@
 /*
    Unix SMB/CIFS implementation.
-   RPC pipe client
+   Runtime plugin adapter for various "smbd"-functions.
 
    Copyright (C) Gerald (Jerry) Carter          2004.
    Copyright (C) Andrew Bartlett                2011.
@@ -24,7 +24,6 @@
 
 #include "includes.h"
 #include "smbd_shim.h"
-#include "smbd/proto.h"
 
 static struct smbd_shim shim;
 
@@ -98,4 +97,20 @@ void unbecome_root(void)
 		shim.unbecome_root();
 	}
 	return;
+}
+
+void exit_server(const char *reason)
+{
+	if (shim.exit_server) {
+		shim.exit_server(reason);
+	}
+	exit(1);
+}
+
+void exit_server_cleanly(const char *const reason)
+{
+	if (shim.exit_server_cleanly) {
+		shim.exit_server_cleanly(reason);
+	}
+	exit(0);
 }

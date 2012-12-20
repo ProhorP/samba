@@ -880,7 +880,8 @@ static NTSTATUS cmd_samr_enum_dom_users(struct rpc_pipe_client *cli,
 					TALLOC_CTX *mem_ctx,
 					int argc, const char **argv)
 {
-	struct policy_handle connect_pol, domain_pol;
+	struct policy_handle connect_pol;
+	struct policy_handle domain_pol = { 0, };
 	NTSTATUS status, result;
 	uint32 start_idx, num_dom_users, i;
 	struct samr_SamArray *dom_users = NULL;
@@ -969,7 +970,8 @@ static NTSTATUS cmd_samr_enum_dom_groups(struct rpc_pipe_client *cli,
                                          TALLOC_CTX *mem_ctx,
                                          int argc, const char **argv)
 {
-	struct policy_handle connect_pol, domain_pol;
+	struct policy_handle connect_pol;
+	struct policy_handle domain_pol = { 0, };
 	NTSTATUS status, result;
 	uint32 start_idx, num_dom_groups, i;
 	uint32 access_mask = MAXIMUM_ALLOWED_ACCESS;
@@ -1052,7 +1054,8 @@ static NTSTATUS cmd_samr_enum_als_groups(struct rpc_pipe_client *cli,
                                          TALLOC_CTX *mem_ctx,
                                          int argc, const char **argv)
 {
-	struct policy_handle connect_pol, domain_pol;
+	struct policy_handle connect_pol;
+	struct policy_handle domain_pol = { 0, };
 	NTSTATUS status, result;
 	uint32 start_idx, num_als_groups, i;
 	uint32 access_mask = MAXIMUM_ALLOWED_ACCESS;
@@ -2700,7 +2703,9 @@ static NTSTATUS cmd_samr_chgpasswd(struct rpc_pipe_client *cli,
 				   TALLOC_CTX *mem_ctx,
 				   int argc, const char **argv)
 {
-	struct policy_handle connect_pol, domain_pol, user_pol;
+	struct policy_handle connect_pol;
+	struct policy_handle domain_pol = { 0, };
+	struct policy_handle user_pol = { 0, };
 	NTSTATUS status, result;
 	const char *user, *oldpass, *newpass;
 	uint32 access_mask = MAXIMUM_ALLOWED_ACCESS;
@@ -3230,7 +3235,7 @@ static NTSTATUS cmd_samr_get_dispinfo_idx(struct rpc_pipe_client *cli,
 {
 	NTSTATUS status, result;
 	struct policy_handle connect_handle;
-	struct policy_handle domain_handle;
+	struct policy_handle domain_handle = { 0, };
 	uint16_t level = 1;
 	struct lsa_String name;
 	uint32_t idx = 0;

@@ -8,6 +8,7 @@ package Samba;
 use strict;
 use target::Samba3;
 use target::Samba4;
+use POSIX;
 
 sub new($$$$$) {
 	my ($classname, $bindir, $binary_mapping,$ldap, $srcdir, $server_maxtime) = @_;
@@ -61,6 +62,15 @@ sub bindir_path($$) {
 
 	return $valpath if (-f $valpath);
 	return $path;
+}
+
+sub nss_wrapper_winbind_so_path($) {
+        my ($object) = @_;
+	my $ret = $ENV{NSS_WRAPPER_WINBIND_SO_PATH};
+        if (not defined($ret)) {
+	    $ret = bindir_path($object, "default/nsswitch/libnss-winbind.so");
+	}
+	return $ret;
 }
 
 sub mk_krb5_conf($$)
@@ -132,6 +142,63 @@ sub mk_realms_stanza($$$$)
 
 ";
         return $realms_stanza;
+}
+
+sub get_interface($)
+{
+    my ($netbiosname) = @_;
+    $netbiosname = lc($netbiosname);
+
+    my %interfaces = ();
+    $interfaces{"locals3dc2"} = 2;
+    $interfaces{"localmember3"} = 3;
+    $interfaces{"localshare4"} = 4;
+    $interfaces{"localktest6"} = 6;
+    $interfaces{"maptoguest"} = 7;
+
+    # 11-16 used by selftest.pl for client interfaces
+
+    $interfaces{"localdc"} = 21;
+    $interfaces{"localvampiredc"} = 22;
+    $interfaces{"s4member"} = 23;
+    $interfaces{"localrpcproxy"} = 24;
+    $interfaces{"dc5"} = 25;
+    $interfaces{"dc6"} = 26;
+    $interfaces{"dc7"} = 27;
+    $interfaces{"rodc"} = 28;
+    $interfaces{"localadmember"} = 29;
+    $interfaces{"plugindc"} = 30;
+    $interfaces{"localsubdc"} = 31;
+    $interfaces{"chgdcpass"} = 32;
+    $interfaces{"promotedvdc"} = 33;
+
+    # update lib/socket_wrapper/socket_wrapper.c
+    #  #define MAX_WRAPPED_INTERFACES 32
+    # if you wish to have more than 32 interfaces
+
+    if (not defined($interfaces{$netbiosname})) {
+	die();
+    }
+
+    return $interfaces{$netbiosname};
+}
+
+sub cleanup_child($$)
+{
+    my ($pid, $name) = @_;
+    my $childpid = waitpid($pid, WNOHANG);
+    if ($childpid == 0) {
+    } elsif ($childpid < 0) {
+	printf STDERR "%s child process %d isn't here any more\n",
+	return $childpid;
+    }
+    elsif ($? & 127) {
+	printf STDERR "%s child process %d, died with signal %d, %s coredump\n",
+	$name, $childpid, ($? & 127),  ($? & 128) ? 'with' : 'without';
+    } else {
+	printf STDERR "%s child process %d exited with value %d\n", $name, $childpid, $? >> 8;
+    }
+    return $childpid;
 }
 
 1;

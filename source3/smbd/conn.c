@@ -24,30 +24,13 @@
 #include "smbd/globals.h"
 #include "lib/util/bitmap.h"
 
-/* The connections bitmap is expanded in increments of BITMAP_BLOCK_SZ. The
- * maximum size of the bitmap is the largest positive integer, but you will hit
- * the "max connections" limit, looong before that.
- */
-
-#define BITMAP_BLOCK_SZ 128
-
-/****************************************************************************
- Init the conn structures.
-****************************************************************************/
-
-void conn_init(struct smbd_server_connection *sconn)
-{
-	sconn->smb1.tcons.Connections = NULL;
-	sconn->smb1.tcons.bmap = bitmap_talloc(sconn, BITMAP_BLOCK_SZ);
-}
-
 /****************************************************************************
  Return the number of open connections.
 ****************************************************************************/
 
 int conn_num_open(struct smbd_server_connection *sconn)
 {
-	return sconn->num_tcons_open;
+	return sconn->num_connections;
 }
 
 /****************************************************************************
@@ -57,67 +40,15 @@ int conn_num_open(struct smbd_server_connection *sconn)
 bool conn_snum_used(struct smbd_server_connection *sconn,
 		    int snum)
 {
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *ptcon;
+	struct connection_struct *conn;
 
-			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
-				if (ptcon->compat_conn &&
-						ptcon->compat_conn->params &&
-						(ptcon->compat_conn->params->service == snum)) {
-					return true;
-				}
-			}
-		}
-	} else {
-		/* SMB1 */
-		connection_struct *conn;
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=conn->next) {
-			if (conn->params->service == snum) {
-				return true;
-			}
+	for (conn=sconn->connections; conn; conn=conn->next) {
+		if (conn->params->service == snum) {
+			return true;
 		}
 	}
+
 	return false;
-}
-
-/****************************************************************************
- Find a conn given a cnum.
-****************************************************************************/
-
-connection_struct *conn_find(struct smbd_server_connection *sconn,unsigned cnum)
-{
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *ptcon;
-
-			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
-				if (ptcon->compat_conn &&
-						ptcon->compat_conn->cnum == cnum) {
-					return ptcon->compat_conn;
-				}
-			}
-		}
-	} else {
-		/* SMB1 */
-		int count=0;
-		connection_struct *conn;
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=conn->next,count++) {
-			if (conn->cnum == cnum) {
-				if (count > 10) {
-					DLIST_PROMOTE(sconn->smb1.tcons.Connections,
-						conn);
-				}
-				return conn;
-			}
-		}
-	}
-
-	return NULL;
 }
 
 /****************************************************************************
@@ -129,84 +60,20 @@ connection_struct *conn_find(struct smbd_server_connection *sconn,unsigned cnum)
 connection_struct *conn_new(struct smbd_server_connection *sconn)
 {
 	connection_struct *conn;
-	int i;
-        int find_offset = 1;
-
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		if (!(conn=talloc_zero(NULL, connection_struct)) ||
-		    !(conn->params = talloc(conn, struct share_params))) {
-			DEBUG(0,("TALLOC_ZERO() failed!\n"));
-			TALLOC_FREE(conn);
-			return NULL;
-		}
-		conn->sconn = sconn;
-		return conn;
-	}
-
-	/* SMB1 */
-find_again:
-	i = bitmap_find(sconn->smb1.tcons.bmap, find_offset);
-
-	if (i == -1) {
-                /* Expand the connections bitmap. */
-                int             oldsz = sconn->smb1.tcons.bmap->n;
-                int             newsz = sconn->smb1.tcons.bmap->n +
-					BITMAP_BLOCK_SZ;
-                struct bitmap * nbmap;
-
-                if (newsz <= oldsz) {
-                        /* Integer wrap. */
-		        DEBUG(0,("ERROR! Out of connection structures\n"));
-                        return NULL;
-                }
-
-		DEBUG(4,("resizing connections bitmap from %d to %d\n",
-                        oldsz, newsz));
-
-                nbmap = bitmap_talloc(sconn, newsz);
-		if (!nbmap) {
-			DEBUG(0,("ERROR! malloc fail.\n"));
-			return NULL;
-		}
-
-                bitmap_copy(nbmap, sconn->smb1.tcons.bmap);
-		TALLOC_FREE(sconn->smb1.tcons.bmap);
-
-                sconn->smb1.tcons.bmap = nbmap;
-                find_offset = oldsz; /* Start next search in the new portion. */
-
-                goto find_again;
-	}
-
-	/* The bitmap position is used below as the connection number
-	 * conn->cnum). This ends up as the TID field in the SMB header,
-	 * which is limited to 16 bits (we skip 0xffff which is the
-	 * NULL TID).
-	 */
-	if (i > 65534) {
-		DEBUG(0, ("Maximum connection limit reached\n"));
-		return NULL;
-	}
 
 	if (!(conn=talloc_zero(NULL, connection_struct)) ||
-	    !(conn->params = talloc(conn, struct share_params))) {
+	    !(conn->params = talloc(conn, struct share_params)) ||
+	    !(conn->connectpath = talloc_strdup(conn, "")) ||
+	    !(conn->origpath = talloc_strdup(conn, ""))) {
 		DEBUG(0,("TALLOC_ZERO() failed!\n"));
 		TALLOC_FREE(conn);
 		return NULL;
 	}
 	conn->sconn = sconn;
-	conn->cnum = i;
 	conn->force_group_gid = (gid_t)-1;
 
-	bitmap_set(sconn->smb1.tcons.bmap, i);
-
-	sconn->num_tcons_open++;
-
-	string_set(&conn->connectpath,"");
-	string_set(&conn->origpath,"");
-
-	DLIST_ADD(sconn->smb1.tcons.Connections, conn);
+	DLIST_ADD(sconn->connections, conn);
+	sconn->num_connections++;
 
 	return conn;
 }
@@ -215,7 +82,7 @@ find_again:
  Clear a vuid out of the connection's vuid cache
 ****************************************************************************/
 
-static void conn_clear_vuid_cache(connection_struct *conn, uint16_t vuid)
+static void conn_clear_vuid_cache(connection_struct *conn, uint64_t vuid)
 {
 	int i;
 
@@ -260,33 +127,15 @@ static void conn_clear_vuid_cache(connection_struct *conn, uint16_t vuid)
  Called from invalidate_vuid()
 ****************************************************************************/
 
-void conn_clear_vuid_caches(struct smbd_server_connection *sconn,uint16_t vuid)
+void conn_clear_vuid_caches(struct smbd_server_connection *sconn, uint64_t vuid)
 {
 	connection_struct *conn;
 
-	if (sconn->using_smb2) {
-		/* SMB2 */
-		struct smbd_smb2_session *sess;
-		for (sess = sconn->smb2.sessions.list; sess; sess = sess->next) {
-			struct smbd_smb2_tcon *ptcon;
-
-			for (ptcon = sess->tcons.list; ptcon; ptcon = ptcon->next) {
-				if (ptcon->compat_conn) {
-					if (ptcon->compat_conn->vuid == vuid) {
-						ptcon->compat_conn->vuid = UID_FIELD_INVALID;
-					}
-					conn_clear_vuid_cache(ptcon->compat_conn, vuid);
-				}
-			}
+	for (conn=sconn->connections; conn;conn=conn->next) {
+		if (conn->vuid == vuid) {
+			conn->vuid = UID_FIELD_INVALID;
 		}
-	} else {
-		/* SMB1 */
-		for (conn=sconn->smb1.tcons.Connections;conn;conn=conn->next) {
-			if (conn->vuid == vuid) {
-				conn->vuid = UID_FIELD_INVALID;
-			}
-			conn_clear_vuid_cache(conn, vuid);
-		}
+		conn_clear_vuid_cache(conn, vuid);
 	}
 }
 
@@ -321,9 +170,6 @@ static void conn_free_internal(connection_struct *conn)
 	free_namearray(conn->veto_oplock_list);
 	free_namearray(conn->aio_write_behind_list);
 
-	string_free(&conn->connectpath);
-	string_free(&conn->origpath);
-
 	ZERO_STRUCTP(conn);
 	talloc_destroy(conn);
 }
@@ -339,25 +185,9 @@ void conn_free(connection_struct *conn)
 		return;
 	}
 
-	if (conn->sconn->using_smb2) {
-		/* SMB2 */
-		conn_free_internal(conn);
-		return;
-	}
-
-	/* SMB1 */
-	DLIST_REMOVE(conn->sconn->smb1.tcons.Connections, conn);
-
-	if (conn->sconn->smb1.tcons.bmap != NULL) {
-		/*
-		 * Can be NULL for fake connections created by
-		 * create_conn_struct()
-		 */
-		bitmap_clear(conn->sconn->smb1.tcons.bmap, conn->cnum);
-	}
-
-	SMB_ASSERT(conn->sconn->num_tcons_open > 0);
-	conn->sconn->num_tcons_open--;
+	DLIST_REMOVE(conn->sconn->connections, conn);
+	SMB_ASSERT(conn->sconn->num_connections > 0);
+	conn->sconn->num_connections--;
 
 	conn_free_internal(conn);
 }

@@ -27,6 +27,7 @@
 #include "idmap_cache.h"
 #include "../libcli/security/security.h"
 #include "lib/winbind_util.h"
+#include "../librpc/gen_ndr/idmap.h"
 
 /*****************************************************************
  Dissect a user-provided name into domain, name, sid and type.
@@ -338,7 +339,10 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 			TALLOC_FREE(tmp_ctx);
 			return false;
 		}
-		strupper_m(tmp_dom);
+		if (!strupper_m(tmp_dom)) {
+			TALLOC_FREE(tmp_ctx);
+			return false;
+		}
 		*ret_domain = tmp_dom;
 	}
 
@@ -496,7 +500,7 @@ static bool lookup_rids(TALLOC_CTX *mem_ctx, const struct dom_sid *domain_sid,
 		*types = NULL;
 	}
 
-	if (sid_check_is_domain(domain_sid)) {
+	if (sid_check_is_our_sam(domain_sid)) {
 		NTSTATUS result;
 
 		if (*domain_name == NULL) {
@@ -612,7 +616,7 @@ static bool lookup_as_domain(const struct dom_sid *sid, TALLOC_CTX *mem_ctx,
 	const char *tmp;
 	enum lsa_SidType type;
 
-	if (sid_check_is_domain(sid)) {
+	if (sid_check_is_our_sam(sid)) {
 		*name = talloc_strdup(mem_ctx, get_global_sam_name());
 		return true;
 	}
@@ -709,7 +713,7 @@ static bool check_dom_sid_to_level(const struct dom_sid *sid, int level)
 	case 3:
 	case 4:
 	case 6:
-		ret = sid_check_is_domain(sid);
+		ret = sid_check_is_our_sam(sid);
 		break;
 	case 5:
 		ret = false;
@@ -1012,115 +1016,6 @@ bool lookup_sid(TALLOC_CTX *mem_ctx, const struct dom_sid *sid,
  modified to use linked lists by jra.
 *****************************************************************/  
 
-/*****************************************************************
-  Find a SID given a uid.
-*****************************************************************/
-
-static bool fetch_sid_from_uid_cache(struct dom_sid *psid, uid_t uid)
-{
-	DATA_BLOB cache_value;
-
-	if (!memcache_lookup(NULL, UID_SID_CACHE,
-			     data_blob_const(&uid, sizeof(uid)),
-			     &cache_value)) {
-		return false;
-	}
-
-	memcpy(psid, cache_value.data, MIN(sizeof(*psid), cache_value.length));
-	SMB_ASSERT(cache_value.length >= offsetof(struct dom_sid, id_auth));
-	SMB_ASSERT(cache_value.length == ndr_size_dom_sid(psid, 0));
-
-	return true;
-}
-
-/*****************************************************************
-  Find a uid given a SID.
-*****************************************************************/
-
-static bool fetch_uid_from_cache( uid_t *puid, const struct dom_sid *psid )
-{
-	DATA_BLOB cache_value;
-
-	if (!memcache_lookup(NULL, SID_UID_CACHE,
-			     data_blob_const(psid, ndr_size_dom_sid(psid, 0)),
-			     &cache_value)) {
-		return false;
-	}
-
-	SMB_ASSERT(cache_value.length == sizeof(*puid));
-	memcpy(puid, cache_value.data, sizeof(*puid));
-
-	return true;
-}
-
-/*****************************************************************
- Store uid to SID mapping in cache.
-*****************************************************************/
-
-void store_uid_sid_cache(const struct dom_sid *psid, uid_t uid)
-{
-	memcache_add(NULL, SID_UID_CACHE,
-		     data_blob_const(psid, ndr_size_dom_sid(psid, 0)),
-		     data_blob_const(&uid, sizeof(uid)));
-	memcache_add(NULL, UID_SID_CACHE,
-		     data_blob_const(&uid, sizeof(uid)),
-		     data_blob_const(psid, ndr_size_dom_sid(psid, 0)));
-}
-
-/*****************************************************************
-  Find a SID given a gid.
-*****************************************************************/
-
-static bool fetch_sid_from_gid_cache(struct dom_sid *psid, gid_t gid)
-{
-	DATA_BLOB cache_value;
-
-	if (!memcache_lookup(NULL, GID_SID_CACHE,
-			     data_blob_const(&gid, sizeof(gid)),
-			     &cache_value)) {
-		return false;
-	}
-
-	memcpy(psid, cache_value.data, MIN(sizeof(*psid), cache_value.length));
-	SMB_ASSERT(cache_value.length >= offsetof(struct dom_sid, id_auth));
-	SMB_ASSERT(cache_value.length == ndr_size_dom_sid(psid, 0));
-
-	return true;
-}
-
-/*****************************************************************
-  Find a gid given a SID.
-*****************************************************************/
-
-static bool fetch_gid_from_cache(gid_t *pgid, const struct dom_sid *psid)
-{
-	DATA_BLOB cache_value;
-
-	if (!memcache_lookup(NULL, SID_GID_CACHE,
-			     data_blob_const(psid, ndr_size_dom_sid(psid, 0)),
-			     &cache_value)) {
-		return false;
-	}
-
-	SMB_ASSERT(cache_value.length == sizeof(*pgid));
-	memcpy(pgid, cache_value.data, sizeof(*pgid));
-
-	return true;
-}
-
-/*****************************************************************
- Store gid to SID mapping in cache.
-*****************************************************************/
-
-void store_gid_sid_cache(const struct dom_sid *psid, gid_t gid)
-{
-	memcache_add(NULL, SID_GID_CACHE,
-		     data_blob_const(psid, ndr_size_dom_sid(psid, 0)),
-		     data_blob_const(&gid, sizeof(gid)));
-	memcache_add(NULL, GID_SID_CACHE,
-		     data_blob_const(&gid, sizeof(gid)),
-		     data_blob_const(psid, ndr_size_dom_sid(psid, 0)));
-}
 
 /*****************************************************************
  *THE LEGACY* convert uid_t to SID function.
@@ -1149,7 +1044,6 @@ static void legacy_uid_to_sid(struct dom_sid *psid, uid_t uid)
 	DEBUG(10,("LEGACY: uid %u -> sid %s\n", (unsigned int)uid,
 		  sid_string_dbg(psid)));
 
-	store_uid_sid_cache(psid, uid);
 	return;
 }
 
@@ -1180,121 +1074,54 @@ static void legacy_gid_to_sid(struct dom_sid *psid, gid_t gid)
 	DEBUG(10,("LEGACY: gid %u -> sid %s\n", (unsigned int)gid,
 		  sid_string_dbg(psid)));
 
-	store_gid_sid_cache(psid, gid);
 	return;
 }
 
 /*****************************************************************
- *THE LEGACY* convert SID to uid function.
+ *THE LEGACY* convert SID to id function.
 *****************************************************************/  
 
-static bool legacy_sid_to_uid(const struct dom_sid *psid, uid_t *puid)
+static bool legacy_sid_to_unixid(const struct dom_sid *psid, struct unixid *id)
 {
-	enum lsa_SidType type;
+	bool ret;
 
-	if (sid_check_is_in_our_domain(psid)) {
-		uid_t uid;
-		gid_t gid;
-		bool ret;
+	become_root();
+	ret = pdb_sid_to_id(psid, id);
+	unbecome_root();
 
-		become_root();
-		ret = pdb_sid_to_id(psid, &uid, &gid, &type);
-		unbecome_root();
-
-		if (ret) {
-			if (type != SID_NAME_USER) {
-				DEBUG(5, ("sid %s is a %s, expected a user\n",
-					  sid_string_dbg(psid),
-					  sid_type_lookup(type)));
-				return false;
-			}
-			*puid = uid;
-			goto done;
-		}
-
-		/* This was ours, but it was not mapped.  Fail */
-	}
-
-	DEBUG(10,("LEGACY: mapping failed for sid %s\n",
-		  sid_string_dbg(psid)));
-	return false;
-
-done:
-	DEBUG(10,("LEGACY: sid %s -> uid %u\n", sid_string_dbg(psid),
-		  (unsigned int)*puid ));
-
-	store_uid_sid_cache(psid, *puid);
-	return true;
-}
-
-/*****************************************************************
- *THE LEGACY* convert SID to gid function.
- Group mapping is used for gids that maps to Wellknown SIDs
-*****************************************************************/  
-
-static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
-{
-	GROUP_MAP *map;
-	enum lsa_SidType type;
-
-	map = talloc_zero(NULL, GROUP_MAP);
-	if (!map) {
-		return false;
-	}
-
-	if ((sid_check_is_in_builtin(psid) ||
-	     sid_check_is_in_wellknown_domain(psid))) {
-		bool ret;
-
-		become_root();
-		ret = pdb_getgrsid(map, *psid);
-		unbecome_root();
-
-		if (ret) {
-			*pgid = map->gid;
-			goto done;
-		}
+	if (!ret) {
 		DEBUG(10,("LEGACY: mapping failed for sid %s\n",
 			  sid_string_dbg(psid)));
 		return false;
 	}
 
-	if (sid_check_is_in_our_domain(psid)) {
-		uid_t uid;
-		gid_t gid;
-		bool ret;
-
-		become_root();
-		ret = pdb_sid_to_id(psid, &uid, &gid, &type);
-		unbecome_root();
-
-		if (ret) {
-			if ((type != SID_NAME_DOM_GRP) &&
-			    (type != SID_NAME_ALIAS)) {
-				DEBUG(5, ("LEGACY: sid %s is a %s, expected "
-					  "a group\n", sid_string_dbg(psid),
-					  sid_type_lookup(type)));
-				return false;
-			}
-			*pgid = gid;
-			goto done;
-		}
-
-		/* This was ours, but it was not mapped.  Fail */
-	}
-
-	DEBUG(10,("LEGACY: mapping failed for sid %s\n",
-		  sid_string_dbg(psid)));
-	return false;
-
- done:
-	DEBUG(10,("LEGACY: sid %s -> gid %u\n", sid_string_dbg(psid),
-		  (unsigned int)*pgid ));
-
-	store_gid_sid_cache(psid, *pgid);
-
-	TALLOC_FREE(map);
 	return true;
+}
+
+static bool legacy_sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
+{
+	struct unixid id;
+	if (!legacy_sid_to_unixid(psid, &id)) {
+		return false;
+	}
+	if (id.type == ID_TYPE_GID || id.type == ID_TYPE_BOTH) {
+		*pgid = id.id;
+		return true;
+	}
+	return false;
+}
+
+static bool legacy_sid_to_uid(const struct dom_sid *psid, uid_t *puid)
+{
+	struct unixid id;
+	if (!legacy_sid_to_unixid(psid, &id)) {
+		return false;
+	}
+	if (id.type == ID_TYPE_UID || id.type == ID_TYPE_BOTH) {
+		*puid = id.id;
+		return true;
+	}
+	return false;
 }
 
 /*****************************************************************
@@ -1306,9 +1133,6 @@ void uid_to_sid(struct dom_sid *psid, uid_t uid)
 	bool expired = true;
 	bool ret;
 	ZERO_STRUCTP(psid);
-
-	if (fetch_sid_from_uid_cache(psid, uid))
-		return;
 
 	/* Check the winbindd cache directly. */
 	ret = idmap_cache_find_uid2sid(uid, psid, &expired);
@@ -1346,7 +1170,6 @@ void uid_to_sid(struct dom_sid *psid, uid_t uid)
 	DEBUG(10,("uid %u -> sid %s\n", (unsigned int)uid,
 		  sid_string_dbg(psid)));
 
-	store_uid_sid_cache(psid, uid);
 	return;
 }
 
@@ -1359,9 +1182,6 @@ void gid_to_sid(struct dom_sid *psid, gid_t gid)
 	bool expired = true;
 	bool ret;
 	ZERO_STRUCTP(psid);
-
-	if (fetch_sid_from_gid_cache(psid, gid))
-		return;
 
 	/* Check the winbindd cache directly. */
 	ret = idmap_cache_find_gid2sid(gid, psid, &expired);
@@ -1399,12 +1219,11 @@ void gid_to_sid(struct dom_sid *psid, gid_t gid)
 	DEBUG(10,("gid %u -> sid %s\n", (unsigned int)gid,
 		  sid_string_dbg(psid)));
 
-	store_gid_sid_cache(psid, gid);
 	return;
 }
 
-bool sids_to_unix_ids(const struct dom_sid *sids, uint32_t num_sids,
-		      struct wbcUnixId *ids)
+bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
+		     struct unixid *ids)
 {
 	struct wbcDomainSid *wbc_sids = NULL;
 	struct wbcUnixId *wbc_ids = NULL;
@@ -1423,39 +1242,24 @@ bool sids_to_unix_ids(const struct dom_sid *sids, uint32_t num_sids,
 		bool expired;
 		uint32_t rid;
 
-		if (fetch_uid_from_cache(&ids[i].id.uid, &sids[i])) {
-			ids[i].type = WBC_ID_TYPE_UID;
-			continue;
-		}
-		if (fetch_gid_from_cache(&ids[i].id.gid, &sids[i])) {
-			ids[i].type = WBC_ID_TYPE_GID;
-			continue;
-		}
 		if (sid_peek_check_rid(&global_sid_Unix_Users,
 				       &sids[i], &rid)) {
-			ids[i].type = WBC_ID_TYPE_UID;
-			ids[i].id.uid = rid;
+			ids[i].type = ID_TYPE_UID;
+			ids[i].id = rid;
 			continue;
 		}
 		if (sid_peek_check_rid(&global_sid_Unix_Groups,
 				       &sids[i], &rid)) {
-			ids[i].type = WBC_ID_TYPE_GID;
-			ids[i].id.gid = rid;
+			ids[i].type = ID_TYPE_GID;
+			ids[i].id = rid;
 			continue;
 		}
-		if (idmap_cache_find_sid2uid(&sids[i], &ids[i].id.uid,
-					     &expired)
-		    && !expired) {
-			ids[i].type = WBC_ID_TYPE_UID;
+		if (idmap_cache_find_sid2unixid(&sids[i], &ids[i], &expired)
+		    && !expired)
+		{
 			continue;
 		}
-		if (idmap_cache_find_sid2gid(&sids[i], &ids[i].id.gid,
-					     &expired)
-		    && !expired) {
-			ids[i].type = WBC_ID_TYPE_GID;
-			continue;
-		}
-		ids[i].type = WBC_ID_TYPE_NOT_SPECIFIED;
+		ids[i].type = ID_TYPE_NOT_SPECIFIED;
 		memcpy(&wbc_sids[num_not_cached], &sids[i],
 		       ndr_size_dom_sid(&sids[i], 0));
 		num_not_cached += 1;
@@ -1479,26 +1283,54 @@ bool sids_to_unix_ids(const struct dom_sid *sids, uint32_t num_sids,
 	num_not_cached = 0;
 
 	for (i=0; i<num_sids; i++) {
-		if (ids[i].type == WBC_ID_TYPE_NOT_SPECIFIED) {
-			ids[i] = wbc_ids[num_not_cached];
+		if (ids[i].type == ID_TYPE_NOT_SPECIFIED) {
+			switch (wbc_ids[num_not_cached].type) {
+			case WBC_ID_TYPE_UID:
+				ids[i].type = ID_TYPE_UID;
+				ids[i].id = wbc_ids[num_not_cached].id.uid;
+				break;
+			case WBC_ID_TYPE_GID:
+				ids[i].type = ID_TYPE_GID;
+				ids[i].id = wbc_ids[num_not_cached].id.gid;
+				break;
+			default:
+				/* The types match, and wbcUnixId -> id is a union anyway */
+				ids[i].type = (enum id_type)wbc_ids[num_not_cached].type;
+				ids[i].id = wbc_ids[num_not_cached].id.gid;
+				break;
+			}
 			num_not_cached += 1;
 		}
 	}
 
 	for (i=0; i<num_sids; i++) {
-		if (ids[i].type != WBC_ID_TYPE_NOT_SPECIFIED) {
+		if (ids[i].type != ID_TYPE_NOT_SPECIFIED) {
 			continue;
 		}
-		if (legacy_sid_to_gid(&sids[i], &ids[i].id.gid)) {
-			ids[i].type = WBC_ID_TYPE_GID;
+		if (legacy_sid_to_gid(&sids[i], &ids[i].id)) {
+			ids[i].type = ID_TYPE_GID;
 			continue;
 		}
-		if (legacy_sid_to_uid(&sids[i], &ids[i].id.uid)) {
-			ids[i].type = WBC_ID_TYPE_UID;
+		if (legacy_sid_to_uid(&sids[i], &ids[i].id)) {
+			ids[i].type = ID_TYPE_UID;
 			continue;
 		}
 	}
 done:
+	for (i=0; i<num_sids; i++) {
+		switch(ids[i].type) {
+		case WBC_ID_TYPE_GID:
+		case WBC_ID_TYPE_UID:
+		case WBC_ID_TYPE_BOTH:
+			if (ids[i].id == -1) {
+				ids[i].type = ID_TYPE_NOT_SPECIFIED;
+			}
+			break;
+		case WBC_ID_TYPE_NOT_SPECIFIED:
+			break;
+		}
+	}
+
 	ret = true;
 fail:
 	TALLOC_FREE(wbc_ids);
@@ -1515,14 +1347,6 @@ bool sid_to_uid(const struct dom_sid *psid, uid_t *puid)
 	bool expired = true;
 	bool ret;
 	uint32 rid;
-	gid_t gid;
-
-	if (fetch_uid_from_cache(puid, psid))
-		return true;
-
-	if (fetch_gid_from_cache(&gid, psid)) {
-		return false;
-	}
 
 	/* Optimize for the Unix Users Domain
 	 * as the conversion is straightforward */
@@ -1563,7 +1387,6 @@ bool sid_to_uid(const struct dom_sid *psid, uid_t *puid)
 	DEBUG(10,("sid %s -> uid %u\n", sid_string_dbg(psid),
 		(unsigned int)*puid ));
 
-	store_uid_sid_cache(psid, *puid);
 	return true;
 }
 
@@ -1577,13 +1400,6 @@ bool sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 	bool expired = true;
 	bool ret;
 	uint32 rid;
-	uid_t uid;
-
-	if (fetch_gid_from_cache(pgid, psid))
-		return true;
-
-	if (fetch_uid_from_cache(&uid, psid))
-		return false;
 
 	/* Optimize for the Unix Groups Domain
 	 * as the conversion is straightforward */
@@ -1625,7 +1441,6 @@ bool sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 	DEBUG(10,("sid %s -> gid %u\n", sid_string_dbg(psid),
 		  (unsigned int)*pgid ));
 
-	store_gid_sid_cache(psid, *pgid);
 	return true;
 }
 

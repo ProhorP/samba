@@ -60,7 +60,7 @@ static bool lp_load_for_s4_ctx(const char *filename)
  * All of the s4 loadparm functions should be here eventually, once
  * they are implemented in the s3 loadparm, have the same format (enum
  * values in particular) and defaults. */
-static const struct loadparm_s3_context s3_fns = 
+static const struct loadparm_s3_helpers s3_fns =
 {
 	.get_parametric = lp_parm_const_string_service,
 	.get_parm_struct = lp_get_parameter,
@@ -73,8 +73,10 @@ static const struct loadparm_s3_context s3_fns =
 	.set_cmdline = lp_set_cmdline,
 	.dump = lp_dump,
 
-	.server_role = lp_server_role,
-	.security = lp_security,
+	._server_role = lp__server_role,
+	._security = lp__security,
+	._domain_master = lp__domain_master,
+	._domain_logons = lp__domain_logons,
 
 	.winbind_separator = lp_winbind_separator,
 	.template_homedir = lp_template_homedir,
@@ -110,9 +112,14 @@ static const struct loadparm_s3_context s3_fns =
 	.unix_extensions = lp_unix_extensions,
 	.use_spnego = lp_use_spnego,
 	.use_mmap = lp_use_mmap,
+
+	.srv_minprotocol = lp_srv_minprotocol,
+	.srv_maxprotocol = lp_srv_maxprotocol,
+
+	.passwordserver = lp_passwordserver
 };
 
-const struct loadparm_s3_context *loadparm_s3_context(void)
+const struct loadparm_s3_helpers *loadparm_s3_helpers(void)
 {
 	return &s3_fns;
 }

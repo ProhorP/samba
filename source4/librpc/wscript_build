@@ -158,7 +158,7 @@ bld.SAMBA_LIBRARY('dcerpc',
 
 bld.SAMBA_SUBSYSTEM('pyrpc_util',
 	source='rpc/pyrpc_util.c',
-	public_deps='pytalloc-util pyparam_util dcerpc',
+	public_deps='pytalloc-util pyparam_util dcerpc MESSAGING',
 	pyext=True,
 	)
 
@@ -296,6 +296,12 @@ bld.SAMBA_PYTHON('python_irpc',
 	realname='samba/dcerpc/irpc.so'
 	)
 
+bld.SAMBA_PYTHON('python_server_id',
+	source='../../librpc/gen_ndr/py_server_id.c',
+	deps='RPC_NDR_SERVER_ID pytalloc-util pyrpc_util',
+	realname='samba/dcerpc/server_id.so'
+	)
+
 bld.SAMBA_PYTHON('python_winbind',
 	source='gen_ndr/py_winbind.c',
 	deps='RPC_NDR_WINBIND pytalloc-util pyrpc_util python_netlogon',
@@ -340,6 +346,12 @@ bld.SAMBA_PYTHON('python_dcerpc_xattr',
 	realname='samba/dcerpc/xattr.so'
 	)
 
+bld.SAMBA_PYTHON('python_dcerpc_idmap',
+	source='../../librpc/gen_ndr/py_idmap.c',
+	deps='pytalloc-util pyrpc_util RPC_NDR_XATTR',
+	realname='samba/dcerpc/idmap.so'
+	)
+
 bld.SAMBA_PYTHON('python_netlogon',
 	source='../../librpc/gen_ndr/py_netlogon.c',
 	deps='RPC_NDR_NETLOGON pytalloc-util pyrpc_util',
@@ -350,6 +362,12 @@ bld.SAMBA_PYTHON('python_dnsserver',
 	source='../../librpc/gen_ndr/py_dnsserver.c',
 	deps='RPC_NDR_DNSSERVER pytalloc-util pyrpc_util',
 	realname='samba/dcerpc/dnsserver.so'
+	)
+
+bld.SAMBA_PYTHON('python_dcerpc_smb_acl',
+	source='../../librpc/gen_ndr/py_smb_acl.c',
+	deps='pytalloc-util pyrpc_util',
+	realname='samba/dcerpc/smb_acl.so'
 	)
 
 bld.SAMBA_SCRIPT('python_dcerpc_init',

@@ -397,7 +397,7 @@ int partition_reload_if_required(struct ldb_module *module,
 		return ldb_oom(ldb);
 	}
 
-	ret = partition_primary_sequence_number(module, mem_ctx, LDB_SEQ_HIGHEST_SEQ, &seq, parent);
+	ret = partition_primary_sequence_number(module, mem_ctx, &seq, parent);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(mem_ctx);
 		return ret;
@@ -705,6 +705,12 @@ int partition_create(struct ldb_module *module, struct ldb_request *req)
 	if (!data) {
 		/* We are not going to create a partition before we are even set up */
 		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	/* see if we are still up-to-date */
+	ret = partition_reload_if_required(module, data, req);
+	if (ret != LDB_SUCCESS) {
+		return ret;
 	}
 
 	for (i=0; data->partitions && data->partitions[i]; i++) {

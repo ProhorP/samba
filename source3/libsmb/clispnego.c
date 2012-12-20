@@ -103,6 +103,10 @@ bool spnego_parse_negTokenInit(TALLOC_CTX *ctx,
 	bool ret;
 	ASN1_DATA *data;
 
+	for (i = 0; i < ASN1_MAX_OIDS; i++) {
+		OIDs[i] = NULL;
+	}
+
 	data = asn1_init(talloc_tos());
 	if (data == NULL) {
 		return false;
@@ -247,49 +251,6 @@ DATA_BLOB spnego_gen_krb5_wrap(TALLOC_CTX *ctx, const DATA_BLOB ticket, const ui
 	return ret;
 }
 
-/*
-  parse a krb5 GSS-API wrapper packet giving a ticket
-*/
-bool spnego_parse_krb5_wrap(TALLOC_CTX *ctx, DATA_BLOB blob, DATA_BLOB *ticket, uint8 tok_id[2])
-{
-	bool ret;
-	ASN1_DATA *data;
-	int data_remaining;
-
-	data = asn1_init(talloc_tos());
-	if (data == NULL) {
-		return false;
-	}
-
-	asn1_load(data, blob);
-	asn1_start_tag(data, ASN1_APPLICATION(0));
-	asn1_check_OID(data, OID_KERBEROS5);
-
-	data_remaining = asn1_tag_remaining(data);
-
-	if (data_remaining < 3) {
-		data->has_error = True;
-	} else {
-		asn1_read(data, tok_id, 2);
-		data_remaining -= 2;
-		*ticket = data_blob_talloc(ctx, NULL, data_remaining);
-		asn1_read(data, ticket->data, ticket->length);
-	}
-
-	asn1_end_tag(data);
-
-	ret = !data->has_error;
-
-	if (data->has_error) {
-		data_blob_free(ticket);
-	}
-
-	asn1_free(data);
-
-	return ret;
-}
-
-
 /* 
    generate a SPNEGO krb5 negTokenInit packet, ready for a EXTENDED_SECURITY
    kerberos session setup
@@ -298,7 +259,7 @@ int spnego_gen_krb5_negTokenInit(TALLOC_CTX *ctx,
 			    const char *principal, int time_offset,
 			    DATA_BLOB *targ,
 			    DATA_BLOB *session_key_krb5, uint32 extra_ap_opts,
-			    time_t *expire_time)
+			    const char *ccname, time_t *expire_time)
 {
 	int retval;
 	DATA_BLOB tkt, tkt_wrapped;
@@ -307,7 +268,7 @@ int spnego_gen_krb5_negTokenInit(TALLOC_CTX *ctx,
 	/* get a kerberos ticket for the service and extract the session key */
 	retval = cli_krb5_get_ticket(ctx, principal, time_offset,
 					  &tkt, session_key_krb5,
-					  extra_ap_opts, NULL,
+					  extra_ap_opts, ccname,
 					  expire_time, NULL);
 	if (retval) {
 		return retval;

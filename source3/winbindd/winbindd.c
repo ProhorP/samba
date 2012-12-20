@@ -36,6 +36,7 @@
 #include "serverid.h"
 #include "auth.h"
 #include "messages.h"
+#include "../lib/util/pidfile.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -65,11 +66,12 @@ static bool reload_services_file(const char *lfile)
 	bool ret;
 
 	if (lp_loaded()) {
-		const char *fname = lp_configfile();
+		char *fname = lp_configfile(talloc_tos());
 
 		if (file_exist(fname) && !strcsequal(fname,get_dyn_CONFIGFILE())) {
 			set_dyn_CONFIGFILE(fname);
 		}
+		TALLOC_FREE(fname);
 	}
 
 	/* if this is a child, restore the logfile to the special
@@ -183,7 +185,7 @@ static void terminate(bool is_parent)
 
 	if (is_parent) {
 		serverid_deregister(procid_self());
-		pidfile_unlink();
+		pidfile_unlink(lp_piddir(), "winbindd");
 	}
 
 	exit(0);
@@ -201,6 +203,26 @@ static void winbindd_sig_term_handler(struct tevent_context *ev,
 	DEBUG(0,("Got sig[%d] terminate (is_parent=%d)\n",
 		 signum, (int)*is_parent));
 	terminate(*is_parent);
+}
+
+/*
+  handle stdin becoming readable when we are in --foreground mode
+ */
+static void winbindd_stdin_handler(struct tevent_context *ev,
+			       struct tevent_fd *fde,
+			       uint16_t flags,
+			       void *private_data)
+{
+	char c;
+	if (read(0, &c, 1) != 1) {
+		bool *is_parent = talloc_get_type_abort(private_data, bool);
+		
+		/* we have reached EOF on stdin, which means the
+		   parent has exited. Shutdown the server */
+		DEBUG(0,("EOF on stdin (is_parent=%d)\n",
+			 (int)*is_parent));
+		terminate(*is_parent);
+	}
 }
 
 bool winbindd_setup_sig_term_handler(bool parent)
@@ -248,6 +270,28 @@ bool winbindd_setup_sig_term_handler(bool parent)
 		return false;
 	}
 
+	return true;
+}
+
+bool winbindd_setup_stdin_handler(bool parent, bool foreground)
+{
+	bool *is_parent;
+
+	if (foreground) {
+		is_parent = talloc(winbind_event_context(), bool);
+		if (!is_parent) {
+			return false;
+		}
+		
+		*is_parent = parent;
+
+		/* if we are running in the foreground then look for
+		   EOF on stdin, and exit if it happens. This allows
+		   us to die if the parent process dies
+		*/
+		tevent_add_fd(winbind_event_context(), is_parent, 0, TEVENT_FD_READ, winbindd_stdin_handler, is_parent);
+	}
+	
 	return true;
 }
 
@@ -389,7 +433,7 @@ static void winbind_msg_validate_cache(struct messaging_context *msg_ctx,
 	 * so we don't block the main winbindd and the validation
 	 * code can safely use fork/waitpid...
 	 */
-	child_pid = sys_fork();
+	child_pid = fork();
 
 	if (child_pid == -1) {
 		DEBUG(1, ("winbind_msg_validate_cache: Could not fork: %s\n",
@@ -577,6 +621,7 @@ static void process_request(struct winbindd_cli_state *state)
 
 	state->cmd_name = "unknown request";
 	state->recv_fn = NULL;
+	state->last_access = time(NULL);
 
 	/* Process command */
 
@@ -878,7 +923,8 @@ static void remove_client(struct winbindd_cli_state *state)
 /* Is a client idle? */
 
 static bool client_is_idle(struct winbindd_cli_state *state) {
-  return (state->response == NULL &&
+  return (state->request == NULL &&
+	  state->response == NULL &&
 	  !state->pwent_state && !state->grent_state);
 }
 
@@ -1028,11 +1074,13 @@ bool winbindd_use_cache(void)
 	return !opt_nocache;
 }
 
-void winbindd_register_handlers(void)
+void winbindd_register_handlers(bool foreground)
 {
 	/* Setup signal handlers */
 
 	if (!winbindd_setup_sig_term_handler(true))
+		exit(1);
+	if (!winbindd_setup_stdin_handler(true, foreground))
 		exit(1);
 	if (!winbindd_setup_sig_hup_handler(NULL))
 		exit(1);
@@ -1252,7 +1300,7 @@ int main(int argc, char **argv, char **envp)
  	CatchSignal(SIGUSR2, SIG_IGN);
 
 	fault_setup();
-	dump_core_setup("winbindd", lp_logfile());
+	dump_core_setup("winbindd", lp_logfile(talloc_tos()));
 
 	load_case_tables();
 
@@ -1305,6 +1353,14 @@ int main(int argc, char **argv, char **envp)
 		}
 	}
 
+	/* We call dump_core_setup one more time because the command line can
+	 * set the log file or the log-basename and this will influence where
+	 * cores are stored. Without this call get_dyn_LOGFILEBASE will be
+	 * the default value derived from build's prefix. For EOM this value
+	 * is often not related to the path where winbindd is actually run
+	 * in production.
+	 */
+	dump_core_setup("winbindd", lp_logfile(talloc_tos()));
 	if (is_daemon && interactive) {
 		d_fprintf(stderr,"\nERROR: "
 			  "Option -i|--interactive is not allowed together with -D|--daemon\n\n");
@@ -1344,6 +1400,17 @@ int main(int argc, char **argv, char **envp)
 		DEBUG(0, ("error opening config file '%s'\n", get_dyn_CONFIGFILE()));
 		exit(1);
 	}
+	/* After parsing the configuration file we setup the core path one more time
+	 * as the log file might have been set in the configuration and cores's
+	 * path is by default basename(lp_logfile()).
+	 */
+	dump_core_setup("winbindd", lp_logfile(talloc_tos()));
+
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC) {
+		DEBUG(0, ("server role = 'active directory domain controller' not compatible with running the winbindd binary. \n"));
+		DEBUGADD(0, ("You should start 'samba' instead, and it will control starting the internal AD DC winbindd implementation, which is not the same as this one\n"));
+		exit(1);
+	}
 
 	/* Initialise messaging system */
 
@@ -1358,6 +1425,10 @@ int main(int argc, char **argv, char **envp)
 
 	if (!directory_exist(lp_lockdir())) {
 		mkdir(lp_lockdir(), 0755);
+	}
+
+	if (!directory_exist(lp_piddir())) {
+		mkdir(lp_piddir(), 0755);
 	}
 
 	/* Setup names. */
@@ -1387,7 +1458,7 @@ int main(int argc, char **argv, char **envp)
 	if (!interactive)
 		become_daemon(Fork, no_process_group, log_stdout);
 
-	pidfile_create("winbindd");
+	pidfile_create(lp_piddir(), "winbindd");
 
 #if HAVE_SETPGID
 	/*
@@ -1413,9 +1484,20 @@ int main(int argc, char **argv, char **envp)
 		exit(1);
 	}
 
-	winbindd_register_handlers();
+	/*
+	 * Do not initialize the parent-child-pipe before becoming
+	 * a daemon: this is used to detect a died parent in the child
+	 * process.
+	 */
+	status = init_before_fork();
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("init_before_fork failed: %s\n", nt_errstr(status)));
+		exit(1);
+	}
 
-	status = init_system_info();
+	winbindd_register_handlers(!Fork);
+
+	status = init_system_session_info();
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("ERROR: failed to setup system user info: %s.\n",
 			  nt_errstr(status)));

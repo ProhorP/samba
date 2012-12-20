@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation.
 # Copyright (C) 2008 Kai Blin <kai@samba.org>
 #
@@ -56,7 +54,7 @@ class IDmapDB(samba.Ldb):
 
         :return xid can that be used for SID/unixid mapping
         """
-        res = self.search(expression="dn=CN=CONFIG", base="", 
+        res = self.search(expression="distinguishedName=CN=CONFIG", base="",
                           scope=ldb.SCOPE_SUBTREE)
         id = res[0].get("xidNumber")
         flag = ldb.FLAG_MOD_REPLACE
@@ -98,5 +96,3 @@ cn: %s
 
 """ % (sid, unixid, sid, type_string, sid)
         self.add(self.parse_ldif(mod).next()[1])
-
-

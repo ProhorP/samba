@@ -256,6 +256,7 @@ static int schema_data_modify(struct ldb_module *module, struct ldb_request *req
 	int cmp;
 	bool rodc = false;
 	int ret;
+	struct ldb_control *sd_propagation_control;
 
 	ldb = ldb_module_get_ctx(module);
 
@@ -271,6 +272,21 @@ static int schema_data_modify(struct ldb_module *module, struct ldb_request *req
 
 	/* dbcheck should be able to fix things */
 	if (ldb_request_get_control(req, DSDB_CONTROL_DBCHECK)) {
+		return ldb_next_request(module, req);
+	}
+
+	sd_propagation_control = ldb_request_get_control(req,
+					DSDB_CONTROL_SEC_DESC_PROPAGATION_OID);
+	if (sd_propagation_control != NULL) {
+		if (req->op.mod.message->num_elements != 1) {
+			return ldb_module_operr(module);
+		}
+		ret = strcmp(req->op.mod.message->elements[0].name,
+			     "nTSecurityDescriptor");
+		if (ret != 0) {
+			return ldb_module_operr(module);
+		}
+
 		return ldb_next_request(module, req);
 	}
 
@@ -325,7 +341,7 @@ static int schema_data_modify(struct ldb_module *module, struct ldb_request *req
 
 	if (!schema->fsmo.update_allowed && !rodc) {
 		ldb_debug_set(ldb, LDB_DEBUG_ERROR,
-			  "schema_data_add: updates are not allowed: reject request\n");
+			  "schema_data_modify: updates are not allowed: reject request\n");
 		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
@@ -389,7 +405,11 @@ static int generate_objectClasses(struct ldb_context *ldb, struct ldb_message *m
 	int ret;
 
 	for (sclass = schema->classes; sclass; sclass = sclass->next) {
-		ret = ldb_msg_add_string(msg, "objectClasses", schema_class_to_description(msg, sclass));
+		char *v = schema_class_to_description(msg, sclass);
+		if (v == NULL) {
+			return ldb_oom(ldb);
+		}
+		ret = ldb_msg_add_steal_string(msg, "objectClasses", v);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
@@ -401,9 +421,13 @@ static int generate_attributeTypes(struct ldb_context *ldb, struct ldb_message *
 {
 	const struct dsdb_attribute *attribute;
 	int ret;
-	
+
 	for (attribute = schema->attributes; attribute; attribute = attribute->next) {
-		ret = ldb_msg_add_string(msg, "attributeTypes", schema_attribute_to_description(msg, attribute));
+		char *v = schema_attribute_to_description(msg, attribute);
+		if (v == NULL) {
+			return ldb_oom(ldb);
+		}
+		ret = ldb_msg_add_steal_string(msg, "attributeTypes", v);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
@@ -445,7 +469,7 @@ static int generate_extendedAttributeInfo(struct ldb_context *ldb,
 			return ldb_oom(ldb);
 		}
 
-		ret = ldb_msg_add_string(msg, "extendedAttributeInfo", val);
+		ret = ldb_msg_add_steal_string(msg, "extendedAttributeInfo", val);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
@@ -467,7 +491,7 @@ static int generate_extendedClassInfo(struct ldb_context *ldb,
 			return ldb_oom(ldb);
 		}
 
-		ret = ldb_msg_add_string(msg, "extendedClassInfo", val);
+		ret = ldb_msg_add_steal_string(msg, "extendedClassInfo", val);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
@@ -505,7 +529,11 @@ static int generate_possibleInferiors(struct ldb_context *ldb, struct ldb_messag
 	}
 
 	for (i=0;possibleInferiors[i];i++) {
-		ret = ldb_msg_add_string(msg, "possibleInferiors", possibleInferiors[i]);
+		char *v = talloc_strdup(msg, possibleInferiors[i]);
+		if (v == NULL) {
+			return ldb_oom(ldb);
+		}
+		ret = ldb_msg_add_steal_string(msg, "possibleInferiors", v);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}

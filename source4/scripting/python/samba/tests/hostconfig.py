@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Unix SMB/CIFS implementation. Tests for shares
 # Copyright (C) Jelmer Vernooij <jelmer@samba.org> 2009
 #
@@ -59,13 +57,15 @@ class ShareTests(TestCase):
     def test_iter(self):
         self.assertEquals([], list(self._get_shares({})))
         self.assertEquals([], list(self._get_shares({"global":{}})))
-        self.assertEquals(["bla"], list(self._get_shares({"global":{}, "bla":{}})))
+        self.assertEquals(
+            ["bla"],
+            list(self._get_shares({"global":{}, "bla":{}})))
 
     def test_len(self):
         shares = self._get_shares({"global": {}})
         self.assertEquals(0, len(shares))
 
-    def test_getitem_nonexistant(self):
+    def test_getitem_nonexistent(self):
         shares = self._get_shares({"global": {}})
         self.assertRaises(KeyError, shares.__getitem__, "bla")
 

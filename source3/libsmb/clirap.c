@@ -28,6 +28,7 @@
 #include "libsmb/libsmb.h"
 #include "libsmb/clirap.h"
 #include "trans2.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 #define PIPE_LANMAN   "\\PIPE\\LANMAN"
 
@@ -116,13 +117,17 @@ bool cli_NetWkstaUserLogon(struct cli_state *cli,char *user, char *workstation)
 	SSVAL(p,0,1);
 	p += 2;
 	strlcpy(p,user,sizeof(param)-PTR_DIFF(p,param));
-	strupper_m(p);
+	if (!strupper_m(p)) {
+		return false;
+	}
 	p += 21;
 	p++;
 	p += 15;
 	p++;
 	strlcpy(p, workstation,sizeof(param)-PTR_DIFF(p,param));
-	strupper_m(p);
+	if (!strupper_m(p)) {
+		return false;
+	}
 	p += 16;
 	SSVAL(p, 0, CLI_BUFFER_SIZE);
 	p += 2;
@@ -620,7 +625,7 @@ NTSTATUS cli_qpathinfo1_recv(struct tevent_req *req,
 			     time_t *change_time,
 			     time_t *access_time,
 			     time_t *write_time,
-			     SMB_OFF_T *size,
+			     off_t *size,
 			     uint16 *mode)
 {
 	struct cli_qpathinfo1_state *state = tevent_req_data(
@@ -640,13 +645,13 @@ NTSTATUS cli_qpathinfo1_recv(struct tevent_req *req,
 	}
 
 	if (change_time) {
-		*change_time = date_fn(state->data+0, cli_state_server_time_zone(state->cli));
+		*change_time = date_fn(state->data+0, smb1cli_conn_server_time_zone(state->cli->conn));
 	}
 	if (access_time) {
-		*access_time = date_fn(state->data+4, cli_state_server_time_zone(state->cli));
+		*access_time = date_fn(state->data+4, smb1cli_conn_server_time_zone(state->cli->conn));
 	}
 	if (write_time) {
-		*write_time = date_fn(state->data+8, cli_state_server_time_zone(state->cli));
+		*write_time = date_fn(state->data+8, smb1cli_conn_server_time_zone(state->cli->conn));
 	}
 	if (size) {
 		*size = IVAL(state->data, 12);
@@ -662,7 +667,7 @@ NTSTATUS cli_qpathinfo1(struct cli_state *cli,
 			time_t *change_time,
 			time_t *access_time,
 			time_t *write_time,
-			SMB_OFF_T *size,
+			off_t *size,
 			uint16 *mode)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -670,7 +675,7 @@ NTSTATUS cli_qpathinfo1(struct cli_state *cli,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -797,7 +802,7 @@ NTSTATUS cli_qpathinfo2_recv(struct tevent_req *req,
 			     struct timespec *access_time,
 			     struct timespec *write_time,
 			     struct timespec *change_time,
-			     SMB_OFF_T *size, uint16 *mode,
+			     off_t *size, uint16 *mode,
 			     SMB_INO_T *ino)
 {
 	struct cli_qpathinfo2_state *state = tevent_req_data(
@@ -837,7 +842,7 @@ NTSTATUS cli_qpathinfo2(struct cli_state *cli, const char *fname,
 			struct timespec *access_time,
 			struct timespec *write_time,
 			struct timespec *change_time,
-			SMB_OFF_T *size, uint16 *mode,
+			off_t *size, uint16 *mode,
 			SMB_INO_T *ino)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -845,7 +850,7 @@ NTSTATUS cli_qpathinfo2(struct cli_state *cli, const char *fname,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -956,7 +961,7 @@ NTSTATUS cli_qpathinfo_streams(struct cli_state *cli, const char *fname,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -1114,7 +1119,7 @@ NTSTATUS cli_qfilename(struct cli_state *cli, uint16_t fnum,
 ****************************************************************************/
 
 NTSTATUS cli_qfileinfo_basic(struct cli_state *cli, uint16_t fnum,
-			     uint16 *mode, SMB_OFF_T *size,
+			     uint16 *mode, off_t *size,
 			     struct timespec *create_time,
 			     struct timespec *access_time,
 			     struct timespec *write_time,
@@ -1244,7 +1249,7 @@ NTSTATUS cli_qpathinfo_basic(struct cli_state *cli, const char *name,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	if (cli_has_async_calls(cli)) {
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
 		 * Can't use sync call while an async call is in flight
 		 */
@@ -1296,7 +1301,7 @@ NTSTATUS cli_qpathinfo_alt_name(struct cli_state *cli, const char *fname, fstrin
 
 	/* The returned data is a pushed string, not raw data. */
 	if (!convert_string_talloc(talloc_tos(),
-				   cli_ucs2(cli) ? CH_UTF16LE : CH_DOS,
+				   smbXcli_conn_use_unicode(cli->conn) ? CH_UTF16LE : CH_DOS,
 				   CH_UNIX,
 				   rdata + 4,
 				   len,

@@ -32,6 +32,7 @@
 #include "rpc_client/cli_lsarpc.h"
 #include "libcli/security/security.h"
 #include "libsmb/nmblib.h"
+#include "../libcli/smb/smbXcli_base.h"
 
 /* 
  * Check a server for being alive and well.
@@ -95,7 +96,7 @@ SMBC_remove_unused_server(SMBCCTX * context,
 /****************************************************************
  * Call the auth_fn with fixed size (fstring) buffers.
  ***************************************************************/
-void
+static void
 SMBC_call_auth_fn(TALLOC_CTX *ctx,
                   SMBCCTX *context,
                   const char *server,
@@ -293,7 +294,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                 if (!cli_state_has_tcon(srv->cli)) {
                         /* Ensure we have accurate auth info */
 			SMBC_call_auth_fn(ctx, context,
-					  cli_state_remote_name(srv->cli),
+					  smbXcli_conn_remote_name(srv->cli->conn),
 					  srv->cli->share,
                                           pp_workgroup,
                                           pp_username,
@@ -371,7 +372,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                          */
                         if (srv) {
 				const char *remote_name =
-					cli_state_remote_name(srv->cli);
+					smbXcli_conn_remote_name(srv->cli->conn);
 
 				srv->dev = (dev_t)(str_checksum(remote_name) ^
                                                    str_checksum(srv->cli->share));
@@ -416,6 +417,10 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 		flags |= CLI_FULL_CONNECTION_USE_CCACHE;
 	}
 
+	if (smbc_getOptionUseNTHash(context)) {
+		flags |= CLI_FULL_CONNECTION_USE_NT_HASH;
+	}
+
         if (share == NULL || *share == '\0' || is_ipc) {
 		/*
 		 * Try 139 first for IPC$
@@ -441,7 +446,8 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 
 	cli_set_timeout(c, smbc_getTimeout(context));
 
-	status = cli_negprot(c, PROTOCOL_NT1);
+	status = smbXcli_negprot(c->conn, c->timeout, PROTOCOL_CORE,
+				 PROTOCOL_NT1);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		cli_shutdown(c);
@@ -488,7 +494,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	   here before trying to connect to the original share.
 	   cli_check_msdfs_proxy() will fail if it is a normal share. */
 
-	if ((cli_state_capabilities(c) & CAP_DFS) &&
+	if ((smb1cli_conn_capabilities(c->conn) & CAP_DFS) &&
 			cli_check_msdfs_proxy(ctx, c, share,
 				&newserver, &newshare,
 				/* FIXME: cli_check_msdfs_proxy() does
@@ -697,7 +703,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
 	if (!srv) {
 		return NULL;
 	}
-	server = cli_state_remote_name(srv->cli);
+	server = smbXcli_conn_remote_name(srv->cli->conn);
 	share = srv->cli->share;
 
         /*

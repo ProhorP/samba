@@ -20,7 +20,7 @@
 #include "includes.h"
 #include "smb_common.h"
 #if HAVE_KRB5
-#include "libcli/auth/krb5_wrap.h"
+#include "lib/krb5_wrap/krb5_samba.h"
 #endif
 #include "auth/gensec/gensec.h"
 #include "libcli/smb/smb_seal.h"
@@ -56,7 +56,7 @@ NTSTATUS get_enc_ctx_num(const uint8_t *buf, uint16_t *p_enc_ctx_num)
 
 static void smb_set_enclen(char *buf,int len,uint16_t enc_ctx_num)
 {
-	_smb_setlen_nbt(buf,len);
+	_smb_setlen_tcp(buf,len);
 
 	SCVAL(buf,4,0xFF);
 	SCVAL(buf,5,'E');

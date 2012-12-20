@@ -5,7 +5,7 @@
 
 if [ $# -lt 5 ]; then
 cat <<EOF
-Usage: test_kinit.sh SERVER USERNAME PASSWORD REALM DOMAIN PREFIX
+Usage: test_kinit.sh SERVER USERNAME PASSWORD REALM DOMAIN PREFIX ENCTYPE SMBCLIENT
 EOF
 exit 1;
 fi
@@ -17,12 +17,12 @@ REALM=$4
 DOMAIN=$5
 PREFIX=$6
 ENCTYPE=$7
-shift 7
+smbclient=$8
+shift 8
 failed=0
 
 samba4bindir="$BINDIR"
 samba4srcdir="$SRCDIR/source4"
-smbclient="$samba4bindir/smbclient"
 samba4kinit="$samba4bindir/samba4kinit"
 samba_tool="$samba4bindir/samba-tool"
 ldbmodify="$samba4bindir/ldbmodify"
@@ -157,6 +157,39 @@ EOF
 
 testit "set user password with kpasswd and servicePrincipalName" $rkpty $PREFIX/tmpkpasswdscript $samba4kpasswd --cache=$PREFIX/tmpccache host/nettestuser@$REALM || failed=`expr $failed + 1`
 
+testit "kinit with user password" $samba4kinit $enctype --password-file=$PREFIX/tmpuserpassfile --request-pac nettestuser@$REALM   || failed=`expr $failed + 1`
+
+test_smbclient "Test login with user kerberos ccache" 'ls' -k yes || failed=`expr $failed + 1`
+
+cat > $PREFIX/tmpldbmodify <<EOF
+dn: cn=nettestuser,cn=users,$BASEDN
+changetype: modify
+replace: pwdLastSet
+pwdLastSet: 0
+EOF
+
+USERPASS=$NEWUSERPASS
+NEWUSERPASS=testPaSS@911%
+
+testit "modify pwdLastSet" $VALGRIND $ldbmodify $PWSETCONFIG $PREFIX/tmpldbmodify $PREFIX/tmpldbmodify -k yes $@ || failed=`expr $failed + 1`
+
+cat > $PREFIX/tmppasswordchange <<EOF
+expect nettestuser@${REALM}'s Password: 
+send ${USERPASS}\n
+expect Your password will expire at
+expect Changing password
+expect New password:
+send ${NEWUSERPASS}\n
+expect Repeat new password:
+send ${NEWUSERPASS}\n
+expect Success: Password changed
+EOF
+
+testit "kinit with user password for expired password" $rkpty $PREFIX/tmppasswordchange $samba4kinit $enctype --request-pac nettestuser@$REALM && failed=`expr $failed + 1`
+
+test_smbclient "Test login with user kerberos ccache" 'ls' -k yes || failed=`expr $failed + 1`
+
+echo $NEWUSERPASS > $PREFIX/tmpuserpassfile
 testit "kinit with user password" $samba4kinit $enctype --password-file=$PREFIX/tmpuserpassfile --request-pac nettestuser@$REALM   || failed=`expr $failed + 1`
 
 test_smbclient "Test login with user kerberos ccache" 'ls' -k yes || failed=`expr $failed + 1`

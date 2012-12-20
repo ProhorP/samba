@@ -176,7 +176,8 @@ void get_xsrf_token(const char *username, const char *pass,
 		char tmp[3];
 
 		snprintf(tmp, sizeof(tmp), "%02x", token[i]);
-		strlcat(token_str, tmp, sizeof(tmp));
+		/* FIXME ! Truncate check. JRA. */
+		(void)strlcat(token_str, tmp, sizeof(tmp));
 	}
 }
 
@@ -560,7 +561,7 @@ static int save_reload(int snum)
 	FILE *f;
 	struct stat st;
 
-	f = sys_fopen(get_dyn_CONFIGFILE(),"w");
+	f = fopen(get_dyn_CONFIGFILE(),"w");
 	if (!f) {
 		printf(_("failed to open %s for writing"), get_dyn_CONFIGFILE());
 		printf("\n");
@@ -626,7 +627,7 @@ static void commit_parameter(int snum, struct parm_struct *parm, const char *v)
 		   variable globally. We need to change the parameter in 
 		   all shares where it is currently set to the default */
 		for (i=0;i<lp_numservices();i++) {
-			s = lp_servicename(i);
+			s = lp_servicename(talloc_tos(), i);
 			if (s && (*s) && lp_is_default(i, parm)) {
 				lp_do_parameter(i, parm->label, v);
 			}
@@ -1111,7 +1112,7 @@ output_page:
 	if (snum < 0)
 		printf("<option value=\" \"> \n");
 	for (i=0;i<lp_numservices();i++) {
-		s = lp_servicename(i);
+		s = lp_servicename(talloc_tos(), i);
 		if (s && (*s) && strcmp(s,"IPC$") && !lp_print_ok(i)) {
 			push_utf8_talloc(talloc_tos(), &utf8_s, s, &converted_size);
 			printf("<option %s value=\"%s\">%s\n", 
@@ -1468,7 +1469,7 @@ output_page:
 	if (snum < 0 || !lp_print_ok(snum))
 		printf("<option value=\" \"> \n");
 	for (i=0;i<lp_numservices();i++) {
-		s = lp_servicename(i);
+		s = lp_servicename(talloc_tos(), i);
 		if (s && (*s) && strcmp(s,"IPC$") && lp_print_ok(i)) {
                     if (i >= iNumNonAutoPrintServices)
                         printf("<option %s value=\"%s\">[*]%s\n",

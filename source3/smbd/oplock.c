@@ -26,15 +26,6 @@
 #include "messages.h"
 #include "../librpc/gen_ndr/open_files.h"
 
-/****************************************************************************
- Get the number of current exclusive oplocks.
-****************************************************************************/
-
-int32 get_number_of_exclusive_open_oplocks(void)
-{
-  return exclusive_oplocks_open;
-}
-
 /*
  * helper function used by the kernel oplock backends to post the break message
  */
@@ -60,30 +51,35 @@ void break_kernel_oplock(struct messaging_context *msg_ctx, files_struct *fsp)
  if oplock set.
 ****************************************************************************/
 
-bool set_file_oplock(files_struct *fsp, int oplock_type)
+NTSTATUS set_file_oplock(files_struct *fsp, int oplock_type)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+	bool use_kernel = lp_kernel_oplocks(SNUM(fsp->conn)) && koplocks;
+
 	if (fsp->oplock_type == LEVEL_II_OPLOCK) {
-		if (koplocks &&
+		if (use_kernel &&
 		    !(koplocks->flags & KOPLOCKS_LEVEL2_SUPPORTED)) {
 			DEBUG(10, ("Refusing level2 oplock, kernel oplocks "
 				   "don't support them\n"));
-			return false;
+			return NT_STATUS_NOT_SUPPORTED;
 		}
 	}
 
 	if ((fsp->oplock_type != NO_OPLOCK) &&
 	    (fsp->oplock_type != FAKE_LEVEL_II_OPLOCK) &&
-	    koplocks &&
-	    !koplocks->ops->set_oplock(koplocks, fsp, oplock_type)) {
-		return False;
+	    use_kernel &&
+	    !koplocks->ops->set_oplock(koplocks, fsp, oplock_type))
+	{
+		return map_nt_error_from_unix(errno);
 	}
 
 	fsp->oplock_type = oplock_type;
 	fsp->sent_oplock_break = NO_BREAK_SENT;
 	if (oplock_type == LEVEL_II_OPLOCK) {
-		level_II_oplocks_open++;
+		sconn->oplocks.level_II_open++;
 	} else if (EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
-		exclusive_oplocks_open++;
+		sconn->oplocks.exclusive_open++;
 	}
 
 	DEBUG(5,("set_file_oplock: granted oplock on file %s, %s/%lu, "
@@ -92,7 +88,7 @@ bool set_file_oplock(files_struct *fsp, int oplock_type)
 		 fsp->fh->gen_id, (int)fsp->open_time.tv_sec,
 		 (int)fsp->open_time.tv_usec ));
 
-	return True;
+	return NT_STATUS_OK;
 }
 
 /****************************************************************************
@@ -101,6 +97,9 @@ bool set_file_oplock(files_struct *fsp, int oplock_type)
 
 void release_file_oplock(files_struct *fsp)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
 	if ((fsp->oplock_type != NO_OPLOCK) &&
 	    (fsp->oplock_type != FAKE_LEVEL_II_OPLOCK) &&
 	    koplocks) {
@@ -108,13 +107,13 @@ void release_file_oplock(files_struct *fsp)
 	}
 
 	if (fsp->oplock_type == LEVEL_II_OPLOCK) {
-		level_II_oplocks_open--;
+		sconn->oplocks.level_II_open--;
 	} else if (EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
-		exclusive_oplocks_open--;
+		sconn->oplocks.exclusive_open--;
 	}
 
-	SMB_ASSERT(exclusive_oplocks_open>=0);
-	SMB_ASSERT(level_II_oplocks_open>=0);
+	SMB_ASSERT(sconn->oplocks.exclusive_open>=0);
+	SMB_ASSERT(sconn->oplocks.level_II_open>=0);
 
 	if (EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
 		/* This doesn't matter for close. */
@@ -136,6 +135,9 @@ void release_file_oplock(files_struct *fsp)
 
 static void downgrade_file_oplock(files_struct *fsp)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
 	if (!EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
 		DEBUG(0, ("trying to downgrade an already-downgraded oplock!\n"));
 		return;
@@ -145,8 +147,8 @@ static void downgrade_file_oplock(files_struct *fsp)
 		koplocks->ops->release_oplock(koplocks, fsp, LEVEL_II_OPLOCK);
 	}
 	fsp->oplock_type = LEVEL_II_OPLOCK;
-	exclusive_oplocks_open--;
-	level_II_oplocks_open++;
+	sconn->oplocks.exclusive_open--;
+	sconn->oplocks.level_II_open++;
 	fsp->sent_oplock_break = NO_BREAK_SENT;
 }
 
@@ -171,8 +173,8 @@ bool remove_oplock(files_struct *fsp)
 	ret = remove_share_oplock(lck, fsp);
 	if (!ret) {
 		DEBUG(0,("remove_oplock: failed to remove share oplock for "
-			 "file %s fnum %d, %s\n",
-			 fsp_str_dbg(fsp), fsp->fnum,
+			 "file %s, %s, %s\n",
+			 fsp_str_dbg(fsp), fsp_fnum_dbg(fsp),
 			 file_id_string_tos(&fsp->file_id)));
 	}
 	release_file_oplock(fsp);
@@ -197,8 +199,8 @@ bool downgrade_oplock(files_struct *fsp)
 	ret = downgrade_share_oplock(lck, fsp);
 	if (!ret) {
 		DEBUG(0,("downgrade_oplock: failed to downgrade share oplock "
-			 "for file %s fnum %d, file_id %s\n",
-			 fsp_str_dbg(fsp), fsp->fnum,
+			 "for file %s, %s, file_id %s\n",
+			 fsp_str_dbg(fsp), fsp_fnum_dbg(fsp),
 			 file_id_string_tos(&fsp->file_id)));
 	}
 
@@ -210,8 +212,9 @@ bool downgrade_oplock(files_struct *fsp)
 /*
  * Some kernel oplock implementations handle the notification themselves.
  */
-bool should_notify_deferred_opens()
+bool should_notify_deferred_opens(struct smbd_server_connection *sconn)
 {
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
 	return !(koplocks &&
 		(koplocks->flags & KOPLOCKS_DEFERRED_OPEN_NOTIFICATION));
 }
@@ -271,7 +274,8 @@ static files_struct *initial_break_processing(
 		dbgtext( "initial_break_processing: called for %s/%u\n",
 			 file_id_string_tos(&id), (int)file_id);
 		dbgtext( "Current oplocks_open (exclusive = %d, levelII = %d)\n",
-			exclusive_oplocks_open, level_II_oplocks_open );
+			sconn->oplocks.exclusive_open,
+			sconn->oplocks.level_II_open);
 	}
 
 	/*
@@ -337,6 +341,9 @@ static void oplock_timeout_handler(struct event_context *ctx,
 
 static void add_oplock_timeout_handler(files_struct *fsp)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
 	/*
 	 * If kernel oplocks already notifies smbds when an oplock break times
 	 * out, just return.
@@ -406,7 +413,7 @@ void break_level2_to_none_async(files_struct *fsp)
 	SMB_ASSERT(fsp->oplock_type == LEVEL_II_OPLOCK);
 
 	DEBUG(10,("process_oplock_async_level2_break_message: sending break "
-		  "to none message for fid %d, file %s\n", fsp->fnum,
+		  "to none message for %s, file %s\n", fsp_fnum_dbg(fsp),
 		  fsp_str_dbg(fsp)));
 
 	/* Now send a break to none message to our client. */
@@ -484,9 +491,12 @@ static void process_oplock_break_message(struct messaging_context *msg_ctx,
 	struct share_mode_entry msg;
 	files_struct *fsp;
 	bool break_to_level2 = False;
+	bool use_kernel;
 	struct smbd_server_connection *sconn =
 		talloc_get_type_abort(private_data,
 		struct smbd_server_connection);
+	struct server_id self = messaging_server_id(sconn->msg_ctx);
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
 
 	if (data->data == NULL) {
 		DEBUG(0, ("Got NULL buffer\n"));
@@ -543,16 +553,18 @@ static void process_oplock_break_message(struct messaging_context *msg_ctx,
 		return;
 	}
 
-	if ((global_client_caps & CAP_LEVEL_II_OPLOCKS) && 
+	use_kernel = lp_kernel_oplocks(SNUM(fsp->conn)) && koplocks;
+
+	if ((global_client_caps & CAP_LEVEL_II_OPLOCKS) &&
 	    !(msg.op_type & FORCE_OPLOCK_BREAK_TO_NONE) &&
-	    !(koplocks && !(koplocks->flags & KOPLOCKS_LEVEL2_SUPPORTED)) &&
+	    !(use_kernel && !(koplocks->flags & KOPLOCKS_LEVEL2_SUPPORTED)) &&
 	    lp_level2_oplocks(SNUM(fsp->conn))) {
 		break_to_level2 = True;
 	}
 
 	/* Need to wait before sending a break
 	   message if we sent ourselves this message. */
-	if (procid_is_me(&src)) {
+	if (serverid_equal(&self, &src)) {
 		wait_before_sending_break();
 	}
 
@@ -637,6 +649,8 @@ static void process_kernel_oplock_break(struct messaging_context *msg_ctx,
 
 void reply_to_oplock_break_requests(files_struct *fsp)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
 	int i;
 
 	/*
@@ -662,11 +676,7 @@ void reply_to_oplock_break_requests(files_struct *fsp)
 
 	SAFE_FREE(fsp->pending_break_messages);
 	fsp->num_pending_break_messages = 0;
-	if (fsp->oplock_timeout != NULL) {
-		/* Remove the timed event handler. */
-		TALLOC_FREE(fsp->oplock_timeout);
-		fsp->oplock_timeout = NULL;
-	}
+	TALLOC_FREE(fsp->oplock_timeout);
 	return;
 }
 
@@ -794,6 +804,7 @@ static void do_break_to_none(struct tevent_req *req)
 {
 	struct break_to_none_state *state = tevent_req_callback_data(
 		req, struct break_to_none_state);
+	struct server_id self = messaging_server_id(state->sconn->msg_ctx);
 	bool ret;
 	int i;
 	struct share_mode_lock *lck;
@@ -865,7 +876,7 @@ static void do_break_to_none(struct tevent_req *req)
  		 * Bugid #5980.
  		 */
 
-		if (procid_is_me(&share_entry->pid)) {
+		if (serverid_equal(&self, &share_entry->pid)) {
 			struct files_struct *cur_fsp =
 				initial_break_processing(state->sconn,
 					share_entry->id,
@@ -898,6 +909,9 @@ done:
 void smbd_contend_level2_oplocks_begin(files_struct *fsp,
 				  enum level2_contention_type type)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
 	if (koplocks && koplocks->ops->contend_level2_oplocks_begin) {
 		koplocks->ops->contend_level2_oplocks_begin(fsp, type);
 		return;
@@ -909,6 +923,9 @@ void smbd_contend_level2_oplocks_begin(files_struct *fsp,
 void smbd_contend_level2_oplocks_end(files_struct *fsp,
 				enum level2_contention_type type)
 {
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
 	/* Only kernel oplocks implement this so far */
 	if (koplocks && koplocks->ops->contend_level2_oplocks_end) {
 		koplocks->ops->contend_level2_oplocks_end(fsp, type);
@@ -978,16 +995,20 @@ bool init_oplocks(struct smbd_server_connection *sconn)
 	messaging_register(sconn->msg_ctx, sconn, MSG_SMB_OPEN_RETRY,
 			   process_open_retry_message);
 
-	if (lp_kernel_oplocks()) {
+	return true;
+}
+
+void init_kernel_oplocks(struct smbd_server_connection *sconn)
+{
+	struct kernel_oplocks *koplocks = sconn->oplocks.kernel_ops;
+
+	/* only initialize once */
+	if (koplocks == NULL) {
 #if HAVE_KERNEL_OPLOCKS_IRIX
 		koplocks = irix_init_kernel_oplocks(sconn);
 #elif HAVE_KERNEL_OPLOCKS_LINUX
 		koplocks = linux_init_kernel_oplocks(sconn);
-#elif HAVE_ONEFS
-#error Isilon, please check if the NULL context is okay here. Thanks!
-		koplocks = onefs_init_kernel_oplocks(sconn);
 #endif
+		sconn->oplocks.kernel_ops = koplocks;
 	}
-
-	return True;
 }

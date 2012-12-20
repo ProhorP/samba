@@ -112,7 +112,7 @@ static bool smb_acl_to_hpux_acl(SMB_ACL_T smb_acl,
 		HPUX_ACL_T *solariacl, int *count, 
 		SMB_ACL_TYPE_T type);
 static SMB_ACL_T hpux_acl_to_smb_acl(HPUX_ACL_T hpuxacl, int count,
-		SMB_ACL_TYPE_T type);
+				     SMB_ACL_TYPE_T type, TALLOC_CTX *mem_ctx);
 static HPUX_ACL_TAG_T smb_tag_to_hpux_tag(SMB_ACL_TAG_T smb_tag);
 static SMB_ACL_TAG_T hpux_tag_to_smb_tag(HPUX_ACL_TAG_T hpux_tag);
 static bool hpux_add_to_acl(HPUX_ACL_T *hpux_acl, int *count,
@@ -140,7 +140,8 @@ static bool hpux_aclsort_call_present(void);
 
 SMB_ACL_T hpuxacl_sys_acl_get_file(vfs_handle_struct *handle,
 				      const char *path_p,
-				      SMB_ACL_TYPE_T type)
+				   SMB_ACL_TYPE_T type,
+				   TALLOC_CTX *mem_ctx)
 {
 	SMB_ACL_T result = NULL;
 	int count;
@@ -168,7 +169,7 @@ SMB_ACL_T hpuxacl_sys_acl_get_file(vfs_handle_struct *handle,
 	if (!hpux_acl_get_file(path_p, &hpux_acl, &count)) {
 		goto done;
 	}
-	result = hpux_acl_to_smb_acl(hpux_acl, count, type);
+	result = hpux_acl_to_smb_acl(hpux_acl, count, type, mem_ctx);
 	if (result == NULL) {
 		DEBUG(10, ("conversion hpux_acl -> smb_acl failed (%s).\n",
 			   strerror(errno)));
@@ -186,19 +187,12 @@ SMB_ACL_T hpuxacl_sys_acl_get_file(vfs_handle_struct *handle,
  * get the access ACL of a file referred to by a fd
  */
 SMB_ACL_T hpuxacl_sys_acl_get_fd(vfs_handle_struct *handle,
-				 files_struct *fsp)
+				 files_struct *fsp,
+				 TALLOC_CTX *mem_ctx)
 {
         /* 
 	 * HPUX doesn't have the facl call. Fake it using the path.... JRA. 
 	 */
-	/* For all I see, the info should already be in the fsp
-	 * parameter, but get it again to be safe --- necessary? */
-        files_struct *file_struct_p = file_find_fd(fsp->conn->sconn,
-						   fsp->fh->fd);
-        if (file_struct_p == NULL) {
-                errno = EBADF;
-                return NULL;
-        }
         /*
          * We know we're in the same conn context. So we
          * can use the relative path.
@@ -207,8 +201,9 @@ SMB_ACL_T hpuxacl_sys_acl_get_fd(vfs_handle_struct *handle,
 		"hpuxacl_sys_acl_get_file (no facl syscall on HPUX).\n"));
 
         return hpuxacl_sys_acl_get_file(handle,
-					file_struct_p->fsp_name->base_name,
-					SMB_ACL_TYPE_ACCESS);
+					fsp->fsp_name->base_name,
+					SMB_ACL_TYPE_ACCESS,
+					mem_ctx);
 }
 
 
@@ -331,14 +326,6 @@ int hpuxacl_sys_acl_set_fd(vfs_handle_struct *handle,
         /*
          * HPUX doesn't have the facl call. Fake it using the path.... JRA.
          */
-	/* For all I see, the info should already be in the fsp
-	 * parameter, but get it again to be safe --- necessary? */
-        files_struct *file_struct_p = file_find_fd(fsp->conn->sconn,
-						   fsp->fh->fd);
-        if (file_struct_p == NULL) {
-                errno = EBADF;
-                return -1;
-        }
         /*
          * We know we're in the same conn context. So we
          * can use the relative path.
@@ -347,7 +334,7 @@ int hpuxacl_sys_acl_set_fd(vfs_handle_struct *handle,
 		"hpuxacl_sys_acl_set_file (no facl syscall on HPUX)\n"));
 
         return hpuxacl_sys_acl_set_file(handle,
-					file_struct_p->fsp_name->base_name,
+					fsp->fsp_name->base_name,
 					SMB_ACL_TYPE_ACCESS, theacl);
 }
 
@@ -402,7 +389,7 @@ int hpuxacl_sys_acl_delete_def_file(vfs_handle_struct *handle,
  done:
 	DEBUG(10, ("hpuxacl_sys_acl_delete_def_file %s.\n",
 		   ((ret != 0) ? "failed" : "succeeded" )));
-	SAFE_FREE(smb_acl);
+	TALLOC_FREE(smb_acl);
 	return ret;
 }
 
@@ -452,13 +439,13 @@ static bool smb_acl_to_hpux_acl(SMB_ACL_T smb_acl,
 		switch(hpux_entry.a_type) {
 		case USER:
 			DEBUG(10, ("got tag type USER with uid %d\n", 
-				   smb_entry->uid));
-			hpux_entry.a_id = (uid_t)smb_entry->uid;
+				   smb_entry->info.user.uid));
+			hpux_entry.a_id = (uid_t)smb_entry->info.user.uid;
 			break;
 		case GROUP:
 			DEBUG(10, ("got tag type GROUP with gid %d\n", 
-				   smb_entry->gid));
-			hpux_entry.a_id = (uid_t)smb_entry->gid;
+				   smb_entry->info.group.gid));
+			hpux_entry.a_id = (uid_t)smb_entry->info.group.gid;
 			break;
 		default:
 			break;
@@ -506,12 +493,12 @@ static bool smb_acl_to_hpux_acl(SMB_ACL_T smb_acl,
  * soaris acl to the SMB_ACL format.
  */
 static SMB_ACL_T hpux_acl_to_smb_acl(HPUX_ACL_T hpux_acl, int count, 
-					SMB_ACL_TYPE_T type)
+				     SMB_ACL_TYPE_T type, TALLOC_CTX *mem_ctx)
 {
 	SMB_ACL_T result;
 	int i;
 
-	if ((result = sys_acl_init(0)) == NULL) {
+	if ((result = sys_acl_init(mem_ctx)) == NULL) {
 		DEBUG(10, ("error allocating memory for SMB_ACL\n"));
 		goto fail;
 	}
@@ -522,11 +509,8 @@ static SMB_ACL_T hpux_acl_to_smb_acl(HPUX_ACL_T hpux_acl, int count,
 		if (!_IS_OF_TYPE(hpux_acl[i], type)) {
 			continue;
 		}
-		result = SMB_REALLOC(result, 
-				     sizeof(struct smb_acl_t) +
-				     (sizeof(struct smb_acl_entry) *
-				      (result->count + 1)));
-		if (result == NULL) {
+		result->acl = talloc_realloc(result, result->acl, struct smb_acl_entry, result->count + 1);
+		if (result->acl == NULL) {
 			DEBUG(10, ("error reallocating memory for SMB_ACL\n"));
 			goto fail;
 		}
@@ -550,7 +534,7 @@ static SMB_ACL_T hpux_acl_to_smb_acl(HPUX_ACL_T hpux_acl, int count,
 	}
 	goto done;
  fail:
-	SAFE_FREE(result);
+	TALLOC_FREE(result);
  done:
 	DEBUG(10, ("hpux_acl_to_smb_acl %s\n",
 		   ((result == NULL) ? "failed" : "succeeded")));

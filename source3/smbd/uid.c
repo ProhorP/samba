@@ -86,7 +86,7 @@ static void free_conn_session_info_if_unused(connection_struct *conn)
 ********************************************************************/
 
 static bool check_user_ok(connection_struct *conn,
-			uint16_t vuid,
+			uint64_t vuid,
 			const struct auth_session_info *session_info,
 			int snum)
 {
@@ -122,7 +122,8 @@ static bool check_user_ok(connection_struct *conn,
 
 	if (!readonly_share &&
 	    !share_access_check(session_info->security_token,
-				lp_servicename(snum), FILE_WRITE_DATA,
+				lp_servicename(talloc_tos(), snum),
+				FILE_WRITE_DATA,
 				NULL)) {
 		/* smb.conf allows r/w, but the security descriptor denies
 		 * write. Fall back to looking at readonly. */
@@ -132,7 +133,7 @@ static bool check_user_ok(connection_struct *conn,
 	}
 
 	if (!share_access_check(session_info->security_token,
-				lp_servicename(snum),
+				lp_servicename(talloc_tos(), snum),
 				readonly_share ?
 				FILE_READ_DATA : FILE_WRITE_DATA,
 				NULL)) {
@@ -191,7 +192,7 @@ static bool check_user_ok(connection_struct *conn,
 
 static bool change_to_user_internal(connection_struct *conn,
 				    const struct auth_session_info *session_info,
-				    uint16_t vuid)
+				    uint64_t vuid)
 {
 	int snum;
 	gid_t gid;
@@ -209,7 +210,7 @@ static bool change_to_user_internal(connection_struct *conn,
 			 "not permitted access to share %s.\n",
 			 session_info->unix_info->sanitized_username,
 			 session_info->unix_info->unix_name,
-			 lp_servicename(snum)));
+			 lp_servicename(talloc_tos(), snum)));
 		return false;
 	}
 
@@ -222,7 +223,7 @@ static bool change_to_user_internal(connection_struct *conn,
 	 * See if we should force group for this service. If so this overrides
 	 * any group set in the force user code.
 	 */
-	if((group_c = *lp_force_group(snum))) {
+	if((group_c = *lp_force_group(talloc_tos(), snum))) {
 
 		SMB_ASSERT(conn->force_group_gid != (gid_t)-1);
 
@@ -275,10 +276,10 @@ static bool change_to_user_internal(connection_struct *conn,
 	return true;
 }
 
-bool change_to_user(connection_struct *conn, uint16_t vuid)
+bool change_to_user(connection_struct *conn, uint64_t vuid)
 {
 	const struct auth_session_info *session_info = NULL;
-	user_struct *vuser;
+	struct user_struct *vuser;
 	int snum = SNUM(conn);
 
 	if (!conn) {
@@ -288,19 +289,7 @@ bool change_to_user(connection_struct *conn, uint16_t vuid)
 
 	vuser = get_valid_user_struct(conn->sconn, vuid);
 
-	/*
-	 * We need a separate check in security=share mode due to vuid
-	 * always being UID_FIELD_INVALID. If we don't do this then
-	 * in share mode security we are *always* changing uid's between
-	 * SMB's - this hurts performance - Badly.
-	 */
-
-	if((lp_security() == SEC_SHARE) && (current_user.conn == conn) &&
-	   (current_user.ut.uid == conn->session_info->unix_token->uid)) {
-		DEBUG(4,("Skipping user change - already "
-			 "user\n"));
-		return(True);
-	} else if ((current_user.conn == conn) &&
+	if ((current_user.conn == conn) &&
 		   (vuser != NULL) && (current_user.vuid == vuid) &&
 		   (current_user.ut.uid == vuser->session_info->unix_token->uid)) {
 		DEBUG(4,("Skipping user change - already "
@@ -308,27 +297,28 @@ bool change_to_user(connection_struct *conn, uint16_t vuid)
 		return(True);
 	}
 
-	session_info = vuser ? vuser->session_info : conn->session_info;
-
-	if (session_info == NULL) {
-		/* Invalid vuid sent - even with security = share. */
-		DEBUG(2,("Invalid vuid %d used on "
-			 "share %s.\n", vuid, lp_servicename(snum) ));
+	if (vuser == NULL) {
+		/* Invalid vuid sent */
+		DEBUG(2,("Invalid vuid %llu used on share %s.\n",
+			 (unsigned long long)vuid, lp_servicename(talloc_tos(),
+								  snum)));
 		return false;
 	}
 
-	/* security = share sets force_user. */
+	session_info = vuser->session_info;
+
 	if (!conn->force_user && vuser == NULL) {
-		DEBUG(2,("Invalid vuid used %d in accessing "
-			"share %s.\n", vuid, lp_servicename(snum) ));
+		DEBUG(2,("Invalid vuid used %llu in accessing share %s.\n",
+			 (unsigned long long)vuid,
+			 lp_servicename(talloc_tos(), snum)));
 		return False;
 	}
 
 	return change_to_user_internal(conn, session_info, vuid);
 }
 
-bool change_to_user_by_session(connection_struct *conn,
-			       const struct auth_session_info *session_info)
+static bool change_to_user_by_session(connection_struct *conn,
+				      const struct auth_session_info *session_info)
 {
 	SMB_ASSERT(conn != NULL);
 	SMB_ASSERT(session_info != NULL);
@@ -412,8 +402,8 @@ static void push_conn_ctx(void)
 	ctx_p->conn = current_user.conn;
 	ctx_p->vuid = current_user.vuid;
 
-	DEBUG(4, ("push_conn_ctx(%u) : conn_ctx_stack_ndx = %d\n",
-		(unsigned int)ctx_p->vuid, conn_ctx_stack_ndx ));
+	DEBUG(4, ("push_conn_ctx(%llu) : conn_ctx_stack_ndx = %d\n",
+		(unsigned long long)ctx_p->vuid, conn_ctx_stack_ndx));
 
 	conn_ctx_stack_ndx++;
 }
@@ -470,7 +460,7 @@ void smbd_unbecome_root(void)
  Saves and restores the connection context.
 ****************************************************************************/
 
-bool become_user(connection_struct *conn, uint16 vuid)
+bool become_user(connection_struct *conn, uint64_t vuid)
 {
 	if (!push_sec_ctx())
 		return False;
@@ -543,12 +533,22 @@ const struct security_unix_token *get_current_utok(connection_struct *conn)
 	return &current_user.ut;
 }
 
+/****************************************************************************
+ Return the Windows token we are running effectively as on this connection.
+ If this is currently a NULL token as we're inside become_root() - a temporary
+ UNIX security override, then we search up the stack for the previous active
+ token.
+****************************************************************************/
+
 const struct security_token *get_current_nttok(connection_struct *conn)
 {
-	return current_user.nt_user_token;
+	if (current_user.nt_user_token) {
+		return current_user.nt_user_token;
+	}
+	return sec_ctx_active_token();
 }
 
-uint16_t get_current_vuid(connection_struct *conn)
+uint64_t get_current_vuid(connection_struct *conn)
 {
 	return current_user.vuid;
 }

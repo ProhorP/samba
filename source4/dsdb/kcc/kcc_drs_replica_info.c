@@ -386,7 +386,7 @@ struct ncList {
 static WERROR get_master_ncs(TALLOC_CTX *mem_ctx, struct ldb_context *samdb,
 			     const char *ntds_guid_str, struct ncList **master_nc_list)
 {
-	const char *post_2003_attrs[] = { "msDs-hasMasterNCs", "hasPartialReplicaNCs", NULL };
+	const char *post_2003_attrs[] = { "msDS-hasMasterNCs", "hasPartialReplicaNCs", NULL };
 	const char *pre_2003_attrs[] = { "hasMasterNCs", "hasPartialReplicaNCs", NULL };
 	const char **attrs = post_2003_attrs;
 	struct ldb_result *res;
@@ -397,7 +397,7 @@ static WERROR get_master_ncs(TALLOC_CTX *mem_ctx, struct ldb_context *samdb,
 	char *nc_str;
 	int is_level_post_2003;
 
-	/* In W2003 and greater, msDs-hasMasterNCs attribute lists the writable NC replicas */
+	/* In W2003 and greater, msDS-hasMasterNCs attribute lists the writable NC replicas */
 	is_level_post_2003 = 1;
 	ret = ldb_search(samdb, mem_ctx, &res, ldb_get_config_basedn(samdb),
 			LDB_SCOPE_DEFAULT, post_2003_attrs, "(objectguid=%s)", ntds_guid_str);
@@ -862,35 +862,39 @@ NTSTATUS kccdrs_replica_get_info(struct irpc_message *msg,
 							     ldb_dn_new(mem_ctx, samdb, object_dn_str));
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_CURSORS3: /* On MS-DRSR it is DS_REPL_INFO_CURSORS_3_FOR_NC */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_UPTODATE_VECTOR_V1: /* On MS-DRSR it is DS_REPL_INFO_UPTODATE_VECTOR_V1 */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_OBJ_METADATA: /* On MS-DRSR it is DS_REPL_INFO_METADATA_FOR_OBJ */
-		status = WERR_INVALID_LEVEL;
+		/*
+		 * It should be too complicated to filter the metadata2 to remove the additional data
+		 * as metadata2 is a superset of metadata
+		 */
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_OBJ_METADATA2: /* On MS-DRSR it is DS_REPL_INFO_METADATA_FOR_OBJ */
 		status = kccdrs_replica_get_info_obj_metadata2(mem_ctx, samdb, req, reply,
 							       ldb_dn_new(mem_ctx, samdb, object_dn_str), base_index);
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_ATTRIBUTE_VALUE_METADATA: /* On MS-DRSR it is DS_REPL_INFO_METADATA_FOR_ATTR_VALUE */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_ATTRIBUTE_VALUE_METADATA2: /* On MS-DRSR it is DS_REPL_INFO_METADATA_2_FOR_ATTR_VALUE */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_KCC_DSA_CONNECT_FAILURES: /* On MS-DRSR it is DS_REPL_INFO_KCC_DSA_CONNECT_FAILURES */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_KCC_DSA_LINK_FAILURES: /* On MS-DRSR it is DS_REPL_INFO_KCC_LINK_FAILURES */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_CLIENT_CONTEXTS: /* On MS-DRSR it is DS_REPL_INFO_CLIENT_CONTEXTS */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	case DRSUAPI_DS_REPLICA_INFO_SERVER_OUTGOING_CALLS: /* On MS-DRSR it is DS_REPL_INFO_SERVER_OUTGOING_CALLS */
-		status = WERR_INVALID_LEVEL;
+		status = WERR_NOT_SUPPORTED;
 		break;
 	default:
 		DEBUG(1,(__location__ ": Unsupported DsReplicaGetInfo info_type %u\n",

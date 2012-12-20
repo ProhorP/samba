@@ -42,6 +42,15 @@ AC_ARG_ENABLE(developer, [AS_HELP_STRING([--enable-developer], [Turn on develope
     [if eval "test x$enable_developer = xyes"; then
         debug=yes
         developer=yes
+        selftest=yes
+    fi])
+
+AC_SUBST(selftest)
+selftest=no
+AC_ARG_ENABLE(selftest, [AS_HELP_STRING([--enable-selftest], [Turn on selftest capability (default=no)])],
+    [if eval "test x$enable_selftest = xyes"; then
+        debug=yes
+        selftest=yes
     fi])
 
 krb5developer=no

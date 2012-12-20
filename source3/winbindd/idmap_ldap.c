@@ -50,7 +50,12 @@ static char *idmap_fetch_secret(const char *backend,
 	if (r < 0)
 		return NULL;
 
-	strupper_m(tmp); /* make sure the key is case insensitive */
+	/* make sure the key is case insensitive */
+	if (!strupper_m(tmp)) {
+		SAFE_FREE(tmp);
+		return NULL;
+	}
+
 	ret = secrets_fetch_generic(tmp, identity);
 
 	SAFE_FREE(tmp);
@@ -300,7 +305,7 @@ static NTSTATUS idmap_ldap_allocate_id_internal(struct idmap_domain *dom,
 		goto done;
 	}
 
-	talloc_autofree_ldapmsg(mem_ctx, result);
+	smbldap_talloc_autofree_ldapmsg(mem_ctx, result);
 
 	count = ldap_count_entries(ctx->smbldap_state->ldap_struct, result);
 	if (count != 1) {
@@ -471,7 +476,7 @@ static NTSTATUS idmap_ldap_db_init(struct idmap_domain *dom)
 
 	tmp = lp_parm_const_string(-1, config_option, "ldap_base_dn", NULL);
 	if ( ! tmp || ! *tmp) {
-		tmp = lp_ldap_idmap_suffix();
+		tmp = lp_ldap_idmap_suffix(talloc_tos());
 		if ( ! tmp) {
 			DEBUG(1, ("ERROR: missing idmap ldap suffix\n"));
 			ret = NT_STATUS_UNSUCCESSFUL;

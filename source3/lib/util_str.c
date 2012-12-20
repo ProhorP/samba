@@ -23,6 +23,7 @@
 */
 
 #include "includes.h"
+#include "lib/param/loadparm.h"
 
 const char toupper_ascii_fast_table[128] = {
 	0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
@@ -54,12 +55,12 @@ bool strnequal(const char *s1,const char *s2,size_t n)
  Convert a string to "normal" form.
 **/
 
-void strnorm(char *s, int case_default)
+bool strnorm(char *s, int case_default)
 {
 	if (case_default == CASE_UPPER)
-		strupper_m(s);
+		return strupper_m(s);
 	else
-		strlower_m(s);
+		return strlower_m(s);
 }
 
 /**
@@ -413,11 +414,11 @@ static bool unix_strlower(const char *src, size_t srclen, char *dest, size_t des
 	if (!convert_string_talloc(talloc_tos(), CH_UNIX, CH_UTF16LE, src, srclen,
 				   (void **)(void *)&buffer, &size))
 	{
-		smb_panic("failed to create UCS2 buffer");
+		return false;
 	}
 	if (!strlower_w(buffer) && (dest == src)) {
 		TALLOC_FREE(buffer);
-		return srclen;
+		return true;
 	}
 	ret = convert_string(CH_UTF16LE, CH_UNIX, buffer, size, dest, destlen, &size);
 	TALLOC_FREE(buffer);
@@ -459,10 +460,11 @@ _PUBLIC_ void strlower_m(char *s)
  Convert a string to lower case.
 **/
 
-void strlower_m(char *s)
+bool strlower_m(char *s)
 {
 	size_t len;
 	int errno_save;
+	bool ret = false;
 
 	/* this is quite a common operation, so we want it to be
 	   fast. We optimise for the ascii case, knowing that all our
@@ -475,18 +477,20 @@ void strlower_m(char *s)
 	}
 
 	if (!*s)
-		return;
+		return true;
 
 	/* I assume that lowercased string takes the same number of bytes
 	 * as source string even in UTF-8 encoding. (VIV) */
 	len = strlen(s) + 1;
 	errno_save = errno;
 	errno = 0;
-	unix_strlower(s,len,s,len);
+	ret = unix_strlower(s,len,s,len);
 	/* Catch mb conversion errors that may not terminate. */
-	if (errno)
+	if (errno) {
 		s[len-1] = '\0';
+	}
 	errno = errno_save;
+	return ret;
 }
 
 static bool unix_strupper(const char *src, size_t srclen, char *dest, size_t destlen)
@@ -496,12 +500,12 @@ static bool unix_strupper(const char *src, size_t srclen, char *dest, size_t des
 	bool ret;
 
 	if (!push_ucs2_talloc(talloc_tos(), &buffer, src, &size)) {
-		return (size_t)-1;
+		return false;
 	}
 
 	if (!strupper_w(buffer) && (dest == src)) {
 		TALLOC_FREE(buffer);
-		return srclen;
+		return true;
 	}
 
 	ret = convert_string(CH_UTF16LE, CH_UNIX, buffer, size, dest, destlen, &size);
@@ -544,10 +548,11 @@ _PUBLIC_ void strupper_m(char *s)
  Convert a string to upper case.
 **/
 
-void strupper_m(char *s)
+bool strupper_m(char *s)
 {
 	size_t len;
 	int errno_save;
+	bool ret = false;
 
 	/* this is quite a common operation, so we want it to be
 	   fast. We optimise for the ascii case, knowing that all our
@@ -560,18 +565,20 @@ void strupper_m(char *s)
 	}
 
 	if (!*s)
-		return;
+		return true;
 
 	/* I assume that lowercased string takes the same number of bytes
 	 * as source string even in multibyte encoding. (VIV) */
 	len = strlen(s) + 1;
 	errno_save = errno;
 	errno = 0;
-	unix_strupper(s,len,s,len);
+	ret = unix_strupper(s,len,s,len);
 	/* Catch mb conversion errors that may not terminate. */
-	if (errno)
+	if (errno) {
 		s[len-1] = '\0';
+	}
 	errno = errno_save;
+	return ret;
 }
 
 /**
@@ -982,7 +989,11 @@ int asprintf_strupper_m(char **strp, const char *fmt, ...)
 	if (ret == -1)
 		return -1;
 
-	strupper_m(result);
+	if (!strupper_m(result)) {
+		SAFE_FREE(result);
+		return -1;
+	}
+
 	*strp = result;
 	return ret;
 }
@@ -999,7 +1010,10 @@ char *talloc_asprintf_strupper_m(TALLOC_CTX *t, const char *fmt, ...)
 	if (ret == NULL) {
 		return NULL;
 	}
-	strupper_m(ret);
+	if (!strupper_m(ret)) {
+		TALLOC_FREE(ret);
+		return NULL;
+	}
 	return ret;
 }
 
@@ -1015,7 +1029,10 @@ char *talloc_asprintf_strlower_m(TALLOC_CTX *t, const char *fmt, ...)
 	if (ret == NULL) {
 		return NULL;
 	}
-	strlower_m(ret);
+	if (!strlower_m(ret)) {
+		TALLOC_FREE(ret);
+		return NULL;
+	}
 	return ret;
 }
 

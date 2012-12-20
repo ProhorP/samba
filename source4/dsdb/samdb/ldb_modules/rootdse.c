@@ -183,7 +183,11 @@ static int dsdb_module_we_are_master(struct ldb_module *module, struct ldb_dn *d
 	struct ldb_dn *owner_dn;
 
 	ret = dsdb_module_search_dn(module, tmp_ctx, &res,
-				    dn, attrs, DSDB_FLAG_NEXT_MODULE, parent);
+				    dn, attrs,
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
+				    DSDB_SEARCH_SHOW_EXTENDED_DN,
+				    parent);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
 		return ret;
@@ -197,7 +201,14 @@ static int dsdb_module_we_are_master(struct ldb_module *module, struct ldb_dn *d
 		return LDB_SUCCESS;
 	}
 
-	*master = (ldb_dn_compare(owner_dn, samdb_ntds_settings_dn(ldb_module_get_ctx(module))) == 0);
+	ret = samdb_dn_is_our_ntdsa(ldb_module_get_ctx(module), dn, master);
+	if (ret != LDB_SUCCESS) {
+		ldb_asprintf_errstring(ldb_module_get_ctx(module), "Failed to confirm if our ntdsDsa is %s: %s",
+				       ldb_dn_get_linearized(owner_dn), ldb_errstring(ldb_module_get_ctx(module)));
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+	
 	talloc_free(tmp_ctx);
 	return LDB_SUCCESS;
 }
@@ -221,6 +232,7 @@ static int rootdse_add_dynamic(struct ldb_module *module, struct ldb_message *ms
 		"schemaNamingContext",
 		"serverName",
 		"validFSMOs",
+		"namingContexts",
 		NULL
 	};
 	const char *guid_attrs[] = {
@@ -251,7 +263,10 @@ static int rootdse_add_dynamic(struct ldb_module *module, struct ldb_message *ms
 		int ret;
 		const char *dns_attrs[] = { "dNSHostName", NULL };
 		ret = dsdb_module_search_dn(module, msg, &res, samdb_server_dn(ldb, msg),
-					    dns_attrs, DSDB_FLAG_NEXT_MODULE, req);
+					    dns_attrs,
+					    DSDB_FLAG_NEXT_MODULE |
+					    DSDB_FLAG_AS_SYSTEM,
+					    req);
 		if (ret == LDB_SUCCESS) {
 			const char *hostname = ldb_msg_find_attr_as_string(res->msgs[0], "dNSHostName", NULL);
 			if (hostname != NULL) {
@@ -478,7 +493,9 @@ static int rootdse_add_dynamic(struct ldb_module *module, struct ldb_message *ms
 
 		ret = dsdb_module_search_dn(module, req, &res,
 					    attr_dn, no_attrs,
-					    DSDB_FLAG_NEXT_MODULE | DSDB_SEARCH_SHOW_EXTENDED_DN,
+					    DSDB_FLAG_NEXT_MODULE |
+					    DSDB_FLAG_AS_SYSTEM |
+					    DSDB_SEARCH_SHOW_EXTENDED_DN,
 					    req);
 		if (ret != LDB_SUCCESS) {
 			return ldb_operr(ldb);
@@ -879,7 +896,10 @@ static int rootdse_init(struct ldb_module *module)
 	*/
 	ret = dsdb_module_search(module, mem_ctx, &res,
 				 ldb_get_default_basedn(ldb),
-				 LDB_SCOPE_BASE, attrs, DSDB_FLAG_NEXT_MODULE, NULL, NULL);
+				 LDB_SCOPE_BASE, attrs,
+				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_FLAG_AS_SYSTEM,
+				 NULL, NULL);
 	if (ret == LDB_SUCCESS && res->count == 1) {
 		int domain_behaviour_version
 			= ldb_msg_find_attr_as_int(res->msgs[0],
@@ -901,7 +921,10 @@ static int rootdse_init(struct ldb_module *module)
 
 	ret = dsdb_module_search(module, mem_ctx, &res,
 				 samdb_partitions_dn(ldb, mem_ctx),
-				 LDB_SCOPE_BASE, attrs, DSDB_FLAG_NEXT_MODULE, NULL, NULL);
+				 LDB_SCOPE_BASE, attrs,
+				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_FLAG_AS_SYSTEM,
+				 NULL, NULL);
 	if (ret == LDB_SUCCESS && res->count == 1) {
 		int forest_behaviour_version
 			= ldb_msg_find_attr_as_int(res->msgs[0],
@@ -925,14 +948,20 @@ static int rootdse_init(struct ldb_module *module)
 	 * the @ROOTDSE record */
 	ret = dsdb_module_search(module, mem_ctx, &res,
 				 ldb_dn_new(mem_ctx, ldb, "@ROOTDSE"),
-				 LDB_SCOPE_BASE, ds_attrs, DSDB_FLAG_NEXT_MODULE, NULL, NULL);
+				 LDB_SCOPE_BASE, ds_attrs,
+				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_FLAG_AS_SYSTEM,
+				 NULL, NULL);
 	if (ret == LDB_SUCCESS && res->count == 1) {
 		struct ldb_dn *ds_dn
 			= ldb_msg_find_attr_as_dn(ldb, mem_ctx, res->msgs[0],
 						  "dsServiceName");
 		if (ds_dn) {
 			ret = dsdb_module_search(module, mem_ctx, &res, ds_dn,
-						 LDB_SCOPE_BASE, attrs, DSDB_FLAG_NEXT_MODULE, NULL, NULL);
+						 LDB_SCOPE_BASE, attrs,
+						 DSDB_FLAG_NEXT_MODULE |
+						 DSDB_FLAG_AS_SYSTEM,
+						 NULL, NULL);
 			if (ret == LDB_SUCCESS && res->count == 1) {
 				int domain_controller_behaviour_version
 					= ldb_msg_find_attr_as_int(res->msgs[0],
@@ -1025,6 +1054,7 @@ static int dsdb_find_optional_feature(struct ldb_module *module, struct ldb_cont
 	ret = dsdb_module_search(module, tmp_ctx, &res, NULL, LDB_SCOPE_SUBTREE,
 				 NULL,
 				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_FLAG_AS_SYSTEM |
 				 DSDB_SEARCH_SEARCH_ALL_PARTITIONS,
 				 parent,
 				 "(&(objectClass=msDS-OptionalFeature)"
@@ -1072,7 +1102,7 @@ static int rootdse_enable_recycle_bin(struct ldb_module *module,struct ldb_conte
 	}
 
 	tmp_ctx = talloc_new(mem_ctx);
-	ntds_settings_dn = samdb_ntds_settings_dn(ldb);
+	ntds_settings_dn = samdb_ntds_settings_dn(ldb, tmp_ctx);
 	if (!ntds_settings_dn) {
 		talloc_free(tmp_ctx);
 		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR, "Failed to find NTDS settings DN");
@@ -1206,6 +1236,35 @@ static int rootdse_schemaupdatenow(struct ldb_module *module, struct ldb_request
 	}
 
 	talloc_free(ext_res);
+	return ldb_module_done(req, NULL, NULL, ret);
+}
+
+static int rootdse_schemaupgradeinprogress(struct ldb_module *module, struct ldb_request *req)
+{
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	int ret = LDB_SUCCESS;
+	struct ldb_dn *schema_dn;
+
+	schema_dn = ldb_get_schema_basedn(ldb);
+	if (!schema_dn) {
+		ldb_reset_err_string(ldb);
+		ldb_debug(ldb, LDB_DEBUG_WARNING,
+			  "rootdse_modify: no schema dn present: (skip ldb_extended call)\n");
+		return ldb_next_request(module, req);
+	}
+
+	/* FIXME we have to do something in order to relax constraints for DRS
+	 * setting schemaUpgradeInProgress cause the fschemaUpgradeInProgress
+	 * in all LDAP connection (2K3/2K3R2) or in the current connection (2K8 and +)
+	 * to be set to true.
+	 */
+
+	/* from 5.113 LDAPConnections in DRSR.pdf
+	 * fschemaUpgradeInProgress: A Boolean that specifies certain constraint
+	 * validations are skipped when adding, updating, or removing directory
+	 * objects on the opened connection. The skipped constraint validations
+	 * are documented in the applicable constraint sections in [MS-ADTS].
+	 */
 	return ldb_module_done(req, NULL, NULL, ret);
 }
 
@@ -1377,6 +1436,9 @@ static int rootdse_modify(struct ldb_module *module, struct ldb_request *req)
 	}
 	if (ldb_msg_find_element(req->op.mod.message, "enableOptionalFeature")) {
 		return rootdse_enableoptionalfeature(module, req);
+	}
+	if (ldb_msg_find_element(req->op.mod.message, "schemaUpgradeInProgress")) {
+		return rootdse_schemaupgradeinprogress(module, req);
 	}
 
 	ldb_set_errstring(ldb, "rootdse_modify: unknown attribute to change!");

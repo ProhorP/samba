@@ -35,7 +35,7 @@
 #include "dsdb/samdb/samdb.h"
 #include "param/param.h"
 #include "../lib/util/dlinklist.h"
-#include "../lib/tdb_compat/tdb_compat.h"
+#include <tdb.h>
 
 /*
   this is used to catch debug messages from ldb
@@ -47,7 +47,6 @@ static void ldb_wrap_debug(void *context, enum ldb_debug_level level,
 			   const char *fmt, va_list ap)
 {
 	int samba_level = -1;
-	char *s = NULL;
 	switch (level) {
 	case LDB_DEBUG_FATAL:
 		samba_level = 0;
@@ -63,10 +62,13 @@ static void ldb_wrap_debug(void *context, enum ldb_debug_level level,
 		break;
 
 	};
-	vasprintf(&s, fmt, ap);
-	if (!s) return;
-	DEBUG(samba_level, ("ldb: %s\n", s));
-	free(s);
+	if (CHECK_DEBUGLVL(samba_level)) {
+		char *s = NULL;
+		vasprintf(&s, fmt, ap);
+		if (!s) return;
+		DEBUG(samba_level, ("ldb: %s\n", s));
+		free(s);
+	}
 }
 
 
@@ -320,7 +322,8 @@ int samba_ldb_connect(struct ldb_context *ldb, struct loadparm_context *lp_ctx,
 
 /*
   when we fork() we need to make sure that any open ldb contexts have
-  any open transactions cancelled
+  any open transactions cancelled (ntdb databases doesn't need reopening,
+  as we don't use clear_if_first).
  */
  void ldb_wrap_fork_hook(void)
 {

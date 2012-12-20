@@ -70,7 +70,7 @@ static void fault_report(int sig)
 	counter++;
 
 	DEBUGSEP(0);
-	DEBUG(0,("INTERNAL ERROR: Signal %d in pid %d (%s)",sig,(int)sys_getpid(),SAMBA_VERSION_STRING));
+	DEBUG(0,("INTERNAL ERROR: Signal %d in pid %d (%s)",sig,(int)getpid(),SAMBA_VERSION_STRING));
 	DEBUG(0,("\nPlease read the Trouble-Shooting section of the Samba HOWTO\n"));
 	DEBUGSEP(0);
 
@@ -96,6 +96,7 @@ void fault_setup(void)
 	if (fault_state.disabled) {
 		return;
 	}
+#if !defined(HAVE_DISABLE_FAULT_HANDLING)
 #ifdef SIGSEGV
 	CatchSignal(SIGSEGV, sig_fault);
 #endif
@@ -104,6 +105,7 @@ void fault_setup(void)
 #endif
 #ifdef SIGABRT
 	CatchSignal(SIGABRT, sig_fault);
+#endif
 #endif
 }
 
@@ -114,8 +116,6 @@ _PUBLIC_ const char *panic_action = NULL;
 */
 static void smb_panic_default(const char *why)
 {
-	int result;
-
 #if defined(HAVE_PRCTL) && defined(PR_SET_PTRACER)
 	/*
 	 * Make sure all children can attach a debugger.
@@ -124,20 +124,22 @@ static void smb_panic_default(const char *why)
 #endif
 
 	if (panic_action && *panic_action) {
-		char pidstr[20];
 		char cmdstring[200];
-		strlcpy(cmdstring, panic_action, sizeof(cmdstring));
-		snprintf(pidstr, sizeof(pidstr), "%d", (int) getpid());
-		all_string_sub(cmdstring, "%d", pidstr, sizeof(cmdstring));
-		DEBUG(0, ("smb_panic(): calling panic action [%s]\n", cmdstring));
-		result = system(cmdstring);
+		if (strlcpy(cmdstring, panic_action, sizeof(cmdstring)) < sizeof(cmdstring)) {
+			int result;
+			char pidstr[20];
+			snprintf(pidstr, sizeof(pidstr), "%d", (int) getpid());
+			all_string_sub(cmdstring, "%d", pidstr, sizeof(cmdstring));
+			DEBUG(0, ("smb_panic(): calling panic action [%s]\n", cmdstring));
+			result = system(cmdstring);
 
-		if (result == -1)
-			DEBUG(0, ("smb_panic(): fork failed in panic action: %s\n",
-				  strerror(errno)));
-		else
-			DEBUG(0, ("smb_panic(): action returned status %d\n",
-				  WEXITSTATUS(result)));
+			if (result == -1)
+				DEBUG(0, ("smb_panic(): fork failed in panic action: %s\n",
+					  strerror(errno)));
+			else
+				DEBUG(0, ("smb_panic(): action returned status %d\n",
+					  WEXITSTATUS(result)));
+		}
 	}
 	DEBUG(0,("PANIC: %s\n", why));
 

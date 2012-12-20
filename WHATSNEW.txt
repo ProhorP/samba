@@ -1,38 +1,22 @@
-What's new in Samba 4 alpha18
-=============================
+                   =============================
+                   Release Notes for Samba 4.0.0
+                         December 11, 2012
+                   =============================
 
-Samba 4.0 will be the next version of the Samba suite and incorporates
-all the technology found in both the Samba4 alpha series and the
-stable 3.x series. The primary additional features over Samba 3.6 are
-support for the Active Directory logon protocols used by Windows 2000
-and above.
 
-WARNINGS
-========
+This is is the first stable release of Samba 4.0.
 
-Samba4 alpha18 is not a final Samba release, however we are now making
-good progress towards a Samba 4.0 release, of which this is a preview.
-Be aware the this release contains both the technology of Samba 3.6
-(that you can reasonably expect to upgrade existing Samba 3.x releases
-to) and the AD domain controller work previously known as 'samba4'.
+This release contains the best of all of Samba's
+technology parts, both a file server (that you can reasonably expect
+to upgrade existing Samba 3.x releases to) and the AD domain
+controller work previously known as 'Samba4'.
 
-While binaries for the stable file server are provided in this
-release, for a stable, supported file server, Samba3 domain or AD
-domain member installation, please run a Samba 3.x release, as we are
-still bedding down the new single build system.
+Major enhancements in Samba 4.0.0 include:
 
-Samba4 is subjected to an awesome battery of tests on an automated
-basis, we have found Samba 4.0 to be very stable in it's behavior.
-However, we still recommend against upgrading production servers from
-Samba 3.x release to Samba 4.0 alpha at this stage.
+Active Directory services
+=========================
 
-If you are upgrading, or looking to develop, test or deploy Samba 4.0
-alpha releases, you should backup all configuration and data.
-
-NEW FEATURES
-============
-
-Samba 4.0 alpha supports the server-side of the Active Directory logon
+Samba 4.0 supports the server-side of the Active Directory logon
 environment used by Windows 2000 and later, so we can do full domain
 join and domain logon operations with these clients.
 
@@ -42,97 +26,91 @@ Samba3-like logon services provided over CIFS.  We correctly generate
 the infamous Kerberos PAC, and include it with the Kerberos tickets we
 issue.
 
-Samba 4.0 alpha ships with two distinct file servers.  The file server
-from the Samba 3.x series is 'smbd', and works with the binaries users
-would expect from that series (nmbd, winbindd, smbpasswd).
+When running an AD DC, you only need to run 'samba' (not smbd/nmbd/winbindd),
+as the required services are co-coordinated by this master binary.
+The tool to administer the Active Directory services is called 'samba-tool'.
 
-Samba 4.0 also ships with a new file server, which is tuned to match
-the requirements of an AD domain controller.  Users should not use the
-file server in the 'samba' binary for non-DC related tasks.
+A short guide to setting up Samba 4 as an AD DC can be found on the wiki:
 
-A new scripting interface has been added to Samba 4, allowing Python
-programs to interface to Samba's internals, and many tools and
+  http://wiki.samba.org/index.php/Samba4/HOWTO
+
+
+File Services
+=============
+
+Samba 4.0.0 ships with two distinct file servers.  We now use the
+file server from the Samba 3.x series 'smbd' for all file serving by
+default.
+
+Samba 4.0 also ships with the 'NTVFS' file server.  This file server
+is what was used prior to the beta2 release of Samba 4.0, and is
+tuned to match the requirements of an AD domain controller.  We
+continue to support this, not only to provide continuity to
+installations that have deployed it as part of an AD DC, but also as a
+running example of the NT-FSA architecture we expect to move smbd to in
+the longer term.
+
+For pure file server work, the binaries users would expect from that
+series (smbd, nmbd, winbindd, smbpasswd) continue to be available.
+
+
+DNS
+===
+
+As DNS is an integral part of Active Directory, we also provide two DNS
+solutions, a simple internal DNS server for 'out of the box' configurations
+and a more elaborate BIND plugin using the BIND DLZ mechanism in versions
+9.8 and 9.9. During the provision, you can select which backend to use.
+With the internal backend, your DNS server is good to go.
+If you chose the BIND_DLZ backend, a configuration file will be generated
+for bind to make it use this plugin, as well as a file explaining how to
+set up bind.
+
+
+NTP
+===
+
+To provide accurate timestamps to Windows clients, we integrate with
+the NTP project to provide secured NTP replies.  To use you need to
+start ntpd and configure it with the 'restrict ... ms-sntp' and
+ntpsigndsocket options.
+
+
+Python Scripting Interface
+==========================
+
+A new scripting interface has been added to Samba 4, allowing
+Python programs to interface to Samba's internals, and many tools and
 internal workings of the DC code is now implemented in python.
 
 
-CHANGES SINCE alpha17
-=====================
-
-For a list of changes since alpha 17, please see the git log.
-
-$ git clone git://git.samba.org/samba.git
-$ cd samba.git
-$ git log samba-4.0.0alpha17..samba-4.0.0alpha18
-
-Some major user-visible changes include:
-
-Improvements to DNS servers.  Samba4 now has 3 options for the
-handling of DNS:  The default option is to use the BIND 9.8 DLZ plugin,
-which stores the information about the DNS zone in the directory.
-There is also an internal DNS server (but which does not support
-secure DNS updates at this time) and the flat file BIND 9.8 backend
-(storing the data in traditional zone files).
-
-To migrate from zone files to directory based DNS servers, a migration
-tool (upgradedns) has been added.
-
-samba-tool dns commands to manage DNS records stored in directory.
-
-smbwrapper (a user-space file system based on LD_PRELOAD) has been
-removed.  
-
-Improvement to the upgrade process between Samba 3.x domains and Samba
-4.0 AD domains (samba-tool domain samba3upgrade).
-
-Some major but less visible changes include:
-
-Major work to bridge the code gap between the major parts of the code
-base, including a common loadparm wrapper, smb client library, as well
-as NTLMSSP, GSSAPI and SPNEGO code as part of the GENSEC
-authentication and authorization stack.
-
-Preparation work for moving to TDB2, a new version of Samba's core TDB
-database.
-
-smbtorture tests for SMB 2 and SMB 2.2 as the team improves and
-develops support these new protocols.
-
-Major cleanup and removal of global variables in the smbd SMB and SMB2 server.
-
-Heimdal security issue 2012-01-11 - libkrb5 checksum - denial of serice
-http://www.h5l.org//advisories.html?show=2012-01-11
-
-KNOWN ISSUES
+Known Issues
 ============
 
-- upgradeprovision should not be run when upgrading to this release
+- Replication of DNS data from one AD server to another may not work.
+  The DNS data used by the internal DNS server and bind9_dlz is stored
+  in an application partition in our directory.  The replication of
+  this partition is not yet reliable.
+
+- Replication may fail on FreeBSD due to getaddrinfo() rejecting names
+  containing _.  A workaround will be in a future release.
+
+- samba_upgradeprovision should not be run when upgrading to this release
   from a recent release.  No important database format changes have
-  been made since alpha16.  
-
-- The BIND 9 DLZ plugin is compatible only with BIND 9.8, not BIND 9.9. 
-
-- Systems with tdb or ldb installed as a system library may have
-  difficulty building this release of Samba4.  The --disable-tdb2
-  configure switch may be of assistance.  (Distributors who (rightly)
-  have difficulty with this may wish to wait until a future release,
-  which will soon fix this issue).
+  been made since alpha16.
 
 - Installation on systems without a system iconv (and developer
   headers at compile time) is known to cause errors when dealing with
   non-ASCII characters.
 
-- In some situations, group members may not be upgraded by the
-  samba-tool domain samba3upgrade tool
-
-- Domain member support in the 'samba' binary is in it's infancy, and
+- Domain member support in the 'samba' binary is in its infancy, and
   is not comparable to the support found in winbindd.  As such, do not
   use the 'samba' binary (provided for the AD server) on a member
   server.
 
-- There is no printing support in the 'samba' binary (use smbd instead)
-
-- There is no NetBIOS browsing support (network neighbourhood) in the
-  'samba' binary (use nmbd and smbd instead)
+- There is no NetBIOS browsing support (network neighbourhood)
+  available for the AD domain controller.  (Support in nmbd and smbd
+  for classic domains and member/standalone servers is unchanged).
 
 - Clock Synchronisation is critical.  Many 'wrong password' errors are
   actually due to Kerberos objecting to a clock skew between client
@@ -141,14 +119,634 @@ KNOWN ISSUES
 
 - The DRS replication code may fail.  Please contact the team if you
   experience issues with DRS replication, as we have fixed many issues
-  here in response to feedback from our production users. 
+  here in response to feedback from our production users.
 
-RUNNING Samba 4.0 as an AD DC
-=============================
+- Linux inotify will now only be supported on systems where glibc also supports
+  it (for details, please refer to bug #8850).
 
-A short guide to setting up Samba 4 as an AD DC can be found on the wiki:
 
-  http://wiki.samba.org/index.php/Samba4/HOWTO
+Upgrading
+=========
+
+Users upgrading from Samba 3.x domain controllers and wanting to use
+Samba 4.0 as an AD DC should use the 'samba-tool domain
+classicupgrade' command.  See the wiki for more details:
+https://wiki.samba.org/index.php/Samba4/samba3upgrade/HOWTO.
+
+Users upgrading from Samba 4.0 alpha and beta releases since alpha15
+should run 'samba-tool dbcheck --cross-ncs --fix' before re-starting
+Samba.  Users upgrading from earlier alpha releases should contact the
+team for advice.
+
+Users upgrading an AD DC from any previous release should run
+'samba-tool ntacl sysvolreset' to re-sync ACLs on the sysvol share
+with those matching the GPOs in LDAP and the defaults from an initial
+provision.  This will set an underlying POSIX ACL if required (eg not
+using the NTVFS file server).
+
+If you used the BIND9_FLATFILE or BIND9_DLZ features,
+you'll have to add '-dns' to the 'server services' option,
+as the internal dns server (SAMBA_INTERNAL) is the default now.
+
+
+Supported features
+==================
+
+A whitepaper of currently (un-)supported features is available on the wiki:
+
+  https://wiki.samba.org/index.php/Samba_4.0_Whitepaper
+
+
+######################################################################
+Changes
+#######
+
+smb.conf changes
+----------------
+
+   Parameter Name			Description
+   --------------			-----------
+
+   acl compatibility			Removed
+   allow dns updates			New
+   announce as				Removed
+   announce version			Removed
+   cldap port				New
+   client max protocol			New
+   client min protocol			New
+   client signing			Changed default
+   dcerpc endpoint servers		New
+   dgram port				New
+   directory security mask		Removed
+   display charset			Removed
+   dns forwarder			New
+   dns update command			New
+   force security mode			Removed
+   force directory security mode	Removed
+   homedir map				Changed default
+   kernel oplocks			Changed default
+   kernel share modes			New
+   kpasswd port				New
+   krb5 port				New
+   nbt client socket address		New
+   nbt port				New
+   nsupdate command			New
+   ntp signd socket directory		New
+   ntvfs handler			New
+   paranoid server security		Removed
+   pid directory			New
+   printer admin			Removed
+   rndc command 			New
+   rpc big endian			New
+   samba kcc command			New
+   security mask			Removed
+   send spnego principal		Removed
+   server max protocol			New
+   server min protocol			New
+   server role				New
+   server services			New
+   server signing			Changed default
+   share backend			New
+   share modes				Removed
+   smb2 max read			Changed default
+   smb2 max write			Changed default
+   smb2 max trans			Changed default
+   socket address			Removed
+   spn update command			New
+   time offset				Removed
+   tls cafile				New
+   tls certfile				New
+   tls crlfile				New
+   tls dh params file			New
+   tls enabled				New
+   tls keyfile				New
+   unicode				New
+   web port				New
+   winbindd privileged socket directory	New
+   winbind sealed pipes			New
+   winbindd socket directory		New
+
+
+CHANGES SINCE 4.0.0rc6
+======================
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 9414: Honor password complexity settings.
+    * BUG 9456: developer-build: Fix panic when acl_xattr fails with access
+      denied.
+    * BUG 9457: Fix "map username script" with "security=ads" and Winbind.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9462: Users can not be given write permissions any more by default.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9415: Install SWAT *.msg files with waf.
+
+
+o   Alexander Bokovoy <ab@samba.org>
+    * BUG 9479: Support FIPS mode when building Samba.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 9438: Fix netr_ServerPasswordSet2, netr_LogonSamLogon with netlogon
+      AES.
+
+
+o   Tsukasa Hamano <hamano@osstech.co.jp>
+    * BUG 9471: Fix SEGV when using second vfs module.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9414: Honor password complexity settings.
+    * BUG 9470: Fix MMC crashes.
+    * BUG 9481: Fix ACL on "cn=partitions,cn=configuration".
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 9459: Install manpages only if we install the target.
+
+
+o   Richard Sharpe <realrichardsharpe@gmail.com>
+    * BUG 9460: Respond correctly to FILE_STREAM_INFO requests.
+
+
+CHANGES SINCE 4.0.0rc5
+======================
+
+In this release candidate, we have a significant number of improvements
+to our Access Control List (ACL) code, particularly for the Active
+Directory Domain Controller, but also in our general purpose file
+server.
+
+These changes are important, as they enable Group Policy Objects to work
+correctly, allow administrators to impose restrictions on some users
+reading certain parts of the directory and correctly propagating
+inherited ACLs down the LDAP directory tree.
+
+Users of the Active Directory Domain Controller upgrading from any
+previous release should run 'samba-tool ntacl sysvolreset' to re-sync
+ACLs on the sysvol share with those matching the GPOs in LDAP and the
+defaults from an initial provision.  This will set an underlying POSIX
+ACL if required.
+
+The ACLs in the Active Directory are also checked on searches by default.
+The automatic inheritance of ACLs is also correctly recalculated on
+changes now.
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 9350: Fail "configure --with-ads" if ads support is not available.
+    * BUG 9446: Id mapping code delivers inconsistent results.
+    * BUG 9453: Fix building pdb_ldap as shared module.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9236: ACL masks incorrectly applied when setting ACLs.
+    * BUG 9374: Allow smb2.acls torture test to pass against smbd with a POSIX
+      ACLs backend.
+
+
+o   Christian Ambach <ambi@samba.org>
+    * BUG 9178: Add DMAPI configure option and checks.
+    * BUG 9274: Document shadow:snapdirseverywhere option of vfs_shadow_copy2.
+    * BUG 9339: Backport build fixes from master.
+    * BUG 9411: aio read marks the file as modified.
+    * BUG 9413: Fix waf build on AIX6.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9121: Provide and use setproctitle replacement function for samba4
+      processes on linux.
+    * BUG 9271: samba-tool: Rework ldap attribute fetch in classicupgrade for
+      missing attributes.
+    * BUG 9421: Fix several build issues.
+    * BUG 9448: Backport several crash bugs from master.
+
+
+o   Sumit Bose <sbose@redhat.com>
+    * BUG 9367: Use work around for 'winbind use default domain' only if it
+      is set.
+
+
+o   Kai Blin <kai@samba.org>
+    * BUG 9399 - 'samba-tool dns serverinfo localhost' returns 'Memory
+      allocation error'.
+    * BUG 9449: Remove unused samba-dig tool.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 9426: rpc_client: lookup nametype 0x20 in rpc_pipe_open_tcp_port().
+    * BUG 9439: Fix ncacn_ip_tcp reconnection code for lsa lookups.
+    * BUG 9451: Allow to force DNS updates using net.
+
+
+o   David Disseldorp <ddiss@samba.org>
+    * BUG 9433: spoolss: Fix segfault when "default devmode" is disabled.
+
+
+o   Amitay Isaacs <amitay@gmail.com>
+    * BUG 9265: Bind dlz fails to start if there is a trustedanchors zone.
+    * BUG 9354: Fix format string vulnerability in an error message.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 9422: Large read requests cause server to issue malformed reply.
+    * BUG 9440: Do not rely on dbwrap_record_get_value to return a talloc
+      object.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 8620: Read ACL are not enabled by default on DS.
+    * BUG 8621: ACL are not recalculated if parent is changed and inherit is
+      enabled.
+    * BUG 9373: samba-tool: Report a CommandError if loading of the config file
+      fails.
+    * BUG 9385: Add missing newline in the output of ldb_ldif_write_trace().
+    * BUG 9390: Fix segfaults in "log level = 10" on Solaris.
+    * BUG 9402: lib/addns: Fix working with a bind9 server.
+    * BUG 9406: ACL fixes since 4.0 rc1.
+    * BUG 9447: Backport tests from master.
+    * BUG 9448: Backport several crash bugs from master.
+
+
+o   Ricky Nance <ricky.nance@weaubleau.k12.mo.us>
+    * BUG 9449: Remove phpldapadmin inclusion.
+
+
+o   Matthieu Patou <mat@matws.net>
+    * BUG 9418: Fix MD5 detection in the autoconf build.
+
+
+o   Arvid Requate <requate@univention.de>
+    * BUG 9376: Fix typo in got_duplicate_group check.
+    * BUG 9392: Fix 'samba-tool fsmo --role=schema'.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 9386: Failover if netlogon pipe is not available.
+    * BUG 9436: Fix leaking sockets of SMB connections to a DC.
+
+
+o   Karolin Seeger <kseeger@samba.org>
+    * BUG 9425: Do not build ntdb by default.
+    * BUG 9437: Warnings when building manpages with waf.
+    * BUG 9443: Manpages of the libraries are located in different
+      subdirectories.
+    * BUG 9444: Merge both samba.8 manpages.
+    * BUG 9445: Update man 7 samba.
+
+
+o   Jelmer Vernooij <jelmer@samba.org>
+    * BUG 9339: Backport build fixes from master.
+
+
+CHANGES SINCE 4.0.0rc4
+======================
+
+With this release candidate the location of the socket samba accepts
+connections from NTPd has changed, as has the enforced permissions.
+
+This means the ntp.conf will need to change from (eg)
+
+ntpsigndsocket /usr/local/samba/var/run/ntp_signd/
+
+to
+
+ntpsigndsocket /usr/local/samba/var/lib/ntp_signd/
+
+To use the socket with ntp on a system with an ntp user and group, you must
+run:
+
+chgrp ntp /usr/local/samba/var/lib/ntp_signd/
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 9321: winbindd:cache: Fix offline logons with cached credentials.
+    * BUG 9339: Build and quota fixes.
+    * BUG 9353: Fix the cluster(ctdb) build without system talloc installed.
+
+
+o   Christian Ambach <ambi@samba.org>
+    * BUG 9208: Cannot migrate files with inheritance flags to share on top of
+      NFSv4 filesystem.
+    * BUG 9361: Quotas management doesn't work with SMB2/3.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9317: Cannot easily change to internal DNS server.
+    * BUG 9338: lib/replace: Return size of xattr if size argument is 0.
+    * BUG 9339: Build and quota fixes.
+    * BUG 9340: Do not use the wheel group for 'administrators'.
+    * BUG 9347: winbind: Extend wbcAuthenticateUserEx to provide PAC.
+    * BUG 9352: Fix samba crashes with certain RPC calls.
+    * BUG 9355: Set mask values to 0777 and use fileserver.conf.
+    * BUG 9357: Don't expose more symbols than specified by abi_match setting.
+    * BUG 9379: ntp_signd permissions are too broad.
+
+
+o   Björn Baumbach <bb@sernet.de>
+    * BUG 9300: vfs_streams_depot: Add delete_lost option.
+    * BUG 9348: Fix the build against older ctdb versions.
+    * BUG 9345: fix use of <smbconfoption> tag.
+    * BUG 9349: Fix check for ctdb_private.h
+    * BUG 9351: Fail "configure --with-cluster-support" if ctdb support is not
+      available.
+
+
+o   Ira Cooper <ira@samba.org>
+    * BUG 9339: Build and quota fixes.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 9272: 'net ads join' does not provide AES keys in host keytab.
+
+
+o   David Disseldorp <ddiss@samba.org>
+    * BUG 9125: Revert "s3-winbindd: make sure we obey the -n switch
+      also for samlogon cache access" and describe samlogon cache caveat for
+      'winbindd -n'.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 7472: Check for dn_expand also in libinet.
+    * BUG 9339: Build and quota fixes.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 9208: Cannot migrate files with inheritance flags to share on top of
+      NFSv4 filesystem.
+    * BUG 9352: dsdb: Simplify DsCrackNameOneFilter a bit.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 8620: Read ACL are not enabled by default on DS.
+    * BUG 9175: Add smbXcli_session_set_disconnect_expired().
+    * BUG 9341: Fix SMBD_SMB2_NUM_IOV_PER_REQ check for sendfile().
+    * BUG 9359: Optimization needed for SMB2 performance sensitive workloads.
+    * BUG 9360: SMB1 tree connect time is wrong.
+
+
+o   Ricky Nance <ricky.nance@weaubleau.k12.mo.us>
+    * BUG 9339: Build and quota fixes.
+
+
+o   Rusty Russell <rusty@rustcorp.com.au>
+    * BUG 9339: Build and quota fixes.
+
+
+o   Christof Schmitt <christof.schmitt@us.ibm.com>
+    * BUG 9347: winbind: Extend wbcAuthenticateUserEx to provide PAC.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 9326: Fix 'net ads join' message for the dns domain.
+    * BUG 9336: Add NetworkManager dispatcher script for Winbind.
+    * BUG 9339: Build and quota fixes.
+
+
+o   Jelmer Vernooij <jelmer@samba.org>
+    * BUG 9357: Don't expose more symbols than specified by abi_match setting.
+
+
+CHANGES SINCE 4.0.0rc3
+======================
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 9304: Remove unused sessionid.tdb and connections.tdb related code.
+    * BUG 9319: validate stat(2) information before reconnect durable handles.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9190: Fix regression (change in behavior) of default acl masks.
+      Remove "security mask", "force security mode", "directory security mask"
+      "force directory" and "security mode" parameters.
+    * BUG 9329: Directory listing with SeBackup can crash smbd.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9295: Assert that auth_domain, auth_builtin, auth_sam, auth_winbind
+      are builtin.
+    * BUG 9322: Backport ldb version update.
+
+
+o   Björn Baumbach <bb@sernet.de>
+    * BUG 9190: docs: Fix opening and ending tag mismatch: para.
+
+
+o   Gregor Beck <gbeck@sernet.de>
+    * BUG 9304: Remove unused sessionid.tdb and connections.tdb related code.
+
+
+o   David Disseldorp <ddiss@suse.de>
+    * BUG 8564: Fix segfault in pam_sm_authenticate().
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9184: Fix loop in tdgram_bsd_recvfrom().
+    * BUG 9209: Fix unitialized padding in smb2_create_blob_push_one().
+    * BUG 9304: Remove unused sessionid.tdb and connections.tdb related code.
+    * BUG 9309: Avoid a level 0 DEBUG if tstream_npa_connect_recv fails.
+    * BUG 9318: Fix write time updates for durable handles.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 9295: Build standard auth modules as internal modules.
+    * BUG 9301: Move 'smbprint' to a common location.
+
+
+o   Jelmer Vernooij <jelmer@samba.org>
+    * BUG 9274: Add documentation and selftest fixes.
+
+
+CHANGES SINCE 4.0.0rc2
+======================
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 8966: Fix 'net rpc share allowedusers' to work with 2008r2.
+    * BUG 9209: Parse of invalid SMB2 create blob can cause smbd crash.
+    * BUG 9214: Bad user supplied SMB2 credit value can cause smbd to call
+      smb_panic.
+    * BUG 9222: Document that signing cannot be disabled for SMB2 by design.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9235: Update Samba3-HOWTO Collection.
+    * BUG 9271: samba-tool: Skip chown in sysvolreset when it would fail on
+      a GID.
+    * BUG 9274: Update Samba3-HOWTO Collection.
+
+
+o   Björn Baumbach <bb@sernet.de>
+    * BUG 9235: Fix opening and ending tag mismatch in Samba3-HOWTO.
+    * BUG 9271: Fix typos in samba_backup.
+    * BUG 9274: Add delete_lost option to vfs_streams_depot.8.
+
+
+o   Kai Blin <kai@samba.org>
+    * BUG 9225: Fix return code for deleted DNS records.
+    * BUG 8878: Time out UDP requests after DNS_REQUEST_TIMEOUT seconds.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 9177: pam_winbind: Match more return codes when wbcGetPwnam has
+    failed.
+
+
+o   David Disseldorp <ddiss@samba.org>
+    * BUG 9269: Fix 64bit-portability-issue.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 5670: Apply some Solaris packaging fixes.
+    * BUG 8107: Fix poll replacement to become a msleep replacement.
+    * BUG 8344: Fix --with(out)-sendfile-support option handling.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 9223: Fix uninitialized variable in the cldap server.
+    * BUG 9268: Make tdb robust against improper CLEAR_IF_FIRST restart.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9271: Several samba-tool fixes.
+    * BUG 9196: Don't take 'state->te' as indication for "was_deferred".
+
+
+o   Matthieu Patou <mat@matws.net>
+    * BUG 9240: Remove unused variable in DNS server.
+    * BUG 9252: Preliminary tests for dcpromo in Windows 2012 fails with
+      Samba DC.
+    * BUG 9253: Crackname returns a dns domain name even if there is no cracked
+      SID.
+    * BUG 9255: Getncchanges with exop for repl_obj returns highest_usn.
+    * BUG 9256: Getncchanges with exop for repl_obj_with_secrets should always
+      be allowed for RWDC.
+    * BUG 9257: LDAP server has at least one un-initialized variable.
+    * BUG 9258: LDAP server ignore configuration values set in the database for
+      timeout.
+    * BUG 9259: rodc join fails complaining that it can't find a RWDC.
+    * BUG 9260: kccdrs_replica_get_info returns invalid level when non
+      supported should be returned.
+    * BUG 9261: ds_replica_sync fails when specifying a name and not a guid.
+    * BUG 9264: getncchanges returns invalid_parameters when it should return
+      bad_nc.
+    * BUG 9254: DsExecuteKCC returns wrong error code if taskid != 0.
+    * BUG 9265: Bind dlz fails to start if there is a trustedanchors zone.
+
+
+o   Rusty Russell <rusty@rustcorp.com.au>
+    * BUG 9268: Make tdb robust against shrinking tdbs.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 8769: Fix RAW printing for normal users.
+    * BUG 9112: Increase debug level for info that the db is empty.
+    * BUG 9244: Build pam_smbpass module only if enabled.
+    * BUG 9245: Make sure the registry is set up before we init printing.
+    * BUG 9276: Add config for systemd-tmpfiles.
+    * BUG 9280: Add support for reloading systemd services.
+
+
+o   Karolin Seeger <kseeger@samba.org>
+    * BUG 7826: Remove link to Using Samba.
+    * BUG 8802: Add basic manpages for 'samba' and 'samba-tool'.
+    * BUG 9165: Fix makerpms.sh on RHEL.
+    * BUG 9243: Remove duplicate synonym min protocol.
+    * BUG 9271: Several samba-tool fixes.
+
+
+o   Jelmer Vernooij <jelmer@samba.org>
+    * BUG 9243: Add basic documentation for 'server min protocol'.
+    * BUG 9271: Several samba-tool fixes.
+    * BUG 9274: Add documentation for several parameters.
+
+
+o   Matthias Dieter Wallnöfer <mdw@samba.org>
+    * BUG 9183: Introduce the wildcard binding feature to allow DNS to listen on
+      localhost.
+
+
+CHANGES SINCE 4.0.0rc1
+======================
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 9173: Make the SMB2 compound request create/delete_on_close/
+      close work as Windows.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9161: Re-add the vfs_Chdir() cache.
+    * BUG 9189: SMB2 Create doesn't return correct MAX ACCESS access mask in
+      blob.
+    * BUG 9213: Bad ASN.1 NegTokenInit packet can cause invalid free.
+
+
+o   Christian Ambach <ambi@samba.org>
+    * BUG 9162: Fix the build of the GPFS VFS module.
+    * BUG 9197: Only do 'printing_subsystem_update' when printing is enabled.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 9228: Fix build on systems without ldap development headers.
+
+
+o   Alexander Bokovoy <ab@samba.org>
+    * BUG 9157: Cleanup idmap_ldap build dependencies.
+    * BUG 9228: Make smbldaphelper subsystem an internal library.
+    * BUG 9229: Fix build of winbindd- and krb5 locator-related manpages.
+
+
+o   Sumit Bose <sbose@redhat.com>
+    * BUG 9185: Allow DNS resolution of trusted domains if DNS name is
+      available.
+
+
+o   Ira Cooper <ira@samba.org>
+    * BUG 9162: Fix build on Illumos/Solaris using '--with-acl'.
+    * BUG 9173: Compound requests should continue processing.
+
+
+o   Günther Deschner <gd@samba.org>
+    * BUG 9185: Winbind cannot resolve AD DC in a different subnet.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 9162: Fix the build of the ACL VFS modules.
+    * BUG 9172: Fix reporting of gfs2 quotas.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 9217: CreateFile with FILE_DIRECTORY_FILE can create directories
+      on read-only shares.
+
+
+o   Vladimir Marek <Vladimir.Marek@Oracle.COM>
+    * BUG 9192: Fix service control for non-internal services.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9173: Make the SMB2 compound request create/delete_on_close/
+      close work as Windows.
+    * BUG 9184: Fix receiving of UDP packets from 0 bytes.
+    * BUG 9191: Release the share mode lock before calling exit_server().
+    * BUG 9193: Fix usage of invalid memory in smb2_signing_check_pdu().
+    * BUG 9194: Disallow '--prefix=/usr' and '--prefix=/usr/local' without
+      '--enable-fhs'.
+    * BUG 9198: Fix RHEL-CTDB packaging.
+
+
+o   Matthieu Patou <mat@matws.net>
+    * BUG 9199: Fix usage of "panic action".
+    * BUG 9233: Fix a non handled memory out of memory.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 8632: Fix builtin forms order to match Windows again.
+    * BUG 9159: Fix generating idmap manpages.
+    * BUG 9218: Don't segfault if user specified ports out for range.
+    * BUG 9231: Fix NT_STATUS_IO_TIMEOUT during slow import of printers into
+      registry.
+
 
 #######################################
 Reporting bugs & Development Discussion
