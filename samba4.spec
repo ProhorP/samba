@@ -1,13 +1,21 @@
 %define samba4_version 4.0.0
 %define _localstatedir /var
 
-# Most of these subpackages are disabled because they are not
-# needed by OpenChange, and to avoid file conflicts with Samba3.
-%def_disable samba4
-%def_disable client
-%def_disable common
-%def_disable python
-%def_disable winbind
+# internal libs
+%def_without talloc
+%def_without tevent
+%def_without tdb
+%def_without ldb
+%def_with ntdb
+
+# buuild as separate package
+%def_with libsmbclient
+%def_with libwbclient
+%def_without pam_smbpass
+
+%def_with mitkrb5
+%def_without dc
+%def_with clustering_support
 
 Name: samba4
 Version: %samba4_version
@@ -24,10 +32,8 @@ Source1: %name.log
 Source4: %name.sysconfig
 Source5: %name.init
 
-
-%if_enabled common
+Conflicts: samba < %version
 Requires(pre): %name-common = %version-%release
-%endif
 
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
@@ -41,40 +47,110 @@ BuildRequires: libpopt-devel
 BuildRequires: python-devel
 BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
-BuildRequires: libxslt xsltproc
-BuildRequires: docbook-style-xsl
 BuildRequires: libpopt-devel
 BuildRequires: zlib-devel
 
-BuildRequires: libtalloc-devel libtdb-devel libtevent-devel libldb-devel
-BuildRequires: libpytalloc-devel python-module-tdb python-module-tevent python-module-pyldb-devel
+BuildRequires: libiniparser-devel
+BuildRequires: libkrb5-devel libssl-devel libcups-devel ctdb-devel
+BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
+BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.17 python-module-tevent}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
+%{?_without_tdb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
 
 BuildRequires: perl-Perl4-CoreLibs
 
 %description
-Samba 4 is the ambitious next version of the Samba suite that is being
-developed in parallel to the stable 3.0 series. The main emphasis in
-this branch is support for the Active Directory logon protocols used
-by Windows 2000 and above.
+Samba is the standard Windows interoperability suite of programs for Linux and Unix.
 
 %package client
 Summary: Samba client programs
 Group: Networking/Other
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
+Conflicts: samba-client < %version
+Provides: samba-client = %version-%release
 
 %description client
 The %name-client package provides some SMB/CIFS clients to complement
 the built-in SMB/CIFS filesystem in Linux. These clients allow access
 of SMB/CIFS shares and printing to SMB/CIFS printers.
 
+%package common
+Summary: Files used by both Samba servers and clients
+Group: System/Servers
+Requires: %name-libs = %version-%release
+Conflicts: samba-common < %version
+Provides: samba-common = %version-%release
+
+%description common
+%name-common provides files necessary for both the server and client
+packages of Samba.
+
+%package dc
+Summary: Samba AD Domain Controller
+Group: System/Servers
+Requires: %name-dc-libs = %version-%release
+
+%description dc
+The %name-dc package provides AD Domain Controller functionality
+
+%package dc-libs
+Summary: Samba AD Domain Controller Libraries
+Group: System/Libraries
+Requires: %name-common = %version-%release
+Requires: %name-libs = %version-%release
+
+%description dc-libs
+The %name-dc-libs package contains the libraries needed by the DC to
+link against the SMB, RPC and other protocols.
+
 %package libs
 Summary: Samba libraries
 Group: System/Libraries
+%if_with libwbclient
+Requires: libwbclient
+%endif
 
 %description libs
 The %name-libs package contains the libraries needed by programs that
 link against the SMB, RPC and other protocols provided by the Samba suite.
+
+%package -n libsmbclient
+Summary: The SMB client library
+Group: System/Libraries
+Conflicts: libsmbclient < %version
+Provides: libsmbclient = %version-%release
+
+%description -n libsmbclient
+The libsmbclient contains the SMB client library from the Samba suite.
+
+%package -n libsmbclient-devel
+Summary: Developer tools for the SMB client library
+Group: Development/C
+Requires: libsmbclient = %version-%release
+Conflicts: libsmbclient-devel < %version
+Provides: libsmbclient-devel = %version-%release
+
+%description -n libsmbclient-devel
+The libsmbclient-devel package contains the header files and libraries needed to
+develop programs that link against the SMB client library in the Samba suite.
+
+%package -n libwbclient
+Summary: The winbind client library
+Group: System/Libraries
+
+%description -n libwbclient
+The libwbclient package contains the winbind client library from the Samba suite.
+
+%package -n libwbclient-devel
+Summary: Developer tools for the winbind library
+Group: Development/C
+Requires: libwbclient = %version-%release
+
+%description -n libwbclient-devel
+The libwbclient-devel package provides developer tools for the wbclient library.
 
 %package -n python-module-%name
 Summary: Samba Python libraries
@@ -106,52 +182,155 @@ Group: Development/Tools
 The %name-pidl package contains the Perl IDL compiler used by Samba
 and Wireshark to parse IDL and similar protocols
 
-%package common
-Summary: Files used by both Samba servers and clients
-Group: System/Servers
-Requires: %name-libs = %version-%release
-
-%description common
-%name-common provides files necessary for both the server and client
-packages of Samba.
 
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
-Requires: %name = %version-%release
+Requires: %name-common = %version-%release
+Requires: %name-libs = %version-%release
+Conflicts: samba-winbind < %version
+Provides: samba-winbind = %version-%release
 
 %description winbind
-The samba-winbind package provides the winbind NSS library, and some
+The %name-winbind package provides the winbind NSS library, and some
 client tools.  Winbind enables Linux to be a full member in Windows
 domains and to use Windows user and group accounts on Linux.
+
+%package winbind-clients
+Summary: Samba winbind clients
+Group: System/Servers
+Requires: %name-winbind = %version-%release
+%if_with libwbclient
+Requires: libwbclient
+%endif
+
+Conflicts: samba-winbind-clients < %version
+Provides: samba-winbind-clients = %version-%release
+
+%description winbind-clients
+The samba4-winbind-clients package provides the NSS library and a PAM
+module necessary to communicate to the Winbind Daemon
+
+%package winbind-devel
+Summary: Developer tools for the winbind library
+Group: Development/Other
+Requires: %name-winbind = %version-%release
+
+%description winbind-devel
+The samba-winbind package provides developer tools for the wbclient library.
+
+%package swat
+Summary: The Samba SMB server Web configuration program
+Group: Security/Networking
+Requires: %name = %version-%release
+#Requires: %name-doc = %version-%release
+Requires: xinetd
+
+Conflicts: samba-swat < %version
+Provides: samba-swat = %version-%release
+
+%description swat
+The samba4-swat package includes the new SWAT (Samba Web Administration
+Tool), for remotely managing Samba's smb.conf file using your favorite
+Web browser.
+
+%package doc
+Summary: Documentation for the Samba suite
+Group: Documentation
+Requires: %name-common = %version-%release
+BuildArch: noarch
+
+Conflicts: samba-doc < %version
+Provides: samba-doc = %version-%release
+
+%description doc
+The samba-doc package includes all the non-manpage documentation for the
+Samba suite.
 
 %prep
 %setup -q
 
 %build
+%if_with talloc
+%define _talloc_lib ,talloc,pytalloc,pytalloc-util
+%else
+%define _talloc_lib ,!talloc,!pytalloc,!pytalloc-util
+%endif
+
+%if_with tevent
+%define _tevent_lib ,tevent,pytevent
+%else
+%define _tevent_lib ,!tevent,!pytevent
+%endif
+
+%if_with tdb
+%define _tdb_lib ,tdb,pytdb
+%else
+%define _tdb_lib ,!tdb,!pytdb
+%endif
+
+%if_with ldb
+%define _ldb_lib ,ldb,pyldb
+%else
+%define _ldb_lib ,!ldb,!pyldb
+%endif
+
+%define _samba4_libraries heimdal,!zlib,!popt,%_talloc_lib,%_tevent_lib,%_tdb_lib,%_ldb_lib
+
+%define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2
+%define _samba4_pdb_modules pdb_tdbsam,pdb_ldap,pdb_ads,pdb_smbpasswd,pdb_wbc_sam,pdb_samba4
+%define _samba4_auth_modules auth_sam,auth_unix,auth_winbind,auth_wbc,auth_server,auth_netlogond,auth_script,auth_samba4
+# auth_domain needs to be static
+%define _samba4_modules %_samba4_idmap_modules,%_samba4_pdb_modules,%_samba4_auth_modules
+
+%if_without libsmbclient
+%define _libsmbclient smbclient,smbsharemodes,
+%endif
+
+%if_without libwbclient
+%define _libwbclient wbclient,
+%endif
+
+%define _samba4_private_libraries %_libsmbclient%_libwbclient
+
+
 %undefine _configure_gettext
 %configure \
 	--enable-fhs \
-	--disable-tdb2 \
-	--with-lockdir=/var/lib/%name \
 	--with-piddir=/var/run \
-	--with-privatedir=/var/lib/%name/private \
-	--with-sockets-dir=/var/run \
-	--with-configdir=%_sysconfdir/%name \
+	--with-sockets-dir=/var/run/samba \
+	--with-modulesdir=%_libdir/samba \
+	--with-pammodulesdir=%_lib/security \
+	--with-lockdir=/var/lib/samba \
+	--with-privatedir=/var/lib/samba/private \
 	--disable-gnutls \
 	--disable-rpath-install \
-	--builtin-libraries=ccan,wbclient \
-	--bundled-libraries=heimdal,!talloc,!tdb,!tevent,!ldb,!zlib
+	--with-shared-modules=%_samba4_modules \
+	--builtin-libraries=ccan \
+	--bundled-libraries=%_samba4_libraries \
+	--with-pam \
+	--private-libraries=%_samba4_private_libraries \
+%if_with mitkrb5
+	--with-system-mitkrb5 \
+%endif
+%if_without dc
+	--without-ad-dc \
+%endif
+%if_with clustering_support
+	--with-cluster-support \
+%endif
+%if_without pam_smbpass
+	--without-pam_smbpass \
+%endif
+	--disable-ntdb
+
 
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
 (cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
 
-# Builds using PIDL the IDL and many other things.
-#make proto
-#make everything
-make
+%make_build
 
 %install
 
@@ -266,17 +445,6 @@ rm -f %buildroot%_bindir/nmblookup
 rm -f %buildroot%_bindir/smbclient
 rm -f %buildroot%_bindir/cifsdd
 rm -f %buildroot%_mandir/man1/nmblookup.*
-%endif
-%if_disabled common
-rm -f %buildroot%_bindir/regdiff
-rm -f %buildroot%_bindir/regpatch
-rm -f %buildroot%_bindir/regshell
-rm -f %buildroot%_bindir/regtree
-rm -f %buildroot%_bindir/testparm
-rm -f %buildroot%_mandir/man1/regdiff.*
-rm -f %buildroot%_mandir/man1/regpatch.*
-rm -f %buildroot%_mandir/man1/regshell.*
-rm -f %buildroot%_mandir/man1/regtree.*
 %endif
 
 # the samba4 build process rebuilds libraries internally,
@@ -556,7 +724,6 @@ find source4/heimdal -type f | xargs chmod -x
 %_mandir/man1/nmblookup.*
 %endif
 
-%if_enabled common
 %files common
 %_bindir/testparm
 %_bindir/regdiff
@@ -572,7 +739,6 @@ find source4/heimdal -type f | xargs chmod -x
 %attr(700,root,root) %dir /var/lib/%name/private
 # We don't want to put a smb.conf in by default, provision should create it
 #%config(noreplace) %_sysconfdir/%name/smb.conf
-%endif
 
 %changelog
 * Fri Dec 21 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt2
