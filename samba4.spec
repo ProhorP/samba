@@ -51,13 +51,14 @@ BuildRequires: libpopt-devel
 BuildRequires: zlib-devel
 
 BuildRequires: libiniparser-devel
-BuildRequires: libkrb5-devel libssl-devel libcups-devel ctdb-devel
+BuildRequires: libkrb5-devel libssl-devel libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.17 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
 %{?_without_tdb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
+%{?_with_clustering_support:BuildRequires: ctdb-devel}
 
 BuildRequires: perl-Perl4-CoreLibs
 
@@ -317,6 +318,7 @@ Samba suite.
 %endif
 %if_with clustering_support
 	--with-cluster-support \
+	--enable-old-ctdb \
 %endif
 %if_without pam_smbpass
 	--without-pam_smbpass \
