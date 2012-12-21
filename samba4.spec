@@ -1,5 +1,4 @@
 %define samba4_version 4.0.0
-%define pre_release alpha18
 %define _localstatedir /var
 
 # Most of these subpackages are disabled because they are not
@@ -12,12 +11,11 @@
 
 Name: samba4
 Version: %samba4_version
-Release: alt1.%pre_release
+Release: alt2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
 Url: http://www.samba.org/
-Packager: Alexey Shabalin <shaba@altlinux.ru>
 
 Source: %name-%version.tar
 
@@ -26,7 +24,6 @@ Source1: %name.log
 Source4: %name.sysconfig
 Source5: %name.init
 
-Patch01: samba-4.0.0alpha16.buildfix.patch
 
 %if_enabled common
 Requires(pre): %name-common = %version-%release
@@ -130,7 +127,6 @@ domains and to use Windows user and group accounts on Linux.
 
 %prep
 %setup -q
-# %patch01 -p1 -b .buildfix
 
 %build
 %undefine _configure_gettext
@@ -579,6 +575,9 @@ find source4/heimdal -type f | xargs chmod -x
 %endif
 
 %changelog
+* Fri Dec 21 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt2
+- 4.0.0 release
+
 * Wed Mar 28 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha18
 - alpha18
 
