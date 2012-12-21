@@ -251,47 +251,46 @@ Samba suite.
 %setup -q
 
 %build
-%if_with talloc
+
 %define _talloc_lib ,talloc,pytalloc,pytalloc-util
-%else
+%if_without talloc
 %define _talloc_lib ,!talloc,!pytalloc,!pytalloc-util
 %endif
 
-%if_with tevent
 %define _tevent_lib ,tevent,pytevent
-%else
+%if_without tevent
 %define _tevent_lib ,!tevent,!pytevent
 %endif
 
-%if_with tdb
 %define _tdb_lib ,tdb,pytdb
-%else
+%if_without tdb
 %define _tdb_lib ,!tdb,!pytdb
 %endif
 
-%if_with ldb
 %define _ldb_lib ,ldb,pyldb
-%else
+%if_without ldb
 %define _ldb_lib ,!ldb,!pyldb
 %endif
 
-%define _samba4_libraries heimdal,!zlib,!popt,%_talloc_lib,%_tevent_lib,%_tdb_lib,%_ldb_lib
+%define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ldb_lib}
 
 %define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2
 %define _samba4_pdb_modules pdb_tdbsam,pdb_ldap,pdb_ads,pdb_smbpasswd,pdb_wbc_sam,pdb_samba4
-%define _samba4_auth_modules auth_sam,auth_unix,auth_winbind,auth_wbc,auth_server,auth_netlogond,auth_script,auth_samba4
+%define _samba4_auth_modules auth_unix,auth_wbc,auth_server,auth_netlogond,auth_script,auth_samba4
 # auth_domain needs to be static
 %define _samba4_modules %_samba4_idmap_modules,%_samba4_pdb_modules,%_samba4_auth_modules
 
+%define _libsmbclient %nil
 %if_without libsmbclient
 %define _libsmbclient smbclient,smbsharemodes,
 %endif
 
+%define _libwbclient %nil
 %if_without libwbclient
 %define _libwbclient wbclient,
 %endif
 
-%define _samba4_private_libraries %_libsmbclient%_libwbclient
+%define _samba4_private_libraries %{_libsmbclient}%{_libwbclient}
 
 
 %undefine _configure_gettext
