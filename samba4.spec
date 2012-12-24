@@ -295,6 +295,7 @@ Samba suite.
 
 
 %undefine _configure_gettext
+%add_optflags -I/usr/include/krb5
 %configure \
 	--enable-fhs \
 	--with-piddir=/var/run \
