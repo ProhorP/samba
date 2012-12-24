@@ -309,6 +309,7 @@ Samba suite.
 	--builtin-libraries=ccan \
 	--bundled-libraries=%_samba4_libraries \
 	--with-pam \
+	--with-ads \
 	--private-libraries=%_samba4_private_libraries \
 %if_with mitkrb5
 	--with-system-mitkrb5 \
