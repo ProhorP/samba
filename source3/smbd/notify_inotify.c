@@ -41,6 +41,7 @@ struct inotify_private {
 	struct sys_notify_context *ctx;
 	int fd;
 	struct inotify_watch_context *watches;
+	bool broken_inotify;	/* Late stop for broken system */
 };
 
 struct inotify_watch_context {
@@ -205,8 +206,15 @@ static void inotify_handler(struct tevent_context *ev, struct tevent_fd *fde,
 	  filenames, and thus can't know how much to allocate
 	  otherwise
 	*/
-	if (ioctl(in->fd, FIONREAD, &bufsize) != 0 || 
-	    bufsize == 0) {
+	if ((ioctl(in->fd, FIONREAD, &bufsize) != 0) && (errno == EACCES)) {
+		/*
+		 * Workaround for broken system (SELinux policy bug fixed since long but it is always better not to loop on EACCES)
+		 */
+		TALLOC_FREE(fde);
+		in->broken_inotify = True;
+		return;
+	}
+	if (bufsize == 0) {
 		DEBUG(0,("No data on inotify fd?!\n"));
 		TALLOC_FREE(fde);
 		return;
@@ -264,6 +272,7 @@ static NTSTATUS inotify_setup(struct sys_notify_context *ctx)
 	}
 	in->ctx = ctx;
 	in->watches = NULL;
+	in->broken_inotify = False;
 
 	ctx->private_data = in;
 	talloc_set_destructor(in, inotify_destructor);
@@ -359,6 +368,10 @@ NTSTATUS inotify_watch(struct sys_notify_context *ctx,
 	}
 
 	in = talloc_get_type(ctx->private_data, struct inotify_private);
+
+	if (in->broken_inotify) {
+		return NT_STATUS_OK;
+	}
 
 	mask = inotify_map(filter);
 	if (mask == 0) {
