@@ -46,6 +46,9 @@ Source10: nmb.init
 Source11: pam_winbind.conf
 Source12: samba.conf.tmp
 
+Source200: README.dc
+Source201: README.downgrade
+
 Patch: %name-%version-%release.patch
 
 Conflicts: samba < %version
@@ -434,6 +437,14 @@ install -m755 %SOURCE10 %buildroot%_initrddir/nmb
 install -m755 %SOURCE5 %buildroot%_initrddir/smb
 install -m755 %SOURCE8 %buildroot%_initrddir/winbind
 
+install -d -m 755 %buildroot%_defaultdocdir/%name
+install -m 644 %SOURCE201 %buildroot%_defaultdocdir/%name/README.downgrade
+
+%if_without dc
+install -m 644 %SOURCE200 %buildroot%_defaultdocdir/%name/README.dc
+install -m 644 %SOURCE200 %buildroot%_defaultdocdir/%name/README.dc-libs
+%endif
+
 for i in nmb smb winbind ; do
     cat packaging/systemd/$i.service | sed -e 's@Type=forking@Type=forking\nEnvironment=KRB5CCNAME=/run/samba/krb5cc_samba@g' >tmp$i.service
     install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
@@ -645,10 +656,14 @@ TDB_NO_FSYNC=1 %make_build test
 %_datadir/samba/setup
 %_man8dir/samba.8.gz
 %_man8dir/samba-tool.8.gz
+%else
+%doc %_defaultdocdir/%name/README.dc
+%exclude %_man8dir/samba.8*
+%exclude %_man8dir/samba-tool.8*
 %endif
 
-%if_with dc
 %files dc-libs
+%if_with dc
 %_libdir/samba/libprocess_model.so
 %_libdir/samba/libservice.so
 %_libdir/samba/process_model
@@ -656,6 +671,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/libdcerpc-server.so.*
 %_libdir/samba/libntvfs.so
 %_libdir/samba/libposix_eadb.so
+%else
+%doc %_defaultdocdir/%name/README.dc-libs
 %endif
 
 %files devel
