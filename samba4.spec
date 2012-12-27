@@ -46,6 +46,8 @@ Source10: nmb.init
 Source11: pam_winbind.conf
 Source12: samba.conf.tmp
 
+Patch: %name-%version-%release.patch
+
 Conflicts: samba < %version
 Requires(pre): %name-common = %version-%release
 
@@ -305,6 +307,7 @@ Samba suite.
 
 %prep
 %setup -q
+%patch -p1
 
 %build
 

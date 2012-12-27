@@ -1,2 +1,4 @@
-tar: . name=@name@-@version@
+tar: samba-@version@:. name=@name@-@version@
+diff: samba-@version@:. .
 copy: extra/*
+
