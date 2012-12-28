@@ -162,6 +162,7 @@ develop programs that link against the SMB client library in the Samba suite.
 Summary: The winbind client library
 Group: System/Libraries
 Conflicts: libwbclient < %version
+Conflicts: samba-winbind-clients < %version
 Provides: libwbclient = %version-%release
 
 %description -n libwbclient4
