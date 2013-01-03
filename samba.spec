@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.6.10
-Release: alt1
+Release: alt2
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -585,6 +585,9 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Thu Jan 03 2013 Led <led@altlinux.ru> 3.6.10-alt2
+- upstream fixes (9471, 9196)
+
 * Tue Dec 11 2012 Led <led@altlinux.ru> 3.6.10-alt1
 - 3.6.10
 
