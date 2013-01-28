@@ -52,6 +52,7 @@ Source201: README.downgrade
 Patch: %name-%version-%release.patch
 
 Conflicts: samba < %version
+Requires: %name-winbind-clients = %version-%release
 Requires(pre): %name-common = %version-%release
 
 BuildRequires: libe2fs-devel
@@ -90,6 +91,9 @@ Summary: Samba client programs
 Group: Networking/Other
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
+%if_with libsmbclient
+Requires: libsmbclient4 = %version-%release
+%endif
 Conflicts: samba-client < %version
 Provides: samba-client = %version-%release
 
@@ -102,6 +106,7 @@ of SMB/CIFS shares and printing to SMB/CIFS printers.
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
 Requires: %name-libs = %version-%release
+Requires: libnetapi4 = %version-%release
 Conflicts: samba-common < %version
 Provides: samba-common = %version-%release
 
@@ -130,6 +135,7 @@ link against the SMB, RPC and other protocols.
 %package libs
 Summary: Samba libraries
 Group: System/Libraries
+Requires: libnetapi4 = %version-%release
 %if_with libwbclient
 Requires: libwbclient4 = %version-%release
 %endif
@@ -190,6 +196,7 @@ Samba netapi library
 %package -n libnetapi4-devel
 Summary: Samba netapi development files
 Group: Development/Other
+Requires: libnetapi4 = %version-%release
 Conflicts: libnetapi-devel < %version
 Provides: libnetapi-devel = %version-%release
 
@@ -234,6 +241,9 @@ Requires: %name-common = %version-%release
 Requires: %name-dc = %version-%release
 Requires: %name-libs = %version-%release
 Requires: %name-winbind = %version-%release
+%if_with libsmbclient
+Requires: libsmbclient4 = %version-%release
+%endif
 
 %description test
 samba4-test provides testing tools for both the server and client
@@ -242,7 +252,7 @@ packages of Samba.
 %package test-devel
 Summary: Testing devel files for Samba servers and clients
 Group: Development/C
-Requires: %name-test-devel = %version-%release
+Requires: %name-test = %version-%release
 
 %description test-devel
 samba-test-devel provides testing devel files for both the server and client
