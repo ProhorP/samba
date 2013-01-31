@@ -269,6 +269,7 @@ CFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -DLDAP_DEPRECATED" %configure \
 popd
 
 pushd docs-xml
+export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
 %autoreconf
 %configure
 %make_build smbdotconf/parameters.all.xml
