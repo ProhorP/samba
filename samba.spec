@@ -155,7 +155,7 @@ The samba-domainjoin-gui package includes a domainjoin gtk application.
 
 %package -n libsmbclient
 Summary: The SMB client library
-Group: Development/Libraries
+Group: System/Libraries
 
 %description -n libsmbclient
 The libsmbclient contains the SMB client library from the Samba suite.
