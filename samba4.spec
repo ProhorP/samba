@@ -7,9 +7,9 @@
 %def_without ldb
 %def_with ntdb
 
-# buuild as separate package
-%def_with libsmbclient
-%def_with libwbclient
+# build as separate package
+%def_without libsmbclient
+%def_without libwbclient
 %def_without pam_smbpass
 
 %def_with mitkrb5
@@ -25,7 +25,7 @@
 
 Name: samba4
 Version: 4.0.1
-Release: alt1
+Release: alt2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -985,6 +985,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Thu Jan 31 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt2
+- build without libsmbclient and libwbclient
+
 * Mon Jan 28 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt1
 - 4.0.1
 
