@@ -491,6 +491,8 @@ ln -sf /%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 
+ln -sf ldap.so  %buildroot%_libdir/samba/pdb/ldapsam.so
+
 # Fix up permission on perl install.
 %_fixperms %buildroot%perl_vendor_privlib
 
