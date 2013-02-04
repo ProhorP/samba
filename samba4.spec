@@ -26,7 +26,7 @@
 
 Name: samba4
 Version: 4.0.2
-Release: alt1
+Release: alt2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -140,9 +140,18 @@ Summary: Samba libraries
 Group: System/Libraries
 %if_with libnetapi
 Requires: libnetapi4 = %version-%release
+%else
+Obsoletes: libnetapi4 < %version-%release
 %endif
 %if_with libwbclient
 Requires: libwbclient4 = %version-%release
+%else
+Obsoletes: libwbclient4 < %version-%release
+%endif
+%if_with libsmbclient
+Requires: libsmbclient4 = %version-%release
+%else
+Obsoletes: libsmbclient4 < %version-%release
 %endif
 
 %description libs
@@ -1002,6 +1011,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt2
+- obsoletes libnetapi4,libwbclient4,libsmbclient4 by samba4-libs if build without them
+
 * Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt1
 - 4.0.2
 - fixed gensec: Allow login without a PAC by default (samba bug #9581)
