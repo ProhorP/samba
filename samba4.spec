@@ -25,8 +25,8 @@
 %endif
 
 Name: samba4
-Version: 4.0.1
-Release: alt3
+Version: 4.0.2
+Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1002,6 +1002,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt1
+- 4.0.2
+- fixed gensec: Allow login without a PAC by default (samba bug #9581)
+
 * Fri Feb 01 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt3
 - build without libnetapi
 - add symlink ldapsam.so to ldap.so
