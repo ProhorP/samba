@@ -99,6 +99,8 @@ Requires: libsmbclient4 = %version-%release
 %endif
 Provides: samba4-client = %version-%release
 Obsoletes: samba4-client < %version-%release
+Provides: samba-client-cups = %version-%release
+Obsoletes: samba-client-cups < %version-%release
 
 %description client
 The %name-client package provides some SMB/CIFS clients to complement
@@ -524,6 +526,11 @@ ln -sf /%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 
+#cups backend
+%define cups_serverbin %(cups-config --serverbin 2>/dev/null)
+mkdir -p %buildroot%{cups_serverbin}/backend
+ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
+
 # Fix up permission on perl install.
 %_fixperms %buildroot%perl_vendor_privlib
 
@@ -598,6 +605,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbspool
 %_bindir/smbta-util
 %_bindir/smbtree
+%{cups_serverbin}/backend/smb
 %_libdir/samba/libldb-cmdline.so
 %_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
