@@ -556,6 +556,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files
 %doc COPYING
+%doc %_defaultdocdir/%name/README.downgrade
 %_bindir/smbstatus
 %_bindir/eventlogadm
 %_sbindir/nmbd
@@ -600,6 +601,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbta-util
 %_bindir/smbtree
 %_libdir/samba/libldb-cmdline.so
+%_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
 %_man1dir/regdiff.1*
