@@ -114,6 +114,7 @@ Requires: %name-libs = %version-%release
 %if_with libnetapi
 Requires: libnetapi = %version-%release
 %endif
+Provides: samba-utils = %version-%release
 Provides: samba4-common = %version-%release
 Obsoletes: samba4-common < %version-%release
 
