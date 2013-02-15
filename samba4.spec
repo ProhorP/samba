@@ -524,8 +524,6 @@ ln -sf /%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 
-ln -sf ldap.so  %buildroot%_libdir/samba/pdb/ldapsam.so
-
 # Fix up permission on perl install.
 %_fixperms %buildroot%perl_vendor_privlib
 
@@ -1043,6 +1041,7 @@ TDB_NO_FSYNC=1 %make_build test
 * Fri Feb 15 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.3-alt1
 - 4.0.3
 - build as default samba, replaced samba4 packages
+- rename pdb_ldap to pdb_ldapsam
 
 * Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt2
 - obsoletes libnetapi4,libwbclient4,libsmbclient4 by samba4-libs if build without them
