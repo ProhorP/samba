@@ -8,9 +8,9 @@
 %def_with ntdb
 
 # build as separate package
-%def_without libsmbclient
-%def_without libwbclient
-%def_without libnetapi
+%def_with libsmbclient
+%def_with libwbclient
+%def_with libnetapi
 %def_without pam_smbpass
 
 %def_with mitkrb5
@@ -24,7 +24,7 @@
 %def_with dc
 %endif
 
-Name: samba4
+Name: samba
 Version: 4.0.3
 Release: alt1
 Group: System/Servers
@@ -52,7 +52,9 @@ Source201: README.downgrade
 
 Patch: %name-%version-%release.patch
 
-Conflicts: samba < %version
+Provides: samba4 = %version-%release
+Obsoletes: samba4 < %version-%release
+
 Requires: %name-winbind-clients = %version-%release
 Requires(pre): %name-common = %version-%release
 
@@ -95,8 +97,8 @@ Requires: %name-libs = %version-%release
 %if_with libsmbclient
 Requires: libsmbclient4 = %version-%release
 %endif
-Conflicts: samba-client < %version
-Provides: samba-client = %version-%release
+Provides: samba4-client = %version-%release
+Obsoletes: samba4-client < %version-%release
 
 %description client
 The %name-client package provides some SMB/CIFS clients to complement
@@ -108,10 +110,10 @@ Summary: Files used by both Samba servers and clients
 Group: System/Servers
 Requires: %name-libs = %version-%release
 %if_with libnetapi
-Requires: libnetapi4 = %version-%release
+Requires: libnetapi = %version-%release
 %endif
-Conflicts: samba-common < %version
-Provides: samba-common = %version-%release
+Provides: samba4-common = %version-%release
+Obsoletes: samba4-common < %version-%release
 
 %description common
 %name-common provides files necessary for both the server and client
@@ -139,17 +141,17 @@ link against the SMB, RPC and other protocols.
 Summary: Samba libraries
 Group: System/Libraries
 %if_with libnetapi
-Requires: libnetapi4 = %version-%release
+Requires: libnetapi = %version-%release
 %else
 Obsoletes: libnetapi4 < %version-%release
 %endif
 %if_with libwbclient
-Requires: libwbclient4 = %version-%release
+Requires: libwbclient = %version-%release
 %else
 Obsoletes: libwbclient4 < %version-%release
 %endif
 %if_with libsmbclient
-Requires: libsmbclient4 = %version-%release
+Requires: libsmbclient = %version-%release
 %else
 Obsoletes: libsmbclient4 < %version-%release
 %endif
@@ -158,69 +160,72 @@ Obsoletes: libsmbclient4 < %version-%release
 The %name-libs package contains the libraries needed by programs that
 link against the SMB, RPC and other protocols provided by the Samba suite.
 
-%package -n libsmbclient4
+%package -n libsmbclient
 Summary: The SMB client library
 Group: System/Libraries
-Conflicts: libsmbclient < %version
-Provides: libsmbclient = %version-%release
+Provides: libsmbclient4 = %version-%release
+Obsoletes: libsmbclient4 < %version-%release
 
-%description -n libsmbclient4
+%description -n libsmbclient
 The libsmbclient contains the SMB client library from the Samba suite.
 
-%package -n libsmbclient4-devel
+%package -n libsmbclient-devel
 Summary: Developer tools for the SMB client library
 Group: Development/C
-Requires: libsmbclient4 = %version-%release
-Conflicts: libsmbclient-devel < %version
-Provides: libsmbclient-devel = %version-%release
+Requires: libsmbclient = %version-%release
+Provides: libsmbclient4-devel = %version-%release
+Obsoletes: libsmbclient4-devel < %version-%release
 
-%description -n libsmbclient4-devel
+%description -n libsmbclient-devel
 The libsmbclient-devel package contains the header files and libraries needed to
 develop programs that link against the SMB client library in the Samba suite.
 
-%package -n libwbclient4
+%package -n libwbclient
 Summary: The winbind client library
 Group: System/Libraries
-Conflicts: libwbclient < %version
 Conflicts: samba-winbind-clients < %version
-Provides: libwbclient = %version-%release
+Provides: libwbclient4 = %version-%release
+Obsoletes: libwbclient4 < %version-%release
+Conflicts: samba-winbind-clients <= 3.6.12-alt1
 
-%description -n libwbclient4
+%description -n libwbclient
 The libwbclient package contains the winbind client library from the Samba suite.
 
-%package -n libwbclient4-devel
+%package -n libwbclient-devel
 Summary: Developer tools for the winbind library
 Group: Development/C
-Requires: libwbclient4 = %version-%release
-Conflicts: libwbclient-devel < %version
-Provides: libwbclient-devel = %version-%release
+Requires: libwbclient = %version-%release
+Provides: libwbclient4-devel = %version-%release
+Obsoletes: libwbclient4-devel < %version-%release
 
-%description -n libwbclient4-devel
+%description -n libwbclient-devel
 The libwbclient-devel package provides developer tools for the wbclient library.
 
-%package -n libnetapi4
+%package -n libnetapi
 Summary: Samba netapi library
 Group: System/Libraries
-Conflicts: libnetapi < %version
-Provides: libnetapi = %version-%release
+Provides: libnetapi4 = %version-%release
+Obsoletes: libnetapi4 < %version-%release
 
-%description -n libnetapi4
+%description -n libnetapi
 Samba netapi library
 
-%package -n libnetapi4-devel
+%package -n libnetapi-devel
 Summary: Samba netapi development files
 Group: Development/Other
-Requires: libnetapi4 = %version-%release
-Conflicts: libnetapi-devel < %version
-Provides: libnetapi-devel = %version-%release
+Requires: libnetapi = %version-%release
+Provides: libnetapi4-devel = %version-%release
+Obsoletes: libnetapi4-devel < %version-%release
 
-%description -n libnetapi4-devel
+%description -n libnetapi-devel
 Samba netapi development files
 
 %package -n python-module-%name
 Summary: Samba Python libraries
 Group: Networking/Other
 Requires: %name-libs = %version-%release
+Provides: python-module-samba4 = %version-%release
+Obsoletes: python-module-samba4 < %version-%release
 
 %add_python_req_skip Tdb
 
@@ -232,6 +237,8 @@ that use SMB, RPC and other Samba provided protocols in Python programs.
 Summary: Developer tools for Samba libraries
 Group: Development/C
 Requires: %name-libs = %version-%release
+Provides: samba4-devel = %version-%release
+Obsoletes: samba4-devel < %version-%release
 
 %description devel
 The %name-devel package contains the header files for the libraries
@@ -242,6 +249,8 @@ libraries in the Samba suite.
 Summary: Perl IDL compiler
 Group: Development/Tools
 # Requires: perl(:MODULE_COMPAT_%(eval "`perl -V:version`"; echo $version))
+Provides: samba4-pidl = %version-%release
+Obsoletes: samba4-pidl < %version-%release
 
 %description pidl
 The %name-pidl package contains the Perl IDL compiler used by Samba
@@ -256,8 +265,10 @@ Requires: %name-dc = %version-%release
 Requires: %name-libs = %version-%release
 Requires: %name-winbind = %version-%release
 %if_with libsmbclient
-Requires: libsmbclient4 = %version-%release
+Requires: libsmbclient = %version-%release
 %endif
+Provides: samba4-test = %version-%release
+Obsoletes: samba4-test < %version-%release
 
 %description test
 samba4-test provides testing tools for both the server and client
@@ -267,6 +278,8 @@ packages of Samba.
 Summary: Testing devel files for Samba servers and clients
 Group: Development/C
 Requires: %name-test = %version-%release
+Provides: samba4-test-devel = %version-%release
+Obsoletes: samba4-test-devel < %version-%release
 
 %description test-devel
 samba-test-devel provides testing devel files for both the server and client
@@ -277,8 +290,8 @@ Summary: Samba winbind
 Group: System/Servers
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
-Conflicts: samba-winbind < %version
-Provides: samba-winbind = %version-%release
+Provides: samba4-winbind = %version-%release
+Obsoletes: samba4-winbind < %version-%release
 
 %description winbind
 The %name-winbind package provides the winbind NSS library, and some
@@ -290,10 +303,10 @@ Summary: Samba winbind clients
 Group: System/Servers
 Requires: %name-winbind = %version-%release
 %if_with libwbclient
-Requires: libwbclient4 = %version-%release
+Requires: libwbclient = %version-%release
 %endif
-Conflicts: samba-winbind-clients < %version
-Provides: samba-winbind-clients = %version-%release
+Provides: samba4-winbind-clients = %version-%release
+Obsoletes: samba4-winbind-clients < %version-%release
 
 %description winbind-clients
 The samba-winbind-clients package provides the NSS library and a PAM
@@ -303,6 +316,8 @@ module necessary to communicate to the Winbind Daemon
 Summary: Developer tools for the winbind library
 Group: Development/Other
 Requires: %name-winbind = %version-%release
+Provides: samba4-winbind-devel = %version-%release
+Obsoletes: samba4-winbind-devel < %version-%release
 
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
@@ -311,10 +326,11 @@ The samba-winbind package provides developer tools for the wbclient library.
 Summary: The Samba SMB server Web configuration program
 Group: Security/Networking
 Requires: %name = %version-%release
-#Requires: %name-doc = %version-%release
+Requires: %name-doc = %version-%release
+Requires: %name-winbind-clients = %version-%release
 Requires: xinetd
-Conflicts: samba-swat < %version
-Provides: samba-swat = %version-%release
+Provides: samba4-swat = %version-%release
+Obsoletes: samba4-swat < %version-%release
 
 %description swat
 The samba-swat package includes the new SWAT (Samba Web Administration
@@ -326,8 +342,8 @@ Summary: Documentation for the Samba suite
 Group: Documentation
 Requires: %name-common = %version-%release
 BuildArch: noarch
-Conflicts: samba-doc < %version
-Provides: samba-doc = %version-%release
+Provides: samba4-doc = %version-%release
+Obsoletes: samba4-doc < %version-%release
 
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
@@ -426,6 +442,14 @@ Samba suite.
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
 (cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
+
+pushd docs-xml
+export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
+%autoreconf
+%configure
+%make_build smbdotconf/parameters.all.xml
+%make_build release
+popd
 
 %install
 %make install DESTDIR=%buildroot PERL_INSTALL_ROOT=%buildroot
@@ -901,11 +925,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %if_with libsmbclient
-%files -n libsmbclient4
+%files -n libsmbclient
 %_libdir/libsmbclient.so.*
 %_libdir/libsmbsharemodes.so.*
 
-%files -n libsmbclient4-devel
+%files -n libsmbclient-devel
 %_includedir/samba-4.0/libsmbclient.h
 %_includedir/samba-4.0/smb_share_modes.h
 %_libdir/libsmbclient.so
@@ -916,21 +940,21 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %if_with libwbclient
-%files -n libwbclient4
+%files -n libwbclient
 %_libdir/libwbclient.so.*
 %_libdir/samba/libwinbind-client.so
 
-%files -n libwbclient4-devel
+%files -n libwbclient-devel
 %_includedir/samba-4.0/wbclient.h
 %_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
 %endif
 
 %if_with libnetapi
-%files -n libnetapi4
+%files -n libnetapi
 %_libdir/libnetapi.so.*
 
-%files -n libnetapi4-devel
+%files -n libnetapi-devel
 %_libdir/libnetapi.so
 %_includedir/samba-4.0/netapi.h
 %_pkgconfigdir/netapi.pc
@@ -950,6 +974,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/swat
 %_man8dir/swat.8*
 #%attr(755,root,root) %_libdir/samba/*.msg
+
+%files doc
+%doc docs-xml/output/htmldocs
 
 %files test
 %_bindir/gentest
@@ -1013,6 +1040,7 @@ TDB_NO_FSYNC=1 %make_build test
 %changelog
 * Fri Feb 15 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.3-alt1
 - 4.0.3
+- build as default samba, replaced samba4 packages
 
 * Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt2
 - obsoletes libnetapi4,libwbclient4,libsmbclient4 by samba4-libs if build without them
