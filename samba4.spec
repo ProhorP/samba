@@ -600,12 +600,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbta-util
 %_bindir/smbtree
 %_libdir/samba/libldb-cmdline.so
-%_man1dir/nmblookup.1.gz
-%_man1dir/oLschema2ldif.1.gz
-%_man1dir/regdiff.1.gz
-%_man1dir/regpatch.1.gz
-%_man1dir/regshell.1.gz
-%_man1dir/regtree.1.gz
+%_man1dir/nmblookup.1*
+%_man1dir/oLschema2ldif.1*
+%_man1dir/regdiff.1*
+%_man1dir/regpatch.1*
+%_man1dir/regshell.1*
+%_man1dir/regtree.1*
 %exclude %_man1dir/findsmb.1*
 %_man1dir/log2pcap.1*
 %_man1dir/nmblookup4.1*
@@ -634,10 +634,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/tdbdump
 %_bindir/tdbrestore
 %_bindir/tdbtool
-%_man8dir/tdbbackup.8.gz
-%_man8dir/tdbdump.8.gz
-%_man8dir/tdbrestore.8.gz
-%_man8dir/tdbtool.8.gz
+%_man8dir/tdbbackup.8*
+%_man8dir/tdbdump.8*
+%_man8dir/tdbrestore.8*
+%_man8dir/tdbtool.8*
 %endif
 
 %if_with ldb
@@ -647,12 +647,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/ldbmodify
 %_bindir/ldbrename
 %_bindir/ldbsearch
-%_man1dir/ldbadd.1.gz
-%_man1dir/ldbdel.1.gz
-%_man1dir/ldbedit.1.gz
-%_man1dir/ldbmodify.1.gz
-%_man1dir/ldbrename.1.gz
-%_man1dir/ldbsearch.1.gz
+%_man1dir/ldbadd.1*
+%_man1dir/ldbdel.1*
+%_man1dir/ldbedit.1*
+%_man1dir/ldbmodify.1*
+%_man1dir/ldbrename.1*
+%_man1dir/ldbsearch.1*
 %endif
 
 %files common -f net.lang
@@ -710,8 +710,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/gensec
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
-%_man8dir/samba.8.gz
-%_man8dir/samba-tool.8.gz
+%_man8dir/samba.8*
+%_man8dir/samba-tool.8*
 %else
 %doc %_defaultdocdir/%name/README.dc
 %exclude %_man8dir/samba.8*
