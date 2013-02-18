@@ -259,6 +259,7 @@ libraries in the Samba suite.
 %package pidl
 Summary: Perl IDL compiler
 Group: Development/Tools
+BuildArch: noarch
 # Requires: perl(:MODULE_COMPAT_%(eval "`perl -V:version`"; echo $version))
 Provides: samba4-pidl = %version-%release
 Obsoletes: samba4-pidl < %version-%release
