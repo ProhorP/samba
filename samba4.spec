@@ -126,6 +126,8 @@ packages of Samba.
 Summary: Samba AD Domain Controller
 Group: System/Servers
 Requires: %name-dc-libs = %version-%release
+Provides: samba4-dc = %version-%release
+Obsoletes: samba4-dc < %version-%release
 
 %description dc
 The %name-dc package provides AD Domain Controller functionality
@@ -135,6 +137,8 @@ Summary: Samba AD Domain Controller Libraries
 Group: System/Libraries
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
+Provides: samba4-dc-libs = %version-%release
+Obsoletes: samba4-dc-libs < %version-%release
 
 %description dc-libs
 The %name-dc-libs package contains the libraries needed by the DC to
@@ -143,6 +147,9 @@ link against the SMB, RPC and other protocols.
 %package libs
 Summary: Samba libraries
 Group: System/Libraries
+Provides: samba4-libs = %version-%release
+Obsoletes: samba4-libs < %version-%release
+
 %if_with libnetapi
 Requires: libnetapi = %version-%release
 %else
@@ -190,6 +197,7 @@ Conflicts: samba-winbind-clients < %version
 Provides: libwbclient4 = %version-%release
 Obsoletes: libwbclient4 < %version-%release
 Conflicts: samba-winbind-clients <= 3.6.12-alt1
+Conflicts: samba4-libs < %version-%release
 
 %description -n libwbclient
 The libwbclient package contains the winbind client library from the Samba suite.
