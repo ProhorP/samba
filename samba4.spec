@@ -1061,6 +1061,9 @@ TDB_NO_FSYNC=1 %make_build test
 - build as default samba, replaced samba4 packages
 - rename pdb_ldap to pdb_ldapsam
 
+* Fri Feb 08 2013 Alexey Shabalin <shaba@altlinux.ru> 3.6.12-alt3
+- add conflict old samba-winbind-clients to libwbclient (ALT#28523)
+
 * Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt2
 - obsoletes libnetapi4,libwbclient4,libsmbclient4 by samba4-libs if build without them
 
