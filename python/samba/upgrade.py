@@ -35,6 +35,7 @@ from samba.credentials import Credentials
 from samba import dsdb
 from samba.ndr import ndr_pack
 from samba import unix2nttime
+from samba import generate_random_password
 
 
 def import_sam_policy(samdb, policy, logger):
@@ -597,7 +598,10 @@ def upgrade_from_samba3(samba3, logger, targetdir, session_info=None,
     if samba3.lp.get("passdb backend").split(":")[0].strip() == "ldapsam":
         base_dn =  samba3.lp.get("ldap suffix")
         ldapuser = samba3.lp.get("ldap admin dn")
-        ldappass = (secrets_db.get_ldap_bind_pw(ldapuser)).strip('\x00')
+        ldappass = secrets_db.get_ldap_bind_pw(ldapuser)
+        if ldappass is None:
+            raise ProvisioningError("ldapsam passdb backend detected but no LDAP Bind PW found in secrets.tdb for user %s.  Please point this tool at the secrets.tdb that was used by the previous installation.")
+        ldappass = ldappass.strip('\x00')
         ldap = True
     else:
         ldapuser = None
@@ -718,7 +722,7 @@ ACB_NORMAL (N, 0x%08X), ACB_WSTRUST (W 0x%08X), ACB_SVRTRUST (S 0x%08X) or ACB_D
 
 Please fix this account before attempting to upgrade again
 """
-                                    % (user.acct_flags, username,
+                                    % (username, user.acct_ctrl,
                                        samr.ACB_NORMAL, samr.ACB_WSTRUST, samr.ACB_SVRTRUST, samr.ACB_DOMTRUST))
 
         userdata[username] = user
@@ -829,11 +833,19 @@ Please fix this account before attempting to upgrade again
     if not (serverrole == "ROLE_DOMAIN_BDC" or serverrole == "ROLE_DOMAIN_PDC"):
         dns_backend = "NONE"
 
+    # If we found an admin user, set a fake pw that we will override.
+    # This avoids us printing out an admin password that we won't actually
+    # set.
+    if admin_user:
+        adminpass = generate_random_password(12, 32)
+    else:
+        adminpass = None
+
     # Do full provision
     result = provision(logger, session_info, None,
                        targetdir=targetdir, realm=realm, domain=domainname,
                        domainsid=str(domainsid), next_rid=next_rid,
-                       dc_rid=machinerid,
+                       dc_rid=machinerid, adminpass = adminpass,
                        dom_for_fun_level=dsdb.DS_DOMAIN_FUNCTION_2003,
                        hostname=netbiosname.lower(), machinepass=machinepass,
                        serverrole=serverrole, samdb_fill=FILL_FULL,

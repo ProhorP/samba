@@ -25,13 +25,16 @@ from samba.ndr import ndr_unpack, ndr_pack
 from samba.dcerpc import drsblobs
 from samba.common import dsdb_Dn
 from samba.dcerpc import security
+from samba.descriptor import get_wellknown_sds, get_diff_sds
+from samba.auth import system_session, admin_session
 
 
 class dbcheck(object):
     """check a SAM database for errors"""
 
     def __init__(self, samdb, samdb_schema=None, verbose=False, fix=False,
-                 yes=False, quiet=False, in_transaction=False):
+                 yes=False, quiet=False, in_transaction=False,
+                 reset_well_known_acls=False):
         self.samdb = samdb
         self.dict_oid_name = None
         self.samdb_schema = (samdb_schema or samdb)
@@ -43,6 +46,7 @@ class dbcheck(object):
         self.remove_all_empty_attributes = False
         self.fix_all_normalisation = False
         self.fix_all_DN_GUIDs = False
+        self.fix_all_binary_dn = False
         self.remove_all_deleted_DN_links = False
         self.fix_all_target_mismatch = False
         self.fix_all_metadata = False
@@ -51,16 +55,34 @@ class dbcheck(object):
         self.fix_all_orphaned_backlinks = False
         self.fix_rmd_flags = False
         self.fix_ntsecuritydescriptor = False
+        self.fix_ntsecuritydescriptor_owner_group = False
         self.seize_fsmo_role = False
         self.move_to_lost_and_found = False
         self.fix_instancetype = False
+        self.reset_well_known_acls = reset_well_known_acls
+        self.reset_all_well_known_acls = False
         self.in_transaction = in_transaction
         self.infrastructure_dn = ldb.Dn(samdb, "CN=Infrastructure," + samdb.domain_dn())
         self.naming_dn = ldb.Dn(samdb, "CN=Partitions,%s" % samdb.get_config_basedn())
         self.schema_dn = samdb.get_schema_basedn()
         self.rid_dn = ldb.Dn(samdb, "CN=RID Manager$,CN=System," + samdb.domain_dn())
-        self.ntds_dsa = samdb.get_dsServiceName()
+        self.ntds_dsa = ldb.Dn(samdb, samdb.get_dsServiceName())
         self.class_schemaIDGUID = {}
+        self.wellknown_sds = get_wellknown_sds(self.samdb)
+
+        self.name_map = {}
+        try:
+            res = samdb.search(base="CN=DnsAdmins,CN=Users,%s" % samdb.domain_dn(), scope=ldb.SCOPE_BASE,
+                           attrs=["objectSid"])
+            dnsadmins_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
+            self.name_map['DnsAdmins'] = str(dnsadmins_sid)
+        except ldb.LdbError, (enum, estr):
+            if enum != ldb.ERR_NO_SUCH_OBJECT:
+                raise
+            pass
+
+        self.system_session_info = system_session()
+        self.admin_session_info = admin_session(None, samdb.get_domain_sid())
 
         res = self.samdb.search(base=self.ntds_dsa, scope=ldb.SCOPE_BASE, attrs=['msDS-hasMasterNCs', 'hasMasterNCs'])
         if "msDS-hasMasterNCs" in res[0]:
@@ -283,6 +305,23 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
                           "Failed to fix %s on attribute %s" % (errstr, attrname)):
             self.report("Fixed %s on attribute %s" % (errstr, attrname))
 
+    def err_incorrect_binary_dn(self, dn, attrname, val, dsdb_dn, errstr):
+        """handle an incorrect binary DN component"""
+        self.report("ERROR: %s binary component for %s in object %s - %s" % (errstr, attrname, dn, val))
+        controls=["extended_dn:1:1", "show_recycled:1"]
+
+        if not self.confirm_all('Change DN to %s?' % str(dsdb_dn), 'fix_all_binary_dn'):
+            self.report("Not fixing %s" % errstr)
+            return
+        m = ldb.Message()
+        m.dn = dn
+        m['old_value'] = ldb.MessageElement(val, ldb.FLAG_MOD_DELETE, attrname)
+        m['new_value'] = ldb.MessageElement(str(dsdb_dn), ldb.FLAG_MOD_ADD, attrname)
+
+        if self.do_modify(m, ["show_recycled:1"],
+                          "Failed to fix %s on attribute %s" % (errstr, attrname)):
+            self.report("Fixed %s on attribute %s" % (errstr, attrname))
+
     def err_dn_target_mismatch(self, dn, attrname, val, dsdb_dn, correct_dn, errstr):
         """handle a DN string being incorrect"""
         self.report("ERROR: incorrect DN string component for %s in object %s - %s" % (attrname, dn, val))
@@ -449,6 +488,13 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
             guidstr = str(misc.GUID(guid))
 
             attrs = ['isDeleted']
+
+            if (str(attrname).lower() == 'msds-hasinstantiatedncs') and (obj.dn == self.ntds_dsa):
+                fixing_msDS_HasInstantiatedNCs = True
+                attrs.append("instanceType")
+            else:
+                fixing_msDS_HasInstantiatedNCs = False
+
             linkID = self.samdb_schema.get_linkId_from_lDAPDisplayName(attrname)
             reverse_link_name = self.samdb_schema.get_backlink_from_lDAPDisplayName(attrname)
             if reverse_link_name is not None:
@@ -462,6 +508,15 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
                 error_count += 1
                 self.err_incorrect_dn_GUID(obj.dn, attrname, val, dsdb_dn, "incorrect GUID")
                 continue
+
+            if fixing_msDS_HasInstantiatedNCs:
+                dsdb_dn.prefix = "B:8:%08X:" % int(res[0]['instanceType'][0])
+                dsdb_dn.binary = "%08X" % int(res[0]['instanceType'][0])
+
+                if str(dsdb_dn) != val:
+                    error_count +=1
+                    self.err_incorrect_binary_dn(obj.dn, attrname, val, dsdb_dn, "incorrect instanceType part of Binary DN")
+                    continue
 
             # now we have two cases - the source object might or might not be deleted
             is_deleted = 'isDeleted' in obj and obj['isDeleted'][0].upper() == 'TRUE'
@@ -692,8 +747,7 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
         return (sd, None)
 
     def err_wrong_sd(self, dn, sd, sd_broken):
-        '''re-write replPropertyMetaData elements for a single attribute for a
-        object. This is used to fix missing replPropertyMetaData elements'''
+        '''re-write the SD due to incorrect inherited ACEs'''
         sd_attr = "nTSecurityDescriptor"
         sd_val = ndr_pack(sd)
         sd_flags = security.SECINFO_DACL | security.SECINFO_SACL
@@ -706,8 +760,61 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
         nmsg.dn = dn
         nmsg[sd_attr] = ldb.MessageElement(sd_val, ldb.FLAG_MOD_REPLACE, sd_attr)
         if self.do_modify(nmsg, ["sd_flags:1:%d" % sd_flags],
+                          "Failed to fix attribute %s" % sd_attr):
+            self.report("Fixed attribute '%s' of '%s'\n" % (sd_attr, dn))
+
+    def err_wrong_default_sd(self, dn, sd, sd_old, diff):
+        '''re-write the SD due to not matching the default (optional mode for fixing an incorrect provision)'''
+        sd_attr = "nTSecurityDescriptor"
+        sd_val = ndr_pack(sd)
+        sd_old_val = ndr_pack(sd_old)
+        sd_flags = security.SECINFO_DACL | security.SECINFO_SACL
+        if sd.owner_sid is not None:
+            sd_flags |= security.SECINFO_OWNER
+        if sd.group_sid is not None:
+            sd_flags |= security.SECINFO_GROUP
+
+        if not self.confirm_all('Reset %s on %s back to provision default?\n%s' % (sd_attr, dn, diff), 'reset_all_well_known_acls'):
+            self.report('Not resetting %s on %s\n' % (sd_attr, dn))
+            return
+
+        m = ldb.Message()
+        m.dn = dn
+        m[sd_attr] = ldb.MessageElement(sd_val, ldb.FLAG_MOD_REPLACE, sd_attr)
+        if self.do_modify(m, ["sd_flags:1:%d" % sd_flags],
+                          "Failed to reset attribute %s" % sd_attr):
+            self.report("Fixed attribute '%s' of '%s'\n" % (sd_attr, dn))
+
+    def err_missing_sd_owner(self, dn, sd):
+        '''re-write the SD due to a missing owner or group'''
+        sd_attr = "nTSecurityDescriptor"
+        sd_val = ndr_pack(sd)
+        sd_flags = security.SECINFO_OWNER | security.SECINFO_GROUP
+
+        if not self.confirm_all('Fix missing owner or group in %s on %s?' % (sd_attr, dn), 'fix_ntsecuritydescriptor_owner_group'):
+            self.report('Not fixing missing owner or group %s on %s\n' % (sd_attr, dn))
+            return
+
+        nmsg = ldb.Message()
+        nmsg.dn = dn
+        nmsg[sd_attr] = ldb.MessageElement(sd_val, ldb.FLAG_MOD_REPLACE, sd_attr)
+
+        # By setting the session_info to admin_session_info and
+        # setting the security.SECINFO_OWNER | security.SECINFO_GROUP
+        # flags we cause the descriptor module to set the correct
+        # owner and group on the SD, replacing the None/NULL values
+        # for owner_sid and group_sid currently present.
+        #
+        # The admin_session_info matches that used in provision, and
+        # is the best guess we can make for an existing object that
+        # hasn't had something specifically set.
+        #
+        # This is important for the dns related naming contexts.
+        self.samdb.set_session_info(self.admin_session_info)
+        if self.do_modify(nmsg, ["sd_flags:1:%d" % sd_flags],
                           "Failed to fix metadata for attribute %s" % sd_attr):
             self.report("Fixed attribute '%s' of '%s'\n" % (sd_attr, dn))
+        self.samdb.set_session_info(self.system_session_info)
 
     def is_fsmo_role(self, dn):
         if dn == self.samdb.domain_dn:
@@ -740,6 +847,16 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
             instancetype |= dsdb.INSTANCE_TYPE_WRITE
 
         return instancetype
+
+    def get_wellknown_sd(self, dn):
+        for [sd_dn, descriptor_fn] in self.wellknown_sds:
+            if dn == sd_dn:
+                domain_sid = security.dom_sid(self.samdb.get_domain_sid())
+                return ndr_unpack(security.descriptor,
+                                  descriptor_fn(domain_sid,
+                                                name_map=self.name_map))
+
+        raise KeyError
 
     def check_object(self, dn, attrs=['*']):
         '''check one object'''
@@ -793,6 +910,27 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
                 if sd_broken is not None:
                     self.err_wrong_sd(dn, sd, sd_broken)
                     error_count += 1
+                    continue
+
+                if sd.owner_sid is None or sd.group_sid is None:
+                    self.err_missing_sd_owner(dn, sd)
+                    error_count += 1
+                    continue
+
+                if self.reset_well_known_acls:
+                    try:
+                        well_known_sd = self.get_wellknown_sd(dn)
+                    except KeyError:
+                        continue
+
+                    current_sd = ndr_unpack(security.descriptor,
+                                            str(obj[attrname][0]))
+
+                    diff = get_diff_sds(well_known_sd, current_sd, security.dom_sid(self.samdb.get_domain_sid()))
+                    if diff != "":
+                        self.err_wrong_default_sd(dn, well_known_sd, current_sd, diff)
+                        error_count += 1
+                        continue
                 continue
 
             if str(attrname).lower() == 'objectclass':
@@ -936,3 +1074,12 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
         m['add']    = ldb.MessageElement('NONE', ldb.FLAG_MOD_ADD, 'force_reindex')
         m['delete'] = ldb.MessageElement('NONE', ldb.FLAG_MOD_DELETE, 'force_reindex')
         return self.do_modify(m, [], 're-indexed database', validate=False)
+
+    ###############################################
+    # reset @MODULES
+    def reset_modules(self):
+        '''reset @MODULES to that needed for current sam.ldb (to read a very old database)'''
+        m = ldb.Message()
+        m.dn = ldb.Dn(self.samdb, "@MODULES")
+        m['@LIST'] = ldb.MessageElement('samba_dsdb', ldb.FLAG_MOD_REPLACE, '@LIST')
+        return self.do_modify(m, [], 'reset @MODULES on database', validate=False)

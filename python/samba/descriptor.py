@@ -28,6 +28,9 @@
 
 from samba.dcerpc import security
 from samba.ndr import ndr_pack
+from samba.schema import get_schema_descriptor
+import ldb
+import re
 
 # Descriptors of naming contexts and other important objects
 
@@ -357,3 +360,222 @@ def get_dns_domain_microsoft_dns_descriptor(domain_sid, name_map={}):
     "(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)" \
     "(A;CI;RPWPCRCCDCLCRCWOWDSDDTSW;;;ED)"
     return sddl2binary(sddl, domain_sid, name_map)
+
+def get_wellknown_sds(samdb):
+
+    # Then subcontainers
+    subcontainers = [
+        (ldb.Dn(samdb, "%s" % str(samdb.domain_dn())), get_domain_descriptor),
+        (ldb.Dn(samdb, "CN=LostAndFound,%s" % str(samdb.domain_dn())), get_domain_delete_protected2_descriptor),
+        (ldb.Dn(samdb, "CN=System,%s" % str(samdb.domain_dn())), get_domain_delete_protected1_descriptor),
+        (ldb.Dn(samdb, "CN=Infrastructure,%s" % str(samdb.domain_dn())), get_domain_infrastructure_descriptor),
+        (ldb.Dn(samdb, "CN=Builtin,%s" % str(samdb.domain_dn())), get_domain_builtin_descriptor),
+        (ldb.Dn(samdb, "CN=Computers,%s" % str(samdb.domain_dn())), get_domain_computers_descriptor),
+        (ldb.Dn(samdb, "CN=Users,%s" % str(samdb.domain_dn())), get_domain_users_descriptor),
+        (ldb.Dn(samdb, "OU=Domain Controllers,%s" % str(samdb.domain_dn())), get_domain_controllers_descriptor),
+        (ldb.Dn(samdb, "CN=MicrosoftDNS,CN=System,%s" % str(samdb.domain_dn())), get_dns_domain_microsoft_dns_descriptor),
+
+        (ldb.Dn(samdb, "%s" % str(samdb.get_config_basedn())), get_config_descriptor),
+        (ldb.Dn(samdb, "CN=NTDS Quotas,%s" % str(samdb.get_config_basedn())), get_config_ntds_quotas_descriptor),
+        (ldb.Dn(samdb, "CN=LostAndFoundConfig,%s" % str(samdb.get_config_basedn())), get_config_delete_protected1wd_descriptor),
+        (ldb.Dn(samdb, "CN=Services,%s" % str(samdb.get_config_basedn())), get_config_delete_protected1_descriptor),
+        (ldb.Dn(samdb, "CN=Physical Locations,%s" % str(samdb.get_config_basedn())), get_config_delete_protected1wd_descriptor),
+        (ldb.Dn(samdb, "CN=WellKnown Security Principals,%s" % str(samdb.get_config_basedn())), get_config_delete_protected1wd_descriptor),
+        (ldb.Dn(samdb, "CN=ForestUpdates,%s" % str(samdb.get_config_basedn())), get_config_delete_protected1wd_descriptor),
+        (ldb.Dn(samdb, "CN=DisplaySpecifiers,%s" % str(samdb.get_config_basedn())), get_config_delete_protected2_descriptor),
+        (ldb.Dn(samdb, "CN=Extended-Rights,%s" % str(samdb.get_config_basedn())), get_config_delete_protected2_descriptor),
+        (ldb.Dn(samdb, "CN=Partitions,%s" % str(samdb.get_config_basedn())), get_config_partitions_descriptor),
+        (ldb.Dn(samdb, "CN=Sites,%s" % str(samdb.get_config_basedn())), get_config_sites_descriptor),
+
+        (ldb.Dn(samdb, "%s" % str(samdb.get_schema_basedn())), get_schema_descriptor),
+    ]
+
+    current = samdb.search(expression="(objectClass=*)",
+                           base="", scope=ldb.SCOPE_BASE,
+                           attrs=["namingContexts"])
+
+    for nc in current[0]["namingContexts"]:
+
+        dnsforestdn = ldb.Dn(samdb, "DC=ForestDnsZones,%s" % (str(samdb.get_root_basedn())))
+        if ldb.Dn(samdb, nc) == dnsforestdn:
+            c = (ldb.Dn(samdb, "%s" % str(dnsforestdn)), get_dns_partition_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=Infrastructure,%s" % str(dnsforestdn)),
+                 get_domain_delete_protected1_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=LostAndFound,%s" % str(dnsforestdn)),
+                 get_domain_delete_protected2_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=MicrosoftDNS,%s" % str(dnsforestdn)),
+                 get_dns_forest_microsoft_dns_descriptor)
+            subcontainers.append(c)
+            continue
+
+        dnsdomaindn = ldb.Dn(samdb, "DC=DomainDnsZones,%s" % (str(samdb.domain_dn())))
+        if ldb.Dn(samdb, nc) == dnsdomaindn:
+            c = (ldb.Dn(samdb, "%s" % str(dnsdomaindn)), get_dns_partition_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=Infrastructure,%s" % str(dnsdomaindn)),
+                 get_domain_delete_protected1_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=LostAndFound,%s" % str(dnsdomaindn)),
+                 get_domain_delete_protected2_descriptor)
+            subcontainers.append(c)
+            c = (ldb.Dn(samdb, "CN=MicrosoftDNS,%s" % str(dnsdomaindn)),
+                 get_dns_domain_microsoft_dns_descriptor)
+            subcontainers.append(c)
+
+    return subcontainers
+
+
+def chunck_acl(acl):
+    """Return separate ACE of an ACL
+
+    :param acl: A string representing the ACL
+    :return: A hash with different parts
+    """
+
+    p = re.compile(r'(\w+)?(\(.*?\))')
+    tab = p.findall(acl)
+
+    hash = {}
+    hash["aces"] = []
+    for e in tab:
+        if len(e[0]) > 0:
+            hash["flags"] = e[0]
+        hash["aces"].append(e[1])
+
+    return hash
+
+
+def chunck_sddl(sddl):
+    """ Return separate parts of the SDDL (owner, group, ...)
+
+    :param sddl: An string containing the SDDL to chunk
+    :return: A hash with the different chunk
+    """
+
+    p = re.compile(r'([OGDS]:)(.*?)(?=(?:[GDS]:|$))')
+    tab = p.findall(sddl)
+
+    hash = {}
+    for e in tab:
+        if e[0] == "O:":
+            hash["owner"] = e[1]
+        if e[0] == "G:":
+            hash["group"] = e[1]
+        if e[0] == "D:":
+            hash["dacl"] = e[1]
+        if e[0] == "S:":
+            hash["sacl"] = e[1]
+
+    return hash
+
+
+def get_clean_sd(sd):
+    """Get the SD without any inherited ACEs
+
+    :param sd: SD to strip
+    :return: An SD with inherited ACEs stripped
+    """
+
+    sd_clean = security.descriptor()
+    sd_clean.owner_sid = sd.owner_sid
+    sd_clean.group_sid = sd.group_sid
+    sd_clean.type = sd.type
+    sd_clean.revision = sd.revision
+
+    aces = []
+    if sd.sacl is not None:
+        aces = sd.sacl.aces
+    for i in range(0, len(aces)):
+        ace = aces[i]
+
+        if not ace.flags & security.SEC_ACE_FLAG_INHERITED_ACE:
+            sd_clean.sacl_add(ace)
+            continue
+
+    aces = []
+    if sd.dacl is not None:
+        aces = sd.dacl.aces
+    for i in range(0, len(aces)):
+        ace = aces[i]
+
+        if not ace.flags & security.SEC_ACE_FLAG_INHERITED_ACE:
+            sd_clean.dacl_add(ace)
+            continue
+    return sd_clean
+
+
+def get_diff_sds(refsd, cursd, domainsid, checkSacl = True):
+    """Get the difference between 2 sd
+
+    This function split the textual representation of ACL into smaller
+    chunck in order to not to report a simple permutation as a difference
+
+    :param refsddl: First sddl to compare
+    :param cursddl: Second sddl to compare
+    :param checkSacl: If false we skip the sacl checks
+    :return: A string that explain difference between sddls
+    """
+
+    cursddl = get_clean_sd(cursd).as_sddl(domainsid)
+    refsddl = get_clean_sd(refsd).as_sddl(domainsid)
+
+    txt = ""
+    hash_cur = chunck_sddl(cursddl)
+    hash_ref = chunck_sddl(refsddl)
+
+    if not hash_cur.has_key("owner"):
+        txt = "\tNo owner in current SD"
+    elif hash_ref.has_key("owner") and hash_cur["owner"] != hash_ref["owner"]:
+        txt = "\tOwner mismatch: %s (in ref) %s" \
+              "(in current)\n" % (hash_ref["owner"], hash_cur["owner"])
+
+    if not hash_cur.has_key("group"):
+        txt = "%s\tNo group in current SD" % txt
+    elif hash_ref.has_key("group") and hash_cur["group"] != hash_ref["group"]:
+        txt = "%s\tGroup mismatch: %s (in ref) %s" \
+              "(in current)\n" % (txt, hash_ref["group"], hash_cur["group"])
+
+    parts = [ "dacl" ]
+    if checkSacl:
+        parts.append("sacl")
+    for part in parts:
+        if hash_cur.has_key(part) and hash_ref.has_key(part):
+
+            # both are present, check if they contain the same ACE
+            h_cur = set()
+            h_ref = set()
+            c_cur = chunck_acl(hash_cur[part])
+            c_ref = chunck_acl(hash_ref[part])
+
+            for elem in c_cur["aces"]:
+                h_cur.add(elem)
+
+            for elem in c_ref["aces"]:
+                h_ref.add(elem)
+
+            for k in set(h_ref):
+                if k in h_cur:
+                    h_cur.remove(k)
+                    h_ref.remove(k)
+
+            if len(h_cur) + len(h_ref) > 0:
+                txt = "%s\tPart %s is different between reference" \
+                      " and current here is the detail:\n" % (txt, part)
+
+                for item in h_cur:
+                    txt = "%s\t\t%s ACE is not present in the" \
+                          " reference\n" % (txt, item)
+
+                for item in h_ref:
+                    txt = "%s\t\t%s ACE is not present in the" \
+                          " current\n" % (txt, item)
+
+        elif hash_cur.has_key(part) and not hash_ref.has_key(part):
+            txt = "%s\tReference ACL hasn't a %s part\n" % (txt, part)
+        elif not hash_cur.has_key(part) and hash_ref.has_key(part):
+            txt = "%s\tCurrent ACL hasn't a %s part\n" % (txt, part)
+
+    return txt

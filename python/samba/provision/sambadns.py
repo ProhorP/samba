@@ -27,6 +27,7 @@ import time
 import ldb
 from base64 import b64encode
 import samba
+from samba.tdb_util import tdb_copy
 from samba.ndr import ndr_pack, ndr_unpack
 from samba import setup_file
 from samba.dcerpc import dnsp, misc, security
@@ -35,7 +36,7 @@ from samba.dsdb import (
     DS_DOMAIN_FUNCTION_2003,
     DS_DOMAIN_FUNCTION_2008_R2
     )
-from samba.provision.descriptor import (
+from samba.descriptor import (
     get_domain_descriptor,
     get_domain_delete_protected1_descriptor,
     get_domain_delete_protected2_descriptor,
@@ -738,22 +739,6 @@ def create_zone_file(lp, logger, paths, targetdir, dnsdomain,
         os.system(rndc + " unfreeze " + lp.get("realm"))
 
 
-def tdb_copy(logger, file1, file2):
-    """Copy tdb file using tdbbackup utility and rename it
-    """
-    # Find the location of tdbbackup tool
-    dirs = ["bin", samba.param.bin_dir()] + os.getenv('PATH').split(os.pathsep)
-    for d in dirs:
-        toolpath = os.path.join(d, "tdbbackup")
-        if os.path.exists(toolpath):
-            break
-    status = os.system("%s -s '.dns' %s" % (toolpath, file1))
-    if status == 0:
-        os.rename("%s.dns" % file1, file2)
-    else:
-        raise Exception("Error copying %s" % file1)
-
-
 def create_samdb_copy(samdb, logger, paths, names, domainsid, domainguid):
     """Create a copy of samdb and give write permissions to named for dns partitions
     """
@@ -816,13 +801,11 @@ def create_samdb_copy(samdb, logger, paths, names, domainsid, domainguid):
     # Copy root, config, schema partitions (and any other if any)
     # Since samdb is open in the current process, copy them in a child process
     try:
-        tdb_copy(logger,
-                 os.path.join(private_dir, "sam.ldb"),
+        tdb_copy(os.path.join(private_dir, "sam.ldb"),
                  os.path.join(dns_dir, "sam.ldb"))
         for nc in partfile:
             pfile = partfile[nc]
-            tdb_copy(logger,
-                     os.path.join(private_dir, pfile),
+            tdb_copy(os.path.join(private_dir, pfile),
                      os.path.join(dns_dir, pfile))
     except:
         logger.error(

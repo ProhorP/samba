@@ -33,7 +33,7 @@ from samba.provision import (provision_paths_from_lp,
                             getpolicypath, set_gpos_acl, create_gpo_struct,
                             FILL_FULL, provision, ProvisioningError,
                             setsysvolacl, secretsdb_self_join)
-from samba.dcerpc import xattr, drsblobs
+from samba.dcerpc import xattr, drsblobs, security
 from samba.dcerpc.misc import SEC_CHAN_BDC
 from samba.ndr import ndr_unpack
 from samba.samdb import SamDB
@@ -302,121 +302,6 @@ def identic_rename(ldbobj, dn):
     ldbobj.rename(ldb.Dn(ldbobj, "%s=foo%s" % (before, after)), dn, ["relax:0"])
 
 
-def chunck_acl(acl):
-    """Return separate ACE of an ACL
-
-    :param acl: A string representing the ACL
-    :return: A hash with different parts
-    """
-
-    p = re.compile(r'(\w+)?(\(.*?\))')
-    tab = p.findall(acl)
-
-    hash = {}
-    hash["aces"] = []
-    for e in tab:
-        if len(e[0]) > 0:
-            hash["flags"] = e[0]
-        hash["aces"].append(e[1])
-
-    return hash
-
-
-def chunck_sddl(sddl):
-    """ Return separate parts of the SDDL (owner, group, ...)
-
-    :param sddl: An string containing the SDDL to chunk
-    :return: A hash with the different chunk
-    """
-
-    p = re.compile(r'([OGDS]:)(.*?)(?=(?:[GDS]:|$))')
-    tab = p.findall(sddl)
-
-    hash = {}
-    for e in tab:
-        if e[0] == "O:":
-            hash["owner"] = e[1]
-        if e[0] == "G:":
-            hash["group"] = e[1]
-        if e[0] == "D:":
-            hash["dacl"] = e[1]
-        if e[0] == "S:":
-            hash["sacl"] = e[1]
-
-    return hash
-
-
-def get_diff_sddls(refsddl, cursddl, checkSacl = True):
-    """Get the difference between 2 sddl
-
-    This function split the textual representation of ACL into smaller
-    chunck in order to not to report a simple permutation as a difference
-
-    :param refsddl: First sddl to compare
-    :param cursddl: Second sddl to compare
-    :param checkSacl: If false we skip the sacl checks
-    :return: A string that explain difference between sddls
-    """
-
-    txt = ""
-    hash_cur = chunck_sddl(cursddl)
-    hash_ref = chunck_sddl(refsddl)
-
-    if not hash_cur.has_key("owner"):
-        txt = "\tNo owner in current SD"
-    elif hash_cur["owner"] != hash_ref["owner"]:
-        txt = "\tOwner mismatch: %s (in ref) %s" \
-              "(in current)\n" % (hash_ref["owner"], hash_cur["owner"])
-
-    if not hash_cur.has_key("group"):
-        txt = "%s\tNo group in current SD" % txt
-    elif hash_cur["group"] != hash_ref["group"]:
-        txt = "%s\tGroup mismatch: %s (in ref) %s" \
-              "(in current)\n" % (txt, hash_ref["group"], hash_cur["group"])
-
-    parts = [ "dacl" ]
-    if checkSacl:
-        parts.append("sacl")
-    for part in parts:
-        if hash_cur.has_key(part) and hash_ref.has_key(part):
-
-            # both are present, check if they contain the same ACE
-            h_cur = set()
-            h_ref = set()
-            c_cur = chunck_acl(hash_cur[part])
-            c_ref = chunck_acl(hash_ref[part])
-
-            for elem in c_cur["aces"]:
-                h_cur.add(elem)
-
-            for elem in c_ref["aces"]:
-                h_ref.add(elem)
-
-            for k in set(h_ref):
-                if k in h_cur:
-                    h_cur.remove(k)
-                    h_ref.remove(k)
-
-            if len(h_cur) + len(h_ref) > 0:
-                txt = "%s\tPart %s is different between reference" \
-                      " and current here is the detail:\n" % (txt, part)
-
-                for item in h_cur:
-                    txt = "%s\t\t%s ACE is not present in the" \
-                          " reference\n" % (txt, item)
-
-                for item in h_ref:
-                    txt = "%s\t\t%s ACE is not present in the" \
-                          " current\n" % (txt, item)
-
-        elif hash_cur.has_key(part) and not hash_ref.has_key(part):
-            txt = "%s\tReference ACL hasn't a %s part\n" % (txt, part)
-        elif not hash_cur.has_key(part) and hash_ref.has_key(part):
-            txt = "%s\tCurrent ACL hasn't a %s part\n" % (txt, part)
-
-    return txt
-
-
 def update_secrets(newsecrets_ldb, secrets_ldb, messagefunc):
     """Update secrets.ldb
 
@@ -560,32 +445,9 @@ def updateOEMInfo(samdb, rootdn):
                                                         "oEMInformation" )
         samdb.modify(delta)
 
-def update_gpo(paths, samdb, names, lp, message, force=0):
+def update_gpo(paths, samdb, names, lp, message):
     """Create missing GPO file object if needed
-
-    Set ACL correctly also.
-    Check ACLs for sysvol/netlogon dirs also
     """
-    resetacls = False
-    try:
-        ntacls.checkset_backend(lp, None, None)
-        eadbname = lp.get("posix:eadb")
-        if eadbname is not None and eadbname != "":
-            try:
-                attribute = samba.xattr_tdb.wrap_getxattr(eadbname,
-                                paths.sysvol, xattr.XATTR_NTACL_NAME)
-            except Exception:
-                attribute = samba.xattr_native.wrap_getxattr(paths.sysvol,
-                                xattr.XATTR_NTACL_NAME)
-        else:
-            attribute = samba.xattr_native.wrap_getxattr(paths.sysvol,
-                                xattr.XATTR_NTACL_NAME)
-    except Exception:
-       resetacls = True
-
-    if force:
-        resetacls = True
-
     dir = getpolicypath(paths.sysvol, names.dnsdomain, names.policyid)
     if not os.path.isdir(dir):
         create_gpo_struct(dir)
@@ -595,30 +457,6 @@ def update_gpo(paths, samdb, names, lp, message, force=0):
     dir = getpolicypath(paths.sysvol, names.dnsdomain, names.policyid_dc)
     if not os.path.isdir(dir):
         create_gpo_struct(dir)
-
-    def acl_error(e):
-        if os.geteuid() == 0:
-            message(ERROR, "Unable to set ACLs on policies related objects: %s" % e)
-        else:
-            message(ERROR, "Unable to set ACLs on policies related objects. "
-                    "ACLs must be set as root if file system ACLs "
-                    "(rather than posix:eadb) are used.")
-
-    # We always reinforce acls on GPO folder because they have to be in sync
-    # with the one in DS
-    try:
-        set_gpos_acl(paths.sysvol, names.dnsdomain, names.domainsid,
-            names.domaindn, samdb, lp)
-    except TypeError, e:
-        acl_error(e)
-
-    if resetacls:
-       try:
-            setsysvolacl(samdb, paths.netlogon, paths.sysvol, names.root_gid,
-                        names.domainsid, names.dnsdomain, names.domaindn, lp)
-       except TypeError, e:
-           acl_error(e)
-
 
 def increment_calculated_keyversion_number(samdb, rootdn, hashDns):
     """For a given hash associating dn and a number, this function will

@@ -45,7 +45,7 @@ class LDAPBase(object):
     def __init__(self, host, creds, lp,
                  two=False, quiet=False, descriptor=False, sort_aces=False, verbose=False,
                  view="section", base="", scope="SUB",
-                 outf=sys.stdout, errf=sys.stderr):
+                 outf=sys.stdout, errf=sys.stderr, skip_missing_dn=True):
         ldb_options = []
         samdb_url = host
         if not "://" in host:
@@ -71,6 +71,7 @@ class LDAPBase(object):
         self.view = view
         self.verbose = verbose
         self.host = host
+        self.skip_missing_dn = skip_missing_dn
         self.base_dn = str(self.ldb.get_default_basedn())
         self.root_dn = str(self.ldb.get_root_basedn())
         self.config_dn = str(self.ldb.get_config_basedn())
@@ -79,7 +80,6 @@ class LDAPBase(object):
         self.server_names = self.find_servers()
         self.domain_name = re.sub("[Dd][Cc]=", "", self.base_dn).replace(",", ".")
         self.domain_sid = self.find_domain_sid()
-        self.get_guid_map()
         self.get_sid_map()
         #
         # Log some domain controller specific place-holers that are being used
@@ -249,20 +249,6 @@ class LDAPBase(object):
         assert index == len(blob)
         return res.strip().replace(" ", "-")
 
-    def get_guid_map(self):
-        """ Build dictionary that maps GUID to 'name' attribute found in Schema or Extended-Rights.
-        """
-        self.guid_map = {}
-        res = self.ldb.search(base=self.schema_dn,
-                              expression="(schemaIdGuid=*)", scope=SCOPE_SUBTREE, attrs=["schemaIdGuid", "name"])
-        for item in res:
-            self.guid_map[self.guid_as_string(item["schemaIdGuid"]).lower()] = item["name"][0]
-        #
-        res = self.ldb.search(base="cn=extended-rights,%s" % self.config_dn,
-                              expression="(rightsGuid=*)", scope=SCOPE_SUBTREE, attrs=["rightsGuid", "name"])
-        for item in res:
-            self.guid_map[str(item["rightsGuid"]).lower()] = item["name"][0]
-
     def get_sid_map(self):
         """ Build dictionary that maps GUID to 'name' attribute found in Schema or Extended-Rights.
         """
@@ -298,22 +284,6 @@ class Descriptor(object):
             return []
         return re.findall("(\(.*?\))", res)
 
-    def fix_guid(self, ace):
-        res = "%s" % ace
-        guids = re.findall("[a-z0-9]+?-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+", res)
-        # If there are not GUIDs to replace return the same ACE
-        if len(guids) == 0:
-            return res
-        for guid in guids:
-            try:
-                name = self.con.guid_map[guid.lower()]
-                res = res.replace(guid, name)
-            except KeyError:
-                # Do not bother if the GUID is not found in
-                # cn=Schema or cn=Extended-Rights
-                pass
-        return res
-
     def fix_sid(self, ace):
         res = "%s" % ace
         sids = re.findall("S-[-0-9]+", res)
@@ -327,14 +297,6 @@ class Descriptor(object):
             except KeyError:
                 # Do not bother if the SID is not found in baseDN
                 pass
-        return res
-
-    def fixit(self, ace):
-        """ Combine all replacement methods in one
-        """
-        res = "%s" % ace
-        res = self.fix_guid(res)
-        res = self.fix_sid(res)
         return res
 
     def diff_1(self, other):
@@ -360,8 +322,8 @@ class Descriptor(object):
                 other_ace = ""
             if len(self_ace) + len(other_ace) == 0:
                 break
-            self_ace_fixed = "%s" % self.fixit(self_ace)
-            other_ace_fixed = "%s" % other.fixit(other_ace)
+            self_ace_fixed = "%s" % self.fix_sid(self_ace)
+            other_ace_fixed = "%s" % other.fix_sid(other_ace)
             if self_ace_fixed != other_ace_fixed:
                 res += "%60s * %s\n" % ( self_ace_fixed, other_ace_fixed )
                 flag = False
@@ -382,8 +344,8 @@ class Descriptor(object):
         other_aces = []
         self_dacl_list_fixed = []
         other_dacl_list_fixed = []
-        [self_dacl_list_fixed.append( self.fixit(ace) ) for ace in self.dacl_list]
-        [other_dacl_list_fixed.append( other.fixit(ace) ) for ace in other.dacl_list]
+        [self_dacl_list_fixed.append( self.fix_sid(ace) ) for ace in self.dacl_list]
+        [other_dacl_list_fixed.append( other.fix_sid(ace) ) for ace in other.dacl_list]
         for ace in self_dacl_list_fixed:
             try:
                 other_dacl_list_fixed.index(ace)
@@ -686,6 +648,7 @@ class LDAPBundel(object):
         self.verbose = self.con.verbose
         self.search_base = self.con.search_base
         self.search_scope = self.con.search_scope
+        self.skip_missing_dn = self.con.skip_missing_dn
         self.summary = {}
         self.summary["unique_attrs"] = []
         self.summary["df_value_attrs"] = []
@@ -729,7 +692,8 @@ class LDAPBundel(object):
         res = True
         if self.size != other.size:
             self.log( "\n* DN lists have different size: %s != %s" % (self.size, other.size) )
-            res = False
+            if not self.skip_missing_dn:
+                res = False
         #
         # This is the case where we want to explicitly compare two objects with different DNs.
         # It does not matter if they are in the same DC, in two DC in one domain or in two
@@ -738,7 +702,7 @@ class LDAPBundel(object):
             title= "\n* DNs found only in %s:" % self.con.host
             for x in self.dn_list:
                 if not x.upper() in [q.upper() for q in other.dn_list]:
-                    if title:
+                    if title and not self.skip_missing_dn:
                         self.log( title )
                         title = None
                         res = False
@@ -749,7 +713,7 @@ class LDAPBundel(object):
             title= "\n* DNs found only in %s:" % other.con.host
             for x in other.dn_list:
                 if not x.upper() in [q.upper() for q in self.dn_list]:
-                    if title:
+                    if title and not self.skip_missing_dn:
                         self.log( title )
                         title = None
                         res = False
@@ -879,7 +843,7 @@ class cmd_ldapcmp(Command):
         "credopts": options.CredentialsOptionsDouble,
     }
 
-    takes_args = ["URL1", "URL2", "context1?", "context2?", "context3?"]
+    takes_args = ["URL1", "URL2", "context1?", "context2?", "context3?", "context4?", "context5?"]
 
     takes_options = [
         Option("-w", "--two", dest="two", action="store_true", default=False,
@@ -902,13 +866,15 @@ class cmd_ldapcmp(Command):
             help="Pass search scope that builds DN list. Options: SUB, ONE, BASE"),
         Option("--filter", dest="filter", default="",
             help="List of comma separated attributes to ignore in the comparision"),
+        Option("--skip-missing-dn", dest="skip_missing_dn", action="store_true", default=False,
+            help="Skip report and failure due to missing DNs in one server or another"),
         ]
 
     def run(self, URL1, URL2,
-            context1=None, context2=None, context3=None,
+            context1=None, context2=None, context3=None, context4=None, context5=None,
             two=False, quiet=False, verbose=False, descriptor=False, sort_aces=False,
             view="section", base="", base2="", scope="SUB", filter="",
-            credopts=None, sambaopts=None, versionopts=None):
+            credopts=None, sambaopts=None, versionopts=None, skip_missing_dn=False):
 
         lp = sambaopts.get_loadparm()
 
@@ -936,9 +902,9 @@ class cmd_ldapcmp(Command):
                 contexts = ["DOMAIN"]
             else:
                 # if no argument given, we compare all contexts
-                contexts = ["DOMAIN", "CONFIGURATION", "SCHEMA"]
+                contexts = ["DOMAIN", "CONFIGURATION", "SCHEMA", "DNSDOMAIN", "DNSFOREST"]
         else:
-            for c in [context1, context2, context3]:
+            for c in [context1, context2, context3, context4, context5]:
                 if c is None:
                     continue
                 if not c.upper() in ["DOMAIN", "CONFIGURATION", "SCHEMA", "DNSDOMAIN", "DNSFOREST"]:
