@@ -25,7 +25,7 @@
 %endif
 
 Name: samba
-Version: 4.0.4
+Version: 4.0.5
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1059,6 +1059,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Tue Apr 09 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.5-alt1
+- 4.0.5
+
 * Tue Mar 19 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.4-alt1
 - 4.0.4 (fixed CVE-2013-186)
 - add /var/cache/samba to samba-common package (ALT#28601)
