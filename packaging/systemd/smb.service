@@ -7,7 +7,7 @@ Type=forking
 PIDFile=/run/smbd.pid
 LimitNOFILE=16384
 EnvironmentFile=-/etc/sysconfig/samba
-ExecStart=/usr/sbin/smbd $SMBDOPTIONS
+ExecStart=/usr/sbin/smbd -D $SMBDOPTIONS
 ExecReload=/usr/bin/kill -HUP $MAINPID
 
 [Install]
