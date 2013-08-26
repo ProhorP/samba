@@ -45,7 +45,6 @@ Source8: winbind.init
 Source9: smb.conf.default
 Source10: nmb.init
 Source11: pam_winbind.conf
-Source12: samba.conf.tmp
 
 Source200: README.dc
 Source201: README.downgrade
@@ -495,8 +494,6 @@ install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/
 install -m644 %SOURCE2 %buildroot%_sysconfdir/xinetd.d/swat
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 
-mkdir -p %buildroot/lib/tmpfiles.d/
-install -m644 %SOURCE12 %buildroot/lib/tmpfiles.d/samba.conf
 
 install -m644 packaging/systemd/samba.sysconfig %buildroot%_sysconfdir/sysconfig/samba
 install -m644 packaging/RHEL/setup/smbusers %buildroot%_sysconfdir/samba/smbusers
@@ -517,6 +514,9 @@ for i in nmb smb winbind ; do
     cat packaging/systemd/$i.service | sed -e 's@Type=forking@Type=forking\nEnvironment=KRB5CCNAME=/run/samba/krb5cc_samba@g' >tmp$i.service
     install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
 done
+
+mkdir -p %buildroot/lib/tmpfiles.d/
+install -m644 packaging/systemd/samba.conf.tmp %buildroot/lib/tmpfiles.d/samba.conf
 
 # NetworkManager online/offline script
 install -d -m 0755 %buildroot%_sysconfdir/NetworkManager/dispatcher.d/
