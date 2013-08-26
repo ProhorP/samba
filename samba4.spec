@@ -38,7 +38,6 @@ Source: %name-%version.tar
 Source1: samba.log
 Source2: samba.xinetd
 Source3: swat.desktop
-Source4: samba.sysconfig
 Source5: smb.init
 Source6: samba.pamd
 Source8: winbind.init
