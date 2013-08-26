@@ -612,6 +612,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbprint
 %_bindir/smbspool
 %_bindir/smbta-util
+%_bindir/smbtar
 %_bindir/smbtree
 %{cups_serverbin}/backend/smb
 %_libdir/samba/libldb-cmdline.so
