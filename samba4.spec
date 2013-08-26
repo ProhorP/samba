@@ -481,7 +481,7 @@ mkdir -p %buildroot%_pkgconfigdir
 mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig,xinetd.d}
-
+mkdir -p %buildroot/lib/tmpfiles.d
 
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
@@ -510,12 +510,9 @@ install -m 644 %SOURCE200 %buildroot%_defaultdocdir/%name/README.dc
 install -m 644 %SOURCE200 %buildroot%_defaultdocdir/%name/README.dc-libs
 %endif
 
-for i in nmb smb winbind ; do
-    cat packaging/systemd/$i.service | sed -e 's@Type=forking@Type=forking\nEnvironment=KRB5CCNAME=/run/samba/krb5cc_samba@g' >tmp$i.service
-    install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
-done
-
-mkdir -p %buildroot/lib/tmpfiles.d/
+install -m644 packaging/systemd/nmb.service %buildroot%_unitdir/nmb.service
+install -m644 packaging/systemd/smb.service %buildroot%_unitdir/smb.service
+install -m644 packaging/systemd/winbind.service %buildroot%_unitdir/winbind.service
 install -m644 packaging/systemd/samba.conf.tmp %buildroot/lib/tmpfiles.d/samba.conf
 
 # NetworkManager online/offline script
