@@ -39,7 +39,7 @@ RETVAL=0
 start() {
         KIND="NMB"
 	echo -n $"Starting $KIND services: "
-	start_daemon nmbd $NMBDOPTIONS
+	start_daemon nmbd -D $NMBDOPTIONS
 	RETVAL=$?
 	echo
 	[ $RETVAL -eq 0 ] && touch /var/lock/subsys/nmb || \

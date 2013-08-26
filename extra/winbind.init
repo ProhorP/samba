@@ -30,7 +30,7 @@ RETVAL=0
 start() {
         KIND="Winbind"
 	echo -n $"Starting $KIND services: "
-	start_daemon winbindd "$WINBINDOPTIONS"
+	start_daemon winbindd -D "$WINBINDOPTIONS"
 	RETVAL=$?
 	echo
 	[ $RETVAL -eq 0 ] && touch /var/lock/subsys/winbindd || RETVAL=1

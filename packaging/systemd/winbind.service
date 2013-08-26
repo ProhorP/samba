@@ -7,7 +7,7 @@ Type=forking
 Environment=KRB5CCNAME=/run/samba/krb5cc_samba
 PIDFile=/run/winbindd.pid
 EnvironmentFile=-/etc/sysconfig/samba
-ExecStart=/usr/sbin/winbindd "$WINBINDOPTIONS"
+ExecStart=/usr/sbin/winbindd -D $WINBINDOPTIONS
 ExecReload=/usr/bin/kill -HUP $MAINPID
 
 [Install]

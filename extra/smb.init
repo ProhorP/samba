@@ -39,7 +39,7 @@ RETVAL=0
 start() {
         KIND="SMB"
 	echo -n $"Starting $KIND services: "
-	start_daemon smbd $SMBDOPTIONS
+	start_daemon smbd -D $SMBDOPTIONS
 	RETVAL=$?
 	echo
 	[ $RETVAL -eq 0 ] && touch /var/lock/subsys/smb || \
