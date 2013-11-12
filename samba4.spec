@@ -26,7 +26,7 @@
 
 Name: samba
 Version: 4.0.11
-Release: alt1
+Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1056,6 +1056,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Tue Nov 12 2013 Andrey Cherepanov <cas@altlinux.org> 4.0.11-alt0.M70P.1
+- Backport to p7 branch (ALT #29443)
+
 * Tue Nov 12 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.11-alt1
 - 4.0.11
 - fixed CVE-2013-4475, CVE-2013-4476
