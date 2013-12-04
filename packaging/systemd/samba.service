@@ -4,6 +4,7 @@ After=syslog.target network.target
 
 [Service]
 Type=forking
+Environment=KRB5CCNAME=/run/samba/krb5cc_samba
 PIDFile=/run/samba.pid
 LimitNOFILE=16384
 EnvironmentFile=-/etc/sysconfig/samba

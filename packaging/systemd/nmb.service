@@ -4,6 +4,7 @@ After=syslog.target network.target
 
 [Service]
 Type=forking
+Environment=KRB5CCNAME=/run/samba/krb5cc_samba
 PIDFile=/run/nmbd.pid
 EnvironmentFile=-/etc/sysconfig/samba
 ExecStart=/usr/sbin/nmbd -D $NMBDOPTIONS
