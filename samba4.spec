@@ -25,7 +25,7 @@
 %endif
 
 Name: samba
-Version: 4.0.13
+Version: 4.0.16
 Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1056,6 +1056,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Thu Mar 27 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.16-alt0.M70P.1
+- New version with security fixes CVE-2013-4496, CVE-2013-6442
+
 * Tue Dec 10 2013 Andrey Cherepanov <cas@altlinux.org> 4.0.13-alt0.M70P.1
 - New version with security fixes CVE-2013-4408, CVE-2012-6150
 
