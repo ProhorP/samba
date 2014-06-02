@@ -25,7 +25,7 @@
 %endif
 
 Name: samba
-Version: 4.0.16
+Version: 4.0.18
 Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1056,6 +1056,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Jun 02 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.18-alt0.M70P.1
+- This bugfix release addressed two minor security issues involving not
+  replying to replies, and with malformed FSCTL_SRV_ENUMERATE_SNAPSHOTS responses.
+
 * Thu Mar 27 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.16-alt0.M70P.1
 - New version with security fixes CVE-2013-4496, CVE-2013-6442
 
