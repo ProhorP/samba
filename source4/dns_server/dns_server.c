@@ -153,6 +153,12 @@ static struct tevent_req *dns_process_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 
+	if (state->in_packet.operation & DNS_FLAG_REPLY) {
+		DEBUG(1, ("Won't reply to replies.\n"));
+		tevent_req_werror(req, WERR_INVALID_PARAM);
+		return tevent_req_post(req, ev);
+	}
+
 	state->state.flags = state->in_packet.operation;
 	state->state.flags |= DNS_FLAG_REPLY;
 
@@ -650,7 +656,7 @@ static NTSTATUS dns_add_socket(struct dns_server *dns,
 /*
   setup our listening sockets on the configured network interfaces
 */
-static NTSTATUS dns_startup_interfaces(struct dns_server *dns, struct loadparm_context *lp_ctx,
+static NTSTATUS dns_startup_interfaces(struct dns_server *dns,
 				       struct interface *ifaces)
 {
 	const struct model_ops *model_ops;
@@ -680,8 +686,8 @@ static NTSTATUS dns_startup_interfaces(struct dns_server *dns, struct loadparm_c
 			NT_STATUS_NOT_OK_RETURN(status);
 		}
 	} else {
-		const char **wcard;
-		wcard = iface_list_wildcard(tmp_ctx, lp_ctx);
+		char **wcard;
+		wcard = iface_list_wildcard(tmp_ctx);
 		if (wcard == NULL) {
 			DEBUG(0, ("No wildcard address available\n"));
 			return NT_STATUS_INTERNAL_ERROR;
@@ -884,7 +890,7 @@ static void dns_task_init(struct task_server *task)
 		DLIST_ADD_END(dns->zones, z, NULL);
 	}
 
-	status = dns_startup_interfaces(dns, task->lp_ctx, ifaces);
+	status = dns_startup_interfaces(dns, ifaces);
 	if (!NT_STATUS_IS_OK(status)) {
 		task_server_terminate(task, "dns failed to setup interfaces", true);
 		return;

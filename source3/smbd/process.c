@@ -153,6 +153,13 @@ bool srv_send_smb(struct smbd_server_connection *sconn, char *buffer,
 	ssize_t ret;
 	char *buf_out = buffer;
 
+	if (!NT_STATUS_IS_OK(sconn->status)) {
+		/*
+		 * we're not supposed to do any io
+		 */
+		return true;
+	}
+
 	smbd_lock_socket(sconn);
 
 	if (do_signing) {
@@ -238,7 +245,7 @@ static bool valid_packet_size(size_t len)
 	 * of header. Don't print the error if this fits.... JRA.
 	 */
 
-	if (len > (BUFFER_SIZE + LARGE_WRITEX_HDR_SIZE)) {
+	if (len > (LARGE_WRITEX_BUFFER_SIZE + LARGE_WRITEX_HDR_SIZE)) {
 		DEBUG(0,("Invalid packet length! (%lu bytes).\n",
 					(unsigned long)len));
 		return false;
@@ -2441,11 +2448,20 @@ static void smbd_server_connection_handler(struct event_context *ev,
 	struct smbd_server_connection *conn = talloc_get_type(private_data,
 					      struct smbd_server_connection);
 
-	if (flags & EVENT_FD_WRITE) {
+	if (!NT_STATUS_IS_OK(conn->status)) {
+		/*
+		 * we're not supposed to do any io
+		 */
+		TEVENT_FD_NOT_READABLE(conn->smb1.fde);
+		TEVENT_FD_NOT_WRITEABLE(conn->smb1.fde);
+		return;
+	}
+
+	if (flags & TEVENT_FD_WRITE) {
 		smbd_server_connection_write_handler(conn);
 		return;
 	}
-	if (flags & EVENT_FD_READ) {
+	if (flags & TEVENT_FD_READ) {
 		smbd_server_connection_read_handler(conn, conn->sock);
 		return;
 	}
@@ -2459,11 +2475,20 @@ static void smbd_server_echo_handler(struct event_context *ev,
 	struct smbd_server_connection *conn = talloc_get_type(private_data,
 					      struct smbd_server_connection);
 
-	if (flags & EVENT_FD_WRITE) {
+	if (!NT_STATUS_IS_OK(conn->status)) {
+		/*
+		 * we're not supposed to do any io
+		 */
+		TEVENT_FD_NOT_READABLE(conn->smb1.echo_handler.trusted_fde);
+		TEVENT_FD_NOT_WRITEABLE(conn->smb1.echo_handler.trusted_fde);
+		return;
+	}
+
+	if (flags & TEVENT_FD_WRITE) {
 		smbd_server_connection_write_handler(conn);
 		return;
 	}
-	if (flags & EVENT_FD_READ) {
+	if (flags & TEVENT_FD_READ) {
 		smbd_server_connection_read_handler(
 			conn, conn->smb1.echo_handler.trusted_fd);
 		return;
@@ -2474,19 +2499,43 @@ static void smbd_server_echo_handler(struct event_context *ev,
 
 struct smbd_release_ip_state {
 	struct smbd_server_connection *sconn;
+	struct tevent_immediate *im;
 	char addr[INET6_ADDRSTRLEN];
 };
+
+static void smbd_release_ip_immediate(struct tevent_context *ctx,
+				      struct tevent_immediate *im,
+				      void *private_data)
+{
+	struct smbd_release_ip_state *state =
+		talloc_get_type_abort(private_data,
+		struct smbd_release_ip_state);
+
+	if (!NT_STATUS_EQUAL(state->sconn->status, NT_STATUS_ADDRESS_CLOSED)) {
+		/*
+		 * smbd_server_connection_terminate() already triggered ?
+		 */
+		return;
+	}
+
+	smbd_server_connection_terminate(state->sconn, "CTDB_SRVID_RELEASE_IP");
+}
 
 /****************************************************************************
 received when we should release a specific IP
 ****************************************************************************/
-static void release_ip(const char *ip, void *priv)
+static bool release_ip(const char *ip, void *priv)
 {
 	struct smbd_release_ip_state *state =
 		talloc_get_type_abort(priv,
 		struct smbd_release_ip_state);
 	const char *addr = state->addr;
 	const char *p = addr;
+
+	if (!NT_STATUS_IS_OK(state->sconn->status)) {
+		/* avoid recursion */
+		return false;
+	}
 
 	if (strncmp("::ffff:", addr, 7) == 0) {
 		p = addr + 7;
@@ -2514,11 +2563,22 @@ static void release_ip(const char *ip, void *priv)
 		 * triggered and has implication on our process model,
 		 * we can just use smbd_server_connection_terminate()
 		 * (also for SMB1).
+		 *
+		 * We don't call smbd_server_connection_terminate() directly
+		 * as we might be called from within ctdbd_migrate(),
+		 * we need to defer our action to the next event loop
 		 */
-		smbd_server_connection_terminate(state->sconn,
-						 "CTDB_SRVID_RELEASE_IP");
-		return;
+		tevent_schedule_immediate(state->im, state->sconn->ev_ctx,
+					  smbd_release_ip_immediate, state);
+
+		/*
+		 * Make sure we don't get any io on the connection.
+		 */
+		state->sconn->status = NT_STATUS_ADDRESS_CLOSED;
+		return true;
 	}
+
+	return false;
 }
 
 static NTSTATUS smbd_register_ips(struct smbd_server_connection *sconn,
@@ -2538,6 +2598,10 @@ static NTSTATUS smbd_register_ips(struct smbd_server_connection *sconn,
 		return NT_STATUS_NO_MEMORY;
 	}
 	state->sconn = sconn;
+	state->im = tevent_create_immediate(state);
+	if (state->im == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
 	if (print_sockaddr(state->addr, sizeof(state->addr), srv) == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -3302,6 +3366,7 @@ void smbd_process(struct tevent_context *ev_ctx,
 	const char *remaddr = NULL;
 	char *rhost;
 	int ret;
+	int tmp;
 
 	conn = talloc_zero(ev_ctx, struct smbXsrv_connection);
 	if (conn == NULL) {
@@ -3589,10 +3654,14 @@ void smbd_process(struct tevent_context *ev_ctx,
 
 	sconn->nbt.got_session = false;
 
-	sconn->smb1.negprot.max_recv = MIN(lp_max_xmit(),BUFFER_SIZE);
+	tmp = lp_max_xmit();
+	tmp = MAX(tmp, SMB_BUFFER_SIZE_MIN);
+	tmp = MIN(tmp, SMB_BUFFER_SIZE_MAX);
+
+	sconn->smb1.negprot.max_recv = tmp;
 
 	sconn->smb1.sessions.done_sesssetup = false;
-	sconn->smb1.sessions.max_send = BUFFER_SIZE;
+	sconn->smb1.sessions.max_send = SMB_BUFFER_SIZE_MAX;
 
 	if (!init_dptrs(sconn)) {
 		exit_server("init_dptrs() failed");

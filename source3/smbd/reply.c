@@ -1697,11 +1697,10 @@ void reply_search(struct smb_request *req)
 		}
 	} else {
 		unsigned int i;
-		maxentries = MIN(
-			maxentries,
-			((BUFFER_SIZE -
-			  ((uint8 *)smb_buf(req->outbuf) + 3 - req->outbuf))
-			 /DIR_STRUCT_SIZE));
+		size_t hdr_size = ((uint8_t *)smb_buf(req->outbuf) + 3 - req->outbuf);
+		size_t available_space = sconn->smb1.sessions.max_send - hdr_size;
+
+		maxentries = MIN(maxentries, available_space/DIR_STRUCT_SIZE);
 
 		DEBUG(8,("dirpath=<%s> dontdescend=<%s>\n",
 			 directory,lp_dontdescend(ctx, SNUM(conn))));
@@ -2917,9 +2916,10 @@ NTSTATUS unlink_internals(connection_struct *conn, struct smb_request *req,
 
 			status = do_unlink(conn, req, smb_fname, dirtype);
 			if (!NT_STATUS_IS_OK(status)) {
+				TALLOC_FREE(dir_hnd);
 				TALLOC_FREE(frame);
 				TALLOC_FREE(talloced);
-				continue;
+				goto out;
 			}
 
 			count++;
@@ -3469,6 +3469,7 @@ void reply_lockread(struct smb_request *req)
 	char *data;
 	off_t startpos;
 	size_t numtoread;
+	size_t maxtoread;
 	NTSTATUS status;
 	files_struct *fsp;
 	struct byte_range_lock *br_lck = NULL;
@@ -3499,18 +3500,12 @@ void reply_lockread(struct smb_request *req)
 	numtoread = SVAL(req->vwv+1, 0);
 	startpos = IVAL_TO_SMB_OFF_T(req->vwv+2, 0);
 
-	numtoread = MIN(BUFFER_SIZE - (smb_size + 3*2 + 3), numtoread);
-
-	reply_outbuf(req, 5, numtoread + 3);
-
-	data = smb_buf(req->outbuf) + 3;
-
 	/*
 	 * NB. Discovered by Menny Hamburger at Mainsoft. This is a core+
 	 * protocol request that predates the read/write lock concept. 
 	 * Thus instead of asking for a read lock here we need to ask
 	 * for a write lock. JRA.
-	 * Note that the requested lock size is unaffected by max_recv.
+	 * Note that the requested lock size is unaffected by max_send.
 	 */
 
 	br_lck = do_lock(req->sconn->msg_ctx,
@@ -3533,16 +3528,22 @@ void reply_lockread(struct smb_request *req)
 	}
 
 	/*
-	 * However the requested READ size IS affected by max_recv. Insanity.... JRA.
+	 * However the requested READ size IS affected by max_send. Insanity.... JRA.
 	 */
+	maxtoread = sconn->smb1.sessions.max_send - (smb_size + 5*2 + 3);
 
-	if (numtoread > sconn->smb1.negprot.max_recv) {
-		DEBUG(0,("reply_lockread: requested read size (%u) is greater than maximum allowed (%u). \
+	if (numtoread > maxtoread) {
+		DEBUG(0,("reply_lockread: requested read size (%u) is greater than maximum allowed (%u/%u). \
 Returning short read of maximum allowed for compatibility with Windows 2000.\n",
-			(unsigned int)numtoread,
-			(unsigned int)sconn->smb1.negprot.max_recv));
-		numtoread = MIN(numtoread, sconn->smb1.negprot.max_recv);
+			(unsigned int)numtoread, (unsigned int)maxtoread,
+			(unsigned int)sconn->smb1.sessions.max_send));
+		numtoread = maxtoread;
 	}
+
+	reply_outbuf(req, 5, numtoread + 3);
+
+	data = smb_buf(req->outbuf) + 3;
+
 	nread = read_file(fsp,data,startpos,numtoread);
 
 	if (nread < 0) {
@@ -3577,10 +3578,10 @@ void reply_read(struct smb_request *req)
 {
 	connection_struct *conn = req->conn;
 	size_t numtoread;
+	size_t maxtoread;
 	ssize_t nread = 0;
 	char *data;
 	off_t startpos;
-	int outsize = 0;
 	files_struct *fsp;
 	struct lock_struct lock;
 	struct smbd_server_connection *sconn = req->sconn;
@@ -3609,17 +3610,17 @@ void reply_read(struct smb_request *req)
 	numtoread = SVAL(req->vwv+1, 0);
 	startpos = IVAL_TO_SMB_OFF_T(req->vwv+2, 0);
 
-	numtoread = MIN(BUFFER_SIZE-outsize,numtoread);
-
 	/*
-	 * The requested read size cannot be greater than max_recv. JRA.
+	 * The requested read size cannot be greater than max_send. JRA.
 	 */
-	if (numtoread > sconn->smb1.negprot.max_recv) {
-		DEBUG(0,("reply_read: requested read size (%u) is greater than maximum allowed (%u). \
+	maxtoread = sconn->smb1.sessions.max_send - (smb_size + 5*2 + 3);
+
+	if (numtoread > maxtoread) {
+		DEBUG(0,("reply_read: requested read size (%u) is greater than maximum allowed (%u/%u). \
 Returning short read of maximum allowed for compatibility with Windows 2000.\n",
-			(unsigned int)numtoread,
-			(unsigned int)sconn->smb1.negprot.max_recv));
-		numtoread = MIN(numtoread, sconn->smb1.negprot.max_recv);
+			(unsigned int)numtoread, (unsigned int)maxtoread,
+			(unsigned int)sconn->smb1.sessions.max_send));
+		numtoread = maxtoread;
 	}
 
 	reply_outbuf(req, 5, numtoread+3);
@@ -5193,7 +5194,7 @@ void reply_writeclose(struct smb_request *req)
 	mtime = convert_time_t_to_timespec(srv_make_unix_date3(req->vwv+4));
 	data = (const char *)req->buf + 1;
 
-	if (!fsp->print_file) {
+	if (fsp->print_file == NULL) {
 		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
 		    (uint64_t)startpos, (uint64_t)numtowrite, WRITE_LOCK,
 		    &lock);
@@ -5207,6 +5208,10 @@ void reply_writeclose(struct smb_request *req)
 
 	nwritten = write_file(req,fsp,data,startpos,numtowrite);
 
+	if (fsp->print_file == NULL) {
+		SMB_VFS_STRICT_UNLOCK(conn, fsp, &lock);
+	}
+
 	set_close_write_time(fsp, mtime);
 
 	/*
@@ -5214,34 +5219,32 @@ void reply_writeclose(struct smb_request *req)
 	 * JRA.
 	 */
 
+	DEBUG(3,("writeclose %s num=%d wrote=%d (numopen=%d)\n",
+		fsp_fnum_dbg(fsp), (int)numtowrite, (int)nwritten,
+		(numtowrite) ? conn->num_files_open - 1 : conn->num_files_open));
+
 	if (numtowrite) {
 		DEBUG(3,("reply_writeclose: zero length write doesn't close "
 			 "file %s\n", fsp_str_dbg(fsp)));
 		close_status = close_file(req, fsp, NORMAL_CLOSE);
+		fsp = NULL;
 	}
-
-	DEBUG(3,("writeclose %s num=%d wrote=%d (numopen=%d)\n",
-		 fsp_fnum_dbg(fsp), (int)numtowrite, (int)nwritten,
-		 conn->num_files_open));
 
 	if(((nwritten == 0) && (numtowrite != 0))||(nwritten < 0)) {
 		reply_nterror(req, NT_STATUS_DISK_FULL);
-		goto strict_unlock;
+		goto out;
 	}
 
 	if(!NT_STATUS_IS_OK(close_status)) {
 		reply_nterror(req, close_status);
-		goto strict_unlock;
+		goto out;
 	}
 
 	reply_outbuf(req, 1, 0);
 
 	SSVAL(req->outbuf,smb_vwv0,nwritten);
 
-strict_unlock:
-	if (numtowrite && !fsp->print_file) {
-		SMB_VFS_STRICT_UNLOCK(conn, fsp, &lock);
-	}
+out:
 
 	END_PROFILE(SMBwriteclose);
 	return;

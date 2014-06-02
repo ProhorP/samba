@@ -495,8 +495,15 @@ NTSTATUS create_conn_struct(TALLOC_CTX *ctx,
 			    connection_struct **pconn,
 			    int snum,
 			    const char *path,
-			    const struct auth_session_info *session_info,
-			    char **poldcwd);
+			    const struct auth_session_info *session_info);
+NTSTATUS create_conn_struct_cwd(TALLOC_CTX *ctx,
+				struct tevent_context *ev,
+				struct messaging_context *msg,
+				connection_struct **pconn,
+				int snum,
+				const char *path,
+				const struct auth_session_info *session_info,
+				char **poldcwd);
 
 /* The following definitions come from smbd/negprot.c  */
 
@@ -619,9 +626,6 @@ bool is_stat_open(uint32 access_mask);
 void remove_deferred_open_entry(struct file_id id, uint64_t mid,
 				struct server_id pid);
 bool is_deferred_open_async(const void *ptr);
-NTSTATUS open_file_fchmod(connection_struct *conn,
-			  struct smb_filename *smb_fname,
-			  files_struct **result);
 NTSTATUS create_directory(connection_struct *conn, struct smb_request *req,
 			  struct smb_filename *smb_dname);
 void msg_file_was_renamed(struct messaging_context *msg,

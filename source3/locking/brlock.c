@@ -1526,11 +1526,17 @@ void brl_close_fnum(struct messaging_context *msg_ctx,
 bool brl_mark_disconnected(struct files_struct *fsp)
 {
 	uint32_t tid = fsp->conn->cnum;
-	uint64_t smblctx = fsp->op->global->open_persistent_id;
+	uint64_t smblctx;
 	uint64_t fnum = fsp->fnum;
 	unsigned int i;
 	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
 	struct byte_range_lock *br_lck = NULL;
+
+	if (fsp->op == NULL) {
+		return false;
+	}
+
+	smblctx = fsp->op->global->open_persistent_id;
 
 	if (!fsp->op->global->durable) {
 		return false;
@@ -1586,11 +1592,17 @@ bool brl_mark_disconnected(struct files_struct *fsp)
 bool brl_reconnect_disconnected(struct files_struct *fsp)
 {
 	uint32_t tid = fsp->conn->cnum;
-	uint64_t smblctx = fsp->op->global->open_persistent_id;
+	uint64_t smblctx;
 	uint64_t fnum = fsp->fnum;
 	unsigned int i;
 	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
 	struct byte_range_lock *br_lck = NULL;
+
+	if (fsp->op == NULL) {
+		return false;
+	}
+
+	smblctx = fsp->op->global->open_persistent_id;
 
 	if (!fsp->op->global->durable) {
 		return false;
@@ -1774,7 +1786,7 @@ static int brl_traverse_fn(struct db_record *rec, void *state)
 	/* In a traverse function we must make a copy of
 	   dbuf before modifying it. */
 
-	locks = (struct lock_struct *)memdup(value.dptr, value.dsize);
+	locks = (struct lock_struct *)smb_memdup(value.dptr, value.dsize);
 	if (!locks) {
 		return -1; /* Terminate traversal. */
 	}
@@ -1862,12 +1874,14 @@ static void byte_range_lock_flush(struct byte_range_lock *br_lck)
 	}
 
 	if (br_lck->num_locks == 0) {
-		/* No locks - delete this entry. */
-		NTSTATUS status = dbwrap_record_delete(br_lck->record);
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("delete_rec returned %s\n",
-				  nt_errstr(status)));
-			smb_panic("Could not delete byte range lock entry");
+		if (br_lck->record) {
+			/* No locks and the record existed - delete this entry. */
+			NTSTATUS status = dbwrap_record_delete(br_lck->record);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(0, ("delete_rec returned %s\n",
+					  nt_errstr(status)));
+				smb_panic("Could not delete byte range lock entry");
+			}
 		}
 	} else {
 		TDB_DATA data;
@@ -1932,7 +1946,12 @@ static struct byte_range_lock *brl_get_locks_internal(TALLOC_CTX *mem_ctx,
 	if (do_read_only) {
 		NTSTATUS status;
 		status = dbwrap_fetch(brlock_db, br_lck, key, &data);
-		if (!NT_STATUS_IS_OK(status)) {
+		if (NT_STATUS_EQUAL(status,NT_STATUS_NOT_FOUND)) {
+			/*
+			 * No locks on this file. data should be empty.
+			 */
+			ZERO_STRUCT(data);
+		} else if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(3, ("Could not fetch byte range lock record\n"));
 			TALLOC_FREE(br_lck);
 			return NULL;
@@ -1942,12 +1961,15 @@ static struct byte_range_lock *brl_get_locks_internal(TALLOC_CTX *mem_ctx,
 		br_lck->record = dbwrap_fetch_locked(brlock_db, br_lck, key);
 
 		if (br_lck->record == NULL) {
-			DEBUG(3, ("Could not lock byte range lock entry\n"));
-			TALLOC_FREE(br_lck);
-			return NULL;
+			/*
+			 * We're going to assume this means no locks on
+			 * the file, not a talloc fail. If it was a talloc
+			 * fail we'll just have to die elsewhere.
+			 */
+			ZERO_STRUCT(data);
+		} else {
+			data = dbwrap_record_get_value(br_lck->record);
 		}
-
-		data = dbwrap_record_get_value(br_lck->record);
 	}
 
 	br_lck->read_only = do_read_only;
