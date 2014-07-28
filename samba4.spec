@@ -641,7 +641,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbtar
 %_bindir/smbtree
 %{cups_serverbin}/backend/smb
-%_libdir/samba/libldb-cmdline.so
 %_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
@@ -700,6 +699,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man1dir/ldbmodify.1*
 %_man1dir/ldbrename.1*
 %_man1dir/ldbsearch.1*
+%_libdir/samba/libldb-cmdline.so
 %endif
 
 %files common -f net.lang
