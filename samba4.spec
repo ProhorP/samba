@@ -25,8 +25,8 @@
 %endif
 
 Name: samba
-Version: 4.0.18
-Release: alt0.M70P.1
+Version: 4.0.21
+Release: alt0.M70T.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1056,6 +1056,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
+- 4.0.21
+  + fixes CVE-2014-3560 (remote code execution as root via nmbd)
+
 * Mon Jun 02 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.18-alt0.M70P.1
 - This bugfix release addressed two minor security issues involving not
   replying to replies, and with malformed FSCTL_SRV_ENUMERATE_SNAPSHOTS responses.
