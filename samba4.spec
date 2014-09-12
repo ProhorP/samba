@@ -24,6 +24,11 @@
 %def_with dc
 %endif
 
+%if_with dc
+# Samba Active Directory Domain Controller implementation is not available with MIT Kereberos
+%def_without mitkrb5
+%endif
+
 Name: samba
 Version: 4.0.21
 Release: alt0.M70T.1
