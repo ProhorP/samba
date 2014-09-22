@@ -882,6 +882,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libdbwrap.so
 %_libdir/samba/libdcerpc-samba.so
 %_libdir/samba/libdcerpc-samba4.so
+%_libdir/samba/libdnsserver_common.so
 %_libdir/samba/liberrors.so
 %_libdir/samba/libevents.so
 %_libdir/samba/libflag_mapping.so
