@@ -13,7 +13,7 @@
 %def_with libnetapi
 %def_without pam_smbpass
 
-%def_without dc
+%def_with dc
 %def_with clustering_support
 %def_without testsuite
 
