@@ -32,7 +32,7 @@
 
 Name: samba
 Version: 4.0.21
-Release: alt0.M70T.1
+Release: alt1.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1069,6 +1069,14 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Thu Sep 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.1
+- Build in DC mode
+- Fix mitkrb5 support with and without DC mode
+- Build on all available cores. Increase build and install verbosity
+- Add setproctitle support
+- Set verbosity level of make by VERBOSE option (-v, -vv or -vvv)
+- Remove missing upgradeprovision programm
+
 * Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
 - 4.0.21
   + fixes CVE-2014-3560 (remote code execution as root via nmbd)
