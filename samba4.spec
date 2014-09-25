@@ -459,7 +459,8 @@ Samba suite.
 %endif
 	--disable-ntdb
 
-%make_build
+[ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
+%make_build NPROCS=%__nprocs
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
