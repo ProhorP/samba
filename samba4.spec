@@ -13,7 +13,6 @@
 %def_with libnetapi
 %def_without pam_smbpass
 
-%def_with mitkrb5
 %def_without dc
 %def_with clustering_support
 %def_without testsuite
@@ -22,6 +21,13 @@
 # The testsuite only works with a full build right now.
 %def_without mitkrb5
 %def_with dc
+%endif
+
+%if_with dc
+# Samba Active Directory Domain Controller implementation is not available with MIT Kereberos
+%def_without mitkrb5
+%else
+%def_with mitkrb5
 %endif
 
 Name: samba
@@ -72,7 +78,11 @@ BuildRequires: libpopt-devel
 BuildRequires: zlib-devel
 
 BuildRequires: libiniparser-devel
-BuildRequires: libkrb5-devel libssl-devel libcups-devel
+%if_with mitkrb5
+BuildRequires: libssl-devel
+BuildRequires: libkrb5-devel
+%endif
+BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
@@ -410,9 +420,10 @@ Samba suite.
 
 %define _samba4_private_libraries %{_libsmbclient}%{_libwbclient}%{_libnetapi}
 
-
 %undefine _configure_gettext
+%if_with mitkrb5
 %add_optflags -I/usr/include/krb5
+%endif
 %configure \
 	--enable-fhs \
 	--with-piddir=/var/run \
@@ -430,11 +441,11 @@ Samba suite.
 	--with-pam \
 	--with-ads \
 	--private-libraries=%_samba4_private_libraries \
-%if_with mitkrb5
-	--with-system-mitkrb5 \
-%endif
 %if_without dc
 	--without-ad-dc \
+	--with-system-mitkrb5 \
+%else
+	--with-ads \
 %endif
 %if_with clustering_support
 	--with-cluster-support \
