@@ -76,6 +76,8 @@ BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
 BuildRequires: libpopt-devel
 BuildRequires: zlib-devel
+# https://bugzilla.samba.org/show_bug.cgi?id=9863
+BuildConflicts: setproctitle-devel
 
 BuildRequires: libiniparser-devel
 %if_with mitkrb5
