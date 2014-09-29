@@ -134,19 +134,13 @@ Group: System/Libraries
 Conflicts: %rname-libs
 
 %if_with libnetapi
-Requires: libnetapi = %version-%release
-%else
-Obsoletes: libnetapi4 < %version-%release
+Requires: libnetapi-dc = %version-%release
 %endif
 %if_with libwbclient
-Requires: libwbclient = %version-%release
-%else
-Obsoletes: libwbclient4 < %version-%release
+Requires: libwbclient-dc = %version-%release
 %endif
 %if_with libsmbclient
-Requires: libsmbclient = %version-%release
-%else
-Obsoletes: libsmbclient4 < %version-%release
+Requires: libsmbclient-dc = %version-%release
 %endif
 
 %description libs
