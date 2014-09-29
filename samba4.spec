@@ -31,7 +31,7 @@
 %def_with mitkrb5
 %endif
 
-Name: samba-dc
+Name: samba-DC
 Version: 4.0.21
 Release: alt1.M70P.1
 Group: System/Servers
@@ -59,9 +59,10 @@ Source201: README.downgrade
 Patch: %rname-%version-%release.patch
 
 Conflicts: %rname
+Conflicts: %rname-dc
 
-Requires: %rname-winbind-clients = %version-%release
-Requires(pre): %rname-common = %version-%release
+Requires: %name-winbind-clients = %version-%release
+Requires(pre): %name-common = %version-%release
 
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
@@ -103,10 +104,10 @@ Samba is the standard Windows interoperability suite of programs for Linux and U
 %package client
 Summary: Samba client programs
 Group: Networking/Other
-Requires: %rname-common = %version-%release
-Requires: %rname-libs = %version-%release
+Requires: %name-common = %version-%release
+Requires: %name-libs = %version-%release
 %if_with libsmbclient
-Requires: libsmbclient4 = %version-%release
+Requires: libsmbclient-DC = %version-%release
 %endif
 Conflicts: %rname-client
 
@@ -118,9 +119,9 @@ of SMB/CIFS shares and printing to SMB/CIFS printers.
 %package common
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
-Requires: %rname-libs = %version-%release
+Requires: %name-libs = %version-%release
 %if_with libnetapi
-Requires: libnetapi = %version-%release
+Requires: libnetapi-DC = %version-%release
 %endif
 Conflicts: %rname-common
 
@@ -132,71 +133,72 @@ packages of Samba.
 Summary: Samba libraries
 Group: System/Libraries
 Conflicts: %rname-libs
+Conflicts: %rname-dc-libs
 
 %if_with libnetapi
-Requires: libnetapi-dc = %version-%release
+Requires: libnetapi-DC = %version-%release
 %endif
 %if_with libwbclient
-Requires: libwbclient-dc = %version-%release
+Requires: libwbclient-DC = %version-%release
 %endif
 %if_with libsmbclient
-Requires: libsmbclient-dc = %version-%release
+Requires: libsmbclient-DC = %version-%release
 %endif
 
 %description libs
 The %rname-libs package contains the libraries needed by programs that
 link against the SMB, RPC and other protocols provided by the Samba suite.
 
-%package -n libsmbclient-dc
+%package -n libsmbclient-DC
 Summary: The SMB client library
 Group: System/Libraries
 Conflicts: libsmbclient
 
-%description -n libsmbclient-dc
+%description -n libsmbclient-DC
 The libsmbclient contains the SMB client library from the Samba suite.
 
-%package -n libsmbclient-dc-devel
+%package -n libsmbclient-DC-devel
 Summary: Developer tools for the SMB client library
 Group: Development/C
-Requires: libsmbclient-dc = %version-%release
+Requires: libsmbclient-DC = %version-%release
 Conflicts: libsmbclient-devel
 
-%description -n libsmbclient-dc-devel
+%description -n libsmbclient-DC-devel
 The libsmbclient-devel package contains the header files and libraries needed to
 develop programs that link against the SMB client library in the Samba suite.
 
-%package -n libwbclient-dc
+%package -n libwbclient-DC
 Summary: The winbind client library
 Group: System/Libraries
 Conflicts: libwbclient
 
-%description -n libwbclient-dc
+%description -n libwbclient-DC
 The libwbclient package contains the winbind client library from the Samba suite.
 
-%package -n libwbclient-dc-devel
+%package -n libwbclient-DC-devel
 Summary: Developer tools for the winbind library
 Group: Development/C
-Requires: libwbclient-dc = %version-%release
+Requires: libwbclient-DC = %version-%release
 Conflicts: libwbclient-devel
 
-%description -n libwbclient-dc-devel
+%description -n libwbclient-DC-devel
 The libwbclient-devel package provides developer tools for the wbclient library.
 
-%package -n libnetapi-dc
+%package -n libnetapi-DC
 Summary: Samba netapi library
 Group: System/Libraries
 Conflicts: libnetapi
 
-%description -n libnetapi-dc
+%description -n libnetapi-DC
 Samba netapi library
 
-%package -n libnetapi-dc-devel
+%package -n libnetapi-DC-devel
 Summary: Samba netapi development files
 Group: Development/Other
-Requires: libnetapi-dc = %version-%release
+Requires: libnetapi-DC = %version-%release
 Conflicts: libnetapi-devel
 
-%description -n libnetapi-dc-devel
+%description -n libnetapi-DC-devel
 Samba netapi development files
 
 %package -n python-module-%name
@@ -249,7 +251,7 @@ Summary: Samba winbind clients
 Group: System/Servers
 Requires: %name-winbind = %version-%release
 %if_with libwbclient
-Requires: libwbclient-dc = %version-%release
+Requires: libwbclient-DC = %version-%release
 %endif
 Conflicts: %rname-winbind-clients
 
@@ -364,7 +366,7 @@ Samba suite.
 	--with-ads \
 	--private-libraries=%_samba4_private_libraries \
 %if_without dc
-	--without-ad-dc \
+	--without-ad-DC \
 	--with-system-mitkrb5 \
 %else
 	--with-ads \
@@ -879,11 +881,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %if_with libsmbclient
-%files -n libsmbclient-dc
+%files -n libsmbclient-DC
 %_libdir/libsmbclient.so.*
 %_libdir/libsmbsharemodes.so.*
 
-%files -n libsmbclient-dc-devel
+%files -n libsmbclient-DC-devel
 %_includedir/samba-4.0/libsmbclient.h
 %_includedir/samba-4.0/smb_share_modes.h
 %_libdir/libsmbclient.so
@@ -894,21 +896,21 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %if_with libwbclient
-%files -n libwbclient-dc
+%files -n libwbclient-DC
 %_libdir/libwbclient.so.*
 %_libdir/samba/libwinbind-client.so
 
-%files -n libwbclient-dc-devel
+%files -n libwbclient-DC-devel
 %_includedir/samba-4.0/wbclient.h
 %_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
 %endif
 
 %if_with libnetapi
-%files -n libnetapi-dc
+%files -n libnetapi-DC
 %_libdir/libnetapi.so.*
 
-%files -n libnetapi-dc-devel
+%files -n libnetapi-DC-devel
 %_libdir/libnetapi.so
 %_includedir/samba-4.0/netapi.h
 %_pkgconfigdir/netapi.pc
@@ -971,7 +973,7 @@ TDB_NO_FSYNC=1 %make_build test
 - Remove missing upgradeprovision programm
 - Add initscript for samba
 - Add dlz_bind9_9.so
-- Rename to samba-dc conflicted by ordinary samba
+- Rename to samba-DC conflicted by ordinary samba
 
 * Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
 - 4.0.21
