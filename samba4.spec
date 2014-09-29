@@ -51,6 +51,7 @@ Source8: winbind.init
 Source9: smb.conf.default
 Source10: nmb.init
 Source11: pam_winbind.conf
+Source12: samba.init
 
 Source200: README.dc
 Source201: README.downgrade
@@ -439,6 +440,9 @@ install -m644 packaging/RHEL/setup/smbusers %buildroot%_sysconfdir/samba/smbuser
 install -m755 %SOURCE10 %buildroot%_initrddir/nmb
 install -m755 %SOURCE5 %buildroot%_initrddir/smb
 install -m755 %SOURCE8 %buildroot%_initrddir/winbind
+%if_with dc
+install -m755 %SOURCE12 %buildroot%_initrddir/samba
+%endif
 
 install -d -m 755 %buildroot%_defaultdocdir/%rname
 install -m 644 %SOURCE201 %buildroot%_defaultdocdir/%rname/README.downgrade
@@ -535,6 +539,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libdsdb-module.so
 
 %if_with dc
+%attr(755,root,root) %_initdir/samba
 %_bindir/samba-tool
 %_sbindir/samba
 %_sbindir/samba_kcc
