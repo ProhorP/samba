@@ -543,6 +543,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/samba_upgradedns
 %_libdir/mit_samba.so
 %_libdir/samba/bind9/dlz_bind9.so
+%_libdir/samba/bind9/dlz_bind9_9.so
 %_libdir/samba/libheimntlm-samba4.so.1
 %_libdir/samba/libheimntlm-samba4.so.1.0.1
 %_libdir/samba/libkdc-samba4.so.2
