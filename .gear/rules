@@ -1,4 +1,4 @@
-tar: samba-@version@:. name=@name@-@version@
-diff: samba-@version@:. .
+tar: samba-@version@:. name=samba-@version@
+diff: samba-@version@:. . name=samba-@version@-@release@.patch
 copy: extra/*
 
