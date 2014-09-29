@@ -968,13 +968,16 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
-* Thu Sep 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.1
+* Mon Sep 29 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.1
 - Build in DC mode
 - Fix mitkrb5 support with and without DC mode
 - Build on all available cores. Increase build and install verbosity
 - Add setproctitle support
 - Set verbosity level of make by VERBOSE option (-v, -vv or -vvv)
 - Remove missing upgradeprovision programm
+- Add initscript for samba
+- Add dlz_bind9_9.so
+- Rename to samba-dc conflicted by ordinary samba
 
 * Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
 - 4.0.21
