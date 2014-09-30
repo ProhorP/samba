@@ -478,8 +478,11 @@ mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/li
 mkdir -p %buildroot%{cups_serverbin}/backend
 ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 
-# Fix up permission on perl install.
+#6.qa3 Fix up permission on perl install.
 %_fixperms %buildroot%perl_vendor_privlib
+
+# remove tests form python modules
+rm -rf %buidroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
 %find_lang pam_winbind
 %find_lang net
