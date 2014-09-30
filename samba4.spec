@@ -64,6 +64,9 @@ Conflicts: %rname-dc
 Requires: %name-winbind-clients = %version-%release
 Requires(pre): %name-common = %version-%release
 
+# Need for samba_upgradedns
+Requires: tdb-utils
+
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
 BuildRequires: libaio-devel
@@ -977,6 +980,7 @@ TDB_NO_FSYNC=1 %make_build test
 - Add initscript for samba
 - Add dlz_bind9_9.so
 - Rename to samba-DC conflicted by ordinary samba
+- Add tdb-utils for samba_upgradedns program
 
 * Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
 - 4.0.21
