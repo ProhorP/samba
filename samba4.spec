@@ -20,8 +20,7 @@
 
 %if_with testsuite
 # The testsuite only works with a full build right now.
-%def_without mitkrb5
-%def_with dc
+%force_with dc
 %endif
 
 %if_with dc
@@ -33,7 +32,7 @@
 
 Name: samba-DC
 Version: 4.0.21
-Release: alt1.M70P.1
+Release: alt1.M70P.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -369,7 +368,7 @@ Samba suite.
 	--with-ads \
 	--private-libraries=%_samba4_private_libraries \
 %if_without dc
-	--without-ad-DC \
+	--without-ad-dc \
 	--with-system-mitkrb5 \
 %else
 	--with-ads \
@@ -485,7 +484,7 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 %_fixperms %buildroot%perl_vendor_privlib
 
 # remove tests form python modules
-rm -rf %buidroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
+rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
 %find_lang pam_winbind
 %find_lang net
@@ -970,6 +969,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Fri Oct 10 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.2
+- Fix typo to build without DC
+- Use %%force_with to really set flag for tests
+
 * Mon Sep 29 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.1
 - Build in DC mode
 - Fix mitkrb5 support with and without DC mode
