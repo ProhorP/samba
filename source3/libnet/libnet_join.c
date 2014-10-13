@@ -449,10 +449,25 @@ static ADS_STATUS libnet_join_set_machine_upn(TALLOC_CTX *mem_ctx,
 	}
 
 	if (!r->in.upn) {
+		const char *realm = r->out.dns_domain_name;
+
+		/* in case we are about to generate a keytab during the join
+		 * make sure the default upn we create is usable with kinit -k.
+		 * gd */
+
+		if (USE_KERBEROS_KEYTAB) {
+			realm = talloc_strdup_upper(mem_ctx,
+						    r->out.dns_domain_name);
+		}
+
+		if (!realm) {
+			return ADS_ERROR(LDAP_NO_MEMORY);
+		}
+
 		r->in.upn = talloc_asprintf(mem_ctx,
 					    "host/%s@%s",
 					    r->in.machine_name,
-					    r->out.dns_domain_name);
+					    realm);
 		if (!r->in.upn) {
 			return ADS_ERROR(LDAP_NO_MEMORY);
 		}
@@ -863,6 +878,7 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 	struct samr_Ids name_types;
 	union samr_UserInfo user_info;
 	struct dcerpc_binding_handle *b = NULL;
+	unsigned int old_timeout = 0;
 
 	DATA_BLOB session_key = data_blob_null;
 	struct samr_CryptPassword crypt_pwd;
@@ -1095,6 +1111,12 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 
 	/* Set password on machine account - first try level 26 */
 
+	/*
+	 * increase the timeout as password filter modules on the DC
+	 * might delay the operation for a significant amount of time
+	 */
+	old_timeout = rpccli_set_timeout(pipe_hnd, 600000);
+
 	init_samr_CryptPasswordEx(r->in.machine_password,
 				  &session_key,
 				  &crypt_pwd_ex);
@@ -1125,6 +1147,8 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 						  &user_info,
 						  &result);
 	}
+
+	old_timeout = rpccli_set_timeout(pipe_hnd, old_timeout);
 
 	if (!NT_STATUS_IS_OK(status)) {
 

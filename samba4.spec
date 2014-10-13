@@ -5,8 +5,10 @@
 %def_without talloc
 %def_without tevent
 %def_without tdb
+%def_without ntdb
 %def_without ldb
-%def_with ntdb
+
+%def_with profiling_data
 
 # build as separate package
 %def_with libsmbclient
@@ -30,9 +32,13 @@
 %def_with mitkrb5
 %endif
 
+%def_with systemd
+%def_enable avahi
+
 Name: samba-DC
-Version: 4.0.21
-Release: alt1.M70P.2
+Version: 4.1.11
+Release: alt1.M70P.1
+
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -42,8 +48,6 @@ Source: %rname-%version.tar
 
 # Red Hat specific replacement-files
 Source1: samba.log
-Source2: samba.xinetd
-Source3: swat.desktop
 Source5: smb.init
 Source6: samba.pamd
 Source8: winbind.init
@@ -80,8 +84,6 @@ BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
 BuildRequires: libpopt-devel
 BuildRequires: zlib-devel
-# https://bugzilla.samba.org/show_bug.cgi?id=9863
-BuildConflicts: setproctitle-devel
 
 BuildRequires: libiniparser-devel
 %if_with mitkrb5
@@ -89,15 +91,21 @@ BuildRequires: libssl-devel
 BuildRequires: libkrb5-devel
 %endif
 BuildRequires: libcups-devel
+BuildRequires: glibc-devel glibc-kernheaders
+# https://bugzilla.samba.org/show_bug.cgi?id=9863
+BuildConflicts: setproctitle-devel
+BuildRequires: libiniparser-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.18 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
-%{?_without_tdb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
+%{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-
+%{?_with_systemd:BuildRequires: systemd-devel}
+%{?_enable_avahi:BuildRequires: libavahi-devel}
 BuildRequires: perl-Perl4-CoreLibs
 
 %description
@@ -236,6 +244,33 @@ Conflicts: %rname-pidl
 The %rname-pidl package contains the Perl IDL compiler used by Samba
 and Wireshark to parse IDL and similar protocols
 
+%package test
+Summary: Testing tools for Samba servers and clients
+Group: Development/Tools
+Requires: %name = %version-%release
+Requires: %name-common = %version-%release
+Requires: %name = %version-%release
+Requires: %name-libs = %version-%release
+Requires: %name-winbind = %version-%release
+%if_with libsmbclient
+Requires: libsmbclient-DC = %version-%release
+%endif
+Conflicts: %rname-test
+
+%description test
+samba4-test provides testing tools for both the server and client
+packages of Samba.
+
+%package test-devel
+Summary: Testing devel files for Samba servers and clients
+Group: Development/C
+Requires: %name-test = %version-%release
+Conflicts: %rname-test-devel
+
+%description test-devel
+samba-test-devel provides testing devel files for both the server and client
+packages of Samba.
+
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
@@ -261,6 +296,21 @@ Conflicts: %rname-winbind-clients
 The samba-winbind-clients package provides the NSS library and a PAM
 module necessary to communicate to the Winbind Daemon
 
+%package winbind-krb5-locator
+Summary: Samba winbind krb5 locator
+Group: System/Servers
+%if_with libwbclient
+Requires: libwbclient-DC = %version-%release
+Requires: %name-winbind = %version-%release
+%else
+Requires: %name-libs = %version-%release
+%endif
+Conflicts: %rname-winbind-krb5-locator
+
+%description winbind-krb5-locator
+The winbind krb5 locator is a plugin for the system kerberos library to allow
+the local kerberos library to use the same KDC as samba and winbind use
+
 %package winbind-devel
 Summary: Developer tools for the winbind library
 Group: Development/Other
@@ -269,20 +319,6 @@ Conflicts: %rname-winbind-devel
 
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
-
-%package swat
-Summary: The Samba SMB server Web configuration program
-Group: Security/Networking
-Requires: %name = %version-%release
-Requires: %name-doc = %version-%release
-Requires: %name-winbind-clients = %version-%release
-Requires: xinetd
-Conflicts: %rname-swat
-
-%description swat
-The samba-swat package includes the new SWAT (Samba Web Administration
-Tool), for remotely managing Samba's smb.conf file using your favorite
-Web browser.
 
 %package doc
 Summary: Documentation for the Samba suite
@@ -316,12 +352,17 @@ Samba suite.
 %define _tdb_lib ,!tdb,!pytdb
 %endif
 
+%define _ntdb_lib ,ntdb,pyntdb
+%if_without ntdb
+%define _ntdb_lib ,!ntdb,!pyntdb
+%endif
+
 %define _ldb_lib ,ldb,pyldb
 %if_without ldb
 %define _ldb_lib ,!ldb,!pyldb
 %endif
 
-%define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ldb_lib}
+%define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ntdb_lib}%{_ldb_lib}
 
 %define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2
 %define _samba4_pdb_modules pdb_tdbsam,pdb_ldap,pdb_ads,pdb_smbpasswd,pdb_wbc_sam,pdb_samba4
@@ -350,6 +391,7 @@ Samba suite.
 %if_with mitkrb5
 %add_optflags -I/usr/include/krb5
 %endif
+LDFLAGS="-Wl,-z,relro,-z,now" \
 %configure \
 	--enable-fhs \
 	--with-piddir=/var/run \
@@ -359,19 +401,22 @@ Samba suite.
 	--with-lockdir=%_localstatedir/lib/samba \
 	--with-cachedir=%_localstatedir/cache/samba \
 	--with-privatedir=/var/lib/samba/private \
-	--disable-gnutls \
-	--disable-rpath-install \
 	--with-shared-modules=%_samba4_modules \
-	--builtin-libraries=ccan \
 	--bundled-libraries=%_samba4_libraries \
 	--with-pam \
 	--with-ads \
+	--without-fam \
 	--private-libraries=%_samba4_private_libraries \
+%if_with mitkrb5
+	--with-system-mitkrb5 \
+%endif
 %if_without dc
 	--without-ad-dc \
-	--with-system-mitkrb5 \
+%endif
+%if_with systemd
+	--with-systemd \
 %else
-	--with-ads \
+	--without-systemd \
 %endif
 %if_with clustering_support
 	--with-cluster-support \
@@ -383,7 +428,12 @@ Samba suite.
 %if_with testsuite
 	--enable-selftest \
 %endif
-	--disable-ntdb
+%if_with profiling_data
+	--with-profiling-data \
+%endif
+	%{subst_enable avahi} \
+	--disable-gnutls \
+	--disable-rpath-install
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs
@@ -411,13 +461,12 @@ mkdir -p %buildroot%_localstatedir/cache/samba
 mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol}
 mkdir -p %buildroot/var/log/samba/old
 mkdir -p %buildroot/var/spool/samba
-mkdir -p %buildroot%_datadir/swat/using_samba
 mkdir -p %buildroot/var/run/{samba,winbindd}
 mkdir -p %buildroot%_libdir/samba
 mkdir -p %buildroot%_pkgconfigdir
 mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
-mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig,xinetd.d}
+mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 mkdir -p %buildroot/lib/tmpfiles.d
 
 # Install other stuff
@@ -428,7 +477,6 @@ install -m644 %SOURCE6 %buildroot%_sysconfdir/pam.d/samba
 echo 127.0.0.1 localhost > %buildroot%_sysconfdir/samba/lmhosts
 mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
-install -m644 %SOURCE2 %buildroot%_sysconfdir/xinetd.d/swat
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 
 
@@ -472,15 +520,15 @@ ln -sf /%_lib/libnss_winbind.so.2  %buildroot%_libdir/libnss_winbind.so
 mv  %buildroot%_libdir/libnss_wins.so.2 %buildroot/%_lib/libnss_wins.so.2
 ln -sf /%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
 
-mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
-mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
+mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
 
 #cups backend
 %define cups_serverbin %(cups-config --serverbin 2>/dev/null)
 mkdir -p %buildroot%{cups_serverbin}/backend
 ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 
-#6.qa3 Fix up permission on perl install.
+# Fix up permission on perl install.
 %_fixperms %buildroot%perl_vendor_privlib
 
 # remove tests form python modules
@@ -566,7 +614,6 @@ TDB_NO_FSYNC=1 %make_build test
 %exclude %_man8dir/samba-tool.8*
 %endif
 
-
 %files client
 %_bindir/cifsdd
 %_bindir/dbwrap_tool
@@ -574,6 +621,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/nmblookup4
 %_bindir/oLschema2ldif
 %_bindir/regdiff
+%_bindir/samba-regedit
 %_bindir/regpatch
 %_bindir/regshell
 %_bindir/regtree
@@ -592,11 +640,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbtar
 %_bindir/smbtree
 %{cups_serverbin}/backend/smb
-%_libdir/samba/libldb-cmdline.so
 %_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
 %_man1dir/regdiff.1*
+%_man8dir/samba-regedit.8*
 %_man1dir/regpatch.1*
 %_man1dir/regshell.1*
 %_man1dir/regtree.1*
@@ -616,13 +664,17 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/smbspool.8*
 %_man8dir/smbta-util.8*
 
-## we don't build it for now
-#%%if_with ntdb
-#%_bindir/ntdbbackup
-#%_bindir/ntdbdump
-#%_bindir/ntdbrestore
-#%_bindir/ntdbtool
-#%%endif
+%if_with ntdb
+%_bindir/ntdbbackup
+%_bindir/ntdbdump
+%_bindir/ntdbrestore
+%_bindir/ntdbtool
+%_man3dir/ntdb.3*
+%_man8dir/ntdbbackup.8*
+%_man8dir/ntdbdump.8*
+%_man8dir/ntdbrestore.8*
+%_man8dir/ntdbtool.8*
+%endif
 %if_with tdb
 %_bindir/tdbbackup
 %_bindir/tdbdump
@@ -647,6 +699,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man1dir/ldbmodify.1*
 %_man1dir/ldbrename.1*
 %_man1dir/ldbsearch.1*
+%_libdir/samba/libldb-cmdline.so
 %endif
 
 %files common -f net.lang
@@ -771,6 +824,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libauth_sam_reply.so
 %_libdir/samba/libauth_unix_token.so
 %_libdir/samba/libauthkrb5.so
+%_libdir/samba/libccan.so
 %_libdir/samba/libcli-ldap-common.so
 %_libdir/samba/libcli-ldap.so
 %_libdir/samba/libcli-nbt.so
@@ -801,6 +855,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libndr-samba4.so
 %_libdir/samba/libnet_keytab.so
 %_libdir/samba/libnetif.so
+%_libdir/samba/libnon_posix_acls.so
 %_libdir/samba/libnpa_tstream.so
 %_libdir/samba/libprinting_migrate.so
 %_libdir/samba/libreplace.so
@@ -824,7 +879,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libtdb_compat.so
 %_libdir/samba/libtrusts_util.so
 %_libdir/samba/libutil_cmdline.so
-#%_libdir/samba/libutil_ntdb.so
+%_libdir/samba/libutil_ntdb.so
 %_libdir/samba/libutil_reg.so
 %_libdir/samba/libutil_setid.so
 %_libdir/samba/libutil_tdb.so
@@ -854,7 +909,6 @@ TDB_NO_FSYNC=1 %make_build test
 %doc %_defaultdocdir/%rname/README.dc-libs
 %endif
 
-
 %if_with ldb
 %_libdir/samba/libldb.so.*
 %_libdir/samba/libpyldb-util.so.*
@@ -869,10 +923,9 @@ TDB_NO_FSYNC=1 %make_build test
 %if_with tdb
 %_libdir/samba/libtdb.so.*
 %endif
-## we don't build it for now
-#%%if_with ntdb
-#%_libdir/samba/libntdb.so.*
-#%%endif
+%if_with ntdb
+%_libdir/samba/libntdb.so.*
+%endif
 %if_without libsmbclient
 %_libdir/samba/libsmbclient.so.*
 %_libdir/samba/libsmbsharemodes.so.*
@@ -928,29 +981,49 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n python-module-%name
 %python_sitelibdir/*
 
-%files swat
-%config(noreplace) %_sysconfdir/xinetd.d/swat
-%config(noreplace) %_sysconfdir/pam.d/samba
-%_datadir/samba/swat
-%_sbindir/swat
-%_man8dir/swat.8*
-#%attr(755,root,root) %_libdir/samba/*.msg
-
 %files doc
 %doc docs-xml/output/htmldocs
+
+%files test
+%_bindir/gentest
+%_bindir/locktest
+%_bindir/masktest
+%_bindir/ndrdump
+%_bindir/smbtorture
+%_libdir/libtorture.so.*
+%_libdir/samba/libsubunit.so
+%if_with dc
+%_libdir/samba/libdlz_bind9_for_torture.so
+%endif
+%_man1dir/gentest.1*
+%_man1dir/locktest.1*
+%_man1dir/masktest.1*
+%_man1dir/ndrdump.1*
+%_man1dir/smbtorture.1*
+%_man1dir/vfstest.1*
+
+%if_with testsuite
+# files to ignore in testsuite mode
+%_libdir/samba/libnss_wrapper.so
+%_libdir/samba/libsocket_wrapper.so
+%_libdir/samba/libuid_wrapper.so
+%endif
+
+%files test-devel
+%_includedir/samba-4.0/torture.h
+%_libdir/libtorture.so
+%_pkgconfigdir/torture.pc
 
 %files winbind -f pam_winbind.lang
 %_libdir/samba/idmap
 %_libdir/samba/nss_info
 %_libdir/samba/libnss_info.so
 %_libdir/samba/libidmap.so
-%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 %_sbindir/winbindd
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %_unitdir/winbind.service
 %attr(755,root,root) %_initrddir/winbind
 %_sysconfdir/NetworkManager/dispatcher.d/30-winbind
-%_man7dir/winbind_krb5_locator.7*
 %_man8dir/winbindd.8*
 %_man8dir/idmap_*.8*
 
@@ -968,12 +1041,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_man5dir/pam_winbind.conf.5*
 %_man8dir/pam_winbind.8*
 
-%changelog
-* Fri Oct 10 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.2
-- Fix typo to build without DC
-- Use %%force_with to really set flag for tests
+%files winbind-krb5-locator
+%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+%_man7dir/winbind_krb5_locator.7*
 
-* Mon Sep 29 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.21-alt1.M70P.1
+%changelog
+* Mon Oct 13 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.11-alt1.M70P.1
 - Build in DC mode
 - Fix mitkrb5 support with and without DC mode
 - Build on all available cores. Increase build and install verbosity
@@ -984,23 +1057,57 @@ TDB_NO_FSYNC=1 %make_build test
 - Add dlz_bind9_9.so
 - Rename to samba-DC conflicted by ordinary samba
 - Add tdb-utils for samba_upgradedns program
+- Use %%force_with to really set flag for tests
 
-* Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
-- 4.0.21
-  + fixes CVE-2014-3560 (remote code execution as root via nmbd)
+* Wed Aug 27 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.11-alt2
+- update init scripts for ALTLinux
 
-* Mon Jun 02 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.18-alt0.M70P.1
-- This bugfix release addressed two minor security issues involving not
-  replying to replies, and with malformed FSCTL_SRV_ENUMERATE_SNAPSHOTS responses.
+* Tue Aug 05 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.11-alt1
+- 4.1.11
+- fixed unstrcpy macro length is invalid(CVE-2014-3560)
 
-* Thu Mar 27 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.16-alt0.M70P.1
-- New version with security fixes CVE-2013-4496, CVE-2013-6442
+* Mon Jul 28 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.10-alt1
+- 4.1.10
 
-* Tue Dec 10 2013 Andrey Cherepanov <cas@altlinux.org> 4.0.13-alt0.M70P.1
-- New version with security fixes CVE-2013-4408, CVE-2012-6150
+* Tue Jun 24 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.9-alt1
+- 4.1.9
+- fixed nmbd denial of service(CVE-2014-0244)
+- fixed Segmentation fault in smbd_marshall_dir_entry(CVE-2014-3493)
 
-* Tue Nov 12 2013 Andrey Cherepanov <cas@altlinux.org> 4.0.11-alt0.M70P.1
-- Backport to p7 branch (ALT #29443)
+* Wed Jun 04 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.8-alt1
+- 4.1.8
+- fixed CVE-2014-0239, CVE-2014-0178
+
+* Wed May 07 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.7-alt2
+- add winbind-krb5-locator package
+
+* Mon May 05 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.7-alt1
+- 4.1.7
+
+* Mon Mar 17 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.6-alt1
+- 4.1.6
+- fixed CVE-2013-4496, CVE-2013-6442
+
+* Wed Jan 15 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.4-alt1
+- 4.1.4
+
+* Mon Dec 09 2013 Alexey Shabalin <shaba@altlinux.ru> 4.1.3-alt1
+- 4.1.3
+- fixed CVE-2013-4408, CVE-2012-6150
+
+* Wed Dec 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.1.2-alt1
+- 4.1.2
+- drop swat package
+- change build options:
+  + --with-profiling-data
+  + drop --disable-ntdb
+  + --without-fam
+  + drop --builtin-libraries=ccan
+- build with avahi support
+- build with external libntdb
+
+* Wed Nov 27 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.12-alt1
+- 4.0.12
 
 * Tue Nov 12 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.11-alt1
 - 4.0.11

@@ -116,7 +116,6 @@ static DIR *dirsort_opendir(vfs_handle_struct *handle,
 				       const char *fname, const char *mask,
 				       uint32 attr)
 {
-	NTSTATUS status;
 	struct dirsort_privates *list_head = NULL;
 	struct dirsort_privates *data = NULL;
 
@@ -132,12 +131,8 @@ static DIR *dirsort_opendir(vfs_handle_struct *handle,
 		return NULL;
 	}
 
-	status = create_synthetic_smb_fname(data,
-					fname,
-					NULL,
-					NULL,
-					&data->smb_fname);
-	if (!NT_STATUS_IS_OK(status)) {
+	data->smb_fname = synthetic_smb_fname(data, fname, NULL, NULL);
+	if (data->smb_fname == NULL) {
 		TALLOC_FREE(data);
 		return NULL;
 	}

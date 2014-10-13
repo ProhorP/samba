@@ -236,10 +236,32 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	connection_struct *conn;
 	char *connpath;
 	const char *vfs_user;
+	struct smbd_server_connection *sconn;
+	const char *servicename = lp_const_servicename(snum);
 
-	conn = talloc_zero(ctx, connection_struct);
-	if (conn == NULL) {
+	sconn = talloc_zero(ctx, struct smbd_server_connection);
+	if (sconn == NULL) {
 		return NT_STATUS_NO_MEMORY;
+	}
+
+	sconn->ev_ctx = ev;
+	sconn->msg_ctx = msg;
+	sconn->sock = -1;
+	sconn->smb1.echo_handler.trusted_fd = -1;
+	sconn->smb1.echo_handler.socket_lock_fd = -1;
+
+	conn = conn_new(sconn);
+	if (conn == NULL) {
+		TALLOC_FREE(sconn);
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	/* Now we have conn, we need to make sconn a child of conn,
+	 * for a proper talloc tree */
+	talloc_steal(conn, sconn);
+
+	if (snum == -1 && servicename == NULL) {
+		servicename = "Unknown Service (snum == -1)";
 	}
 
 	connpath = talloc_strdup(conn, path);
@@ -250,37 +272,16 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	connpath = talloc_string_sub(conn,
 				     connpath,
 				     "%S",
-				     lp_servicename(talloc_tos(), snum));
+				     servicename);
 	if (!connpath) {
 		TALLOC_FREE(conn);
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	conn->sconn = talloc_zero(conn, struct smbd_server_connection);
-	if (conn->sconn == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	conn->sconn->ev_ctx = ev;
-	conn->sconn->msg_ctx = msg;
-	conn->sconn->sock = -1;
-	conn->sconn->smb1.echo_handler.trusted_fd = -1;
-	conn->sconn->smb1.echo_handler.socket_lock_fd = -1;
-
 	/* needed for smbd_vfs_init() */
-
-	if (!(conn->params = talloc_zero(conn, struct share_params))) {
-		DEBUG(0, ("TALLOC failed\n"));
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
 
 	conn->params->service = snum;
 	conn->cnum = TID_FIELD_INVALID;
-
-	DLIST_ADD(conn->sconn->connections, conn);
-	conn->sconn->num_connections++;
 
 	if (session_info != NULL) {
 		conn->session_info = copy_session_info(conn, session_info);
@@ -305,7 +306,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	 */
 	if (conn->session_info) {
 		share_access_check(conn->session_info->security_token,
-				   lp_servicename(talloc_tos(), snum),
+				   servicename,
 				   MAXIMUM_ALLOWED_ACCESS,
 				   &conn->share_access);
 
@@ -315,7 +316,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 				DEBUG(0,("create_conn_struct: connection to %s "
 					 "denied due to security "
 					 "descriptor.\n",
-					 lp_servicename(talloc_tos(), snum)));
+					 servicename));
 				conn_free(conn);
 				return NT_STATUS_ACCESS_DENIED;
 			} else {
@@ -335,7 +336,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	}
 
 	/* this must be the first filesystem operation that we do */
-	if (SMB_VFS_CONNECT(conn, lp_servicename(talloc_tos(), snum), vfs_user) < 0) {
+	if (SMB_VFS_CONNECT(conn, servicename, vfs_user) < 0) {
 		DEBUG(0,("VFS connect failed!\n"));
 		conn_free(conn);
 		return NT_STATUS_UNSUCCESSFUL;
@@ -1307,14 +1308,12 @@ bool create_msdfs_link(const struct junction_map *jucn)
 
 	if(SMB_VFS_SYMLINK(conn, msdfs_link, path) < 0) {
 		if (errno == EEXIST) {
-			struct smb_filename *smb_fname = NULL;
-			NTSTATUS status;
+			struct smb_filename *smb_fname;
 
-			status = create_synthetic_smb_fname(talloc_tos(), path,
-							    NULL, NULL,
-							    &smb_fname);
-			if (!NT_STATUS_IS_OK(status)) {
-				errno = map_errno_from_nt_status(status);
+			smb_fname = synthetic_smb_fname(talloc_tos(), path,
+							NULL, NULL);
+			if (smb_fname == NULL) {
+				errno = ENOMEM;
 				goto out;
 			}
 
@@ -1347,18 +1346,15 @@ bool remove_msdfs_link(const struct junction_map *jucn)
 	char *cwd;
 	connection_struct *conn;
 	bool ret = False;
-	struct smb_filename *smb_fname = NULL;
-	NTSTATUS status;
+	struct smb_filename *smb_fname;
 
 	if (!junction_to_local_path(jucn, &path, &conn, &cwd)) {
 		return false;
 	}
 
-	status = create_synthetic_smb_fname(talloc_tos(), path,
-					    NULL, NULL,
-					    &smb_fname);
-	if (!NT_STATUS_IS_OK(status)) {
-		errno = map_errno_from_nt_status(status);
+	smb_fname = synthetic_smb_fname(talloc_tos(), path, NULL, NULL);
+	if (smb_fname == NULL) {
+		errno = ENOMEM;
 		return false;
 	}
 

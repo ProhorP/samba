@@ -1,10 +1,10 @@
-/* 
+/*
    Unix SMB/Netbios implementation.
    SMB client library implementation
    Copyright (C) Andrew Tridgell 1998
    Copyright (C) Richard Sharpe 2000, 2002
    Copyright (C) John Terpstra 2000
-   Copyright (C) Tom Jansen (Ninja ISD) 2002 
+   Copyright (C) Tom Jansen (Ninja ISD) 2002
    Copyright (C) Derrell Lipman 2003-2008
    Copyright (C) Jeremy Allison 2007, 2008
 
@@ -91,9 +91,11 @@ void
 smbc_setDebug(SMBCCTX *c, int debug)
 {
 	char buf[32];
+	TALLOC_CTX *frame = talloc_stackframe();
 	snprintf(buf, sizeof(buf), "%d", debug);
         c->debug = debug;
-	lp_set_cmdline("log level", buf); 
+	lp_set_cmdline("log level", buf);
+	TALLOC_FREE(frame);
 }
 
 /**
@@ -116,14 +118,38 @@ smbc_setTimeout(SMBCCTX *c, int timeout)
         c->timeout = timeout;
 }
 
+/**
+ * Get the TCP port used to connect.
+ */
+uint16_t
+smbc_getPort(SMBCCTX *c)
+{
+        return c->internal->port;
+}
+
+/**
+ * Set the TCP port used to connect.
+ */
+void
+smbc_setPort(SMBCCTX *c, uint16_t port)
+{
+        c->internal->port = port;
+}
+
+
 /** Get whether to log to standard error instead of standard output */
 smbc_bool
 smbc_getOptionDebugToStderr(SMBCCTX *c)
 {
+	smbc_bool ret;
+	TALLOC_CTX *frame = talloc_stackframe();
+
 	/* Because this is a global concept, it is better to check
 	 * what is really set, rather than what we wanted set
 	 * (particularly as you cannot go back to stdout). */
-        return debug_get_output_is_stderr();
+	ret = debug_get_output_is_stderr();
+	TALLOC_FREE(frame);
+	return ret;
 }
 
 /** Set whether to log to standard error instead of standard output.
@@ -135,6 +161,7 @@ smbc_getOptionDebugToStderr(SMBCCTX *c)
 void
 smbc_setOptionDebugToStderr(SMBCCTX *c, smbc_bool b)
 {
+	TALLOC_CTX *frame = talloc_stackframe();
 	if (b) {
 		/*
 		 * We do not have a unique per-thread debug state? For
@@ -145,6 +172,7 @@ smbc_setOptionDebugToStderr(SMBCCTX *c, smbc_bool b)
 		 */
 		setup_logging("libsmbclient", DEBUG_STDERR);
 	}
+	TALLOC_FREE(frame);
 }
 
 /**
@@ -479,7 +507,11 @@ smbc_setOptionUseNTHash(SMBCCTX *c, smbc_bool b)
 smbc_get_auth_data_fn
 smbc_getFunctionAuthData(SMBCCTX *c)
 {
-        return c->callbacks.auth_fn;
+	smbc_get_auth_data_fn ret;
+	TALLOC_CTX *frame = talloc_stackframe();
+	ret = c->callbacks.auth_fn;
+	TALLOC_FREE(frame);
+	return ret;
 }
 
 /** Set the function for obtaining authentication data */

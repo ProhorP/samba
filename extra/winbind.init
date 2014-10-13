@@ -1,105 +1,102 @@
 #!/bin/sh
 #
 # chkconfig: - 27 73
-# description: Starts and stops the Samba winbind daemon
-#	       #
+# description: Starts and stops the Samba Winbind daemon \
+#       used to provide seamless NT domain integration.
+#
+# processname: winbindd
 # pidfile: /var/run/winbindd.pid
 # config:  /etc/samba/smb.conf
+### BEGIN INIT INFO
+# Provides: winbind
+# Default-Start: 3 4 5
+# Default-Stop: 0 1 6
+# Should-Start: $syslog nmb
+# Should-Stop: $null
+# Required-Start: $local_fs $network
+# Required-Stop: $null
+# Short-Description: Samba Name Service Switch daemon
+# Description: Starts and stops the SAMBA winbind daemons \
+#              used to provide user and group information \
+#              from a NT domain controller to linux.
+### END INIT INFO
 
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
 
-# Source function library.
-. /etc/rc.d/init.d/functions
-
-# Avoid using root's TMPDIR
-unset TMPDIR
+. /etc/init.d/functions
 
 # Source networking configuration.
-. /etc/sysconfig/network
+SourceIfNotEmpty /etc/sysconfig/network
 
-# Check that networking is up.
-[ ${NETWORKING} = "no" ] && exit 1
+SourceIfNotEmpty /etc/sysconfig/samba
 
 # Check that smb.conf exists.
-[ -f /etc/samba/smb.conf ] || exit 6
+[ -s /etc/samba/smb.conf ] || exit
 
-[ -f /etc/sysconfig/samba ] && . /etc/sysconfig/samba
-
+export TMPDIR=/tmp
+LOCKFILE=/var/lock/subsys/winbindd
+PIDFILE=/var/run/winbindd.pid
 RETVAL=0
 
 
 start() {
-        KIND="Winbind"
-	echo -n $"Starting $KIND services: "
-	start_daemon winbindd -D "$WINBINDOPTIONS"
+	is_yes "$NETWORKING" || return 0
+	msg_starting $"Samba Winbind service"
+	start_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- winbindd -D "$WINBINDOPTIONS"
 	RETVAL=$?
-	echo
-	[ $RETVAL -eq 0 ] && touch /var/lock/subsys/winbindd || RETVAL=1
 	return $RETVAL
-}	
+}
 
 stop() {
-        echo
-	KIND="Winbind"
-	echo -n $"Shutting down $KIND services: "
-	stop_daemon winbindd
+	msg_stopping $"Samba Winbind service"
+	stop_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- winbindd
 	RETVAL=$?
-	[ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/winbindd
-	echo ""
 	return $RETVAL
-}	
+}
 
 restart() {
 	stop
 	start
-}	
+}
 
 reload() {
-        echo -n $"Reloading smb.conf file: "
-	stop_daemon -HUP winbindd
+	msg_reloading $"Samba Winbind service"
+	stop_daemon --pidfile "$PIDFILE" --expect-user root -HUP -- winbindd
 	RETVAL=$?
-	echo
 	return $RETVAL
-}	
-
-rhstatus() {
-	status winbindd
-	return $?
-}	
-
-# Allow status as non-root.
-if [ "$1" = status ]; then
-       rhstatus
-       exit $?
-fi
-
-# Check that we can write to it... so non-root users stop here
-[ -w /etc/samba/smb.conf ] || exit 4
+}
 
 case "$1" in
   start)
-  	start
+	start
 	;;
   stop)
-  	stop
+	stop
 	;;
   restart)
-  	restart
+	restart
 	;;
   reload)
-  	reload
+	reload
 	;;
   status)
-  	rhstatus
+	status --pidfile "$PIDFILE" --expect-user root -- winbindd
+	RETVAL=$?
 	;;
   condrestart)
-  	[ -f /var/lock/subsys/winbindd ] && restart || :
+	if [ -e "$LOCKFILE" ]; then
+		restart
+	fi
 	;;
   condstop)
-  	[ -f /var/lock/subsys/winbindd ] && stop || :
+	if [ -e "$LOCKFILE" ]; then
+		stop
+	fi
 	;;
   *)
-	echo $"Usage: $0 {start|stop|restart|reload|status|condrestart|condstop}"
-	exit 2
+	msg_usage "${0##*/} {start|stop|reload|restart|condstop|condrestart|condreload|status}"
+	RETVAL=1
 esac
 
-exit $?
+exit $RETVAL

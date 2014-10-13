@@ -5,10 +5,10 @@ WAF_BINARY=$(PYTHON) ./buildtools/bin/waf
 WAF=WAF_MAKE=1 $(WAF_BINARY)
 
 all:
-	$(WAF) build -j$(NPROCS) $(VERBOSE)
+	$(WAF) build
 
 install:
-	$(WAF) install $(VERBOSE)
+	$(WAF) install
 
 uninstall:
 	$(WAF) uninstall

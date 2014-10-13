@@ -1,10 +1,10 @@
-/* 
+/*
    Unix SMB/Netbios implementation.
    SMB client library implementation
    Copyright (C) Andrew Tridgell 1998
    Copyright (C) Richard Sharpe 2000, 2002
    Copyright (C) John Terpstra 2000
-   Copyright (C) Tom Jansen (Ninja ISD) 2002 
+   Copyright (C) Tom Jansen (Ninja ISD) 2002
    Copyright (C) Derrell Lipman 2003-2008
    Copyright (C) Jeremy Allison 2007, 2008
 
@@ -28,7 +28,7 @@
 #include "libsmb_internal.h"
 #include "../libcli/smb/smbXcli_base.h"
 
-/* 
+/*
  * Generate an inode number from file name for those things that need it
  */
 
@@ -120,6 +120,7 @@ SMBC_stat_ctx(SMBCCTX *context,
         struct timespec change_time_ts;
 	off_t size = 0;
 	uint16 mode = 0;
+	uint16_t port = 0;
 	SMB_INO_T ino = 0;
 	TALLOC_CTX *frame = talloc_stackframe();
 
@@ -142,6 +143,7 @@ SMBC_stat_ctx(SMBCCTX *context,
                             fname,
                             &workgroup,
                             &server,
+                            &port,
                             &share,
                             &path,
                             &user,
@@ -162,7 +164,7 @@ SMBC_stat_ctx(SMBCCTX *context,
 	}
 
 	srv = SMBC_server(frame, context, True,
-                          server, share, &workgroup, &user, &password);
+                          server, port, share, &workgroup, &user, &password);
 	if (!srv) {
 		TALLOC_FREE(frame);
 		return -1;  /* errno set by SMBC_server */
@@ -214,6 +216,7 @@ SMBC_fstat_ctx(SMBCCTX *context,
         char *targetpath = NULL;
 	struct cli_state *targetcli = NULL;
 	SMB_INO_T ino = 0;
+	uint16_t port = 0;
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS status;
 
@@ -240,6 +243,7 @@ SMBC_fstat_ctx(SMBCCTX *context,
                             file->fname,
                             NULL,
                             &server,
+                            &port,
                             &share,
                             &path,
                             &user,
@@ -360,6 +364,13 @@ SMBC_fstatvfs_ctx(SMBCCTX *context,
         unsigned long flags = 0;
 	uint32 fs_attrs = 0;
 	struct cli_state *cli = file->srv->cli;
+	struct smbXcli_tcon *tcon;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		tcon = cli->smb2.tcon;
+	} else {
+		tcon = cli->smb1.tcon;
+	}
 
         /* Initialize all fields (at least until we actually use them) */
         memset(st, 0, sizeof(*st));
@@ -465,7 +476,9 @@ SMBC_fstatvfs_ctx(SMBCCTX *context,
         }
 
         /* See if DFS is supported */
-	if ((smb1cli_conn_capabilities(cli->conn) & CAP_DFS) &&  cli->dfsroot) {
+	if (smbXcli_conn_dfs_supported(cli->conn) &&
+	    smbXcli_tcon_is_dfs_share(tcon))
+	{
                 flags |= SMBC_VFS_FEATURE_DFS;
         }
 

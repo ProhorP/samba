@@ -3,11 +3,12 @@ Description=Samba NMB Daemon
 After=syslog.target network.target
 
 [Service]
-Type=forking
+Type=notify
+NotifyAccess=all
 Environment=KRB5CCNAME=/run/samba/krb5cc_samba
 PIDFile=/run/nmbd.pid
 EnvironmentFile=-/etc/sysconfig/samba
-ExecStart=/usr/sbin/nmbd -D $NMBDOPTIONS
+ExecStart=/usr/sbin/nmbd $NMBDOPTIONS
 ExecReload=/usr/bin/kill -HUP $MAINPID
 
 [Install]

@@ -134,7 +134,7 @@ conf.CHECK_CODE('''
        krb5_get_init_creds_opt_free(ctx, opt);
        ''',
     'KRB5_CREDS_OPT_FREE_REQUIRES_CONTEXT',
-    headers='krb5.h', lib='krb5',
+    headers='krb5.h', link=False,
     msg="Checking whether krb5_get_init_creds_opt_free takes a context argument")
 conf.CHECK_CODE('''
        const krb5_data *pkdata;

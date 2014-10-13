@@ -623,7 +623,7 @@ _PUBLIC_ isc_result_t dlz_create(const char *dlzname,
 		lpcfg_do_global_parameter(state->lp, "log level", "0");
 	}
 
-	if (smb_krb5_init_context(state, state->ev_ctx, state->lp, &state->smb_krb5_ctx) != 0) {
+	if (smb_krb5_init_context(state, state->lp, &state->smb_krb5_ctx) != 0) {
 		result = ISC_R_NOMEMORY;
 		goto failed;
 	}
@@ -825,7 +825,7 @@ static isc_result_t dlz_lookup_types(struct dlz_bind9_data *state,
 			break;
 		}
 	}
-	if (ret != LDB_SUCCESS) {
+	if (ret != LDB_SUCCESS || res->count == 0) {
 		talloc_free(tmp_ctx);
 		return ISC_R_NOTFOUND;
 	}

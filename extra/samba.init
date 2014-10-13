@@ -41,14 +41,14 @@ fi
 prog=samba
 prog_dir=/usr/local/samba/sbin/
 lockfile=/var/lock/subsys/$prog
-
+pidfile=/var/run/$prog.pid
 
 start() {
         [ "$NETWORKING" = "no" ] && exit 1
 #       [ -x /usr/sbin/ntpd ] || exit 5
         # Start daemons.
         echo -n $"Starting samba: "
-        start_daemon $prog -D $SAMBAOPTIONS
+        start_daemon --pidfile "$pidfile" --lockfile "$lockfile" $prog -D $SAMBAOPTIONS
         RETVAL=$?
         echo
         [ $RETVAL -eq 0 ] && touch $lockfile || \
@@ -61,7 +61,7 @@ start() {
 stop() {
         [ "$EUID" != "0" ] && exit 4
         echo -n $"Shutting down samba: "
-        stop_daemon $prog
+        stop_daemon --pidfile "$pidfile" --lockfile "$lockfile" $prog
         RETVAL=$?
         echo
         [ $RETVAL -eq 0 ] && rm -f $lockfile

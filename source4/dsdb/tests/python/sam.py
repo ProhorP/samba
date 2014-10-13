@@ -27,7 +27,7 @@ from samba.samdb import SamDB
 from samba.dsdb import (UF_NORMAL_ACCOUNT, UF_ACCOUNTDISABLE,
     UF_WORKSTATION_TRUST_ACCOUNT, UF_SERVER_TRUST_ACCOUNT,
     UF_PARTIAL_SECRETS_ACCOUNT, UF_TEMP_DUPLICATE_ACCOUNT,
-    UF_PASSWD_NOTREQD, ATYPE_NORMAL_ACCOUNT,
+    UF_PASSWD_NOTREQD, UF_LOCKOUT, UF_PASSWORD_EXPIRED, ATYPE_NORMAL_ACCOUNT,
     GTYPE_SECURITY_BUILTIN_LOCAL_GROUP, GTYPE_SECURITY_DOMAIN_LOCAL_GROUP,
     GTYPE_SECURITY_GLOBAL_GROUP, GTYPE_SECURITY_UNIVERSAL_GROUP,
     GTYPE_DISTRIBUTION_DOMAIN_LOCAL_GROUP, GTYPE_DISTRIBUTION_GLOBAL_GROUP,
@@ -586,7 +586,7 @@ class SamTests(samba.tests.TestCase):
 
     def test_sam_attributes(self):
         """Test the behaviour of special attributes of SAM objects"""
-        print "Testing the behaviour of special attributes of SAM objects\n"""
+        print "Testing the behaviour of special attributes of SAM objects\n"
 
         ldb.add({
             "dn": "cn=ldaptestuser,cn=users," + self.base_dn,
@@ -1425,15 +1425,19 @@ class SamTests(samba.tests.TestCase):
         # password yet.
         # With SYSTEM rights you can set a interdomain trust account.
 
-        # Invalid attribute
-        try:
-            ldb.add({
-                "dn": "cn=ldaptestuser,cn=users," + self.base_dn,
-                "objectclass": "user",
-                "userAccountControl": "0"})
-            self.fail()
-        except LdbError, (num, _):
-            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+        ldb.add({
+            "dn": "cn=ldaptestuser,cn=users," + self.base_dn,
+            "objectclass": "user",
+            "userAccountControl": "0"})
+
+        res1 = ldb.search("cn=ldaptestuser,cn=users," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_PASSWD_NOTREQD == 0)
         delete_force(self.ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
 
 # This has to wait until s4 supports it (needs a password module change)
@@ -1459,6 +1463,22 @@ class SamTests(samba.tests.TestCase):
         self.assertEquals(int(res1[0]["sAMAccountType"][0]),
           ATYPE_NORMAL_ACCOUNT)
         self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
+        delete_force(self.ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
+
+        ldb.add({
+            "dn": "cn=ldaptestuser,cn=users," + self.base_dn,
+            "objectclass": "user",
+            "userAccountControl": str(UF_NORMAL_ACCOUNT | UF_PASSWD_NOTREQD | UF_LOCKOUT | UF_PASSWORD_EXPIRED)})
+
+        res1 = ldb.search("cn=ldaptestuser,cn=users," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl", "lockoutTime", "pwdLastSet"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & (UF_LOCKOUT | UF_PASSWORD_EXPIRED) == 0)
+        self.assertFalse("lockoutTime" in res1[0])
+        self.assertTrue(int(res1[0]["pwdLastSet"][0]) == 0)
         delete_force(self.ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
 
         try:
@@ -1567,6 +1587,46 @@ class SamTests(samba.tests.TestCase):
           ATYPE_NORMAL_ACCOUNT)
         self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
 
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
+        m["userAccountControl"] = MessageElement(
+          str(UF_ACCOUNTDISABLE),
+          FLAG_MOD_REPLACE, "userAccountControl")
+        ldb.modify(m)
+
+        res1 = ldb.search("cn=ldaptestuser,cn=users," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_NORMAL_ACCOUNT != 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE != 0)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
+        m["lockoutTime"] = MessageElement(str(samba.unix2nttime(0)), FLAG_MOD_REPLACE, "lockoutTime")
+        m["pwdLastSet"] = MessageElement(str(samba.unix2nttime(0)), FLAG_MOD_REPLACE, "pwdLastSet")
+        ldb.modify(m)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
+        m["userAccountControl"] = MessageElement(
+          str(UF_LOCKOUT | UF_PASSWORD_EXPIRED),
+          FLAG_MOD_REPLACE, "userAccountControl")
+        ldb.modify(m)
+
+        res1 = ldb.search("cn=ldaptestuser,cn=users," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl", "lockoutTime", "pwdLastSet"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_NORMAL_ACCOUNT != 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & (UF_LOCKOUT | UF_PASSWORD_EXPIRED) == 0)
+        self.assertTrue(int(res1[0]["lockoutTime"][0]) == 0)
+        self.assertTrue(int(res1[0]["pwdLastSet"][0]) == 0)
+
         try:
             m = Message()
             m.dn = Dn(ldb, "cn=ldaptestuser,cn=users," + self.base_dn)
@@ -1647,15 +1707,19 @@ class SamTests(samba.tests.TestCase):
         # password yet.
         # With SYSTEM rights you can set a interdomain trust account.
 
-        # Invalid attribute
-        try:
-            ldb.add({
-                "dn": "cn=ldaptestcomputer,cn=computers," + self.base_dn,
-                "objectclass": "computer",
-                "userAccountControl": "0"})
-            self.fail()
-        except LdbError, (num, _):
-            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
+        ldb.add({
+            "dn": "cn=ldaptestcomputer,cn=computers," + self.base_dn,
+            "objectclass": "computer",
+            "userAccountControl": "0"})
+
+        res1 = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_PASSWD_NOTREQD == 0)
         delete_force(self.ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
 
 # This has to wait until s4 supports it (needs a password module change)
@@ -1681,6 +1745,22 @@ class SamTests(samba.tests.TestCase):
         self.assertEquals(int(res1[0]["sAMAccountType"][0]),
           ATYPE_NORMAL_ACCOUNT)
         self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
+        delete_force(self.ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+
+        ldb.add({
+            "dn": "cn=ldaptestcomputer,cn=computers," + self.base_dn,
+            "objectclass": "computer",
+            "userAccountControl": str(UF_NORMAL_ACCOUNT | UF_PASSWD_NOTREQD | UF_LOCKOUT | UF_PASSWORD_EXPIRED)})
+
+        res1 = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl", "lockoutTime", "pwdLastSet"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & (UF_LOCKOUT | UF_PASSWORD_EXPIRED) == 0)
+        self.assertFalse("lockoutTime" in res1[0])
+        self.assertTrue(int(res1[0]["pwdLastSet"][0]) == 0)
         delete_force(self.ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
 
         try:
@@ -1782,6 +1862,46 @@ class SamTests(samba.tests.TestCase):
         self.assertEquals(int(res1[0]["sAMAccountType"][0]),
           ATYPE_NORMAL_ACCOUNT)
         self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE == 0)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["userAccountControl"] = MessageElement(
+          str(UF_ACCOUNTDISABLE),
+          FLAG_MOD_REPLACE, "userAccountControl")
+        ldb.modify(m)
+
+        res1 = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_NORMAL_ACCOUNT != 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_ACCOUNTDISABLE != 0)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["lockoutTime"] = MessageElement(str(samba.unix2nttime(0)), FLAG_MOD_REPLACE, "lockoutTime")
+        m["pwdLastSet"] = MessageElement(str(samba.unix2nttime(0)), FLAG_MOD_REPLACE, "pwdLastSet")
+        ldb.modify(m)
+
+        m = Message()
+        m.dn = Dn(ldb, "cn=ldaptestcomputer,cn=computers," + self.base_dn)
+        m["userAccountControl"] = MessageElement(
+          str(UF_LOCKOUT | UF_PASSWORD_EXPIRED),
+          FLAG_MOD_REPLACE, "userAccountControl")
+        ldb.modify(m)
+
+        res1 = ldb.search("cn=ldaptestcomputer,cn=computers," + self.base_dn,
+                          scope=SCOPE_BASE,
+                          attrs=["sAMAccountType", "userAccountControl", "lockoutTime", "pwdLastSet"])
+        self.assertTrue(len(res1) == 1)
+        self.assertEquals(int(res1[0]["sAMAccountType"][0]),
+          ATYPE_NORMAL_ACCOUNT)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & UF_NORMAL_ACCOUNT != 0)
+        self.assertTrue(int(res1[0]["userAccountControl"][0]) & (UF_LOCKOUT | UF_PASSWORD_EXPIRED) == 0)
+        self.assertTrue(int(res1[0]["lockoutTime"][0]) == 0)
+        self.assertTrue(int(res1[0]["pwdLastSet"][0]) == 0)
 
         try:
             m = Message()
@@ -2484,7 +2604,7 @@ class SamTests(samba.tests.TestCase):
 
     def test_sam_description_attribute(self):
         """Test SAM description attribute"""
-        print "Test SAM description attribute"""
+        print "Test SAM description attribute"
 
         self.ldb.add({
             "dn": "cn=ldaptestgroup,cn=users," + self.base_dn,
@@ -2652,7 +2772,7 @@ class SamTests(samba.tests.TestCase):
 
     def test_fSMORoleOwner_attribute(self):
         """Test fSMORoleOwner attribute"""
-        print "Test fSMORoleOwner attribute"""
+        print "Test fSMORoleOwner attribute"
 
         ds_service_name = self.ldb.get_dsServiceName()
 
@@ -2726,6 +2846,37 @@ class SamTests(samba.tests.TestCase):
 
         delete_force(self.ldb, "cn=ldaptestgroup,cn=users," + self.base_dn)
 
+    def test_protected_sid_objects(self):
+        """Test deletion of objects with RID < 1000"""
+        self.ldb.create_ou("ou=ldaptestou," + self.base_dn)
+        # a list of some well-known sids
+        # objects in Builtin are aready covered by objectclass
+        protected_list = [
+            ["CN=Domain Admins","CN=Users,"],
+            ["CN=Schema Admins","CN=Users,"],
+            ["CN=Enterprise Admins","CN=Users,"],
+            ["CN=Administrator","CN=Users,"],
+            ["CN=Domain Controllers","CN=Users,"],
+            ]
+
+
+
+        for pr_object in protected_list:
+            try:
+                self.ldb.delete(pr_object[0] + "," + pr_object[1] + self.base_dn)
+            except LdbError, (num, _):
+                self.assertEquals(num, ERR_OTHER)
+            else:
+                self.fail("Deleted " + pr_object[0])
+
+            try:
+                self.ldb.rename(pr_object[0] + "," + pr_object[1] + self.base_dn,
+                                pr_object[0] + "2," + pr_object[1] + self.base_dn)
+            except LdbError, (num, _):
+                self.fail("Could not rename " + pr_object[0])
+
+            self.ldb.rename(pr_object[0] + "2," + pr_object[1] + self.base_dn,
+                            pr_object[0] + "," + pr_object[1] + self.base_dn)
 
 if not "://" in host:
     if os.path.isfile(host):

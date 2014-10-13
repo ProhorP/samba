@@ -2269,8 +2269,18 @@ static PyObject *py_pdb_set_aliasinfo(pytalloc_Object *self, PyObject *args)
 
 	alias_sid = pytalloc_get_ptr(py_alias_sid);
 
-	fstrcpy(alias_info.acct_name, PyString_AsString(PyDict_GetItemString(py_alias_info, "acct_name")));
-	fstrcpy(alias_info.acct_desc, PyString_AsString(PyDict_GetItemString(py_alias_info, "acct_desc")));
+	alias_info.acct_name = talloc_strdup(frame, PyString_AsString(PyDict_GetItemString(py_alias_info, "acct_name")));
+	if (alias_info.acct_name == NULL) {
+		PyErr_Format(py_pdb_error, "Unable to allocate memory");
+		talloc_free(frame);
+		return NULL;
+	}
+	alias_info.acct_desc = talloc_strdup(frame, PyString_AsString(PyDict_GetItemString(py_alias_info, "acct_desc")));
+	if (alias_info.acct_desc == NULL) {
+		PyErr_Format(py_pdb_error, "Unable to allocate memory");
+		talloc_free(frame);
+		return NULL;
+	}
 
 	status = methods->set_aliasinfo(methods, alias_sid, &alias_info);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3638,7 +3648,7 @@ static PyObject *py_set_secrets_dir(PyObject *self, PyObject *args)
 	}
 
 	/* Initialize secrets database */
-	if (!secrets_init_path(private_dir)) {
+	if (!secrets_init_path(private_dir, lp_use_ntdb())) {
 		PyErr_Format(py_pdb_error, "Cannot open secrets file database in '%s'",
 				private_dir);
 		talloc_free(frame);

@@ -233,7 +233,7 @@ krb5_error_code smb_krb5_send_and_recv_func(krb5_context context,
 
 	if (!data) {
 		/* If no event context was available, then create one for this loop */
-		ev = tevent_context_init(tmp_ctx);
+		ev = samba_tevent_context_init(tmp_ctx);
 		if (!ev) {
 			talloc_free(tmp_ctx);
 			return ENOMEM;
@@ -474,7 +474,6 @@ smb_krb5_init_context_basic(TALLOC_CTX *tmp_ctx,
 }
 
 krb5_error_code smb_krb5_init_context(void *parent_ctx,
-				      struct tevent_context *ev,
 				      struct loadparm_context *lp_ctx,
 				      struct smb_krb5_context **smb_krb5_context)
 {
@@ -528,17 +527,6 @@ krb5_error_code smb_krb5_init_context(void *parent_ctx,
 		return ret;
 	}
 	krb5_set_warn_dest(kctx, logf);
-
-	/* Set use of our socket lib */
-	if (ev) {
-		struct tevent_context *previous_ev;
-		ret = smb_krb5_context_set_event_ctx(*smb_krb5_context,
-						     ev, &previous_ev);
-		if (ret) {
-			talloc_free(tmp_ctx);
-			return ret;
-		}
-	}
 
 	/* Set options in kerberos */
 

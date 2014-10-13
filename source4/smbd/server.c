@@ -261,7 +261,6 @@ static void show_build(void)
 		CONFIG_OPTION(CACHEDIR),
 		CONFIG_OPTION(PIDDIR),
 		CONFIG_OPTION(PRIVATE_DIR),
-		CONFIG_OPTION(SWATDIR),
 		CONFIG_OPTION(CODEPAGEDIR),
 		CONFIG_OPTION(SETUPDIR),
 		CONFIG_OPTION(WINBINDD_SOCKET_DIR),
@@ -369,7 +368,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	umask(0);
 
 	DEBUG(0,("%s version %s started.\n", binary_name, SAMBA_VERSION_STRING));
-	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2012\n"));
+	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2013\n"));
 
 	if (sizeof(uint16_t) < 2 || sizeof(uint32_t) < 4 || sizeof(uint64_t) < 8) {
 		DEBUG(0,("ERROR: Samba is not configured correctly for the word size on your machine\n"));
@@ -399,15 +398,13 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 
 	if (lpcfg_server_role(cmdline_lp_ctx) == ROLE_ACTIVE_DIRECTORY_DC) {
 		if (!open_schannel_session_store(talloc_autofree_context(), cmdline_lp_ctx)) {
-			DEBUG(0,("ERROR: Samba cannot open schannel store for secured NETLOGON operations.\n"));
-			exit(1);
+			exit_daemon("Samba cannot open schannel store for secured NETLOGON operations.", EACCES);
 		}
 	}
 
 	/* make sure we won't go through nss_winbind */
 	if (!winbind_off()) {
-		DEBUG(0,("Failed to disable recusive winbindd calls.  Exiting.\n"));
-		exit(1);
+		exit_daemon("Samba failed to disable recusive winbindd calls.", EACCES);
 	}
 
 	gensec_init(); /* FIXME: */
@@ -432,8 +429,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	event_ctx = s4_event_context_init(talloc_autofree_context());
 
 	if (event_ctx == NULL) {
-		DEBUG(0,("Initializing event context failed\n"));
-		return 1;
+		exit_daemon("Initializing event context failed", EACCES);
 	}
 
 	if (opt_interactive) {
@@ -448,6 +444,10 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 #ifdef SIGTTIN
 	signal(SIGTTIN, SIG_IGN);
 #endif
+
+	if (fstat(0, &st) != 0) {
+		exit_daemon("Samba failed to set standard input handler", ENOTTY);
+	}
 
 	if (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) {
 		tevent_add_fd(event_ctx,
@@ -475,15 +475,14 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 		DEBUG(0, ("At this time the 'samba' binary should only be used for either:\n"));
 		DEBUGADD(0, ("'server role = active directory domain controller' or to access the ntvfs file server with 'server services = +smb' or the rpc proxy with 'dcerpc endpoint servers = remote'\n"));
 		DEBUGADD(0, ("You should start smbd/nmbd/winbindd instead for domain member and standalone file server tasks\n"));
-		exit(1);
+		exit_daemon("Samba detected misconfigured 'server role' and exited. Check logs for details", EINVAL);
 	};
 
 	prime_ldb_databases(event_ctx);
 
 	status = setup_parent_messaging(event_ctx, cmdline_lp_ctx);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0,("Failed to setup parent messaging - %s\n", nt_errstr(status)));
-		return 1;
+		exit_daemon("Samba failed to setup parent messaging", NT_STATUS_V(status));
 	}
 
 	DEBUG(0,("%s: using '%s' process model\n", binary_name, model));
@@ -491,8 +490,11 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	status = server_service_startup(event_ctx, cmdline_lp_ctx, model, 
 					lpcfg_server_services(cmdline_lp_ctx));
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0,("Starting Services failed - %s\n", nt_errstr(status)));
-		return 1;
+		exit_daemon("Samba failed to start services", NT_STATUS_V(status));
+	}
+
+	if (opt_daemon) {
+		daemon_ready("samba");
 	}
 
 	/* wait for events - this is where smbd sits for most of its
