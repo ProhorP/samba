@@ -36,8 +36,8 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.11
-Release: alt1.M70P.1
+Version: 4.1.12
+Release: alt0.M70P.1
 
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1046,6 +1046,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Tue Oct 14 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.12-alt0.M70P.1
+- New version
+
 * Mon Oct 13 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.11-alt1.M70P.1
 - Build in DC mode
 - Fix mitkrb5 support with and without DC mode
