@@ -603,6 +603,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libkdc-samba4.so.2
 %_libdir/samba/libkdc-samba4.so.2.0.0
 %_libdir/samba/libpac.so
+%_libdir/samba/libdnsserver_common.so
 %_libdir/samba/gensec
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
