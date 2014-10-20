@@ -61,7 +61,7 @@ start() {
 stop() {
         [ "$EUID" != "0" ] && exit 4
         echo -n $"Shutting down samba: "
-        stop_daemon --pidfile "$pidfile" --lockfile "$lockfile" $prog
+        stop_daemon --lockfile "$lockfile" $prog
         RETVAL=$?
         echo
         [ $RETVAL -eq 0 ] && rm -f $lockfile

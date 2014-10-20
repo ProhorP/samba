@@ -36,7 +36,7 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.12
+Version: 4.1.13
 Release: alt0.M70P.1
 
 Group: System/Servers
@@ -1047,6 +1047,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Mon Oct 20 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.13-alt0.M70P.1
+- New version
+- Do not use pidfile to stop service samba
+
 * Tue Oct 14 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.12-alt0.M70P.1
 - New version
 
