@@ -12,6 +12,7 @@
 %def_with libwbclient
 %def_with libnetapi
 %def_without pam_smbpass
+%def_without docs
 
 %def_with mitkrb5
 %def_without dc
@@ -30,8 +31,8 @@
 %endif
 
 Name: samba
-Version: 4.0.21
-Release: alt0.M70T.1
+Version: 4.0.23
+Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -341,7 +342,9 @@ The samba-winbind package provides developer tools for the wbclient library.
 Summary: The Samba SMB server Web configuration program
 Group: Security/Networking
 Requires: %name = %version-%release
+%if_with docs
 Requires: %name-doc = %version-%release
+%endif
 Requires: %name-winbind-clients = %version-%release
 Requires: xinetd
 Provides: samba4-swat = %version-%release
@@ -352,6 +355,7 @@ The samba-swat package includes the new SWAT (Samba Web Administration
 Tool), for remotely managing Samba's smb.conf file using your favorite
 Web browser.
 
+%if_with docs
 %package doc
 Summary: Documentation for the Samba suite
 Group: Documentation
@@ -363,6 +367,7 @@ Obsoletes: samba4-doc < %version-%release
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
 Samba suite.
+%endif
 
 %prep
 %setup -q
@@ -455,10 +460,7 @@ Samba suite.
 
 %make_build
 
-# Build PIDL for installation into vendor directories before
-# 'make proto' gets to it.
-(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
-
+%if_with docs
 pushd docs-xml
 export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
 %autoreconf
@@ -466,9 +468,10 @@ export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xm
 %make_build smbdotconf/parameters.all.xml
 %make_build release
 popd
+%endif
 
 %install
-%make install DESTDIR=%buildroot PERL_INSTALL_ROOT=%buildroot
+%make install DESTDIR=%buildroot
 
 mkdir -p %buildroot/sbin
 mkdir -p %buildroot/usr/{sbin,bin}
@@ -998,8 +1001,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/swat.8*
 #%attr(755,root,root) %_libdir/samba/*.msg
 
+%if_with docs
 %files doc
 %doc docs-xml/output/htmldocs
+%endif
 
 %files test
 %_bindir/gentest
@@ -1061,6 +1066,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Dec 22 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.23-alt0.M70P.1
+- 4.0.23
+- Build without documentation
+
 * Sat Aug 02 2014 Michael Shigorin <mike@altlinux.org> 4.0.21-alt0.M70T.1
 - 4.0.21
   + fixes CVE-2014-3560 (remote code execution as root via nmbd)
