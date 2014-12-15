@@ -430,7 +430,6 @@ Samba suite.
 
 
 %undefine _configure_gettext
-%add_optflags -I/usr/include/krb5
 LDFLAGS="-Wl,-z,relro,-z,now" \
 %configure \
 	--enable-fhs \
@@ -479,15 +478,15 @@ LDFLAGS="-Wl,-z,relro,-z,now" \
 
 # Build PIDL for installation into vendor directories before
 # 'make proto' gets to it.
-(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
+#(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
 
-pushd docs-xml
-export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
-%autoreconf
-%configure
-%make_build smbdotconf/parameters.all.xml
-%make_build release
-popd
+#pushd docs-xml
+#export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
+#%autoreconf
+#%configure
+#%make_build smbdotconf/parameters.all.xml
+#%make_build release
+#popd
 
 %install
 %make install DESTDIR=%buildroot PERL_INSTALL_ROOT=%buildroot
