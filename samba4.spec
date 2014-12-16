@@ -476,20 +476,8 @@ LDFLAGS="-Wl,-z,relro,-z,now" \
 
 %make_build
 
-# Build PIDL for installation into vendor directories before
-# 'make proto' gets to it.
-#(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
-
-#pushd docs-xml
-#export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
-#%autoreconf
-#%configure
-#%make_build smbdotconf/parameters.all.xml
-#%make_build release
-#popd
-
 %install
-%make install DESTDIR=%buildroot PERL_INSTALL_ROOT=%buildroot
+make install DESTDIR=%buildroot
 
 mkdir -p %buildroot/sbin
 mkdir -p %buildroot/usr/{sbin,bin}
@@ -1016,8 +1004,8 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n python-module-%name
 %python_sitelibdir/*
 
-%files doc
-%doc docs-xml/output/htmldocs
+#%files doc
+#%doc docs-xml/output/htmldocs
 
 %files test
 %_bindir/gentest
