@@ -60,6 +60,10 @@ Provides: samba-swat = %version-%release
 Obsoletes: samba-swat < %version-%release
 Provides: samba4-swat = %version-%release
 Obsoletes: samba4-swat < %version-%release
+Provides: samba-doc = %version-%release
+Obsoletes: samba-doc < %version-%release
+Provides: samba4-doc = %version-%release
+Obsoletes: samba4-doc < %version-%release
 
 Requires: %name-winbind-clients = %version-%release
 Requires(pre): %name-common = %version-%release
@@ -360,17 +364,17 @@ Obsoletes: samba4-winbind-devel < %version-%release
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
 
-%package doc
-Summary: Documentation for the Samba suite
-Group: Documentation
-Requires: %name-common = %version-%release
-BuildArch: noarch
-Provides: samba4-doc = %version-%release
-Obsoletes: samba4-doc < %version-%release
+#%package doc
+#Summary: Documentation for the Samba suite
+#Group: Documentation
+#Requires: %name-common = %version-%release
+#BuildArch: noarch
+#Provides: samba4-doc = %version-%release
+#Obsoletes: samba4-doc < %version-%release
 
-%description doc
-The samba-doc package includes all the non-manpage documentation for the
-Samba suite.
+#%description doc
+#The samba-doc package includes all the non-manpage documentation for the
+#Samba suite.
 
 %prep
 %setup -q
