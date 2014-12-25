@@ -1050,8 +1050,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
-* Wed Dec 03 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
+* Thu Dec 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
 - New version
+- Disable build documentation because it cannot built
 
 * Mon Oct 20 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.13-alt0.M70P.1
 - New version
