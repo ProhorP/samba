@@ -15,6 +15,7 @@
 %def_with libwbclient
 %def_with libnetapi
 %def_without pam_smbpass
+%def_without docs
 
 %def_with dc
 %def_with clustering_support
@@ -320,6 +321,7 @@ Conflicts: %rname-winbind-devel
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
 
+%if_with docs
 %package doc
 Summary: Documentation for the Samba suite
 Group: Documentation
@@ -330,6 +332,7 @@ Conflicts: %rname-doc
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
 Samba suite.
+%endif
 
 %prep
 %setup -q -n %rname-%version
@@ -438,10 +441,7 @@ LDFLAGS="-Wl,-z,relro,-z,now" \
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs
 
-# Build PIDL for installation into vendor directories before
-# 'make proto' gets to it.
-(cd pidl && perl Makefile.PL INSTALLDIRS=vendor )
-
+%if_with docs
 pushd docs-xml
 export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
 %autoreconf
@@ -449,9 +449,10 @@ export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xm
 %make_build smbdotconf/parameters.all.xml
 %make_build release
 popd
+%endif
 
 %install
-%make install DESTDIR=%buildroot PERL_INSTALL_ROOT=%buildroot
+%make install DESTDIR=%buildroot
 
 mkdir -p %buildroot/sbin
 mkdir -p %buildroot/usr/{sbin,bin}
@@ -982,8 +983,10 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n python-module-%name
 %python_sitelibdir/*
 
+%if_with docs
 %files doc
 %doc docs-xml/output/htmldocs
+%endif
 
 %files test
 %_bindir/gentest
