@@ -37,7 +37,7 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.14
+Version: 4.1.15
 Release: alt0.M70P.1
 
 Group: System/Servers
@@ -1050,6 +1050,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Mon Jan 12 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt0.M70P.1
+- New version
+
 * Thu Dec 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
 - New version
 - Disable build documentation because it cannot built
