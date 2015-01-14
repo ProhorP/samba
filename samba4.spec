@@ -38,7 +38,7 @@
 
 Name: samba-DC
 Version: 4.1.15
-Release: alt0.M70P.1
+Release: alt1
 
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1050,7 +1050,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
-* Mon Jan 12 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt0.M70P.1
+* Wed Jan 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt1
 - New version
 
 * Thu Dec 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
