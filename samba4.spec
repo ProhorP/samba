@@ -38,7 +38,7 @@
 
 Name: samba-DC
 Version: 4.1.16
-Release: alt1
+Release: alt0.M70P.1
 
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1050,7 +1050,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
-* Thu Jan 15 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.16-alt1
+* Thu Jan 15 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.16-alt0.M70P.1
 - New version
 - Security fixes:
   + CVE-2014-8143: Samba's AD DC allows the administrator to delegate
@@ -1059,7 +1059,7 @@ TDB_NO_FSYNC=1 %make_build test
     additional required check on the UF_SERVER_TRUST_ACCOUNT bit in the
     userAccountControl attributes.
 
-* Wed Jan 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt1
+* Mon Jan 12 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt0.M70P.1
 - New version
 
 * Thu Dec 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
