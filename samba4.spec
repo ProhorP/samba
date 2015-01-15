@@ -37,7 +37,7 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.15
+Version: 4.1.16
 Release: alt1
 
 Group: System/Servers
@@ -1050,6 +1050,15 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Thu Jan 15 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.16-alt1
+- New version
+- Security fixes:
+  + CVE-2014-8143: Samba's AD DC allows the administrator to delegate
+    creation of user or computer accounts to specific users or groups.
+    However, all released versions of Samba's AD DC did not implement the
+    additional required check on the UF_SERVER_TRUST_ACCOUNT bit in the
+    userAccountControl attributes.
+
 * Wed Jan 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt1
 - New version
 
