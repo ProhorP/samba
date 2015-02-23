@@ -2,8 +2,8 @@
 
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
-Version: 3.5.15
-Release: alt1.M60P.1
+Version: 3.5.22
+Release: alt0.M60P.1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -43,7 +43,7 @@ Patch228: samba-3.5.11-manpage.patch
 Patch229: samba-3.5.11-idmapdebug.patch
 Patch235: samba-3.5.11-nss_info_doc.patch
 Patch237: samba-3.5.11-winbindd_manpage.patch
-
+Patch238: samba-3.5.22-CVE-2015-0240.patch
 
 Requires(pre): samba-common = %version-%release
 
@@ -204,6 +204,7 @@ cp %SOURCE11 packaging/Fedora/
 %patch229 -p1 -b .idmapdebug
 %patch235 -p1 -b .nss_info_doc
 %patch237 -p1 -b .winbindd_manpage
+%patch238 -p1
 
 sed -i 's/SAMBA_VERSION_VENDOR_SUFFIX=$/&\"%release\"/' %samba_source/VERSION
 cd %samba_source
@@ -657,6 +658,10 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Mon Feb 23 2015 Andrey Cherepanov <cas@altlinux.org> 3.5.22-alt0.M60P.1
+- 3.5.22
+  + fixes CVE-2015-0240 (security flaw in the smbd file server daemon)
+
 * Wed May 02 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.15-alt1.M60P.1
 - 3.5.15 (CVE-2012-2111)
 
