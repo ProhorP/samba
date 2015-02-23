@@ -37,7 +37,7 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.16
+Version: 4.1.17
 Release: alt0.M70P.1
 
 Group: System/Servers
@@ -1050,6 +1050,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Mon Feb 23 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.17-alt0.M70P.1
+- New version
+- Security fixes:
+  + fixes CVE-2015-0240 (security flaw in the smbd file server daemon)
+
 * Thu Jan 15 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.16-alt0.M70P.1
 - New version
 - Security fixes:
