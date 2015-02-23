@@ -298,7 +298,7 @@ NTSTATUS check_info3_in_group(struct netr_SamInfo3 *info3,
 	status = sid_array_from_info3(talloc_tos(), info3,
 				      &token->user_sids,
 				      &token->num_sids,
-				      true, false);
+				      true);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
 		return status;
@@ -656,6 +656,7 @@ static NTSTATUS winbindd_raw_kerberos_login(struct winbindd_domain *domain,
 					    cc,
 					    service,
 					    state->request->data.auth.user,
+					    state->request->data.auth.pass,
 					    realm,
 					    uid,
 					    time(NULL),
@@ -1034,6 +1035,7 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 							    cc,
 							    service,
 							    state->request->data.auth.user,
+							    state->request->data.auth.pass,
 							    domain->alt_name,
 							    uid,
 							    time(NULL),
@@ -1365,7 +1367,7 @@ static NTSTATUS winbindd_dual_pam_auth_samlogon(struct winbindd_domain *domain,
 			domain->can_do_validation6 = false;
 		}
 
-		logon_fn = contact_domain->can_do_samlogon_ex
+		logon_fn = (contact_domain->can_do_samlogon_ex && domain->can_do_validation6)
 			? rpccli_netlogon_sam_network_logon_ex
 			: rpccli_netlogon_sam_network_logon;
 
@@ -1558,7 +1560,9 @@ enum winbindd_result winbindd_dual_pam_auth(struct winbindd_domain *domain,
 	parse_domain_user(mapped_user, name_domain, name_user);
 
 	if ( mapped_user != state->request->data.auth.user ) {
-		fstr_sprintf( domain_user, "%s\\%s", name_domain, name_user );
+		fstr_sprintf( domain_user, "%s%c%s", name_domain,
+			*lp_winbind_separator(),
+			name_user );
 		safe_strcpy( state->request->data.auth.user, domain_user,
 			     sizeof(state->request->data.auth.user)-1 );
 	}
@@ -1989,7 +1993,7 @@ enum winbindd_result winbindd_dual_pam_auth_crap(struct winbindd_domain *domain,
 			domain->can_do_validation6 = false;
 		}
 
-		logon_fn = contact_domain->can_do_samlogon_ex
+		logon_fn = (contact_domain->can_do_samlogon_ex && domain->can_do_validation6)
 			? rpccli_netlogon_sam_network_logon_ex
 			: rpccli_netlogon_sam_network_logon;
 
@@ -2453,6 +2457,13 @@ enum winbindd_result winbindd_dual_pam_logoff(struct winbindd_domain *domain,
 			nt_errstr(result)));
 		goto process_result;
 	}
+
+	/*
+	 * Remove any mlock'ed memory creds in the child
+	 * we might be using for krb5 ticket renewal.
+	 */
+
+	winbindd_delete_memory_creds(state->request->data.logoff.user);
 
 #else
 	result = NT_STATUS_NOT_SUPPORTED;

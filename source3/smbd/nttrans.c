@@ -134,11 +134,6 @@ void send_nt_replies(connection_struct *conn,
 			     + data_alignment_offset);
 
 		/*
-		 * We might have had SMBnttranss in req->inbuf, fix that.
-		 */
-		SCVAL(req->outbuf, smb_com, SMBnttrans);
-
-		/*
 		 * Set total params and data to be sent.
 		 */
 
@@ -939,7 +934,19 @@ struct ea_list *read_nttrans_ea_list(TALLOC_CTX *ctx, const char *pdata, size_t 
 		if (next_offset == 0) {
 			break;
 		}
+
+		/* Integer wrap protection for the increment. */
+		if (offset + next_offset < offset) {
+			break;
+		}
+
 		offset += next_offset;
+
+		/* Integer wrap protection for while loop. */
+		if (offset + 4 < offset) {
+			break;
+		}
+
 	}
 
 	return ea_list_head;
@@ -3067,6 +3074,12 @@ void reply_nttranss(struct smb_request *req)
 	START_PROFILE(SMBnttranss);
 
 	show_msg((char *)req->inbuf);
+
+	/* Windows clients expect all replies to
+	   an NT transact secondary (SMBnttranss 0xA1)
+	   to have a command code of NT transact
+	   (SMBnttrans 0xA0). See bug #8989 for details. */
+	req->cmd = SMBnttrans;
 
 	if (req->wct < 18) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);

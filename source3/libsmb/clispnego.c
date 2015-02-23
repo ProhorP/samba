@@ -136,6 +136,10 @@ bool spnego_parse_negTokenInit(DATA_BLOB blob,
 	bool ret;
 	ASN1_DATA *data;
 
+	for (i = 0; i < ASN1_MAX_OIDS; i++) {
+		OIDs[i] = NULL;
+	}
+
 	data = asn1_init(talloc_tos());
 	if (data == NULL) {
 		return false;
@@ -161,6 +165,9 @@ bool spnego_parse_negTokenInit(DATA_BLOB blob,
 	for (i=0; asn1_tag_remaining(data) > 0 && i < ASN1_MAX_OIDS-1; i++) {
 		const char *oid_str = NULL;
 		asn1_read_OID(data,talloc_autofree_context(),&oid_str);
+		if (data->has_error) {
+			break;
+		}
 		OIDs[i] = CONST_DISCARD(char *, oid_str);
 	}
 	OIDs[i] = NULL;
@@ -380,6 +387,7 @@ bool spnego_parse_krb5_wrap(DATA_BLOB blob, DATA_BLOB *ticket, uint8 tok_id[2])
 	bool ret;
 	ASN1_DATA *data;
 	int data_remaining;
+	*ticket = data_blob_null;
 
 	data = asn1_init(talloc_tos());
 	if (data == NULL) {

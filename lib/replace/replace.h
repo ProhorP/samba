@@ -140,6 +140,12 @@ char *rep_strdup(const char *s);
 void *rep_memmove(void *dest,const void *src,int size);
 #endif
 
+#ifndef HAVE_MEMMEM
+#define memmem rep_memmem
+void *rep_memmem(const void *haystack, size_t haystacklen,
+		 const void *needle, size_t needlelen);
+#endif
+
 #ifndef HAVE_MKTIME
 #define mktime rep_mktime
 /* prototype is in "system/time.h" */
@@ -350,7 +356,17 @@ int rep_dlclose(void *handle);
 #endif
 #endif
 
-#ifndef HAVE_VASPRINTF
+#if !defined(HAVE_VDPRINTF) || !defined(HAVE_C99_VSNPRINTF)
+#define vdprintf rep_vdprintf
+int rep_vdprintf(int fd, const char *format, va_list ap) PRINTF_ATTRIBUTE(2,0);
+#endif
+
+#if !defined(HAVE_DPRINTF) || !defined(HAVE_C99_VSNPRINTF)
+#define dprintf rep_dprintf
+int rep_dprintf(int fd, const char *format, ...) PRINTF_ATTRIBUTE(2,3);
+#endif
+
+#if !defined(HAVE_VASPRINTF) || !defined(HAVE_C99_VSNPRINTF)
 #define vasprintf rep_vasprintf
 int rep_vasprintf(char **ptr, const char *format, va_list ap) PRINTF_ATTRIBUTE(2,0);
 #endif
@@ -365,9 +381,27 @@ int rep_snprintf(char *,size_t ,const char *, ...) PRINTF_ATTRIBUTE(3,4);
 int rep_vsnprintf(char *,size_t ,const char *, va_list ap) PRINTF_ATTRIBUTE(3,0);
 #endif
 
-#ifndef HAVE_ASPRINTF
+#if !defined(HAVE_ASPRINTF) || !defined(HAVE_C99_VSNPRINTF)
 #define asprintf rep_asprintf
 int rep_asprintf(char **,const char *, ...) PRINTF_ATTRIBUTE(2,3);
+#endif
+
+#if !defined(HAVE_C99_VSNPRINTF)
+#ifdef REPLACE_BROKEN_PRINTF
+/*
+ * We do not redefine printf by default
+ * as it breaks the build if system headers
+ * use __attribute__((format(printf, 3, 0)))
+ * instead of __attribute__((format(__printf__, 3, 0)))
+ */
+#define printf rep_printf
+#endif
+int rep_printf(const char *, ...) PRINTF_ATTRIBUTE(1,2);
+#endif
+
+#if !defined(HAVE_C99_VSNPRINTF)
+#define fprintf rep_fprintf
+int rep_fprintf(FILE *stream, const char *, ...) PRINTF_ATTRIBUTE(2,3);
 #endif
 
 #ifndef HAVE_VSYSLOG

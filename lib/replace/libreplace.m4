@@ -108,7 +108,7 @@ AC_CHECK_HEADERS(unix.h)
 AC_CHECK_FUNCS(seteuid setresuid setegid setresgid chroot bzero strerror)
 AC_CHECK_FUNCS(vsyslog setlinebuf mktime ftruncate chsize rename)
 AC_CHECK_FUNCS(waitpid wait4 strlcpy strlcat initgroups memmove strdup)
-AC_CHECK_FUNCS(pread pwrite strndup strcasestr strtok_r mkdtemp dup2)
+AC_CHECK_FUNCS(pread pwrite strndup strcasestr strtok_r mkdtemp dup2 dprintf vdprintf)
 AC_CHECK_FUNCS(isatty chown lchown link readlink symlink realpath)
 AC_HAVE_DECL(setresuid, [#include <unistd.h>])
 AC_HAVE_DECL(setresgid, [#include <unistd.h>])
@@ -227,6 +227,8 @@ AC_HAVE_DECL(environ, [#include <unistd.h>])
 
 AC_CHECK_FUNCS(strnlen)
 AC_CHECK_FUNCS(strtoull __strtoull strtouq strtoll __strtoll strtoq)
+
+AC_CHECK_FUNCS(memmem)
 
 # this test disabled as we don't actually need __VA_ARGS__ yet
 AC_TRY_CPP([

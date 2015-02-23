@@ -681,3 +681,57 @@ char *rep_realpath(const char *path, char *resolved_path)
 	return NULL;
 }
 #endif
+
+
+#ifndef HAVE_MEMMEM
+void *rep_memmem(const void *haystack, size_t haystacklen,
+		 const void *needle, size_t needlelen)
+{
+	if (needlelen == 0) {
+		return discard_const(haystack);
+	}
+	while (haystacklen >= needlelen) {
+		char *p = memchr(haystack, *(const char *)needle,
+				 haystacklen-(needlelen-1));
+		if (!p) return NULL;
+		if (memcmp(p, needle, needlelen) == 0) {
+			return p;
+		}
+		haystack = p+1;
+		haystacklen -= (p - (const char *)haystack) + 1;
+	}
+	return NULL;
+}
+#endif
+
+#if !defined(HAVE_VDPRINTF) || !defined(HAVE_C99_VSNPRINTF)
+int rep_vdprintf(int fd, const char *format, va_list ap)
+{
+	char *s = NULL;
+	int ret;
+
+	vasprintf(&s, format, ap);
+	if (s == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+	ret = write(fd, s, strlen(s));
+	free(s);
+	return ret;
+}
+#endif
+
+#if !defined(HAVE_DPRINTF) || !defined(HAVE_C99_VSNPRINTF)
+int rep_dprintf(int fd, const char *format, ...)
+{
+	int ret;
+	va_list ap;
+
+	va_start(ap, format);
+	ret = vdprintf(fd, format, ap);
+	va_end(ap);
+
+	return ret;
+}
+#endif
+

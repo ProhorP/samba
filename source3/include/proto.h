@@ -1361,8 +1361,7 @@ NTSTATUS sid_array_from_info3(TALLOC_CTX *mem_ctx,
 			      const struct netr_SamInfo3 *info3,
 			      DOM_SID **user_sids,
 			      size_t *num_user_sids,
-			      bool include_user_group_rid,
-			      bool skip_ressource_groups);
+			      bool include_user_group_rid);
 
 /* The following definitions come from lib/util_sock.c  */
 
@@ -3918,9 +3917,9 @@ void expire_workgroups_and_servers(time_t t);
 /* The following definitions come from param/loadparm.c  */
 
 char *lp_smb_ports(void);
-char *lp_dos_charset(void);
-char *lp_unix_charset(void);
-char *lp_display_charset(void);
+const char *lp_dos_charset(void);
+const char *lp_unix_charset(void);
+const char *lp_display_charset(void);
 char *lp_logfile(void);
 char *lp_configfile(void);
 char *lp_smb_passwd_file(void);
@@ -7003,7 +7002,7 @@ bool set_conn_connectpath(connection_struct *conn, const char *connectpath);
 bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir);
 void load_registry_shares(void);
 int add_home_service(const char *service, const char *username, const char *homedir);
-int find_service(fstring service);
+int find_service(const char *service_in, fstring service);
 connection_struct *make_connection_snum(struct smbd_server_connection *sconn,
 					int snum, user_struct *vuser,
 					DATA_BLOB password,

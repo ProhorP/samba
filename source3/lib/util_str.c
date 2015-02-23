@@ -514,6 +514,10 @@ char *safe_strcpy_fn(const char *fn,
 		return NULL;
 	}
 
+	if (src == dest) {
+		return dest;
+	}
+
 #ifdef DEVELOPER
 	clobber_region(fn,line,dest, maxlength+1);
 #endif
@@ -2300,6 +2304,10 @@ bool validate_net_name( const char *name,
 		int max_len)
 {
 	int i;
+
+	if (!name) {
+		return false;
+	}
 
 	for ( i=0; i<max_len && name[i]; i++ ) {
 		/* fail if strchr_m() finds one of the invalid characters */

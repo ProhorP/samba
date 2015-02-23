@@ -1,4 +1,485 @@
                    ==============================
+                   Release Notes for Samba 3.5.22
+			  August 05, 2013
+                   ==============================
+
+
+This is a security release in order to address
+CVE-2013-4124 (Missing integer wrap protection in EA list reading can cause
+server to loop with DOS).
+
+o  CVE-2013-4124:
+   All current released versions of Samba are vulnerable to a denial of
+   service on an authenticated or guest connection. A malformed packet
+   can cause the smbd server to loop the CPU performing memory
+   allocations and preventing any further service.
+
+   A connection to a file share, or a local account is needed to exploit
+   this problem, either authenticated or unauthenticated if guest
+   connections are allowed.
+
+   This flaw is not exploitable beyond causing the code to loop
+   allocating memory, which may cause the machine to exceed memory
+   limits.
+
+
+Changes since 3.5.21:
+---------------------
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 10010: CVE-2013-4124: Missing integer wrap protection in EA list
+      reading can cause server to loop with DOS.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+Release notes for older releases follow:
+----------------------------------------
+
+                   ==============================
+                   Release Notes for Samba 3.5.21
+			 January 30, 2013
+                   ==============================
+
+
+This is a security release in order to address
+CVE-2013-0213 (Clickjacking issue in SWAT) and
+CVE-2013-0214 (Potential XSRF in SWAT).
+
+o  CVE-2013-0213:
+   All current released versions of Samba are vulnerable to clickjacking in the
+   Samba Web Administration Tool (SWAT). When the SWAT pages are integrated into
+   a malicious web page via a frame or iframe and then overlaid by other content,
+   an attacker could trick an administrator to potentially change Samba settings.
+
+   In order to be vulnerable, SWAT must have been installed and enabled
+   either as a standalone server launched from inetd or xinetd, or as a
+   CGI plugin to Apache. If SWAT has not been installed or enabled (which
+   is the default install state for Samba) this advisory can be ignored.
+
+o  CVE-2013-0214:
+   All current released versions of Samba are vulnerable to a cross-site
+   request forgery in the Samba Web Administration Tool (SWAT). By guessing a
+   user's password and then tricking a user who is authenticated with SWAT into
+   clicking a manipulated URL on a different web page, it is possible to manipulate
+   SWAT.
+
+   In order to be vulnerable, the attacker needs to know the victim's password.
+   Additionally SWAT must have been installed and enabled either as a standalone
+   server launched from inetd or xinetd, or as a CGI plugin to Apache. If SWAT has
+   not been installed or enabled (which is the default install state for Samba)
+   this advisory can be ignored.
+
+
+Changes since 3.5.20:
+---------------------
+
+o   Kai Blin <kai@samba.org>
+    * BUG 9576: CVE-2013-0213: Fix clickjacking issue in SWAT.
+    * BUG 9577: CVE-2013-0214: Fix potential XSRF in SWAT.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
+                   Release Notes for Samba 3.5.20
+			 December 17, 2012
+                   ==============================
+
+
+This is the latest stable release of Samba 3.5.
+
+Major enhancements in Samba 3.5.20 include:
+
+o  Fix segfaults in log level = 10 on Solaris (bug #9390).
+o  Apply ACL masks correctly when setting ACLs (bug #9236).
+
+
+Changes since 3.5.19:
+---------------------
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 7781: Samba transforms ShareName to lowercase (sharename) when adding
+      new share via MMC.
+    * BUG 9236: Apply ACL masks correctly when setting ACLs.
+    * BUG 9455: munmap called for an address location not mapped by Samba.
+
+
+o   Björn Baumbach <bb@sernet.de>
+    * BUG 9345: Fix usage of <smbconfoption> tag.
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9390: Fix segfaults in log level = 10 on Solaris.
+    * BUG 9402: Fix dns updates against BIND9 (used in a Samba4 domain).
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
+                   Release Notes for Samba 3.5.19
+			  November 5, 2012
+                   ==============================
+
+
+This is the latest stable release of Samba 3.5.
+
+Major enhancements in Samba 3.5.19 include:
+
+o  Connection to outbound trusted domain goes offline (bug #9016).
+o  ACL masks incorrectly applied when setting ACLs (bug #9236).
+o  Samba panics if a user specifies an invalid port number (bug #9218).
+
+
+Changes since 3.5.18:
+---------------------
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9016: Connection to outbound trusted domain goes offline.
+    * BUG 9117: smbclient can't connect to a Windows 7 server using NTLMv2.
+    * BUG 9213: Bad ASN.1 NegTokenInit packet can cause invalid free.
+    * BUG 9236: ACL masks incorrectly applied when setting ACLs.
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 8788: libsmb: Initialise ticket to ensure we do not free invalid memory.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 8344: autoconf: Fix --with(out)-sendfile-support option handling.
+    * BUG 8732: Fix compile of krb5 locator on Solaris.
+    * BUG 9172: Add quota support for gfs2.
+
+
+o   Matthieu Patou <mat@matws.net>
+    * BUG 9259: lib-addns: Ensure that allocated buffer are pre set to 0.
+
+
+o   Andreas Schneider <asn@samba.org>
+    * BUG 9218: Samba panics if a user specifies an invalid port number.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
+                   Release Notes for Samba 3.5.18
+			 September 24, 2012
+                   ==============================
+
+
+This is the latest stable release of Samba 3.5.
+
+Major enhancements in Samba 3.5.18 include:
+
+o  Fix a smbd crash in reply_lockingX_error (bug #9084).
+o  Fix Winbind crashes caused by mis-identified idle clients (bug #9104).
+o  Desktop Managers (xdm, gdm, lightdm...) crash with SIGSEGV in
+   _pam_winbind_change_pwd() when password is expiring (bug #9013).
+
+
+Changes since 3.5.17:
+---------------------
+
+o   Michael Adam <obnox@samba.org>
+    * BUG 7788: Clarify the idmap_rid manpage.
+
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9098: Winbind does not refresh Kerberos tickets.
+    * BUG 9147: Winbind can't fetch user or group info from AD via LDAP.
+    * BUG 9150: Valid open requests can cause smbd assert due to incorrect
+      oplock handling on delete requests.
+
+
+o   Neil R. Goldberg <ngoldber@mitre.org>
+    * BUG 9100: Winbind doesn't return "Domain Local" groups from own domain.
+
+
+o   Hargagan <shargagan@novell.com>
+    * BUG 9085: NMB registration for a duplicate workstation fails with
+      registration refuse.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 7814: Fix build of sysquote_xfs.
+    * BUG 8402: Winbind log spammed with idmap messages.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * BUG 9084: Fix a smbd crash in reply_lockingX_error.
+
+
+o   Herb Lewis <hlewis@panasas.com>
+    * BUG 9104: Fix Winbind crashes caused by mis-identified idle clients.
+
+
+o   Luca Lorenzetto <lorenzetto-luca@ubuntu-it.org>
+    * BUG 9013: Desktop Managers (xdm, gdm, lightdm...) crash with SIGSEGV in
+      _pam_winbind_change_pwd() when password is expiring.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
+                   Release Notes for Samba 3.5.17
+			   August 13, 2012
+                   ==============================
+
+
+This is the latest stable release of Samba 3.5.
+
+
+Changes since 3.5.16:
+---------------------
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 9034: Fix typo in set_re_uid() call when USE_SETRESUID selected in
+      configure.
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 8996: Fix build without ads support.
+    * BUG 9011: Second part of a fix for bug #9011 (Build on HP-UX broken).
+
+
+o   Stefan Metzmacher <metze@samba.org>
+    * BUG 9022: Make vfs_gpfs less verbose in get/set_xattr functions.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
+                   Release Notes for Samba 3.5.16
+			    July 2, 2012
+                   ==============================
+
+
+This is the latest stable release of Samba 3.5.
+
+Major enhancements in Samba 3.5.16 include:
+
+o  Fix possible memory leaks in the Samba master process (bug #8970).
+o  Fix uninitialized memory read in talloc_free().
+o  Fix smbd crash with unknown user (bug #8314).
+
+
+Changes since 3.5.15:
+---------------------
+
+o   Jeremy Allison <jra@samba.org>
+    * BUG 8314: Fix smbd crash with unknown user.
+    * BUG 8831: Fix inconsistent (with manpage) command-line switch for "help"
+      in smbtree.
+    * BUG 8882: Fix processing of %U with vfs_full_audit when "force user"
+      is set.
+    * BUG 8897: winbind_krb5_locator only returns one IP address.
+    * BUG 8910: resolve_ads() code can return zero addresses and miss valid DC
+      IP addresses.
+    * BUG 8957: Fix typo in pam_winbindd code.
+    * BUG 8972: Directory group write permission bit is set if unix extensions
+      are enabled.
+    * BUG 8974: Kernel oplocks are broken when uid(file) != uid(process).
+    * BUG 8989: Send correct responses to NT Transact Secondary when no data and
+      no params.
+    * BUG 8994: Fix "winbind normalize names".
+
+
+o   Andrew Bartlett <abartlet@samba.org>
+    * BUG 8599: Only use SamLogonEx when we can get unencrypted session keys.
+    * BUG 8943: Slow but responsive DC can lock up winbindd for > 10 minutes
+      at a time.
+
+
+o   Björn Baumbach <bb@sernet.de>
+    * BUG 7564: Fix default name resolve order in the manpage.
+
+
+o   John Bradshaw <john@johnbradshaw.org>
+    * BUG 7938: Fix typo (overrided -> overridden) in Samba3-HOWTO.
+
+
+o   Olaf Flebbe <o.flebbe@science-computing.de>
+    * BUG 8552: Correct documentation of "case sensitive".
+
+
+o   Björn Jacke <bj@sernet.de>
+    * BUG 8869: Remove outdated netscape ds 5 schema file.
+    * BUG 9011: Fix build on HP-UX.
+
+
+o   Volker Lendecke <vl@samba.org>
+    * Fix uninitialized memory read in talloc_free().
+    * BUG 8338: OS/X can not deal with a 10-vwv read on normal files.
+    * BUG 8998: Notify code can miss a ChDir.
+    * BUG 9000: Fix a Winbind race leading to 100% CPU.
+    * BUG 9003: Fix posix acl on gpfs.
+
+
+o   Matthieu Patou <mat@matws.net>
+    * BUG 8975: Make sure that Winbind can coredump.
+
+
+o   Karolin Seeger <kseeger@samba.org>
+    * BUG 7930: Add hint that setting "profile acls = yes" on normal shares can
+      cause trouble.
+
+
+o   Richard Sharpe <realrichardsharpe@gmail.com>
+    * BUG 8822: Fix building out-of-tree vfs modules.
+    * BUG 8970: Fix possible memory leaks in the Samba master process.
+
+
+o   Simo Sorce <idra@samba.org>
+    * BUG 8915: Fix pam_winbind build against newer iniparser library.
+
+
+######################################################################
+Reporting bugs & Development Discussion
+#######################################
+
+Please discuss this release on the samba-technical mailing list or by
+joining the #samba-technical IRC channel on irc.freenode.net.
+
+If you do report problems then please try to send high quality
+feedback. If you don't provide vital information to help us track down
+the problem then you will probably be ignored.  All bug reports should
+be filed under the Samba 3.5 product in the project's Bugzilla
+database (https://bugzilla.samba.org/).
+
+
+======================================================================
+== Our Code, Our Bugs, Our Responsibility.
+== The Samba Team
+======================================================================
+
+
+----------------------------------------------------------------------
+
+
+                   ==============================
                    Release Notes for Samba 3.5.15
 			   April 30, 2012
                    ==============================
@@ -43,8 +524,8 @@ database (https://bugzilla.samba.org/).
 ======================================================================
 
 
-Release notes for older releases follow:
-----------------------------------------
+----------------------------------------------------------------------
+
 
                    ==============================
                    Release Notes for Samba 3.5.14

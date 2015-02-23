@@ -894,11 +894,6 @@ static NTSTATUS open_mode_check(connection_struct *conn,
 	return NT_STATUS_OK;
 }
 
-static bool is_delete_request(files_struct *fsp) {
-	return ((fsp->access_mask == DELETE_ACCESS) &&
-		(fsp->oplock_type == NO_OPLOCK));
-}
-
 /*
  * Send a break message to the oplock holder and delay the open for
  * our client.
@@ -1002,13 +997,9 @@ static bool delay_for_oplocks(struct share_mode_lock *lck,
 	}
 
 	if (exclusive != NULL) { /* Found an exclusive oplock */
-		bool delay_it = is_delete_request(fsp) ?
-				BATCH_OPLOCK_TYPE(exclusive->op_type) :	true;
 		SMB_ASSERT(!have_level2);
-		if (delay_it) {
-			send_break_message(fsp, exclusive, mid, oplock_request);
-			return true;
-		}
+		send_break_message(fsp, exclusive, mid, oplock_request);
+		return true;
 	}
 
 	/*
@@ -2296,8 +2287,10 @@ static NTSTATUS open_directory(connection_struct *conn,
 
 	SMB_ASSERT(!is_ntfs_stream_smb_fname(smb_dname));
 
-	/* Ensure we have a directory attribute. */
-	file_attributes |= FILE_ATTRIBUTE_DIRECTORY;
+	if (!(file_attributes & FILE_FLAG_POSIX_SEMANTICS)) {
+		/* Ensure we have a directory attribute. */
+		file_attributes |= FILE_ATTRIBUTE_DIRECTORY;
+	}
 
 	DEBUG(5,("open_directory: opening directory %s, access_mask = 0x%x, "
 		 "share_access = 0x%x create_options = 0x%x, "
