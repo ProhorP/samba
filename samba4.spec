@@ -31,7 +31,7 @@
 %endif
 
 Name: samba
-Version: 4.0.23
+Version: 4.0.25
 Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1066,6 +1066,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Feb 23 2015 Anton V. Boyarshinov <boyarsh@altlinux.ru> 4.0.25-alt0.M70P.1
+- 4.0.25
+- CVE-2015-0240 fixed
+
 * Mon Dec 22 2014 Andrey Cherepanov <cas@altlinux.org> 4.0.23-alt0.M70P.1
 - 4.0.23
 - Build without documentation
