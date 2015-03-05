@@ -37,7 +37,7 @@
 %def_enable avahi
 
 Name: samba-DC
-Version: 4.1.17
+Version: 4.2.0
 Release: alt1
 
 Group: System/Servers
@@ -423,7 +423,6 @@ LDFLAGS="-Wl,-z,relro,-z,now" \
 %endif
 %if_with clustering_support
 	--with-cluster-support \
-	--enable-old-ctdb \
 %endif
 %if_without pam_smbpass
 	--without-pam_smbpass \
@@ -1050,6 +1049,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Thu Mar 05 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
+- New version
+
 * Mon Feb 23 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.17-alt1
 - New version
 - Security fixes:
