@@ -1,0 +1,104 @@
+#!/bin/sh
+#
+# chkconfig: - 91 35
+# description: Starts and stops the Samba nmbd daemon \
+#	       used to provide NetBIOS over IP naming services to clients.
+#
+# processname: nmbd
+# pidfile: /var/run/samba/nmbd.pid
+# config:  /etc/samba/smb.conf
+### BEGIN INIT INFO
+# Provides: nmb
+# Default-Start: 3 4 5
+# Default-Stop: 0 1 6
+# Should-Start: $syslog
+# Should-Stop: $null
+# Required-Start: $network $local_fs
+# Required-Stop: $null
+# Short-Description: Samba NetBIOS Name Server
+# Description: Starts and stops the SAMBA nmbd daemon \
+#              used to provide NetBIOS over IP naming services to clients.
+### END INIT INFO
+
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
+
+# Source function library.
+. /etc/init.d/functions
+
+# Source networking configuration.
+SourceIfNotEmpty /etc/sysconfig/network
+
+SourceIfNotEmpty /etc/sysconfig/samba
+
+# Check that smb.conf exists.
+[ -s /etc/samba/smb.conf ] || exit
+
+export TMPDIR=/tmp
+LOCKFILE=/var/lock/subsys/nmb
+PIDFILE=/var/run/nmbd.pid
+RETVAL=0
+
+start() {
+	is_yes "$NETWORKING" || return 0
+	NMBD_DISABLED=`testparm -s --parameter-name='disable netbios' 2>/dev/null`
+	if [ "$NMBD_DISABLED" != Yes ]; then
+		msg_starting $"Samba NetBIOS Name Server"
+		start_daemon --pidfile "$PIDFILE"  --lockfile "$LOCKFILE" --expect-user root --no-announce -- nmbd -D $NMBDOPTIONS
+		RETVAL=$?
+	fi
+	return $RETVAL
+}
+
+stop() {
+	msg_stopping $"Samba NetBIOS Name Server"
+	stop_daemon --pidfile "$PIDFILE"  --lockfile "$LOCKFILE" --expect-user root --no-announce -- nmbd
+	RETVAL=$?
+}
+
+restart() {
+	stop
+	start
+}
+
+reload() {
+	msg_reloading $"Samba NetBIOS Name Server"
+	stop_daemon --pidfile "$PIDFILE" --expect-user root -HUP -- nmbd
+	RETVAL=$?
+	return $RETVAL
+}
+
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	restart
+	;;
+  reload)
+	reload
+	;;
+  status)
+	status --pidfile "$PIDFILE" --expect-user root -- nmbd
+	RETVAL=$?
+	;;
+  condrestart)
+	if [ -e "$LOCKFILE" ]; then
+		restart
+	fi
+	;;
+  condstop)
+	if [ -e "$LOCKFILE" ]; then
+		stop
+	fi
+	;;
+  *)
+	msg_usage "${0##*/} {start|stop|reload|restart|condstop|condrestart|condreload|status}"
+	RETVAL=1
+esac
+
+exit $RETVAL

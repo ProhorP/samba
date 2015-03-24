@@ -1,0 +1,103 @@
+#!/bin/sh
+#
+# chkconfig: - 91 35
+# description: Starts and stops the Samba smbd daemon \
+#	       used to provide SMB network services.
+#
+# processname: smbd
+# pidfile: /var/run/samba/smbd.pid
+# config:  /etc/samba/smb.conf
+#
+### BEGIN INIT INFO
+# Provides: smb
+# Default-Start: 3 4 5
+# Default-Stop: 0 1 6
+# Should-Start: $syslog nmb winbind slapd cups
+# Should-Stop: $null
+# Required-Start: $local_fs $network
+# Required-Stop: $null
+# Short-Description: Samba SMB/CIFS Server
+# Description: Starts and stops the SAMBA smbd daemons \
+#              used to provide SMB network services.
+### END INIT INFO
+
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
+
+# Source function library.
+. /etc/init.d/functions
+
+# Source networking configuration.
+SourceIfNotEmpty /etc/sysconfig/network
+
+SourceIfNotEmpty /etc/sysconfig/samba
+
+# Check that smb.conf exists.
+[ -s /etc/samba/smb.conf ] || exit
+
+export TMPDIR=/tmp
+LOCKFILE=/var/lock/subsys/smb
+PIDFILE=/var/run/smbd.pid
+RETVAL=0
+
+
+start() {
+	is_yes "$NETWORKING" || return 0
+	msg_starting $"Samba SMB/CIFS Server"
+	start_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- smbd -D $SMBDOPTIONS
+	RETVAL=$?
+	return $RETVAL
+}
+
+stop() {
+	msg_stopping $"Samba SMB/CIFS Server"
+	stop_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- smbd
+	RETVAL=$?
+	return $RETVAL
+}
+
+restart() {
+	stop
+	start
+}
+
+reload() {
+	msg_reloading $"Samba SMB/CIFS Server"
+	stop_daemon --pidfile "$PIDFILE" --expect-user root -HUP -- smbd
+	RETVAL=$?
+	return $RETVAL
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	restart
+	;;
+  reload)
+	reload
+	;;
+  status)
+	status --pidfile "$PIDFILE" --expect-user root -- smbd
+	RETVAL=$?
+	;;
+  condrestart)
+	if [ -e "$LOCKFILE" ]; then
+		restart
+	fi
+	;;
+  condstop)
+	if [ -e "$LOCKFILE" ]; then
+		stop
+	fi
+	;;
+  *)
+	msg_usage "${0##*/} {start|stop|reload|restart|condstop|condrestart|condreload|status}"
+	RETVAL=1
+esac
+
+exit $RETVAL

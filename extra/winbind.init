@@ -1,0 +1,102 @@
+#!/bin/sh
+#
+# chkconfig: - 27 73
+# description: Starts and stops the Samba Winbind daemon \
+#       used to provide seamless NT domain integration.
+#
+# processname: winbindd
+# pidfile: /var/run/winbindd.pid
+# config:  /etc/samba/smb.conf
+### BEGIN INIT INFO
+# Provides: winbind
+# Default-Start: 3 4 5
+# Default-Stop: 0 1 6
+# Should-Start: $syslog nmb
+# Should-Stop: $null
+# Required-Start: $local_fs $network
+# Required-Stop: $null
+# Short-Description: Samba Name Service Switch daemon
+# Description: Starts and stops the SAMBA winbind daemons \
+#              used to provide user and group information \
+#              from a NT domain controller to linux.
+### END INIT INFO
+
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
+
+. /etc/init.d/functions
+
+# Source networking configuration.
+SourceIfNotEmpty /etc/sysconfig/network
+
+SourceIfNotEmpty /etc/sysconfig/samba
+
+# Check that smb.conf exists.
+[ -s /etc/samba/smb.conf ] || exit
+
+export TMPDIR=/tmp
+LOCKFILE=/var/lock/subsys/winbindd
+PIDFILE=/var/run/winbindd.pid
+RETVAL=0
+
+
+start() {
+	is_yes "$NETWORKING" || return 0
+	msg_starting $"Samba Winbind service"
+	start_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- winbindd -D "$WINBINDOPTIONS"
+	RETVAL=$?
+	return $RETVAL
+}
+
+stop() {
+	msg_stopping $"Samba Winbind service"
+	stop_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- winbindd
+	RETVAL=$?
+	return $RETVAL
+}
+
+restart() {
+	stop
+	start
+}
+
+reload() {
+	msg_reloading $"Samba Winbind service"
+	stop_daemon --pidfile "$PIDFILE" --expect-user root -HUP -- winbindd
+	RETVAL=$?
+	return $RETVAL
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	restart
+	;;
+  reload)
+	reload
+	;;
+  status)
+	status --pidfile "$PIDFILE" --expect-user root -- winbindd
+	RETVAL=$?
+	;;
+  condrestart)
+	if [ -e "$LOCKFILE" ]; then
+		restart
+	fi
+	;;
+  condstop)
+	if [ -e "$LOCKFILE" ]; then
+		stop
+	fi
+	;;
+  *)
+	msg_usage "${0##*/} {start|stop|reload|restart|condstop|condrestart|condreload|status}"
+	RETVAL=1
+esac
+
+exit $RETVAL
