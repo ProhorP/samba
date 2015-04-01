@@ -142,6 +142,7 @@ SMB/CIFS clients.
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
 BuildArch: noarch
+Provides: samba-utils = %version-%release
 Provides: samba4-common = %version-%release
 Obsoletes: samba4-common < %version-%release
 
