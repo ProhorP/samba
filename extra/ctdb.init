@@ -1,0 +1,95 @@
+#!/bin/sh
+
+# Start and stop CTDB (Clustered TDB daemon)
+#
+# chkconfig: - 90 01
+#
+# description: Starts and stops CTDB
+# pidfile: /var/run/ctdb/ctdbd.pid
+# config: /etc/sysconfig/ctdb
+
+### BEGIN INIT INFO
+# Provides:            ctdb
+# Required-Start:      $local_fs $syslog $network $remote_fs
+# Required-Stop:       $local_fs $syslog $network $remote_fs
+# Default-Start:       2 3 4 5
+# Default-Stop:        0 1 6
+# Short-Description:   start and stop ctdb service
+# Description:         Start and stop CTDB (Clustered TDB daemon)
+### END INIT INFO
+
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
+
+# Source function library.
+. /etc/init.d/functions
+
+SourceIfNotEmpty /etc/sysconfig/ctdb
+
+CTDBD=ctdbd
+CTDBD_WRAPPER=ctdbd_wrapper
+LOCKFILE=/var/lock/subsys/ctdbd
+PIDFILE=/var/run/ctdbd/ctdbd.pid
+RETVAL=0
+
+############################################################
+
+start()
+{
+	msg_starting $"Samba ctdbd service"
+	start_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- $CTDBD_WRAPPER "$PIDFILE" start
+	RETVAL=$?
+	return $RETVAL
+}
+
+stop()
+{
+	msg_stopping $"Samba ctdbd service"
+	stop_daemon --pidfile "$PIDFILE" --lockfile "$LOCKFILE" --expect-user root --no-announce -- $CTDBD_WRAPPER "$PIDFILE" stop
+	RETVAL=$?
+	return $RETVAL
+}
+
+restart() {
+	stop
+	start
+}
+
+reload() {
+	stop
+	start
+}
+
+
+case "$1" in
+    start)
+	start
+	;;
+    stop)
+	stop
+	;;
+    restart)
+	restart
+	;;
+    reload)
+	reload
+	;;
+    status)
+	status --pidfile "$PIDFILE" --expect-user root -- $CTDBD
+	;;
+  condrestart)
+	if [ -e "$LOCKFILE" ]; then
+		restart
+	fi
+	;;
+  condstop)
+	if [ -e "$LOCKFILE" ]; then
+		stop
+	fi
+	;;
+  *)
+	msg_usage "${0##*/} {start|stop|reload|restart|condstop|condrestart|condreload|status}"
+	RETVAL=1
+esac
+
+exit $RETVAL

@@ -9516,11 +9516,6 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 		goto err_jinfo_free;
 	}
 
-	svc_name = lp_const_servicename(snum);
-	if (svc_name == NULL) {
-		return WERR_INVALID_PARAM;
-	}
-
 	result = winreg_get_printer_internal(p->mem_ctx,
 				    get_session_info_system(),
 				    p->msg_ctx,
@@ -9543,21 +9538,6 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 		DEBUG(3, ("no sysjob for spoolss jobid %u\n", r->in.job_id));
 		result = WERR_INVALID_PARAM;
 		goto err_pinfo_free;
-	}
-
-	pdb = get_print_db_byname(svc_name);
-	if (pdb == NULL) {
-		DEBUG(3, ("failed to get print db for svc %s\n", svc_name));
-		TALLOC_FREE(pinfo2);
-		return WERR_INVALID_PARAM;
-	}
-
-	sysjob = jobid_to_sysjob_pdb(pdb, r->in.job_id);
-	release_print_db(pdb);
-	if (sysjob == -1) {
-		DEBUG(3, ("no sysjob for spoolss jobid %u\n", r->in.job_id));
-		TALLOC_FREE(pinfo2);
-		return WERR_INVALID_PARAM;
 	}
 
 	count = print_queue_status(p->msg_ctx, snum, &queue, &prt_status);

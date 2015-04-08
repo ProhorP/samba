@@ -1053,21 +1053,4 @@ struct tevent_context *messaging_tevent_context(
 	return msg_ctx->event_ctx;
 }
 
-/*
-  Call when a process has terminated abnormally.
-*/
-void messaging_cleanup_server(struct messaging_context *msg_ctx,
-				struct server_id server)
-{
-	if (server_id_is_disconnected(&server)) {
-		return;
-	}
-
-	if (!procid_is_local(&server)) {
-		return;
-	}
-
-	(void)messaging_tdb_cleanup(msg_ctx, server);
-
-}
 /** @} **/
