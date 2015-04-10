@@ -604,6 +604,9 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 # remove tests form python modules
 rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
+mkdir -p %buildroot%_sysconfdir/ld.so.conf.d/
+echo "%_libdir/samba" > %buildroot%_sysconfdir/ld.so.conf.d/%name.conf
+
 %find_lang pam_winbind
 %find_lang net
 
