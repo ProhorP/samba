@@ -18,7 +18,7 @@
 %def_without docs
 
 %def_with dc
-%def_with clustering_support
+%def_without clustering_support
 %def_without testsuite
 
 %if_with testsuite
@@ -329,58 +329,6 @@ Conflicts: %rname-winbind-devel
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
 
-%package -n ctdb-DC
-Summary: A Clustered Database based on Samba's Trivial Database (TDB)
-Group: System/Servers
-
-# for ps and killall
-Requires: psmisc
-Requires: tdb-utils
-# for pkill and pidof:
-Requires: procps
-# for netstat:
-Requires: net-tools
-Requires: ethtool
-# for ip:
-Requires: iproute
-Requires: iptables
-# for flock, getopt, kill:
-Requires: util-linux
-Conflicts: ctdb
-
-%description -n ctdb-DC
-CTDB is a cluster implementation of the TDB database used by Samba and other
-projects to store temporary data. If an application is already using TDB for
-temporary data it is very easy to convert that application to be cluster aware
-and use CTDB instead.
-
-%package -n ctdb-DC-devel
-Summary: CTDB clustered database development package
-Group: Development/C
-Requires: ctdb-DC = %version-%release
-Conflicts: ctdb-devel
-
-%description -n ctdb-DC-devel
-Libraries, include files, etc you can use to develop CTDB applications.
-CTDB is a cluster implementation of the TDB database used by Samba and other
-projects to store temporary data. If an application is already using TDB for
-temporary data it is very easy to convert that application to be cluster aware
-and use CTDB instead.
-
-%package -n ctdb-DC-tests
-Summary: CTDB clustered database test suite
-Group: Development/Other
-Requires: ctdb-DC = %version-%release
-Conflicts: ctdb-tests
-Requires: nc
-
-%description -n ctdb-DC-tests
-Test suite for CTDB.
-CTDB is a cluster implementation of the TDB database used by Samba and other
-projects to store temporary data. If an application is already using TDB for
-temporary data it is very easy to convert that application to be cluster aware
-and use CTDB instead.
-
 %if_with docs
 %package doc
 Summary: Documentation for the Samba suite
@@ -631,12 +579,6 @@ TDB_NO_FSYNC=1 %make_build test
 
 %preun winbind
 %preun_service winbind
-
-%post -n ctdb-DC
-%post_service ctdb
-
-%preun -n ctdb-DC
-%preun_service ctdb
 
 %files
 %doc COPYING README WHATSNEW.txt
@@ -1135,67 +1077,6 @@ TDB_NO_FSYNC=1 %make_build test
 %files winbind-krb5-locator
 %_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 %_man7dir/winbind_krb5_locator.7*
-
-%if_with clustering_support
-%files -n ctdb-DC
-%doc ctdb/README
-%config(noreplace) %_sysconfdir/sysconfig/ctdb
-%dir %_sysconfdir/ctdb
-%config(noreplace) %_sysconfdir/ctdb/notify.sh
-%config(noreplace) %_sysconfdir/ctdb/debug-hung-script.sh
-%config(noreplace) %_sysconfdir/ctdb/ctdb-crash-cleanup.sh
-%config(noreplace) %_sysconfdir/ctdb/gcore_trace.sh
-%config(noreplace) %_sysconfdir/ctdb/functions
-%config(noreplace) %_sysconfdir/ctdb/debug_locks.sh
-%_sysconfdir/ctdb/statd-callout
-%dir /var/lib/ctdb
-%_unitdir/ctdb.service
-%_initdir/ctdb
-%_tmpfilesdir/ctdb.conf
-
-%dir %_sysconfdir/ctdb/nfs-rpc-checks.d
-%_sysconfdir/ctdb/nfs-rpc-checks.d/10.statd.check
-%_sysconfdir/ctdb/nfs-rpc-checks.d/20.nfsd.check
-%_sysconfdir/ctdb/nfs-rpc-checks.d/30.lockd.check
-%_sysconfdir/ctdb/nfs-rpc-checks.d/40.mountd.check
-%_sysconfdir/ctdb/nfs-rpc-checks.d/50.rquotad.check
-%_sysconfdir/sudoers.d/ctdb
-%_sysconfdir/ctdb/events.d/
-%dir %_sysconfdir/ctdb/notify.d
-%_sysconfdir/ctdb/notify.d/README
-%_sbindir/ctdbd
-%_sbindir/ctdbd_wrapper
-%_bindir/ctdb
-%_bindir/smnotify
-%_bindir/ping_pong
-%_bindir/ltdbtool
-%_bindir/ctdb_diagnostics
-%_bindir/onnode
-%_bindir/ctdb_lock_helper
-%_bindir/ctdb_event_helper
-
-%_man1dir/ctdb.1*
-%_man1dir/ctdbd.1*
-%_man1dir/onnode.1*
-%_man1dir/ltdbtool.1*
-%_man1dir/ping_pong.1*
-%_man1dir/ctdbd_wrapper.1*
-%_man5dir/ctdbd.conf.5*
-%_man7dir/ctdb.7*
-%_man7dir/ctdb-tunables.7*
-%_man7dir/ctdb-statistics.7*
-
-%files -n ctdb-DC-devel
-%_includedir/samba-4.0/ctdb*
-%_libdir/pkgconfig/ctdb.pc
-
-%files -n ctdb-DC-tests
-%_libdir/ctdb-tests
-%_bindir/ctdb_run_tests
-%_bindir/ctdb_run_cluster_tests
-%_datadir/ctdb-tests
-%doc ctdb/tests/README
-%endif
 
 %changelog
 * Fri Apr 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
