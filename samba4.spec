@@ -1,3 +1,5 @@
+%set_verify_elf_method unresolved=relaxed
+
 %define rname samba
 %define _localstatedir /var
 
