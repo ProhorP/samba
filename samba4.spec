@@ -300,7 +300,7 @@ Summary: Samba winbind clients
 Group: System/Servers
 Requires: %name-winbind = %version-%release
 %if_with libwbclient
-Requires: libwbclient = %version-%release
+Requires: libwbclient-DC = %version-%release
 %endif
 
 %description winbind-clients
