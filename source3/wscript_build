@@ -166,7 +166,7 @@ bld.SAMBA3_SUBSYSTEM('pdb',
 
 bld.SAMBA3_LIBRARY('smbldaphelper',
                    source='passdb/pdb_ldap_schema.c passdb/pdb_ldap_util.c',
-                   deps='smbldap secrets3',
+                   deps='smbldap secrets3 samba-passdb',
                    allow_undefined_symbols=True,
                    enabled=bld.CONFIG_SET('HAVE_LDAP'),
                    private_library=True)
