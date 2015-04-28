@@ -536,9 +536,9 @@ rm -rf %buildroot%perl_vendorlib/Parse/Yapp
 
 # winbind
 mv %buildroot%_libdir/libnss_winbind.so.2 %buildroot/%_lib/libnss_winbind.so.2
-ln -sf /%_lib/libnss_winbind.so.2  %buildroot%_libdir/libnss_winbind.so
+ln -sf ../../%_lib/libnss_winbind.so.2  %buildroot%_libdir/libnss_winbind.so
 mv  %buildroot%_libdir/libnss_wins.so.2 %buildroot/%_lib/libnss_wins.so.2
-ln -sf /%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
+ln -sf ../../%_lib/libnss_wins.so.2  %buildroot%_libdir/libnss_wins.so
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
 mv %buildroot%_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
