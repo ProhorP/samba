@@ -17,7 +17,7 @@
 %def_with libwbclient
 %def_with libnetapi
 %def_without pam_smbpass
-%def_without docs
+%def_with docs
 
 %def_with dc
 %def_without clustering_support
@@ -499,7 +499,7 @@ install -m755 %SOURCE10 %buildroot%_initrddir/nmb
 install -m755 %SOURCE5 %buildroot%_initrddir/smb
 install -m755 %SOURCE8 %buildroot%_initrddir/winbind
 %if_with dc
-install -m755 %SOURCE12 %buildroot%_initrddir/samba
+install -m755 %SOURCE20 %buildroot%_initrddir/samba
 %endif
 
 install -d -m 755 %buildroot%_defaultdocdir/%rname
@@ -1083,6 +1083,7 @@ TDB_NO_FSYNC=1 %make_build test
 %changelog
 * Fri Apr 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
 - New version of Samba AD DC
+- Enable documentation build
 
 * Mon Feb 23 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.17-alt1
 - New version
