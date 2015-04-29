@@ -566,12 +566,20 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %post
+%if_with dc
+%post_service samba
+%else
 %post_service smb
 %post_service nmb
+%endif
 
 %preun
+%if_with dc
+%preun_service samba
+%else
 %preun_service smb
 %preun_service nmb
+%endif
 
 %pre winbind
 %_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
@@ -1083,6 +1091,7 @@ TDB_NO_FSYNC=1 %make_build test
 %changelog
 * Wed Apr 29 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.1-alt1
 - New version of Samba AD DC
+- Fix post/postun hooks for samba init script
 
 * Fri Apr 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
 - New version of Samba AD DC
