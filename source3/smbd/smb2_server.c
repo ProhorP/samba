@@ -777,6 +777,7 @@ static void smb2_set_operation_credit(struct smbd_server_connection *sconn,
 
 	cmd = SVAL(inhdr, SMB2_HDR_OPCODE);
 	credits_requested = SVAL(inhdr, SMB2_HDR_CREDIT);
+	credits_requested = MAX(credits_requested, 1);
 	out_flags = IVAL(outhdr, SMB2_HDR_FLAGS);
 	out_status = NT_STATUS(IVAL(outhdr, SMB2_HDR_STATUS));
 
@@ -795,7 +796,9 @@ static void smb2_set_operation_credit(struct smbd_server_connection *sconn,
 		 * credits on the final response.
 		 */
 		credits_granted = 0;
-	} else if (credits_requested > 0) {
+	} else {
+		uint16_t additional_possible =
+			sconn->smb2.max_credits - credit_charge;
 		uint16_t additional_max = 0;
 		uint16_t additional_credits = credits_requested - 1;
 
@@ -821,14 +824,10 @@ static void smb2_set_operation_credit(struct smbd_server_connection *sconn,
 			break;
 		}
 
+		additional_max = MIN(additional_max, additional_possible);
 		additional_credits = MIN(additional_credits, additional_max);
 
 		credits_granted = credit_charge + additional_credits;
-	} else if (sconn->smb2.credits_granted == 0) {
-		/*
-		 * Make sure the client has always at least one credit
-		 */
-		credits_granted = 1;
 	}
 
 	/*
@@ -1910,11 +1909,6 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 	if (x != NULL) {
 		signing_required = x->global->signing_required;
 		encryption_required = x->global->encryption_required;
-
-		if (opcode == SMB2_OP_SESSSETUP &&
-		    x->global->channels[0].signing_key.length) {
-			signing_required = true;
-		}
 	}
 
 	req->do_signing = false;
