@@ -5,7 +5,6 @@ After=syslog.target network.target
 [Service]
 Type=notify
 NotifyAccess=all
-Environment=KRB5CCNAME=/run/samba/krb5cc_samba
 PIDFile=/run/nmbd.pid
 EnvironmentFile=-/etc/sysconfig/samba
 ExecStart=/usr/sbin/nmbd $NMBDOPTIONS

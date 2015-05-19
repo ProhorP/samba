@@ -68,6 +68,10 @@ stop() {
         return $RETVAL
 }
 
+restart() {
+	stop
+	start
+}
 
 # See how we were called.
 case "$1" in
@@ -81,18 +85,17 @@ status)
         status $prog
         ;;
 restart)
-        stop
-        start
+	restart
         ;;
 reload)
         echo "Not implemented yet."
         exit 3
         ;;
 condrestart)
-        [ -f $lockfile ] && restart || :
+        [ -f $lockfile ] && restart ||:
         ;;
 condstop)
-        [ -f $lockfile ] && stop || :
+        [ -f $lockfile ] && stop ||:
         ;;
 *)
         echo $"Usage: $0 {start|stop|status|restart|reload|condrestart|condstop}"
