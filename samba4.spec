@@ -41,7 +41,7 @@
 %def_with libcephfs
 
 Name: samba-DC
-Version: 4.2.1
+Version: 4.2.2
 Release: alt0.M70P.1
 
 Group: System/Servers
@@ -1089,9 +1089,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
-* Tue May 19 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.1-alt0.M70P.1
+* Wed Jun 03 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.2-alt0.M70P.1
 - New version of Samba AD DC
 - Fix post/postun hooks for samba init script
+
+* Mon Jun 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.2-alt1
+- New version of Samba AD DC
 
 * Fri Apr 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
 - New version of Samba AD DC
