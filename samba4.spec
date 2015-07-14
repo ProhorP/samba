@@ -41,7 +41,7 @@
 %def_with libcephfs
 
 Name: samba-DC
-Version: 4.2.2
+Version: 4.2.3
 Release: alt1
 
 Group: System/Servers
@@ -1089,6 +1089,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Tue Jul 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt1
+- New version of Samba AD DC
+
 * Mon Jun 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.2-alt1
 - New version of Samba AD DC
 
