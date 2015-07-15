@@ -1327,12 +1327,11 @@ NTSTATUS smbd_smb2_request_pending_queue(struct smbd_smb2_request *req,
 
 	if (req->in.vector_count > req->current_idx + SMBD_SMB2_NUM_IOV_PER_REQ) {
 		/*
-		 * We're trying to go async in a compound
-		 * request chain.
-		 * This is only allowed for opens that
-		 * cause an oplock break, otherwise it
-		 * is not allowed. See [MS-SMB2].pdf
-		 * note <194> on Section 3.3.5.2.7.
+		 * We're trying to go async in a compound request
+		 * chain. This is only allowed for opens that cause an
+		 * oplock break or for the last operation in the
+		 * chain, otherwise it is not allowed. See
+		 * [MS-SMB2].pdf note <206> on Section 3.3.5.2.7.
 		 */
 		const uint8_t *inhdr = SMBD_SMB2_IN_HDR_PTR(req);
 
@@ -2613,8 +2612,13 @@ NTSTATUS smbd_smb2_request_done_ex(struct smbd_smb2_request *req,
 		outdyn_v->iov_len = 0;
 	}
 
-	/* see if we need to recalculate the offset to the next response */
-	if (next_command_ofs > 0) {
+	/*
+	 * See if we need to recalculate the offset to the next response
+	 *
+	 * Note that all responses may require padding (including the very last
+	 * one).
+	 */
+	if (req->out.vector_count >= (2 * SMBD_SMB2_NUM_IOV_PER_REQ)) {
 		next_command_ofs  = SMB2_HDR_BODY;
 		next_command_ofs += SMBD_SMB2_OUT_BODY_LEN(req);
 		next_command_ofs += SMBD_SMB2_OUT_DYN_LEN(req);
@@ -2668,8 +2672,11 @@ NTSTATUS smbd_smb2_request_done_ex(struct smbd_smb2_request *req,
 		next_command_ofs += pad_size;
 	}
 
-	SIVAL(outhdr, SMB2_HDR_NEXT_COMMAND, next_command_ofs);
-
+	if ((req->current_idx + SMBD_SMB2_NUM_IOV_PER_REQ) >= req->out.vector_count) {
+		SIVAL(outhdr, SMB2_HDR_NEXT_COMMAND, 0);
+	} else {
+		SIVAL(outhdr, SMB2_HDR_NEXT_COMMAND, next_command_ofs);
+	}
 	return smbd_smb2_request_reply(req);
 }
 
