@@ -32,7 +32,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.2.0
+Version: 4.2.3
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -70,6 +70,7 @@ Obsoletes: samba4-doc < %version-%release
 
 Requires(pre): %name-common = %version-%release
 Requires: %name-libs = %version-%release
+Requires: %name-common-tools = %version-%release
 %if_with libwbclient
 Requires: libwbclient = %version-%release
 %endif
@@ -77,6 +78,7 @@ Requires: libwbclient = %version-%release
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
 BuildRequires: libaio-devel
+BuildRequires: libarchive-devel
 BuildRequires: libattr-devel
 BuildRequires: libncurses-devel
 BuildRequires: libpam-devel
@@ -95,17 +97,18 @@ BuildRequires: libiniparser-devel
 BuildRequires: libkrb5-devel libssl-devel libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
-%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.18 python-module-tevent}
-%{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
-%{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.2 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.25 python-module-tevent}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.6  python-module-tdb}
+%{?_without_ntdb:BuildRequires: libntdb-devel >= 1.0  python-module-ntdb}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.20 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %{?_with_systemd:BuildRequires: libsystemd-devel}
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
+%{?_with_dc:BuildRequires: libgnutls-devel}
 BuildRequires: perl-Perl4-CoreLibs
 
 %description
@@ -114,7 +117,8 @@ Samba is the standard Windows interoperability suite of programs for Linux and U
 %package client
 Summary: Samba client programs
 Group: Networking/Other
-Requires: %name-common = %version-%release
+Requires(pre): %name-common = %version-%release
+Requires: %name-common-tools = %version-%release
 Requires: %name-client-libs = %version-%release
 %if_with libsmbclient
 Requires: libsmbclient = %version-%release
@@ -133,6 +137,7 @@ of SMB/CIFS shares and printing to SMB/CIFS printers.
 Summary: Samba client libraries
 Group: Networking/Other
 Conflicts: samba-common < %version-%release
+Requires(pre): %name-common = %version-%release
 
 %description client-libs
 The samba-client-libs package contains internal libraries needed by the
@@ -153,7 +158,7 @@ packages of Samba.
 %package common-libs
 Summary: Libraries used by both Samba servers and clients
 Group: System/Libraries
-Requires: %name-common = %version-%release
+Requires(pre): %name-common = %version-%release
 Requires: %name-client-libs = %version-%release
 %if_with libwbclient
 Requires: libwbclient = %version-%release
@@ -247,7 +252,7 @@ Summary: The SMB client library
 Group: System/Libraries
 Provides: libsmbclient4 = %version-%release
 Obsoletes: libsmbclient4 < %version-%release
-Requires: %name-common = %version-%release
+Requires(pre): %name-common = %version-%release
 Requires: %name-client-libs = %version-%release
 
 %description -n libsmbclient
@@ -355,7 +360,7 @@ samba4-test provides testing tools for both the server and client
 packages of Samba.
 
 %package test-libs
-Summary: Libraries need by teh testing tools for Samba servers and clients
+Summary: Libraries need by the testing tools for Samba servers and clients
 Group: System/Libraries
 Requires: %name-libs = %version-%release
 
@@ -378,7 +383,8 @@ packages of Samba.
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
-Requires: %name-common = %version-%release
+Requires(pre): %name-common = %version-%release
+Requires: %name-common-tools = %version-%release
 Requires: %name-libs = %version-%release
 Provides: samba4-winbind = %version-%release
 Obsoletes: samba4-winbind < %version-%release
@@ -588,7 +594,6 @@ and use CTDB instead.
 	--with-profiling-data \
 %endif
 	%{subst_enable avahi} \
-	--disable-gnutls \
 	--disable-rpath-install
 
 %make_build
@@ -950,6 +955,7 @@ TDB_NO_FSYNC=1 %make_build test
 %attr(0700,root,root) %dir /var/log/samba/old
 %dir /var/run/samba
 %dir /var/run/winbindd
+%dir /var/lib/samba
 %attr(755,root,root) %dir %_localstatedir/cache/samba
 %attr(700,root,root) %dir /var/lib/samba/private
 %attr(755,root,root) %dir %_sysconfdir/samba
@@ -995,12 +1001,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/upgradeprovision
 %_libdir/mit_samba.so
 %_libdir/samba/bind9/dlz_bind9.so
-%_libdir/samba/libheimntlm-samba4.so.1
-%_libdir/samba/libheimntlm-samba4.so.1.0.1
-%_libdir/samba/libkdc-samba4.so.2
-%_libdir/samba/libkdc-samba4.so.2.0.0
-%_libdir/samba/libpac.so
-%_libdir/samba/gensec
+%_libdir/samba/libheimntlm-samba4.so.*
+%_libdir/samba/libkdc-samba4.so.*
+%_libdir/samba/libpac-samba4.so
+%dir %_libdir/samba/gensec
+%_libdir/samba/gensec/krb5.so
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
 %_man8dir/samba.8*
@@ -1208,9 +1213,9 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with testsuite
 # files to ignore in testsuite mode
-%_libdir/samba/libnss_wrapper.so
-%_libdir/samba/libsocket_wrapper.so
-%_libdir/samba/libuid_wrapper.so
+%_libdir/samba/libnss-wrapper.so
+%_libdir/samba/libsocket-wrapper.so
+%_libdir/samba/libuid-wrapper.so
 %endif
 
 %files test-libs
@@ -1321,6 +1326,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Wed Jul 15 2015 Alexey Shabalin <shaba@altlinux.ru> 4.2.3-alt1
+- 4.2.3
+
 * Mon Mar 23 2015 Alexey Shabalin <shaba@altlinux.ru> 4.2.0-alt1
 - 4.2.0
 
