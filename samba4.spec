@@ -102,7 +102,7 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.6  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 1.0  python-module-ntdb}
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.20 python-module-pyldb-devel}
-%{?_with_clustering_support:BuildRequires: ctdb-devel}
+#{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %{?_with_systemd:BuildRequires: libsystemd-devel}
 %{?_enable_avahi:BuildRequires: libavahi-devel}
@@ -528,7 +528,7 @@ and use CTDB instead.
 
 %define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ntdb_lib}%{_ldb_lib}
 
-%define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2
+%define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2,idmap_ldap
 %define _samba4_pdb_modules pdb_tdbsam,pdb_ldap,pdb_ads,pdb_smbpasswd,pdb_wbc_sam,pdb_samba4
 %define _samba4_auth_modules auth_unix,auth_wbc,auth_server,auth_netlogond,auth_script,auth_samba4
 # auth_domain needs to be static
@@ -536,7 +536,7 @@ and use CTDB instead.
 
 %define _libsmbclient %nil
 %if_without libsmbclient
-%define _libsmbclient smbclient,smbsharemodes,
+%define _libsmbclient smbclient,
 %endif
 
 %define _libwbclient %nil
@@ -594,6 +594,8 @@ and use CTDB instead.
 	--with-profiling-data \
 %endif
 	%{subst_enable avahi} \
+	%{subst_enable glusterfs} \
+	--disable-rpath \
 	--disable-rpath-install
 
 %make_build
@@ -616,7 +618,7 @@ mkdir -p %buildroot%_pkgconfigdir
 mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
-mkdir -p %buildroot/lib/tmpfiles.d
+mkdir -p %buildroot%_tmpfilesdir
 
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
