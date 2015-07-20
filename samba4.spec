@@ -1,4 +1,5 @@
 %define _localstatedir /var
+%define libwbc_alternatives_version 0.12
 
 # internal libs
 %def_without talloc
@@ -620,6 +621,27 @@ mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 mkdir -p %buildroot%_tmpfilesdir
 
+# Move libwbclient.so* into private directory, it cannot be just libdir/samba
+# because samba uses rpath with this directory.
+install -d -m 0755 %buildroot%_libdir/samba/wbclient
+mv %buildroot%_libdir/libwbclient.so* %buildroot%_libdir/samba/wbclient
+if [ ! -f %buildroot%_libdir/samba/wbclient/libwbclient.so.%libwbc_alternatives_version ]
+then
+    echo "Expected libwbclient version not found, please check if version has changed."
+    exit -1
+fi
+ln -s ../..%_libdir/samba/wbclient/libwbclient.so.%libwbc_alternatives_version %buildroot%_libdir/
+ln -s ../..%_libdir/samba/wbclient/libwbclient.so.0 %buildroot%_libdir/
+ln -s ../..%_libdir/samba/wbclient/libwbclient.so %buildroot%_libdir/
+
+# Add alternatives for libwbclient
+mkdir -p %buildroot%_altdir
+printf '%_libdir/libwbclient.so.%libwbc_alternatives_version\t%_libdir/samba/wbclient/libwbclient.so.%libwbc_alternatives_version\t10\n' > %buildroot%_altdir/libwbclient-samba
+printf '%_libdir/libwbclient.so.0\t%_libdir/samba/wbclient/libwbclient.so.0\t10\n' >> %buildroot%_altdir/libwbclient-samba
+
+printf '%_libdir/libwbclient.so\t%_libdir/samba/wbclient/libwbclient.so\t10\n' > %buildroot%_altdir/libwbclient-devel-samba
+
+
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
 install -m644 %SOURCE9 %buildroot%_sysconfdir/samba/smb.conf
@@ -917,8 +939,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libutil-tdb-samba4.so
 
 %if_without libwbclient
-%_libdir/samba/libwbclient.so.*
+%ghost %_libdir/libwbclient.so.*
+%_libdir/samba/wbclient/libwbclient.so.*
 %_libdir/samba/libwinbind-client-samba4.so
+%_altdir/libwbclient-samba
 %endif # ! with_libwbclient
 
 %if_without libsmbclient
@@ -1176,12 +1200,16 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with libwbclient
 %files -n libwbclient
-%_libdir/libwbclient.so.*
+%ghost %_libdir/libwbclient.so.*
+%_libdir/samba/wbclient/libwbclient.so.*
 %_libdir/samba/libwinbind-client-samba4.so
+%_altdir/libwbclient-samba
 
 %files -n libwbclient-devel
 %_includedir/samba-4.0/wbclient.h
-%_libdir/libwbclient.so
+%ghost %_libdir/libwbclient.so
+%_libdir/samba/wbclient/libwbclient.so
+%_altdir/libwbclient-devel-samba
 %_pkgconfigdir/wbclient.pc
 %endif
 
@@ -1330,6 +1358,7 @@ TDB_NO_FSYNC=1 %make_build test
 %changelog
 * Wed Jul 15 2015 Alexey Shabalin <shaba@altlinux.ru> 4.2.3-alt1
 - 4.2.3
+- add alternatives for libwbclient
 
 * Mon Mar 23 2015 Alexey Shabalin <shaba@altlinux.ru> 4.2.0-alt1
 - 4.2.0
