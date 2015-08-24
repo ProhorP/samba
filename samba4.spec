@@ -1,4 +1,6 @@
 %set_verify_elf_method unresolved=relaxed
+%global _findprov_method ""
+%global _findreq_method ""
 
 %define rname samba
 %define _localstatedir /var
@@ -40,16 +42,16 @@
 %def_enable glusterfs
 %def_with libcephfs
 
-Name: samba-DC
+Name:    samba-DC
 Version: 4.2.3
-Release: alt1
+Release: alt2
 
-Group: System/Servers
+Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
-Url: http://www.samba.org/
+Url:     http://www.samba.org/
 
-Source: %rname-%version.tar
+Source:  %rname-%version.tar
 
 # Red Hat specific replacement-files
 Source1: samba.log
@@ -673,7 +675,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbclient
 %_bindir/smbcquotas
 %_bindir/smbget
-#%_bindir/smbiconv
 %_bindir/smbpasswd
 %_bindir/smbprint
 %_bindir/smbspool
@@ -1089,6 +1090,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Mon Aug 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt2
+- Skip provides generation to prevent link conflict with ordinary samba
+  in repository
+
 * Tue Jul 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt1
 - New version of Samba AD DC
 
