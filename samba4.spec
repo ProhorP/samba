@@ -617,11 +617,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/nmbd.8*
 %_man8dir/vfs_*.8*
 
-# DC-specific stuff
-%_libdir/samba/ldb
-%_libdir/samba/libdfs-server-ad-samba4.so
-%_libdir/samba/libdsdb-module-samba4.so
-
 %if_with dc
 %attr(755,root,root) %_initdir/samba
 %_bindir/samba-tool
@@ -640,6 +635,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libkdc-samba4.so.2.0.0
 %_libdir/samba/libpac-samba4.so
 %_libdir/samba/libdnsserver-common-samba4.so
+%_libdir/samba/libdfs-server-ad-samba4.so
+%_libdir/samba/libdsdb-module-samba4.so
+%_libdir/samba/ldb
 %_libdir/samba/gensec
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
@@ -952,6 +950,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libposix-eadb-samba4.so
 %else
 %doc %_defaultdocdir/%rname/README.dc-libs
+%_libdir/samba/libdnsserver-common-samba4.so
 %endif
 
 %if_with ldb
