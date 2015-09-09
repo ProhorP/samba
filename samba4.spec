@@ -1104,8 +1104,10 @@ TDB_NO_FSYNC=1 %make_build test
 
 %changelog
 * Mon Aug 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt2
-- Skip provides generation to prevent link conflict with ordinary samba
-  in repository
+- Build in dc mode in %_libdir/samba-dc to prevent link conflict
+  with ordinary samba in repository
+- Build without libsmbclient, libwbclient and libnetapi
+- Move documentation to /usr/share/doc/samba
 
 * Tue Jul 14 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt1
 - New version of Samba AD DC
