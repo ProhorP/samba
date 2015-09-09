@@ -15,9 +15,9 @@
 %def_with profiling_data
 
 # build as separate package
-%def_with libsmbclient
-%def_with libwbclient
-%def_with libnetapi
+%def_without libsmbclient
+%def_without libwbclient
+%def_without libnetapi
 %def_without pam_smbpass
 %def_with docs
 
