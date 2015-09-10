@@ -29,6 +29,8 @@
 #include "messages.h"
 #include "libcli/security/security.h"
 #include "../libcli/smb/smb2_create_ctx.h"
+#include "lib/sys_rw.h"
+#include "lib/util/tevent_ntstatus.h"
 
 /*
  * Enhanced OS X and Netatalk compatibility
@@ -123,8 +125,10 @@ struct fruit_config_data {
 	enum fruit_locking locking;
 	enum fruit_encoding encoding;
 	bool use_aapl;
+	bool use_copyfile;
 	bool readdir_attr_enabled;
 	bool unix_info_enabled;
+	bool copyfile_enabled;
 	bool veto_appledouble;
 
 	/*
@@ -526,7 +530,7 @@ static bool ad_pack(struct adouble *ad)
 	offset += ADEDLEN_NENTRIES;
 
 	for (eid = 0, nent = 0; eid < ADEID_MAX; eid++) {
-		if ((ad->ad_eid[eid].ade_off == 0)) {
+		if (ad->ad_eid[eid].ade_off == 0) {
 			/*
 			 * ade_off is also used as indicator whether a
 			 * specific entry is used or not
@@ -894,7 +898,8 @@ static ssize_t ad_header_read_rsrc(struct adouble *ad, const char *path)
 		if (rc != 0) {
 			goto exit;
 		}
-		ad_setentrylen(ad, ADEID_RFORK, sbuf.st_ex_size);
+		len = sbuf.st_ex_size;
+		ad_setentrylen(ad, ADEID_RFORK, len);
 	} else {
 		/* FIXME: direct sys_pread(), don't have an fsp */
 		len = sys_pread(fd, ad->ad_data, AD_DATASZ_DOT_UND, 0);
@@ -1333,33 +1338,27 @@ static int init_fruit_config(vfs_handle_struct *handle)
 	}
 	config->encoding = (enum fruit_encoding)enumval;
 
-	if (lp_parm_bool(SNUM(handle->conn),
-			 FRUIT_PARAM_TYPE_NAME, "veto_appledouble", true)) {
-		config->veto_appledouble = true;
-	}
+	config->veto_appledouble = lp_parm_bool(
+		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
+		"veto_appledouble", true);
 
-	if (lp_parm_bool(-1, FRUIT_PARAM_TYPE_NAME, "aapl", true)) {
-		config->use_aapl = true;
-	}
+	config->use_aapl = lp_parm_bool(
+		-1, FRUIT_PARAM_TYPE_NAME, "aapl", true);
 
-	if (lp_parm_bool(-1, FRUIT_PARAM_TYPE_NAME, "nfs_aces", true)) {
-		config->unix_info_enabled = true;
-	}
+	config->unix_info_enabled = lp_parm_bool(
+		-1, FRUIT_PARAM_TYPE_NAME, "nfs_aces", true);
 
-	if (lp_parm_bool(SNUM(handle->conn),
-			 "readdir_attr", "aapl_rsize", true)) {
-		config->readdir_attr_rsize = true;
-	}
+	config->use_copyfile = lp_parm_bool(-1, FRUIT_PARAM_TYPE_NAME,
+					   "copyfile", false);
 
-	if (lp_parm_bool(SNUM(handle->conn),
-			 "readdir_attr", "aapl_finder_info", true)) {
-		config->readdir_attr_finder_info = true;
-	}
+	config->readdir_attr_rsize = lp_parm_bool(
+		SNUM(handle->conn), "readdir_attr", "aapl_rsize", true);
 
-	if (lp_parm_bool(SNUM(handle->conn),
-			 "readdir_attr", "aapl_max_access", true)) {
-		config->readdir_attr_max_access = true;
-	}
+	config->readdir_attr_finder_info = lp_parm_bool(
+		SNUM(handle->conn), "readdir_attr", "aapl_finder_info", true);
+
+	config->readdir_attr_max_access = lp_parm_bool(
+		SNUM(handle->conn), "readdir_attr", "aapl_max_access", true);
 
 	SMB_VFS_HANDLE_SET_DATA(handle, config,
 				NULL, struct fruit_config_data,
@@ -1374,13 +1373,13 @@ static int init_fruit_config(vfs_handle_struct *handle)
 static int adouble_path(TALLOC_CTX *ctx, const char *path_in, char **path_out)
 {
 	char *parent;
-	const char *basename;
+	const char *base;
 
-	if (!parent_dirname(ctx, path_in, &parent, &basename)) {
+	if (!parent_dirname(ctx, path_in, &parent, &base)) {
 		return -1;
 	}
 
-	*path_out = talloc_asprintf(ctx, "%s/._%s", parent, basename);
+	*path_out = talloc_asprintf(ctx, "%s/._%s", parent, base);
 	if (*path_out == NULL) {
 		return -1;
 	}
@@ -1562,7 +1561,7 @@ static void update_btime(vfs_handle_struct *handle,
 /**
  * Map an access mask to a Netatalk single byte byte range lock
  **/
-static off_t access_to_netatalk_brl(enum apple_fork fork,
+static off_t access_to_netatalk_brl(enum apple_fork fork_type,
 				    uint32_t access_mask)
 {
 	off_t offset;
@@ -1582,7 +1581,7 @@ static off_t access_to_netatalk_brl(enum apple_fork fork,
 		break;
 	}
 
-	if (fork == APPLE_FORK_RSRC) {
+	if (fork_type == APPLE_FORK_RSRC) {
 		if (offset == AD_FILELOCK_OPEN_NONE) {
 			offset = AD_FILELOCK_RSRC_OPEN_NONE;
 		} else {
@@ -1596,7 +1595,7 @@ static off_t access_to_netatalk_brl(enum apple_fork fork,
 /**
  * Map a deny mode to a Netatalk brl
  **/
-static off_t denymode_to_netatalk_brl(enum apple_fork fork,
+static off_t denymode_to_netatalk_brl(enum apple_fork fork_type,
 				      uint32_t deny_mode)
 {
 	off_t offset;
@@ -1614,7 +1613,7 @@ static off_t denymode_to_netatalk_brl(enum apple_fork fork,
 		smb_panic("denymode_to_netatalk_brl: bad deny mode\n");
 	}
 
-	if (fork == APPLE_FORK_RSRC) {
+	if (fork_type == APPLE_FORK_RSRC) {
 		offset += 2;
 	}
 
@@ -1659,7 +1658,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 	off_t off;
 
 	/* FIXME: hardcoded data fork, add resource fork */
-	enum apple_fork fork = APPLE_FORK_DATA;
+	enum apple_fork fork_type = APPLE_FORK_DATA;
 
 	DEBUG(10, ("fruit_check_access: %s, am: %s/%s, dm: %s/%s\n",
 		  fsp_str_dbg(fsp),
@@ -1674,10 +1673,10 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 	if ((access_mask & FILE_READ_DATA) || (deny_mode & DENY_READ)) {
 		/* Check access */
 		open_for_reading = test_netatalk_lock(
-			fsp, access_to_netatalk_brl(fork, FILE_READ_DATA));
+			fsp, access_to_netatalk_brl(fork_type, FILE_READ_DATA));
 
 		deny_read = test_netatalk_lock(
-			fsp, denymode_to_netatalk_brl(fork, DENY_READ));
+			fsp, denymode_to_netatalk_brl(fork_type, DENY_READ));
 
 		DEBUG(10, ("read: %s, deny_write: %s\n",
 			  open_for_reading == true ? "yes" : "no",
@@ -1690,7 +1689,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 
 		/* Set locks */
 		if (access_mask & FILE_READ_DATA) {
-			off = access_to_netatalk_brl(fork, FILE_READ_DATA);
+			off = access_to_netatalk_brl(fork_type, FILE_READ_DATA);
 			br_lck = do_lock(
 				handle->conn->sconn->msg_ctx, fsp,
 				fsp->op->global->open_persistent_id, 1, off,
@@ -1704,7 +1703,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 		}
 
 		if (deny_mode & DENY_READ) {
-			off = denymode_to_netatalk_brl(fork, DENY_READ);
+			off = denymode_to_netatalk_brl(fork_type, DENY_READ);
 			br_lck = do_lock(
 				handle->conn->sconn->msg_ctx, fsp,
 				fsp->op->global->open_persistent_id, 1, off,
@@ -1724,10 +1723,10 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 	if ((access_mask & FILE_WRITE_DATA) || (deny_mode & DENY_WRITE)) {
 		/* Check access */
 		open_for_writing = test_netatalk_lock(
-			fsp, access_to_netatalk_brl(fork, FILE_WRITE_DATA));
+			fsp, access_to_netatalk_brl(fork_type, FILE_WRITE_DATA));
 
 		deny_write = test_netatalk_lock(
-			fsp, denymode_to_netatalk_brl(fork, DENY_WRITE));
+			fsp, denymode_to_netatalk_brl(fork_type, DENY_WRITE));
 
 		DEBUG(10, ("write: %s, deny_write: %s\n",
 			  open_for_writing == true ? "yes" : "no",
@@ -1740,7 +1739,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 
 		/* Set locks */
 		if (access_mask & FILE_WRITE_DATA) {
-			off = access_to_netatalk_brl(fork, FILE_WRITE_DATA);
+			off = access_to_netatalk_brl(fork_type, FILE_WRITE_DATA);
 			br_lck = do_lock(
 				handle->conn->sconn->msg_ctx, fsp,
 				fsp->op->global->open_persistent_id, 1, off,
@@ -1754,7 +1753,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 
 		}
 		if (deny_mode & DENY_WRITE) {
-			off = denymode_to_netatalk_brl(fork, DENY_WRITE);
+			off = denymode_to_netatalk_brl(fork_type, DENY_WRITE);
 			br_lck = do_lock(
 				handle->conn->sconn->msg_ctx, fsp,
 				fsp->op->global->open_persistent_id, 1, off,
@@ -1833,6 +1832,11 @@ static NTSTATUS check_aapl(vfs_handle_struct *handle,
 		    (handle->conn->tcon->compat->fs_capabilities & FILE_NAMED_STREAMS)) {
 			server_caps |= SMB2_CRTCTX_AAPL_SUPPORTS_READ_DIR_ATTR;
 			config->readdir_attr_enabled = true;
+		}
+
+		if (config->use_copyfile) {
+			server_caps |= SMB2_CRTCTX_AAPL_SUPPORTS_OSX_COPYFILE;
+			config->copyfile_enabled = true;
 		}
 
 		/*
@@ -1991,7 +1995,7 @@ static NTSTATUS check_ms_nfs(vfs_handle_struct *handle,
 			*pdo_chmod = true;
 
 			DEBUG(10, ("MS NFS chmod request %s, %04o\n",
-				   fsp_str_dbg(fsp), *pmode));
+				   fsp_str_dbg(fsp), (unsigned)(*pmode)));
 			break;
 		}
 	}
@@ -2385,14 +2389,43 @@ static int fruit_unlink(vfs_handle_struct *handle,
 {
 	int rc = -1;
 	struct fruit_config_data *config = NULL;
-	char *adp = NULL;
-
-	if (!is_ntfs_stream_smb_fname(smb_fname)) {
-		return SMB_VFS_NEXT_UNLINK(handle, smb_fname);
-	}
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
 				struct fruit_config_data, return -1);
+
+	if (!is_ntfs_stream_smb_fname(smb_fname)) {
+		char *adp = NULL;
+
+		rc = SMB_VFS_NEXT_UNLINK(handle, smb_fname);
+		if (rc != 0) {
+			return -1;
+		}
+
+		if (config->rsrc != FRUIT_RSRC_ADFILE) {
+			return 0;
+		}
+
+		/*
+		 * 0 byte resource fork streams are not listed by
+		 * vfs_streaminfo, as a result stream cleanup/deletion of file
+		 * deletion doesn't remove the resourcefork stream.
+		 */
+		rc = adouble_path(talloc_tos(),
+				  smb_fname->base_name, &adp);
+		if (rc != 0) {
+			return -1;
+		}
+
+		/* FIXME: direct unlink(), missing smb_fname */
+		DEBUG(1,("fruit_unlink: %s\n", adp));
+		rc = unlink(adp);
+		if ((rc == -1) && (errno == ENOENT)) {
+			rc = 0;
+		}
+
+		TALLOC_FREE(adp);
+		return 0;
+	}
 
 	if (is_afpinfo_stream(smb_fname)) {
 		if (config->meta == FRUIT_META_STREAM) {
@@ -2402,8 +2435,14 @@ static int fruit_unlink(vfs_handle_struct *handle,
 						 smb_fname->base_name,
 						 AFPINFO_EA_NETATALK);
 		}
-	} else if (is_afpresource_stream(smb_fname)) {
+
+		return rc;
+	}
+
+	if (is_afpresource_stream(smb_fname)) {
 		if (config->rsrc == FRUIT_RSRC_ADFILE) {
+			char *adp = NULL;
+
 			rc = adouble_path(talloc_tos(),
 					  smb_fname->base_name, &adp);
 			if (rc != 0) {
@@ -2414,17 +2453,20 @@ static int fruit_unlink(vfs_handle_struct *handle,
 			if ((rc == -1) && (errno == ENOENT)) {
 				rc = 0;
 			}
+			TALLOC_FREE(adp);
 		} else {
 			rc = SMB_VFS_REMOVEXATTR(handle->conn,
-                                     smb_fname->base_name,
-                                     AFPRESOURCE_EA_NETATALK);
+						 smb_fname->base_name,
+						 AFPRESOURCE_EA_NETATALK);
 		}
-	} else {
-		rc = SMB_VFS_NEXT_UNLINK(handle, smb_fname);
+
+		return rc;
 	}
 
-	TALLOC_FREE(adp);
-	return rc;
+	return SMB_VFS_NEXT_UNLINK(handle, smb_fname);
+
+
+	return 0;
 }
 
 static int fruit_chmod(vfs_handle_struct *handle,
@@ -2620,7 +2662,7 @@ static ssize_t fruit_pread(vfs_handle_struct *handle,
 		char afpinfo_buf[AFP_INFO_SIZE];
 		size_t to_return;
 
-		if ((offset < 0) || (offset > AFP_INFO_SIZE)) {
+		if ((offset < 0) || (offset >= AFP_INFO_SIZE)) {
 			len = 0;
 			rc = 0;
 			goto exit;
@@ -3081,7 +3123,7 @@ static NTSTATUS fruit_streaminfo(vfs_handle_struct *handle,
 	if (config->rsrc != FRUIT_RSRC_STREAM) {
 		ad = ad_get(talloc_tos(), handle, smb_fname->base_name,
 			    ADOUBLE_RSRC);
-		if (ad) {
+		if (ad && (ad_getentrylen(ad, ADEID_RFORK) > 0)) {
 			if (!add_fruit_stream(
 				    mem_ctx, pnum_streams, pstreams,
 				    AFPRESOURCE_STREAM_NAME,
@@ -3139,7 +3181,7 @@ exit:
 
 static int fruit_fallocate(struct vfs_handle_struct *handle,
 			   struct files_struct *fsp,
-			   enum vfs_fallocate_mode mode,
+			   uint32_t mode,
 			   off_t offset,
 			   off_t len)
 {
@@ -3159,6 +3201,62 @@ static int fruit_fallocate(struct vfs_handle_struct *handle,
 	return -1;
 }
 
+static int fruit_ftruncate_meta(struct vfs_handle_struct *handle,
+				struct files_struct *fsp,
+				off_t offset,
+				struct adouble *ad)
+{
+	/*
+	 * As this request hasn't been seen in the wild,
+	 * the only sensible use I can imagine is the client
+	 * truncating the stream to 0 bytes size.
+	 * We simply remove the metadata on such a request.
+	 */
+	if (offset != 0) {
+		DBG_WARNING("ftruncate %s to %jd",
+			    fsp_str_dbg(fsp), (intmax_t)offset);
+		return -1;
+	}
+
+	return SMB_VFS_FREMOVEXATTR(fsp, AFPRESOURCE_EA_NETATALK);
+}
+
+static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
+				struct files_struct *fsp,
+				off_t offset,
+				struct adouble *ad)
+{
+	int rc;
+	struct fruit_config_data *config;
+
+	SMB_VFS_HANDLE_GET_DATA(handle, config,
+				struct fruit_config_data, return -1);
+
+	if (config->rsrc == FRUIT_RSRC_XATTR && offset == 0) {
+		return SMB_VFS_FREMOVEXATTR(fsp,
+					    AFPRESOURCE_EA_NETATALK);
+	}
+
+	rc = SMB_VFS_NEXT_FTRUNCATE(
+		handle, fsp,
+		offset + ad_getentryoff(ad, ADEID_RFORK));
+	if (rc != 0) {
+		return -1;
+	}
+
+	if (config->rsrc == FRUIT_RSRC_ADFILE) {
+		ad_setentrylen(ad, ADEID_RFORK, offset);
+		rc = ad_write(ad, NULL);
+		if (rc != 0) {
+			return -1;
+		}
+		DEBUG(10, ("fruit_ftruncate_rsrc file %s offset %jd\n",
+			   fsp_str_dbg(fsp), (intmax_t)offset));
+	}
+
+	return 0;
+}
+
 static int fruit_ftruncate(struct vfs_handle_struct *handle,
 			   struct files_struct *fsp,
 			   off_t offset)
@@ -3166,7 +3264,6 @@ static int fruit_ftruncate(struct vfs_handle_struct *handle,
 	int rc = 0;
         struct adouble *ad =
 		(struct adouble *)VFS_FETCH_FSP_EXTENSION(handle, fsp);
-	struct fruit_config_data *config;
 
 	DEBUG(10, ("streams_xattr_ftruncate called for file %s offset %.0f\n",
 		   fsp_str_dbg(fsp), (double)offset));
@@ -3179,40 +3276,15 @@ static int fruit_ftruncate(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct fruit_config_data, return -1);
-
 	switch (ad->ad_type) {
 	case ADOUBLE_META:
-		/*
-		 * As this request hasn't been seen in the wild,
-		 * the only sensible use I can imagine is the client
-		 * truncating the stream to 0 bytes size.
-		 * We simply remove the metadata on such a request.
-		 */
-		if (offset == 0) {
-			rc = SMB_VFS_FREMOVEXATTR(fsp,
-						  AFPRESOURCE_EA_NETATALK);
-		}
+		rc = fruit_ftruncate_meta(handle, fsp, offset, ad);
 		break;
+
 	case ADOUBLE_RSRC:
-		if (config->rsrc == FRUIT_RSRC_XATTR && offset == 0) {
-			rc = SMB_VFS_FREMOVEXATTR(fsp,
-						  AFPRESOURCE_EA_NETATALK);
-		} else {
-			rc = SMB_VFS_NEXT_FTRUNCATE(
-				handle, fsp,
-				offset + ad_getentryoff(ad, ADEID_RFORK));
-			if (rc != 0) {
-				return -1;
-			}
-			ad_setentrylen(ad, ADEID_RFORK, offset);
-			rc = ad_write(ad, NULL);
-			if (rc != 0) {
-				return -1;
-			}
-		}
+		rc = fruit_ftruncate_rsrc(handle, fsp, offset, ad);
 		break;
+
 	default:
 		return -1;
 	}
@@ -3242,6 +3314,7 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 {
 	NTSTATUS status;
 	struct fruit_config_data *config = NULL;
+	files_struct *fsp = NULL;
 
 	status = check_aapl(handle, req, in_context_blobs, out_context_blobs);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3263,10 +3336,36 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
+	fsp = *result;
+
+	if (config->copyfile_enabled) {
+		/*
+		 * Set a flag in the fsp. Gets used in copychunk to
+		 * check whether the special Apple copyfile semantics
+		 * for copychunk should be allowed in a copychunk
+		 * request with a count of 0.
+		 */
+		fsp->aapl_copyfile_supported = true;
+	}
+
+	/*
+	 * If this is a plain open for existing files, opening an 0
+	 * byte size resource fork MUST fail with
+	 * NT_STATUS_OBJECT_NAME_NOT_FOUND.
+	 *
+	 * Cf the vfs_fruit torture tests in test_rfork_create().
+	 */
+	if (is_afpresource_stream(fsp->fsp_name) &&
+	    create_disposition == FILE_OPEN)
+	{
+		if (fsp->fsp_name->st.st_ex_size == 0) {
+			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+			goto fail;
+		}
+	}
 
 	if (is_ntfs_stream_smb_fname(smb_fname)
-	    || (*result == NULL)
-	    || ((*result)->is_directory)) {
+	    || fsp->is_directory) {
 		return status;
 	}
 
@@ -3283,11 +3382,11 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	return status;
 
 fail:
-	DEBUG(1, ("fruit_create_file: %s\n", nt_errstr(status)));
+	DEBUG(10, ("fruit_create_file: %s\n", nt_errstr(status)));
 
-	if (*result) {
-		close_file(req, *result, ERROR_CLOSE);
-		*result = NULL;
+	if (fsp) {
+		close_file(req, fsp, ERROR_CLOSE);
+		*result = fsp = NULL;
 	}
 
 	return status;
@@ -3371,7 +3470,7 @@ fail:
 
 static NTSTATUS fruit_fget_nt_acl(vfs_handle_struct *handle,
 				  files_struct *fsp,
-				  uint32 security_info,
+				  uint32_t security_info,
 				  TALLOC_CTX *mem_ctx,
 				  struct security_descriptor **ppdesc)
 {
@@ -3429,7 +3528,7 @@ static NTSTATUS fruit_fget_nt_acl(vfs_handle_struct *handle,
 
 static NTSTATUS fruit_fset_nt_acl(vfs_handle_struct *handle,
 				  files_struct *fsp,
-				  uint32 security_info_sent,
+				  uint32_t security_info_sent,
 				  const struct security_descriptor *psd)
 {
 	NTSTATUS status;
@@ -3464,11 +3563,209 @@ static NTSTATUS fruit_fset_nt_acl(vfs_handle_struct *handle,
 
 		if (result != 0) {
 			DEBUG(1, ("chmod: %s, result: %d, %04o error %s\n", fsp_str_dbg(fsp),
-				  result, ms_nfs_mode, strerror(errno)));
+				  result, (unsigned)ms_nfs_mode,
+				  strerror(errno)));
 			status = map_nt_error_from_unix(errno);
 			return status;
 		}
 	}
+
+	return NT_STATUS_OK;
+}
+
+struct fruit_copy_chunk_state {
+	struct vfs_handle_struct *handle;
+	off_t copied;
+	struct files_struct *src_fsp;
+	struct files_struct *dst_fsp;
+	bool is_copyfile;
+};
+
+static void fruit_copy_chunk_done(struct tevent_req *subreq);
+static struct tevent_req *fruit_copy_chunk_send(struct vfs_handle_struct *handle,
+						TALLOC_CTX *mem_ctx,
+						struct tevent_context *ev,
+						struct files_struct *src_fsp,
+						off_t src_off,
+						struct files_struct *dest_fsp,
+						off_t dest_off,
+						off_t num)
+{
+	struct tevent_req *req, *subreq;
+	struct fruit_copy_chunk_state *fruit_copy_chunk_state;
+	NTSTATUS status;
+	struct fruit_config_data *config;
+	off_t to_copy = num;
+
+	DEBUG(10,("soff: %ju, doff: %ju, len: %ju\n",
+		  (uintmax_t)src_off, (uintmax_t)dest_off, (uintmax_t)num));
+
+	SMB_VFS_HANDLE_GET_DATA(handle, config,
+				struct fruit_config_data,
+				return NULL);
+
+	req = tevent_req_create(mem_ctx, &fruit_copy_chunk_state,
+				struct fruit_copy_chunk_state);
+	if (req == NULL) {
+		return NULL;
+	}
+	fruit_copy_chunk_state->handle = handle;
+	fruit_copy_chunk_state->src_fsp = src_fsp;
+	fruit_copy_chunk_state->dst_fsp = dest_fsp;
+
+	/*
+	 * Check if this a OS X copyfile style copychunk request with
+	 * a requested chunk count of 0 that was translated to a
+	 * copy_chunk_send VFS call overloading the parameters src_off
+	 * = dest_off = num = 0.
+	 */
+	if ((src_off == 0) && (dest_off == 0) && (num == 0) &&
+	    src_fsp->aapl_copyfile_supported &&
+	    dest_fsp->aapl_copyfile_supported)
+	{
+		status = vfs_stat_fsp(src_fsp);
+		if (tevent_req_nterror(req, status)) {
+			return tevent_req_post(req, ev);
+		}
+
+		to_copy = src_fsp->fsp_name->st.st_ex_size;
+		fruit_copy_chunk_state->is_copyfile = true;
+	}
+
+	subreq = SMB_VFS_NEXT_COPY_CHUNK_SEND(handle,
+					      mem_ctx,
+					      ev,
+					      src_fsp,
+					      src_off,
+					      dest_fsp,
+					      dest_off,
+					      to_copy);
+	if (tevent_req_nomem(subreq, req)) {
+		return tevent_req_post(req, ev);
+	}
+
+	tevent_req_set_callback(subreq, fruit_copy_chunk_done, req);
+	return req;
+}
+
+static void fruit_copy_chunk_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct fruit_copy_chunk_state *state = tevent_req_data(
+		req, struct fruit_copy_chunk_state);
+	NTSTATUS status;
+	unsigned int num_streams = 0;
+	struct stream_struct *streams = NULL;
+	int i;
+	struct smb_filename *src_fname_tmp = NULL;
+	struct smb_filename *dst_fname_tmp = NULL;
+
+	status = SMB_VFS_NEXT_COPY_CHUNK_RECV(state->handle,
+					      subreq,
+					      &state->copied);
+	TALLOC_FREE(subreq);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	if (!state->is_copyfile) {
+		tevent_req_done(req);
+		return;
+	}
+
+	/*
+	 * Now copy all reamining streams. We know the share supports
+	 * streams, because we're in vfs_fruit. We don't do this async
+	 * because streams are few and small.
+	 */
+	status = vfs_streaminfo(state->handle->conn, NULL,
+				state->src_fsp->fsp_name->base_name,
+				req, &num_streams, &streams);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	if (num_streams == 1) {
+		/* There is always one stream, ::$DATA. */
+		tevent_req_done(req);
+		return;
+	}
+
+	for (i = 0; i < num_streams; i++) {
+		DEBUG(10, ("%s: stream: '%s'/%ju\n",
+			   __func__, streams[i].name,
+			   (uintmax_t)streams[i].size));
+
+		src_fname_tmp = synthetic_smb_fname(
+			req,
+			state->src_fsp->fsp_name->base_name,
+			streams[i].name,
+			NULL);
+		if (tevent_req_nomem(src_fname_tmp, req)) {
+			return;
+		}
+
+		if (is_ntfs_default_stream_smb_fname(src_fname_tmp)) {
+			TALLOC_FREE(src_fname_tmp);
+			continue;
+		}
+
+		dst_fname_tmp = synthetic_smb_fname(
+			req,
+			state->dst_fsp->fsp_name->base_name,
+			streams[i].name,
+			NULL);
+		if (tevent_req_nomem(dst_fname_tmp, req)) {
+			TALLOC_FREE(src_fname_tmp);
+			return;
+		}
+
+		status = copy_file(req,
+				   state->handle->conn,
+				   src_fname_tmp,
+				   dst_fname_tmp,
+				   OPENX_FILE_CREATE_IF_NOT_EXIST,
+				   0, false);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(1, ("%s: copy %s to %s failed: %s\n", __func__,
+				  smb_fname_str_dbg(src_fname_tmp),
+				  smb_fname_str_dbg(dst_fname_tmp),
+				  nt_errstr(status)));
+			TALLOC_FREE(src_fname_tmp);
+			TALLOC_FREE(dst_fname_tmp);
+			tevent_req_nterror(req, status);
+			return;
+		}
+
+		TALLOC_FREE(src_fname_tmp);
+		TALLOC_FREE(dst_fname_tmp);
+	}
+
+	TALLOC_FREE(streams);
+	TALLOC_FREE(src_fname_tmp);
+	TALLOC_FREE(dst_fname_tmp);
+	tevent_req_done(req);
+}
+
+static NTSTATUS fruit_copy_chunk_recv(struct vfs_handle_struct *handle,
+				      struct tevent_req *req,
+				      off_t *copied)
+{
+	struct fruit_copy_chunk_state *fruit_copy_chunk_state = tevent_req_data(
+		req, struct fruit_copy_chunk_state);
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		DEBUG(1, ("server side copy chunk failed: %s\n",
+			  nt_errstr(status)));
+		*copied = 0;
+		tevent_req_received(req);
+		return status;
+	}
+
+	*copied = fruit_copy_chunk_state->copied;
+	tevent_req_received(req);
 
 	return NT_STATUS_OK;
 }
@@ -3490,11 +3787,12 @@ static struct vfs_fn_pointers vfs_fruit_fns = {
 	.fstat_fn = fruit_fstat,
 	.streaminfo_fn = fruit_streaminfo,
 	.ntimes_fn = fruit_ntimes,
-	.unlink_fn = fruit_unlink,
 	.ftruncate_fn = fruit_ftruncate,
 	.fallocate_fn = fruit_fallocate,
 	.create_file_fn = fruit_create_file,
 	.readdir_attr_fn = fruit_readdir_attr,
+	.copy_chunk_send_fn = fruit_copy_chunk_send,
+	.copy_chunk_recv_fn = fruit_copy_chunk_recv,
 
 	/* NT ACL operations */
 	.fget_nt_acl_fn = fruit_fget_nt_acl,

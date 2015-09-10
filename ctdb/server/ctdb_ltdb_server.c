@@ -622,7 +622,7 @@ int ctdb_recheck_persistent_health(struct ctdb_context *ctdb)
 				   ctdb_db->unhealthy_reason));
 	}
 	DEBUG((fail!=0)?DEBUG_ALERT:DEBUG_NOTICE,
-	      ("ctdb_recheck_presistent_health: OK[%d] FAIL[%d]\n",
+	      ("ctdb_recheck_persistent_health: OK[%d] FAIL[%d]\n",
 	       ok, fail));
 
 	if (fail != 0) {
@@ -1632,7 +1632,8 @@ int32_t ctdb_control_get_db_statistics(struct ctdb_context *ctdb,
 		return -1;
 	}
 
-	*stats = ctdb_db->statistics;
+	memcpy(stats, &ctdb_db->statistics,
+	       offsetof(struct ctdb_db_statistics, hot_keys_wire));
 
 	stats->num_hot_keys = MAX_HOT_KEYS;
 

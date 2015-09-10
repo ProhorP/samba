@@ -54,7 +54,7 @@ done
 setup_tickles ()
 {
     # Make sure tickles file exists.
-    tickles_file="$CTDB_VARDIR/fake-ctdb/tickles"
+    tickles_file="$EVENTSCRIPTS_TESTS_VAR_DIR/fake-ctdb/tickles"
     mkdir -p $(dirname "$tickles_file")
     touch "$tickles_file"
 }
@@ -310,9 +310,33 @@ ctdb_natgwlist ()
 
 ######################################################################
 
+ctdb_setvar ()
+{
+    shift
+    _var="$1"
+
+    for _i in $FAKE_CTDB_TUNABLES_OK ; do
+	if [ "$_var" = "$_i" ] ; then
+	    return 0
+	fi
+    done
+
+    for _i in $FAKE_CTDB_TUNABLES_OBSOLETE ; do
+	if [ "$_var" = "$_i" ] ; then
+	    echo "Setting obsolete tunable variable '${_var}'"
+	    return 0
+	fi
+    done
+
+    echo "Unable to set tunable variable '${_var}'"
+    return 1
+}
+
+######################################################################
+
 _t_setup ()
 {
-    _t_dir="$CTDB_VARDIR/fake-ctdb/fake-tdb/$1"
+    _t_dir="$EVENTSCRIPTS_TESTS_VAR_DIR/fake-ctdb/fake-tdb/$1"
     mkdir -p "$_t_dir"
 }
 
@@ -491,5 +515,6 @@ case "$1" in
     shutdown)      ctdb_shutdown "$@";;
     setnatgwstate) ctdb_setnatgwstate "$@" ;;
     natgwlist)     ctdb_natgwlist "$@" ;;
+    setvar)	   ctdb_setvar "$@" ;;
     *) not_implemented "$1" ;;
 esac
