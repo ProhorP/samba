@@ -573,7 +573,7 @@ cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%rname/
 
 # Cleanup man pages
 %if_without libsmbclient
-rm -f %buildroot%_man7dir/libsmbclient.7.gz
+/bin/rm -f %buildroot%_man7dir/libsmbclient.7.gz
 %endif
 
 %find_lang pam_winbind
@@ -895,15 +895,20 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/liberrors-samba4.so
 %_samba_mod_libdir/libevents-samba4.so
 %_samba_mod_libdir/libflag-mapping-samba4.so
+%_samba_mod_libdir/libgenrand-samba4.so
 %_samba_mod_libdir/libgpo-samba4.so
 %_samba_mod_libdir/libgse-samba4.so
 %_samba_mod_libdir/libhttp-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
+%_samba_mod_libdir/libiov-buf-samba4.so
 %_samba_mod_libdir/libkrb5samba-samba4.so
 %_samba_mod_libdir/libldbsamba-samba4.so
 %_samba_mod_libdir/liblibcli-lsa3-samba4.so
 %_samba_mod_libdir/liblibcli-netlogon3-samba4.so
 %_samba_mod_libdir/liblibsmb-samba4.so
+%_samba_mod_libdir/libmessages-dgm-samba4.so
+%_samba_mod_libdir/libmessages-util-samba4.so
+%_samba_mod_libdir/libmsghdr-samba4.so
 %_samba_mod_libdir/libsmb-transport-samba4.so
 %_samba_mod_libdir/libmsrpc3-samba4.so
 %_samba_mod_libdir/libndr-samba-samba4.so
@@ -923,6 +928,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsamba-python-samba4.so
 %_samba_mod_libdir/libsamdb-common-samba4.so
 %_samba_mod_libdir/libsecrets3-samba4.so
+%_samba_mod_libdir/libserver-id-db-samba4.so
 %_samba_mod_libdir/libserver-role-samba4.so
 %_samba_mod_libdir/libshares-samba4.so
 %_samba_mod_libdir/libsamba3-util-samba4.so
@@ -932,8 +938,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsmbldaphelper-samba4.so
 %_samba_mod_libdir/libsmbpasswdparser-samba4.so
 %_samba_mod_libdir/libsmbregistry-samba4.so
+%_samba_mod_libdir/libsys-rw-samba4.so
 %_samba_mod_libdir/libsocket-blocking-samba4.so
+%_samba_mod_libdir/libtalloc-report-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
+%_samba_mod_libdir/libtime-basic-samba4.so
 %_samba_mod_libdir/libtrusts-util-samba4.so
 %_samba_mod_libdir/libutil-cmdline-samba4.so
 %_samba_mod_libdir/libutil-reg-samba4.so
