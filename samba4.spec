@@ -41,8 +41,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.2.3
-Release: alt2
+Version: 4.3.0
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -81,6 +81,7 @@ Requires: %name-libs = %version-%release
 Requires: libwbclient-DC = %version-%release
 %endif
 
+BuildRequires: /proc
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
 BuildRequires: libaio-devel
@@ -95,6 +96,8 @@ BuildRequires: python-devel
 BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
 BuildRequires: zlib-devel
+BuildRequires: libxfs-qa-devel
+BuildRequires: libarchive-devel >= 3.1.2
 
 %if_with mitkrb5
 BuildRequires: libssl-devel
@@ -111,7 +114,7 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.18 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.21 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %{?_with_systemd:BuildRequires: libsystemd-devel}
@@ -639,7 +642,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/samba_dnsupdate
 %_sbindir/samba_spnupdate
 %_sbindir/samba_upgradedns
-%_samba_libdir/mit_samba.so
 %_samba_mod_libdir/bind9/dlz_bind9.so
 %_samba_mod_libdir/bind9/dlz_bind9_9.so
 %_samba_mod_libdir/bind9/dlz_bind9_10.so
@@ -762,7 +764,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/profiles
 %_bindir/smbcontrol
 %_bindir/testparm
-%_datadir/samba/codepages
 %config(noreplace) %_sysconfdir/logrotate.d/samba
 %attr(0700,root,root) %dir /var/log/samba
 %attr(0700,root,root) %dir /var/log/samba/old
@@ -879,7 +880,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libauth-sam-reply-samba4.so
 %_samba_mod_libdir/libauth-unix-token-samba4.so
 %_samba_mod_libdir/libauthkrb5-samba4.so
-%_samba_mod_libdir/libccan-samba4.so
 %_samba_mod_libdir/libcli-ldap-common-samba4.so
 %_samba_mod_libdir/libcli-ldap-samba4.so
 %_samba_mod_libdir/libcli-nbt-samba4.so
@@ -934,10 +934,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsmbregistry-samba4.so
 %_samba_mod_libdir/libsocket-blocking-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
-%_samba_mod_libdir/libtdb-compat-samba4.so
 %_samba_mod_libdir/libtrusts-util-samba4.so
 %_samba_mod_libdir/libutil-cmdline-samba4.so
-%_samba_mod_libdir/libutil-ntdb-samba4.so
 %_samba_mod_libdir/libutil-reg-samba4.so
 %_samba_mod_libdir/libutil-setid-samba4.so
 %_samba_mod_libdir/libutil-tdb-samba4.so
@@ -1046,7 +1044,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/ndrdump
 %_bindir/smbtorture
 %_samba_libdir/libtorture.so.*
-%_samba_mod_libdir/libsubunit-samba4.so
 %if_with dc
 %_samba_mod_libdir/libdlz-bind9-for-torture-samba4.so
 %else
@@ -1103,6 +1100,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 
 %changelog
+* Thu Sep 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1
+- New version
+- Requires /proc for doc generation
+
 * Mon Aug 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt2
 - Build in dc mode in %_libdir/samba-dc to prevent link conflict
   with ordinary samba in repository
