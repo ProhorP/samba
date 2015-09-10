@@ -495,10 +495,12 @@ static void ctdb_lock_timeout_handler(struct tevent_context *ev,
 				    struct timeval current_time,
 				    void *private_data)
 {
-	static const char * debug_locks = NULL;
+	static char debug_locks[PATH_MAX+1] = "";
 	struct lock_context *lock_ctx;
 	struct ctdb_context *ctdb;
 	pid_t pid;
+	double elapsed_time;
+	int new_timer;
 
 	lock_ctx = talloc_get_type_abort(private_data, struct lock_context);
 	ctdb = lock_ctx->ctdb;
@@ -508,28 +510,23 @@ static void ctdb_lock_timeout_handler(struct tevent_context *ev,
 		lock_ctx->ttimer = NULL;
 		return;
 	}
+
+	elapsed_time = timeval_elapsed(&lock_ctx->start_time);
 	if (lock_ctx->ctdb_db) {
 		DEBUG(DEBUG_WARNING,
 		      ("Unable to get %s lock on database %s for %.0lf seconds\n",
 		       (lock_ctx->type == LOCK_RECORD ? "RECORD" : "DB"),
-		       lock_ctx->ctdb_db->db_name,
-		       timeval_elapsed(&lock_ctx->start_time)));
+		       lock_ctx->ctdb_db->db_name, elapsed_time));
 	} else {
 		DEBUG(DEBUG_WARNING,
 		      ("Unable to get ALLDB locks for %.0lf seconds\n",
-		       timeval_elapsed(&lock_ctx->start_time)));
+		       elapsed_time));
 	}
 
-	/* Fire a child process to find the blocking process. */
-	if (debug_locks == NULL) {
-		debug_locks = getenv("CTDB_DEBUG_LOCKS");
-		if (debug_locks == NULL) {
-			debug_locks = talloc_asprintf(ctdb,
-						      "%s/debug_locks.sh",
-						      getenv("CTDB_BASE"));
-		}
-	}
-	if (debug_locks != NULL) {
+	if (ctdb_set_helper("lock debugging helper",
+			    debug_locks, sizeof(debug_locks),
+			    "CTDB_DEBUG_LOCKS",
+			    getenv("CTDB_BASE"), "debug_locks.sh")) {
 		pid = vfork();
 		if (pid == 0) {
 			execl(debug_locks, debug_locks, NULL);
@@ -539,14 +536,23 @@ static void ctdb_lock_timeout_handler(struct tevent_context *ev,
 	} else {
 		DEBUG(DEBUG_WARNING,
 		      (__location__
-		       " Unable to setup lock debugging - no memory?\n"));
+		       " Unable to setup lock debugging\n"));
+	}
+
+	/* Back-off logging if lock is not obtained for a long time */
+	if (elapsed_time < 100.0) {
+		new_timer = 10;
+	} else if (elapsed_time < 1000.0) {
+		new_timer = 100;
+	} else {
+		new_timer = 1000;
 	}
 
 	/* reset the timeout timer */
 	// talloc_free(lock_ctx->ttimer);
 	lock_ctx->ttimer = tevent_add_timer(ctdb->ev,
 					    lock_ctx,
-					    timeval_current_ofs(10, 0),
+					    timeval_current_ofs(new_timer, 0),
 					    ctdb_lock_timeout_handler,
 					    (void *)lock_ctx);
 }
@@ -755,20 +761,15 @@ static void ctdb_lock_schedule(struct ctdb_context *ctdb)
 	struct lock_context *lock_ctx;
 	int ret, argc;
 	TALLOC_CTX *tmp_ctx;
-	const char *helper = CTDB_HELPER_BINDIR "/ctdb_lock_helper";
-	static const char *prog = NULL;
+	static char prog[PATH_MAX+1] = "";
 	const char **args;
 
-	if (prog == NULL) {
-		const char *t;
-
-		t = getenv("CTDB_LOCK_HELPER");
-		if (t != NULL) {
-			prog = talloc_strdup(ctdb, t);
-		} else {
-			prog = talloc_strdup(ctdb, helper);
-		}
-		CTDB_NO_MEMORY_VOID(ctdb, prog);
+	if (!ctdb_set_helper("lock helper",
+			     prog, sizeof(prog),
+			     "CTDB_LOCK_HELPER",
+			     CTDB_HELPER_BINDIR, "ctdb_lock_helper")) {
+		ctdb_die(ctdb, __location__
+			 " Unable to set lock helper\n");
 	}
 
 	/* Find a lock context with requests */

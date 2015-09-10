@@ -7,7 +7,7 @@
 	<manvolnum>8</manvolnum>
 	<refmiscinfo class="source">Samba</refmiscinfo>
 	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
-	<refmiscinfo class="version">4.2</refmiscinfo>
+	<refmiscinfo class="version">4.3</refmiscinfo>
 </refmeta>
 
 
@@ -211,6 +211,18 @@
 	      exposing the internally created ._ files may have other
 	      unknown side effects.</para>
 	      <para>The default is <emphasis>yes</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>fruit:copyfile = yes | no</term>
+	    <listitem>
+	      <para>Whether to enable OS X specific copychunk ioctl
+	      that requests a copy of a whole file along with all
+	      attached metadata.</para>
+	      <para>WARNING: the copyfile request is blocking the
+	      client while the server does the copy.</para>.
+	      <para>The default is <emphasis>no</emphasis>.</para>
 	    </listitem>
 	  </varlistentry>
 
