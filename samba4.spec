@@ -1110,7 +1110,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %changelog
 * Thu Sep 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1
-- New version
+- New version (https://www.samba.org/samba/history/samba-4.3.0.html)
 - Requires /proc for doc generation
 
 * Mon Aug 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt2
