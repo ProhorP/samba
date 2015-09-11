@@ -1,4 +1,5 @@
 %set_verify_elf_method unresolved=relaxed
+%add_findprov_skiplist /%_lib/*
 
 %define rname samba
 %define _localstatedir /var
