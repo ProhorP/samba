@@ -71,13 +71,11 @@ Patch: %rname-%version-%release.patch
 Conflicts: %rname
 Conflicts: %rname-dc
 
-Requires: %name-winbind-clients = %version-%release
-Requires(pre): %name-common = %version-%release
-
 # Need for samba_upgradedns
 Requires: tdb-utils
 Requires(pre): %name-common = %version-%release
 Requires: %name-libs = %version-%release
+Requires: %name-winbind-clients = %version-%release
 %if_with libwbclient
 Requires: libwbclient-DC = %version-%release
 %endif
@@ -619,8 +617,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/eventlogadm
 %_sbindir/nmbd
 %_sbindir/smbd
-%_samba_mod_libdir/auth
-%_samba_mod_libdir/vfs
 %config(noreplace) %_sysconfdir/samba/smbusers
 %attr(755,root,root) %_initdir/smb
 %attr(755,root,root) %_initdir/nmb
@@ -643,19 +639,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/samba_dnsupdate
 %_sbindir/samba_spnupdate
 %_sbindir/samba_upgradedns
-%_samba_mod_libdir/bind9/dlz_bind9.so
-%_samba_mod_libdir/bind9/dlz_bind9_9.so
-%_samba_mod_libdir/bind9/dlz_bind9_10.so
-%_samba_mod_libdir/libheimntlm-samba4.so.1
-%_samba_mod_libdir/libheimntlm-samba4.so.1.0.1
-%_samba_mod_libdir/libkdc-samba4.so.2
-%_samba_mod_libdir/libkdc-samba4.so.2.0.0
-%_samba_mod_libdir/libpac-samba4.so
-%_samba_mod_libdir/libdnsserver-common-samba4.so
-%_samba_mod_libdir/libdfs-server-ad-samba4.so
-%_samba_mod_libdir/libdsdb-module-samba4.so
-%_samba_mod_libdir/ldb
-%_samba_mod_libdir/gensec
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
 %_man8dir/samba.8*
@@ -868,6 +851,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libtevent-util.so.*
 %_samba_libdir/libsamba-passdb.so.*
 %_samba_libdir/libsmbldap.so.*
+%_samba_mod_libdir/auth
+%_samba_mod_libdir/vfs
 
 # libraries needed by the public libraries
 %_samba_mod_libdir/libCHARSET3-samba4.so
@@ -952,6 +937,19 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libxattr-tdb-samba4.so
 
 %if_with dc
+%_samba_mod_libdir/bind9/dlz_bind9.so
+%_samba_mod_libdir/bind9/dlz_bind9_9.so
+%_samba_mod_libdir/bind9/dlz_bind9_10.so
+%_samba_mod_libdir/libheimntlm-samba4.so.1
+%_samba_mod_libdir/libheimntlm-samba4.so.1.0.1
+%_samba_mod_libdir/libkdc-samba4.so.2
+%_samba_mod_libdir/libkdc-samba4.so.2.0.0
+%_samba_mod_libdir/libpac-samba4.so
+%_samba_mod_libdir/libdnsserver-common-samba4.so
+%_samba_mod_libdir/libdfs-server-ad-samba4.so
+%_samba_mod_libdir/libdsdb-module-samba4.so
+%_samba_mod_libdir/ldb
+%_samba_mod_libdir/gensec
 %_samba_mod_libdir/libdb-glue-samba4.so
 %_samba_mod_libdir/libHDB-SAMBA4-samba4.so
 %_samba_mod_libdir/libasn1-samba4.so.*
