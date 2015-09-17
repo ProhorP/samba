@@ -529,7 +529,7 @@ install -m755 %SOURCE20 %buildroot%_initrddir/samba
 # Put README in builddir
 cp %SOURCE200 %SOURCE201 .
 
-for i in nmb smb winbind ; do
+for i in nmb smb winbind samba; do
     cat packaging/systemd/$i.service | sed -e 's@\[Service\]@[Service]\nEnvironment=KRB5CCNAME=FILE:/run/samba/krb5cc_samba@g' >tmp$i.service
     install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
 done
@@ -649,6 +649,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with dc
 %attr(755,root,root) %_initdir/samba
+%_unitdir/samba.service
 %_bindir/samba-tool
 %_sbindir/samba
 %_sbindir/samba_kcc
