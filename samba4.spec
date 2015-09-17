@@ -10,6 +10,7 @@
 %def_without tdb
 %def_without ntdb
 %def_without ldb
+%def_with    winbind
 
 %def_with profiling_data
 
@@ -75,7 +76,9 @@ Conflicts: %rname-dc
 Requires: tdb-utils
 Requires(pre): %name-common = %version-%release
 Requires: %name-libs = %version-%release
+%if_with winbind
 Requires: %name-winbind-clients = %version-%release
+%endif
 %if_with libwbclient
 Requires: libwbclient-DC = %version-%release
 %endif
@@ -265,7 +268,9 @@ Requires: %name = %version-%release
 Requires: %name-common = %version-%release
 Requires: %name = %version-%release
 Requires: %name-libs = %version-%release
+%if_with winbind
 Requires: %name-winbind = %version-%release
+%endif
 %if_with libsmbclient
 Requires: libsmbclient-DC = %version-%release
 %endif
@@ -285,6 +290,7 @@ Conflicts: %rname-test-devel
 samba-test-devel provides testing devel files for both the server and client
 packages of Samba.
 
+%if_with winbind
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
@@ -332,6 +338,7 @@ Conflicts: %rname-winbind-devel
 
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
+%endif
 
 %if_with docs
 %package doc
@@ -445,6 +452,11 @@ Samba suite.
 %else
 	--without-systemd \
 %endif
+%if_with winbind
+	--with-winbind \
+%else
+	--without-winbind \
+%endif
 %if_with clustering_support
 	--with-cluster-support \
 %endif
@@ -542,6 +554,7 @@ rm -f %buildroot%perl_vendorlib/wscript_build
 rm -rf %buildroot%perl_vendorlib/Parse/Yapp
 
 # winbind
+%if_with winbind
 mv %buildroot%_samba_libdir/libnss_winbind.so.2 %buildroot/%_lib/libnss_winbind.so.2
 ln -sf /%_lib/libnss_winbind.so.2  %buildroot%_samba_libdir/libnss_winbind.so
 mv  %buildroot%_samba_libdir/libnss_wins.so.2 %buildroot/%_lib/libnss_wins.so.2
@@ -549,6 +562,7 @@ ln -sf /%_lib/libnss_wins.so.2  %buildroot%_samba_libdir/libnss_wins.so
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
 mv %buildroot%_samba_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
+%endif
 
 #cups backend
 %define cups_serverbin %(cups-config --serverbin 2>/dev/null)
@@ -599,6 +613,7 @@ TDB_NO_FSYNC=1 %make_build test
 %preun_service nmb
 %endif
 
+%if_with winbind
 %pre winbind
 %_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
 
@@ -607,6 +622,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %preun winbind
 %preun_service winbind
+%endif
 
 %files
 %doc COPYING README WHATSNEW.txt
@@ -1076,6 +1092,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libtorture.so
 %_pkgconfigdir/torture.pc
 
+%if_with winbind
 %files winbind -f pam_winbind.lang
 %_samba_mod_libdir/idmap
 %_samba_mod_libdir/nss_info
@@ -1106,6 +1123,7 @@ TDB_NO_FSYNC=1 %make_build test
 %files winbind-krb5-locator
 %_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 %_man7dir/winbind_krb5_locator.7*
+%endif
 
 %changelog
 * Thu Sep 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1
