@@ -45,7 +45,7 @@
 
 Name:    samba-DC
 Version: 4.3.0
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1126,6 +1126,14 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt2
+- Exclude libnss_win* from debuginfo
+- Make libnss_win* symlinks to /lib*
+- Package unit samba.service for systemd
+- Add conditional build of winbind part
+- Move all libraries to samba-DC-libs
+- Remove duplicated requirements
+
 * Thu Sep 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1
 - New version (https://www.samba.org/samba/history/samba-4.3.0.html)
 - Requires /proc for doc generation
