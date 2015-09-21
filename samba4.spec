@@ -1,5 +1,6 @@
 %set_verify_elf_method unresolved=relaxed
 %add_findprov_skiplist /%_lib/*
+%add_debuginfo_skiplist /%_lib
 
 %define rname samba
 %define _localstatedir /var
@@ -266,7 +267,6 @@ Summary: Testing tools for Samba servers and clients
 Group: Development/Tools
 Requires: %name = %version-%release
 Requires: %name-common = %version-%release
-Requires: %name = %version-%release
 Requires: %name-libs = %version-%release
 %if_with winbind
 Requires: %name-winbind = %version-%release
@@ -555,10 +555,9 @@ rm -rf %buildroot%perl_vendorlib/Parse/Yapp
 
 # winbind
 %if_with winbind
-mv %buildroot%_samba_libdir/libnss_winbind.so.2 %buildroot/%_lib/libnss_winbind.so.2
-ln -sf ../../../%_lib/libnss_winbind.so.2  %buildroot%_samba_libdir/libnss_winbind.so
-mv  %buildroot%_samba_libdir/libnss_wins.so.2 %buildroot/%_lib/libnss_wins.so.2
-ln -sf ../../../%_lib/libnss_wins.so.2  %buildroot%_samba_libdir/libnss_wins.so
+mkdir -p %buildroot/%_lib
+ln -sf ..%_samba_libdir/libnss_winbind.so %buildroot/%_lib/libnss_winbind.so.2
+ln -sf ..%_samba_libdir/libnss_wins.so    %buildroot/%_lib/libnss_wins.so.2
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
 mv %buildroot%_samba_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
@@ -1110,9 +1109,9 @@ TDB_NO_FSYNC=1 %make_build test
 %files winbind-clients
 %_bindir/ntlm_auth
 %_bindir/wbinfo
-%_samba_libdir/libnss_winbind.so
+%_samba_libdir/libnss_winbind.so*
 /%_lib/libnss_winbind.so.*
-%_samba_libdir/libnss_wins.so
+%_samba_libdir/libnss_wins.so*
 /%_lib/libnss_wins.so.*
 /%_lib/security/pam_winbind.so
 %config(noreplace) %_sysconfdir/security/pam_winbind.conf
