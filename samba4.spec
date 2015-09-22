@@ -45,7 +45,7 @@
 
 Name:    samba-DC
 Version: 4.3.0
-Release: alt2
+Release: alt1.M70C.1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -120,7 +120,7 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.21 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-%{?_with_systemd:BuildRequires: libsystemd-devel}
+%{?_with_systemd:BuildRequires: systemd-devel}
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
@@ -1126,6 +1126,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1.M70C.1
+- Backport to c7 branch
+
 * Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt2
 - Exclude libnss_win* from debuginfo
 - Make libnss_win* symlinks to /lib*
