@@ -59,7 +59,7 @@ static struct db_context *smbXsrv_session_global_db_ctx = NULL;
 
 NTSTATUS smbXsrv_session_global_init(void)
 {
-	const char *global_path = NULL;
+	char *global_path = NULL;
 	struct db_context *db_ctx = NULL;
 
 	if (smbXsrv_session_global_db_ctx != NULL) {
@@ -70,6 +70,9 @@ NTSTATUS smbXsrv_session_global_init(void)
 	 * This contains secret information like session keys!
 	 */
 	global_path = lock_path("smbXsrv_session_global.tdb");
+	if (global_path == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	db_ctx = db_open(NULL, global_path,
 			 0, /* hash_size */
@@ -79,6 +82,7 @@ NTSTATUS smbXsrv_session_global_init(void)
 			 O_RDWR | O_CREAT, 0600,
 			 DBWRAP_LOCK_ORDER_1,
 			 DBWRAP_FLAG_NONE);
+	TALLOC_FREE(global_path);
 	if (db_ctx == NULL) {
 		NTSTATUS status;
 
@@ -809,10 +813,12 @@ static void smbXsrv_session_global_verify_record(struct db_record *db_rec,
 
 	exists = serverid_exists(&global->channels[0].server_id);
 	if (!exists) {
+		struct server_id_buf idbuf;
 		DEBUG(2,("smbXsrv_session_global_verify_record: "
 			 "key '%s' server_id %s does not exist.\n",
 			 hex_encode_talloc(frame, key.dptr, key.dsize),
-			 server_id_str(frame, &global->channels[0].server_id)));
+			 server_id_str_buf(global->channels[0].server_id,
+					   &idbuf)));
 		if (DEBUGLVL(2)) {
 			NDR_PRINT_DEBUG(smbXsrv_session_globalB, &global_blob);
 		}
@@ -1112,6 +1118,7 @@ static NTSTATUS smbXsrv_session_clear_and_logoff(struct smbXsrv_session *session
 			 */
 			preq->do_signing = false;
 			preq->do_encryption = false;
+			preq->preauth = NULL;
 		}
 	}
 
@@ -1160,6 +1167,15 @@ NTSTATUS smbXsrv_session_create(struct smbXsrv_connection *conn,
 	session->idle_time = now;
 	session->status = NT_STATUS_MORE_PROCESSING_REQUIRED;
 	session->client = conn->client;
+
+	if (conn->protocol >= PROTOCOL_SMB3_10) {
+		session->preauth = talloc(session, struct smbXsrv_preauth);
+		if (session->preauth == NULL) {
+			TALLOC_FREE(session);
+			return NT_STATUS_NO_MEMORY;
+		}
+		*session->preauth = conn->smb2.preauth;
+	}
 
 	status = smbXsrv_session_global_allocate(table->global.db_ctx,
 						 session,
@@ -1414,6 +1430,7 @@ struct tevent_req *smb2srv_session_shutdown_send(TALLOC_CTX *mem_ctx,
 				 */
 				preq->do_signing = false;
 				preq->do_encryption = false;
+				preq->preauth = NULL;
 
 				if (preq->subreq != NULL) {
 					tevent_req_cancel(preq->subreq);
