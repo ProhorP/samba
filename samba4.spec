@@ -44,8 +44,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.0
-Release: alt2
+Version: 4.3.1
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1126,6 +1126,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Oct 20 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.1.html)
+
 * Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt2
 - Exclude libnss_win* from debuginfo
 - Make libnss_win* symlinks to /lib*
