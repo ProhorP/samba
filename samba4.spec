@@ -1051,6 +1051,8 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files pidl
 %attr(755,root,root) %_bindir/pidl
+%_man1dir/pidl.1.*
+%_man3dir/Parse::Pidl::*
 %perl_vendor_privlib/*
 
 %files -n python-module-%name
