@@ -48,7 +48,7 @@ Version: 4.3.1
 Release: alt1
 
 Group:   System/Servers
-Summary: The Samba4 CIFS and AD client and server suite
+Summary: Samba Active Directory Domain Controller
 License: GPLv3+ and LGPLv3+
 Url:     http://www.samba.org/
 
@@ -352,6 +352,18 @@ Conflicts: %rname-doc
 The samba-doc package includes all the non-manpage documentation for the
 Samba suite.
 %endif
+
+%package -n task-samba-dc
+Summary: Samba Active Directory Domain Controller
+Group: System/Servers
+BuildArch: noarch
+Provides: task-samba-ad-dc = %version-%release
+Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client samba-DC-doc krb5-kinit
+Conflicts: samba python-module-samba samba-common samba-winbind-clients samba-winbind samba-client samba-doc
+
+%description -n task-samba-dc
+Samba server acts as a Domain Controller that is compatible with
+Microsoft Active Directory.
 
 %prep
 %setup -q -n %rname-%version
@@ -1127,9 +1139,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 %endif
 
+%files -n task-samba-dc
+
 %changelog
 * Tue Oct 20 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt1
 - New version (https://www.samba.org/samba/history/samba-4.3.1.html)
+- New metapackage task-samba-dc to install complete Domain Controller
 
 * Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt2
 - Exclude libnss_win* from debuginfo
