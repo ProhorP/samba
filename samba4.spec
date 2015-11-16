@@ -24,7 +24,7 @@
 
 %def_with dc
 %def_with clustering_support
-%def_with testsuite
+%def_without testsuite
 
 %if_with testsuite
 # The testsuite only works with a full build right now.
@@ -1141,8 +1141,8 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
-* Thu Nov 12 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt2
-- Enable test build and clustering support
+* Mon Nov 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt2
+- Enable clustering support
 
 * Tue Oct 20 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt1
 - New version (https://www.samba.org/samba/history/samba-4.3.1.html)
