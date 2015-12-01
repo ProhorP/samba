@@ -23,7 +23,7 @@
 %def_with docs
 
 %def_with dc
-%def_without clustering_support
+%def_with clustering_support
 %def_without testsuite
 
 %if_with testsuite
@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.1
+Version: 4.3.2
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -99,7 +99,6 @@ BuildRequires: python-devel
 BuildRequires: libreadline-devel
 BuildRequires: libldap-devel
 BuildRequires: zlib-devel
-BuildRequires: libxfs-qa-devel
 BuildRequires: libarchive-devel >= 3.1.2
 
 %if_with mitkrb5
@@ -118,7 +117,6 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.21 python-module-pyldb-devel}
-%{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %{?_with_systemd:BuildRequires: systemd-devel}
 %{?_enable_avahi:BuildRequires: libavahi-devel}
@@ -340,6 +338,63 @@ Conflicts: %rname-winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
 %endif
 
+%if_with clustering_support
+%package ctdb
+Summary: A Clustered Database based on Samba's Trivial Database (TDB)
+Group: System/Servers
+
+Requires: %name-libs = %version-%release
+
+# for ps and killall
+Requires: psmisc
+Requires: tdb-utils
+# for pkill and pidof:
+Requires: procps
+# for netstat:
+Requires: net-tools
+Requires: ethtool
+# for ip:
+Requires: iproute
+Requires: iptables
+# for flock, getopt, kill:
+Requires: util-linux
+Conflicts: ctdb
+
+%description ctdb
+CTDB is a cluster implementation of the TDB database used by Samba and other
+projects to store temporary data. If an application is already using TDB for
+temporary data it is very easy to convert that application to be cluster aware
+and use CTDB instead.
+
+%package ctdb-devel
+Summary: CTDB clustered database development package
+Group: Development/C
+Requires: %name-ctdb = %version-%release
+Conflicts: ctdb-devel
+
+%description ctdb-devel
+Libraries, include files, etc you can use to develop CTDB applications.
+CTDB is a cluster implementation of the TDB database used by Samba and other
+projects to store temporary data. If an application is already using TDB for
+temporary data it is very easy to convert that application to be cluster aware
+and use CTDB instead.
+
+%package ctdb-tests
+Summary: CTDB clustered database test suite
+Group: Development/Other
+Requires: %name-libs = %version-%release
+Requires: %name-ctdb = %version-%release
+Requires: nc
+Conflicts: ctdb-tests
+
+%description ctdb-tests
+Test suite for CTDB.
+CTDB is a cluster implementation of the TDB database used by Samba and other
+projects to store temporary data. If an application is already using TDB for
+temporary data it is very easy to convert that application to be cluster aware
+and use CTDB instead.
+%endif
+
 %if_with docs
 %package doc
 Summary: Documentation for the Samba suite
@@ -481,8 +536,7 @@ Microsoft Active Directory.
 %if_with profiling_data
 	--with-profiling-data \
 %endif
-	%{subst_enable avahi} \
-	--disable-rpath-install
+	%{subst_enable avahi}
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs
@@ -597,7 +651,7 @@ cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%rname/
 
 # Cleanup man pages
 %if_without libsmbclient
-/bin/rm -f %buildroot%_man7dir/libsmbclient.7.gz
+/bin/rm -f %buildroot%_man7dir/libsmbclient.7*
 %endif
 
 %find_lang pam_winbind
@@ -1081,6 +1135,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/masktest
 %_bindir/ndrdump
 %_bindir/smbtorture
+%_bindir/async_connect_send_test
 %_samba_libdir/libtorture.so.*
 %if_with dc
 %_samba_mod_libdir/libdlz-bind9-for-torture-samba4.so
@@ -1139,9 +1194,79 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/winbind_krb5_locator.7*
 %endif
 
+%if_with clustering_support
+%files ctdb
+#doc ctdb/README
+%config(noreplace) %_sysconfdir/sysconfig/ctdb
+%dir %_sysconfdir/ctdb
+%config(noreplace) %_sysconfdir/ctdb/notify.sh
+%config(noreplace) %_sysconfdir/ctdb/debug-hung-script.sh
+%config(noreplace) %_sysconfdir/ctdb/ctdb-crash-cleanup.sh
+%config(noreplace) %_sysconfdir/ctdb/gcore_trace.sh
+%config(noreplace) %_sysconfdir/ctdb/functions
+%config(noreplace) %_sysconfdir/ctdb/debug_locks.sh
+%_sysconfdir/ctdb/statd-callout
+%dir /var/lib/ctdb
+%_unitdir/ctdb.service
+%_initdir/ctdb
+%_tmpfilesdir/ctdb.conf
+
+%_sysconfdir/ctdb/nfs-checks.d
+%_sysconfdir/ctdb/nfs-linux-kernel-callout
+%_sysconfdir/sudoers.d/ctdb
+%_sysconfdir/ctdb/events.d
+%dir %_sysconfdir/ctdb/notify.d
+%_sysconfdir/ctdb/notify.d/README
+%_sbindir/ctdbd
+%_sbindir/ctdbd_wrapper
+%_bindir/ctdb
+%_bindir/smnotify
+%_bindir/ping_pong
+%_bindir/ltdbtool
+%_bindir/ctdb_diagnostics
+%_bindir/onnode
+%_bindir/ctdb_lock_helper
+%_bindir/ctdb_event_helper
+
+%_man1dir/ctdb.1*
+%_man1dir/ctdbd.1*
+%_man1dir/onnode.1*
+%_man1dir/ltdbtool.1*
+%_man1dir/ping_pong.1*
+%_man1dir/ctdbd_wrapper.1*
+%_man5dir/ctdbd.conf.5*
+%_man7dir/ctdb.7*
+%_man7dir/ctdb-tunables.7*
+%_man7dir/ctdb-statistics.7*
+
+%files ctdb-devel
+%_includedir/samba-4.0/ctdb*
+%_libdir/pkgconfig/ctdb.pc
+
+%files ctdb-tests
+%_libdir/samba-dc/ctdb-tests
+%_bindir/ctdb_run_tests
+%_bindir/ctdb_run_cluster_tests
+%_datadir/ctdb-tests
+%endif
+
 %files -n task-samba-dc
 
 %changelog
+* Tue Dec 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.1
+- Backport samba-DC from Sisyphus to p7 branch
+
+* Tue Dec 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.2.html)
+- Enable RPATH in installed files to correct link using .pc files
+
+* Thu Nov 26 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt3
+- Remove libxfs-qa-devel from build requirements
+- Package samba-DC-ctdb, samba-DC-ctdb-devel and samba-DC-ctdb-tests
+
+* Mon Nov 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt2
+- Enable clustering support
+
 * Thu Nov 05 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.1-alt0.M70P.1
 - Backport samba-DC from Sisyphus to p7 branch
 
