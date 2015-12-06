@@ -45,7 +45,7 @@
 
 Name:    samba-DC
 Version: 4.3.2
-Release: alt0.M70P.1
+Release: alt0.M70P.2
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1253,6 +1253,9 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Sun Dec 06 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.2
+- Rebuild with new libldb
+
 * Tue Dec 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.1
 - Backport samba-DC from Sisyphus to p7 branch
 
