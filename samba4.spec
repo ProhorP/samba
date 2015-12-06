@@ -32,7 +32,7 @@
 
 Name: samba
 Version: 4.0.26
-Release: alt0.M70P.2
+Release: alt0.M70P.3
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1066,6 +1066,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Sun Dec 06 2015 Andrey Cherepanov <cas@altlinux.org> 4.0.26-alt0.M70P.3
+- Rebuild with new libldb
+
 * Thu Nov 05 2015 Andrey Cherepanov <cas@altlinux.org> 4.0.26-alt0.M70P.2
 - Rebuild with new version of libtalloc
 
