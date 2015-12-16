@@ -95,7 +95,7 @@
 	<listitem>
 		<para>
 			<command>Problematic parsing - </command>
-			Protocol version 1 uses hyphen and comma to seperate blocks of data. Once there is a
+			Protocol version 1 uses hyphen and comma to separate blocks of data. Once there is a
 			filename with a hyphen, you will run into problems because the receiver decodes the
 			data in a wrong way.
 		</para>
@@ -129,7 +129,7 @@
 	<itemizedlist>
 		<listitem>
 		<para>
-		The data from the module may be send encrypted, with a key stored in secrets.tdb. The
+		The data from the module may be send encrypted, with a key stored in secrets.tdb (or secrets.ntdb). The
 		Receiver then has to use the same key. The module does AES block encryption over the
 		data to send.
 		</para>
@@ -139,7 +139,7 @@
 		The module now can identify itself against the receiver with a sub-release number, where
 		the receiver may run with a different sub-release number than the module. However, as
 		long as both run on the V2.x protocol, the receiver will not crash, even if the module
-		uses features only implemented in the newer subrelease. Ultimatively, if the module uses
+		uses features only implemented in the newer subrelease. Ultimately, if the module uses
 		a new feature from a newer subrelease, and the receiver runs an older protocol, it is just
 		ignoring the functionality. Of course it is best to have both the receiver and the module
 		running the same subrelease of the protocol.

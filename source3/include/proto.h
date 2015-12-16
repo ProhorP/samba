@@ -393,7 +393,7 @@ ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, off_t pos);
 int set_blocking(int fd, bool set);
 NTSTATUS init_before_fork(void);
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
-			   struct event_context *ev_ctx,
+			   struct tevent_context *ev_ctx,
 			   bool parent_longlived);
 void *malloc_(size_t size);
 void *Realloc(void *p, size_t size, bool free_old_on_error);
@@ -402,7 +402,6 @@ void add_to_large_array(TALLOC_CTX *mem_ctx, size_t element_size,
 			ssize_t *array_size);
 char *get_myname(TALLOC_CTX *ctx);
 char *get_mydnsdomname(TALLOC_CTX *ctx);
-int interpret_protocol(const char *str,int def);
 char *automount_lookup(TALLOC_CTX *ctx, const char *user_name);
 char *automount_lookup(TALLOC_CTX *ctx, const char *user_name);
 bool process_exists(const struct server_id pid);
@@ -482,6 +481,7 @@ bool map_open_params_to_ntcreate(const char *smb_base_fname,
 				 uint32 *pcreate_options,
 				 uint32_t *pprivate_flags);
 struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct security_unix_token *tok);
+bool dir_check_ftype(uint32_t mode, uint32_t dirtype);
 void init_modules(void);
 
 /* The following definitions come from lib/util_builtin.c  */
@@ -608,13 +608,13 @@ int open_socket_in(int type,
 NTSTATUS open_socket_out(const struct sockaddr_storage *pss, uint16_t port,
 			 int timeout, int *pfd);
 struct tevent_req *open_socket_out_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					const struct sockaddr_storage *pss,
 					uint16_t port,
 					int timeout);
 NTSTATUS open_socket_out_recv(struct tevent_req *req, int *pfd);
 struct tevent_req *open_socket_out_defer_send(TALLOC_CTX *mem_ctx,
-					      struct event_context *ev,
+					      struct tevent_context *ev,
 					      struct timeval wait_time,
 					      const struct sockaddr_storage *pss,
 					      uint16_t port,
@@ -718,9 +718,6 @@ int ipstr_list_parse(const char *ipstr_list, struct ip_service **ip_list);
 void ipstr_list_free(char* ipstr_list);
 uint64_t STR_TO_SMB_BIG_UINT(const char *nptr, const char **entptr);
 uint64_t conv_str_size(const char * str);
-bool add_string_to_array(TALLOC_CTX *mem_ctx,
-			 const char *str, const char ***strings,
-			 int *num);
 void sprintf_append(TALLOC_CTX *mem_ctx, char **string, ssize_t *len,
 		    size_t *bufsize, const char *fmt, ...);
 int asprintf_strupper_m(char **strp, const char *fmt, ...);
@@ -1081,9 +1078,12 @@ bool lp_winbind_normalize_names(void);
 bool lp_winbind_rpc_only(void);
 bool lp_create_krb5_conf(void);
 int lp_winbind_max_domain_connections(void);
-const char *lp_idmap_backend(void);
 int lp_idmap_cache_time(void);
 int lp_idmap_negative_cache_time(void);
+bool lp_idmap_range(const char *domain_name, uint32_t *low, uint32_t *high);
+bool lp_idmap_default_range(uint32_t *low, uint32_t *high);
+const char *lp_idmap_backend(const char *domain_name);
+const char *lp_idmap_default_backend (void);
 int lp_keepalive(void);
 bool lp_passdb_expand_explicit(void);
 char *lp_ldap_suffix(TALLOC_CTX *ctx);
@@ -1159,6 +1159,7 @@ bool lp_client_ntlmv2_auth(void);
 bool lp_host_msdfs(void);
 bool lp_enhanced_browsing(void);
 bool lp_use_mmap(void);
+bool lp_use_ntdb(void);
 bool lp_unix_extensions(void);
 bool lp_unicode(void);
 bool lp_use_spnego(void);
@@ -1187,6 +1188,8 @@ int lp_deadtime(void);
 bool lp_getwd_cache(void);
 int lp_srv_maxprotocol(void);
 int lp_srv_minprotocol(void);
+int lp_cli_maxprotocol(void);
+int lp_cli_minprotocol(void);
 int lp_security(void);
 int lp__server_role(void);
 int lp__security(void);
@@ -1275,7 +1278,6 @@ bool lp_hideunwriteable_files(int );
 bool lp_browseable(int );
 bool lp_access_based_share_enum(int );
 bool lp_readonly(int );
-bool lp_no_set_dir(int );
 bool lp_guest_ok(int );
 bool lp_guest_only(int );
 bool lp_administrative_share(int );
@@ -1395,8 +1397,6 @@ bool process_registry_shares(void);
 bool lp_config_backend_is_registry(void);
 bool lp_config_backend_is_file(void);
 bool lp_file_list_changed(void);
-bool lp_idmap_uid(uid_t *low, uid_t *high);
-bool lp_idmap_gid(gid_t *low, gid_t *high);
 const char *lp_ldap_machine_suffix(TALLOC_CTX *ctx);
 const char *lp_ldap_user_suffix(TALLOC_CTX *ctx);
 const char *lp_ldap_group_suffix(TALLOC_CTX *ctx);
@@ -1599,20 +1599,18 @@ bool lookup_unix_group_name(const char *name, struct dom_sid *sid);
 
 NTSTATUS get_full_smb_filename(TALLOC_CTX *ctx, const struct smb_filename *smb_fname,
 			      char **full_name);
-NTSTATUS create_synthetic_smb_fname(TALLOC_CTX *ctx, const char *base_name,
-				    const char *stream_name,
-				    const SMB_STRUCT_STAT *psbuf,
-				    struct smb_filename **smb_fname_out);
-NTSTATUS create_synthetic_smb_fname_split(TALLOC_CTX *ctx,
-					  const char *fname,
-					  const SMB_STRUCT_STAT *psbuf,
-					  struct smb_filename **smb_fname_out);
+struct smb_filename *synthetic_smb_fname(TALLOC_CTX *mem_ctx,
+					 const char *base_name,
+					 const char *stream_name,
+					 const SMB_STRUCT_STAT *psbuf);
+struct smb_filename *synthetic_smb_fname_split(TALLOC_CTX *ctx,
+					       const char *fname,
+					       const SMB_STRUCT_STAT *psbuf);
 const char *smb_fname_str_dbg(const struct smb_filename *smb_fname);
 const char *fsp_str_dbg(const struct files_struct *fsp);
 const char *fsp_fnum_dbg(const struct files_struct *fsp);
-NTSTATUS copy_smb_filename(TALLOC_CTX *ctx,
-			   const struct smb_filename *smb_fname_in,
-			   struct smb_filename **smb_fname_out);
+struct smb_filename *cp_smb_filename(TALLOC_CTX *mem_ctx,
+				     const struct smb_filename *in);
 bool is_ntfs_stream_smb_fname(const struct smb_filename *smb_fname);
 bool is_ntfs_default_stream_smb_fname(const struct smb_filename *smb_fname);
 bool is_invalid_windows_ea_name(const char *name);

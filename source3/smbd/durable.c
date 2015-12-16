@@ -121,7 +121,6 @@ NTSTATUS vfs_default_durable_cookie(struct files_struct *fsp,
 	cookie.stat_info.st_ex_blocks = fsp->fsp_name->st.st_ex_blocks;
 	cookie.stat_info.st_ex_flags = fsp->fsp_name->st.st_ex_flags;
 	cookie.stat_info.st_ex_mask = fsp->fsp_name->st.st_ex_mask;
-	cookie.stat_info.vfs_private = fsp->fsp_name->st.vfs_private;
 
 	ndr_err = ndr_push_struct_blob(cookie_blob, mem_ctx, &cookie,
 			(ndr_push_flags_fn_t)ndr_push_vfs_default_durable_cookie);
@@ -170,10 +169,6 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
 	}
 
 	if (!BATCH_OPLOCK_TYPE(fsp->oplock_type)) {
-		return NT_STATUS_NOT_SUPPORTED;
-	}
-
-	if (fsp->num_pending_break_messages > 0) {
 		return NT_STATUS_NOT_SUPPORTED;
 	}
 
@@ -279,7 +274,6 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
 	cookie.stat_info.st_ex_blocks = fsp->fsp_name->st.st_ex_blocks;
 	cookie.stat_info.st_ex_flags = fsp->fsp_name->st.st_ex_flags;
 	cookie.stat_info.st_ex_mask = fsp->fsp_name->st.st_ex_mask;
-	cookie.stat_info.vfs_private = fsp->fsp_name->st.vfs_private;
 
 	ndr_err = ndr_push_struct_blob(&new_cookie_blob, mem_ctx, &cookie,
 			(ndr_push_flags_fn_t)ndr_push_vfs_default_durable_cookie);
@@ -540,18 +534,6 @@ static bool vfs_default_durable_reconnect_check_stat(
 		return false;
 	}
 
-	if (cookie_st->vfs_private != fsp_st->vfs_private) {
-		DEBUG(1, ("vfs_default_durable_reconnect (%s): "
-			  "stat_ex.%s differs: "
-			  "cookie:%llu != stat:%llu, "
-			  "denying durable reconnect\n",
-			  name,
-			  "vfs_private",
-			  (unsigned long long)cookie_st->vfs_private,
-			  (unsigned long long)fsp_st->vfs_private));
-		return false;
-	}
-
 	return true;
 }
 
@@ -616,12 +598,10 @@ NTSTATUS vfs_default_durable_reconnect(struct connection_struct *conn,
 	}
 
 	/* Create an smb_filename with stream_name == NULL. */
-	status = create_synthetic_smb_fname(talloc_tos(),
-					    cookie.base_name,
-					    NULL, NULL,
-					    &smb_fname);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+	smb_fname = synthetic_smb_fname(talloc_tos(), cookie.base_name,
+					NULL, NULL);
+	if (smb_fname == NULL) {
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	ret = SMB_VFS_LSTAT(conn, smb_fname);
@@ -702,20 +682,6 @@ NTSTATUS vfs_default_durable_reconnect(struct connection_struct *conn,
 	}
 
 	/*
-	 * TODO:
-	 * add scavenger timer functionality
-	 *
-	 * For now we always allow the reconnect
-	 */
-#if 0
-	expire_time = op->global->disconnect_time;
-	expire_time += NTTIME_MAGIC(op->global->durable_timeout_msec);
-	if (expire < now) {
-		//TODO reopen and close before telling the client...
-	}
-#endif
-
-	/*
 	 * 2. proceed with opening file
 	 */
 
@@ -741,8 +707,6 @@ NTSTATUS vfs_default_durable_reconnect(struct connection_struct *conn,
 	/*
 	 * TODO:
 	 * Do we need to store the modified flag in the DB?
-	 * How to handle update_write_time and friends
-	 * during a disconnected client on a durable handle?
 	 */
 	fsp->modified = false;
 	/*

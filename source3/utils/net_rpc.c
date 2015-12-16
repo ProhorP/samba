@@ -369,7 +369,9 @@ static NTSTATUS rpc_oldjoin_internals(struct net_context *c,
 	}
 
 	fstrcpy(trust_passwd, lp_netbios_name());
-	strlower_m(trust_passwd);
+	if (!strlower_m(trust_passwd)) {
+		return NT_STATUS_UNSUCCESSFUL;
+	}
 
 	/*
 	 * Machine names can be 15 characters, but the max length on
@@ -886,13 +888,20 @@ static int rpc_user_password(struct net_context *c, int argc, const char **argv)
 	if (argv[1]) {
 		u1003.usri1003_password = argv[1];
 	} else {
+		char pwd[256] = {0};
 		ret = asprintf(&prompt, _("Enter new password for %s:"),
 			       argv[0]);
 		if (ret == -1) {
 			return -1;
 		}
-		u1003.usri1003_password = talloc_strdup(c, getpass(prompt));
+
+		ret = samba_getpass(prompt, pwd, sizeof(pwd), false, false);
 		SAFE_FREE(prompt);
+		if (ret < 0) {
+			return -1;
+		}
+
+		u1003.usri1003_password = talloc_strdup(c, pwd);
 		if (u1003.usri1003_password == NULL) {
 			return -1;
 		}
@@ -4333,10 +4342,25 @@ static struct full_alias *server_aliases;
 /*
  * Add an alias to the static list.
  */
-static void push_alias(TALLOC_CTX *mem_ctx, struct full_alias *alias)
+static void push_alias(struct full_alias *alias)
 {
-	if (server_aliases == NULL)
-		server_aliases = SMB_MALLOC_ARRAY(struct full_alias, 100);
+	size_t array_size;
+
+	if (server_aliases == NULL) {
+		server_aliases = talloc_array(NULL, struct full_alias, 100);
+		if (server_aliases == NULL) {
+			smb_panic("talloc_array failed");
+		}
+	}
+
+	array_size = talloc_array_length(server_aliases);
+	if (array_size == num_server_aliases) {
+		server_aliases = talloc_realloc(NULL, server_aliases,
+						struct full_alias, array_size + 100);
+		if (server_aliases == NULL) {
+			smb_panic("talloc_realloc failed");
+		}
+	}
 
 	server_aliases[num_server_aliases] = *alias;
 	num_server_aliases += 1;
@@ -4445,7 +4469,7 @@ static NTSTATUS rpc_fetch_domain_aliases(struct rpc_pipe_client *pipe_hnd,
 			sid_compose(&alias.sid, domain_sid,
 				    groups->entries[i].idx);
 
-			push_alias(mem_ctx, &alias);
+			push_alias(&alias);
 		}
 	} while (NT_STATUS_EQUAL(result, STATUS_MORE_ENTRIES));
 
@@ -4710,6 +4734,7 @@ static bool get_user_sids(const char *domain, const char *user, struct security_
 	for (i = 0; i < num_groups; i++) {
 		gid_t gid = groups[i];
 		struct dom_sid sid;
+		bool ok;
 
 		wbc_status = wbcGidToSid(gid, &wsid);
 		if (!WBC_ERROR_IS_OK(wbc_status)) {
@@ -4723,7 +4748,12 @@ static bool get_user_sids(const char *domain, const char *user, struct security_
 
 		DEBUG(3, (" %s\n", sid_str));
 
-		string_to_sid(&sid, sid_str);
+		ok = string_to_sid(&sid, sid_str);
+		if (!ok) {
+			DEBUG(1, ("Failed to convert string to SID\n"));
+			wbcFreeMemory(groups);
+			return false;
+		}
 		add_sid_to_token(token, &sid);
 	}
 	wbcFreeMemory(groups);
@@ -4910,7 +4940,8 @@ static void show_userlist(struct rpc_pipe_client *pipe_hnd,
 	}
 
 	if (!NT_STATUS_IS_OK(cli_ntcreate(cli, "\\", 0, READ_CONTROL_ACCESS, 0,
-			FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0x0, 0x0, &fnum))) {
+			FILE_SHARE_READ|FILE_SHARE_WRITE,
+			FILE_OPEN, 0x0, 0x0, &fnum, NULL))) {
 		cli_query_secdesc(cli, fnum, mem_ctx, &root_sd);
 	}
 
@@ -5068,6 +5099,7 @@ static NTSTATUS rpc_share_allowedusers_internals(struct net_context *c,
 		free_user_token(&tokens[i].token);
 	}
 	SAFE_FREE(tokens);
+	TALLOC_FREE(server_aliases);
 
 	return nt_status;
 }
@@ -5392,7 +5424,7 @@ static int rpc_file_user(struct net_context *c, int argc, const char **argv)
 {
 	NET_API_STATUS status;
 	uint32 preferred_len = 0xffffffff, i;
-	const char *username=NULL;
+	char *username=NULL;
 	uint32_t total_entries = 0;
 	uint32_t entries_read = 0;
 	uint32_t resume_handle = 0;
@@ -5431,6 +5463,7 @@ static int rpc_file_user(struct net_context *c, int argc, const char **argv)
 		display_file_info_3(&i3[i]);
 	}
  done:
+	SAFE_FREE(username);
 	return status;
 }
 

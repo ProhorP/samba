@@ -1,10 +1,10 @@
-/* 
+/*
    Unix SMB/Netbios implementation.
    SMB client library implementation
    Copyright (C) Andrew Tridgell 1998
    Copyright (C) Richard Sharpe 2000, 2002
    Copyright (C) John Terpstra 2000
-   Copyright (C) Tom Jansen (Ninja ISD) 2002 
+   Copyright (C) Tom Jansen (Ninja ISD) 2002
    Copyright (C) Derrell Lipman 2003-2008
    Copyright (C) Jeremy Allison 2007, 2008
    Copyright (C) SATOH Fumiyasu <fumiyas@osstech.co.jp> 2009.
@@ -34,28 +34,44 @@
 #include "libsmb/nmblib.h"
 #include "../libcli/smb/smbXcli_base.h"
 
-/* 
+/*
  * Check a server for being alive and well.
- * returns 0 if the server is in shape. Returns 1 on error 
- * 
+ * returns 0 if the server is in shape. Returns 1 on error
+ *
  * Also useable outside libsmbclient to enable external cache
  * to do some checks too.
  */
 int
 SMBC_check_server(SMBCCTX * context,
-                  SMBCSRV * server) 
+                  SMBCSRV * server)
 {
+	time_t now;
+
 	if (!cli_state_is_connected(server->cli)) {
 		return 1;
 	}
 
+	now = time_mono(NULL);
+
+	if (server->last_echo_time == (time_t)0 ||
+			now > server->last_echo_time +
+				(server->cli->timeout/1000)) {
+		unsigned char data[16] = {0};
+		NTSTATUS status = cli_echo(server->cli,
+					1,
+					data_blob_const(data, sizeof(data)));
+		if (!NT_STATUS_IS_OK(status)) {
+			return 1;
+		}
+		server->last_echo_time = now;
+	}
 	return 0;
 }
 
-/* 
+/*
  * Remove a server from the cached server list it's unused.
  * On success, 0 is returned. 1 is returned if the server could not be removed.
- * 
+ *
  * Also useable outside libsmbclient
  */
 int
@@ -199,7 +215,7 @@ check_server_cache:
                          * servers in the cache
                          */
 			if (smbc_getFunctionRemoveUnusedServer(context)(context,
-                                                                        srv)) { 
+                                                                        srv)) {
                                 /*
                                  * We could not remove the server completely,
                                  * remove it from the cache so we will not get
@@ -239,6 +255,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
             SMBCCTX *context,
             bool connect_if_not_found,
             const char *server,
+            uint16_t port,
             const char *share,
             char **pp_workgroup,
             char **pp_username,
@@ -255,6 +272,8 @@ SMBC_server_internal(TALLOC_CTX *ctx,
  	NTSTATUS status;
 	char *newserver, *newshare;
 	int flags = 0;
+	struct smbXcli_tcon *tcon = NULL;
+	int signing_state = SMB_SIGNING_DEFAULT;
 
 	ZERO_STRUCT(c);
 	*in_cache = false;
@@ -273,7 +292,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
          * server...
          */
         if (srv &&
-            *share != '\0' &&
+	    share != NULL && *share != '\0' &&
             smbc_getOptionOneSharePerServer(context)) {
 
                 /*
@@ -421,22 +440,28 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 		flags |= CLI_FULL_CONNECTION_USE_NT_HASH;
 	}
 
-        if (share == NULL || *share == '\0' || is_ipc) {
-		/*
-		 * Try 139 first for IPC$
-		 */
-		status = cli_connect_nb(server_n, NULL, NBT_SMB_PORT, 0x20,
+	if (context->internal->smb_encryption_level != SMBC_ENCRYPTLEVEL_NONE) {
+		signing_state = SMB_SIGNING_REQUIRED;
+	}
+
+	if (port == 0) {
+	        if (share == NULL || *share == '\0' || is_ipc) {
+			/*
+			 * Try 139 first for IPC$
+			 */
+			status = cli_connect_nb(server_n, NULL, NBT_SMB_PORT, 0x20,
 					smbc_getNetbiosName(context),
-					SMB_SIGNING_DEFAULT, flags, &c);
+					signing_state, flags, &c);
+		}
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
 		/*
 		 * No IPC$ or 139 did not work
 		 */
-		status = cli_connect_nb(server_n, NULL, 0, 0x20,
+		status = cli_connect_nb(server_n, NULL, port, 0x20,
 					smbc_getNetbiosName(context),
-					SMB_SIGNING_DEFAULT, flags, &c);
+					signing_state, flags, &c);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -446,9 +471,9 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 
 	cli_set_timeout(c, smbc_getTimeout(context));
 
-	status = smbXcli_negprot(c->conn, c->timeout, PROTOCOL_CORE,
-				 PROTOCOL_NT1);
-
+	status = smbXcli_negprot(c->conn, c->timeout,
+				 lp_cli_minprotocol(),
+				 lp_cli_maxprotocol());
 	if (!NT_STATUS_IS_OK(status)) {
 		cli_shutdown(c);
 		errno = ETIMEDOUT;
@@ -499,7 +524,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	   here before trying to connect to the original share.
 	   cli_check_msdfs_proxy() will fail if it is a normal share. */
 
-	if ((smb1cli_conn_capabilities(c->conn) & CAP_DFS) &&
+	if (smbXcli_conn_dfs_supported(c->conn) &&
 			cli_check_msdfs_proxy(ctx, c, share,
 				&newserver, &newshare,
 				/* FIXME: cli_check_msdfs_proxy() does
@@ -511,7 +536,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 				*pp_workgroup)) {
 		cli_shutdown(c);
 		srv = SMBC_server_internal(ctx, context, connect_if_not_found,
-				newserver, newshare, pp_workgroup,
+				newserver, port, newshare, pp_workgroup,
 				pp_username, pp_password, in_cache);
 		TALLOC_FREE(newserver);
 		TALLOC_FREE(newshare);
@@ -529,6 +554,12 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	}
 
 	DEBUG(4,(" tconx ok\n"));
+
+	if (smbXcli_conn_protocol(c->conn) >= PROTOCOL_SMB2_02) {
+		tcon = c->smb2.tcon;
+	} else {
+		tcon = c->smb1.tcon;
+	}
 
         /* Determine if this share supports case sensitivity */
 	if (is_ipc) {
@@ -557,10 +588,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                           (fs_attrs & FILE_CASE_SENSITIVE_SEARCH
                            ? "True"
                            : "False")));
-                cli_set_case_sensitive(c,
-                                       (fs_attrs & FILE_CASE_SENSITIVE_SEARCH
-                                        ? True
-                                        : False));
+		smbXcli_tcon_set_fs_attributes(tcon, fs_attrs);
         }
 
 	if (context->internal->smb_encryption_level) {
@@ -604,6 +632,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	srv->dev = (dev_t)(str_checksum(server) ^ str_checksum(share));
         srv->no_pathinfo = False;
         srv->no_pathinfo2 = False;
+	srv->no_pathinfo3 = False;
         srv->no_nt_session = False;
 
 done:
@@ -634,6 +663,7 @@ SMBC_server(TALLOC_CTX *ctx,
 		SMBCCTX *context,
 		bool connect_if_not_found,
 		const char *server,
+		uint16_t port,
 		const char *share,
 		char **pp_workgroup,
 		char **pp_username,
@@ -643,7 +673,7 @@ SMBC_server(TALLOC_CTX *ctx,
 	bool in_cache = false;
 
 	srv = SMBC_server_internal(ctx, context, connect_if_not_found,
-			server, share, pp_workgroup,
+			server, port, share, pp_workgroup,
 			pp_username, pp_password, &in_cache);
 
 	if (!srv) {
@@ -685,6 +715,7 @@ SMBCSRV *
 SMBC_attr_server(TALLOC_CTX *ctx,
                  SMBCCTX *context,
                  const char *server,
+                 uint16_t port,
                  const char *share,
                  char **pp_workgroup,
                  char **pp_username,
@@ -703,7 +734,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
 	 * i.e., a normal share or a referred share from
 	 * 'msdfs proxy' share.
 	 */
-	srv = SMBC_server(ctx, context, true, server, share,
+	srv = SMBC_server(ctx, context, true, server, port, share,
 			pp_workgroup, pp_username, pp_password);
 	if (!srv) {
 		return NULL;
@@ -719,6 +750,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
         ipc_srv = SMBC_find_server(ctx, context, server, "*IPC$",
                                    pp_workgroup, pp_username, pp_password);
         if (!ipc_srv) {
+		int signing_state = SMB_SIGNING_DEFAULT;
 
                 /* We didn't find a cached connection.  Get the password */
 		if (!*pp_password || (*pp_password)[0] == '\0') {
@@ -740,6 +772,9 @@ SMBC_attr_server(TALLOC_CTX *ctx,
                 if (smbc_getOptionUseCCache(context)) {
                         flags |= CLI_FULL_CONNECTION_USE_CCACHE;
                 }
+		if (context->internal->smb_encryption_level != SMBC_ENCRYPTLEVEL_NONE) {
+			signing_state = SMB_SIGNING_REQUIRED;
+		}
 
                 nt_status = cli_full_connection(&ipc_cli,
 						lp_netbios_name(), server,
@@ -748,7 +783,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
 						*pp_workgroup,
 						*pp_password,
 						flags,
-						SMB_SIGNING_DEFAULT);
+						signing_state);
                 if (! NT_STATUS_IS_OK(nt_status)) {
                         DEBUG(1,("cli_full_connection failed! (%s)\n",
                                  nt_errstr(nt_status)));

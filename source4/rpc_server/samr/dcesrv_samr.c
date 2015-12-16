@@ -61,8 +61,6 @@
 	info->field = samdb_result_logon_hours(mem_ctx, msg, attr);
 #define QUERY_AFLAGS(msg, field, attr) \
 	info->field = samdb_result_acct_flags(sam_ctx, mem_ctx, msg, a_state->domain_state->domain_dn);
-#define QUERY_PARAMETERS(msg, field, attr) \
-	info->field = samdb_result_parameters(mem_ctx, msg, attr);
 
 
 /* these are used to make the Set[User|Group]Info code easier to follow */
@@ -2703,6 +2701,8 @@ static NTSTATUS dcesrv_samr_QueryUserInfo(struct dcesrv_call_state *dce_call, TA
 	const char * const *attrs = NULL;
 	union samr_UserInfo *info;
 
+	NTSTATUS status;
+
 	*r->out.info = NULL;
 
 	DCESRV_PULL_HANDLE(h, r->in.user_handle, SAMR_HANDLE_USER);
@@ -3043,7 +3043,11 @@ static NTSTATUS dcesrv_samr_QueryUserInfo(struct dcesrv_call_state *dce_call, TA
 		break;
 
 	case 20:
-		QUERY_PARAMETERS(msg, info20.parameters,    "userParameters");
+		status = samdb_result_parameters(mem_ctx, msg, "userParameters", &info->info20.parameters);
+		if (!NT_STATUS_IS_OK(status)) {
+			talloc_free(info);
+			return status;
+		}
 		break;
 
 	case 21:
@@ -3062,7 +3066,12 @@ static NTSTATUS dcesrv_samr_QueryUserInfo(struct dcesrv_call_state *dce_call, TA
 		QUERY_STRING(msg, info21.description,          "description");
 		QUERY_STRING(msg, info21.workstations,         "userWorkstations");
 		QUERY_STRING(msg, info21.comment,              "comment");
-		QUERY_PARAMETERS(msg, info21.parameters,       "userParameters");
+		status = samdb_result_parameters(mem_ctx, msg, "userParameters", &info->info21.parameters);
+		if (!NT_STATUS_IS_OK(status)) {
+			talloc_free(info);
+			return status;
+		}
+
 		QUERY_RID   (msg, info21.rid,                  "objectSid");
 		QUERY_UINT  (msg, info21.primary_gid,          "primaryGroupID");
 		QUERY_AFLAGS(msg, info21.acct_flags,           "userAccountControl");
@@ -3510,8 +3519,14 @@ static NTSTATUS dcesrv_samr_SetUserInfo(struct dcesrv_call_state *dce_call, TALL
 		}
 
 		if (r->in.info->info26.password_expired > 0) {
+			NTTIME t = 0;
 			struct ldb_message_element *set_el;
-			if (samdb_msg_add_uint64(sam_ctx, mem_ctx, msg, "pwdLastSet", 0) != LDB_SUCCESS) {
+			if (r->in.info->info26.password_expired
+					== PASS_DONT_CHANGE_AT_NEXT_LOGON) {
+				unix_to_nt_time(&t, time(NULL));
+			}
+			if (samdb_msg_add_uint64(sam_ctx, mem_ctx, msg,
+						 "pwdLastSet", t) != LDB_SUCCESS) {
 				return NT_STATUS_NO_MEMORY;
 			}
 			set_el = ldb_msg_find_element(msg, "pwdLastSet");
@@ -3557,17 +3572,23 @@ static NTSTATUS dcesrv_samr_GetGroupsForUser(struct dcesrv_call_state *dce_call,
 	const char * const attrs[2] = { "objectSid", NULL };
 	struct samr_RidWithAttributeArray *array;
 	int i, count;
+	char membersidstr[DOM_SID_STR_BUFLEN];
 
 	DCESRV_PULL_HANDLE(h, r->in.user_handle, SAMR_HANDLE_USER);
 
 	a_state = h->data;
 	d_state = a_state->domain_state;
 
+	dom_sid_string_buf(a_state->account_sid,
+			   membersidstr, sizeof(membersidstr)),
+
 	count = samdb_search_domain(a_state->sam_ctx, mem_ctx,
 				    d_state->domain_dn, &res,
 				    attrs, d_state->domain_sid,
-				    "(&(member=%s)(|(grouptype=%d)(grouptype=%d))(objectclass=group))",
-				    ldb_dn_get_linearized(a_state->account_dn),
+				    "(&(member=<SID=%s>)"
+				     "(|(grouptype=%d)(grouptype=%d))"
+				     "(objectclass=group))",
+				    membersidstr,
 				    GTYPE_SECURITY_UNIVERSAL_GROUP,
 				    GTYPE_SECURITY_GLOBAL_GROUP);
 	if (count < 0)
@@ -4290,6 +4311,11 @@ static NTSTATUS dcesrv_samr_ValidatePassword(struct dcesrv_call_state *dce_call,
 	DATA_BLOB password;
 	enum samr_ValidationStatus res;
 	NTSTATUS status;
+	enum dcerpc_transport_t transport = dce_call->conn->endpoint->ep_description->transport;
+
+	if (transport != NCACN_IP_TCP && transport != NCALRPC) {
+		DCESRV_FAULT(DCERPC_FAULT_ACCESS_DENIED);
+	}
 
 	(*r->out.rep) = talloc_zero(mem_ctx, union samr_ValidatePasswordRep);
 

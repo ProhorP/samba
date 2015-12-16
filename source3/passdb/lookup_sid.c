@@ -23,7 +23,7 @@
 #include "passdb.h"
 #include "../librpc/gen_ndr/ndr_security.h"
 #include "secrets.h"
-#include "memcache.h"
+#include "../lib/util/memcache.h"
 #include "idmap_cache.h"
 #include "../libcli/security/security.h"
 #include "lib/winbind_util.h"
@@ -120,7 +120,7 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 			goto ok;
 	}
 
-	if (((flags & LOOKUP_NAME_NO_NSS) == 0)
+	if (((flags & (LOOKUP_NAME_NO_NSS|LOOKUP_NAME_GROUP)) == 0)
 	    && strequal(domain, unix_users_domain_name())) {
 		if (lookup_unix_user_name(name, &sid)) {
 			type = SID_NAME_USER;
@@ -293,7 +293,7 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 	/* 11. Ok, windows would end here. Samba has two more options:
                Unmapped users and unmapped groups */
 
-	if (((flags & LOOKUP_NAME_NO_NSS) == 0)
+	if (((flags & (LOOKUP_NAME_NO_NSS|LOOKUP_NAME_GROUP)) == 0)
 	    && lookup_unix_user_name(name, &sid)) {
 		domain = talloc_strdup(tmp_ctx, unix_users_domain_name());
 		type = SID_NAME_USER;
@@ -393,6 +393,30 @@ bool lookup_name_smbconf(TALLOC_CTX *mem_ctx,
 		return lookup_name(mem_ctx, full_name, flags,
 				ret_domain, ret_name,
 				ret_sid, ret_type);
+	}
+
+	/* Try with winbind default domain name. */
+	if (lp_winbind_use_default_domain()) {
+		bool ok;
+
+		qualified_name = talloc_asprintf(mem_ctx,
+						 "%s\\%s",
+						 lp_workgroup(),
+						 full_name);
+		if (qualified_name == NULL) {
+			return false;
+		}
+
+		ok = lookup_name(mem_ctx,
+				 qualified_name,
+				 flags,
+				 ret_domain,
+				 ret_name,
+				 ret_sid,
+				 ret_type);
+		if (ok) {
+			return true;
+		}
 	}
 
 	/* Try with our own SAM name. */

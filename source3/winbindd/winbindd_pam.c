@@ -576,8 +576,13 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 	time_t time_offset = 0;
 	const char *user_ccache_file;
 	struct PAC_LOGON_INFO *logon_info = NULL;
+	struct netr_SamInfo3 *info3_copy = NULL;
 
 	*info3 = NULL;
+
+	if (domain->alt_name == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	/* 1st step:
 	 * prepare a krb5_cc_cache string for the user */
@@ -609,7 +614,11 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 
 	parse_domain_user(user, name_domain, name_user);
 
-	realm = domain->alt_name;
+	realm = talloc_strdup(mem_ctx, domain->alt_name);
+	if (realm == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
 	if (!strupper_m(realm)) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
@@ -656,10 +665,19 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 		goto failed;
 	}
 
-	*info3 = &logon_info->info3;
+	if (logon_info == NULL) {
+		DEBUG(10,("Missing logon_info in ticket of %s\n",
+			principal_s));
+		return NT_STATUS_INVALID_PARAMETER;
+	}
 
 	DEBUG(10,("winbindd_raw_kerberos_login: winbindd validated ticket of %s\n",
 		principal_s));
+
+	result = create_info3_from_pac_logon_info(mem_ctx, logon_info, &info3_copy);
+	if (!NT_STATUS_IS_OK(result)) {
+		goto failed;
+	}
 
 	/* if we had a user's ccache then return that string for the pam
 	 * environment */
@@ -696,7 +714,7 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 		}
 
 	}
-
+	*info3 = info3_copy;
 	return NT_STATUS_OK;
 
 failed:
@@ -962,6 +980,10 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 			const char *service = NULL;
 			const char *user_ccache_file;
 
+			if (domain->alt_name == NULL) {
+				return NT_STATUS_INVALID_PARAMETER;
+			}
+
 			uid = get_uid_from_request(state->request);
 			if (uid == -1) {
 				DEBUG(0,("winbindd_dual_pam_auth_cached: invalid uid\n"));
@@ -976,7 +998,11 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 				return NT_STATUS_NO_MEMORY;
 			}
 
-			realm = domain->alt_name;
+			realm = talloc_strdup(state->mem_ctx, domain->alt_name);
+			if (realm == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+
 			if (!strupper_m(realm)) {
 				return NT_STATUS_INVALID_PARAMETER;
 			}
@@ -1001,7 +1027,7 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 							    service,
 							    state->request->data.auth.user,
 							    state->request->data.auth.pass,
-							    domain->alt_name,
+							    realm,
 							    uid,
 							    time(NULL),
 							    time(NULL) + lp_winbind_cache_time(),
@@ -1196,7 +1222,6 @@ static NTSTATUS winbindd_dual_auth_passdb(TALLOC_CTX *mem_ctx,
 static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					    TALLOC_CTX *mem_ctx,
 					    uint32_t logon_parameters,
-					    const char *server,
 					    const char *username,
 					    const char *domainname,
 					    const char *workstation,
@@ -1320,7 +1345,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					netlogon_pipe,
 					mem_ctx,
 					logon_parameters,
-					server,		/* server name */
+					domain->dcname,	/* server name */
 					username,	/* user name */
 					domainname,	/* target domain */
 					workstation,	/* workstation */
@@ -1334,7 +1359,7 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 					netlogon_pipe,
 					mem_ctx,
 					logon_parameters,
-					server,		/* server name */
+					domain->dcname,	/* server name */
 					username,	/* user name */
 					domainname,	/* target domain */
 					workstation,	/* workstation */
@@ -1497,7 +1522,6 @@ static NTSTATUS winbindd_dual_pam_auth_samlogon(TALLOC_CTX *mem_ctx,
 	result = winbind_samlogon_retry_loop(domain,
 					     mem_ctx,
 					     0,
-					     domain->dcname,
 					     name_user,
 					     name_domain,
 					     lp_netbios_name(),
@@ -1920,7 +1944,6 @@ enum winbindd_result winbindd_dual_pam_auth_crap(struct winbindd_domain *domain,
 	result = winbind_samlogon_retry_loop(domain,
 					     state->mem_ctx,
 					     state->request->data.auth_crap.logon_parameters,
-					     domain->dcname,
 					     name_user,
 					     name_domain,
 					     /* Bug #3248 - found by Stefan Burkei. */
@@ -2405,6 +2428,7 @@ NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
 	struct winbindd_request *req = state->request;
 	DATA_BLOB pac_blob;
 	struct PAC_LOGON_INFO *logon_info = NULL;
+	struct netr_SamInfo3 *info3_copy = NULL;
 	NTSTATUS result;
 
 	pac_blob = data_blob_const(req->extra_data.data, req->extra_len);
@@ -2418,7 +2442,13 @@ NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
 
 	if (logon_info) {
 		/* Signature verification succeeded, trust the PAC */
-		netsamlogon_cache_store(NULL, &logon_info->info3);
+		result = create_info3_from_pac_logon_info(state->mem_ctx,
+							logon_info,
+							&info3_copy);
+		if (!NT_STATUS_IS_OK(result)) {
+			return result;
+		}
+		netsamlogon_cache_store(NULL, info3_copy);
 
 	} else {
 		/* Try without signature verification */
@@ -2430,9 +2460,22 @@ NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
 				   nt_errstr(result)));
 			return result;
 		}
+		if (logon_info) {
+			/*
+			 * Don't strictly need to copy here,
+			 * but it makes it explicit we're
+			 * returning a copy talloc'ed off
+			 * the state->mem_ctx.
+			 */
+			info3_copy = copy_netr_SamInfo3(state->mem_ctx,
+					&logon_info->info3);
+			if (info3_copy == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+		}
 	}
 
-	*info3 = &logon_info->info3;
+	*info3 = info3_copy;
 
 	return NT_STATUS_OK;
 }

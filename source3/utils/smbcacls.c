@@ -490,7 +490,7 @@ static bool parse_ace(struct cli_state *cli, struct security_ace *ace,
 	p++;
 	/* Try to parse numeric form */
 
-	if (sscanf(p, "%i/%i/%i", &atype, &aflags, &amask) == 3 &&
+	if (sscanf(p, "%u/%u/%u", &atype, &aflags, &amask) == 3 &&
 	    StringToSid(cli, &sid, str)) {
 		goto done;
 	}
@@ -553,7 +553,7 @@ static bool parse_ace(struct cli_state *cli, struct security_ace *ace,
 			return False;
 		}
 	} else {
-		if (!sscanf(tok, "%i", &aflags)) {
+		if (!sscanf(tok, "%u", &aflags)) {
 			printf("ACE '%s': bad integer flags entry at '%s'\n",
 				orig_str, tok);
 			SAFE_FREE(str);
@@ -571,7 +571,7 @@ static bool parse_ace(struct cli_state *cli, struct security_ace *ace,
 	}
 
 	if (strncmp(tok, "0x", 2) == 0) {
-		if (sscanf(tok, "%i", &amask) != 1) {
+		if (sscanf(tok, "%x", &amask) != 1) {
 			printf("ACE '%s': bad hex number at '%s'\n",
 				orig_str, tok);
 			SAFE_FREE(str);
@@ -811,7 +811,7 @@ static uint16 get_fileinfo(struct cli_state *cli, const char *filename)
 
 	status = cli_ntcreate(cli, filename, 0, CREATE_ACCESS_READ,
 			      0, FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OPEN, 0x0, 0x0, &fnum);
+			      FILE_OPEN, 0x0, 0x0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Failed to open %s: %s\n", filename, nt_errstr(status));
 		return 0;
@@ -859,7 +859,7 @@ static struct security_descriptor *get_secdesc(struct cli_state *cli, const char
 
 	status = cli_ntcreate(cli, filename, 0, desired_access,
 			      0, FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OPEN, 0x0, 0x0, &fnum);
+			      FILE_OPEN, 0x0, 0x0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Failed to open %s: %s\n", filename, nt_errstr(status));
 		return NULL;
@@ -923,7 +923,7 @@ static bool set_secdesc(struct cli_state *cli, const char *filename,
 	status = cli_ntcreate(cli, filename, 0,
 			      desired_access,
 			      0, FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OPEN, 0x0, 0x0, &fnum);
+			      FILE_OPEN, 0x0, 0x0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Failed to open %s: %s\n", filename, nt_errstr(status));
 		return false;
@@ -1386,6 +1386,7 @@ static struct cli_state *connect_one(struct user_auth_info *auth_info,
 		},
 		{ "test-args", 't', POPT_ARG_NONE, &test_args, 1, "Test arguments"},
 		{ "domain-sid", 0, POPT_ARG_STRING, &domain_sid, 0, "Domain SID for sddl", "SID"},
+		{ "max-protocol", 'm', POPT_ARG_STRING, NULL, 'm', "Set the max protocol level", "LEVEL" },
 		POPT_COMMON_SAMBA
 		POPT_COMMON_CONNECTION
 		POPT_COMMON_CREDENTIALS
@@ -1456,6 +1457,9 @@ static struct cli_state *connect_one(struct user_auth_info *auth_info,
 			owner_username = poptGetOptArg(pc);
 			change_mode = REQUEST_INHERIT;
 			break;
+		case 'm':
+			lp_set_cmdline("client max protocol", poptGetOptArg(pc));
+			break;
 		}
 	}
 
@@ -1479,6 +1483,9 @@ static struct cli_state *connect_one(struct user_auth_info *auth_info,
 	if (!filename) {
 		return -1;
 	}
+
+	poptFreeContext(pc);
+	popt_burn_cmdline_password(argc, argv);
 
 	string_replace(path,'/','\\');
 

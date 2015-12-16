@@ -115,8 +115,16 @@ static int fake_acls_stat(vfs_handle_struct *handle,
 	if (ret == 0) {
 		TALLOC_CTX *frame = talloc_stackframe();
 		char *path;
+		struct smb_filename smb_fname_base = {
+			.base_name = smb_fname->base_name
+		};
 		NTSTATUS status;
-		status = get_full_smb_filename(frame, smb_fname, &path);
+		/*
+		 * As we're calling getxattr directly here
+		 * we need to use only the base_name, not
+		 * the full name containing any stream name.
+		 */
+		status = get_full_smb_filename(frame, &smb_fname_base, &path);
 		if (!NT_STATUS_IS_OK(status)) {
 			errno = map_errno_from_nt_status(status);
 			TALLOC_FREE(frame);
@@ -148,8 +156,16 @@ static int fake_acls_lstat(vfs_handle_struct *handle,
 	if (ret == 0) {
 		TALLOC_CTX *frame = talloc_stackframe();
 		char *path;
+		struct smb_filename smb_fname_base = {
+			.base_name = smb_fname->base_name
+		};
 		NTSTATUS status;
-		status = get_full_smb_filename(frame, smb_fname, &path);
+		/*
+		 * As we're calling getxattr directly here
+		 * we need to use only the base_name, not
+		 * the full name containing any stream name.
+		 */
+		status = get_full_smb_filename(frame, &smb_fname_base, &path);
 		if (!NT_STATUS_IS_OK(status)) {
 			errno = map_errno_from_nt_status(status);
 			TALLOC_FREE(frame);
@@ -273,7 +289,7 @@ static SMB_ACL_T fake_acls_sys_acl_get_fd(struct vfs_handle_struct *handle,
 	DATA_BLOB blob = data_blob_null;
 	ssize_t length;
 	const char *name = FAKE_ACL_ACCESS_XATTR;
-	struct smb_acl_t *acl;
+	struct smb_acl_t *acl = NULL;
 	TALLOC_CTX *frame = talloc_stackframe();
 		
 	do {
@@ -298,20 +314,6 @@ static SMB_ACL_T fake_acls_sys_acl_get_fd(struct vfs_handle_struct *handle,
 	return acl;
 }
 
-
-static int fake_acls_sys_acl_blob_get_file(struct vfs_handle_struct *handle, const char *path, TALLOC_CTX *mem_ctx, 
-					   char **blob_description, DATA_BLOB *blob)
-{
-	errno = ENOSYS;
-	return -1;
-}
-
-static int fake_acls_sys_acl_blob_get_fd(struct vfs_handle_struct *handle, files_struct *fsp, TALLOC_CTX *mem_ctx, 
-					 char **blob_description, DATA_BLOB *blob)
-{
-	errno = ENOSYS;
-	return -1;
-}
 
 static int fake_acls_sys_acl_set_file(vfs_handle_struct *handle, const char *path, SMB_ACL_TYPE_T acltype, SMB_ACL_T theacl)
 {
@@ -360,12 +362,12 @@ static int fake_acls_sys_acl_delete_def_file(vfs_handle_struct *handle, const ch
 	int ret;
 	const char *name = FAKE_ACL_DEFAULT_XATTR;
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct smb_filename *smb_fname = NULL;
-	NTSTATUS status = create_synthetic_smb_fname_split(frame, path, NULL,
-						  &smb_fname);
-	if (!NT_STATUS_IS_OK(status)) {
-		errno = map_errno_from_nt_status(status);
+	struct smb_filename *smb_fname;
+
+	smb_fname = synthetic_smb_fname(frame, path, NULL, NULL);
+	if (smb_fname == NULL) {
 		TALLOC_FREE(frame);
+		errno = ENOMEM;
 		return -1;
 	}
 
@@ -391,7 +393,7 @@ static int fake_acls_sys_acl_delete_def_file(vfs_handle_struct *handle, const ch
 	return ret;
 }
 
-static int fake_acls_chown(vfs_handle_struct *handle,  const char *path, uid_t uid, gid_t gid)
+static int fake_acls_chown(vfs_handle_struct *handle, const char *path, uid_t uid, gid_t gid)
 {
 	int ret;
 	uint8_t id_buf[4];
@@ -412,7 +414,7 @@ static int fake_acls_chown(vfs_handle_struct *handle,  const char *path, uid_t u
 	return 0;
 }
 
-static int fake_acls_lchown(vfs_handle_struct *handle,  const char *path, uid_t uid, gid_t gid)
+static int fake_acls_lchown(vfs_handle_struct *handle, const char *path, uid_t uid, gid_t gid)
 {
 	int ret;
 	uint8_t id_buf[4];
@@ -469,8 +471,8 @@ static struct vfs_fn_pointers vfs_fake_acls_fns = {
 	.fstat_fn = fake_acls_fstat,
 	.sys_acl_get_file_fn = fake_acls_sys_acl_get_file,
 	.sys_acl_get_fd_fn = fake_acls_sys_acl_get_fd,
-	.sys_acl_blob_get_file_fn = fake_acls_sys_acl_blob_get_file,
-	.sys_acl_blob_get_fd_fn = fake_acls_sys_acl_blob_get_fd,
+	.sys_acl_blob_get_file_fn = posix_sys_acl_blob_get_file,
+	.sys_acl_blob_get_fd_fn = posix_sys_acl_blob_get_fd,
 	.sys_acl_set_file_fn = fake_acls_sys_acl_set_file,
 	.sys_acl_set_fd_fn = fake_acls_sys_acl_set_fd,
 	.sys_acl_delete_def_file_fn = fake_acls_sys_acl_delete_def_file,

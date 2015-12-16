@@ -428,7 +428,7 @@ static void reinit_after_fork_pipe_handler(struct tevent_context *ev,
 
 
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
-			   struct event_context *ev_ctx,
+			   struct tevent_context *ev_ctx,
 			   bool parent_longlived)
 {
 	NTSTATUS status = NT_STATUS_OK;
@@ -558,31 +558,6 @@ char *get_mydnsdomname(TALLOC_CTX *ctx)
 		return talloc_strdup(ctx, "");
 	}
 }
-
-/****************************************************************************
- Interpret a protocol description string, with a default.
-****************************************************************************/
-
-int interpret_protocol(const char *str,int def)
-{
-	if (strequal(str,"NT1"))
-		return(PROTOCOL_NT1);
-	if (strequal(str,"LANMAN2"))
-		return(PROTOCOL_LANMAN2);
-	if (strequal(str,"LANMAN1"))
-		return(PROTOCOL_LANMAN1);
-	if (strequal(str,"CORE"))
-		return(PROTOCOL_CORE);
-	if (strequal(str,"COREPLUS"))
-		return(PROTOCOL_COREPLUS);
-	if (strequal(str,"CORE+"))
-		return(PROTOCOL_COREPLUS);
-
-	DEBUG(0,("Unrecognised protocol level %s\n",str));
-
-	return(def);
-}
-
 
 #if (defined(HAVE_NETGROUP) && defined(WITH_AUTOMOUNT))
 /******************************************************************
@@ -1217,7 +1192,9 @@ bool is_myname(const char *s)
 	bool ret = False;
 
 	for (n=0; my_netbios_names(n); n++) {
-		if (strequal(my_netbios_names(n), s)) {
+		const char *nbt_name = my_netbios_names(n);
+
+		if (strncasecmp_m(nbt_name, s, MAX_NETBIOSNAME_LEN-1) == 0) {
 			ret=True;
 			break;
 		}
@@ -1528,15 +1505,17 @@ static char *xx_path(const char *name, const char *rootpath)
 	trim_string(fname,"","/");
 
 	if (!directory_exist(fname)) {
-		if (!mkdir(fname,0755))
-			DEBUG(1, ("Unable to create directory %s for file %s. "
-			      "Error was %s\n", fname, name, strerror(errno)));
+		if (mkdir(fname,0755) == -1) {
+			/* Did someone else win the race ? */
+			if (errno != EEXIST) {
+				DEBUG(1, ("Unable to create directory %s for file %s. "
+					"Error was %s\n", fname, name, strerror(errno)));
+				return NULL;
+			}
+		}
 	}
 
-	return talloc_asprintf(talloc_tos(),
-				"%s/%s",
-				fname,
-				name);
+	return talloc_asprintf_append(fname, "/%s", name);
 }
 
 /**
@@ -1848,48 +1827,60 @@ bool unix_wild_match(const char *pattern, const char *string)
 }
 
 /**********************************************************************
- Converts a name to a fully qualified domain name.
- Returns true if lookup succeeded, false if not (then fqdn is set to name)
- Note we deliberately use gethostbyname here, not getaddrinfo as we want
- to examine the h_aliases and I don't know how to do that with getaddrinfo.
+  Converts a name to a fully qualified domain name.
+  Returns true if lookup succeeded, false if not (then fqdn is set to name)
+  Uses getaddrinfo() with AI_CANONNAME flag to obtain the official
+  canonical name of the host. getaddrinfo() may use a variety of sources
+  including /etc/hosts to obtain the domainname. It expects aliases in
+  /etc/hosts to NOT be the FQDN. The FQDN should come first.
 ***********************************************************************/
 
 bool name_to_fqdn(fstring fqdn, const char *name)
 {
 	char *full = NULL;
-	struct hostent *hp = gethostbyname(name);
+	struct addrinfo hints;
+	struct addrinfo *result;
+	int s;
 
-	if (!hp || !hp->h_name || !*hp->h_name) {
+	/* Configure hints to obtain canonical name */
+
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+	hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
+	hints.ai_flags = AI_CANONNAME;  /* Get host's FQDN */
+	hints.ai_protocol = 0;          /* Any protocol */
+
+	s = getaddrinfo(name, NULL, &hints, &result);
+	if (s != 0) {
+		DEBUG(1, ("getaddrinfo: %s\n", gai_strerror(s)));
 		DEBUG(10,("name_to_fqdn: lookup for %s failed.\n", name));
 		fstrcpy(fqdn, name);
 		return false;
 	}
+	full = result->ai_canonname;
 
-	/* Find out if the fqdn is returned as an alias
+	/* Find out if the FQDN is returned as an alias
 	 * to cope with /etc/hosts files where the first
-	 * name is not the fqdn but the short name */
-	if (hp->h_aliases && (! strchr_m(hp->h_name, '.'))) {
-		int i;
-		for (i = 0; hp->h_aliases[i]; i++) {
-			if (strchr_m(hp->h_aliases[i], '.')) {
-				full = hp->h_aliases[i];
-				break;
-			}
-		}
+	 * name is not the FQDN but the short name.
+	 * getaddrinfo provides no easy way of handling aliases
+	 * in /etc/hosts. Users should make sure the FQDN
+	 * comes first in /etc/hosts. */
+	if (full && (! strchr_m(full, '.'))) {
+		DEBUG(1, ("WARNING: your /etc/hosts file may be broken!\n"));
+		DEBUGADD(1, ("    Full qualified domain names (FQDNs) should not be specified\n"));
+		DEBUGADD(1, ("    as an alias in /etc/hosts. FQDN should be the first name\n"));
+		DEBUGADD(1, ("    prior to any aliases.\n"));
 	}
 	if (full && (strcasecmp_m(full, "localhost.localdomain") == 0)) {
 		DEBUG(1, ("WARNING: your /etc/hosts file may be broken!\n"));
 		DEBUGADD(1, ("    Specifing the machine hostname for address 127.0.0.1 may lead\n"));
 		DEBUGADD(1, ("    to Kerberos authentication problems as localhost.localdomain\n"));
 		DEBUGADD(1, ("    may end up being used instead of the real machine FQDN.\n"));
-		full = hp->h_name;
-	}
-	if (!full) {
-		full = hp->h_name;
 	}
 
 	DEBUG(10,("name_to_fqdn: lookup for %s -> %s.\n", name, full));
 	fstrcpy(fqdn, full);
+	freeaddrinfo(result);           /* No longer needed */
 	return true;
 }
 
@@ -2424,4 +2415,46 @@ struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct securi
 		cpy->groups = NULL;
 	}
 	return cpy;
+}
+
+/****************************************************************************
+ Check that a file matches a particular file type.
+****************************************************************************/
+
+bool dir_check_ftype(uint32_t mode, uint32_t dirtype)
+{
+	uint32_t mask;
+
+	/* Check the "may have" search bits. */
+	if (((mode & ~dirtype) &
+			(FILE_ATTRIBUTE_HIDDEN |
+			 FILE_ATTRIBUTE_SYSTEM |
+			 FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+		return false;
+	}
+
+	/* Check the "must have" bits,
+	   which are the may have bits shifted eight */
+	/* If must have bit is set, the file/dir can
+	   not be returned in search unless the matching
+	   file attribute is set */
+	mask = ((dirtype >> 8) & (FILE_ATTRIBUTE_DIRECTORY|
+				    FILE_ATTRIBUTE_ARCHIVE|
+				   FILE_ATTRIBUTE_READONLY|
+				     FILE_ATTRIBUTE_HIDDEN|
+				     FILE_ATTRIBUTE_SYSTEM)); /* & 0x37 */
+	if(mask) {
+		if((mask & (mode & (FILE_ATTRIBUTE_DIRECTORY|
+				      FILE_ATTRIBUTE_ARCHIVE|
+				     FILE_ATTRIBUTE_READONLY|
+				       FILE_ATTRIBUTE_HIDDEN|
+					FILE_ATTRIBUTE_SYSTEM))) == mask) {
+			/* check if matching attribute present */
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	return true;
 }

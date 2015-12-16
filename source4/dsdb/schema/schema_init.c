@@ -58,12 +58,6 @@ struct dsdb_schema *dsdb_schema_copy_shallow(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	/* schema base_dn */
-	schema_copy->base_dn = ldb_dn_copy(schema_copy, schema->base_dn);
-	if (!schema_copy->base_dn) {
-		goto failed;
-	}
-
 	/* copy prexiMap & schemaInfo */
 	schema_copy->prefixmap = dsdb_schema_pfm_copy_shallow(schema_copy,
 							      schema->prefixmap);
@@ -103,8 +97,6 @@ struct dsdb_schema *dsdb_schema_copy_shallow(TALLOC_CTX *mem_ctx,
 	}
 
 	/* leave reload_seq_number = 0 so it will be refresh ASAP */
-	schema_copy->refresh_fn = schema->refresh_fn;
-	schema_copy->loaded_from_module = schema->loaded_from_module;
 
 	return schema_copy;
 
@@ -699,9 +691,10 @@ WERROR dsdb_attribute_from_ldb(const struct dsdb_schema *schema,
 	return WERR_OK;
 }
 
-WERROR dsdb_set_attribute_from_ldb(struct ldb_context *ldb,
-			       struct dsdb_schema *schema,
-			       struct ldb_message *msg)
+WERROR dsdb_set_attribute_from_ldb_dups(struct ldb_context *ldb,
+					struct dsdb_schema *schema,
+					struct ldb_message *msg,
+					bool checkdups)
 {
 	WERROR status;
 	struct dsdb_attribute *attr = talloc_zero(schema, struct dsdb_attribute);
@@ -729,12 +722,44 @@ WERROR dsdb_set_attribute_from_ldb(struct ldb_context *ldb,
 		return WERR_DS_ATT_SCHEMA_REQ_SYNTAX;
 	}
 
+	if (checkdups) {
+		const struct dsdb_attribute *a2;
+		struct dsdb_attribute **a;
+		uint32_t i;
+
+		a2 = dsdb_attribute_by_attributeID_id(schema,
+						      attr->attributeID_id);
+		if (a2 == NULL) {
+			goto done;
+		}
+
+		i = schema->attributes_to_remove_size;
+		a = talloc_realloc(schema, schema->attributes_to_remove,
+				   struct dsdb_attribute *, i + 1);
+		if (a == NULL) {
+			return WERR_NOMEM;
+		}
+		/* Mark the old attribute as to be removed */
+		a[i] = discard_const_p(struct dsdb_attribute, a2);
+		schema->attributes_to_remove = a;
+		schema->attributes_to_remove_size++;
+	}
+
+done:
 	DLIST_ADD(schema->attributes, attr);
 	return WERR_OK;
 }
 
-WERROR dsdb_set_class_from_ldb(struct dsdb_schema *schema,
-			   struct ldb_message *msg)
+WERROR dsdb_set_attribute_from_ldb(struct ldb_context *ldb,
+				   struct dsdb_schema *schema,
+				   struct ldb_message *msg)
+{
+	return dsdb_set_attribute_from_ldb_dups(ldb, schema, msg, false);
+}
+
+WERROR dsdb_set_class_from_ldb_dups(struct dsdb_schema *schema,
+				    struct ldb_message *msg,
+				    bool checkdups)
 {
 	WERROR status;
 	struct dsdb_class *obj = talloc_zero(schema, struct dsdb_class);
@@ -792,8 +817,37 @@ WERROR dsdb_set_class_from_ldb(struct dsdb_schema *schema,
 	GET_BOOL_LDB(msg, "isDefunct", obj, isDefunct, false);
 	GET_BOOL_LDB(msg, "systemOnly", obj, systemOnly, false);
 
+	if (checkdups) {
+		const struct dsdb_class *c2;
+		struct dsdb_class **c;
+		uint32_t i;
+
+		c2 = dsdb_class_by_governsID_id(schema, obj->governsID_id);
+		if (c2 == NULL) {
+			goto done;
+		}
+
+		i = schema->classes_to_remove_size;
+		c = talloc_realloc(schema, schema->classes_to_remove,
+				   struct dsdb_class *, i + 1);
+		if (c == NULL) {
+			return WERR_NOMEM;
+		}
+		/* Mark the old class to be removed */
+		c[i] = discard_const_p(struct dsdb_class, c2);
+		schema->classes_to_remove = c;
+		schema->classes_to_remove_size++;
+	}
+
+done:
 	DLIST_ADD(schema->classes, obj);
 	return WERR_OK;
+}
+
+WERROR dsdb_set_class_from_ldb(struct dsdb_schema *schema,
+			       struct ldb_message *msg)
+{
+	return dsdb_set_class_from_ldb_dups(schema, msg, false);
 }
 
 #define dsdb_oom(error_string, mem_ctx) *error_string = talloc_asprintf(mem_ctx, "dsdb out of memory at %s:%d\n", __FILE__, __LINE__)
@@ -868,8 +922,6 @@ int dsdb_schema_from_ldb_results(TALLOC_CTX *mem_ctx, struct ldb_context *ldb,
 							      "dsdb", "schema update allowed",
 							      false);
 	}
-
-	schema->base_dn = talloc_steal(schema, schema_res->msgs[0]->dn);
 
 	prefix_val = ldb_msg_find_ldb_val(schema_res->msgs[0], "prefixMap");
 	if (!prefix_val) {

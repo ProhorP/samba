@@ -259,9 +259,13 @@ static NTSTATUS pdb_samba_dsdb_init_sam_from_priv(struct pdb_methods *m,
 		pdb_set_workstations(sam, str, PDB_SET);
 	}
 
-	str = ldb_msg_find_attr_as_string(msg, "userParameters",
-					    NULL);
-	if (str != NULL) {
+	blob = ldb_msg_find_ldb_val(msg, "userParameters");
+	if (blob != NULL) {
+		str = base64_encode_data_blob(frame, *blob);
+		if (str == NULL) {
+			DEBUG(0, ("base64_encode_data_blob() failed\n"));
+			goto fail;
+		}
 		pdb_set_munged_dial(sam, str, PDB_SET);
 	}
 
@@ -553,8 +557,25 @@ static int pdb_samba_dsdb_replace_by_sam(struct pdb_samba_dsdb_state *state,
 
 	/* This will need work, it is actually a UTF8 'string' with internal NULLs, to handle TS parameters */
 	if (need_update(sam, PDB_MUNGEDDIAL)) {
-		ret |= ldb_msg_add_string(msg, "userParameters",
-					  pdb_get_munged_dial(sam));
+		const char *base64_munged_dial = NULL;
+
+		base64_munged_dial = pdb_get_munged_dial(sam);
+		if (base64_munged_dial != NULL && strlen(base64_munged_dial) > 0) {
+			struct ldb_val blob;
+
+			blob = base64_decode_data_blob_talloc(msg,
+							base64_munged_dial);
+			if (blob.data == NULL) {
+				DEBUG(0, ("Failed to decode userParameters from "
+					  "munged dialback string[%s] for %s\n",
+					  base64_munged_dial,
+					  ldb_dn_get_linearized(msg->dn)));
+				talloc_free(frame);
+				return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+			}
+			ret |= ldb_msg_add_steal_value(msg, "userParameters",
+						       &blob);
+		}
 	}
 
 	if (need_update(sam, PDB_COUNTRY_CODE)) {
@@ -1199,8 +1220,8 @@ static NTSTATUS fake_enum_group_memberships(struct pdb_samba_dsdb_state *state,
 {
 	NTSTATUS status;
 	size_t num_groups = 0;
-	struct dom_sid *group_sids;
-	gid_t *gids;
+	struct dom_sid *group_sids = NULL;
+	gid_t *gids = NULL;
 	TALLOC_CTX *tmp_ctx;
 
 	tmp_ctx = talloc_new(mem_ctx);
@@ -2063,7 +2084,7 @@ static bool pdb_samba_dsdb_sid_to_id(struct pdb_methods *m, const struct dom_sid
 	}
 
 	ZERO_STRUCT(id_map);
-	id_map.sid = sid;
+	id_map.sid = discard_const_p(struct dom_sid, sid);
 	id_maps[0] = &id_map;
 	id_maps[1] = NULL;
 
@@ -2120,6 +2141,11 @@ static NTSTATUS pdb_samba_dsdb_enum_trusteddoms(struct pdb_methods *m,
 	return NT_STATUS_OK;
 }
 
+static bool pdb_samba_dsdb_is_responsible_for_wellknown(struct pdb_methods *m)
+{
+	return true;
+}
+
 static void pdb_samba_dsdb_init_methods(struct pdb_methods *m)
 {
 	m->name = "samba_dsdb";
@@ -2171,6 +2197,8 @@ static void pdb_samba_dsdb_init_methods(struct pdb_methods *m)
 	m->set_trusteddom_pw = pdb_samba_dsdb_set_trusteddom_pw;
 	m->del_trusteddom_pw = pdb_samba_dsdb_del_trusteddom_pw;
 	m->enum_trusteddoms = pdb_samba_dsdb_enum_trusteddoms;
+	m->is_responsible_for_wellknown =
+				pdb_samba_dsdb_is_responsible_for_wellknown;
 }
 
 static void free_private_data(void **vp)
@@ -2184,6 +2212,10 @@ static void free_private_data(void **vp)
 static NTSTATUS pdb_samba_dsdb_init_secrets(struct pdb_methods *m)
 {
 	struct pdb_domain_info *dom_info;
+	struct dom_sid stored_sid;
+	struct GUID stored_guid;
+	bool sid_exists_and_matches = false;
+	bool guid_exists_and_matches = false;
 	bool ret;
 
 	dom_info = pdb_samba_dsdb_get_domain_info(m, m);
@@ -2191,20 +2223,38 @@ static NTSTATUS pdb_samba_dsdb_init_secrets(struct pdb_methods *m)
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	secrets_clear_domain_protection(dom_info->name);
-	ret = secrets_store_domain_sid(dom_info->name,
-				       &dom_info->sid);
-	if (!ret) {
-		goto done;
+	ret = secrets_fetch_domain_sid(dom_info->name, &stored_sid);
+	if (ret) {
+		if (dom_sid_equal(&stored_sid, &dom_info->sid)) {
+			sid_exists_and_matches = true;
+		}
 	}
-	ret = secrets_store_domain_guid(dom_info->name,
-				        &dom_info->guid);
-	if (!ret) {
-		goto done;
+
+	if (sid_exists_and_matches == false) {
+		secrets_clear_domain_protection(dom_info->name);
+		ret = secrets_store_domain_sid(dom_info->name,
+					       &dom_info->sid);
+		ret &= secrets_mark_domain_protected(dom_info->name);
+		if (!ret) {
+			goto done;
+		}
 	}
-	ret = secrets_mark_domain_protected(dom_info->name);
-	if (!ret) {
-		goto done;
+
+	ret = secrets_fetch_domain_guid(dom_info->name, &stored_guid);
+	if (ret) {
+		if (GUID_equal(&stored_guid, &dom_info->guid)) {
+			guid_exists_and_matches = true;
+		}
+	}
+
+	if (guid_exists_and_matches == false) {
+		secrets_clear_domain_protection(dom_info->name);
+		ret = secrets_store_domain_guid(dom_info->name,
+					       &dom_info->guid);
+		ret &= secrets_mark_domain_protected(dom_info->name);
+		if (!ret) {
+			goto done;
+		}
 	}
 
 done:

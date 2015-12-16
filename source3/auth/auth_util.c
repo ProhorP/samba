@@ -232,8 +232,8 @@ bool make_user_info_netlogon_interactive(struct auth_usersupplied_info **user_in
 	{
 		bool ret;
 		NTSTATUS nt_status;
-		DATA_BLOB local_lm_blob;
-		DATA_BLOB local_nt_blob;
+		DATA_BLOB local_lm_blob = data_blob_null;
+		DATA_BLOB local_nt_blob = data_blob_null;
 
 		if (lm_interactive_pwd) {
 			local_lm_blob = data_blob(local_lm_response,
@@ -1369,7 +1369,7 @@ NTSTATUS make_server_info_info3(TALLOC_CTX *mem_ctx,
 				const char *sent_nt_username,
 				const char *domain,
 				struct auth_serversupplied_info **server_info,
-				struct netr_SamInfo3 *info3)
+				const struct netr_SamInfo3 *info3)
 {
 	static const char zeros[16] = {0, };
 

@@ -252,7 +252,7 @@ NTSTATUS cli_setpathinfo(struct cli_state *cli,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = tevent_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -281,7 +281,7 @@ struct cli_posix_link_internal_state {
 static void cli_posix_link_internal_done(struct tevent_req *subreq);
 
 static struct tevent_req *cli_posix_link_internal_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t level,
 					const char *oldname,
@@ -325,7 +325,7 @@ static void cli_posix_link_internal_done(struct tevent_req *subreq)
 ****************************************************************************/
 
 struct tevent_req *cli_posix_symlink_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *oldname,
 					const char *newname)
@@ -344,7 +344,7 @@ NTSTATUS cli_posix_symlink(struct cli_state *cli,
 			const char *newname)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -356,7 +356,7 @@ NTSTATUS cli_posix_symlink(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -396,7 +396,7 @@ struct readlink_state {
 static void cli_posix_readlink_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_posix_readlink_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					size_t len)
@@ -485,7 +485,7 @@ NTSTATUS cli_posix_readlink(struct cli_state *cli, const char *fname,
 				char *linkpath, size_t len)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -497,7 +497,7 @@ NTSTATUS cli_posix_readlink(struct cli_state *cli, const char *fname,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -530,7 +530,7 @@ NTSTATUS cli_posix_readlink(struct cli_state *cli, const char *fname,
 ****************************************************************************/
 
 struct tevent_req *cli_posix_hardlink_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *oldname,
 					const char *newname)
@@ -549,7 +549,7 @@ NTSTATUS cli_posix_hardlink(struct cli_state *cli,
 			const char *newname)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -561,7 +561,7 @@ NTSTATUS cli_posix_hardlink(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -601,7 +601,7 @@ struct getfacl_state {
 static void cli_posix_getfacl_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_posix_getfacl_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname)
 {
@@ -661,7 +661,7 @@ NTSTATUS cli_posix_getfacl(struct cli_state *cli,
 			char **retbuf)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -673,7 +673,7 @@ NTSTATUS cli_posix_getfacl(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -712,7 +712,7 @@ struct stat_state {
 static void cli_posix_stat_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_posix_stat_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname)
 {
@@ -792,7 +792,7 @@ NTSTATUS cli_posix_stat(struct cli_state *cli,
 			SMB_STRUCT_STAT *sbuf)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -804,7 +804,7 @@ NTSTATUS cli_posix_stat(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -842,7 +842,7 @@ struct cli_posix_chown_chmod_internal_state {
 static void cli_posix_chown_chmod_internal_done(struct tevent_req *subreq);
 
 static struct tevent_req *cli_posix_chown_chmod_internal_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					uint32_t mode,
@@ -885,7 +885,7 @@ static void cli_posix_chown_chmod_internal_done(struct tevent_req *subreq)
 ****************************************************************************/
 
 struct tevent_req *cli_posix_chmod_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					mode_t mode)
@@ -905,7 +905,7 @@ NTSTATUS cli_posix_chmod_recv(struct tevent_req *req)
 NTSTATUS cli_posix_chmod(struct cli_state *cli, const char *fname, mode_t mode)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -917,7 +917,7 @@ NTSTATUS cli_posix_chmod(struct cli_state *cli, const char *fname, mode_t mode)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -950,7 +950,7 @@ NTSTATUS cli_posix_chmod(struct cli_state *cli, const char *fname, mode_t mode)
 ****************************************************************************/
 
 struct tevent_req *cli_posix_chown_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					uid_t uid,
@@ -974,7 +974,7 @@ NTSTATUS cli_posix_chown(struct cli_state *cli,
 			gid_t gid)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -986,7 +986,7 @@ NTSTATUS cli_posix_chown(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1026,7 +1026,7 @@ struct cli_rename_state {
 };
 
 struct tevent_req *cli_rename_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname_src,
 				const char *fname_dst)
@@ -1097,10 +1097,18 @@ NTSTATUS cli_rename_recv(struct tevent_req *req)
 
 NTSTATUS cli_rename(struct cli_state *cli, const char *fname_src, const char *fname_dst)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_rename(cli,
+					fname_src,
+					fname_dst);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -1110,7 +1118,7 @@ NTSTATUS cli_rename(struct cli_state *cli, const char *fname_src, const char *fn
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1145,7 +1153,7 @@ struct cli_ntrename_internal_state {
 };
 
 static struct tevent_req *cli_ntrename_internal_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname_src,
 				const char *fname_dst,
@@ -1218,7 +1226,7 @@ static NTSTATUS cli_ntrename_internal_recv(struct tevent_req *req)
 }
 
 struct tevent_req *cli_ntrename_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname_src,
 				const char *fname_dst)
@@ -1239,7 +1247,7 @@ NTSTATUS cli_ntrename_recv(struct tevent_req *req)
 NTSTATUS cli_ntrename(struct cli_state *cli, const char *fname_src, const char *fname_dst)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -1251,7 +1259,7 @@ NTSTATUS cli_ntrename(struct cli_state *cli, const char *fname_src, const char *
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1280,7 +1288,7 @@ NTSTATUS cli_ntrename(struct cli_state *cli, const char *fname_src, const char *
 ****************************************************************************/
 
 struct tevent_req *cli_nt_hardlink_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname_src,
 				const char *fname_dst)
@@ -1301,7 +1309,7 @@ NTSTATUS cli_nt_hardlink_recv(struct tevent_req *req)
 NTSTATUS cli_nt_hardlink(struct cli_state *cli, const char *fname_src, const char *fname_dst)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -1313,7 +1321,7 @@ NTSTATUS cli_nt_hardlink(struct cli_state *cli, const char *fname_src, const cha
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1348,7 +1356,7 @@ struct cli_unlink_state {
 };
 
 struct tevent_req *cli_unlink_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname,
 				uint16_t mayhave_attrs)
@@ -1407,10 +1415,16 @@ NTSTATUS cli_unlink_recv(struct tevent_req *req)
 
 NTSTATUS cli_unlink(struct cli_state *cli, const char *fname, uint16_t mayhave_attrs)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_unlink(cli, fname);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -1420,7 +1434,7 @@ NTSTATUS cli_unlink(struct cli_state *cli, const char *fname, uint16_t mayhave_a
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1455,7 +1469,7 @@ struct cli_mkdir_state {
 };
 
 struct tevent_req *cli_mkdir_send(TALLOC_CTX *mem_ctx,
-				  struct event_context *ev,
+				  struct tevent_context *ev,
 				  struct cli_state *cli,
 				  const char *dname)
 {
@@ -1511,10 +1525,16 @@ NTSTATUS cli_mkdir_recv(struct tevent_req *req)
 
 NTSTATUS cli_mkdir(struct cli_state *cli, const char *dname)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_mkdir(cli, dname);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -1524,7 +1544,7 @@ NTSTATUS cli_mkdir(struct cli_state *cli, const char *dname)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1559,7 +1579,7 @@ struct cli_rmdir_state {
 };
 
 struct tevent_req *cli_rmdir_send(TALLOC_CTX *mem_ctx,
-				  struct event_context *ev,
+				  struct tevent_context *ev,
 				  struct cli_state *cli,
 				  const char *dname)
 {
@@ -1615,10 +1635,16 @@ NTSTATUS cli_rmdir_recv(struct tevent_req *req)
 
 NTSTATUS cli_rmdir(struct cli_state *cli, const char *dname)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_rmdir(cli, dname);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -1628,7 +1654,7 @@ NTSTATUS cli_rmdir(struct cli_state *cli, const char *dname)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1670,7 +1696,7 @@ static void cli_nt_delete_on_close_done(struct tevent_req *subreq)
 }
 
 struct tevent_req *cli_nt_delete_on_close_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t fnum,
 					bool flag)
@@ -1726,7 +1752,7 @@ NTSTATUS cli_nt_delete_on_close_recv(struct tevent_req *req)
 NTSTATUS cli_nt_delete_on_close(struct cli_state *cli, uint16_t fnum, bool flag)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -1738,7 +1764,7 @@ NTSTATUS cli_nt_delete_on_close(struct cli_state *cli, uint16_t fnum, bool flag)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1769,12 +1795,13 @@ NTSTATUS cli_nt_delete_on_close(struct cli_state *cli, uint16_t fnum, bool flag)
 struct cli_ntcreate_state {
 	uint16_t vwv[24];
 	uint16_t fnum;
+	struct smb_create_returns cr;
 };
 
 static void cli_ntcreate_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_ntcreate_send(TALLOC_CTX *mem_ctx,
-				     struct event_context *ev,
+				     struct tevent_context *ev,
 				     struct cli_state *cli,
 				     const char *fname,
 				     uint32_t CreatFlags,
@@ -1854,17 +1881,29 @@ static void cli_ntcreate_done(struct tevent_req *subreq)
 	uint8_t *bytes;
 	NTSTATUS status;
 
-	status = cli_smb_recv(subreq, state, NULL, 3, &wct, &vwv,
+	status = cli_smb_recv(subreq, state, NULL, 34, &wct, &vwv,
 			      &num_bytes, &bytes);
 	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
+	state->cr.oplock_level = CVAL(vwv+2, 0);
 	state->fnum = SVAL(vwv+2, 1);
+	state->cr.create_action = IVAL(vwv+3, 1);
+	state->cr.creation_time = BVAL(vwv+5, 1);
+	state->cr.last_access_time = BVAL(vwv+9, 1);
+	state->cr.last_write_time = BVAL(vwv+13, 1);
+	state->cr.change_time   = BVAL(vwv+17, 1);
+	state->cr.file_attributes = IVAL(vwv+21, 1);
+	state->cr.allocation_size = BVAL(vwv+23, 1);
+	state->cr.end_of_file   = BVAL(vwv+27, 1);
+
 	tevent_req_done(req);
 }
 
-NTSTATUS cli_ntcreate_recv(struct tevent_req *req, uint16_t *pfnum)
+NTSTATUS cli_ntcreate_recv(struct tevent_req *req,
+		uint16_t *pfnum,
+		struct smb_create_returns *cr)
 {
 	struct cli_ntcreate_state *state = tevent_req_data(
 		req, struct cli_ntcreate_state);
@@ -1874,6 +1913,9 @@ NTSTATUS cli_ntcreate_recv(struct tevent_req *req, uint16_t *pfnum)
 		return status;
 	}
 	*pfnum = state->fnum;
+	if (cr != NULL) {
+		*cr = state->cr;
+	}
 	return NT_STATUS_OK;
 }
 
@@ -1886,12 +1928,28 @@ NTSTATUS cli_ntcreate(struct cli_state *cli,
 		      uint32_t CreateDisposition,
 		      uint32_t CreateOptions,
 		      uint8_t SecurityFlags,
-		      uint16_t *pfid)
+		      uint16_t *pfid,
+		      struct smb_create_returns *cr)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_create_fnum(cli,
+					fname,
+					CreatFlags,
+					DesiredAccess,
+					FileAttributes,
+					ShareAccess,
+					CreateDisposition,
+					CreateOptions,
+					pfid,
+					cr);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -1901,7 +1959,7 @@ NTSTATUS cli_ntcreate(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -1921,7 +1979,7 @@ NTSTATUS cli_ntcreate(struct cli_state *cli,
 		goto fail;
 	}
 
-	status = cli_ntcreate_recv(req, pfid);
+	status = cli_ntcreate_recv(req, pfid, cr);
  fail:
 	TALLOC_FREE(frame);
 	return status;
@@ -1929,12 +1987,13 @@ NTSTATUS cli_ntcreate(struct cli_state *cli,
 
 struct cli_nttrans_create_state {
 	uint16_t fnum;
+	struct smb_create_returns cr;
 };
 
 static void cli_nttrans_create_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_nttrans_create_send(TALLOC_CTX *mem_ctx,
-					   struct event_context *ev,
+					   struct tevent_context *ev,
 					   struct cli_state *cli,
 					   const char *fname,
 					   uint32_t CreatFlags,
@@ -2041,12 +2100,24 @@ static void cli_nttrans_create_done(struct tevent_req *subreq)
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
+	state->cr.oplock_level = CVAL(param, 0);
 	state->fnum = SVAL(param, 2);
+	state->cr.create_action = IVAL(param, 4);
+	state->cr.creation_time = BVAL(param, 12);
+	state->cr.last_access_time = BVAL(param, 20);
+	state->cr.last_write_time = BVAL(param, 28);
+	state->cr.change_time   = BVAL(param, 36);
+	state->cr.file_attributes = IVAL(param, 44);
+	state->cr.allocation_size = BVAL(param, 48);
+	state->cr.end_of_file   = BVAL(param, 56);
+
 	TALLOC_FREE(param);
 	tevent_req_done(req);
 }
 
-NTSTATUS cli_nttrans_create_recv(struct tevent_req *req, uint16_t *fnum)
+NTSTATUS cli_nttrans_create_recv(struct tevent_req *req,
+			uint16_t *fnum,
+			struct smb_create_returns *cr)
 {
 	struct cli_nttrans_create_state *state = tevent_req_data(
 		req, struct cli_nttrans_create_state);
@@ -2056,6 +2127,9 @@ NTSTATUS cli_nttrans_create_recv(struct tevent_req *req, uint16_t *fnum)
 		return status;
 	}
 	*fnum = state->fnum;
+	if (cr != NULL) {
+		*cr = state->cr;
+	}
 	return NT_STATUS_OK;
 }
 
@@ -2071,10 +2145,11 @@ NTSTATUS cli_nttrans_create(struct cli_state *cli,
 			    struct security_descriptor *secdesc,
 			    struct ea_struct *eas,
 			    int num_eas,
-			    uint16_t *pfid)
+			    uint16_t *pfid,
+			    struct smb_create_returns *cr)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -2085,7 +2160,7 @@ NTSTATUS cli_nttrans_create(struct cli_state *cli,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -2100,7 +2175,7 @@ NTSTATUS cli_nttrans_create(struct cli_state *cli,
 	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
-	status = cli_nttrans_create_recv(req, pfid);
+	status = cli_nttrans_create_recv(req, pfid, cr);
  fail:
 	TALLOC_FREE(frame);
 	return status;
@@ -2121,7 +2196,7 @@ struct cli_openx_state {
 static void cli_openx_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_openx_create(TALLOC_CTX *mem_ctx,
-				   struct event_context *ev,
+				   struct tevent_context *ev,
 				   struct cli_state *cli, const char *fname,
 				   int flags, int share_mode,
 				   struct tevent_req **psmbreq)
@@ -2212,7 +2287,7 @@ struct tevent_req *cli_openx_create(TALLOC_CTX *mem_ctx,
 	return req;
 }
 
-struct tevent_req *cli_openx_send(TALLOC_CTX *mem_ctx, struct event_context *ev,
+struct tevent_req *cli_openx_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
 				 struct cli_state *cli, const char *fname,
 				 int flags, int share_mode)
 {
@@ -2269,9 +2344,9 @@ NTSTATUS cli_openx(struct cli_state *cli, const char *fname, int flags,
 	     int share_mode, uint16_t *pfnum)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
-	NTSTATUS status = NT_STATUS_OK;
+	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -2281,20 +2356,17 @@ NTSTATUS cli_openx(struct cli_state *cli, const char *fname, int flags,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
-		status = NT_STATUS_NO_MEMORY;
 		goto fail;
 	}
 
 	req = cli_openx_send(frame, ev, cli, fname, flags, share_mode);
 	if (req == NULL) {
-		status = NT_STATUS_NO_MEMORY;
 		goto fail;
 	}
 
-	if (!tevent_req_poll(req, ev)) {
-		status = map_nt_error_from_unix(errno);
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
 
@@ -2315,6 +2387,7 @@ NTSTATUS cli_open(struct cli_state *cli, const char *fname, int flags,
 	unsigned int openfn = 0;
 	unsigned int dos_deny = 0;
 	uint32_t access_mask, share_mode, create_disposition, create_options;
+	struct smb_create_returns cr;
 
 	/* Do the initial mapping into OpenX parameters. */
 	if (flags & O_CREAT) {
@@ -2395,7 +2468,8 @@ NTSTATUS cli_open(struct cli_state *cli, const char *fname, int flags,
 				create_disposition,
 				create_options,
 				0,
-				pfnum);
+				pfnum,
+				&cr);
 
 	/* Try and cope will all varients of "we don't do this call"
 	   and fall back to openX. */
@@ -2410,6 +2484,25 @@ NTSTATUS cli_open(struct cli_state *cli, const char *fname, int flags,
 			NT_STATUS_EQUAL(status,NT_STATUS_CTL_FILE_NOT_SUPPORTED) ||
 			NT_STATUS_EQUAL(status,NT_STATUS_UNSUCCESSFUL)) {
 		goto try_openx;
+	}
+
+	if (NT_STATUS_IS_OK(status) &&
+	    (create_options & FILE_NON_DIRECTORY_FILE) &&
+	    (cr.file_attributes & FILE_ATTRIBUTE_DIRECTORY))
+	{
+		/*
+		 * Some (broken) servers return a valid handle
+		 * for directories even if FILE_NON_DIRECTORY_FILE
+		 * is set. Just close the handle and set the
+		 * error explicitly to NT_STATUS_FILE_IS_A_DIRECTORY.
+		 */
+		status = cli_close(cli, *pfnum);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+		status = NT_STATUS_FILE_IS_A_DIRECTORY;
+		/* Set this so libsmbclient can retrieve it. */
+		cli->raw_status = status;
 	}
 
 	return status;
@@ -2430,7 +2523,7 @@ struct cli_close_state {
 static void cli_close_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_close_create(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum,
 				struct tevent_req **psubreq)
@@ -2458,7 +2551,7 @@ struct tevent_req *cli_close_create(TALLOC_CTX *mem_ctx,
 }
 
 struct tevent_req *cli_close_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum)
 {
@@ -2498,10 +2591,16 @@ NTSTATUS cli_close_recv(struct tevent_req *req)
 
 NTSTATUS cli_close(struct cli_state *cli, uint16_t fnum)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_close_fnum(cli, fnum);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -2511,7 +2610,7 @@ NTSTATUS cli_close(struct cli_state *cli, uint16_t fnum)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -2552,7 +2651,7 @@ static void cli_ftruncate_done(struct tevent_req *subreq)
 }
 
 struct tevent_req *cli_ftruncate_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t fnum,
 					uint64_t size)
@@ -2609,7 +2708,7 @@ NTSTATUS cli_ftruncate_recv(struct tevent_req *req)
 NTSTATUS cli_ftruncate(struct cli_state *cli, uint16_t fnum, uint64_t size)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -2621,7 +2720,7 @@ NTSTATUS cli_ftruncate(struct cli_state *cli, uint16_t fnum, uint64_t size)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -2725,7 +2824,7 @@ struct cli_unlock_state {
 static void cli_unlock_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_unlock_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum,
 				uint64_t offset,
@@ -2786,7 +2885,7 @@ NTSTATUS cli_unlock(struct cli_state *cli,
 			uint32_t len)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -2798,7 +2897,7 @@ NTSTATUS cli_unlock(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -2890,7 +2989,7 @@ struct cli_unlock64_state {
 static void cli_unlock64_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_unlock64_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum,
 				uint64_t offset,
@@ -2951,7 +3050,7 @@ NTSTATUS cli_unlock64(struct cli_state *cli,
 				uint64_t len)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -2967,7 +3066,7 @@ NTSTATUS cli_unlock64(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3010,7 +3109,7 @@ static void cli_posix_unlock_internal_done(struct tevent_req *subreq)
 }
 
 static struct tevent_req *cli_posix_lock_internal_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t fnum,
 					uint64_t offset,
@@ -3093,7 +3192,7 @@ static struct tevent_req *cli_posix_lock_internal_send(TALLOC_CTX *mem_ctx,
 ****************************************************************************/
 
 struct tevent_req *cli_posix_lock_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t fnum,
 					uint64_t offset,
@@ -3115,7 +3214,7 @@ NTSTATUS cli_posix_lock(struct cli_state *cli, uint16_t fnum,
 			bool wait_lock, enum brl_type lock_type)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -3132,7 +3231,7 @@ NTSTATUS cli_posix_lock(struct cli_state *cli, uint16_t fnum,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3168,7 +3267,7 @@ NTSTATUS cli_posix_lock(struct cli_state *cli, uint16_t fnum,
 ****************************************************************************/
 
 struct tevent_req *cli_posix_unlock_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					uint16_t fnum,
 					uint64_t offset,
@@ -3186,7 +3285,7 @@ NTSTATUS cli_posix_unlock_recv(struct tevent_req *req)
 NTSTATUS cli_posix_unlock(struct cli_state *cli, uint16_t fnum, uint64_t offset, uint64_t len)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -3198,7 +3297,7 @@ NTSTATUS cli_posix_unlock(struct cli_state *cli, uint16_t fnum, uint64_t offset,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3244,7 +3343,7 @@ struct cli_getattrE_state {
 };
 
 struct tevent_req *cli_getattrE_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum)
 {
@@ -3335,10 +3434,22 @@ NTSTATUS cli_getattrE(struct cli_state *cli,
 			time_t *access_time,
 			time_t *write_time)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_getattrE(cli,
+					fnum,
+					attr,
+					size,
+					change_time,
+					access_time,
+					write_time);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -3348,7 +3459,7 @@ NTSTATUS cli_getattrE(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3391,7 +3502,7 @@ struct cli_getatr_state {
 };
 
 struct tevent_req *cli_getatr_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname)
 {
@@ -3482,10 +3593,20 @@ NTSTATUS cli_getatr(struct cli_state *cli,
 			off_t *size,
 			time_t *write_time)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_getatr(cli,
+					fname,
+					attr,
+					size,
+					write_time);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -3495,7 +3616,7 @@ NTSTATUS cli_getatr(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3533,7 +3654,7 @@ struct cli_setattrE_state {
 };
 
 struct tevent_req *cli_setattrE_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				uint16_t fnum,
 				time_t change_time,
@@ -3591,10 +3712,20 @@ NTSTATUS cli_setattrE(struct cli_state *cli,
 			time_t access_time,
 			time_t write_time)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_setattrE(cli,
+					fnum,
+					change_time,
+					access_time,
+					write_time);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -3604,7 +3735,7 @@ NTSTATUS cli_setattrE(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3645,7 +3776,7 @@ struct cli_setatr_state {
 };
 
 struct tevent_req *cli_setatr_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *fname,
 				uint16_t attr,
@@ -3720,10 +3851,19 @@ NTSTATUS cli_setatr(struct cli_state *cli,
 		uint16_t attr,
 		time_t mtime)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_setatr(cli,
+					fname,
+					attr,
+					mtime);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -3733,7 +3873,7 @@ NTSTATUS cli_setatr(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3768,7 +3908,7 @@ struct cli_chkpath_state {
 };
 
 struct tevent_req *cli_chkpath_send(TALLOC_CTX *mem_ctx,
-				  struct event_context *ev,
+				  struct tevent_context *ev,
 				  struct cli_state *cli,
 				  const char *fname)
 {
@@ -3825,7 +3965,7 @@ NTSTATUS cli_chkpath_recv(struct tevent_req *req)
 NTSTATUS cli_chkpath(struct cli_state *cli, const char *path)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	char *path2 = NULL;
 	NTSTATUS status = NT_STATUS_OK;
@@ -3852,7 +3992,7 @@ NTSTATUS cli_chkpath(struct cli_state *cli, const char *path)
 		}
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3889,7 +4029,7 @@ struct cli_dskattr_state {
 };
 
 struct tevent_req *cli_dskattr_send(TALLOC_CTX *mem_ctx,
-				  struct event_context *ev,
+				  struct tevent_context *ev,
 				  struct cli_state *cli)
 {
 	struct tevent_req *req = NULL, *subreq = NULL;
@@ -3949,10 +4089,16 @@ NTSTATUS cli_dskattr_recv(struct tevent_req *req, int *bsize, int *total, int *a
 
 NTSTATUS cli_dskattr(struct cli_state *cli, int *bsize, int *total, int *avail)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_dskattr(cli, bsize, total, avail);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -3962,7 +4108,7 @@ NTSTATUS cli_dskattr(struct cli_state *cli, int *bsize, int *total, int *avail)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -3999,7 +4145,7 @@ struct ctemp_state {
 };
 
 struct tevent_req *cli_ctemp_send(TALLOC_CTX *mem_ctx,
-				struct event_context *ev,
+				struct tevent_context *ev,
 				struct cli_state *cli,
 				const char *path)
 {
@@ -4103,7 +4249,7 @@ NTSTATUS cli_ctemp(struct cli_state *cli,
 			char **out_path)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -4115,7 +4261,7 @@ NTSTATUS cli_ctemp(struct cli_state *cli,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -4229,11 +4375,22 @@ NTSTATUS cli_set_ea_path(struct cli_state *cli, const char *path,
 	unsigned int param_len = 0;
 	uint8_t *param;
 	NTSTATUS status;
-	TALLOC_CTX *frame = talloc_stackframe();
+	TALLOC_CTX *frame = NULL;
 
-	param = talloc_array(talloc_tos(), uint8_t, 6);
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_set_ea_path(cli,
+					path,
+					ea_name,
+					ea_val,
+					ea_len);
+	}
+
+	frame = talloc_stackframe();
+
+	param = talloc_array(frame, uint8_t, 6);
 	if (!param) {
-		return NT_STATUS_NO_MEMORY;
+		status = NT_STATUS_NO_MEMORY;
+		goto fail;
 	}
 	SSVAL(param,0,SMB_INFO_SET_EA);
 	SSVAL(param,2,0);
@@ -4246,7 +4403,10 @@ NTSTATUS cli_set_ea_path(struct cli_state *cli, const char *path,
 
 	status = cli_set_ea(cli, TRANSACT2_SETPATHINFO, param, param_len,
 			    ea_name, ea_val, ea_len);
-	talloc_free(frame);
+
+  fail:
+
+	TALLOC_FREE(frame);
 	return status;
 }
 
@@ -4259,6 +4419,14 @@ NTSTATUS cli_set_ea_fnum(struct cli_state *cli, uint16_t fnum,
 			 size_t ea_len)
 {
 	uint8_t param[6];
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_set_ea_fnum(cli,
+					fnum,
+					ea_name,
+					ea_val,
+					ea_len);
+	}
 
 	memset(param, 0, 6);
 	SSVAL(param,0,fnum);
@@ -4441,10 +4609,20 @@ NTSTATUS cli_get_ea_list_path(struct cli_state *cli, const char *path,
 		size_t *pnum_eas,
 		struct ea_struct **pea_list)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		return cli_smb2_get_ea_list_path(cli,
+					path,
+					ctx,
+					pnum_eas,
+					pea_list);
+	}
+
+	frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -4453,7 +4631,7 @@ NTSTATUS cli_get_ea_list_path(struct cli_state *cli, const char *path,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -4553,7 +4731,7 @@ static void cli_posix_open_internal_done(struct tevent_req *subreq)
 }
 
 static struct tevent_req *cli_posix_open_internal_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					int flags,
@@ -4624,7 +4802,7 @@ static struct tevent_req *cli_posix_open_internal_send(TALLOC_CTX *mem_ctx,
 }
 
 struct tevent_req *cli_posix_open_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					int flags,
@@ -4655,7 +4833,7 @@ NTSTATUS cli_posix_open(struct cli_state *cli, const char *fname,
 {
 
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -4667,7 +4845,7 @@ NTSTATUS cli_posix_open(struct cli_state *cli, const char *fname,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -4697,7 +4875,7 @@ NTSTATUS cli_posix_open(struct cli_state *cli, const char *fname,
 }
 
 struct tevent_req *cli_posix_mkdir_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					mode_t mode)
@@ -4714,7 +4892,7 @@ NTSTATUS cli_posix_mkdir_recv(struct tevent_req *req)
 NTSTATUS cli_posix_mkdir(struct cli_state *cli, const char *fname, mode_t mode)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -4726,7 +4904,7 @@ NTSTATUS cli_posix_mkdir(struct cli_state *cli, const char *fname, mode_t mode)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -4765,7 +4943,7 @@ struct cli_posix_unlink_internal_state {
 static void cli_posix_unlink_internal_done(struct tevent_req *subreq);
 
 static struct tevent_req *cli_posix_unlink_internal_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname,
 					uint16_t level)
@@ -4800,7 +4978,7 @@ static void cli_posix_unlink_internal_done(struct tevent_req *subreq)
 }
 
 struct tevent_req *cli_posix_unlink_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname)
 {
@@ -4820,7 +4998,7 @@ NTSTATUS cli_posix_unlink_recv(struct tevent_req *req)
 NTSTATUS cli_posix_unlink(struct cli_state *cli, const char *fname)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -4832,7 +5010,7 @@ NTSTATUS cli_posix_unlink(struct cli_state *cli, const char *fname)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -4864,7 +5042,7 @@ NTSTATUS cli_posix_unlink(struct cli_state *cli, const char *fname)
 ****************************************************************************/
 
 struct tevent_req *cli_posix_rmdir_send(TALLOC_CTX *mem_ctx,
-					struct event_context *ev,
+					struct tevent_context *ev,
 					struct cli_state *cli,
 					const char *fname)
 {
@@ -4881,7 +5059,7 @@ NTSTATUS cli_posix_rmdir_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx)
 NTSTATUS cli_posix_rmdir(struct cli_state *cli, const char *fname)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev = NULL;
+	struct tevent_context *ev = NULL;
 	struct tevent_req *req = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 
@@ -4893,7 +5071,7 @@ NTSTATUS cli_posix_rmdir(struct cli_state *cli, const char *fname)
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
@@ -5089,7 +5267,7 @@ NTSTATUS cli_notify(struct cli_state *cli, uint16_t fnum, uint32_t buffer_size,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = tevent_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -5216,7 +5394,7 @@ NTSTATUS cli_qpathinfo(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		       uint8_t **rdata, uint32_t *num_rdata)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -5227,7 +5405,7 @@ NTSTATUS cli_qpathinfo(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -5353,7 +5531,7 @@ NTSTATUS cli_qfileinfo(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		       uint8_t **rdata, uint32_t *num_rdata)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -5364,7 +5542,7 @@ NTSTATUS cli_qfileinfo(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -5389,7 +5567,7 @@ struct cli_flush_state {
 static void cli_flush_done(struct tevent_req *subreq);
 
 struct tevent_req *cli_flush_send(TALLOC_CTX *mem_ctx,
-				  struct event_context *ev,
+				  struct tevent_context *ev,
 				  struct cli_state *cli,
 				  uint16_t fnum)
 {
@@ -5433,7 +5611,7 @@ NTSTATUS cli_flush_recv(struct tevent_req *req)
 NTSTATUS cli_flush(TALLOC_CTX *mem_ctx, struct cli_state *cli, uint16_t fnum)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -5444,7 +5622,7 @@ NTSTATUS cli_flush(TALLOC_CTX *mem_ctx, struct cli_state *cli, uint16_t fnum)
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -5578,7 +5756,7 @@ NTSTATUS cli_shadow_copy_data(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 			      char ***pnames, int *pnum_names)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -5589,7 +5767,7 @@ NTSTATUS cli_shadow_copy_data(TALLOC_CTX *mem_ctx, struct cli_state *cli,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}

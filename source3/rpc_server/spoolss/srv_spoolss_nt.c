@@ -1633,15 +1633,17 @@ WERROR _spoolss_OpenPrinter(struct pipes_struct *p,
 			    struct spoolss_OpenPrinter *r)
 {
 	struct spoolss_OpenPrinterEx e;
+	struct spoolss_UserLevel1 level1;
 	WERROR werr;
 
-	ZERO_STRUCT(e.in.userlevel);
+	ZERO_STRUCT(level1);
 
 	e.in.printername	= r->in.printername;
 	e.in.datatype		= r->in.datatype;
 	e.in.devmode_ctr	= r->in.devmode_ctr;
 	e.in.access_mask	= r->in.access_mask;
-	e.in.level		= 0;
+	e.in.userlevel_ctr.level		= 1;
+	e.in.userlevel_ctr.user_info.level1	= &level1;
 
 	e.out.handle		= r->out.handle;
 
@@ -1715,12 +1717,12 @@ WERROR _spoolss_OpenPrinterEx(struct pipes_struct *p,
 		return WERR_INVALID_PARAM;
 	}
 
-	if (r->in.level > 3) {
+	if (r->in.userlevel_ctr.level > 3) {
 		return WERR_INVALID_PARAM;
 	}
-	if ((r->in.level == 1 && !r->in.userlevel.level1) ||
-	    (r->in.level == 2 && !r->in.userlevel.level2) ||
-	    (r->in.level == 3 && !r->in.userlevel.level3)) {
+	if ((r->in.userlevel_ctr.level == 1 && !r->in.userlevel_ctr.user_info.level1) ||
+	    (r->in.userlevel_ctr.level == 2 && !r->in.userlevel_ctr.user_info.level2) ||
+	    (r->in.userlevel_ctr.level == 3 && !r->in.userlevel_ctr.user_info.level3)) {
 		return WERR_INVALID_PARAM;
 	}
 
@@ -2347,15 +2349,23 @@ static WERROR getprinterdata_printer_server(TALLOC_CTX *mem_ctx,
 		enum ndr_err_code ndr_err;
 		struct spoolss_OSVersion os;
 
-		os.major		= 5;	/* Windows 2000 == 5.0 */
-		os.minor		= 0;
-		os.build		= 2195;	/* build */
+		os.major		= lp_parm_int(GLOBAL_SECTION_SNUM,
+						      "spoolss", "os_major", 5);
+						      /* Windows 2000 == 5.0 */
+		os.minor		= lp_parm_int(GLOBAL_SECTION_SNUM,
+						      "spoolss", "os_minor", 0);
+		os.build		= lp_parm_int(GLOBAL_SECTION_SNUM,
+						      "spoolss", "os_build", 2195);
 		os.extra_string		= "";	/* leave extra string empty */
 
 		ndr_err = ndr_push_struct_blob(&blob, mem_ctx, &os,
 			(ndr_push_flags_fn_t)ndr_push_spoolss_OSVersion);
 		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 			return WERR_GENERAL_FAILURE;
+		}
+
+		if (DEBUGLEVEL >= 10) {
+			NDR_PRINT_DEBUG(spoolss_OSVersion, &os);
 		}
 
 		*type = REG_BINARY;
@@ -4222,7 +4232,25 @@ static WERROR construct_printer_info7(TALLOC_CTX *mem_ctx,
 		werr = nt_printer_guid_get(tmp_ctx, session_info, msg_ctx,
 					   printer, &guid);
 		if (!W_ERROR_IS_OK(werr)) {
-			goto out_tmp_free;
+			/*
+			 * If we do not have a GUID entry in the registry, then
+			 * try to retrieve it from AD and store it now.
+			 */
+			werr = nt_printer_guid_retrieve(tmp_ctx, printer,
+							&guid);
+			if (!W_ERROR_IS_OK(werr)) {
+				DEBUG(1, ("Failed to retrieve GUID for "
+					  "printer [%s] from AD - "
+					  "Is the the printer still "
+					  "published ?\n", printer));
+				goto out_tmp_free;
+			}
+
+			werr = nt_printer_guid_store(msg_ctx, printer, guid);
+			if (!W_ERROR_IS_OK(werr)) {
+				DEBUG(3, ("failed to store printer %s guid\n",
+					  printer));
+			}
 		}
 		r->guid = talloc_strdup_upper(mem_ctx, GUID_string2(mem_ctx, &guid));
 		r->action = DSPRINT_PUBLISH;
@@ -4763,17 +4791,20 @@ WERROR _spoolss_GetPrinter(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_info_free;
 	}
 
 	*r->out.needed = 0;
 
 	if (Printer == NULL) {
-		return WERR_BADFID;
+		result = WERR_BADFID;
+		goto err_info_free;
 	}
 
 	if (!get_printer_snum(p, r->in.handle, &snum, NULL)) {
-		return WERR_BADFID;
+		result = WERR_BADFID;
+		goto err_info_free;
 	}
 
 	result = winreg_get_printer_internal(p->mem_ctx,
@@ -4782,7 +4813,7 @@ WERROR _spoolss_GetPrinter(struct pipes_struct *p,
 				    lp_const_servicename(snum),
 				    &info2);
 	if (!W_ERROR_IS_OK(result)) {
-		goto out;
+		goto err_info_free;
 	}
 
 	switch (r->in.level) {
@@ -4842,12 +4873,10 @@ WERROR _spoolss_GetPrinter(struct pipes_struct *p,
 	}
 	TALLOC_FREE(info2);
 
- out:
 	if (!W_ERROR_IS_OK(result)) {
 		DEBUG(0, ("_spoolss_GetPrinter: failed to construct printer info level %d - %s\n",
 			  r->in.level, win_errstr(result)));
-		TALLOC_FREE(r->out.info);
-		return result;
+		goto err_info_free;
 	}
 
 	*r->out.needed	= SPOOLSS_BUFFER_UNION(spoolss_PrinterInfo,
@@ -4855,6 +4884,10 @@ WERROR _spoolss_GetPrinter(struct pipes_struct *p,
 	r->out.info	= SPOOLSS_BUFFER_OK(r->out.info, NULL);
 
 	return SPOOLSS_BUFFER_OK(WERR_OK, WERR_INSUFFICIENT_BUFFER);
+
+err_info_free:
+	TALLOC_FREE(r->out.info);
+	return result;
 }
 
 /********************************************************************
@@ -4887,7 +4920,8 @@ static WERROR string_array_from_driver_info(TALLOC_CTX *mem_ctx,
 						  const char *arch,
 						  int version)
 {
-	int i, num_strings = 0;
+	int i;
+	size_t num_strings = 0;
 	const char **array = NULL;
 
 	if (string_array == NULL) {
@@ -5670,14 +5704,16 @@ WERROR _spoolss_GetPrinterDriver2(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_info_free;
 	}
 
 	DEBUG(4,("_spoolss_GetPrinterDriver2\n"));
 
 	if (!(printer = find_printer_index_by_hnd(p, r->in.handle))) {
 		DEBUG(0,("_spoolss_GetPrinterDriver2: invalid printer handle!\n"));
-		return WERR_INVALID_PRINTER_NAME;
+		result = WERR_INVALID_PRINTER_NAME;
+		goto err_info_free;
 	}
 
 	*r->out.needed = 0;
@@ -5685,7 +5721,8 @@ WERROR _spoolss_GetPrinterDriver2(struct pipes_struct *p,
 	*r->out.server_minor_version = 0;
 
 	if (!get_printer_snum(p, r->in.handle, &snum, NULL)) {
-		return WERR_BADFID;
+		result = WERR_BADFID;
+		goto err_info_free;
 	}
 
 	if (r->in.client_major_version == SPOOLSS_DRIVER_VERSION_2012) {
@@ -5702,8 +5739,7 @@ WERROR _spoolss_GetPrinterDriver2(struct pipes_struct *p,
 						     r->in.architecture,
 						     version);
 	if (!W_ERROR_IS_OK(result)) {
-		TALLOC_FREE(r->out.info);
-		return result;
+		goto err_info_free;
 	}
 
 	*r->out.needed	= SPOOLSS_BUFFER_UNION(spoolss_DriverInfo,
@@ -5711,6 +5747,10 @@ WERROR _spoolss_GetPrinterDriver2(struct pipes_struct *p,
 	r->out.info	= SPOOLSS_BUFFER_OK(r->out.info, NULL);
 
 	return SPOOLSS_BUFFER_OK(WERR_OK, WERR_INSUFFICIENT_BUFFER);
+
+err_info_free:
+	TALLOC_FREE(r->out.info);
+	return result;
 }
 
 
@@ -5787,11 +5827,11 @@ WERROR _spoolss_StartDocPrinter(struct pipes_struct *p,
 		return WERR_INVALID_HANDLE;
 	}
 
-	if (r->in.level != 1) {
+	if (r->in.info_ctr->level != 1) {
 		return WERR_UNKNOWN_LEVEL;
 	}
 
-	info_1 = r->in.info.info1;
+	info_1 = r->in.info_ctr->info.info1;
 
 	/*
 	 * a nice thing with NT is it doesn't listen to what you tell it.
@@ -6432,6 +6472,9 @@ static WERROR update_dsspooler(TALLOC_CTX *mem_ctx,
 						 snum, printer->sharename ?
 						 printer->sharename : "");
 		}
+
+		/* name change, purge any cache entries for the old */
+		prune_printername_cache();
 	}
 
 	if (printer->printername != NULL &&
@@ -6468,6 +6511,9 @@ static WERROR update_dsspooler(TALLOC_CTX *mem_ctx,
 			notify_printer_printername(server_event_context(),
 						   msg_ctx, snum, p ? p : "");
 		}
+
+		/* name change, purge any cache entries for the old */
+		prune_printername_cache();
 	}
 
 	if (printer->portname != NULL &&
@@ -7831,6 +7877,7 @@ WERROR _spoolss_GetForm(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
+		TALLOC_FREE(r->out.info);
 		return WERR_INVALID_PARAM;
 	}
 
@@ -8428,7 +8475,7 @@ static WERROR compose_spoolss_server_path(TALLOC_CTX *mem_ctx,
 					  char **path)
 {
 	const char *pservername = NULL;
-	const char *long_archi = SPOOLSS_ARCHITECTURE_NT_X86;
+	const char *long_archi;
 	const char *short_archi;
 
 	*path = NULL;
@@ -8436,6 +8483,10 @@ static WERROR compose_spoolss_server_path(TALLOC_CTX *mem_ctx,
 	/* environment may be empty */
 	if (environment && strlen(environment)) {
 		long_archi = environment;
+	} else {
+		long_archi = lp_parm_const_string(GLOBAL_SECTION_SNUM,
+						  "spoolss", "architecture",
+						  SPOOLSS_ARCHITECTURE_NT_X86);
 	}
 
 	/* servername may be empty */
@@ -8517,6 +8568,7 @@ WERROR _spoolss_GetPrinterDriverDirectory(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
+		TALLOC_FREE(r->out.info);
 		return WERR_INVALID_PARAM;
 	}
 
@@ -8757,7 +8809,7 @@ WERROR _spoolss_DeletePrinterData(struct pipes_struct *p,
 WERROR _spoolss_AddForm(struct pipes_struct *p,
 			struct spoolss_AddForm *r)
 {
-	struct spoolss_AddFormInfo1 *form = r->in.info.info1;
+	struct spoolss_AddFormInfo1 *form;
 	int snum = -1;
 	WERROR status = WERR_OK;
 	struct printer_handle *Printer = find_printer_index_by_hnd(p, r->in.handle);
@@ -8780,6 +8832,15 @@ WERROR _spoolss_AddForm(struct pipes_struct *p,
 					  SEC_PRIV_PRINT_OPERATOR)) {
 		DEBUG(2,("_spoolss_Addform: denied by insufficient permissions.\n"));
 		return WERR_ACCESS_DENIED;
+	}
+
+	if (r->in.info_ctr->level != 1) {
+		return WERR_INVALID_LEVEL;
+	}
+
+	form = r->in.info_ctr->info.info1;
+	if (!form) {
+		return WERR_INVALID_PARAM;
 	}
 
 	switch (form->flags) {
@@ -8899,7 +8960,7 @@ done:
 WERROR _spoolss_SetForm(struct pipes_struct *p,
 			struct spoolss_SetForm *r)
 {
-	struct spoolss_AddFormInfo1 *form = r->in.info.info1;
+	struct spoolss_AddFormInfo1 *form;
 	const char *form_name = r->in.form_name;
 	int snum = -1;
 	WERROR status = WERR_OK;
@@ -8924,6 +8985,15 @@ WERROR _spoolss_SetForm(struct pipes_struct *p,
 					   SEC_PRIV_PRINT_OPERATOR)) {
 		DEBUG(2,("_spoolss_Setform: denied by insufficient permissions.\n"));
 		return WERR_ACCESS_DENIED;
+	}
+
+	if (r->in.info_ctr->level != 1) {
+		return WERR_INVALID_LEVEL;
+	}
+
+	form = r->in.info_ctr->info.info1;
+	if (!form) {
+		return WERR_INVALID_PARAM;
 	}
 
 	tmp_ctx = talloc_new(p->mem_ctx);
@@ -9446,7 +9516,8 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_jinfo_free;
 	}
 
 	DEBUG(5,("_spoolss_GetJob\n"));
@@ -9454,12 +9525,14 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 	*r->out.needed = 0;
 
 	if (!get_printer_snum(p, r->in.handle, &snum, NULL)) {
-		return WERR_BADFID;
+		result = WERR_BADFID;
+		goto err_jinfo_free;
 	}
 
 	svc_name = lp_const_servicename(snum);
 	if (svc_name == NULL) {
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_jinfo_free;
 	}
 
 	result = winreg_get_printer_internal(p->mem_ctx,
@@ -9468,22 +9541,22 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 				    svc_name,
 				    &pinfo2);
 	if (!W_ERROR_IS_OK(result)) {
-		return result;
+		goto err_jinfo_free;
 	}
 
 	pdb = get_print_db_byname(svc_name);
 	if (pdb == NULL) {
 		DEBUG(3, ("failed to get print db for svc %s\n", svc_name));
-		TALLOC_FREE(pinfo2);
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_pinfo_free;
 	}
 
 	sysjob = jobid_to_sysjob_pdb(pdb, r->in.job_id);
 	release_print_db(pdb);
 	if (sysjob == -1) {
 		DEBUG(3, ("no sysjob for spoolss jobid %u\n", r->in.job_id));
-		TALLOC_FREE(pinfo2);
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_pinfo_free;
 	}
 
 	count = print_queue_status(p->msg_ctx, snum, &queue, &prt_status);
@@ -9513,8 +9586,7 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 	TALLOC_FREE(pinfo2);
 
 	if (!W_ERROR_IS_OK(result)) {
-		TALLOC_FREE(r->out.info);
-		return result;
+		goto err_jinfo_free;
 	}
 
 	*r->out.needed	= SPOOLSS_BUFFER_UNION(spoolss_JobInfo, r->out.info,
@@ -9522,6 +9594,12 @@ WERROR _spoolss_GetJob(struct pipes_struct *p,
 	r->out.info	= SPOOLSS_BUFFER_OK(r->out.info, NULL);
 
 	return SPOOLSS_BUFFER_OK(WERR_OK, WERR_INSUFFICIENT_BUFFER);
+
+err_pinfo_free:
+	TALLOC_FREE(pinfo2);
+err_jinfo_free:
+	TALLOC_FREE(r->out.info);
+	return result;
 }
 
 /****************************************************************
@@ -10093,7 +10171,8 @@ WERROR _spoolss_GetPrintProcessorDirectory(struct pipes_struct *p,
 	/* that's an [in out] buffer */
 
 	if (!r->in.buffer && (r->in.offered != 0)) {
-		return WERR_INVALID_PARAM;
+		result = WERR_INVALID_PARAM;
+		goto err_info_free;
 	}
 
 	DEBUG(5,("_spoolss_GetPrintProcessorDirectory: level %d\n",
@@ -10109,7 +10188,8 @@ WERROR _spoolss_GetPrintProcessorDirectory(struct pipes_struct *p,
 
 	snum = find_service(talloc_tos(), "prnproc$", &prnproc_share);
 	if (!prnproc_share) {
-		return WERR_NOMEM;
+		result = WERR_NOMEM;
+		goto err_info_free;
 	}
 	if (snum != -1) {
 		prnproc_share_exists = true;
@@ -10120,8 +10200,7 @@ WERROR _spoolss_GetPrintProcessorDirectory(struct pipes_struct *p,
 						    r->in.environment,
 						    &r->out.info->info1);
 	if (!W_ERROR_IS_OK(result)) {
-		TALLOC_FREE(r->out.info);
-		return result;
+		goto err_info_free;
 	}
 
 	*r->out.needed	= SPOOLSS_BUFFER_UNION(spoolss_PrintProcessorDirectoryInfo,
@@ -10129,6 +10208,10 @@ WERROR _spoolss_GetPrintProcessorDirectory(struct pipes_struct *p,
 	r->out.info	= SPOOLSS_BUFFER_OK(r->out.info, NULL);
 
 	return SPOOLSS_BUFFER_OK(WERR_OK, WERR_INSUFFICIENT_BUFFER);
+
+err_info_free:
+	TALLOC_FREE(r->out.info);
+	return result;
 }
 
 /*******************************************************************
@@ -10950,11 +11033,11 @@ WERROR _spoolss_60(struct pipes_struct *p,
 }
 
 /****************************************************************
- _spoolss_61
+ _spoolss_RpcSendRecvBidiData
 ****************************************************************/
 
-WERROR _spoolss_61(struct pipes_struct *p,
-		   struct spoolss_61 *r)
+WERROR _spoolss_RpcSendRecvBidiData(struct pipes_struct *p,
+				    struct spoolss_RpcSendRecvBidiData *r)
 {
 	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;
@@ -11087,6 +11170,50 @@ WERROR _spoolss_6c(struct pipes_struct *p,
 
 WERROR _spoolss_6d(struct pipes_struct *p,
 		   struct spoolss_6d *r)
+{
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
+	return WERR_NOT_SUPPORTED;
+}
+
+/****************************************************************
+ _spoolss_RpcGetJobNamedPropertyValue
+****************************************************************/
+
+WERROR _spoolss_RpcGetJobNamedPropertyValue(struct pipes_struct *p,
+					    struct spoolss_RpcGetJobNamedPropertyValue *r)
+{
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
+	return WERR_NOT_SUPPORTED;
+}
+
+/****************************************************************
+ _spoolss_RpcSetJobNamedProperty
+****************************************************************/
+
+WERROR _spoolss_RpcSetJobNamedProperty(struct pipes_struct *p,
+				       struct spoolss_RpcSetJobNamedProperty *r)
+{
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
+	return WERR_NOT_SUPPORTED;
+}
+
+/****************************************************************
+ _spoolss_RpcDeleteJobNamedProperty
+****************************************************************/
+
+WERROR _spoolss_RpcDeleteJobNamedProperty(struct pipes_struct *p,
+					  struct spoolss_RpcDeleteJobNamedProperty *r)
+{
+	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
+	return WERR_NOT_SUPPORTED;
+}
+
+/****************************************************************
+ _spoolss_RpcEnumJobNamedProperties
+****************************************************************/
+
+WERROR _spoolss_RpcEnumJobNamedProperties(struct pipes_struct *p,
+					  struct spoolss_RpcEnumJobNamedProperties *r)
 {
 	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
 	return WERR_NOT_SUPPORTED;

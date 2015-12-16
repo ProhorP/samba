@@ -141,6 +141,7 @@ sub check_or_start($$$)
 sub wait_for_start($$)
 {
 	my ($self, $testenv_vars) = @_;
+	my $ret;
 	# give time for nbt server to register its names
 	print "delaying for nbt name registration\n";
 	sleep 2;
@@ -161,7 +162,25 @@ sub wait_for_start($$)
 	system("$nmblookup $testenv_vars->{CONFIGURATION} $testenv_vars->{NETBIOSNAME}");
 	system("$nmblookup $testenv_vars->{CONFIGURATION} -U $testenv_vars->{SERVER_IP} $testenv_vars->{NETBIOSNAME}");
 
+	# Ensure we have the first RID Set before we start tests.  This makes the tests more reliable.
+	if ($testenv_vars->{SERVER_ROLE} eq "domain controller" and not ($testenv_vars->{NETBIOS_NAME} eq "rodc")) {
+	    print "waiting for working LDAP and a RID Set to be allocated\n";
+	    my $ldbsearch = Samba::bindir_path($self, "ldbsearch");
+	    my $count = 0;
+	    my $base_dn = "DC=".join(",DC=", split(/\./, $testenv_vars->{REALM}));
+	    my $rid_set_dn = "cn=RID Set,cn=$testenv_vars->{NETBIOSNAME},ou=domain controllers,$base_dn";
+	    while (system("$ldbsearch -H ldap://$testenv_vars->{SERVER} -U$testenv_vars->{USERNAME}%$testenv_vars->{PASSWORD} -s base -b \"$rid_set_dn\" rIDAllocationPool > /dev/null") != 0) {
+		$count++;
+		if ($count > 40) {
+		    $ret = 1;
+		    last;
+		}
+		sleep(1);
+	    }
+	}
 	print $self->getlog_env($testenv_vars);
+
+	return $ret
 }
 
 sub write_ldb_file($$$)
@@ -497,7 +516,8 @@ sub provision_raw_prepare($$$$$$$$$$)
 	$ctx->{tlsdir} = "$ctx->{privatedir}/tls";
 
 	$ctx->{ipv4} = "127.0.0.$swiface";
-	$ctx->{interfaces} = "$ctx->{ipv4}/8";
+	$ctx->{ipv6} = sprintf("fd00:0000:0000:0000:0000:0000:5357:5f%02x", $swiface);
+	$ctx->{interfaces} = "$ctx->{ipv4}/8 $ctx->{ipv6}/64";
 
 	push(@{$ctx->{directories}}, $ctx->{privatedir});
 	push(@{$ctx->{directories}}, $ctx->{etcdir});
@@ -558,6 +578,12 @@ sub provision_raw_step1($$)
 	my ($self, $ctx) = @_;
 
 	mkdir($_, 0777) foreach (@{$ctx->{directories}});
+
+	##
+	## lockdir and piddir must be 0755
+	##
+	chmod 0755, $ctx->{lockdir};
+	chmod 0755, $ctx->{piddir};
 
 	unless (open(CONFFILE, ">$ctx->{smb_conf}")) {
 		warn("can't open $ctx->{smb_conf}$?");
@@ -666,6 +692,7 @@ nogroup:x:65534:nobody
 		PIDDIR => $ctx->{piddir},
 		SERVER => $ctx->{hostname},
 		SERVER_IP => $ctx->{ipv4},
+		SERVER_IPV6 => $ctx->{ipv6},
 		NETBIOSNAME => $ctx->{netbiosname},
 		DOMAIN => $ctx->{domain},
 		USERNAME => $ctx->{username},
@@ -690,7 +717,8 @@ nogroup:x:65534:nobody
 	        NSS_WRAPPER_WINBIND_SO_PATH => Samba::nss_wrapper_winbind_so_path($self),
                 LOCAL_PATH => $ctx->{share},
                 UID_RFC2307TEST => $uid_rfc2307test,
-                GID_RFC2307TEST => $gid_rfc2307test
+                GID_RFC2307TEST => $gid_rfc2307test,
+                SERVER_ROLE => $ctx->{server_role}
 	};
 
 	return $ret;
@@ -888,12 +916,14 @@ sub provision_member($$$)
 
 	$ret->{MEMBER_SERVER} = $ret->{SERVER};
 	$ret->{MEMBER_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{MEMBER_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{MEMBER_NETBIOSNAME} = $ret->{NETBIOSNAME};
 	$ret->{MEMBER_USERNAME} = $ret->{USERNAME};
 	$ret->{MEMBER_PASSWORD} = $ret->{PASSWORD};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -980,12 +1010,14 @@ sub provision_rpc_proxy($$$)
 
 	$ret->{RPC_PROXY_SERVER} = $ret->{SERVER};
 	$ret->{RPC_PROXY_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{RPC_PROXY_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{RPC_PROXY_NETBIOSNAME} = $ret->{NETBIOSNAME};
 	$ret->{RPC_PROXY_USERNAME} = $ret->{USERNAME};
 	$ret->{RPC_PROXY_PASSWORD} = $ret->{PASSWORD};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -1056,10 +1088,12 @@ sub provision_promoted_dc($$$)
 
 	$ret->{PROMOTED_DC_SERVER} = $ret->{SERVER};
 	$ret->{PROMOTED_DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{PROMOTED_DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{PROMOTED_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -1117,10 +1151,12 @@ sub provision_vampire_dc($$$)
 
 	$ret->{VAMPIRE_DC_SERVER} = $ret->{SERVER};
 	$ret->{VAMPIRE_DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{VAMPIRE_DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{VAMPIRE_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -1182,10 +1218,12 @@ sub provision_subdom_dc($$$)
 
 	$ret->{SUBDOM_DC_SERVER} = $ret->{SERVER};
 	$ret->{SUBDOM_DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{SUBDOM_DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{SUBDOM_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -1216,6 +1254,7 @@ sub provision_dc($$)
 	$ret->{NETBIOSALIAS} = "localdc1-a";
 	$ret->{DC_SERVER} = $ret->{SERVER};
 	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 	$ret->{DC_USERNAME} = $ret->{USERNAME};
 	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
@@ -1359,10 +1398,12 @@ sub provision_rodc($$$)
 
 	$ret->{RODC_DC_SERVER} = $ret->{SERVER};
 	$ret->{RODC_DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{RODC_DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{RODC_DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 
 	$ret->{DC_SERVER} = $dcvars->{DC_SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{DC_SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{DC_SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{DC_NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{DC_USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{DC_PASSWORD};
@@ -1463,7 +1504,7 @@ sub provision_plugin_s4_dc($$)
 				   "domain controller",
 				   "plugindc",
 				   "PLUGINDOMAIN",
-				   "plugin.samba.example.com",
+				   "plugindc.samba.example.com",
 				   "2008",
 				   "locDCpass1",
 				   undef, $extra_smbconf_options,
@@ -1477,6 +1518,7 @@ sub provision_plugin_s4_dc($$)
 
 	$ret->{DC_SERVER} = $ret->{SERVER};
 	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 	$ret->{DC_USERNAME} = $ret->{USERNAME};
 	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
@@ -1509,13 +1551,14 @@ sub provision_chgdcpass($$)
 	
 	# Remove secrets.tdb from this environment to test that we still start up
 	# on systems without the new matching secrets.tdb records
-	unless (unlink("$ret->{PRIVATEDIR}/secrets.tdb")) {
+	unless (unlink("$ret->{PRIVATEDIR}/secrets.tdb") || unlink("$ret->{PRIVATEDIR}/secrets.ntdb")) {
 		warn("Unable to remove $ret->{PRIVATEDIR}/secrets.tdb added during provision");
 		return undef;
 	}
 	    
 	$ret->{DC_SERVER} = $ret->{SERVER};
 	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
 	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
 	$ret->{DC_USERNAME} = $ret->{USERNAME};
 	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
@@ -1658,6 +1701,12 @@ sub setup_env($$$)
 		return $target3->setup_admember("$path/s3member", $self->{vars}->{dc}, 29);
 	} elsif ($envname eq "plugin_s4_dc") {
 		return $self->setup_plugin_s4_dc("$path/plugin_s4_dc");
+	} elsif ($envname eq "s3member_rfc2307") {
+		if (not defined($self->{vars}->{dc})) {
+			$self->setup_dc("$path/dc");
+		}
+		return $target3->setup_admember_rfc2307("$path/s3member_rfc2307",
+							$self->{vars}->{dc}, 34);
 	} else {
 		return "UNKNOWN";
 	}

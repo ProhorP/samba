@@ -780,7 +780,7 @@ static bool join3(struct torture_context *tctx,
 		DATA_BLOB session_key;
 		DATA_BLOB confounded_session_key = data_blob_talloc(
 			mem_ctx, NULL, 16);
-		struct MD5Context ctx;
+		MD5_CTX ctx;
 		uint8_t confounder[16];
 
 		ZERO_STRUCT(u_info);
@@ -1015,6 +1015,7 @@ static bool auth2(struct torture_context *tctx,
 	creds_state = netlogon_creds_client_init(mem_ctx,
 						 a.in.account_name,
 						 a.in.computer_name,
+						 a.in.secure_channel_type,
 						 r.in.credentials,
 						 r.out.return_credentials, &mach_pw,
 						 &netr_cred, negotiate_flags);
@@ -2146,6 +2147,7 @@ static bool torture_samba3_rpc_randomauth2(struct torture_context *torture)
 	creds_state = netlogon_creds_client_init(mem_ctx,
 						 a.in.account_name,
 						 a.in.computer_name,
+						 a.in.secure_channel_type,
 						 r.in.credentials,
 						 r.out.return_credentials, &mach_pw,
 						 &netr_cred, negotiate_flags);
@@ -2621,7 +2623,7 @@ static bool rap_get_servername(struct torture_context *tctx,
 static bool find_printers(struct torture_context *tctx,
 			  struct dcerpc_pipe *p,
 			  const char ***printers,
-			  int *num_printers)
+			  size_t *num_printers)
 {
 	struct srvsvc_NetShareEnum r;
 	struct srvsvc_NetShareInfoCtr info_ctr;
@@ -2758,7 +2760,7 @@ static bool torture_samba3_rpc_spoolss(struct torture_context *torture)
 	struct dcerpc_binding_handle *b;
 	struct policy_handle server_handle, printer_handle;
 	const char **printers;
-	int num_printers;
+	size_t num_printers;
 	struct spoolss_UserLevel1 userlevel1;
 	char *servername;
 
@@ -2804,8 +2806,8 @@ static bool torture_samba3_rpc_spoolss(struct torture_context *torture)
 						   servername);
 		r.in.datatype = NULL;
 		r.in.access_mask = 0;
-		r.in.level = 1;
-		r.in.userlevel.level1 = &userlevel1;
+		r.in.userlevel_ctr.level = 1;
+		r.in.userlevel_ctr.user_info.level1 = &userlevel1;
 		r.out.handle = &server_handle;
 
 		torture_assert_ntstatus_ok(torture,
@@ -2836,8 +2838,8 @@ static bool torture_samba3_rpc_spoolss(struct torture_context *torture)
 			torture, "\\\\%s\\%s", servername, printers[0]);
 		r.in.datatype = NULL;
 		r.in.access_mask = 0;
-		r.in.level = 1;
-		r.in.userlevel.level1 = &userlevel1;
+		r.in.userlevel_ctr.level = 1;
+		r.in.userlevel_ctr.user_info.level1 = &userlevel1;
 		r.out.handle = &printer_handle;
 
 		torture_assert_ntstatus_ok(torture,

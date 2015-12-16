@@ -39,6 +39,7 @@
 #include "smbprofile.h"
 #include "rpc_server/srv_pipe_hnd.h"
 #include "printing.h"
+#include "lib/util_ea.h"
 
 #define DIR_ENTRY_SAFETY_MARGIN 4096
 
@@ -68,6 +69,7 @@ NTSTATUS check_access(connection_struct *conn,
 	} else {
 		NTSTATUS status = smbd_check_access_rights(conn,
 					smb_fname,
+					false,
 					access_mask);
 		if (!NT_STATUS_IS_OK(status)) {
 			return status;
@@ -746,67 +748,6 @@ static struct ea_list *read_ea_name_list(TALLOC_CTX *ctx, const char *pdata, siz
 	}
 
 	return ea_list_head;
-}
-
-/****************************************************************************
- Read one EA list entry from the buffer.
-****************************************************************************/
-
-struct ea_list *read_ea_list_entry(TALLOC_CTX *ctx, const char *pdata, size_t data_size, size_t *pbytes_used)
-{
-	struct ea_list *eal = talloc_zero(ctx, struct ea_list);
-	uint16 val_len;
-	unsigned int namelen;
-	size_t converted_size;
-
-	if (!eal) {
-		return NULL;
-	}
-
-	if (data_size < 6) {
-		return NULL;
-	}
-
-	eal->ea.flags = CVAL(pdata,0);
-	namelen = CVAL(pdata,1);
-	val_len = SVAL(pdata,2);
-
-	if (4 + namelen + 1 + val_len > data_size) {
-		return NULL;
-	}
-
-	/* Ensure the name is null terminated. */
-	if (pdata[namelen + 4] != '\0') {
-		return NULL;
-	}
-	if (!pull_ascii_talloc(ctx, &eal->ea.name, pdata + 4, &converted_size)) {
-		DEBUG(0,("read_ea_list_entry: pull_ascii_talloc failed: %s",
-			 strerror(errno)));
-	}
-	if (!eal->ea.name) {
-		return NULL;
-	}
-
-	eal->ea.value = data_blob_talloc(eal, NULL, (size_t)val_len + 1);
-	if (!eal->ea.value.data) {
-		return NULL;
-	}
-
-	memcpy(eal->ea.value.data, pdata + 4 + namelen + 1, val_len);
-
-	/* Ensure we're null terminated just in case we print the value. */
-	eal->ea.value.data[val_len] = '\0';
-	/* But don't count the null. */
-	eal->ea.value.length--;
-
-	if (pbytes_used) {
-		*pbytes_used = 4 + namelen + 1 + val_len;
-	}
-
-	DEBUG(10,("read_ea_list_entry: read ea name %s\n", eal->ea.name));
-	dump_data(10, eal->ea.value.data, eal->ea.value.length);
-
-	return eal;
 }
 
 /****************************************************************************
@@ -2422,6 +2363,7 @@ static void call_trans2findfirst(connection_struct *conn,
 	struct smbd_server_connection *sconn = req->sconn;
 	uint32_t ucf_flags = (UCF_SAVE_LCOMP | UCF_ALWAYS_ALLOW_WCARD_LCOMP);
 	bool backup_priv = false;
+	bool as_root = false;
 
 	if (total_params < 13) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2487,6 +2429,7 @@ close_if_end = %d requires_resume_key = %d backup_priv = %d level = 0x%x, max_da
 
 	if (backup_priv) {
 		become_root();
+		as_root = true;
 		ntstatus = filename_convert_with_privilege(ctx,
 				conn,
 				req,
@@ -2742,7 +2685,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 	}
  out:
 
-	if (backup_priv) {
+	if (as_root) {
 		unbecome_root();
 	}
 
@@ -2796,6 +2739,7 @@ static void call_trans2findnext(connection_struct *conn,
 	struct dptr_struct *dirptr;
 	struct smbd_server_connection *sconn = req->sconn;
 	bool backup_priv = false; 
+	bool as_root = false;
 
 	if (total_params < 13) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2964,6 +2908,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 
 	if (backup_priv) {
 		become_root();
+		as_root = true;
 	}
 
 	/*
@@ -3055,7 +3000,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		dptr_close(sconn, &dptr_num); /* This frees up the saved mask */
 	}
 
-	if (backup_priv) {
+	if (as_root) {
 		unbecome_root();
 	}
 
@@ -3502,6 +3447,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			case SMB_SIGNING_OFF:
 				encrypt_caps = 0;
 				break;
+			case SMB_SIGNING_DESIRED:
 			case SMB_SIGNING_IF_REQUIRED:
 			case SMB_SIGNING_DEFAULT:
 				encrypt_caps = CIFS_UNIX_TRANSPORT_ENCRYPTION_CAP;
@@ -5321,10 +5267,9 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 			return;
 		}
 
-		status = copy_smb_filename(talloc_tos(), fsp->fsp_name,
-					   &smb_fname);
-		if (!NT_STATUS_IS_OK(status)) {
-			reply_nterror(req, status);
+		smb_fname = cp_smb_filename(talloc_tos(), fsp->fsp_name);
+		if (smb_fname == NULL) {
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			return;
 		}
 
@@ -5437,16 +5382,14 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 		/* If this is a stream, check if there is a delete_pending. */
 		if ((conn->fs_capabilities & FILE_NAMED_STREAMS)
 		    && is_ntfs_stream_smb_fname(smb_fname)) {
-			struct smb_filename *smb_fname_base = NULL;
+			struct smb_filename *smb_fname_base;
 
 			/* Create an smb_filename with stream_name == NULL. */
-			status =
-			    create_synthetic_smb_fname(talloc_tos(),
-						       smb_fname->base_name,
-						       NULL, NULL,
-						       &smb_fname_base);
-			if (!NT_STATUS_IS_OK(status)) {
-				reply_nterror(req, status);
+			smb_fname_base = synthetic_smb_fname(
+				talloc_tos(), smb_fname->base_name,
+				NULL, NULL);
+			if (smb_fname_base == NULL) {
+				reply_nterror(req, NT_STATUS_NO_MEMORY);
 				return;
 			}
 
@@ -5834,7 +5777,7 @@ static NTSTATUS smb_set_file_dosmode(connection_struct *conn,
 				     const struct smb_filename *smb_fname,
 				     uint32 dosmode)
 {
-	struct smb_filename *smb_fname_base = NULL;
+	struct smb_filename *smb_fname_base;
 	NTSTATUS status;
 
 	if (!VALID_STAT(smb_fname->st)) {
@@ -5842,11 +5785,10 @@ static NTSTATUS smb_set_file_dosmode(connection_struct *conn,
 	}
 
 	/* Always operate on the base_name, even if a stream was passed in. */
-	status = create_synthetic_smb_fname(talloc_tos(), smb_fname->base_name,
-					    NULL, &smb_fname->st,
-					    &smb_fname_base);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+	smb_fname_base = synthetic_smb_fname(
+		talloc_tos(), smb_fname->base_name, NULL, &smb_fname->st);
+	if (smb_fname_base == NULL) {
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	if (dosmode) {
@@ -5923,9 +5865,9 @@ static NTSTATUS smb_set_file_size(connection_struct *conn,
 		return NT_STATUS_OK;
 	}
 
-	status = copy_smb_filename(talloc_tos(), smb_fname, &smb_fname_tmp);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+	smb_fname_tmp = cp_smb_filename(talloc_tos(), smb_fname);
+	if (smb_fname_tmp == NULL) {
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	smb_fname_tmp->st = *psbuf;
@@ -6308,10 +6250,11 @@ static NTSTATUS smb2_file_rename_information(connection_struct *conn,
 		}
 
 		/* Create an smb_fname to call rename_internals_fsp() with. */
-		status = create_synthetic_smb_fname(talloc_tos(),
-		    fsp->base_fsp->fsp_name->base_name, newname, NULL,
-		    &smb_fname_dst);
-		if (!NT_STATUS_IS_OK(status)) {
+		smb_fname_dst = synthetic_smb_fname(
+			talloc_tos(), fsp->base_fsp->fsp_name->base_name,
+			newname, NULL);
+		if (smb_fname_dst == NULL) {
+			status = NT_STATUS_NO_MEMORY;
 			goto out;
 		}
 
@@ -6477,10 +6420,11 @@ static NTSTATUS smb_file_rename_information(connection_struct *conn,
 		}
 
 		/* Create an smb_fname to call rename_internals_fsp() with. */
-		status = create_synthetic_smb_fname(talloc_tos(),
-		    fsp->base_fsp->fsp_name->base_name, newname, NULL,
-		    &smb_fname_dst);
-		if (!NT_STATUS_IS_OK(status)) {
+		smb_fname_dst = synthetic_smb_fname(
+			talloc_tos(), fsp->base_fsp->fsp_name->base_name,
+			newname, NULL);
+		if (smb_fname_dst == NULL) {
+			status = NT_STATUS_NO_MEMORY;
 			goto out;
 		}
 
@@ -6548,11 +6492,10 @@ static NTSTATUS smb_file_rename_information(connection_struct *conn,
 				goto out;
 			}
 			/* Create an smb_fname to call rename_internals_fsp() */
-			status = create_synthetic_smb_fname(ctx,
-							    base_name, NULL,
-							    NULL,
-							    &smb_fname_dst);
-			if (!NT_STATUS_IS_OK(status)) {
+			smb_fname_dst = synthetic_smb_fname(
+				ctx, base_name, NULL, NULL);
+			if (smb_fname_dst == NULL) {
+				status = NT_STATUS_NO_MEMORY;
 				goto out;
 			}
 		}
@@ -7164,10 +7107,9 @@ static NTSTATUS smb_set_file_unix_basic(connection_struct *conn,
 			return status;
 		}
 
-		status = copy_smb_filename(talloc_tos(), smb_fname,
-					   &smb_fname_tmp);
-		if (!NT_STATUS_IS_OK(status)) {
-			return status;
+		smb_fname_tmp = cp_smb_filename(talloc_tos(), smb_fname);
+		if (smb_fname_tmp == NULL) {
+			return NT_STATUS_NO_MEMORY;
 		}
 
 		if (SMB_VFS_STAT(conn, smb_fname_tmp) != 0) {
@@ -8196,10 +8138,9 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		}
 		info_level = SVAL(params,2);
 
-		status = copy_smb_filename(talloc_tos(), fsp->fsp_name,
-					   &smb_fname);
-		if (!NT_STATUS_IS_OK(status)) {
-			reply_nterror(req, status);
+		smb_fname = cp_smb_filename(talloc_tos(), fsp->fsp_name);
+		if (smb_fname == NULL) {
+			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			return;
 		}
 

@@ -650,27 +650,42 @@ uint32_t samdb_result_acct_flags(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ct
 	return acct_flags;
 }
 
-struct lsa_BinaryString samdb_result_parameters(TALLOC_CTX *mem_ctx,
-						struct ldb_message *msg,
-						const char *attr)
+NTSTATUS samdb_result_parameters(TALLOC_CTX *mem_ctx,
+				 struct ldb_message *msg,
+				 const char *attr,
+				 struct lsa_BinaryString *s)
 {
-	struct lsa_BinaryString s;
+	int i;
 	const struct ldb_val *val = ldb_msg_find_ldb_val(msg, attr);
 
-	ZERO_STRUCT(s);
+	ZERO_STRUCTP(s);
 
 	if (!val) {
-		return s;
+		return NT_STATUS_OK;
 	}
 
-	s.array = talloc_array(mem_ctx, uint16_t, val->length/2);
-	if (!s.array) {
-		return s;
+	if ((val->length % 2) != 0) {
+		/*
+		 * If the on-disk data is not even in length, we know
+		 * it is corrupt, and can not be safely pushed.  We
+		 * would either truncate, send either a un-initilaised
+		 * byte or send a forced zero byte
+		 */
+		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
-	s.length = s.size = val->length;
-	memcpy(s.array, val->data, val->length);
 
-	return s;
+	s->array = talloc_array(mem_ctx, uint16_t, val->length/2);
+	if (!s->array) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	s->length = s->size = val->length;
+
+	/* The on-disk format is the 'network' format, being UTF16LE (sort of) */
+	for (i = 0; i < s->length / 2; i++) {
+		s->array[i] = SVAL(val->data, i * 2);
+	}
+
+	return NT_STATUS_OK;
 }
 
 /* Find an attribute, with a particular value */
@@ -978,10 +993,26 @@ int samdb_msg_add_logon_hours(struct ldb_context *sam_ldb, TALLOC_CTX *mem_ctx, 
 int samdb_msg_add_parameters(struct ldb_context *sam_ldb, TALLOC_CTX *mem_ctx, struct ldb_message *msg,
 			     const char *attr_name, struct lsa_BinaryString *parameters)
 {
+	int i;
 	struct ldb_val val;
+	if ((parameters->length % 2) != 0) {
+		return LDB_ERR_INVALID_ATTRIBUTE_SYNTAX;
+	}
+
+	val.data = talloc_array(mem_ctx, uint8_t, parameters->length);
+	if (val.data == NULL) {
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
 	val.length = parameters->length;
-	val.data = (uint8_t *)parameters->array;
-	return ldb_msg_add_value(msg, attr_name, &val, NULL);
+	for (i = 0; i < parameters->length / 2; i++) {
+		/*
+		 * The on-disk format needs to be in the 'network'
+		 * format, parmeters->array is a uint16_t array of
+		 * length parameters->length / 2
+		 */
+		SSVAL(val.data, i * 2, parameters->array[i]);
+	}
+	return ldb_msg_add_steal_value(msg, attr_name, &val);
 }
 
 /*
@@ -1302,6 +1333,7 @@ const struct GUID *samdb_ntds_invocation_id(struct ldb_context *ldb)
 	/* see if we have a cached copy */
 	invocation_id = (struct GUID *)ldb_get_opaque(ldb, "cache.invocation_id");
 	if (invocation_id) {
+		SMB_ASSERT(!GUID_all_zero(invocation_id));
 		return invocation_id;
 	}
 
@@ -1325,6 +1357,14 @@ const struct GUID *samdb_ntds_invocation_id(struct ldb_context *ldb)
 	}
 
 	*invocation_id = samdb_result_guid(res->msgs[0], "invocationId");
+	if (GUID_all_zero(invocation_id)) {
+		if (ldb_msg_find_ldb_val(res->msgs[0], "invocationId")) {
+			DEBUG(0, ("Failed to find our own NTDS Settings invocationId in the ldb!\n"));	
+		} else {
+			DEBUG(0, ("Failed to find parse own NTDS Settings invocationId from the ldb!\n"));
+		}
+		goto failed;
+	}
 
 	/* cache the domain_sid in the ldb */
 	if (ldb_set_opaque(ldb, "cache.invocation_id", invocation_id) != LDB_SUCCESS) {
@@ -1362,6 +1402,7 @@ bool samdb_set_ntds_invocation_id(struct ldb_context *ldb, const struct GUID *in
 		goto failed;
 	}
 
+	SMB_ASSERT(!GUID_all_zero(invocation_id_in));
 	*invocation_id_new = *invocation_id_in;
 
 	/* cache the domain_sid in the ldb */
@@ -2458,7 +2499,9 @@ struct ldb_dn *samdb_domain_to_dn(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
  */
 int dsdb_find_dn_by_guid(struct ldb_context *ldb, 
 			 TALLOC_CTX *mem_ctx,
-			 const struct GUID *guid, struct ldb_dn **dn)
+			 const struct GUID *guid,
+			 uint32_t dsdb_flags,
+			 struct ldb_dn **dn)
 {
 	int ret;
 	struct ldb_result *res;
@@ -2472,7 +2515,7 @@ int dsdb_find_dn_by_guid(struct ldb_context *ldb,
 	ret = dsdb_search(ldb, mem_ctx, &res, NULL, LDB_SCOPE_SUBTREE, attrs,
 			  DSDB_SEARCH_SEARCH_ALL_PARTITIONS |
 			  DSDB_SEARCH_SHOW_EXTENDED_DN |
-			  DSDB_SEARCH_ONE_ONLY,
+			  DSDB_SEARCH_ONE_ONLY | dsdb_flags,
 			  "objectGUID=%s", guid_str);
 	talloc_free(guid_str);
 	if (ret != LDB_SUCCESS) {

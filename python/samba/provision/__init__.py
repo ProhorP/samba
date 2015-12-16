@@ -561,7 +561,8 @@ def determine_netbios_name(hostname):
 
 def guess_names(lp=None, hostname=None, domain=None, dnsdomain=None,
                 serverrole=None, rootdn=None, domaindn=None, configdn=None,
-                schemadn=None, serverdn=None, sitename=None):
+                schemadn=None, serverdn=None, sitename=None,
+                domain_names_forced=False):
     """Guess configuration settings to use."""
 
     if hostname is None:
@@ -594,7 +595,7 @@ def guess_names(lp=None, hostname=None, domain=None, dnsdomain=None,
         raise ProvisioningError("guess_names: 'realm =' was not specified in supplied %s.  Please remove the smb.conf file and let provision generate it" % lp.configfile)
 
     if lp.get("realm").upper() != realm:
-        raise ProvisioningError("guess_names: 'realm=%s' in %s must match chosen realm '%s'!  Please remove the smb.conf file and let provision generate it" % (lp.get("realm").upper(), realm, lp.configfile))
+        raise ProvisioningError("guess_names: 'realm=%s' in %s must match chosen realm '%s'!  Please remove the smb.conf file and let provision generate it" % (lp.get("realm").upper(), lp.configfile, realm))
 
     if lp.get("server role").lower() != serverrole:
         raise ProvisioningError("guess_names: 'server role=%s' in %s must match chosen server role '%s'!  Please remove the smb.conf file and let provision generate it" % (lp.get("server role"), lp.configfile, serverrole))
@@ -624,8 +625,8 @@ def guess_names(lp=None, hostname=None, domain=None, dnsdomain=None,
     if hostname.upper() == realm:
         raise ProvisioningError("guess_names: Realm '%s' must not be equal to hostname '%s'!" % (realm, hostname))
     if netbiosname.upper() == realm:
-        raise ProvisioningError("guess_names: Realm '%s' must not be equal to netbios hostname '%s'!" % (realm, netbiosname))
-    if domain == realm:
+        raise ProvisioningError("guess_names: Realm '%s' must not be equal to NetBIOS hostname '%s'!" % (realm, netbiosname))
+    if domain == realm and not domain_names_forced:
         raise ProvisioningError("guess_names: Realm '%s' must not be equal to short domain name '%s'!" % (realm, domain))
 
     if rootdn is None:
@@ -1198,7 +1199,13 @@ def setup_samdb(path, session_info, provision_backend, lp, names,
 
     # And now we can connect to the DB - the schema won't be loaded from the
     # DB
-    samdb.connect(path)
+    try:
+        samdb.connect(path)
+    except ldb.LdbError, (num, string_error):
+        if (num == ldb.ERR_INSUFFICIENT_ACCESS_RIGHTS):
+            raise ProvisioningError("Permission denied connecting to %s, are you running as root?" % path)
+        else:
+            raise
 
     # But we have to give it one more kick to have it use the schema
     # during provision - it needs, now that it is connected, to write
@@ -1467,17 +1474,17 @@ FILL_NT4SYNC = "NT4SYNC"
 FILL_DRS = "DRS"
 SYSVOL_ACL = "O:LAG:BAD:P(A;OICI;0x001f01ff;;;BA)(A;OICI;0x001200a9;;;SO)(A;OICI;0x001f01ff;;;SY)(A;OICI;0x001200a9;;;AU)"
 POLICIES_ACL = "O:LAG:BAD:P(A;OICI;0x001f01ff;;;BA)(A;OICI;0x001200a9;;;SO)(A;OICI;0x001f01ff;;;SY)(A;OICI;0x001200a9;;;AU)(A;OICI;0x001301bf;;;PA)"
+SYSVOL_SERVICE="sysvol"
 
-
-def set_dir_acl(path, acl, lp, domsid, use_ntvfs, passdb):
-    setntacl(lp, path, acl, domsid, use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb)
+def set_dir_acl(path, acl, lp, domsid, use_ntvfs, passdb, service=SYSVOL_SERVICE):
+    setntacl(lp, path, acl, domsid, use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb, service=service)
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
             setntacl(lp, os.path.join(root, name), acl, domsid,
-                    use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb)
+                    use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb, service=service)
         for name in dirs:
             setntacl(lp, os.path.join(root, name), acl, domsid,
-                    use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb)
+                    use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb, service=service)
 
 
 def set_gpos_acl(sysvol, dnsdomain, domainsid, domaindn, samdb, lp, use_ntvfs, passdb):
@@ -1495,7 +1502,7 @@ def set_gpos_acl(sysvol, dnsdomain, domainsid, domaindn, samdb, lp, use_ntvfs, p
     # Set ACL for GPO root folder
     root_policy_path = os.path.join(sysvol, dnsdomain, "Policies")
     setntacl(lp, root_policy_path, POLICIES_ACL, str(domainsid),
-            use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb)
+            use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=passdb, service=SYSVOL_SERVICE)
 
     res = samdb.search(base="CN=Policies,CN=System,%s"%(domaindn),
                         attrs=["cn", "nTSecurityDescriptor"],
@@ -1526,6 +1533,31 @@ def setsysvolacl(samdb, netlogon, sysvol, uid, gid, domainsid, dnsdomain,
     s4_passdb = None
 
     if not use_ntvfs:
+        s3conf = s3param.get_context()
+        s3conf.load(lp.configfile)
+
+        file = tempfile.NamedTemporaryFile(dir=os.path.abspath(sysvol))
+        try:
+            try:
+                smbd.set_simple_acl(file.name, 0755, gid)
+            except OSError:
+                if not smbd.have_posix_acls():
+                    # This clue is only strictly correct for RPM and
+                    # Debian-like Linux systems, but hopefully other users
+                    # will get enough clue from it.
+                    raise ProvisioningError("Samba was compiled without the posix ACL support that s3fs requires.  "
+                                            "Try installing libacl1-dev or libacl-devel, then re-run configure and make.")
+
+                raise ProvisioningError("Your filesystem or build does not support posix ACLs, which s3fs requires.  "
+                                        "Try the mounting the filesystem with the 'acl' option.")
+            try:
+                smbd.chown(file.name, uid, gid)
+            except OSError:
+                raise ProvisioningError("Unable to chown a file on your filesystem.  "
+                                        "You may not be running provision as root.")
+        finally:
+            file.close()
+
         # This will ensure that the smbd code we are running when setting ACLs
         # is initialised with the smb.conf
         s3conf = s3param.get_context()
@@ -1559,16 +1591,22 @@ def setsysvolacl(samdb, netlogon, sysvol, uid, gid, domainsid, dnsdomain,
         canchown = True
 
     # Set the SYSVOL_ACL on the sysvol folder and subfolder (first level)
-    setntacl(lp,sysvol, SYSVOL_ACL, str(domainsid), use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=s4_passdb)
+    setntacl(lp,sysvol, SYSVOL_ACL, str(domainsid), use_ntvfs=use_ntvfs,
+             skip_invalid_chown=True, passdb=s4_passdb,
+             service=SYSVOL_SERVICE)
     for root, dirs, files in os.walk(sysvol, topdown=False):
         for name in files:
             if use_ntvfs and canchown:
                 os.chown(os.path.join(root, name), -1, gid)
-            setntacl(lp, os.path.join(root, name), SYSVOL_ACL, str(domainsid), use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=s4_passdb)
+            setntacl(lp, os.path.join(root, name), SYSVOL_ACL, str(domainsid),
+                     use_ntvfs=use_ntvfs, skip_invalid_chown=True,
+                     passdb=s4_passdb, service=SYSVOL_SERVICE)
         for name in dirs:
             if use_ntvfs and canchown:
                 os.chown(os.path.join(root, name), -1, gid)
-            setntacl(lp, os.path.join(root, name), SYSVOL_ACL, str(domainsid), use_ntvfs=use_ntvfs, skip_invalid_chown=True, passdb=s4_passdb)
+            setntacl(lp, os.path.join(root, name), SYSVOL_ACL, str(domainsid),
+                     use_ntvfs=use_ntvfs, skip_invalid_chown=True,
+                     passdb=s4_passdb, service=SYSVOL_SERVICE)
 
     # Set acls on Policy folder and policies folders
     set_gpos_acl(sysvol, dnsdomain, domainsid, domaindn, samdb, lp, use_ntvfs, passdb=s4_passdb)
@@ -1580,14 +1618,15 @@ def acl_type(direct_db_access):
         return "VFS"
 
 def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
-    fsacl = getntacl(lp, path, direct_db_access=direct_db_access)
+    fsacl = getntacl(lp, path, direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
     fsacl_sddl = fsacl.as_sddl(domainsid)
     if fsacl_sddl != acl:
         raise ProvisioningError('%s ACL on GPO directory %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), path, fsacl_sddl, acl))
 
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
-            fsacl = getntacl(lp, os.path.join(root, name), direct_db_access=direct_db_access)
+            fsacl = getntacl(lp, os.path.join(root, name),
+                             direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
             if fsacl is None:
                 raise ProvisioningError('%s ACL on GPO file %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
@@ -1595,7 +1634,8 @@ def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
                 raise ProvisioningError('%s ACL on GPO file %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), os.path.join(root, name), fsacl_sddl, acl))
 
         for name in dirs:
-            fsacl = getntacl(lp, os.path.join(root, name), direct_db_access=direct_db_access)
+            fsacl = getntacl(lp, os.path.join(root, name),
+                             direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
             if fsacl is None:
                 raise ProvisioningError('%s ACL on GPO directory %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
@@ -1618,7 +1658,8 @@ def check_gpos_acl(sysvol, dnsdomain, domainsid, domaindn, samdb, lp,
 
     # Set ACL for GPO root folder
     root_policy_path = os.path.join(sysvol, dnsdomain, "Policies")
-    fsacl = getntacl(lp, root_policy_path, direct_db_access=direct_db_access)
+    fsacl = getntacl(lp, root_policy_path,
+                     direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
     if fsacl is None:
         raise ProvisioningError('DB ACL on policy root %s %s not found!' % (acl_type(direct_db_access), root_policy_path))
     fsacl_sddl = fsacl.as_sddl(domainsid)
@@ -1673,7 +1714,7 @@ def checksysvolacl(samdb, netlogon, sysvol, domainsid, dnsdomain, domaindn,
     for direct_db_access in [True, False]:
         # Check the SYSVOL_ACL on the sysvol folder and subfolder (first level)
         for dir_path in [os.path.join(sysvol, dnsdomain), netlogon]:
-            fsacl = getntacl(lp, dir_path, direct_db_access=direct_db_access)
+            fsacl = getntacl(lp, dir_path, direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
             if fsacl is None:
                 raise ProvisioningError('%s ACL on sysvol directory %s not found!' % (acl_type(direct_db_access), dir_path))
             fsacl_sddl = fsacl.as_sddl(domainsid)
@@ -1785,7 +1826,7 @@ def provision_fill(samdb, secrets_ldb, logger, names, paths,
         setup_ad_dns(samdb, secrets_ldb, domainsid, names, paths, lp, logger,
                      hostip=hostip, hostip6=hostip6, dns_backend=dns_backend,
                      dnspass=dnspass, os_level=dom_for_fun_level,
-                     targetdir=targetdir, site=DEFAULTSITE)
+                     targetdir=targetdir)
 
         domainguid = samdb.searchone(basedn=samdb.get_default_basedn(),
                                      attribute="objectGUID")
@@ -1975,7 +2016,7 @@ def provision(logger, session_info, credentials, smbconf=None,
     names = guess_names(lp=lp, hostname=hostname, domain=domain,
         dnsdomain=realm, serverrole=serverrole, domaindn=domaindn,
         configdn=configdn, schemadn=schemadn, serverdn=serverdn,
-        sitename=sitename, rootdn=rootdn)
+        sitename=sitename, rootdn=rootdn, domain_names_forced=(samdb_fill == FILL_DRS))
     paths = provision_paths_from_lp(lp, names.dnsdomain)
 
     paths.bind_gid = bind_gid
@@ -2020,32 +2061,6 @@ def provision(logger, session_info, credentials, smbconf=None,
 
     if paths.sysvol and not os.path.exists(paths.sysvol):
         os.makedirs(paths.sysvol, 0775)
-
-    if not use_ntvfs and serverrole == "active directory domain controller":
-        s3conf = s3param.get_context()
-        s3conf.load(lp.configfile)
-
-        if paths.sysvol is None:
-            raise MissingShareError("sysvol", paths.smbconf)
-
-        file = tempfile.NamedTemporaryFile(dir=os.path.abspath(paths.sysvol))
-        try:
-            try:
-                smbd.set_simple_acl(file.name, 0755, root_gid)
-            except Exception:
-                if not smbd.have_posix_acls():
-                    # This clue is only strictly correct for RPM and
-                    # Debian-like Linux systems, but hopefully other users
-                    # will get enough clue from it.
-                    raise ProvisioningError("Samba was compiled without the posix ACL support that s3fs requires.  Try installing libacl1-dev or libacl-devel, then re-run configure and make.")
-
-                raise ProvisioningError("Your filesystem or build does not support posix ACLs, which s3fs requires.  Try the mounting the filesystem with the 'acl' option.")
-            try:
-                smbd.chown(file.name, root_uid, root_gid)
-            except Exception:
-                raise ProvisioningError("Unable to chown a file on your filesystem.  You may not be running provision as root.")
-        finally:
-            file.close()
 
     ldapi_url = "ldapi://%s" % urllib.quote(paths.s4_ldapi_path, safe="")
 

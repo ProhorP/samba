@@ -133,7 +133,7 @@ class dc_join(object):
             else:
                 ctx.dns_backend = dns_backend
 
-        ctx.dnshostname = "%s.%s" % (ctx.myname, ctx.dnsdomain)
+        ctx.dnshostname = "%s.%s" % (ctx.myname.lower(), ctx.dnsdomain)
 
         ctx.realm = ctx.dnsdomain
 
@@ -793,7 +793,7 @@ class dc_join(object):
                 binding_options += ",print"
             repl = drs_utils.drs_Replicate(
                 "ncacn_ip_tcp:%s[%s]" % (ctx.server, binding_options),
-                ctx.lp, repl_creds, ctx.local_samdb)
+                ctx.lp, repl_creds, ctx.local_samdb, ctx.invocation_id)
 
             repl.replicate(ctx.schema_dn, source_dsa_invocation_id,
                     destination_dsa_guid, schema=True, rodc=ctx.RODC,
@@ -1198,7 +1198,7 @@ def join_subdomain(server=None, creds=None, lp=None, site=None,
     ctx.base_dn = samba.dn_from_dns_name(dnsdomain)
     ctx.domsid = str(security.random_sid())
     ctx.acct_dn = None
-    ctx.dnshostname = "%s.%s" % (ctx.myname, ctx.dnsdomain)
+    ctx.dnshostname = "%s.%s" % (ctx.myname.lower(), ctx.dnsdomain)
     ctx.trustdom_pass = samba.generate_random_password(128, 128)
 
     ctx.userAccountControl = samba.dsdb.UF_SERVER_TRUST_ACCOUNT | samba.dsdb.UF_TRUSTED_FOR_DELEGATION

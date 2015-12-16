@@ -234,7 +234,7 @@ static void chain3_ntcreate_done(struct tevent_req *subreq)
 		req, struct chain3_state);
 	NTSTATUS status;
 
-	status = cli_ntcreate_recv(subreq, &state->fnum);
+	status = cli_ntcreate_recv(subreq, &state->fnum, NULL);
 	TALLOC_FREE(subreq);
 	printf("cli_ntcreate returned %s, fnum=%u\n", nt_errstr(status),
 	       (unsigned)state->fnum);
@@ -276,7 +276,7 @@ bool run_chain3(int dummy)
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
-	ev = tevent_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}

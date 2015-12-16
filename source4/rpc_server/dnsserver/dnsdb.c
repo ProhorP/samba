@@ -395,7 +395,7 @@ WERROR dnsserver_db_add_record(TALLOC_CTX *mem_ctx,
 					const char *name,
 					struct DNS_RPC_RECORD *add_record)
 {
-	const char * const attrs[] = { "dnsRecord", NULL };
+	const char * const attrs[] = { "dnsRecord", "dNSTombstoned", NULL };
 	struct ldb_result *res;
 	struct dnsp_DnssrvRpcRecord *rec;
 	struct ldb_message_element *el;
@@ -404,14 +404,18 @@ WERROR dnsserver_db_add_record(TALLOC_CTX *mem_ctx,
 	NTTIME t;
 	int ret, i;
 	int serial;
+	bool was_tombstoned = false;
 
 	rec = dns_to_dnsp_copy(mem_ctx, add_record);
 	W_ERROR_HAVE_NO_MEMORY(rec);
 
-	/* Set the correct rank for the record.
-	 * FIXME: add logic to check for glue records */
+	/* Set the correct rank for the record. */
 	if (z->zoneinfo->dwZoneType == DNS_ZONE_TYPE_PRIMARY) {
-		rec->rank |= DNS_RANK_ZONE;
+		if (strcmp(name, "@") != 0 && rec->wType == DNS_TYPE_NS) {
+			rec->rank = DNS_RANK_NS_GLUE;
+		} else {
+			rec->rank |= DNS_RANK_ZONE;
+		}
 	} else if (strcmp(z->name, ".") == 0) {
 		rec->rank |= DNS_RANK_ROOT_HINT;
 	}
@@ -449,6 +453,12 @@ WERROR dnsserver_db_add_record(TALLOC_CTX *mem_ctx,
 		}
 	}
 
+	was_tombstoned = ldb_msg_find_attr_as_bool(res->msgs[0],
+						   "dNSTombstoned", false);
+	if (was_tombstoned) {
+		el->num_values = 0;
+	}
+
 	for (i=0; i<el->num_values; i++) {
 		struct dnsp_DnssrvRpcRecord rec2;
 
@@ -479,6 +489,12 @@ WERROR dnsserver_db_add_record(TALLOC_CTX *mem_ctx,
 	}
 
 	el->flags = LDB_FLAG_MOD_REPLACE;
+
+	el = ldb_msg_find_element(res->msgs[0], "dNSTombstoned");
+	if (el != NULL) {
+		el->flags = LDB_FLAG_MOD_DELETE;
+	}
+
 	ret = ldb_modify(samdb, res->msgs[0]);
 	if (ret != LDB_SUCCESS) {
 		return WERR_INTERNAL_DB_ERROR;
@@ -505,11 +521,6 @@ WERROR dnsserver_db_update_record(TALLOC_CTX *mem_ctx,
 	int ret, i;
 	int serial;
 
-	serial = dnsserver_update_soa(mem_ctx, samdb, z);
-	if (serial < 0) {
-		return WERR_INTERNAL_DB_ERROR;
-	}
-
 	arec = dns_to_dnsp_copy(mem_ctx, add_record);
 	W_ERROR_HAVE_NO_MEMORY(arec);
 
@@ -519,11 +530,10 @@ WERROR dnsserver_db_update_record(TALLOC_CTX *mem_ctx,
 	unix_to_nt_time(&t, time(NULL));
 	t /= 10*1000*1000;
 
-	arec->dwSerial = serial;
 	arec->dwTimeStamp = t;
 
 	ret = ldb_search(samdb, mem_ctx, &res, z->zone_dn, LDB_SCOPE_ONELEVEL, attrs,
-			"(&(objectClass=dnsNode)(name=%s))", name);
+			"(&(objectClass=dnsNode)(name=%s)(!(dNSTombstoned=TRUE)))", name);
 	if (ret != LDB_SUCCESS) {
 		return WERR_INTERNAL_DB_ERROR;
 	}
@@ -570,6 +580,15 @@ WERROR dnsserver_db_update_record(TALLOC_CTX *mem_ctx,
 	}
 	if (i == el->num_values) {
 		return WERR_DNS_ERROR_RECORD_DOES_NOT_EXIST;
+	}
+
+	/* If updating SOA record, use specified serial, otherwise increment */
+	if (arec->wType != DNS_TYPE_SOA) {
+		serial = dnsserver_update_soa(mem_ctx, samdb, z);
+		if (serial < 0) {
+			return WERR_INTERNAL_DB_ERROR;
+		}
+		arec->dwSerial = serial;
 	}
 
 	ndr_err = ndr_push_struct_blob(&el->values[i], mem_ctx, arec,
@@ -931,6 +950,7 @@ WERROR dnsserver_db_create_zone(struct ldb_context *samdb,
 	dns_rec[1].wType = DNS_TYPE_NS;
 	dns_rec[1].rank = DNS_RANK_ZONE;
 	dns_rec[1].dwSerial = soa.serial;
+	dns_rec[1].dwTtlSeconds = 3600;
 	dns_rec[1].dwTimeStamp = (uint32_t)t;
 	dns_rec[1].data.ns = server_fqdn;
 

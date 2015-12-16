@@ -380,7 +380,7 @@ NTSTATUS _wbint_QueryGroupList(struct pipes_struct *p,
 {
 	struct winbindd_domain *domain = wb_child_domain();
 	uint32_t i, num_groups;
-	struct wb_acct_info *groups;
+	struct wb_acct_info *groups = NULL;
 	struct wbint_Principal *result;
 	NTSTATUS status;
 
@@ -706,7 +706,8 @@ reconnect:
 
 	reset_cm_connection_on_error(domain, status);
         if (!NT_STATUS_IS_OK(status)) {
-                DEBUG(3, ("could not open handle to NETLOGON pipe\n"));
+		DEBUG(3, ("could not open handle to NETLOGON pipe: %s\n",
+			  nt_errstr(status)));
 		return status;
         }
 
@@ -714,7 +715,7 @@ reconnect:
 
 	fstr_sprintf(logon_server, "\\\\%s", domain->dcname);
 	*r->out.dcname = talloc_strdup(p->mem_ctx, domain->dcname);
-	if (r->out.dcname == NULL) {
+	if (*r->out.dcname == NULL) {
 		DEBUG(2, ("Could not allocate memory\n"));
 		return NT_STATUS_NO_MEMORY;
 	}

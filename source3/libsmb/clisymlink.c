@@ -90,7 +90,7 @@ static void cli_symlink_create_done(struct tevent_req *subreq)
 	size_t data_len;
 	NTSTATUS status;
 
-	status = cli_ntcreate_recv(subreq, &state->fnum);
+	status = cli_ntcreate_recv(subreq, &state->fnum, NULL);
 	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
@@ -201,7 +201,7 @@ NTSTATUS cli_symlink(struct cli_state *cli, const char *oldname,
 		     const char *newname, uint32_t flags)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -209,7 +209,7 @@ NTSTATUS cli_symlink(struct cli_state *cli, const char *oldname,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -275,7 +275,7 @@ static void cli_readlink_opened(struct tevent_req *subreq)
 		req, struct cli_readlink_state);
 	NTSTATUS status;
 
-	status = cli_ntcreate_recv(subreq, &state->fnum);
+	status = cli_ntcreate_recv(subreq, &state->fnum, NULL);
 	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
@@ -375,7 +375,7 @@ NTSTATUS cli_readlink(struct cli_state *cli, const char *fname,
 		      char **pprint_name, uint32_t *pflags)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 
@@ -383,7 +383,7 @@ NTSTATUS cli_readlink(struct cli_state *cli, const char *fname,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}

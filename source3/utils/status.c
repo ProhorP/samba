@@ -43,6 +43,7 @@
 #include "smbd/smbd.h"
 #include "librpc/gen_ndr/notify.h"
 #include "lib/conn_tdb.h"
+#include "serverid.h"
 
 #define SMB_MAXPIDS		2048
 static uid_t 		Ucrit_uid = 0;               /* added by OH */
@@ -131,6 +132,11 @@ static void print_share_mode(const struct share_mode_entry *e,
 		d_printf("--------------------------------------------------------------------------------------------------\n");
 	}
 	count++;
+
+	if (do_checks && !serverid_exists(&e->pid)) {
+		/* the process for this entry does not exist any more */
+		return;
+	}
 
 	if (Ucrit_checkPid(e->pid)) {
 		d_printf("%-11s  ",procid_str_static(&e->pid));
@@ -357,6 +363,7 @@ static void print_notify_recs(const char *path,
 	TALLOC_CTX *frame = talloc_stackframe();
 	int ret = 0;
 	struct messaging_context *msg_ctx;
+	bool ok;
 
 	sec_init();
 	load_case_tables();
@@ -438,7 +445,7 @@ static void print_notify_recs(const char *path,
 		 * connection, usable by the db_open() calls further
 		 * down.
 		 */
-		msg_ctx = messaging_init(NULL, event_context_init(NULL));
+		msg_ctx = messaging_init(NULL, samba_tevent_context_init(NULL));
 		if (msg_ctx == NULL) {
 			fprintf(stderr, "messaging_init failed\n");
 			ret = -1;
@@ -456,10 +463,12 @@ static void print_notify_recs(const char *path,
 	switch (profile_only) {
 		case 'P':
 			/* Dump profile data */
-			return status_profile_dump(verbose);
+			ok = status_profile_dump(verbose);
+			return ok ? 0 : 1;
 		case 'R':
 			/* Continuously display rate-converted data */
-			return status_profile_rates(verbose);
+			ok = status_profile_rates(verbose);
+			return ok ? 0 : 1;
 		default:
 			break;
 	}

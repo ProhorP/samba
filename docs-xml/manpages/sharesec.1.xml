@@ -26,14 +26,17 @@
 		<arg choice="opt">-R, --replace=ACLs</arg>
 		<arg choice="opt">-D, --delete</arg>
 		<arg choice="opt">-v, --view</arg>
+		<arg choice="opt">--view-all</arg>
 		<arg choice="opt">-M, --machine-sid</arg>
 		<arg choice="opt">-F, --force</arg>
 		<arg choice="opt">-d, --debuglevel=DEBUGLEVEL</arg>
 		<arg choice="opt">-s, --configfile=CONFIGFILE</arg>
 		<arg choice="opt">-l, --log-basename=LOGFILEBASE</arg>
-		<arg choice="opt">-V, --version</arg>
+		<arg choice="opt">--version</arg>
 		<arg choice="opt">-?, --help</arg>
 		<arg choice="opt">--usage</arg>
+		<arg choice="opt">-S, --setsddl=STRING</arg>
+		<arg choice="opt">-V, --viewsddl</arg>
 	</cmdsynopsis>
 </refsynopsisdiv>
 
@@ -95,6 +98,34 @@
 		<term>-R|--replace=ACLS</term>
 		<listitem><para>
 		Overwrite an existing share permission ACL.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-v|--view</term>
+		<listitem><para>
+		List a share acl
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>--view-all</term>
+		<listitem><para>
+		List all share acls
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-S|--setsddl=STRING</term>
+		<listitem><para>
+		Set security descriptor by providing ACL in SDDL format.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-V|--viewsddl</term>
+		<listitem><para>
+		List a share acl in SDDL format.
 		</para></listitem>
 		</varlistentry>
 

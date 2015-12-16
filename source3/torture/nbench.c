@@ -338,7 +338,7 @@ static void nbench_cmd_done(struct tevent_req *subreq)
 	switch (state->cmd->cmd) {
 	case NBENCH_CMD_NTCREATEX: {
 		struct ftable *ft;
-		status = cli_ntcreate_recv(subreq, &state->ft->fnum);
+		status = cli_ntcreate_recv(subreq, &state->ft->fnum, NULL);
 		TALLOC_FREE(subreq);
 		if (status_wrong(req, state->cmd->status, status)) {
 			return;
@@ -465,7 +465,7 @@ bool run_nbench2(int dummy)
 			strerror(errno));
 		return false;
 	}
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		goto fail;
 	}

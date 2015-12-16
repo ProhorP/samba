@@ -112,7 +112,7 @@ def SAMBA_LIBRARY(bld, libname, source,
                   keep_underscore=False,
                   autoproto=None,
                   autoproto_extra_source='',
-                  group='libraries',
+                  group='main',
                   depends_on='',
                   local_include=True,
                   global_include=True,
@@ -311,7 +311,7 @@ def SAMBA_BINARY(bld, binname, source,
                  use_hostcc=False,
                  use_global_deps=True,
                  compiler=None,
-                 group='binaries',
+                 group='main',
                  manpages=None,
                  local_include=True,
                  global_include=True,
@@ -643,8 +643,6 @@ def SETUP_BUILD_GROUPS(bld):
     bld.add_group('headers')
     bld.add_group('main')
     bld.add_group('symbolcheck')
-    bld.add_group('libraries')
-    bld.add_group('binaries')
     bld.add_group('syslibcheck')
     bld.add_group('final')
 Build.BuildContext.SETUP_BUILD_GROUPS = SETUP_BUILD_GROUPS

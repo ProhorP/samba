@@ -167,7 +167,7 @@ int solarisacl_sys_acl_set_file(vfs_handle_struct *handle,
 	 * that has not been specified in "type" from the file first 
 	 * and concatenate it with the acl provided.
 	 */
-	if (vfs_stat_smb_fname(handle->conn, name, &s) != 0) {
+	if (vfs_stat_smb_basename(handle->conn, name, &s) != 0) {
 		DEBUG(10, ("Error in stat call: %s\n", strerror(errno)));
 		goto done;
 	}
@@ -751,6 +751,8 @@ static bool solaris_acl_check(SOLARIS_ACL_T solaris_acl, int count)
 static struct vfs_fn_pointers solarisacl_fns = {
 	.sys_acl_get_file_fn = solarisacl_sys_acl_get_file,
 	.sys_acl_get_fd_fn = solarisacl_sys_acl_get_fd,
+	.sys_acl_blob_get_file_fn = posix_sys_acl_blob_get_file,
+	.sys_acl_blob_get_fd_fn = posix_sys_acl_blob_get_fd,
 	.sys_acl_set_file_fn = solarisacl_sys_acl_set_file,
 	.sys_acl_set_fd_fn = solarisacl_sys_acl_set_fd,
 	.sys_acl_delete_def_file_fn = solarisacl_sys_acl_delete_def_file,

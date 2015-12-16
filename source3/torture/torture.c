@@ -26,7 +26,7 @@
 #include "tldap.h"
 #include "tldap_util.h"
 #include "../librpc/gen_ndr/svcctl.h"
-#include "memcache.h"
+#include "../lib/util/memcache.h"
 #include "nsswitch/winbind_client.h"
 #include "dbwrap/dbwrap.h"
 #include "dbwrap/dbwrap_open.h"
@@ -46,7 +46,6 @@ extern char *optarg;
 extern int optind;
 
 fstring host, workgroup, share, password, username, myname;
-static int max_protocol = PROTOCOL_NT1;
 static const char *sockops="TCP_NODELAY";
 int torture_nprocs=1;
 static int port_to_use=0;
@@ -180,7 +179,7 @@ static bool cli_bad_session_request(int fd,
 	bool ret = false;
 	uint8_t message_type;
 	uint8_t error;
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct tevent_req *req;
 
 	frame = talloc_stackframe();
@@ -228,7 +227,7 @@ static bool cli_bad_session_request(int fd,
 		goto fail;
 	}
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -2985,7 +2984,7 @@ static bool run_negprot_nowait(int dummy)
 
 	printf("starting negprot nowait test\n");
 
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		return false;
 	}
@@ -3100,6 +3099,9 @@ static bool run_randomipc(int dummy)
 	if (!torture_close_connection(cli)) {
 		correct = False;
 	}
+
+	SAFE_FREE(rparam);
+	SAFE_FREE(rdata);
 
 	printf("finished random ipc test\n");
 
@@ -3723,7 +3725,7 @@ static bool run_oplock4(int dummy)
 		return false;
 	}
 
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		printf("tevent_context_init failed\n");
 		return false;
@@ -3871,7 +3873,7 @@ static bool run_deletetest(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_ALL_ACCESS|DELETE_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
-			      FILE_DELETE_ON_CLOSE, 0, &fnum1);
+			      FILE_DELETE_ON_CLOSE, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[1] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -3898,7 +3900,7 @@ static bool run_deletetest(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_ALL_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[2] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -3936,7 +3938,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_ALL_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[3] open - 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -3948,7 +3950,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[3] open  - 2 of %s succeeded - should have failed.\n", fname);
 		goto fail;
@@ -3958,7 +3960,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			     FILE_ATTRIBUTE_NORMAL,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OPEN, 0, 0, &fnum2);
+			     FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[3] open  - 3 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4005,7 +4007,7 @@ static bool run_deletetest(int dummy)
 	                      FILE_READ_DATA|FILE_WRITE_DATA|DELETE_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[4] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4015,7 +4017,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 	                     FILE_ATTRIBUTE_NORMAL,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OPEN, 0, 0, &fnum2);
+			     FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[4] open  - 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4037,7 +4039,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[4] open  - 3 of %s succeeded ! Should have failed.\n", fname );
 		goto fail;
@@ -4084,7 +4086,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_DATA|FILE_WRITE_DATA,
 			     FILE_ATTRIBUTE_NORMAL,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			     FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[6] open of %s failed (%s)\n", fname,
 		       nt_errstr(status));
@@ -4114,7 +4116,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0,
 	                      FILE_READ_DATA|FILE_WRITE_DATA|DELETE_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
-			      0, 0, &fnum1);
+			      0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[7] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4168,7 +4170,7 @@ static bool run_deletetest(int dummy)
 	                     FILE_READ_DATA|FILE_WRITE_DATA|DELETE_ACCESS,
 			     FILE_ATTRIBUTE_NORMAL,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			     FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[8] open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4178,7 +4180,7 @@ static bool run_deletetest(int dummy)
 			     FILE_READ_DATA|FILE_WRITE_DATA|DELETE_ACCESS,
 			     FILE_ATTRIBUTE_NORMAL,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OPEN, 0, 0, &fnum2);
+			     FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[8] open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4218,7 +4220,7 @@ static bool run_deletetest(int dummy)
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_NONE,
 			      FILE_OVERWRITE_IF,
-			      FILE_DELETE_ON_CLOSE, 0, &fnum1);
+			      FILE_DELETE_ON_CLOSE, 0, &fnum1, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[9] open of %s succeeded should have failed!\n", fname);
 		goto fail;
@@ -4232,7 +4234,7 @@ static bool run_deletetest(int dummy)
 			     FILE_READ_DATA|FILE_WRITE_DATA|DELETE_ACCESS,
 			     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
 			     FILE_OVERWRITE_IF, FILE_DELETE_ON_CLOSE,
-			     0, &fnum1);
+			     0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[10] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4264,7 +4266,7 @@ static bool run_deletetest(int dummy)
 	/* Create a readonly file. */
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_DATA|FILE_WRITE_DATA,
 	                      FILE_ATTRIBUTE_READONLY, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[11] open of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4281,7 +4283,7 @@ static bool run_deletetest(int dummy)
 			     FILE_READ_ATTRIBUTES|DELETE_ACCESS,
 			     0,
 			     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OPEN, 0, 0, &fnum1);
+			     FILE_OPEN, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[11] open of %s failed: %s\n", fname, nt_errstr(status));
 		goto fail;
@@ -4304,7 +4306,7 @@ static bool run_deletetest(int dummy)
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE,
 			      FILE_OVERWRITE_IF,
-			      FILE_DELETE_ON_CLOSE, 0, &fnum1);
+			      FILE_DELETE_ON_CLOSE, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[12] open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4313,7 +4315,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[12] open 2 of %s failed(%s).\n", fname, nt_errstr(status));
 		goto fail;
@@ -4335,7 +4337,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[12] open 3 of %s succeeded - should fail).\n", fname);
 		goto fail;
@@ -4350,7 +4352,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("[12] open 4 of %s failed (%s)\n", fname, nt_errstr(status));
 		goto fail;
@@ -4375,7 +4377,7 @@ static bool run_deletetest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			      FILE_OPEN, 0, 0, &fnum2);
+			      FILE_OPEN, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("[12] open 5 of %s succeeded - should fail).\n", fname);
 		goto fail;
@@ -4458,7 +4460,7 @@ static bool run_deletetest_ln(int dummy)
 	status = cli_ntcreate(cli, fname, 0, FILE_READ_DATA,
 			FILE_ATTRIBUTE_NORMAL,
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			FILE_OPEN_IF, 0, 0, &fnum);
+			FILE_OPEN_IF, 0, 0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("ntcreate of %s failed (%s)\n", fname, nt_errstr(status));
 		return false;
@@ -4468,7 +4470,7 @@ static bool run_deletetest_ln(int dummy)
 	status = cli_ntcreate(cli, fname_ln, 0, DELETE_ACCESS,
 			FILE_ATTRIBUTE_NORMAL,
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			FILE_OPEN_IF, 0, 0, &fnum1);
+			FILE_OPEN_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("ntcreate of %s failed (%s)\n", fname_ln, nt_errstr(status));
 		return false;
@@ -4593,7 +4595,7 @@ static bool run_xcopy(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, FIRST_DESIRED_ACCESS,
 			      FILE_ATTRIBUTE_ARCHIVE, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0x4044, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0x4044, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("First open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4601,7 +4603,7 @@ static bool run_xcopy(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, SECOND_DESIRED_ACCESS, 0,
 	                     FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-			     FILE_OPEN, 0x200000, 0, &fnum2);
+			     FILE_OPEN, 0x200000, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("second open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4638,7 +4640,7 @@ static bool run_rename(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("First open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4666,7 +4668,7 @@ static bool run_rename(int dummy)
 #else
 			      FILE_SHARE_DELETE|FILE_SHARE_READ,
 #endif
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Second open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4691,7 +4693,7 @@ static bool run_rename(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, READ_CONTROL_ACCESS,
 	                      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Third open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4703,7 +4705,7 @@ static bool run_rename(int dummy)
 	uint16_t fnum2;
 
 	if (!NT_STATUS_IS_OK(cli_ntcreate(cli1, fname, 0, DELETE_ACCESS, FILE_ATTRIBUTE_NORMAL,
-				   FILE_SHARE_NONE, FILE_OVERWRITE_IF, 0, 0, &fnum2))) {
+				   FILE_SHARE_NONE, FILE_OVERWRITE_IF, 0, 0, &fnum2, NULL))) {
 		printf("Fourth open failed - %s\n", cli_errstr(cli1));
 		return False;
 	}
@@ -4741,7 +4743,7 @@ static bool run_rename(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 	                      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ | FILE_SHARE_WRITE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Fourth open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4769,7 +4771,7 @@ static bool run_rename(int dummy)
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS,
 	                 FILE_ATTRIBUTE_NORMAL,
 			 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-			 FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			 FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Fifth open failed - %s\n", nt_errstr(status));
 		return False;
@@ -4788,7 +4790,8 @@ static bool run_rename(int dummy)
          */
 
         /* if (!NT_STATUS_OP(cli_ntcreate(cli1, fname, 0, GENERIC_READ_ACCESS, FILE_ATTRIBUTE_NORMAL,
-				   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OVERWRITE_IF, 0, 0, &fnum2))) {
+				   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				   FILE_OVERWRITE_IF, 0, 0, &fnum2, NULL))) {
           printf("Opening original file after rename of open file fails: %s\n",
               cli_errstr(cli1));
         }
@@ -4851,7 +4854,7 @@ static bool run_pipe_number(int dummy)
 		status = cli_ntcreate(cli1, pipe_name, 0, FILE_READ_DATA,
 				      FILE_ATTRIBUTE_NORMAL,
 				      FILE_SHARE_READ|FILE_SHARE_WRITE,
-				      FILE_OPEN_IF, 0, 0, &fnum);
+				      FILE_OPEN_IF, 0, 0, &fnum, NULL);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("Open of pipe %s failed with error (%s)\n", pipe_name, nt_errstr(status));
 			break;
@@ -5050,7 +5053,7 @@ static bool run_opentest(int dummy)
 	printf("TEST #1 testing 2 non-io opens (no delete)\n");
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #1 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5058,7 +5061,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli2, fname, 0, FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #1 open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5085,7 +5088,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0,
 	                      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #2 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5093,7 +5096,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli2, fname, 0, FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #2 open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5119,7 +5122,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_ATTRIBUTES,
 	                      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #3 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5128,7 +5131,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli2, fname, 0,
 	                      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #3 open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5155,7 +5158,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0,
 			       DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			       FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			       FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			       FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #4 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5164,7 +5167,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli2, fname, 0,
 			      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("TEST #4 open 2 of %s SUCCEEDED - should have failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5187,7 +5190,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli1, fname, 0,
 	                      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #5 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5196,7 +5199,7 @@ static bool run_opentest(int dummy)
 	status = cli_ntcreate(cli2, fname, 0,
 			      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #5 open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5222,7 +5225,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_DATA,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #6 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5230,7 +5233,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli2, fname, 0, FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #6 open 2 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5256,7 +5259,7 @@ static bool run_opentest(int dummy)
 
 	status = cli_ntcreate(cli1, fname, 0, FILE_READ_DATA,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE,
-			      FILE_OVERWRITE_IF, 0, 0, &fnum1);
+			      FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #7 open 1 of %s failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5266,7 +5269,7 @@ static bool run_opentest(int dummy)
 			      DELETE_ACCESS|FILE_READ_ATTRIBUTES,
 			      FILE_ATTRIBUTE_NORMAL,
 			      FILE_SHARE_READ|FILE_SHARE_DELETE,
-			      FILE_OPEN_IF, 0, 0, &fnum2);
+			      FILE_OPEN_IF, 0, 0, &fnum2, NULL);
 	if (NT_STATUS_IS_OK(status)) {
 		printf("TEST #7 open 2 of %s SUCCEEDED - should have failed (%s)\n", fname, nt_errstr(status));
 		return False;
@@ -5287,7 +5290,7 @@ static bool run_opentest(int dummy)
 	printf("TEST #8 testing open without WRITE_ATTRIBUTES, updating close write time.\n");
 	status = cli_ntcreate(cli1, fname, 0, FILE_WRITE_DATA, FILE_ATTRIBUTE_NORMAL,
 				FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-				FILE_OVERWRITE_IF, 0, 0, &fnum1);
+				FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("TEST #8 open of %s failed (%s)\n", fname, nt_errstr(status));
 		correct = false;
@@ -5698,8 +5701,7 @@ static bool run_simple_posix_open_test(int dummy)
 			FILE_READ_DATA|FILE_WRITE_DATA, 0,
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
 			FILE_CREATE,
-			0x0, 0x0, &fnum2);
-
+			0x0, 0x0, &fnum2, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("Windows create of %s failed (%s)\n", fname_windows,
 			nt_errstr(status));
@@ -5833,7 +5835,7 @@ static bool run_openattrtest(int dummy)
 
 		status = cli_ntcreate(cli1, fname, 0, FILE_WRITE_DATA,
 				       open_attrs_table[i], FILE_SHARE_NONE,
-				       FILE_OVERWRITE_IF, 0, 0, &fnum1);
+				       FILE_OVERWRITE_IF, 0, 0, &fnum1, NULL);
 		if (!NT_STATUS_IS_OK(status)) {
 			printf("open %d (1) of %s failed (%s)\n", i, fname, nt_errstr(status));
 			return False;
@@ -5850,7 +5852,7 @@ static bool run_openattrtest(int dummy)
 					      FILE_READ_DATA|FILE_WRITE_DATA,
 					      open_attrs_table[j],
 					      FILE_SHARE_NONE, FILE_OVERWRITE,
-					      0, 0, &fnum1);
+					      0, 0, &fnum1, NULL);
 			if (!NT_STATUS_IS_OK(status)) {
 				for (l = 0; l < sizeof(attr_results)/sizeof(struct trunc_open_results); l++) {
 					if (attr_results[l].num == k) {
@@ -6186,7 +6188,7 @@ static bool run_eatest(int dummy)
 	status = cli_ntcreate(cli, fname, 0,
                               FIRST_DESIRED_ACCESS, FILE_ATTRIBUTE_ARCHIVE,
                               FILE_SHARE_NONE, FILE_OVERWRITE_IF,
-                              0x4044, 0, &fnum);
+                              0x4044, 0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("open failed - %s\n", nt_errstr(status));
 		talloc_destroy(mem_ctx);
@@ -6320,7 +6322,8 @@ static bool run_dirtest1(int dummy)
 		fstring fname;
 		slprintf(fname, sizeof(fname), "\\LISTDIR\\f%d", i);
 		if (!NT_STATUS_IS_OK(cli_ntcreate(cli, fname, 0, GENERIC_ALL_ACCESS, FILE_ATTRIBUTE_ARCHIVE,
-				   FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OVERWRITE_IF, 0, 0, &fnum))) {
+				   FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OVERWRITE_IF,
+				   0, 0, &fnum, NULL))) {
 			fprintf(stderr,"Failed to open %s\n", fname);
 			return False;
 		}
@@ -6515,7 +6518,7 @@ static bool run_sesssetup_bench(int dummy)
 
 	status = cli_ntcreate(c, fname, 0, GENERIC_ALL_ACCESS|DELETE_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
-			      FILE_DELETE_ON_CLOSE, 0, &fnum);
+			      FILE_DELETE_ON_CLOSE, 0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("open %s failed: %s\n", fname, nt_errstr(status));
 		return false;
@@ -6605,7 +6608,7 @@ static void chain1_close_completion(struct tevent_req *req)
 static bool run_chain1(int dummy)
 {
 	struct cli_state *cli1;
-	struct event_context *evt = event_context_init(NULL);
+	struct tevent_context *evt = samba_tevent_context_init(NULL);
 	struct tevent_req *reqs[3], *smbreqs[3];
 	bool done = false;
 	const char *str = "foobar";
@@ -6666,7 +6669,7 @@ static void chain2_tcon_completion(struct tevent_req *req)
 static bool run_chain2(int dummy)
 {
 	struct cli_state *cli1;
-	struct event_context *evt = event_context_init(NULL);
+	struct tevent_context *evt = samba_tevent_context_init(NULL);
 	struct tevent_req *reqs[2], *smbreqs[2];
 	bool done = false;
 	NTSTATUS status;
@@ -6751,7 +6754,7 @@ static void torture_createdel_created(struct tevent_req *subreq)
 	NTSTATUS status;
 	uint16_t fnum;
 
-	status = cli_ntcreate_recv(subreq, &fnum);
+	status = cli_ntcreate_recv(subreq, &fnum, NULL);
 	TALLOC_FREE(subreq);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("cli_ntcreate_recv returned %s\n",
@@ -7031,7 +7034,7 @@ static bool run_notify_bench(int dummy)
 		num_unc_names = 1;
 	}
 
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		d_printf("tevent_context_init failed\n");
 		return false;
@@ -7056,7 +7059,7 @@ static bool run_notify_bench(int dummy)
 				      0, FILE_SHARE_READ|FILE_SHARE_WRITE|
 				      FILE_SHARE_DELETE,
 				      FILE_OPEN_IF, FILE_DIRECTORY_FILE, 0,
-				      &dnum);
+				      &dnum, NULL);
 
 		if (!NT_STATUS_IS_OK(status)) {
 			d_printf("Could not create %s: %s\n", dname,
@@ -7126,7 +7129,7 @@ static bool run_mangle1(int dummy)
 
 	status = cli_ntcreate(cli, fname, 0, GENERIC_ALL_ACCESS|DELETE_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
-			      0, 0, &fnum);
+			      0, 0, &fnum, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("open %s failed: %s\n", fname, nt_errstr(status));
 		return false;
@@ -7271,7 +7274,7 @@ static bool check_read_call(struct cli_state *cli,
 	size_t len_expected = 0;
 	struct tevent_context *ev = NULL;
 
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		return false;
 	}
@@ -7402,7 +7405,7 @@ static bool run_large_readx(int dummy)
 	/* Create a file of size 4MB. */
 	status = cli_ntcreate(cli1, fname, 0, GENERIC_ALL_ACCESS,
 			FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
-			0, 0, &fnum1);
+			0, 0, &fnum1, NULL);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("open %s failed: %s\n", fname, nt_errstr(status));
@@ -7511,7 +7514,7 @@ static bool run_large_readx(int dummy)
 
 		status = cli_ntcreate(cli2, fname, 0, FILE_READ_DATA,
 				FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
-				0, 0, &fnum2);
+				0, 0, &fnum2, NULL);
 		if (!NT_STATUS_IS_OK(status)) {
 			d_printf("Second open %s failed: %s\n", fname, nt_errstr(status));
 			goto out;
@@ -7793,7 +7796,8 @@ static bool run_shortname_test(int dummy)
 		fname[15] = i;
 
 		status = cli_ntcreate(cli, fname, 0, GENERIC_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-                                   FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OVERWRITE_IF, 0, 0, &fnum);
+                                   FILE_SHARE_READ|FILE_SHARE_WRITE,
+				   FILE_OVERWRITE_IF, 0, 0, &fnum, NULL);
 		if (!NT_STATUS_IS_OK(status)) {
 			d_printf("(%s) cli_nt_create of %s failed: %s\n",
 				__location__, fname, nt_errstr(status));
@@ -7902,7 +7906,7 @@ static bool run_tldap(int dummy)
 	}
 	d_printf("defaultNamingContext: %s\n", basedn);
 
-	ev = tevent_context_init(talloc_tos());
+	ev = samba_tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		d_printf("tevent_context_init failed\n");
 		return false;
@@ -8049,7 +8053,7 @@ static bool run_streamerror(int dummy)
 			      FILE_READ_DATA|FILE_READ_EA|
 			      FILE_READ_ATTRIBUTES|READ_CONTROL_ACCESS,
 			      FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
-			      FILE_OPEN, 0, 0, &fnum);
+			      FILE_OPEN, 0, 0, &fnum, NULL);
 
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
 		printf("ntcreate returned %s, expected "
@@ -8854,7 +8858,7 @@ static void wbclient_done(struct tevent_req *req)
 
 static bool run_local_wbclient(int dummy)
 {
-	struct event_context *ev;
+	struct tevent_context *ev;
 	struct wb_context **wb_ctx;
 	struct winbindd_request wb_req;
 	bool result = false;
@@ -8931,7 +8935,7 @@ static bool run_getaddrinfo_send(int dummy)
 	struct tevent_req *reqs[4];
 	int i;
 
-	ev = event_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -9532,9 +9536,17 @@ static struct {
 	{ "LOCAL-remove_duplicate_addrs2", run_local_remove_duplicate_addrs2, 0},
 	{ "local-tdb-opener", run_local_tdb_opener, 0 },
 	{ "local-tdb-writer", run_local_tdb_writer, 0 },
+	{ "LOCAL-DBWRAP-CTDB", run_local_dbwrap_ctdb, 0 },
 	{NULL, NULL, 0}};
 
-
+/*
+ * dummy function to satisfy linker dependency
+ */
+struct tevent_context *winbind_event_context(void);
+struct tevent_context *winbind_event_context(void)
+{
+	return NULL;
+}
 
 /****************************************************************************
 run a specified test or "ALL"
@@ -9646,6 +9658,7 @@ static void usage(void)
 	setup_logging("smbtorture", DEBUG_STDOUT);
 
 	load_case_tables();
+	fault_setup();
 
 	if (is_default_dyn_CONFIGFILE()) {
 		if(getenv("SMB_CONF_PATH")) {
@@ -9703,7 +9716,7 @@ static void usage(void)
 			fstrcpy(workgroup,optarg);
 			break;
 		case 'm':
-			max_protocol = interpret_protocol(optarg, max_protocol);
+			lp_set_cmdline("client max protocol", optarg);
 			break;
 		case 'N':
 			torture_nprocs = atoi(optarg);
@@ -9776,9 +9789,12 @@ static void usage(void)
 	if(use_kerberos && !gotuser) gotpass = True;
 
 	while (!gotpass) {
-		p = getpass("Password:");
-		if (p) {
-			fstrcpy(password, p);
+		char pwd[256] = {0};
+		int rc;
+
+		rc = samba_getpass("Password:", pwd, sizeof(pwd), false, false);
+		if (rc == 0) {
+			fstrcpy(password, pwd);
 			gotpass = 1;
 		}
 	}

@@ -27,17 +27,9 @@
 struct smb2cli_create_state {
 	uint8_t fixed[56];
 
-	uint8_t oplock_level;
-	uint32_t create_action;
-	NTTIME creation_time;
-	NTTIME last_access_time;
-	NTTIME last_write_time;
-	NTTIME change_time;
-	uint64_t allocation_size;
-	uint64_t end_of_file;
-	uint32_t file_attributes;
 	uint64_t fid_persistent;
 	uint64_t fid_volatile;
+	struct smb_create_returns cr;
 	struct smb2_create_blobs blobs;
 };
 
@@ -70,6 +62,9 @@ struct tevent_req *smb2cli_create_send(
 	size_t blobs_offset;
 	uint8_t *dyn;
 	size_t dyn_len;
+	size_t max_dyn_len;
+	uint32_t additional_flags = 0;
+	uint32_t clear_flags = 0;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct smb2cli_create_state);
@@ -137,13 +132,29 @@ struct tevent_req *smb2cli_create_send(
 		data_blob_free(&blob);
 	}
 
+	if (smbXcli_conn_dfs_supported(conn) &&
+	    smbXcli_tcon_is_dfs_share(tcon))
+	{
+		additional_flags |= SMB2_HDR_FLAG_DFS;
+	}
+
+	/*
+	 * We use max_dyn_len = 0
+	 * as we don't explicitly ask for any output length.
+	 *
+	 * But it's still possible for the server to return
+	 * large create blobs.
+	 */
+	max_dyn_len = 0;
+
 	subreq = smb2cli_req_send(state, ev, conn, SMB2_OP_CREATE,
-				  0, 0, /* flags */
+				  additional_flags, clear_flags,
 				  timeout_msec,
 				  tcon,
 				  session,
 				  state->fixed, sizeof(state->fixed),
-				  dyn, dyn_len);
+				  dyn, dyn_len,
+				  max_dyn_len);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -172,21 +183,22 @@ static void smb2cli_create_done(struct tevent_req *subreq)
 
 	status = smb2cli_req_recv(subreq, state, &iov,
 				  expected, ARRAY_SIZE(expected));
+	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
 
 	body = (uint8_t *)iov[1].iov_base;
 
-	state->oplock_level	= CVAL(body, 2);
-	state->create_action	= IVAL(body, 4);
-	state->creation_time	= BVAL(body, 8);
-	state->last_access_time	= BVAL(body, 16);
-	state->last_write_time	= BVAL(body, 24);
-	state->change_time	= BVAL(body, 32);
-	state->allocation_size	= BVAL(body, 40);
-	state->end_of_file	= BVAL(body, 48);
-	state->file_attributes	= IVAL(body, 56);
+	state->cr.oplock_level  = CVAL(body, 2);
+	state->cr.create_action = IVAL(body, 4);
+	state->cr.creation_time = BVAL(body, 8);
+	state->cr.last_access_time = BVAL(body, 16);
+	state->cr.last_write_time = BVAL(body, 24);
+	state->cr.change_time   = BVAL(body, 32);
+	state->cr.allocation_size = BVAL(body, 40);
+	state->cr.end_of_file   = BVAL(body, 48);
+	state->cr.file_attributes = IVAL(body, 56);
 	state->fid_persistent	= BVAL(body, 64);
 	state->fid_volatile	= BVAL(body, 72);
 
@@ -212,7 +224,8 @@ static void smb2cli_create_done(struct tevent_req *subreq)
 
 NTSTATUS smb2cli_create_recv(struct tevent_req *req,
 			     uint64_t *fid_persistent,
-			     uint64_t *fid_volatile)
+			     uint64_t *fid_volatile,
+			     struct smb_create_returns *cr)
 {
 	struct smb2cli_create_state *state =
 		tevent_req_data(req,
@@ -224,6 +237,9 @@ NTSTATUS smb2cli_create_recv(struct tevent_req *req,
 	}
 	*fid_persistent = state->fid_persistent;
 	*fid_volatile = state->fid_volatile;
+	if (cr) {
+		*cr = state->cr;
+	}
 	return NT_STATUS_OK;
 }
 
@@ -241,7 +257,8 @@ NTSTATUS smb2cli_create(struct smbXcli_conn *conn,
 			uint32_t create_options,
 			struct smb2_create_blobs *blobs,
 			uint64_t *fid_persistent,
-			uint64_t *fid_volatile)
+			uint64_t *fid_volatile,
+			struct smb_create_returns *cr)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct tevent_context *ev;
@@ -255,7 +272,7 @@ NTSTATUS smb2cli_create(struct smbXcli_conn *conn,
 		status = NT_STATUS_INVALID_PARAMETER;
 		goto fail;
 	}
-	ev = tevent_context_init(frame);
+	ev = samba_tevent_context_init(frame);
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -272,7 +289,7 @@ NTSTATUS smb2cli_create(struct smbXcli_conn *conn,
 	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
-	status = smb2cli_create_recv(req, fid_persistent, fid_volatile);
+	status = smb2cli_create_recv(req, fid_persistent, fid_volatile, cr);
  fail:
 	TALLOC_FREE(frame);
 	return status;

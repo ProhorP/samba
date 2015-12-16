@@ -87,7 +87,13 @@ static void gotalarm_sig(int signum)
 #ifndef LDAP_PROTO_TCP
 #define LDAP_PROTO_TCP 1
 #endif
-		uri = talloc_asprintf(talloc_tos(), "ldap://%s:%u", server, port);
+		if ( strchr_m(server, ':') ) {
+			/* IPv6 URI */
+			uri = talloc_asprintf(talloc_tos(), "ldap://[%s]:%u", server, port);
+		} else {
+			/* IPv4 URI */
+			uri = talloc_asprintf(talloc_tos(), "ldap://%s:%u", server, port);
+		}
 		if (uri == NULL) {
 			return NULL;
 		}
@@ -1041,6 +1047,24 @@ static ADS_STATUS ads_do_paged_search_args(ADS_STRUCT *ads,
 	if (rc) {
 		DEBUG(3,("ads_do_paged_search_args: ldap_search_with_timeout(%s) -> %s\n", expr,
 			 ldap_err2string(rc)));
+		if (rc == LDAP_OTHER) {
+			char *ldap_errmsg;
+			int ret;
+
+			ret = ldap_parse_result(ads->ldap.ld,
+						*res,
+						NULL,
+						NULL,
+						&ldap_errmsg,
+						NULL,
+						NULL,
+						0);
+			if (ret == LDAP_SUCCESS) {
+				DEBUG(3, ("ldap_search_with_timeout(%s) "
+					  "error: %s\n", expr, ldap_errmsg));
+				ldap_memfree(ldap_errmsg);
+			}
+		}
 		goto done;
 	}
 
@@ -3282,7 +3306,7 @@ ADS_STATUS ads_get_joinable_ous(ADS_STRUCT *ads,
 
 		if (!add_string_to_array(mem_ctx, dn,
 					 (const char ***)ous,
-					 (int *)num_ous)) {
+					 num_ous)) {
 			TALLOC_FREE(dn);
 			ads_msgfree(ads, res);
 			return ADS_ERROR(LDAP_NO_MEMORY);

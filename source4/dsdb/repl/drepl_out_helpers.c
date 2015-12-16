@@ -67,14 +67,17 @@ struct tevent_req *dreplsrv_out_drsuapi_send(TALLOC_CTX *mem_ctx,
 	state->conn	= conn;
 	state->drsuapi	= conn->drsuapi;
 
-	if (state->drsuapi && !state->drsuapi->pipe->conn->dead) {
-		tevent_req_done(req);
-		return tevent_req_post(req, ev);
-	}
+	if (state->drsuapi != NULL) {
+		struct dcerpc_binding_handle *b =
+			state->drsuapi->pipe->binding_handle;
+		bool is_connected = dcerpc_binding_handle_is_connected(b);
 
-	if (state->drsuapi && state->drsuapi->pipe->conn->dead) {
-		talloc_free(state->drsuapi);
-		conn->drsuapi = NULL;
+		if (is_connected) {
+			tevent_req_done(req);
+			return tevent_req_post(req, ev);
+		}
+
+		TALLOC_FREE(conn->drsuapi);
 	}
 
 	state->drsuapi = talloc_zero(state, struct dreplsrv_drsuapi_connection);
@@ -183,8 +186,33 @@ static void dreplsrv_out_drsuapi_bind_done(struct tevent_req *subreq)
 			info28->repl_epoch		= info48->repl_epoch;
 			break;
 		}
-		case 28:
+		case 28: {
 			*info28 = state->bind_r.out.bind_info->info.info28;
+			break;
+		}
+		case 32: {
+			struct drsuapi_DsBindInfo32 *info32;
+			info32 = &state->bind_r.out.bind_info->info.info32;
+
+			info28->supported_extensions	= info32->supported_extensions;
+			info28->site_guid		= info32->site_guid;
+			info28->pid			= info32->pid;
+			info28->repl_epoch		= info32->repl_epoch;
+			break;
+		}
+		case 52: {
+			struct drsuapi_DsBindInfo52 *info52;
+			info52 = &state->bind_r.out.bind_info->info.info52;
+
+			info28->supported_extensions	= info52->supported_extensions;
+			info28->site_guid		= info52->site_guid;
+			info28->pid			= info52->pid;
+			info28->repl_epoch		= info52->repl_epoch;
+			break;
+		}
+		default:
+			DEBUG(1, ("Warning: invalid info length in bind info: %d\n",
+				state->bind_r.out.bind_info->length));
 			break;
 		}
 	}
@@ -379,6 +407,7 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 	NTSTATUS status;
 	uint32_t replica_flags;
 	struct drsuapi_DsReplicaHighWaterMark highwatermark;
+	struct ldb_dn *schema_dn = ldb_get_schema_basedn(service->samdb);
 
 	r = talloc(state, struct drsuapi_DsGetNCChanges);
 	if (tevent_req_nomem(r, req)) {
@@ -426,7 +455,7 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 		replica_flags &= ~DRSUAPI_DRS_WRIT_REP;
 	} else if (partition->rodc_replica) {
 		bool for_schema = false;
-		if (ldb_dn_compare_base(ldb_get_schema_basedn(service->samdb), partition->dn) == 0) {
+		if (ldb_dn_compare_base(schema_dn, partition->dn) == 0) {
 			for_schema = true;
 		}
 
@@ -438,6 +467,13 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 		if (state->op->extended_op == DRSUAPI_EXOP_REPL_SECRET) {
 			replica_flags &= ~DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING;
 		}
+	}
+	if (state->op->extended_op != DRSUAPI_EXOP_NONE) {
+		/*
+		 * If it's an exop never set the ADD_REF even if it's in
+		 * repsFrom flags.
+		 */
+		replica_flags &= ~DRSUAPI_DRS_ADD_REF;
 	}
 
 	/* is this a full resync of all objects? */
@@ -606,6 +642,7 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 	struct dreplsrv_service *service = state->op->service;
 	struct dreplsrv_partition *partition = state->op->source_dsa->partition;
 	struct dreplsrv_drsuapi_connection *drsuapi = state->op->source_dsa->conn->drsuapi;
+	struct ldb_dn *schema_dn = ldb_get_schema_basedn(service->samdb);
 	struct dsdb_schema *schema;
 	struct dsdb_schema *working_schema = NULL;
 	const struct drsuapi_DsReplicaOIDMapping_Ctr *mapping_ctr;
@@ -662,20 +699,23 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 	 * Decide what working schema to use for object conversion.
 	 * We won't need a working schema for empty replicas sent.
 	 */
-	if (first_object && ldb_dn_compare(partition->dn, schema->base_dn) == 0) {
-		/* create working schema to convert objects with */
-		status = dsdb_repl_make_working_schema(service->samdb,
-						       schema,
-						       mapping_ctr,
-						       object_count,
-						       first_object,
-						       &drsuapi->gensec_skey,
-						       state, &working_schema);
-		if (!W_ERROR_IS_OK(status)) {
-			DEBUG(0,("Failed to create working schema: %s\n",
-				 win_errstr(status)));
-			tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
-			return;
+	if (first_object) {
+		bool is_schema = ldb_dn_compare(partition->dn, schema_dn) == 0;
+		if (is_schema) {
+			/* create working schema to convert objects with */
+			status = dsdb_repl_make_working_schema(service->samdb,
+							       schema,
+							       mapping_ctr,
+							       object_count,
+							       first_object,
+							       &drsuapi->gensec_skey,
+							       state, &working_schema);
+			if (!W_ERROR_IS_OK(status)) {
+				DEBUG(0,("Failed to create working schema: %s\n",
+					 win_errstr(status)));
+				tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
+				return;
+			}
 		}
 	}
 

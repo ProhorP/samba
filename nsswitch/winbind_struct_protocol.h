@@ -29,7 +29,7 @@ typedef char fstring[FSTRING_LEN];
  * is needed for launchd support -- jpeach.
  */
 #ifndef WINBINDD_SOCKET_DIR
-#define WINBINDD_SOCKET_DIR  "/var/run/winbindd"  /* Name of PF_UNIX dir */
+#define WINBINDD_SOCKET_DIR  "/tmp/.winbindd"  /* Name of PF_UNIX dir */
 #endif
 
 /*

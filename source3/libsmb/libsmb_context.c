@@ -1,10 +1,10 @@
-/* 
+/*
    Unix SMB/Netbios implementation.
    SMB client library implementation
    Copyright (C) Andrew Tridgell 1998
    Copyright (C) Richard Sharpe 2000, 2002
    Copyright (C) John Terpstra 2000
-   Copyright (C) Tom Jansen (Ninja ISD) 2002 
+   Copyright (C) Tom Jansen (Ninja ISD) 2002
    Copyright (C) Derrell Lipman 2003-2008
    Copyright (C) Jeremy Allison 2007, 2008
 
@@ -30,7 +30,7 @@
 #include "../libcli/smb/smbXcli_base.h"
 
 /*
- * Is the logging working / configfile read ? 
+ * Is the logging working / configfile read ?
  */
 static bool SMBC_initialized = false;
 static unsigned int initialized_ctx_count = 0;
@@ -169,6 +169,7 @@ smbc_new_context(void)
 
         smbc_setDebug(context, 0);
         smbc_setTimeout(context, 20000);
+        smbc_setPort(context, 0);
 
         smbc_setOptionFullTimeNames(context, False);
         smbc_setOptionOpenShareMode(context, SMBC_SHAREMODE_DENY_NONE);
@@ -559,6 +560,7 @@ SMBCCTX *
 smbc_init_context(SMBCCTX *context)
 {
         int pid;
+        TALLOC_CTX *frame;
 
         if (!context) {
                 errno = EBADF;
@@ -570,11 +572,14 @@ smbc_init_context(SMBCCTX *context)
                 return NULL;
         }
 
+        frame = talloc_stackframe();
+
         if ((!smbc_getFunctionAuthData(context) &&
              !smbc_getFunctionAuthDataWithContext(context)) ||
             smbc_getDebug(context) < 0 ||
             smbc_getDebug(context) > 100) {
 
+                TALLOC_FREE(frame);
                 errno = EINVAL;
                 return NULL;
 
@@ -593,6 +598,7 @@ smbc_init_context(SMBCCTX *context)
                 }
 
                 if (!user) {
+                        TALLOC_FREE(frame);
                         errno = ENOMEM;
                         return NULL;
                 }
@@ -601,6 +607,7 @@ smbc_init_context(SMBCCTX *context)
 		SAFE_FREE(user);
 
         	if (!smbc_getUser(context)) {
+                        TALLOC_FREE(frame);
                         errno = ENOMEM;
                         return NULL;
                 }
@@ -623,6 +630,7 @@ smbc_init_context(SMBCCTX *context)
                         pid = getpid();
                         netbios_name = (char *)SMB_MALLOC(17);
                         if (!netbios_name) {
+                                TALLOC_FREE(frame);
                                 errno = ENOMEM;
                                 return NULL;
                         }
@@ -631,6 +639,7 @@ smbc_init_context(SMBCCTX *context)
                 }
 
                 if (!netbios_name) {
+                        TALLOC_FREE(frame);
                         errno = ENOMEM;
                         return NULL;
                 }
@@ -639,6 +648,7 @@ smbc_init_context(SMBCCTX *context)
 		SAFE_FREE(netbios_name);
 
                 if (!smbc_getNetbiosName(context)) {
+                        TALLOC_FREE(frame);
                         errno = ENOMEM;
                         return NULL;
                 }
@@ -658,6 +668,7 @@ smbc_init_context(SMBCCTX *context)
                 }
 
                 if (!workgroup) {
+                        TALLOC_FREE(frame);
                         errno = ENOMEM;
                         return NULL;
                 }
@@ -666,6 +677,7 @@ smbc_init_context(SMBCCTX *context)
 		SAFE_FREE(workgroup);
 
 		if (!smbc_getWorkgroup(context)) {
+                        TALLOC_FREE(frame);
 			errno = ENOMEM;
 			return NULL;
 		}
@@ -691,6 +703,7 @@ smbc_init_context(SMBCCTX *context)
                 smb_panic("error unlocking 'initialized_ctx_count'");
 	}
 
+        TALLOC_FREE(frame);
         return context;
 }
 
@@ -726,11 +739,14 @@ void smbc_set_credentials_with_fallback(SMBCCTX *context,
 	smbc_bool use_kerberos = false;
 	const char *signing_state = "off";
 	struct user_auth_info *auth_info = NULL;
+	TALLOC_CTX *frame;
 
 	if (! context) {
 
 		return;
 	}
+
+	frame = talloc_stackframe();
 
 	if (! workgroup || ! *workgroup) {
 		workgroup = smbc_getWorkgroup(context);
@@ -748,6 +764,7 @@ void smbc_set_credentials_with_fallback(SMBCCTX *context,
 
 	if (! auth_info) {
 		DEBUG(0, ("smbc_set_credentials_with_fallback: allocation fail\n"));
+		TALLOC_FREE(frame);
 		return;
 	}
 
@@ -776,4 +793,5 @@ void smbc_set_credentials_with_fallback(SMBCCTX *context,
 	TALLOC_FREE(context->internal->auth_info);
 
         context->internal->auth_info = auth_info;
+	TALLOC_FREE(frame);
 }

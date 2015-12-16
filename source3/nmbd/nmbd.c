@@ -43,7 +43,7 @@ bool found_lm_clients = False;
 
 time_t StartupTime = 0;
 
-struct event_context *nmbd_event_context(void)
+struct tevent_context *nmbd_event_context(void)
 {
 	return server_event_context();
 }
@@ -803,12 +803,19 @@ static bool open_sockets(bool isdaemon, int port)
 	};
 	TALLOC_CTX *frame;
 	NTSTATUS status;
+	bool ok;
 
 	/*
 	 * Do this before any other talloc operation
 	 */
 	talloc_enable_null_tracking();
 	frame = talloc_stackframe();
+
+	/*
+	 * We want total control over the permissions on created files,
+	 * so set our umask to 0.
+	 */
+	umask(0);
 
 	setup_logging(argv[0], DEBUG_DEFAULT_STDOUT);
 
@@ -965,12 +972,14 @@ static bool open_sockets(bool isdaemon, int port)
 	}
 #endif
 
-	if (!directory_exist(lp_lockdir())) {
-		mkdir(lp_lockdir(), 0755);
+	ok = directory_create_or_exist(lp_lockdir(), geteuid(), 0755);
+	if (!ok) {
+		exit_daemon("Failed to create directory for lock files, check 'lock directory'", errno);
 	}
 
-	if (!directory_exist(lp_piddir())) {
-		mkdir(lp_piddir(), 0755);
+	ok = directory_create_or_exist(lp_piddir(), geteuid(), 0755);
+	if (!ok) {
+		exit_daemon("Failed to create directory for pid files, check 'pid directory'", errno);
 	}
 
 	pidfile_create(lp_piddir(), "nmbd");
@@ -979,8 +988,7 @@ static bool open_sockets(bool isdaemon, int port)
 				   false);
 
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0,("reinit_after_fork() failed\n"));
-		exit(1);
+		exit_daemon("reinit_after_fork() failed", map_errno_from_nt_status(status));
 	}
 
 	/*
@@ -990,16 +998,15 @@ static bool open_sockets(bool isdaemon, int port)
 	 */
 	status = init_before_fork();
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("init_before_fork failed: %s\n", nt_errstr(status)));
-		exit(1);
+		exit_daemon(nt_errstr(status), map_errno_from_nt_status(status));
 	}
 
 	if (!nmbd_setup_sig_term_handler(msg))
-		exit(1);
+		exit_daemon("NMBD failed to setup signal handler", EINVAL);
 	if (!nmbd_setup_stdin_handler(msg, !Fork))
-		exit(1);
+		exit_daemon("NMBD failed to setup stdin handler", EINVAL);
 	if (!nmbd_setup_sig_hup_handler(msg))
-		exit(1);
+		exit_daemon("NMBD failed to setup SIGHUP handler", EINVAL);
 
 	/* get broadcast messages */
 
@@ -1007,8 +1014,7 @@ static bool open_sockets(bool isdaemon, int port)
 				FLAG_MSG_GENERAL |
 				FLAG_MSG_NMBD |
 				FLAG_MSG_DBWRAP)) {
-		DEBUG(1, ("Could not register myself in serverid.tdb\n"));
-		exit(1);
+		exit_daemon("Could not register NMBD process in serverid.tdb", EACCES);
 	}
 
 	messaging_register(msg, NULL, MSG_FORCE_ELECTION,
@@ -1039,9 +1045,8 @@ static bool open_sockets(bool isdaemon, int port)
 
 	/* Create an nmbd subnet record for each of the above. */
 	if( False == create_subnets() ) {
-		DEBUG(0,("ERROR: Failed when creating subnet lists. Exiting.\n"));
 		kill_async_dns_child();
-		exit(1);
+		exit_daemon("NMBD failed when creating subnet lists", EACCES);
 	}
 
 	/* Load in any static local names. */ 
@@ -1053,9 +1058,8 @@ static bool open_sockets(bool isdaemon, int port)
 
 	/* If we are acting as a WINS server, initialise data structures. */
 	if( !initialise_wins() ) {
-		DEBUG( 0, ( "nmbd: Failed when initialising WINS server.\n" ) );
 		kill_async_dns_child();
-		exit(1);
+		exit_daemon( "NMBD failed when initialising WINS server.", EACCES);
 	}
 
 	/* 
@@ -1067,21 +1071,23 @@ static bool open_sockets(bool isdaemon, int port)
 	 */
 
 	if( False == register_my_workgroup_and_names() ) {
-		DEBUG(0,("ERROR: Failed when creating my my workgroup. Exiting.\n"));
 		kill_async_dns_child();
-		exit(1);
+		exit_daemon( "NMBD failed when creating my workgroup.", EACCES);
 	}
 
 	if (!initialize_nmbd_proxy_logon()) {
-		DEBUG(0,("ERROR: Failed setup nmbd_proxy_logon.\n"));
 		kill_async_dns_child();
-		exit(1);
+		exit_daemon( "NMBD failed to setup nmbd_proxy_logon.", EACCES);
 	}
 
 	if (!nmbd_init_packet_server()) {
 		kill_async_dns_child();
-                exit(1);
-        }
+		exit_daemon( "NMBD failed to setup packet server.", EACCES);
+	}
+
+	if (is_daemon && !opt_interactive) {
+		daemon_ready("nmbd");
+	}
 
 	TALLOC_FREE(frame);
 	process(msg);

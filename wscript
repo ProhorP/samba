@@ -12,7 +12,7 @@ import wafsamba, Options, samba_dist, Scripting, Utils, samba_version
 
 
 samba_dist.DIST_DIRS('.')
-samba_dist.DIST_BLACKLIST('.gitignore .bzrignore source4/selftest/provisions/alpha13 source4/selftest/provisions/release-4-0-0/')
+samba_dist.DIST_BLACKLIST('.gitignore .bzrignore source4/selftest/provisions')
 
 # install in /usr/local/samba by default
 Options.default_prefix = '/usr/local/samba'
@@ -64,12 +64,15 @@ def set_options(opt):
                   help=("Disable Position Independent Executable builds"),
                   action="store_false", dest='enable_pie')
 
+    opt.add_option('--with-systemd',
+                   help=("Enable systemd integration"),
+                   action='store_true', dest='enable_systemd')
+
+    opt.add_option('--without-systemd',
+                   help=("Disable systemd integration"),
+                   action='store_false', dest='enable_systemd')
+
     gr = opt.option_group('developer options')
-
-    opt.add_option('--disable-ntdb',
-                   help=("disable ntdb"),
-                   action="store_true", dest='disable_ntdb', default=True)
-
 
     opt.tool_options('python') # options for disabling pyc or pyo compilation
     # enable options related to building python extensions
@@ -93,7 +96,7 @@ def configure(conf):
     conf.SAMBA_CHECK_PERL(mandatory=True)
     conf.find_program('xsltproc', var='XSLTPROC')
 
-    conf.SAMBA_CHECK_PYTHON(mandatory=True)
+    conf.SAMBA_CHECK_PYTHON(mandatory=True, version=(2,5,0))
     conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=True)
 
     if sys.platform == 'darwin' and not conf.env['HAVE_ENVIRON_DECL']:
@@ -128,11 +131,7 @@ def configure(conf):
     conf.RECURSE('source4/ntvfs/sysdep')
     conf.RECURSE('lib/util')
     conf.RECURSE('lib/ccan')
-    conf.env.disable_ntdb = getattr(Options.options, 'disable_ntdb', False)
-    if not Options.options.disable_ntdb:
-        conf.RECURSE('lib/ntdb')
-    else:
-        conf.DEFINE('DISABLE_NTDB', 1)
+    conf.RECURSE('lib/ntdb')
     conf.RECURSE('lib/zlib')
     conf.RECURSE('lib/util/charset')
     conf.RECURSE('source4/auth')
@@ -170,11 +169,8 @@ def configure(conf):
     if not conf.CHECK_CODE('#include "tests/summary.c"',
                            define='SUMMARY_PASSES',
                            addmain=False,
-                           execute=True,
                            msg='Checking configure summary'):
         raise Utils.WafError('configure summary failed')
-    
-    conf.SAMBA_CONFIG_H('include/config.h')
 
     if Options.options.enable_pie != False:
         if Options.options.enable_pie == True:
@@ -185,6 +181,21 @@ def configure(conf):
         if conf.check_cc(cflags='-fPIE', ldflags='-pie', mandatory=need_pie,
                          msg="Checking compiler for PIE support"):
 		conf.env['ENABLE_PIE'] = True
+
+    if Options.options.enable_systemd != False:
+        conf.check_cfg(package='libsystemd-daemon', args='--cflags --libs',
+                       msg='Checking for libsystemd-daemon', uselib_store="SYSTEMD-DAEMON")
+        conf.CHECK_HEADERS('systemd/sd-daemon.h', lib='systemd-daemon')
+        conf.CHECK_LIB('systemd-daemon', shlib=True)
+
+    if conf.CONFIG_SET('HAVE_SYSTEMD_SD_DAEMON_H'):
+        conf.DEFINE('HAVE_SYSTEMD', '1')
+        conf.env['ENABLE_SYSTEMD'] = True
+    else:
+        conf.SET_TARGET_TYPE('systemd-daemon', 'EMPTY')
+        conf.undefine('HAVE_SYSTEMD')
+
+    conf.SAMBA_CONFIG_H('include/config.h')
 
 def etags(ctx):
     '''build TAGS file using etags'''
@@ -253,13 +264,6 @@ def dist():
 
     os.system(srcdir + "/release-scripts/build-manpages-nogit")
     samba_dist.DIST_FILES('bin/docs:docs', extend=True)
-
-    os.system(srcdir + "/source3/autogen.sh")
-    samba_dist.DIST_FILES('source3/configure', extend=True)
-    samba_dist.DIST_FILES('source3/autoconf', extend=True)
-    samba_dist.DIST_FILES('source3/include/autoconf', extend=True)
-    samba_dist.DIST_FILES('examples/VFS/configure', extend=True)
-    samba_dist.DIST_FILES('examples/VFS/module_config.h.in', extend=True)
 
     if sambaversion.IS_SNAPSHOT:
         # write .distversion file and add to tar

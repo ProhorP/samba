@@ -197,13 +197,18 @@ bool print_backend_init(struct messaging_context *msg_ctx)
 	const char *sversion = "INFO/version";
 	int services = lp_numservices();
 	int snum;
+	bool ok;
 
 	if (!printer_list_parent_init()) {
 		return false;
 	}
 
+	ok = directory_create_or_exist(cache_path("printing"), geteuid(), 0755);
+	if (!ok) {
+		return false;
+	}
+
 	unlink(cache_path("printing.tdb"));
-	mkdir(cache_path("printing"),0755);
 
 	/* handle a Samba upgrade */
 
@@ -2738,6 +2743,7 @@ static WERROR print_job_spool_file(int snum, uint32_t jobid,
 	SMB_STRUCT_STAT st;
 	const char *path;
 	int len;
+	mode_t mask;
 
 	/* if this file is within the printer path, it means that smbd
 	 * is spooling it and will pass us control when it is finished.
@@ -2762,7 +2768,7 @@ static WERROR print_job_spool_file(int snum, uint32_t jobid,
 			fstrcpy(pjob->filename, output_file);
 
 			DEBUG(3, ("print_job_spool_file:"
-				  "External spooling activated"));
+				  "External spooling activated\n"));
 
 			/* we do not open the file until spooling is done */
 			pjob->fd = -1;
@@ -2775,7 +2781,9 @@ static WERROR print_job_spool_file(int snum, uint32_t jobid,
 	slprintf(pjob->filename, sizeof(pjob->filename)-1,
 		 "%s/%sXXXXXX", lp_pathname(talloc_tos(), snum),
 		 PRINT_SPOOL_PREFIX);
+	mask = umask(S_IRWXO | S_IRWXG);
 	pjob->fd = mkstemp(pjob->filename);
+	umask(mask);
 
 	if (pjob->fd == -1) {
 		werr = map_werror_from_unix(errno);

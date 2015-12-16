@@ -78,7 +78,7 @@ static bool test_ntp_signd(struct torture_context *tctx,
 	char *unix_address;
 	int sys_errno;
 
-	struct MD5Context ctx;
+	MD5_CTX ctx;
 	uint8_t sig[16];
 	enum ndr_err_code ndr_err;
 	bool ok;
@@ -113,6 +113,7 @@ static bool test_ntp_signd(struct torture_context *tctx,
 
 	creds = netlogon_creds_client_init(tctx, a.in.account_name,
 					   a.in.computer_name,
+					   a.in.secure_channel_type,
 					   &credentials1, &credentials2, 
 					   pwhash, &credentials3,
 					   negotiate_flags);
