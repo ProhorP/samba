@@ -5,7 +5,7 @@
 %def_without tevent
 %def_without tdb
 %def_without ldb
-%def_with ntdb
+%def_without ntdb
 
 # build as separate package
 %def_with libsmbclient
@@ -31,8 +31,8 @@
 %endif
 
 Name: samba
-Version: 4.0.26
-Release: alt0.M70P.3
+Version: 4.1.22
+Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -43,7 +43,6 @@ Source: %name-%version.tar
 # Red Hat specific replacement-files
 Source1: samba.log
 Source2: samba.xinetd
-Source3: swat.desktop
 Source5: smb.init
 Source6: samba.pamd
 Source8: winbind.init
@@ -84,7 +83,8 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.0.8 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.18 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
-%{?_without_tdb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
+%{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 
@@ -338,23 +338,6 @@ Obsoletes: samba4-winbind-devel < %version-%release
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
 
-%package swat
-Summary: The Samba SMB server Web configuration program
-Group: Security/Networking
-Requires: %name = %version-%release
-%if_with docs
-Requires: %name-doc = %version-%release
-%endif
-Requires: %name-winbind-clients = %version-%release
-Requires: xinetd
-Provides: samba4-swat = %version-%release
-Obsoletes: samba4-swat < %version-%release
-
-%description swat
-The samba-swat package includes the new SWAT (Samba Web Administration
-Tool), for remotely managing Samba's smb.conf file using your favorite
-Web browser.
-
 %if_with docs
 %package doc
 Summary: Documentation for the Samba suite
@@ -390,12 +373,17 @@ Samba suite.
 %define _tdb_lib ,!tdb,!pytdb
 %endif
 
+%define _ntdb_lib ,ntdb,pyntdb
+%if_without ntdb
+%define _ntdb_lib ,!ntdb,!pyntdb
+%endif
+
 %define _ldb_lib ,ldb,pyldb
 %if_without ldb
 %define _ldb_lib ,!ldb,!pyldb
 %endif
 
-%define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ldb_lib}
+%define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ntdb_lib}%{_ldb_lib}
 
 %define _samba4_idmap_modules idmap_ad,idmap_rid,idmap_adex,idmap_hash,idmap_tdb2
 %define _samba4_pdb_modules pdb_tdbsam,pdb_ldap,pdb_ads,pdb_smbpasswd,pdb_wbc_sam,pdb_samba4
@@ -456,7 +444,7 @@ Samba suite.
 %if_with testsuite
 	--enable-selftest \
 %endif
-	--disable-ntdb
+	%nil
 
 %make_build
 
@@ -481,7 +469,6 @@ mkdir -p %buildroot%_localstatedir/cache/samba
 mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol}
 mkdir -p %buildroot/var/log/samba/old
 mkdir -p %buildroot/var/spool/samba
-mkdir -p %buildroot%_datadir/swat/using_samba
 mkdir -p %buildroot/var/run/{samba,winbindd}
 mkdir -p %buildroot%_libdir/samba
 mkdir -p %buildroot%_pkgconfigdir
@@ -498,7 +485,6 @@ install -m644 %SOURCE6 %buildroot%_sysconfdir/pam.d/samba
 echo 127.0.0.1 localhost > %buildroot%_sysconfdir/samba/lmhosts
 mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
-install -m644 %SOURCE2 %buildroot%_sysconfdir/xinetd.d/swat
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 
 
@@ -592,6 +578,7 @@ TDB_NO_FSYNC=1 %make_build test
 %attr(1777,root,root) %dir /var/spool/samba
 %dir %_sysconfdir/openldap/schema
 %_sysconfdir/openldap/schema/samba.schema
+%_sysconfdir/pam.d/samba
 %_man1dir/smbstatus.1*
 %_man8dir/eventlogadm.8*
 %_man8dir/smbd.8*
@@ -622,17 +609,18 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbta-util
 %_bindir/smbtar
 %_bindir/smbtree
+%_bindir/samba-regedit
 %{cups_serverbin}/backend/smb
-%_libdir/samba/libldb-cmdline.so
 %_man1dir/dbwrap_tool.1*
-%_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
 %_man1dir/regdiff.1*
+%_man8dir/samba-regedit.8*
 %_man1dir/regpatch.1*
 %_man1dir/regshell.1*
 %_man1dir/regtree.1*
 %exclude %_man1dir/findsmb.1*
 %_man1dir/log2pcap.1*
+%_man1dir/nmblookup.1*
 %_man1dir/nmblookup4.1*
 %_man1dir/rpcclient.1*
 %_man1dir/sharesec.1*
@@ -993,14 +981,6 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n python-module-%name
 %python_sitelibdir/*
 
-%files swat
-%config(noreplace) %_sysconfdir/xinetd.d/swat
-%config(noreplace) %_sysconfdir/pam.d/samba
-%_datadir/samba/swat
-%_sbindir/swat
-%_man8dir/swat.8*
-#%attr(755,root,root) %_libdir/samba/*.msg
-
 %if_with docs
 %files doc
 %doc docs-xml/output/htmldocs
@@ -1066,6 +1046,22 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.1
+- New version
+- Security fixes:
+  - CVE-2015-3223 (Denial of service in Samba Active Directory
+  server)
+  - CVE-2015-5252 (Insufficient symlink verification in smbd)
+  - CVE-2015-5299 (Missing access control check in shadow copy
+  code)
+  -  CVE-2015-5296 (Samba client requesting encryption vulnerable
+  to downgrade attack)
+  - CVE-2015-8467 (Denial of service attack against Windows
+  Active Directory server)
+  - CVE-2015-5330 (Remote memory read in Samba LDAP server)
+- Remove swat
+- Build with system ntdb
+
 * Sun Dec 06 2015 Andrey Cherepanov <cas@altlinux.org> 4.0.26-alt0.M70P.3
 - Rebuild with new libldb
 
