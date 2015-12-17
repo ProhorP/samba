@@ -32,7 +32,7 @@
 
 Name: samba
 Version: 4.1.22
-Release: alt0.M70P.1
+Release: alt0.M70C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1046,7 +1046,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
-* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.1
+* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70C.1
 - New version
 - Security fixes:
   - CVE-2015-3223 (Denial of service in Samba Active Directory
@@ -1054,7 +1054,7 @@ TDB_NO_FSYNC=1 %make_build test
   - CVE-2015-5252 (Insufficient symlink verification in smbd)
   - CVE-2015-5299 (Missing access control check in shadow copy
   code)
-  -  CVE-2015-5296 (Samba client requesting encryption vulnerable
+  - CVE-2015-5296 (Samba client requesting encryption vulnerable
   to downgrade attack)
   - CVE-2015-8467 (Denial of service attack against Windows
   Active Directory server)
