@@ -32,7 +32,7 @@
 
 Name: samba
 Version: 4.1.22
-Release: alt0.M70C.1
+Release: alt0.M70C.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -887,7 +887,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libtdb_compat.so
 %_libdir/samba/libtrusts_util.so
 %_libdir/samba/libutil_cmdline.so
-#%_libdir/samba/libutil_ntdb.so
+%_libdir/samba/libutil_ntdb.so
 %_libdir/samba/libutil_reg.so
 %_libdir/samba/libutil_setid.so
 %_libdir/samba/libutil_tdb.so
@@ -1046,6 +1046,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Thu Dec 17 2015 Anton V. Boyarshinov <boyarsh@altlinux.org> 4.1.22-alt0.M70C.2
+- build fixed
+
 * Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70C.1
 - New version
 - Security fixes:
