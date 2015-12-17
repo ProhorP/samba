@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.2
+Version: 4.3.3
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -122,7 +122,6 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
-BuildRequires: perl-Perl4-CoreLibs
 
 %description
 Samba is the standard Windows interoperability suite of programs for Linux and Unix.
@@ -1253,6 +1252,26 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Thu Dec 17 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt0.M70P.1
+- Backport new version with security fixes from Sisyphus to p7 branch
+
+* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.3.html)
+- Security fixes:
+  - CVE-2015-3223 (Denial of service in Samba Active Directory
+  server)
+  - CVE-2015-5252 (Insufficient symlink verification in smbd)
+  - CVE-2015-5299 (Missing access control check in shadow copy
+  code)
+  - CVE-2015-5296 (Samba client requesting encryption vulnerable
+  to downgrade attack)
+  - CVE-2015-8467 (Denial of service attack against Windows
+  Active Directory server)
+  - CVE-2015-5330 (Remote memory read in Samba LDAP server)
+
+* Tue Dec 08 2015 Igor Vlasenko <viy@altlinux.ru> 4.3.2-alt1.1
+- NMU: dropped unused prehistoric BR: perl-Perl4-CoreLibs
+
 * Tue Dec 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.1
 - Backport samba-DC from Sisyphus to p7 branch
 
