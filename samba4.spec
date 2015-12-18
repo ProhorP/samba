@@ -1272,6 +1272,9 @@ TDB_NO_FSYNC=1 %make_build test
 * Tue Dec 08 2015 Igor Vlasenko <viy@altlinux.ru> 4.3.2-alt1.1
 - NMU: dropped unused prehistoric BR: perl-Perl4-CoreLibs
 
+* Sun Dec 06 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.2
+- Rebuild with new libldb
+
 * Tue Dec 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.2-alt0.M70P.1
 - Backport samba-DC from Sisyphus to p7 branch
 
