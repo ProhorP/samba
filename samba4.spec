@@ -887,7 +887,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libtdb_compat.so
 %_libdir/samba/libtrusts_util.so
 %_libdir/samba/libutil_cmdline.so
-#%_libdir/samba/libutil_ntdb.so
+%_libdir/samba/libutil_ntdb.so
 %_libdir/samba/libutil_reg.so
 %_libdir/samba/libutil_setid.so
 %_libdir/samba/libutil_tdb.so
