@@ -6,6 +6,7 @@
 %def_without tdb
 %def_without ldb
 %def_without ntdb
+%def_with    systemd
 
 # build as separate package
 %def_with libsmbclient
@@ -32,7 +33,7 @@
 
 Name: samba
 Version: 4.1.22
-Release: alt0.M70P.1
+Release: alt0.M70P.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -87,6 +88,7 @@ BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.14 python-module-pyldb-devel}
 %{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
+%{?_with_systemd:BuildRequires: systemd-devel}
 
 BuildRequires: perl-Perl4-CoreLibs
 
@@ -1046,6 +1048,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Mon Dec 21 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.2
+- Fix run with systemd by rebuild with systemd-devel
+
 * Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.1
 - New version
 - Security fixes:
