@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.1.22
-Release: alt0.M70P.2
+Release: alt0.M70P.3
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -508,6 +508,7 @@ install -m 644 %SOURCE200 %buildroot%_defaultdocdir/%name/README.dc-libs
 install -m644 packaging/systemd/nmb.service %buildroot%_unitdir/nmb.service
 install -m644 packaging/systemd/smb.service %buildroot%_unitdir/smb.service
 install -m644 packaging/systemd/winbind.service %buildroot%_unitdir/winbind.service
+subst 's,Type=notify,Type=forking,' %buildroot%_unitdir/*.service
 install -m644 packaging/systemd/samba.conf.tmp %buildroot/lib/tmpfiles.d/samba.conf
 
 # NetworkManager online/offline script
@@ -1048,6 +1049,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Tue Dec 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.3
+- Completely fix services run with systemd
+
 * Mon Dec 21 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.2
 - Fix run with systemd by rebuild with systemd-devel
 
