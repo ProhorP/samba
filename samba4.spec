@@ -44,8 +44,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.3
-Release: alt1.M70P.1
+Version: 4.3.4
+Release: alt0.M70P.1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1135,7 +1135,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/masktest
 %_bindir/ndrdump
 %_bindir/smbtorture
-%_bindir/async_connect_send_test
 %_samba_libdir/libtorture.so.*
 %if_with dc
 %_samba_mod_libdir/libdlz-bind9-for-torture-samba4.so
@@ -1253,6 +1252,12 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Thu Jan 14 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.4-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Tue Jan 12 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.4-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.4.html)
+
 * Thu Dec 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt1.M70P.1
 - Change services type from notify to forking
 
