@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.4
+Version: 4.3.5
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -1252,6 +1252,12 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Fri Mar 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.5-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Thu Mar 03 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.5-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.5.html)
+
 * Thu Jan 14 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.4-alt0.M70P.1
 - Backport new version to p7 branch
 
