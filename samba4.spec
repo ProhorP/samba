@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.1.22
-Release: alt0.M70P.4
+Release: alt0.M70P.5
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1049,6 +1049,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Fri Mar 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.5
+- Rebuild with libldb-1.1.26
+
 * Thu Jan 14 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.4
 - Rebuild with libldb-1.1.25
 
