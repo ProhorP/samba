@@ -32,8 +32,8 @@
 %endif
 
 Name: samba
-Version: 4.1.22
-Release: alt0.M70P.5
+Version: 4.1.23
+Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -556,7 +556,7 @@ TDB_NO_FSYNC=1 %make_build test
 %preun_service nmb
 
 %pre winbind
-%_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
+%_sbindir/groupadd -f -r wbpriv >/dev/null 2>&1 || :
 
 %post winbind
 %post_service winbind
@@ -1049,6 +1049,13 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.23-alt0.M70P.1
+- New version
+- Security fixes:
+  - CVE-2015-7560 (Incorrect ACL get/set allowed on symlink path)
+  - CVE-2016-0771 (Out-of-bounds read in internal DNS server)
+- Do not use specified GID for wbpriv group
+
 * Fri Mar 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.22-alt0.M70P.5
 - Rebuild with libldb-1.1.26
 
