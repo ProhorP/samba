@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.5
+Version: 4.3.6
 Release: alt1
 
 Group:   System/Servers
@@ -1252,6 +1252,12 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.6.html)
+- Security fixes:
+  - CVE-2015-7560 (Incorrect ACL get/set allowed on symlink path)
+  - CVE-2016-0771 (Out-of-bounds read in internal DNS server)
+
 * Thu Mar 03 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.5-alt1
 - New version (https://www.samba.org/samba/history/samba-4.3.5.html)
 
