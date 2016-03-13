@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.1.23
-Release: alt0.M70P.1
+Release: alt0.M70P.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1049,6 +1049,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/pam_winbind.8*
 
 %changelog
+* Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.23-alt0.M70P.2
+- Rebuild with downgraded libtalloc
+
 * Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.1.23-alt0.M70P.1
 - New version
 - Security fixes:
