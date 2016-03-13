@@ -45,7 +45,7 @@
 
 Name:    samba-DC
 Version: 4.3.6
-Release: alt0.M70P.1
+Release: alt1.M70P.1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1252,6 +1252,12 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt1.M70P.1
+- Rebuild with downgraded libtalloc (ALT #31881)
+
+* Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt2
+- Rebuild with new libtalloc
+
 * Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt0.M70P.1
 - Backport new version to p7 branch
 
