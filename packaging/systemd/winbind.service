@@ -1,9 +1,6 @@
 [Unit]
 Description=Samba Winbind Daemon
-After=syslog.target network-online.target nmb.service
-Wants=network-online.target
-Before=nss-user-lookup.target
-Wants=nss-user-lookup.target
+After=syslog.target network.target nmb.service
 
 [Service]
 Type=notify
