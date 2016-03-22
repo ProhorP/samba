@@ -43,8 +43,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.6
-Release: alt2
+Version: 4.4.0
+Release: alt1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1221,6 +1221,10 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Tue Mar 22 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.0-alt1
+- New version (https://www.samba.org/samba/history/samba-4.4.0.html)
+- Remove samba-DC-test-build and samba-DC-ctdb-devel
+
 * Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt2
 - Rebuild with new libtalloc
 
