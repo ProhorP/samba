@@ -1,0 +1,13 @@
+object 30812c414bb0ceb95abae08c35b94b2f97be4c5c
+type commit
+tag samba-4.4.0
+tagger Karolin Seeger <kseeger@samba.org> 1458637296 +0100
+
+samba: tag release samba-4.4.0
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1
+
+iD8DBQBW8QnwbzORW2Vot+oRAnqrAKCFXXLCdeGqdgmk+S+D4TxqVf54ZACffMCm
+OwvNRHX3nznCyhLtQsvaYYE=
+=9Vbi
+-----END PGP SIGNATURE-----
