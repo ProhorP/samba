@@ -130,7 +130,7 @@ struct pai_val {
 };
 
 /************************************************************************
- Return a uint32 of the pai_entry principal.
+ Return a uint32_t of the pai_entry principal.
 ************************************************************************/
 
 static uint32_t get_pai_entry_val(struct pai_entry *paie)
@@ -150,7 +150,7 @@ static uint32_t get_pai_entry_val(struct pai_entry *paie)
 }
 
 /************************************************************************
- Return a uint32 of the entry principal.
+ Return a uint32_t of the entry principal.
 ************************************************************************/
 
 static uint32_t get_entry_val(canon_ace *ace_entry)
@@ -338,8 +338,8 @@ static uint16_t get_pai_flags(struct pai_val *pal, canon_ace *ace_entry, bool de
 
 static bool check_pai_ok_v1(const char *pai_buf, size_t pai_buf_data_size)
 {
-	uint16 num_entries;
-	uint16 num_def_entries;
+	uint16_t num_entries;
+	uint16_t num_def_entries;
 
 	if (pai_buf_data_size < PAI_V1_ENTRIES_BASE) {
 		/* Corrupted - too small. */
@@ -370,8 +370,8 @@ static bool check_pai_ok_v1(const char *pai_buf, size_t pai_buf_data_size)
 
 static bool check_pai_ok_v2(const char *pai_buf, size_t pai_buf_data_size)
 {
-	uint16 num_entries;
-	uint16 num_def_entries;
+	uint16_t num_entries;
+	uint16_t num_def_entries;
 
 	if (pai_buf_data_size < PAI_V2_ENTRIES_BASE) {
 		/* Corrupted - too small. */
@@ -1120,7 +1120,7 @@ uint32_t map_canon_ace_perms(int snum,
 #define FILE_SPECIFIC_WRITE_BITS (FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA)
 #define FILE_SPECIFIC_EXECUTE_BITS (FILE_EXECUTE)
 
-static mode_t map_nt_perms( uint32 *mask, int type)
+static mode_t map_nt_perms( uint32_t *mask, int type)
 {
 	mode_t mode = 0;
 
@@ -1163,12 +1163,9 @@ static mode_t map_nt_perms( uint32 *mask, int type)
 
 NTSTATUS unpack_nt_owners(struct connection_struct *conn,
 			uid_t *puser, gid_t *pgrp,
-			uint32 security_info_sent, const struct
+			uint32_t security_info_sent, const struct
 			security_descriptor *psd)
 {
-	struct dom_sid owner_sid;
-	struct dom_sid grp_sid;
-
 	*puser = (uid_t)-1;
 	*pgrp = (gid_t)-1;
 
@@ -1181,9 +1178,6 @@ NTSTATUS unpack_nt_owners(struct connection_struct *conn,
 	 * Validate the owner and group SID's.
 	 */
 
-	memset(&owner_sid, '\0', sizeof(owner_sid));
-	memset(&grp_sid, '\0', sizeof(grp_sid));
-
 	DEBUG(5,("unpack_nt_owners: validating owner_sids.\n"));
 
 	/*
@@ -1192,8 +1186,7 @@ NTSTATUS unpack_nt_owners(struct connection_struct *conn,
 	 */
 
 	if (security_info_sent & SECINFO_OWNER) {
-		sid_copy(&owner_sid, psd->owner_sid);
-		if (!sid_to_uid(&owner_sid, puser)) {
+		if (!sid_to_uid(psd->owner_sid, puser)) {
 			if (lp_force_unknown_acl_user(SNUM(conn))) {
 				/* this allows take ownership to work
 				 * reasonably */
@@ -1201,7 +1194,7 @@ NTSTATUS unpack_nt_owners(struct connection_struct *conn,
 			} else {
 				DEBUG(3,("unpack_nt_owners: unable to validate"
 					 " owner sid for %s\n",
-					 sid_string_dbg(&owner_sid)));
+					 sid_string_dbg(psd->owner_sid)));
 				return NT_STATUS_INVALID_OWNER;
 			}
 		}
@@ -1215,8 +1208,7 @@ NTSTATUS unpack_nt_owners(struct connection_struct *conn,
 	 */
 
 	if (security_info_sent & SECINFO_GROUP) {
-		sid_copy(&grp_sid, psd->group_sid);
-		if (!sid_to_gid( &grp_sid, pgrp)) {
+		if (!sid_to_gid(psd->group_sid, pgrp)) {
 			if (lp_force_unknown_acl_user(SNUM(conn))) {
 				/* this allows take group ownership to work
 				 * reasonably */
@@ -2455,7 +2447,7 @@ static bool unpack_canon_ace(files_struct *fsp,
 				struct dom_sid *pfile_grp_sid,
 				canon_ace **ppfile_ace,
 				canon_ace **ppdir_ace,
-				uint32 security_info_sent,
+				uint32_t security_info_sent,
 				const struct security_descriptor *psd)
 {
 	canon_ace *file_ace = NULL;
@@ -3093,7 +3085,7 @@ static bool convert_canon_ace_to_posix_perms( files_struct *fsp, canon_ace *file
 	canon_ace *group_ace = NULL;
 	canon_ace *other_ace = NULL;
 
-	if (ace_count != 3) {
+	if (ace_count > 5) {
 		DEBUG(3,("convert_canon_ace_to_posix_perms: Too many ACE "
 			 "entries for file %s to convert to posix perms.\n",
 			 fsp_str_dbg(fsp)));
@@ -3113,6 +3105,43 @@ static bool convert_canon_ace_to_posix_perms( files_struct *fsp, canon_ace *file
 		DEBUG(3,("convert_canon_ace_to_posix_perms: Can't get "
 			 "standard entries for file %s.\n", fsp_str_dbg(fsp)));
 		return False;
+	}
+
+	/*
+	 * Ensure all ACE entries are owner, group or other.
+	 * We can't set if there are any other SIDs.
+	 */
+	for (ace_p = file_ace_list; ace_p; ace_p = ace_p->next) {
+		if (ace_p == owner_ace || ace_p == group_ace ||
+				ace_p == other_ace) {
+			continue;
+		}
+		if (ace_p->owner_type == UID_ACE) {
+			if (ace_p->unix_ug.id != owner_ace->unix_ug.id) {
+				DEBUG(3,("Invalid uid %u in ACE for file %s.\n",
+					(unsigned int)ace_p->unix_ug.id,
+					fsp_str_dbg(fsp)));
+				return false;
+			}
+		} else if (ace_p->owner_type == GID_ACE) {
+			if (ace_p->unix_ug.id != group_ace->unix_ug.id) {
+				DEBUG(3,("Invalid gid %u in ACE for file %s.\n",
+					(unsigned int)ace_p->unix_ug.id,
+					fsp_str_dbg(fsp)));
+				return false;
+			}
+		} else {
+			/*
+			 * There should be no duplicate WORLD_ACE entries.
+			 */
+
+			DEBUG(3,("Invalid type %u, uid %u in "
+				"ACE for file %s.\n",
+				(unsigned int)ace_p->owner_type,
+				(unsigned int)ace_p->unix_ug.id,
+				fsp_str_dbg(fsp)));
+			return false;
+		}
 	}
 
 	*posix_perms = (mode_t)0;
@@ -3152,8 +3181,8 @@ static size_t merge_default_aces( struct security_ace *nt_ace_list, size_t num_a
 
 	for (i = 0; i < num_aces; i++) {
 		for (j = i+1; j < num_aces; j++) {
-			uint32 i_flags_ni = (nt_ace_list[i].flags & ~SEC_ACE_FLAG_INHERITED_ACE);
-			uint32 j_flags_ni = (nt_ace_list[j].flags & ~SEC_ACE_FLAG_INHERITED_ACE);
+			uint32_t i_flags_ni = (nt_ace_list[i].flags & ~SEC_ACE_FLAG_INHERITED_ACE);
+			uint32_t j_flags_ni = (nt_ace_list[j].flags & ~SEC_ACE_FLAG_INHERITED_ACE);
 			bool i_inh = (nt_ace_list[i].flags & SEC_ACE_FLAG_INHERITED_ACE) ? True : False;
 			bool j_inh = (nt_ace_list[j].flags & SEC_ACE_FLAG_INHERITED_ACE) ? True : False;
 
@@ -3645,7 +3674,7 @@ NTSTATUS try_chown(files_struct *fsp, uid_t uid, gid_t gid)
  it, even though it's a const pointer.
 ****************************************************************************/
 
-NTSTATUS set_nt_acl(files_struct *fsp, uint32 security_info_sent, const struct security_descriptor *psd_orig)
+NTSTATUS set_nt_acl(files_struct *fsp, uint32_t security_info_sent, const struct security_descriptor *psd_orig)
 {
 	connection_struct *conn = fsp->conn;
 	uid_t user = (uid_t)-1;
@@ -3670,12 +3699,22 @@ NTSTATUS set_nt_acl(files_struct *fsp, uint32 security_info_sent, const struct s
 		return NT_STATUS_MEDIA_WRITE_PROTECTED;
 	}
 
-	if (!psd_orig) {
+	if (psd_orig == NULL) {
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	psd = dup_sec_desc(talloc_tos(), psd_orig);
-	if (!psd) {
+	/*
+	 * MS NFS mode, here's the deal: the client merely wants to
+	 * modify the mode, but roundtripping get_acl/set/acl would
+	 * add additional POSIX ACEs.  So in case we get a request
+	 * containing a MS NFS mode SID, we do nothing here.
+	 */
+	if (security_descriptor_with_ms_nfs(psd_orig)) {
+		return NT_STATUS_OK;
+	}
+
+	psd = security_descriptor_copy(talloc_tos(), psd_orig);
+	if (psd == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
@@ -4255,7 +4294,7 @@ static bool unix_ex_wire_to_tagtype(unsigned char wire_tt, SMB_ACL_TAG_T *p_tt)
 ****************************************************************************/
 
 static SMB_ACL_T create_posix_acl_from_wire(connection_struct *conn,
-					    uint16 num_acls,
+					    uint16_t num_acls,
 					    const char *pdata,
 					    TALLOC_CTX *mem_ctx)
 {
@@ -4311,7 +4350,7 @@ static SMB_ACL_T create_posix_acl_from_wire(connection_struct *conn,
 		}
 
 		if (tag_type == SMB_ACL_USER) {
-			uint32 uidval = IVAL(pdata,(i*SMB_POSIX_ACL_ENTRY_SIZE)+2);
+			uint32_t uidval = IVAL(pdata,(i*SMB_POSIX_ACL_ENTRY_SIZE)+2);
 			uid_t uid = (uid_t)uidval;
 			if (sys_acl_set_qualifier(the_entry,(void *)&uid) == -1) {
 				DEBUG(0,("create_posix_acl_from_wire: Failed to set uid %u on entry %u. (%s)\n",
@@ -4321,7 +4360,7 @@ static SMB_ACL_T create_posix_acl_from_wire(connection_struct *conn,
 		}
 
 		if (tag_type == SMB_ACL_GROUP) {
-			uint32 gidval = IVAL(pdata,(i*SMB_POSIX_ACL_ENTRY_SIZE)+2);
+			uint32_t gidval = IVAL(pdata,(i*SMB_POSIX_ACL_ENTRY_SIZE)+2);
 			gid_t gid = (uid_t)gidval;
 			if (sys_acl_set_qualifier(the_entry,(void *)&gid) == -1) {
 				DEBUG(0,("create_posix_acl_from_wire: Failed to set gid %u on entry %u. (%s)\n",
@@ -4349,7 +4388,7 @@ static SMB_ACL_T create_posix_acl_from_wire(connection_struct *conn,
 ****************************************************************************/
 
 bool set_unix_posix_default_acl(connection_struct *conn, const char *fname, const SMB_STRUCT_STAT *psbuf,
-				uint16 num_def_acls, const char *pdata)
+				uint16_t num_def_acls, const char *pdata)
 {
 	SMB_ACL_T def_acl = NULL;
 
@@ -4537,7 +4576,7 @@ static bool remove_posix_acl(connection_struct *conn, files_struct *fsp, const c
  except SMB_ACL_USER_OBJ, SMB_ACL_GROUP_OBJ, SMB_ACL_OTHER.
 ****************************************************************************/
 
-bool set_unix_posix_acl(connection_struct *conn, files_struct *fsp, const char *fname, uint16 num_acls, const char *pdata)
+bool set_unix_posix_acl(connection_struct *conn, files_struct *fsp, const char *fname, uint16_t num_acls, const char *pdata)
 {
 	SMB_ACL_T file_acl = NULL;
 
@@ -4584,7 +4623,7 @@ bool set_unix_posix_acl(connection_struct *conn, files_struct *fsp, const char *
 ********************************************************************/
 
 NTSTATUS get_nt_acl_no_snum(TALLOC_CTX *ctx, const char *fname,
-				uint32 security_info_wanted,
+				uint32_t security_info_wanted,
 				struct security_descriptor **sd)
 {
 	TALLOC_CTX *frame = talloc_stackframe();

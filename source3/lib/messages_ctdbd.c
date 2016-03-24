@@ -20,29 +20,8 @@
 #include "includes.h"
 #include "messages.h"
 #include "util_tdb.h"
-
-#ifdef CLUSTER_SUPPORT
-
-/*
- * It is not possible to include ctdb.h and tdb_compat.h (included via
- * some other include above) without warnings. This fixes those
- * warnings.
- */
-
-#ifdef typesafe_cb
-#undef typesafe_cb
-#endif
-
-#ifdef typesafe_cb_preargs
-#undef typesafe_cb_preargs
-#endif
-
-#ifdef typesafe_cb_postargs
-#undef typesafe_cb_postargs
-#endif
-
-#include "ctdb.h"
-#include "ctdb_private.h"
+#include "lib/util/iov_buf.h"
+#include "lib/messages_util.h"
 #include "ctdbd_conn.h"
 
 
@@ -71,6 +50,7 @@ struct ctdbd_connection *messaging_ctdbd_connection(void)
 		ev = samba_tevent_context_init(NULL);
 		if (!ev) {
 			DEBUG(0,("samba_tevent_context_init failed\n"));
+			return NULL;
 		}
 
 		msg = messaging_init(NULL, ev);
@@ -82,31 +62,41 @@ struct ctdbd_connection *messaging_ctdbd_connection(void)
 
 	if (global_ctdb_connection_pid != getpid()) {
 		DEBUG(0,("messaging_ctdbd_connection():"
-			 "valid for pid[%d] but it's [%d]\n",
-			 global_ctdb_connection_pid, getpid()));
+			 "valid for pid[%jd] but it's [%jd]\n",
+			 (intmax_t)global_ctdb_connection_pid,
+			 (intmax_t)getpid()));
 		smb_panic("messaging_ctdbd_connection() invalid process\n");
 	}
 
 	return global_ctdbd_connection;
 }
 
-static NTSTATUS messaging_ctdb_send(struct messaging_context *msg_ctx,
-				    struct server_id pid, int msg_type,
-				    const DATA_BLOB *data,
-				    struct messaging_backend *backend)
+static int messaging_ctdb_send(struct server_id src,
+			       struct server_id pid, int msg_type,
+			       const struct iovec *iov, int iovlen,
+			       const int *fds, size_t num_fds,
+			       struct messaging_backend *backend)
 {
 	struct messaging_ctdbd_context *ctx = talloc_get_type_abort(
 		backend->private_data, struct messaging_ctdbd_context);
+	uint8_t hdr[MESSAGE_HDR_LENGTH];
+	struct iovec iov2[iovlen+1];
+	NTSTATUS status;
 
-	struct messaging_rec msg;
+	if (num_fds > 0) {
+		return ENOSYS;
+	}
 
-	msg.msg_version	= MESSAGE_VERSION;
-	msg.msg_type	= msg_type;
-	msg.dest	= pid;
-	msg.src		= msg_ctx->id;
-	msg.buf		= *data;
+	message_hdr_put(hdr, msg_type, src, pid);
+	iov2[0] = (struct iovec){ .iov_base = hdr, .iov_len = sizeof(hdr) };
+	memcpy(&iov2[1], iov, iovlen * sizeof(*iov));
 
-	return ctdbd_messaging_send(ctx->conn, pid.vnn, pid.pid, &msg);
+	status = ctdbd_messaging_send_iov(ctx->conn, pid.vnn, pid.pid,
+					  iov2, iovlen+1);
+	if (NT_STATUS_IS_OK(status)) {
+		return 0;
+	}
+	return map_errno_from_nt_status(status);
 }
 
 static int messaging_ctdbd_destructor(struct messaging_ctdbd_context *ctx)
@@ -116,6 +106,60 @@ static int messaging_ctdbd_destructor(struct messaging_ctdbd_context *ctx)
 	 */
 	global_ctdb_connection_pid = 0;
 	global_ctdbd_connection = NULL;
+	return 0;
+}
+
+static int messaging_ctdb_recv(
+	uint32_t src_vnn, uint32_t dst_vnn, uint64_t dst_srvid,
+	const uint8_t *msg, size_t msg_len, void *private_data)
+{
+	struct messaging_context *msg_ctx = talloc_get_type_abort(
+		private_data, struct messaging_context);
+	struct server_id me = messaging_server_id(msg_ctx);
+	NTSTATUS status;
+	struct iovec iov;
+	struct server_id src, dst;
+	enum messaging_type msg_type;
+	struct server_id_buf idbuf;
+
+	if (msg_len < MESSAGE_HDR_LENGTH) {
+		DEBUG(1, ("%s: message too short: %u\n", __func__,
+			  (unsigned)msg_len));
+		return 0;
+	}
+
+	message_hdr_get(&msg_type, &src, &dst, msg);
+
+	iov = (struct iovec) {
+		.iov_base = discard_const_p(uint8_t, msg) + MESSAGE_HDR_LENGTH,
+		.iov_len = msg_len - MESSAGE_HDR_LENGTH
+	};
+
+	DEBUG(10, ("%s: Received message 0x%x len %u from %s\n",
+		   __func__, (unsigned)msg_type, (unsigned)msg_len,
+		   server_id_str_buf(src, &idbuf)));
+
+	if (!server_id_same_process(&me, &dst)) {
+		struct server_id_buf id1, id2;
+
+		DEBUG(10, ("%s: I'm %s, ignoring msg to %s\n", __func__,
+			   server_id_str_buf(me, &id1),
+			   server_id_str_buf(dst, &id2)));
+		return 0;
+	}
+
+	/*
+	 * Go through the event loop
+	 */
+
+	status = messaging_send_iov_from(msg_ctx, src, dst, msg_type,
+					 &iov, 1, NULL, 0);
+
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(10, ("%s: messaging_send_iov_from failed: %s\n",
+			   __func__, nt_errstr(status)));
+	}
+
 	return 0;
 }
 
@@ -156,6 +200,9 @@ NTSTATUS messaging_ctdbd_init(struct messaging_context *msg_ctx,
 		return status;
 	}
 
+	status = register_with_ctdbd(ctx->conn, getpid(),
+				     messaging_ctdb_recv, msg_ctx);
+
 	global_ctdb_connection_pid = getpid();
 	global_ctdbd_connection = ctx->conn;
 	talloc_set_destructor(ctx, messaging_ctdbd_destructor);
@@ -168,19 +215,3 @@ NTSTATUS messaging_ctdbd_init(struct messaging_context *msg_ctx,
 	*presult = result;
 	return NT_STATUS_OK;
 }
-
-#else
-
-NTSTATUS messaging_ctdbd_init(struct messaging_context *msg_ctx,
-			      TALLOC_CTX *mem_ctx,
-			      struct messaging_backend **presult)
-{
-	return NT_STATUS_NOT_IMPLEMENTED;
-}
-
-struct ctdbd_connection *messaging_ctdbd_connection(void)
-{
-	return NULL;
-}
-
-#endif

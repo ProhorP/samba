@@ -25,7 +25,7 @@
 #include "includes.h"
 #include "lib/param/loadparm.h"
 
-const char toupper_ascii_fast_table[128] = {
+static const char toupper_ascii_fast_table[128] = {
 	0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 	0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
@@ -551,7 +551,6 @@ _PUBLIC_ void strupper_m(char *s)
 bool strupper_m(char *s)
 {
 	size_t len;
-	int errno_save;
 	bool ret = false;
 
 	/* this is quite a common operation, so we want it to be
@@ -560,24 +559,21 @@ bool strupper_m(char *s)
 	   (ie. they match for the first 128 chars) */
 
 	while (*s && !(((unsigned char)s[0]) & 0x80)) {
-		*s = toupper_ascii_fast((unsigned char)*s);
+		*s = toupper_ascii_fast_table[(unsigned char)s[0]];
 		s++;
 	}
 
 	if (!*s)
 		return true;
 
-	/* I assume that lowercased string takes the same number of bytes
+	/* I assume that uppercased string takes the same number of bytes
 	 * as source string even in multibyte encoding. (VIV) */
 	len = strlen(s) + 1;
-	errno_save = errno;
-	errno = 0;
 	ret = unix_strupper(s,len,s,len);
 	/* Catch mb conversion errors that may not terminate. */
-	if (errno) {
+	if (!ret) {
 		s[len-1] = '\0';
 	}
-	errno = errno_save;
 	return ret;
 }
 
@@ -914,7 +910,7 @@ uint64_t conv_str_size(const char * str)
 }
 
 /* Append an sprintf'ed string. Double buffer size on demand. Usable without
- * error checking in between. The indiation that something weird happened is
+ * error checking in between. The indication that something weird happened is
  * string==NULL */
 
 void sprintf_append(TALLOC_CTX *mem_ctx, char **string, ssize_t *len,
@@ -1227,70 +1223,41 @@ char *escape_shell_string(const char *src)
 	return ret;
 }
 
-/***************************************************
- str_list_make, v3 version. The v4 version does not
- look at quoted strings with embedded blanks, so
- do NOT merge this function please!
-***************************************************/
+/*
+ * This routine improves performance for operations temporarily acting on a
+ * full path. It is equivalent to the much more expensive
+ *
+ * talloc_asprintf(talloc_tos(), "%s/%s", dir, name)
+ *
+ * This actually does make a difference in metadata-heavy workloads (i.e. the
+ * "standard" client.txt nbench run.
+ */
 
-#define S_LIST_ABS 16 /* List Allocation Block Size */
-
-char **str_list_make_v3(TALLOC_CTX *mem_ctx, const char *string,
-	const char *sep)
+ssize_t full_path_tos(const char *dir, const char *name,
+		      char *tmpbuf, size_t tmpbuf_len,
+		      char **pdst, char **to_free)
 {
-	char **list;
-	const char *str;
-	char *s, *tok;
-	int num, lsize;
+	size_t dirlen, namelen, len;
+	char *dst;
 
-	if (!string || !*string)
-		return NULL;
+	dirlen = strlen(dir);
+	namelen = strlen(name);
+	len = dirlen + namelen + 1;
 
-	list = talloc_array(mem_ctx, char *, S_LIST_ABS+1);
-	if (list == NULL) {
-		return NULL;
-	}
-	lsize = S_LIST_ABS;
-
-	s = talloc_strdup(list, string);
-	if (s == NULL) {
-		DEBUG(0,("str_list_make: Unable to allocate memory"));
-		TALLOC_FREE(list);
-		return NULL;
-	}
-	if (!sep) sep = LIST_SEP;
-
-	num = 0;
-	str = s;
-
-	while (next_token_talloc(list, &str, &tok, sep)) {
-
-		if (num == lsize) {
-			char **tmp;
-
-			lsize += S_LIST_ABS;
-
-			tmp = talloc_realloc(mem_ctx, list, char *,
-						   lsize + 1);
-			if (tmp == NULL) {
-				DEBUG(0,("str_list_make: "
-					"Unable to allocate memory"));
-				TALLOC_FREE(list);
-				return NULL;
-			}
-
-			list = tmp;
-
-			memset (&list[num], 0,
-				((sizeof(char*)) * (S_LIST_ABS +1)));
+	if (len < tmpbuf_len) {
+		dst = tmpbuf;
+		*to_free = NULL;
+	} else {
+		dst = talloc_array(talloc_tos(), char, len+1);
+		if (dst == NULL) {
+			return -1;
 		}
-
-		list[num] = tok;
-		num += 1;
+		*to_free = dst;
 	}
 
-	list[num] = NULL;
-
-	TALLOC_FREE(s);
-	return list;
+	memcpy(dst, dir, dirlen);
+	dst[dirlen] = '/';
+	memcpy(dst+dirlen+1, name, namelen+1);
+	*pdst = dst;
+	return len;
 }

@@ -36,7 +36,7 @@ WERROR NetFileClose_r(struct libnetapi_ctx *ctx,
 	struct dcerpc_binding_handle *b;
 
 	werr = libnetapi_get_binding_handle(ctx, r->in.server_name,
-					    &ndr_table_srvsvc.syntax_id,
+					    &ndr_table_srvsvc,
 					    &b);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -130,7 +130,7 @@ WERROR NetFileGetInfo_r(struct libnetapi_ctx *ctx,
 	}
 
 	werr = libnetapi_get_binding_handle(ctx, r->in.server_name,
-					    &ndr_table_srvsvc.syntax_id,
+					    &ndr_table_srvsvc,
 					    &b);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -201,7 +201,7 @@ WERROR NetFileEnum_r(struct libnetapi_ctx *ctx,
 	}
 
 	werr = libnetapi_get_binding_handle(ctx, r->in.server_name,
-					    &ndr_table_srvsvc.syntax_id,
+					    &ndr_table_srvsvc,
 					    &b);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -240,7 +240,7 @@ WERROR NetFileEnum_r(struct libnetapi_ctx *ctx,
 	}
 
 	for (i=0; i < info_ctr.ctr.ctr2->count; i++) {
-		union srvsvc_NetFileInfo _i;
+		union srvsvc_NetFileInfo _i = {0};
 		switch (r->in.level) {
 			case 2:
 				_i.info2 = &info_ctr.ctr.ctr2->array[i];

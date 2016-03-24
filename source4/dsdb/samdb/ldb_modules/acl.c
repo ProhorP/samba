@@ -552,14 +552,17 @@ static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 		return LDB_ERR_CONSTRAINT_VIOLATION;
 	}
 
-	if (principal->name.name_string.len < 2) {
+	if (krb5_princ_size(krb_ctx, principal) < 2) {
 		goto fail;
 	}
 
-	instanceName = principal->name.name_string.val[1];
-	serviceType = principal->name.name_string.val[0];
-	if (principal->name.name_string.len == 3) {
-		serviceName = principal->name.name_string.val[2];
+	instanceName = smb_krb5_principal_get_comp_string(mem_ctx, krb_ctx,
+							  principal, 1);
+	serviceType = smb_krb5_principal_get_comp_string(mem_ctx, krb_ctx,
+							 principal, 0);
+	if (krb5_princ_size(krb_ctx, principal) == 3) {
+		serviceName = smb_krb5_principal_get_comp_string(mem_ctx, krb_ctx,
+								 principal, 2);
 	} else {
 		serviceName = NULL;
 	}
@@ -746,8 +749,9 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 	struct ldb_context *ldb;
 	const struct dsdb_schema *schema;
 	const struct dsdb_class *objectclass;
-	struct ldb_dn *nc_root;
 	struct ldb_control *as_system;
+	struct ldb_message_element *el;
+	unsigned int instanceType = 0;
 
 	if (ldb_dn_is_special(req->op.add.message->dn)) {
 		return ldb_next_request(module, req);
@@ -769,19 +773,6 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_oom(ldb);
 	}
 
-	/* Creating an NC. There is probably something we should do here,
-	 * but we will establish that later */
-
-	ret = dsdb_find_nc_root(ldb, req, req->op.add.message->dn, &nc_root);
-	if (ret != LDB_SUCCESS) {
-		return ret;
-	}
-	if (ldb_dn_compare(nc_root, req->op.add.message->dn) == 0) {
-		talloc_free(nc_root);
-		return ldb_next_request(module, req);
-	}
-	talloc_free(nc_root);
-
 	schema = dsdb_get_schema(ldb, req);
 	if (!schema) {
 		return ldb_operr(ldb);
@@ -790,15 +781,94 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 	objectclass = dsdb_get_structural_oc_from_msg(schema, req->op.add.message);
 	if (!objectclass) {
 		ldb_asprintf_errstring(ldb_module_get_ctx(module),
-				       "acl: unable to find or validate structrual objectClass on %s\n",
+				       "acl: unable to find or validate structural objectClass on %s\n",
 				       ldb_dn_get_linearized(req->op.add.message->dn));
 		return ldb_module_done(req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
+	}
+
+	el = ldb_msg_find_element(req->op.add.message, "instanceType");
+	if ((el != NULL) && (el->num_values != 1)) {
+		ldb_set_errstring(ldb, "acl: the 'instanceType' attribute is single-valued!");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	instanceType = ldb_msg_find_attr_as_uint(req->op.add.message,
+						 "instanceType", 0);
+	if (instanceType & INSTANCE_TYPE_IS_NC_HEAD) {
+		static const char *no_attrs[] = { NULL };
+		struct ldb_result *partition_res;
+		struct ldb_dn *partitions_dn;
+
+		partitions_dn = samdb_partitions_dn(ldb, req);
+		if (!partitions_dn) {
+			ldb_set_errstring(ldb, "acl: CN=partitions dn could not be generated!");
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
+
+		ret = dsdb_module_search(module, req, &partition_res,
+					 partitions_dn, LDB_SCOPE_ONELEVEL,
+					 no_attrs,
+					 DSDB_FLAG_NEXT_MODULE |
+					 DSDB_FLAG_AS_SYSTEM |
+					 DSDB_SEARCH_ONE_ONLY |
+					 DSDB_SEARCH_SHOW_RECYCLED,
+					 req,
+					 "(&(nCName=%s)(objectClass=crossRef))",
+					 ldb_dn_get_linearized(req->op.add.message->dn));
+
+		if (ret == LDB_SUCCESS) {
+			/* Check that we can write to the crossRef object MS-ADTS 3.1.1.5.2.8.2 */
+			ret = dsdb_module_check_access_on_dn(module, req, partition_res->msgs[0]->dn,
+							     SEC_ADS_WRITE_PROP,
+							     &objectclass->schemaIDGUID, req);
+			if (ret != LDB_SUCCESS) {
+				ldb_asprintf_errstring(ldb_module_get_ctx(module),
+						       "acl: ACL check failed on crossRef object %s: %s\n",
+						       ldb_dn_get_linearized(partition_res->msgs[0]->dn),
+						       ldb_errstring(ldb));
+				return ret;
+			}
+
+			/*
+			 * TODO: Remaining checks, like if we are
+			 * the naming master etc need to be handled
+			 * in the instanceType module
+			 */
+			return ldb_next_request(module, req);
+		}
+
+		/* Check that we can create a crossRef object MS-ADTS 3.1.1.5.2.8.2 */
+		ret = dsdb_module_check_access_on_dn(module, req, partitions_dn,
+						     SEC_ADS_CREATE_CHILD,
+						     &objectclass->schemaIDGUID, req);
+		if (ret == LDB_ERR_NO_SUCH_OBJECT &&
+		    ldb_request_get_control(req, LDB_CONTROL_RELAX_OID))
+		{
+			/* Allow provision bootstrap */
+			ret = LDB_SUCCESS;
+		}
+		if (ret != LDB_SUCCESS) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(module),
+					       "acl: ACL check failed on CN=Partitions crossRef container %s: %s\n",
+					       ldb_dn_get_linearized(partitions_dn), ldb_errstring(ldb));
+			return ret;
+		}
+
+		/*
+		 * TODO: Remaining checks, like if we are the naming
+		 * master and adding the crossRef object need to be
+		 * handled in the instanceType module
+		 */
+		return ldb_next_request(module, req);
 	}
 
 	ret = dsdb_module_check_access_on_dn(module, req, parent,
 					     SEC_ADS_CREATE_CHILD,
 					     &objectclass->schemaIDGUID, req);
 	if (ret != LDB_SUCCESS) {
+		ldb_asprintf_errstring(ldb_module_get_ctx(module),
+				       "acl: unable to find or validate structural objectClass on %s\n",
+				       ldb_dn_get_linearized(req->op.add.message->dn));
 		return ret;
 	}
 	return ldb_next_request(module, req);
@@ -958,6 +1028,7 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 	struct security_descriptor *sd;
 	struct dom_sid *sid = NULL;
 	struct ldb_control *as_system;
+	struct ldb_control *is_undelete;
 	bool userPassword;
 	TALLOC_CTX *tmp_ctx;
 	const struct ldb_message *msg = req->op.mod.message;
@@ -976,6 +1047,8 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 	if (as_system != NULL) {
 		as_system->critical = 0;
 	}
+
+	is_undelete = ldb_request_get_control(req, DSDB_CONTROL_RESTORE_TOMBSTONE_OID);
 
 	/* Don't print this debug statement if elements[0].name is going to be NULL */
 	if (msg->num_elements > 0) {
@@ -1123,6 +1196,14 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 			if (ret != LDB_SUCCESS) {
 				goto fail;
 			}
+		} else if (is_undelete != NULL && (ldb_attr_cmp("isDeleted", el->name) == 0)) {
+			/*
+			 * in case of undelete op permissions on
+			 * isDeleted are irrelevant and
+			 * distinguishedName is removed by the
+			 * tombstone_reanimate module
+			 */
+			continue;
 		} else {
 			ret = acl_check_access_on_attribute(module,
 							    tmp_ctx,
@@ -1276,6 +1357,42 @@ static int acl_delete(struct ldb_module *module, struct ldb_request *req)
 
 	return ldb_next_request(module, req);
 }
+static int acl_check_reanimate_tombstone(TALLOC_CTX *mem_ctx,
+					 struct ldb_module *module,
+					 struct ldb_request *req,
+					 struct ldb_dn *nc_root)
+{
+	int ret;
+	struct ldb_result *acl_res;
+	struct security_descriptor *sd = NULL;
+	struct dom_sid *sid = NULL;
+	static const char *acl_attrs[] = {
+		"nTSecurityDescriptor",
+		"objectClass",
+		"objectSid",
+		NULL
+	};
+
+	ret = dsdb_module_search_dn(module, mem_ctx, &acl_res,
+				    nc_root, acl_attrs,
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
+				    DSDB_SEARCH_SHOW_RECYCLED, req);
+	if (ret != LDB_SUCCESS) {
+		DEBUG(10,("acl: failed to find object %s\n",
+			  ldb_dn_get_linearized(nc_root)));
+		return ret;
+	}
+
+	ret = dsdb_get_sd_from_ldb_message(mem_ctx, req, acl_res->msgs[0], &sd);
+	sid = samdb_result_dom_sid(mem_ctx, acl_res->msgs[0], "objectSid");
+	if (ret != LDB_SUCCESS || !sd) {
+		return ldb_operr(ldb_module_get_ctx(module));
+	}
+	return acl_check_extended_right(mem_ctx, sd, acl_user_token(module),
+					GUID_DRS_REANIMATE_TOMBSTONE,
+					SEC_ADS_CONTROL_ACCESS, sid);
+}
 
 static int acl_rename(struct ldb_module *module, struct ldb_request *req)
 {
@@ -1291,6 +1408,7 @@ static int acl_rename(struct ldb_module *module, struct ldb_request *req)
 	struct ldb_result *acl_res;
 	struct ldb_dn *nc_root;
 	struct ldb_control *as_system;
+	struct ldb_control *is_undelete;
 	TALLOC_CTX *tmp_ctx;
 	const char *rdn_name;
 	static const char *acl_attrs[] = {
@@ -1342,6 +1460,17 @@ static int acl_rename(struct ldb_module *module, struct ldb_request *req)
 		/* Windows returns "ERR_UNWILLING_TO_PERFORM */
 		return ldb_module_done(req, NULL, NULL,
 				       LDB_ERR_UNWILLING_TO_PERFORM);
+	}
+
+	/* special check for undelete operation */
+	is_undelete = ldb_request_get_control(req, DSDB_CONTROL_RESTORE_TOMBSTONE_OID);
+	if (is_undelete != NULL) {
+		is_undelete->critical = 0;
+		ret = acl_check_reanimate_tombstone(tmp_ctx, module, req, nc_root);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return ret;
+		}
 	}
 	talloc_free(nc_root);
 
@@ -1456,25 +1585,27 @@ static int acl_rename(struct ldb_module *module, struct ldb_request *req)
 	}
 
 	/* do we have delete object on the object? */
-	ret = acl_check_access_on_objectclass(module, tmp_ctx, sd, sid,
-					      SEC_STD_DELETE,
-					      objectclass);
-	if (ret == LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
-		return ldb_next_request(module, req);
+	/* this access is not necessary for undelete ops */
+	if (is_undelete == NULL) {
+		ret = acl_check_access_on_objectclass(module, tmp_ctx, sd, sid,
+						      SEC_STD_DELETE,
+						      objectclass);
+		if (ret == LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return ldb_next_request(module, req);
+		}
+		/* what about delete child on the current parent */
+		ret = dsdb_module_check_access_on_dn(module, req, oldparent,
+						     SEC_ADS_DELETE_CHILD,
+						     &objectclass->schemaIDGUID,
+						     req);
+		if (ret != LDB_SUCCESS) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(module),
+					       "acl:access_denied renaming %s", ldb_dn_get_linearized(req->op.rename.olddn));
+			talloc_free(tmp_ctx);
+			return ldb_module_done(req, NULL, NULL, ret);
+		}
 	}
-	/* what about delete child on the current parent */
-	ret = dsdb_module_check_access_on_dn(module, req, oldparent,
-					     SEC_ADS_DELETE_CHILD,
-					     &objectclass->schemaIDGUID,
-					     req);
-	if (ret != LDB_SUCCESS) {
-		ldb_asprintf_errstring(ldb_module_get_ctx(module),
-				       "acl:access_denied renaming %s", ldb_dn_get_linearized(req->op.rename.olddn));
-		talloc_free(tmp_ctx);
-		return ldb_module_done(req, NULL, NULL, ret);
-	}
-
 	talloc_free(tmp_ctx);
 
 	return ldb_next_request(module, req);

@@ -176,16 +176,6 @@ static void dreplsrv_out_drsuapi_bind_done(struct tevent_req *subreq)
 			info28->repl_epoch		= 0;
 			break;
 		}
-		case 48: {
-			struct drsuapi_DsBindInfo48 *info48;
-			info48 = &state->bind_r.out.bind_info->info.info48;
-
-			info28->supported_extensions	= info48->supported_extensions;
-			info28->site_guid		= info48->site_guid;
-			info28->pid			= info48->pid;
-			info28->repl_epoch		= info48->repl_epoch;
-			break;
-		}
 		case 28: {
 			*info28 = state->bind_r.out.bind_info->info.info28;
 			break;
@@ -198,6 +188,16 @@ static void dreplsrv_out_drsuapi_bind_done(struct tevent_req *subreq)
 			info28->site_guid		= info32->site_guid;
 			info28->pid			= info32->pid;
 			info28->repl_epoch		= info32->repl_epoch;
+			break;
+		}
+		case 48: {
+			struct drsuapi_DsBindInfo48 *info48;
+			info48 = &state->bind_r.out.bind_info->info.info48;
+
+			info28->supported_extensions	= info48->supported_extensions;
+			info28->site_guid		= info48->site_guid;
+			info28->pid			= info48->pid;
+			info28->repl_epoch		= info48->repl_epoch;
 			break;
 		}
 		case 52: {
@@ -308,7 +308,10 @@ static NTSTATUS dreplsrv_get_rodc_partial_attribute_set(struct dreplsrv_service 
 
 	pas->version = 1;
 	pas->attids = talloc_array(pas, enum drsuapi_DsAttributeId, schema->num_attributes);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(pas->attids, pas);
+	if (pas->attids == NULL) {
+		TALLOC_FREE(pas);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	for (i=0; i<schema->num_attributes; i++) {
 		struct dsdb_attribute *a;
@@ -324,7 +327,10 @@ static NTSTATUS dreplsrv_get_rodc_partial_attribute_set(struct dreplsrv_service 
 	}
 
 	pas->attids = talloc_realloc(pas, pas->attids, enum drsuapi_DsAttributeId, pas->num_attids);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(pas->attids, pas);
+	if (pas->attids == NULL) {
+		TALLOC_FREE(pas);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	*_pas = pas;
 	return NT_STATUS_OK;
@@ -349,7 +355,10 @@ static NTSTATUS dreplsrv_get_gc_partial_attribute_set(struct dreplsrv_service *s
 
 	pas->version = 1;
 	pas->attids = talloc_array(pas, enum drsuapi_DsAttributeId, schema->num_attributes);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(pas->attids, pas);
+	if (pas->attids == NULL) {
+		TALLOC_FREE(pas);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	for (i=0; i<schema->num_attributes; i++) {
 		struct dsdb_attribute *a;
@@ -361,7 +370,10 @@ static NTSTATUS dreplsrv_get_gc_partial_attribute_set(struct dreplsrv_service *s
 	}
 
 	pas->attids = talloc_realloc(pas, pas->attids, enum drsuapi_DsAttributeId, pas->num_attids);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(pas->attids, pas);
+	if (pas->attids == NULL) {
+		TALLOC_FREE(pas);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	*_pas = pas;
 	return NT_STATUS_OK;
@@ -464,8 +476,11 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 			DEBUG(0,(__location__ ": Failed to construct RODC partial attribute set : %s\n", nt_errstr(status)));
 			return;
 		}
+		replica_flags &= ~DRSUAPI_DRS_WRIT_REP;
 		if (state->op->extended_op == DRSUAPI_EXOP_REPL_SECRET) {
 			replica_flags &= ~DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING;
+		} else {
+			replica_flags |= DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING;
 		}
 	}
 	if (state->op->extended_op != DRSUAPI_EXOP_NONE) {
@@ -553,7 +568,7 @@ static void dreplsrv_op_pull_source_get_changes_done(struct tevent_req *subreq)
 	uint32_t ctr_level = 0;
 	struct drsuapi_DsGetNCChangesCtr1 *ctr1 = NULL;
 	struct drsuapi_DsGetNCChangesCtr6 *ctr6 = NULL;
-	enum drsuapi_DsExtendedError extended_ret;
+	enum drsuapi_DsExtendedError extended_ret = DRSUAPI_EXOP_ERR_NONE;
 	state->ndr_struct_ptr = NULL;
 
 	status = dcerpc_drsuapi_DsGetNCChanges_r_recv(subreq, r);

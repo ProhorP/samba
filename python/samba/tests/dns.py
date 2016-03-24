@@ -19,20 +19,13 @@ import os
 import sys
 import struct
 import random
-
-sys.path.insert(0, "bin/python")
-import samba
-samba.ensure_external_module("testtools", "testtools")
-samba.ensure_external_module("subunit", "subunit/python")
-from subunit.run import SubunitTestRunner
-import unittest
-
-from samba import socket
+import socket
 import samba.ndr as ndr
 from samba import credentials, param
 from samba.tests import TestCase
 from samba.dcerpc import dns, dnsp, dnsserver
 from samba.netcmd.dns import TXTRecord, dns_record_match, data_to_dns_record
+from samba.tests.subunitrun import SubunitOptions, TestProgram
 import samba.getopt as options
 import optparse
 
@@ -40,16 +33,23 @@ parser = optparse.OptionParser("dns.py <server name> <server ip> [options]")
 sambaopts = options.SambaOptions(parser)
 parser.add_option_group(sambaopts)
 
-FILTER=''.join([(len(repr(chr(x)))==3) and chr(x) or '.' for x in range(256)])
+# This timeout only has relevance when testing against Windows
+# Format errors tend to return patchy responses, so a timeout is needed.
+parser.add_option("--timeout", type="int", dest="timeout",
+                  help="Specify timeout for DNS requests")
 
 # use command line creds if available
 credopts = options.CredentialsOptions(parser)
 parser.add_option_group(credopts)
+subunitopts = SubunitOptions(parser)
+parser.add_option_group(subunitopts)
 
 opts, args = parser.parse_args()
 
 lp = sambaopts.get_loadparm()
 creds = credopts.get_credentials(lp)
+
+timeout = opts.timeout
 
 if len(args) < 2:
     parser.print_usage()
@@ -135,7 +135,7 @@ class DNSTest(TestCase):
         return self.creds.get_realm().lower()
 
     def dns_transaction_udp(self, packet, host=server_ip,
-                            dump=False):
+                            dump=False, timeout=timeout):
         "send a DNS query and read the reply"
         s = None
         try:
@@ -143,6 +143,7 @@ class DNSTest(TestCase):
             if dump:
                 print self.hexdump(send_packet)
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, 0)
+            s.settimeout(timeout)
             s.connect((host, 53))
             s.send(send_packet, 0)
             recv_packet = s.recv(2048, 0)
@@ -154,7 +155,7 @@ class DNSTest(TestCase):
                 s.close()
 
     def dns_transaction_tcp(self, packet, host=server_ip,
-                            dump=False):
+                            dump=False, timeout=timeout):
         "send a DNS query and read the reply"
         s = None
         try:
@@ -162,6 +163,7 @@ class DNSTest(TestCase):
             if dump:
                 print self.hexdump(send_packet)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+            s.settimeout(timeout)
             s.connect((host, 53))
             tcp_packet = struct.pack('!H', len(send_packet))
             tcp_packet += send_packet
@@ -173,16 +175,6 @@ class DNSTest(TestCase):
         finally:
                 if s is not None:
                     s.close()
-
-    def hexdump(self, src, length=8):
-        N=0; result=''
-        while src:
-           s,src = src[:length],src[length:]
-           hexa = ' '.join(["%02X"%ord(x) for x in s])
-           s = s.translate(FILTER)
-           result += "%04X   %-*s   %s\n" % (N, length*3, hexa, s)
-           N+=length
-        return result
 
     def make_txt_update(self, prefix, txt_array):
         p = self.make_name_packet(dns.DNS_OPCODE_UPDATE)
@@ -221,9 +213,6 @@ class DNSTest(TestCase):
         self.assert_dns_rcode_equals(response, dns.DNS_RCODE_OK)
         self.assertEquals(response.ancount, 1)
         self.assertEquals(response.answers[0].rdata.txt.str, txt_array)
-
-    def assertIsNotNone(self, item):
-        self.assertTrue(item is not None)
 
 class TestSimpleQueries(DNSTest):
 
@@ -307,8 +296,15 @@ class TestSimpleQueries(DNSTest):
         questions.append(q)
 
         self.finish_name_packet(p, questions)
-        response = self.dns_transaction_udp(p)
-        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        try:
+            response = self.dns_transaction_udp(p)
+            self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        except socket.timeout:
+            # Windows chooses not to respond to incorrectly formatted queries.
+            # Although this appears to be non-deterministic even for the same
+            # request twice, it also appears to be based on a how poorly the
+            # request is formatted.
+            pass
 
     def test_qtype_all_query(self):
         "create a QTYPE_ALL query"
@@ -346,8 +342,15 @@ class TestSimpleQueries(DNSTest):
         questions.append(q)
 
         self.finish_name_packet(p, questions)
-        response = self.dns_transaction_udp(p)
-        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_NOTIMP)
+        try:
+            response = self.dns_transaction_udp(p)
+            self.assert_dns_rcode_equals(response, dns.DNS_RCODE_NOTIMP)
+        except socket.timeout:
+            # Windows chooses not to respond to incorrectly formatted queries.
+            # Although this appears to be non-deterministic even for the same
+            # request twice, it also appears to be based on a how poorly the
+            # request is formatted.
+            pass
 
 # Only returns an authority section entry in BIND and Win DNS
 # FIXME: Enable one Samba implements this feature
@@ -400,8 +403,15 @@ class TestDNSUpdates(DNSTest):
         updates.append(u)
 
         self.finish_name_packet(p, updates)
-        response = self.dns_transaction_udp(p)
-        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        try:
+            response = self.dns_transaction_udp(p)
+            self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        except socket.timeout:
+            # Windows chooses not to respond to incorrectly formatted queries.
+            # Although this appears to be non-deterministic even for the same
+            # request twice, it also appears to be based on a how poorly the
+            # request is formatted.
+            pass
 
     def test_update_wrong_qclass(self):
         "create update with DNS_QCLASS_NONE"
@@ -439,8 +449,15 @@ class TestDNSUpdates(DNSTest):
         p.ancount = len(prereqs)
         p.answers = prereqs
 
-        response = self.dns_transaction_udp(p)
-        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        try:
+            response = self.dns_transaction_udp(p)
+            self.assert_dns_rcode_equals(response, dns.DNS_RCODE_FORMERR)
+        except socket.timeout:
+            # Windows chooses not to respond to incorrectly formatted queries.
+            # Although this appears to be non-deterministic even for the same
+            # request twice, it also appears to be based on a how poorly the
+            # request is formatted.
+            pass
 
     def test_update_prereq_with_non_null_length(self):
         "test update with a non-null length"
@@ -848,6 +865,7 @@ class TestInvalidQueries(DNSTest):
 
     def test_one_a_reply(self):
         "send a reply instead of a query"
+        global timeout
 
         p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
         questions = []
@@ -863,6 +881,7 @@ class TestInvalidQueries(DNSTest):
         try:
             send_packet = ndr.ndr_pack(p)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+            s.settimeout(timeout)
             host=self.server_ip
             s.connect((host, 53))
             tcp_packet = struct.pack('!H', len(send_packet))
@@ -870,9 +889,84 @@ class TestInvalidQueries(DNSTest):
             s.send(tcp_packet, 0)
             recv_packet = s.recv(0xffff + 2, 0)
             self.assertEquals(0, len(recv_packet))
+        except socket.timeout:
+            # Windows chooses not to respond to incorrectly formatted queries.
+            # Although this appears to be non-deterministic even for the same
+            # request twice, it also appears to be based on a how poorly the
+            # request is formatted.
+            pass
         finally:
             if s is not None:
                 s.close()
+
+class TestZones(DNSTest):
+    def setUp(self):
+        super(TestZones, self).setUp()
+        self.zone = "test.lan"
+        self.rpc_conn = dnsserver.dnsserver("ncacn_ip_tcp:%s[sign]" % (self.server_ip),
+                                            self.lp, self.creds)
+
+    def tearDown(self):
+        super(TestZones, self).tearDown()
+        try:
+            self.delete_zone(self.zone)
+        except RuntimeError, (num, string):
+            if num != 9601: #WERR_DNS_ERROR_ZONE_DOES_NOT_EXIST
+                raise
+
+    def create_zone(self, zone):
+        zone_create = dnsserver.DNS_RPC_ZONE_CREATE_INFO_LONGHORN()
+        zone_create.pszZoneName = zone
+        zone_create.dwZoneType = dnsp.DNS_ZONE_TYPE_PRIMARY
+        zone_create.fAllowUpdate = dnsp.DNS_ZONE_UPDATE_SECURE
+        zone_create.fAging = 0
+        zone_create.dwDpFlags = dnsserver.DNS_DP_DOMAIN_DEFAULT
+        self.rpc_conn.DnssrvOperation2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
+                                       0,
+                                       self.server_ip,
+                                       None,
+                                       0,
+                                       'ZoneCreate',
+                                       dnsserver.DNSSRV_TYPEID_ZONE_CREATE,
+                                       zone_create)
+
+    def delete_zone(self, zone):
+        self.rpc_conn.DnssrvOperation2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
+                                       0,
+                                       self.server_ip,
+                                       zone,
+                                       0,
+                                       'DeleteZoneFromDs',
+                                       dnsserver.DNSSRV_TYPEID_NULL,
+                                       None)
+
+    def test_soa_query(self):
+        zone = "test.lan"
+        p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
+        questions = []
+
+        q = self.make_name_question(zone, dns.DNS_QTYPE_SOA, dns.DNS_QCLASS_IN)
+        questions.append(q)
+        self.finish_name_packet(p, questions)
+
+        response = self.dns_transaction_udp(p)
+        # Windows returns OK while BIND logically seems to return NXDOMAIN
+        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_NXDOMAIN)
+        self.assert_dns_opcode_equals(response, dns.DNS_OPCODE_QUERY)
+        self.assertEquals(response.ancount, 0)
+
+        self.create_zone(zone)
+        response = self.dns_transaction_udp(p)
+        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_OK)
+        self.assert_dns_opcode_equals(response, dns.DNS_OPCODE_QUERY)
+        self.assertEquals(response.ancount, 1)
+        self.assertEquals(response.answers[0].rr_type, dns.DNS_QTYPE_SOA)
+
+        self.delete_zone(zone)
+        response = self.dns_transaction_udp(p)
+        self.assert_dns_rcode_equals(response, dns.DNS_RCODE_NXDOMAIN)
+        self.assert_dns_opcode_equals(response, dns.DNS_OPCODE_QUERY)
+        self.assertEquals(response.ancount, 0)
 
 class TestRPCRoundtrip(DNSTest):
     def setUp(self):
@@ -1163,19 +1257,4 @@ class TestRPCRoundtrip(DNSTest):
                                               0, self.server_ip, self.get_dns_domain(),
                                               name, None, add_rec_buf)
 
-runner = SubunitTestRunner()
-rc = 0
-if not runner.run(unittest.makeSuite(DNSTest)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(TestSimpleQueries)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(TestDNSUpdates)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(TestComplexQueries)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(TestInvalidQueries)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(TestRPCRoundtrip)).wasSuccessful():
-    rc = 1
-
-sys.exit(rc)
+TestProgram(module=__name__, opts=subunitopts)

@@ -115,8 +115,12 @@ WERROR NetJoinDomain_r(struct libnetapi_ctx *ctx,
 	struct dcerpc_binding_handle *b;
 	DATA_BLOB session_key;
 
+	if (IS_DC) {
+		return WERR_SETUP_DOMAIN_CONTROLLER;
+	}
+
 	werr = libnetapi_open_pipe(ctx, r->in.server,
-				   &ndr_table_wkssvc.syntax_id,
+				   &ndr_table_wkssvc,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -257,7 +261,7 @@ WERROR NetUnjoinDomain_r(struct libnetapi_ctx *ctx,
 	DATA_BLOB session_key;
 
 	werr = libnetapi_open_pipe(ctx, r->in.server_name,
-				   &ndr_table_wkssvc.syntax_id,
+				   &ndr_table_wkssvc,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -313,7 +317,7 @@ WERROR NetGetJoinInformation_r(struct libnetapi_ctx *ctx,
 	struct dcerpc_binding_handle *b;
 
 	werr = libnetapi_open_pipe(ctx, r->in.server_name,
-				   &ndr_table_wkssvc.syntax_id,
+				   &ndr_table_wkssvc,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -387,6 +391,8 @@ WERROR NetGetJoinableOUs_l(struct libnetapi_ctx *ctx,
 	uint32_t flags = DS_DIRECTORY_SERVICE_REQUIRED |
 			 DS_RETURN_DNS_NAME;
 	struct libnetapi_private_ctx *priv;
+	char **p;
+	size_t s;
 
 	priv = talloc_get_type_abort(ctx->private_data,
 		struct libnetapi_private_ctx);
@@ -426,13 +432,13 @@ WERROR NetGetJoinableOUs_l(struct libnetapi_ctx *ctx,
 		return WERR_DEFAULT_JOIN_REQUIRED;
 	}
 
-	ads_status = ads_get_joinable_ous(ads, ctx,
-					  (char ***)r->out.ous,
-					  (size_t *)r->out.ou_count);
+	ads_status = ads_get_joinable_ous(ads, ctx, &p, &s);
 	if (!ADS_ERR_OK(ads_status)) {
 		ads_destroy(&ads);
 		return WERR_DEFAULT_JOIN_REQUIRED;
 	}
+	*r->out.ous = discard_const_p(const char *, p);
+	*r->out.ou_count = s;
 
 	ads_destroy(&ads);
 	return WERR_OK;
@@ -455,7 +461,7 @@ WERROR NetGetJoinableOUs_r(struct libnetapi_ctx *ctx,
 	DATA_BLOB session_key;
 
 	werr = libnetapi_open_pipe(ctx, r->in.server_name,
-				   &ndr_table_wkssvc.syntax_id,
+				   &ndr_table_wkssvc,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;
@@ -508,7 +514,7 @@ WERROR NetRenameMachineInDomain_r(struct libnetapi_ctx *ctx,
 	DATA_BLOB session_key;
 
 	werr = libnetapi_open_pipe(ctx, r->in.server_name,
-				   &ndr_table_wkssvc.syntax_id,
+				   &ndr_table_wkssvc,
 				   &pipe_cli);
 	if (!W_ERROR_IS_OK(werr)) {
 		goto done;

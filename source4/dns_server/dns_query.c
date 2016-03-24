@@ -325,7 +325,7 @@ static WERROR handle_question(struct dns_server *dns,
 			continue;
 		}
 		if ((question->question_type != DNS_QTYPE_ALL) &&
-		    (recs[ri].wType != question->question_type)) {
+		    (recs[ri].wType != (enum dns_record_type) question->question_type)) {
 			werror_return = WERR_OK;
 			continue;
 		}
@@ -411,8 +411,8 @@ static NTSTATUS accept_gss_ticket(TALLOC_CTX *mem_ctx,
 {
 	NTSTATUS status;
 
-	status = gensec_update(tkey->gensec, mem_ctx, dns->task->event_ctx,
-			       *key, reply);
+	status = gensec_update_ev(tkey->gensec, mem_ctx, dns->task->event_ctx,
+				  *key, reply);
 
 	if (NT_STATUS_EQUAL(NT_STATUS_MORE_PROCESSING_REQUIRED, status)) {
 		*dns_auth_error = DNS_RCODE_OK;
@@ -526,7 +526,7 @@ static WERROR handle_tkey(struct dns_server *dns,
 								reply.data,
 								reply.length);
 			state->sign = true;
-			state->key_name = talloc_strdup(mem_ctx, tkey->name);
+			state->key_name = talloc_strdup(state->mem_ctx, tkey->name);
 			if (state->key_name == NULL) {
 				return WERR_NOMEM;
 			}

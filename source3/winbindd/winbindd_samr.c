@@ -39,42 +39,6 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
-static NTSTATUS open_internal_samr_pipe(TALLOC_CTX *mem_ctx,
-					struct rpc_pipe_client **samr_pipe)
-{
-	struct rpc_pipe_client *cli = NULL;
-	struct auth_session_info *session_info = NULL;
-	NTSTATUS status;
-
-	if (session_info == NULL) {
-		status = make_session_info_system(mem_ctx, &session_info);
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("open_samr_pipe: Could not create auth_session_info: %s\n",
-				  nt_errstr(status)));
-			return status;
-		}
-	}
-
-	/* create a samr connection */
-	status = rpc_pipe_open_internal(mem_ctx,
-					&ndr_table_samr.syntax_id,
-					session_info,
-					NULL,
-					winbind_messaging_context(),
-					&cli);
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("open_samr_pipe: Could not connect to samr_pipe: %s\n",
-			  nt_errstr(status)));
-		return status;
-	}
-
-	if (samr_pipe) {
-		*samr_pipe = cli;
-	}
-
-	return NT_STATUS_OK;
-}
-
 NTSTATUS open_internal_samr_conn(TALLOC_CTX *mem_ctx,
 				 struct winbindd_domain *domain,
 				 struct rpc_pipe_client **samr_pipe,
@@ -84,7 +48,7 @@ NTSTATUS open_internal_samr_conn(TALLOC_CTX *mem_ctx,
 	struct policy_handle samr_connect_hnd;
 	struct dcerpc_binding_handle *b;
 
-	status = open_internal_samr_pipe(mem_ctx, samr_pipe);
+	status = wb_open_internal_pipe(mem_ctx, &ndr_table_samr, samr_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -116,49 +80,13 @@ NTSTATUS open_internal_samr_conn(TALLOC_CTX *mem_ctx,
 	return result;
 }
 
-static NTSTATUS open_internal_lsa_pipe(TALLOC_CTX *mem_ctx,
-				       struct rpc_pipe_client **lsa_pipe)
-{
-	struct rpc_pipe_client *cli = NULL;
-	struct auth_session_info *session_info = NULL;
-	NTSTATUS status;
-
-	if (session_info == NULL) {
-		status = make_session_info_system(mem_ctx, &session_info);
-		if (!NT_STATUS_IS_OK(status)) {
-			DEBUG(0, ("open_lsa_pipe: Could not create auth_session_info: %s\n",
-				  nt_errstr(status)));
-			return status;
-		}
-	}
-
-	/* create a lsa connection */
-	status = rpc_pipe_open_internal(mem_ctx,
-					&ndr_table_lsarpc.syntax_id,
-					session_info,
-					NULL,
-					winbind_messaging_context(),
-					&cli);
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("open_lsa_pipe: Could not connect to lsa_pipe: %s\n",
-			  nt_errstr(status)));
-		return status;
-	}
-
-	if (lsa_pipe) {
-		*lsa_pipe = cli;
-	}
-
-	return NT_STATUS_OK;
-}
-
-static NTSTATUS open_internal_lsa_conn(TALLOC_CTX *mem_ctx,
-				       struct rpc_pipe_client **lsa_pipe,
-				       struct policy_handle *lsa_hnd)
+NTSTATUS open_internal_lsa_conn(TALLOC_CTX *mem_ctx,
+				struct rpc_pipe_client **lsa_pipe,
+				struct policy_handle *lsa_hnd)
 {
 	NTSTATUS status;
 
-	status = open_internal_lsa_pipe(mem_ctx, lsa_pipe);
+	status = wb_open_internal_pipe(mem_ctx, &ndr_table_lsarpc, lsa_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -497,7 +425,7 @@ done:
 /* List all domain groups */
 static NTSTATUS builtin_enum_dom_groups(struct winbindd_domain *domain,
 				TALLOC_CTX *mem_ctx,
-				uint32 *num_entries,
+				uint32_t *num_entries,
 				struct wb_acct_info **info)
 {
 	/* BUILTIN doesn't have domain groups */
@@ -509,7 +437,7 @@ static NTSTATUS builtin_enum_dom_groups(struct winbindd_domain *domain,
 /* Query display info for a domain */
 static NTSTATUS builtin_query_user_list(struct winbindd_domain *domain,
 				TALLOC_CTX *mem_ctx,
-				uint32 *num_entries,
+				uint32_t *num_entries,
 				struct wbint_userinfo **info)
 {
 	/* We don't have users */
@@ -684,7 +612,9 @@ static NTSTATUS sam_sid_to_name(struct winbindd_domain *domain,
 
 	/* Paranoia check */
 	if (!sid_check_is_in_builtin(sid) &&
+	    !sid_check_is_builtin(sid) &&
 	    !sid_check_is_in_our_sam(sid) &&
+	    !sid_check_is_our_sam(sid) &&
 	    !sid_check_is_in_unix_users(sid) &&
 	    !sid_check_is_unix_users(sid) &&
 	    !sid_check_is_in_unix_groups(sid) &&
@@ -740,7 +670,7 @@ done:
 static NTSTATUS sam_rids_to_names(struct winbindd_domain *domain,
 				  TALLOC_CTX *mem_ctx,
 				  const struct dom_sid *domain_sid,
-				  uint32 *rids,
+				  uint32_t *rids,
 				  size_t num_rids,
 				  char **pdomain_name,
 				  char ***pnames,
@@ -1053,7 +983,7 @@ static NTSTATUS sam_sequence_number(struct winbindd_domain *domain,
 {
 	struct rpc_pipe_client *samr_pipe;
 	struct policy_handle dom_pol;
-	uint32_t seq;
+	uint32_t seq = DOM_SEQUENCE_NONE;
 	TALLOC_CTX *tmp_ctx;
 	NTSTATUS status, result;
 	struct dcerpc_binding_handle *b = NULL;

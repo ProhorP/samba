@@ -55,8 +55,14 @@ bool sid_check_object_is_for_passdb(const struct dom_sid *sid)
 		return true;
 	}
 
+	if (pdb_is_responsible_for_everything_else())
+	{
+		return true;
+	}
+
 	return false;
 }
+
 /**
  * check whether this is an object- or domain-sid that should
  * be treated by the passdb, e.g. for id-mapping.
@@ -111,6 +117,11 @@ bool sid_check_is_for_passdb(const struct dom_sid *sid)
 
 	if (sid_check_is_in_unix_groups(sid) &&
 	    pdb_is_responsible_for_unix_groups())
+	{
+		return true;
+	}
+
+	if (pdb_is_responsible_for_everything_else())
 	{
 		return true;
 	}

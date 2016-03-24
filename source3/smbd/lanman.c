@@ -307,7 +307,7 @@ static int package(struct pack_desc *p, ...)
 	int needed=0, stringneeded;
 	const char *str=NULL;
 	int is_string=0, stringused;
-	int32 temp;
+	int32_t temp;
 
 	va_start(args,p);
 
@@ -832,7 +832,7 @@ static bool api_DosPrintQGetInfo(struct smbd_server_connection *sconn,
 	}
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -1029,7 +1029,7 @@ static bool api_DosPrintQEnum(struct smbd_server_connection *sconn,
 	}
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -1206,7 +1206,7 @@ static bool check_session_info(int uLevel, char* id)
 
 struct srv_info_struct {
 	fstring name;
-	uint32 type;
+	uint32_t type;
 	fstring comment;
 	fstring domain;
 	bool server_added;
@@ -1217,7 +1217,7 @@ struct srv_info_struct {
  number of entries.
 ******************************************************************/
 
-static int get_session_info(uint32 servertype,
+static int get_session_info(uint32_t servertype,
 			   struct srv_info_struct **servers,
 			   const char *domain)
 {
@@ -1226,12 +1226,19 @@ static int get_session_info(uint32 servertype,
 	char **lines;
 	bool local_list_only;
 	int i;
-
-	lines = file_lines_load(cache_path(SERVER_LIST), NULL, 0, NULL);
-	if (!lines) {
-		DEBUG(4,("Can't open %s - %s\n",cache_path(SERVER_LIST),strerror(errno)));
+	char *slist_cache_path = cache_path(SERVER_LIST);
+	if (slist_cache_path == NULL) {
 		return 0;
 	}
+
+	lines = file_lines_load(slist_cache_path, NULL, 0, NULL);
+	if (!lines) {
+		DEBUG(4, ("Can't open %s - %s\n",
+			  slist_cache_path, strerror(errno)));
+		TALLOC_FREE(slist_cache_path);
+		return 0;
+	}
+	TALLOC_FREE(slist_cache_path);
 
 	/* request for everything is code for request all servers */
 	if (servertype == SV_TYPE_ALL) {
@@ -1447,7 +1454,7 @@ static bool api_RNetServerEnum2(struct smbd_server_connection *sconn,
 	char *p = skip_string(param,tpscnt,str2);
 	int uLevel = get_safe_SVAL(param, tpscnt, p, 0, -1);
 	int buf_len = get_safe_SVAL(param,tpscnt, p, 2, 0);
-	uint32 servertype = get_safe_IVAL(param,tpscnt,p,4, 0);
+	uint32_t servertype = get_safe_IVAL(param,tpscnt,p,4, 0);
 	char *p2;
 	int data_len, fixed_len, string_len;
 	int f_len = 0, s_len = 0;
@@ -1617,7 +1624,7 @@ static bool api_RNetServerEnum3(struct smbd_server_connection *sconn,
 	char *p = skip_string(param,tpscnt,str2);
 	int uLevel = get_safe_SVAL(param, tpscnt, p, 0, -1);
 	int buf_len = get_safe_SVAL(param,tpscnt, p, 2, 0);
-	uint32 servertype = get_safe_IVAL(param,tpscnt,p,4, 0);
+	uint32_t servertype = get_safe_IVAL(param,tpscnt,p,4, 0);
 	char *p2;
 	int data_len, fixed_len, string_len;
 	int f_len = 0, s_len = 0;
@@ -1909,7 +1916,7 @@ static int fill_share_info(connection_struct *conn, int snum, int uLevel,
 			len += StrlenExpanded(conn,snum,lp_comment(talloc_tos(), snum));
 		}
 		if (uLevel > 1) {
-			len += strlen(lp_pathname(talloc_tos(), snum)) + 1;
+			len += strlen(lp_path(talloc_tos(), snum)) + 1;
 		}
 		if (buflen) {
 			*buflen = struct_len;
@@ -1945,10 +1952,10 @@ static int fill_share_info(connection_struct *conn, int snum, int uLevel,
 
 		SCVAL(p,13,0);
 		type = STYPE_DISKTREE;
-		if (lp_print_ok(snum)) {
+		if (lp_printable(snum)) {
 			type = STYPE_PRINTQ;
 		}
-		if (strequal("IPC",lp_fstype(talloc_tos(),snum))) {
+		if (strequal("IPC",lp_fstype(snum))) {
 			type = STYPE_IPC;
 		}
 		SSVAL(p,14,type);		/* device type */
@@ -1961,7 +1968,7 @@ static int fill_share_info(connection_struct *conn, int snum, int uLevel,
 		SSVALS(p,22,-1);		/* max uses */
 		SSVAL(p,24,1); /* current uses */
 		SIVAL(p,26,PTR_DIFF(p2,baseaddr)); /* local pathname */
-		len += CopyAndAdvance(&p2,lp_pathname(talloc_tos(),snum),&l2);
+		len += CopyAndAdvance(&p2,lp_path(talloc_tos(),snum),&l2);
 		memset(p+30,0,SHPWLEN+2); /* passwd (reserved), pad field */
 	}
 
@@ -2256,7 +2263,7 @@ static bool api_RNetShareAdd(struct smbd_server_connection *sconn,
 		return false;
 	}
 
-	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_srvsvc.syntax_id,
+	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_srvsvc,
 					conn->session_info,
 					conn->sconn->remote_address,
 					conn->sconn->msg_ctx,
@@ -2342,7 +2349,7 @@ static bool api_RNetGroupEnum(struct smbd_server_connection *sconn,
 
 	uint32_t num_groups;
 	uint32_t resume_handle;
-	struct rpc_pipe_client *samr_pipe;
+	struct rpc_pipe_client *samr_pipe = NULL;
 	struct policy_handle samr_handle, domain_handle;
 	NTSTATUS status, result;
 	struct dcerpc_binding_handle *b;
@@ -2368,7 +2375,7 @@ static bool api_RNetGroupEnum(struct smbd_server_connection *sconn,
 	}
 
 	status = rpc_pipe_open_interface(
-		talloc_tos(), &ndr_table_samr.syntax_id,
+		talloc_tos(), &ndr_table_samr,
 		conn->session_info, conn->sconn->remote_address,
 		conn->sconn->msg_ctx, &samr_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -2526,7 +2533,7 @@ static bool api_NetUserGetGroups(struct smbd_server_connection *sconn,
 	uint32_t i;
 	char *endp = NULL;
 
-	struct rpc_pipe_client *samr_pipe;
+	struct rpc_pipe_client *samr_pipe = NULL;
 	struct policy_handle samr_handle, domain_handle, user_handle;
 	struct lsa_String name;
 	struct lsa_Strings names;
@@ -2574,7 +2581,7 @@ static bool api_NetUserGetGroups(struct smbd_server_connection *sconn,
 	endp = *rdata + *rdata_len;
 
 	status = rpc_pipe_open_interface(
-		talloc_tos(), &ndr_table_samr.syntax_id,
+		talloc_tos(), &ndr_table_samr,
 		conn->session_info, conn->sconn->remote_address,
 		conn->sconn->msg_ctx, &samr_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -2724,7 +2731,7 @@ static bool api_RNetUserEnum(struct smbd_server_connection *sconn,
 	int i, resume_context, cli_buf_size;
 	uint32_t resume_handle;
 
-	struct rpc_pipe_client *samr_pipe;
+	struct rpc_pipe_client *samr_pipe = NULL;
 	struct policy_handle samr_handle, domain_handle;
 	NTSTATUS status, result;
 
@@ -2774,7 +2781,7 @@ static bool api_RNetUserEnum(struct smbd_server_connection *sconn,
 	endp = *rdata + *rdata_len;
 
 	status = rpc_pipe_open_interface(
-		talloc_tos(), &ndr_table_samr.syntax_id,
+		talloc_tos(), &ndr_table_samr,
 		conn->session_info, conn->sconn->remote_address,
 		conn->sconn->msg_ctx, &samr_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -3037,7 +3044,7 @@ static bool api_SamOEMChangePassword(struct smbd_server_connection *sconn,
 	memcpy(password.data, data, 516);
 	memcpy(hash.hash, data+516, 16);
 
-	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_samr.syntax_id,
+	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_samr,
 					conn->session_info,
 					conn->sconn->remote_address,
 					conn->sconn->msg_ctx,
@@ -3094,7 +3101,7 @@ static bool api_RDosPrintJobDel(struct smbd_server_connection *sconn,
 	char *str1 = get_safe_str_ptr(param,tpscnt,param,2);
 	char *str2 = skip_string(param,tpscnt,str1);
 	char *p = skip_string(param,tpscnt,str2);
-	uint32 jobid;
+	uint32_t jobid;
 	fstring sharename;
 	int errcode;
 	WERROR werr = WERR_OK;
@@ -3134,7 +3141,7 @@ static bool api_RDosPrintJobDel(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -3262,7 +3269,7 @@ static bool api_WPrintQueueCtrl(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -3389,7 +3396,7 @@ static bool api_PrintJobInfo(struct smbd_server_connection *sconn,
 	char *str1 = get_safe_str_ptr(param,tpscnt,param,2);
 	char *str2 = skip_string(param,tpscnt,str1);
 	char *p = skip_string(param,tpscnt,str2);
-	uint32 jobid;
+	uint32_t jobid;
 	fstring sharename;
 	int uLevel = get_safe_SVAL(param,tpscnt,p,2,-1);
 	int function = get_safe_SVAL(param,tpscnt,p,4,-1);
@@ -3444,7 +3451,7 @@ static bool api_PrintJobInfo(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -3621,7 +3628,7 @@ static bool api_RNetServerGetInfo(struct smbd_server_connection *sconn,
 	p = *rdata;
 	p2 = p + struct_len;
 
-	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_srvsvc.syntax_id,
+	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_srvsvc,
 					conn->session_info,
 					conn->sconn->remote_address,
 					conn->sconn->msg_ctx,
@@ -3655,8 +3662,13 @@ static bool api_RNetServerGetInfo(struct smbd_server_connection *sconn,
 	}
 
 	if (uLevel != 20) {
-		srvstr_push(NULL, 0, p, info.info101->server_name, 16,
-			STR_ASCII|STR_UPPER|STR_TERMINATE);
+		size_t len = 0;
+		status = srvstr_push(NULL, 0, p, info.info101->server_name, 16,
+			STR_ASCII|STR_UPPER|STR_TERMINATE, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			errcode = W_ERROR_V(ntstatus_to_werror(status));
+			goto out;
+		}
   	}
 	p += 16;
 	if (uLevel > 0) {
@@ -4052,7 +4064,7 @@ static bool api_RNetUserGetInfo(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(domain_handle);
 	ZERO_STRUCT(user_handle);
 
-	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_samr.syntax_id,
+	status = rpc_pipe_open_interface(mem_ctx, &ndr_table_samr,
 					conn->session_info,
 					conn->sconn->remote_address,
 					conn->sconn->msg_ctx,
@@ -4542,7 +4554,7 @@ static bool api_WPrintJobGetInfo(struct smbd_server_connection *sconn,
 	char *p = skip_string(param,tpscnt,str2);
 	int uLevel;
 	fstring sharename;
-	uint32 jobid;
+	uint32_t jobid;
 	struct pack_desc desc;
 	char *tmpdata=NULL;
 
@@ -4581,7 +4593,7 @@ static bool api_WPrintJobGetInfo(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -4723,7 +4735,7 @@ static bool api_WPrintJobEnumerate(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -4923,7 +4935,7 @@ static bool api_WPrintDestGetInfo(struct smbd_server_connection *sconn,
 	ZERO_STRUCT(handle);
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -5055,7 +5067,7 @@ static bool api_WPrintDestEnum(struct smbd_server_connection *sconn,
 	queuecnt = 0;
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_spoolss.syntax_id,
+					 &ndr_table_spoolss,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,
@@ -5366,7 +5378,7 @@ static bool api_RNetSessionEnum(struct smbd_server_connection *sconn,
 	}
 
 	status = rpc_pipe_open_interface(conn,
-					 &ndr_table_srvsvc.syntax_id,
+					 &ndr_table_srvsvc,
 					 conn->session_info,
 					 conn->sconn->remote_address,
 					 conn->sconn->msg_ctx,

@@ -47,7 +47,7 @@ bool nt_token_check_sid ( const struct dom_sid *sid, const struct security_token
 	return security_token_has_sid(token, sid);
 }
 
-bool nt_token_check_domain_rid( struct security_token *token, uint32 rid )
+bool nt_token_check_domain_rid( struct security_token *token, uint32_t rid )
 {
 	struct dom_sid domain_sid;
 
@@ -129,7 +129,7 @@ struct security_token *get_root_nt_token( void )
 NTSTATUS add_aliases(const struct dom_sid *domain_sid,
 		     struct security_token *token)
 {
-	uint32 *aliases;
+	uint32_t *aliases;
 	size_t i, num_aliases;
 	NTSTATUS status;
 	TALLOC_CTX *tmp_ctx;
@@ -409,7 +409,7 @@ static NTSTATUS add_local_groups(struct security_token *result,
 		 * result->sids[0] is set to DOMAIN\Guest.
 		 * Lookup by account name instead.
 		 */
-		pass = Get_Pwnam_alloc(tmp_ctx, lp_guestaccount());
+		pass = Get_Pwnam_alloc(tmp_ctx, lp_guest_account());
 	} else {
 		uid_t uid;
 
@@ -487,8 +487,8 @@ static NTSTATUS finalize_local_nt_token(struct security_token *result,
 					bool is_guest)
 {
 	struct dom_sid dom_sid;
-	gid_t gid;
 	NTSTATUS status;
+	struct acct_info *info;
 
 	/* Add any local groups. */
 
@@ -527,11 +527,18 @@ static NTSTATUS finalize_local_nt_token(struct security_token *result,
 		}
 	}
 
+	info = talloc_zero(talloc_tos(), struct acct_info);
+	if (info == NULL) {
+		DEBUG(0, ("talloc failed!\n"));
+		return NT_STATUS_NO_MEMORY;
+	}
+
 	/* Deal with the BUILTIN\Administrators group.  If the SID can
 	   be resolved then assume that the add_aliasmem( S-1-5-32 )
 	   handled it. */
 
-	if (!sid_to_gid(&global_sid_Builtin_Administrators, &gid)) {
+	status = pdb_get_aliasinfo(&global_sid_Builtin_Administrators, info);
+	if (!NT_STATUS_IS_OK(status)) {
 
 		become_root();
 		if (!secrets_fetch_domain_sid(lp_workgroup(), &dom_sid)) {
@@ -562,7 +569,8 @@ static NTSTATUS finalize_local_nt_token(struct security_token *result,
 	   be resolved then assume that the add_aliasmem( S-1-5-32 )
 	   handled it. */
 
-	if (!sid_to_gid(&global_sid_Builtin_Users, &gid)) {
+	status = pdb_get_aliasinfo(&global_sid_Builtin_Users, info);
+	if (!NT_STATUS_IS_OK(status)) {
 
 		become_root();
 		if (!secrets_fetch_domain_sid(lp_workgroup(), &dom_sid)) {
@@ -581,6 +589,8 @@ static NTSTATUS finalize_local_nt_token(struct security_token *result,
 				  "Can Winbind allocate gids?\n"));
 		}
 	}
+
+	TALLOC_FREE(info);
 
 	/* Deal with local groups */
 
@@ -662,7 +672,6 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
 	gid_t *gids;
 	struct dom_sid *group_sids;
-	struct dom_sid unix_group_sid;
 	uint32_t num_group_sids;
 	uint32_t num_gids;
 	uint32_t i;
@@ -707,8 +716,6 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 		/* see the smb_panic() in pdb_default_enum_group_memberships */
 		SMB_ASSERT(num_group_sids > 0);
 
-		*gid = gids[0];
-
 		/* Ensure we're returning the found_username on the right context. */
 		*found_username = talloc_strdup(mem_ctx,
 						pdb_get_username(sam_acct));
@@ -720,7 +727,7 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 
 		/*
 		 * If the SID from lookup_name() was the guest sid, passdb knows
-		 * about the mapping of guest sid to lp_guestaccount()
+		 * about the mapping of guest sid to lp_guest_account()
 		 * username and will return the unix_pw info for a guest
 		 * user. Use it if it's there, else lookup the *uid details
 		 * using Get_Pwnam_alloc(). See bug #6291 for details. JRA.
@@ -786,15 +793,11 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 		}
 		num_group_sids = getgroups_num_group_sids;
 
-		if (num_group_sids) {
-			group_sids = talloc_array(tmp_ctx, struct dom_sid, num_group_sids);
-			if (group_sids == NULL) {
-				DEBUG(1, ("talloc_array failed\n"));
-				result = NT_STATUS_NO_MEMORY;
-				goto done;
-			}
-		} else {
-			group_sids = NULL;
+		group_sids = talloc_array(tmp_ctx, struct dom_sid, num_group_sids);
+		if (group_sids == NULL) {
+			DEBUG(1, ("talloc_array failed\n"));
+			result = NT_STATUS_NO_MEMORY;
+			goto done;
 		}
 
 		for (i=0; i<num_group_sids; i++) {
@@ -803,8 +806,6 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 
 		/* In getgroups_unix_user we always set the primary gid */
 		SMB_ASSERT(num_group_sids > 0);
-
-		*gid = gids[0];
 
 		/* Ensure we're returning the found_username on the right context. */
 		*found_username = talloc_strdup(mem_ctx, pass->pw_name);
@@ -837,20 +838,26 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 			goto done;
 		}
 
+		gids = talloc_array(tmp_ctx, gid_t, num_group_sids);
+		if (gids == NULL) {
+			result = NT_STATUS_NO_MEMORY;
+			goto done;
+		}
+
 		sid_copy(&group_sids[0], user_sid);
 		sid_split_rid(&group_sids[0], NULL);
 		sid_append_rid(&group_sids[0], DOMAIN_RID_USERS);
 
-		if (!sid_to_gid(&group_sids[0], gid)) {
+		if (!sid_to_gid(&group_sids[0], &gids[0])) {
 			DEBUG(1, ("sid_to_gid(%s) failed\n",
 				  sid_string_dbg(&group_sids[0])));
 			goto done;
 		}
 
-		gids = gid;
-
 		*found_username = NULL;
 	}
+
+	*gid = gids[0];
 
 	/* Add the "Unix Group" SID for each gid to catch mapped groups
 	   and their Unix equivalent.  This is to solve the backwards
@@ -862,6 +869,7 @@ static NTSTATUS create_token_from_sid(TALLOC_CTX *mem_ctx,
 	num_gids = num_group_sids;
 	range_ok = lp_idmap_default_range(&low, &high);
 	for ( i=0; i<num_gids; i++ ) {
+		struct dom_sid unix_group_sid;
 
 		/* don't pickup anything managed by Winbind */
 		if (range_ok && (gids[i] >= low) && (gids[i] <= high)) {

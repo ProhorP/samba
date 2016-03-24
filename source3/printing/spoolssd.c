@@ -107,7 +107,7 @@ static void update_conf(struct tevent_context *ev,
 			struct messaging_context *msg)
 {
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 	load_printers(ev, msg);
 
 	spoolss_reopen_logs(spoolss_child_id);
@@ -265,7 +265,7 @@ static bool spoolss_child_init(struct tevent_context *ev_ctx,
 {
 	NTSTATUS status;
 	struct rpc_srv_callbacks spoolss_cb;
-	struct messaging_context *msg_ctx = messaging_init(NULL, ev_ctx);
+	struct messaging_context *msg_ctx = server_messaging_context();
 	bool ok;
 
 	status = reinit_after_fork(msg_ctx, ev_ctx,
@@ -315,14 +315,14 @@ static bool spoolss_child_init(struct tevent_context *ev_ctx,
 
 	status = rpc_winreg_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register winreg rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register winreg rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_spoolss_init(&spoolss_cb);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register spoolss rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register spoolss rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
@@ -350,7 +350,7 @@ static int spoolss_children_main(struct tevent_context *ev_ctx,
 {
 	struct spoolss_children_data *data;
 	bool ok;
-	int ret;
+	int ret = 0;
 
 	ok = spoolss_child_init(ev_ctx, child_id, pf);
 	if (!ok) {
@@ -645,9 +645,7 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 		return pid;
 	}
 
-	status = reinit_after_fork(msg_ctx,
-				   ev_ctx,
-				   true);
+	status = smbd_reinit_after_fork(msg_ctx, ev_ctx, true);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
@@ -744,14 +742,14 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 
 	status = rpc_winreg_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register winreg rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register winreg rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_spoolss_init(&spoolss_cb);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register spoolss rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register spoolss rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

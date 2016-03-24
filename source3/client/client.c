@@ -26,6 +26,7 @@
 #include "popt_common.h"
 #include "rpc_client/cli_pipe.h"
 #include "client/client_proto.h"
+#include "client/clitar_proto.h"
 #include "../librpc/gen_ndr/ndr_srvsvc_c.h"
 #include "../lib/util/select.h"
 #include "system/readline.h"
@@ -46,7 +47,6 @@
 extern int do_smb_browse(void); /* mDNS browsing */
 
 extern bool override_logfile;
-extern char tar_type;
 
 static int port = 0;
 static char *service;
@@ -74,12 +74,6 @@ static int archive_level = 0;
 
 static bool translation = false;
 static bool have_ip;
-
-/* clitar bits insert */
-extern int blocksize;
-extern bool tar_inc;
-extern bool tar_reset;
-/* clitar bits end */
 
 static bool prompt = true;
 
@@ -304,7 +298,7 @@ static void send_message(const char *username)
 
 static int do_dskattr(void)
 {
-	int total, bsize, avail;
+	uint64_t total, bsize, avail;
 	struct cli_state *targetcli = NULL;
 	char *targetpath = NULL;
 	TALLOC_CTX *ctx = talloc_tos();
@@ -318,14 +312,16 @@ static int do_dskattr(void)
 		return 1;
 	}
 
-	status = cli_dskattr(targetcli, &bsize, &total, &avail);
+	status = cli_disk_size(targetcli, targetpath, &bsize, &total, &avail);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_printf("Error in dskattr: %s\n", nt_errstr(status));
 		return 1;
 	}
 
-	d_printf("\n\t\t%d blocks of size %d. %d blocks available\n",
-		 total, bsize, avail);
+	d_printf("\n\t\t%" PRIu64
+		" blocks of size %" PRIu64
+		". %" PRIu64 " blocks available\n",
+		total, bsize, avail);
 
 	return 0;
 }
@@ -364,7 +360,7 @@ static int do_cd(const char *new_dir)
 	char *targetpath = NULL;
 	struct cli_state *targetcli = NULL;
 	SMB_STRUCT_STAT sbuf;
-	uint32 attributes;
+	uint32_t attributes;
 	int ret = 1;
 	TALLOC_CTX *ctx = talloc_stackframe();
 	NTSTATUS status;
@@ -817,7 +813,7 @@ static NTSTATUS do_list_helper(const char *mntpoint, struct file_info *f,
 ****************************************************************************/
 
 NTSTATUS do_list(const char *mask,
-			uint16 attribute,
+			uint16_t attribute,
 			NTSTATUS (*fn)(struct cli_state *cli_state, struct file_info *,
 				   const char *dir),
 			bool rec,
@@ -933,7 +929,7 @@ NTSTATUS do_list(const char *mask,
 static int cmd_dir(void)
 {
 	TALLOC_CTX *ctx = talloc_tos();
-	uint16 attribute = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
+	uint16_t attribute = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
 	char *mask = NULL;
 	char *buf = NULL;
 	int rc = 1;
@@ -983,7 +979,7 @@ static int cmd_dir(void)
 static int cmd_du(void)
 {
 	TALLOC_CTX *ctx = talloc_tos();
-	uint16 attribute = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
+	uint16_t attribute = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
 	char *mask = NULL;
 	char *buf = NULL;
 	NTSTATUS status;
@@ -1067,7 +1063,7 @@ static int do_get(const char *rname, const char *lname_in, bool reget)
 	uint16_t fnum;
 	bool newhandle = false;
 	struct timespec tp_start;
-	uint16 attr;
+	uint16_t attr;
 	off_t size;
 	off_t start = 0;
 	off_t nread = 0;
@@ -1162,7 +1158,7 @@ static int do_get(const char *rname, const char *lname_in, bool reget)
 	}
 
 	if (archive_level >= 2 && (attr & FILE_ATTRIBUTE_ARCHIVE)) {
-		cli_setatr(cli, rname, attr & ~(uint16)FILE_ATTRIBUTE_ARCHIVE, 0);
+		cli_setatr(cli, rname, attr & ~(uint16_t)FILE_ATTRIBUTE_ARCHIVE, 0);
 	}
 
 	{
@@ -1423,7 +1419,7 @@ static int cmd_more(void)
 static int cmd_mget(void)
 {
 	TALLOC_CTX *ctx = talloc_tos();
-	uint16 attribute = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
+	uint16_t attribute = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
 	char *mget_mask = NULL;
 	char *buf = NULL;
 	NTSTATUS status = NT_STATUS_OK;
@@ -1729,16 +1725,16 @@ static int do_allinfo(const char *name)
 		return false;
 	}
 
-	unix_timespec_to_nt_time(&tmp, b_time);
+	tmp = unix_timespec_to_nt_time(b_time);
 	d_printf("create_time:    %s\n", nt_time_string(talloc_tos(), tmp));
 
-	unix_timespec_to_nt_time(&tmp, a_time);
+	tmp = unix_timespec_to_nt_time(a_time);
 	d_printf("access_time:    %s\n", nt_time_string(talloc_tos(), tmp));
 
-	unix_timespec_to_nt_time(&tmp, m_time);
+	tmp = unix_timespec_to_nt_time(m_time);
 	d_printf("write_time:     %s\n", nt_time_string(talloc_tos(), tmp));
 
-	unix_timespec_to_nt_time(&tmp, c_time);
+	tmp = unix_timespec_to_nt_time(c_time);
 	d_printf("change_time:    %s\n", nt_time_string(talloc_tos(), tmp));
 
 	d_printf("attributes: %s (%x)\n", attr_str(talloc_tos(), mode), mode);
@@ -1808,13 +1804,13 @@ static int do_allinfo(const char *name)
 			TALLOC_FREE(snap_name);
 			continue;
 		}
-		unix_timespec_to_nt_time(&tmp, b_time);
+		tmp = unix_timespec_to_nt_time(b_time);
 		d_printf("create_time:    %s\n", nt_time_string(talloc_tos(), tmp));
-		unix_timespec_to_nt_time(&tmp, a_time);
+		tmp = unix_timespec_to_nt_time(a_time);
 		d_printf("access_time:    %s\n", nt_time_string(talloc_tos(), tmp));
-		unix_timespec_to_nt_time(&tmp, m_time);
+		tmp =unix_timespec_to_nt_time(m_time);
 		d_printf("write_time:     %s\n", nt_time_string(talloc_tos(), tmp));
-		unix_timespec_to_nt_time(&tmp, c_time);
+		tmp = unix_timespec_to_nt_time(c_time);
 		d_printf("change_time:    %s\n", nt_time_string(talloc_tos(), tmp));
 		d_printf("size: %d\n", (int)size);
 	}
@@ -2394,7 +2390,7 @@ static int cmd_del(void)
 	char *mask = NULL;
 	char *buf = NULL;
 	NTSTATUS status = NT_STATUS_OK;
-	uint16 attribute = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
+	uint16_t attribute = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN;
 
 	if (recurse) {
 		attribute |= FILE_ATTRIBUTE_DIRECTORY;
@@ -2429,7 +2425,7 @@ static int cmd_wdel(void)
 	TALLOC_CTX *ctx = talloc_tos();
 	char *mask = NULL;
 	char *buf = NULL;
-	uint16 attribute;
+	uint16_t attribute;
 	struct cli_state *targetcli;
 	char *targetname = NULL;
 	NTSTATUS status;
@@ -2439,7 +2435,7 @@ static int cmd_wdel(void)
 		return 1;
 	}
 
-	attribute = (uint16)strtol(buf, (char **)NULL, 16);
+	attribute = (uint16_t)strtol(buf, (char **)NULL, 16);
 
 	if (!next_token_talloc(ctx, &cmd_ptr,&buf,NULL)) {
 		d_printf("wdel 0x<attrib> <wcard>\n");
@@ -2771,8 +2767,8 @@ static int cmd_close(void)
 static int cmd_posix(void)
 {
 	TALLOC_CTX *ctx = talloc_tos();
-	uint16 major, minor;
-	uint32 caplow, caphigh;
+	uint16_t major, minor;
+	uint32_t caplow, caphigh;
 	char *caps;
 	NTSTATUS status;
 
@@ -3325,14 +3321,14 @@ static int cmd_getfacl(void)
 	char *name = NULL;
 	char *targetname = NULL;
 	struct cli_state *targetcli;
-	uint16 major, minor;
-	uint32 caplow, caphigh;
+	uint16_t major, minor;
+	uint32_t caplow, caphigh;
 	char *retbuf = NULL;
 	size_t rb_size = 0;
 	SMB_STRUCT_STAT sbuf;
-	uint16 num_file_acls = 0;
-	uint16 num_dir_acls = 0;
-	uint16 i;
+	uint16_t num_file_acls = 0;
+	uint16_t num_dir_acls = 0;
+	uint16_t i;
 	NTSTATUS status;
 
 	if (!next_token_talloc(ctx, &cmd_ptr,&name,NULL)) {
@@ -3412,7 +3408,7 @@ static int cmd_getfacl(void)
 	}
 
 	for (i = 0; i < num_file_acls; i++) {
-		uint32 uorg;
+		uint32_t uorg;
 		fstring permstring;
 		unsigned char tagtype = CVAL(retbuf, SMB_POSIX_ACL_HEADER_SIZE+(i*SMB_POSIX_ACL_ENTRY_SIZE));
 		unsigned char perms = CVAL(retbuf, SMB_POSIX_ACL_HEADER_SIZE+(i*SMB_POSIX_ACL_ENTRY_SIZE)+1);
@@ -3449,7 +3445,7 @@ static int cmd_getfacl(void)
 	}
 
 	for (i = 0; i < num_dir_acls; i++) {
-		uint32 uorg;
+		uint32_t uorg;
 		fstring permstring;
 		unsigned char tagtype = CVAL(retbuf, SMB_POSIX_ACL_HEADER_SIZE+((i+num_file_acls)*SMB_POSIX_ACL_ENTRY_SIZE));
 		unsigned char perms = CVAL(retbuf, SMB_POSIX_ACL_HEADER_SIZE+((i+num_file_acls)*SMB_POSIX_ACL_ENTRY_SIZE)+1);
@@ -3808,6 +3804,139 @@ static int cmd_rename(void)
 	}
 
 	return 0;
+}
+
+struct scopy_timing {
+	struct timespec tp_start;
+};
+
+static int scopy_status(off_t written, void *priv)
+{
+	struct timespec tp_end;
+	unsigned int scopy_total_time_ms;
+	struct scopy_timing *st = priv;
+
+	clock_gettime_mono(&tp_end);
+	scopy_total_time_ms = nsec_time_diff(&tp_end,&st->tp_start)/1000000;
+
+	DEBUG(5,("Copied %jd bytes at an average %3.1f kb/s\n",
+		 (intmax_t)written, written / (1.024*scopy_total_time_ms)));
+
+	return true;
+}
+
+/****************************************************************************
+ Server-Side copy some file.
+****************************************************************************/
+
+static int cmd_scopy(void)
+{
+	TALLOC_CTX *ctx = talloc_tos();
+	char *src, *dest;
+	char *buf, *buf2;
+	struct cli_state *targetcli;
+	char *targetsrc;
+	char *targetdest;
+	uint32_t DesiredAccess, ShareAccess, CreateDisposition, CreateOptions;
+	struct smb_create_returns cr;
+	uint16_t destfnum = (uint16_t)-1;
+	uint16_t srcfnum = (uint16_t)-1;
+	off_t written = 0;
+	struct scopy_timing st;
+	int rc = 0;
+	NTSTATUS status;
+
+	if (!next_token_talloc(ctx, &cmd_ptr,&buf,NULL) ||
+			!next_token_talloc(ctx, &cmd_ptr,&buf2,NULL)) {
+		d_printf("scopy <src> <dest>\n");
+		return 1;
+	}
+
+	src = talloc_asprintf(ctx,
+			"%s%s",
+			client_get_cur_dir(),
+			buf);
+	if (!src) {
+		return 1;
+	}
+
+	dest = talloc_asprintf(ctx,
+			"%s%s",
+			client_get_cur_dir(),
+			buf2);
+	if (!dest) {
+		return 1;
+	}
+
+	status = cli_resolve_path(ctx, "", auth_info, cli, src, &targetcli,
+			&targetsrc);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("scopy %s: %s\n", src, nt_errstr(status));
+		return 1;
+	}
+
+	status = cli_resolve_path(ctx, "", auth_info, cli, dest, &targetcli,
+			&targetdest);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("scopy %s: %s\n", dest, nt_errstr(status));
+		return 1;
+	}
+
+
+	DesiredAccess = (FILE_READ_DATA|FILE_READ_EA|FILE_READ_ATTRIBUTES|
+			READ_CONTROL_ACCESS|SYNCHRONIZE_ACCESS);
+	ShareAccess = FILE_SHARE_READ|FILE_SHARE_DELETE;
+	CreateDisposition = FILE_OPEN;
+	CreateOptions = (FILE_SEQUENTIAL_ONLY|FILE_NON_DIRECTORY_FILE|
+			FILE_OPEN_REPARSE_POINT);
+	status = cli_ntcreate(targetcli, targetsrc, 0, DesiredAccess, 0,
+			ShareAccess, CreateDisposition, CreateOptions, 0x0,
+			&srcfnum, &cr);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("Failed to open file %s. %s\n",
+				targetsrc, nt_errstr(status));
+		return 1;
+	}
+
+	DesiredAccess = (FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_READ_EA|
+			FILE_WRITE_EA|FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES|
+			DELETE_ACCESS|READ_CONTROL_ACCESS|WRITE_DAC_ACCESS|SYNCHRONIZE_ACCESS);
+	ShareAccess = FILE_SHARE_NONE;
+	CreateDisposition = FILE_CREATE;
+	CreateOptions = FILE_SEQUENTIAL_ONLY|FILE_NON_DIRECTORY_FILE;
+	status = cli_ntcreate(targetcli, targetdest, 0, DesiredAccess,
+			FILE_ATTRIBUTE_ARCHIVE, ShareAccess, CreateDisposition,
+			CreateOptions, 0x0, &destfnum, NULL);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("Failed to create file %s. %s\n",
+				targetdest, nt_errstr(status));
+		cli_close(targetcli, srcfnum);
+		return 1;
+	}
+
+	clock_gettime_mono(&st.tp_start);
+	status = cli_splice(targetcli, targetcli, srcfnum, destfnum,
+			cr.end_of_file, 0, 0, &written, scopy_status, &st);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("%s copying file %s -> %s \n",
+				nt_errstr(status),
+				targetsrc,
+				targetdest);
+		rc = 1;
+	}
+
+	status = cli_close(targetcli, srcfnum);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("Error %s closing remote source file\n", nt_errstr(status));
+		rc = 1;
+	}
+	status = cli_close(targetcli, destfnum);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("Error %s closing remote dest file\n", nt_errstr(status));
+		rc = 1;
+	}
+
+	return rc;
 }
 
 /****************************************************************************
@@ -4185,7 +4314,7 @@ static int cmd_reput(void)
  List a share name.
  ****************************************************************************/
 
-static void browse_fn(const char *name, uint32 m,
+static void browse_fn(const char *name, uint32_t m,
                       const char *comment, void *state)
 {
 	const char *typestr = "";
@@ -4228,7 +4357,7 @@ static bool browse_host_rpc(bool sort)
 	int i;
 	struct dcerpc_binding_handle *b;
 
-	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_srvsvc.syntax_id,
+	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_srvsvc,
 					  &pipe_hnd);
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -4299,7 +4428,7 @@ static bool browse_host(bool sort)
  List a server name.
 ****************************************************************************/
 
-static void server_fn(const char *name, uint32 m,
+static void server_fn(const char *name, uint32_t m,
                       const char *comment, void *state)
 {
 
@@ -4527,6 +4656,124 @@ static int cmd_show_connect( void )
 	return 0;
 }
 
+/**
+ * set_remote_attr - set DOS attributes of a remote file
+ * @filename: path to the file name
+ * @new_attr: attribute bit mask to use
+ * @mode: one of ATTR_SET or ATTR_UNSET
+ *
+ * Update the file attributes with the one provided.
+ */
+int set_remote_attr(const char *filename, uint16_t new_attr, int mode)
+{
+	extern struct cli_state *cli;
+	uint16_t old_attr;
+	NTSTATUS status;
+
+	status = cli_getatr(cli, filename, &old_attr, NULL, NULL);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("cli_getatr failed: %s\n", nt_errstr(status));
+		return 1;
+	}
+
+	if (mode == ATTR_SET) {
+		new_attr |= old_attr;
+	} else {
+		new_attr = old_attr & ~new_attr;
+	}
+
+	status = cli_setatr(cli, filename, new_attr, 0);
+	if (!NT_STATUS_IS_OK(status)) {
+		d_printf("cli_setatr failed: %s\n", nt_errstr(status));
+		return 1;
+	}
+
+	return 0;
+}
+
+/**
+ * cmd_setmode - interactive command to set DOS attributes
+ *
+ * Read a filename and mode from the client command line and update
+ * the file DOS attributes.
+ */
+int cmd_setmode(void)
+{
+	const extern char *cmd_ptr;
+	char *buf;
+	char *fname = NULL;
+	uint16_t attr[2] = {0};
+	int mode = ATTR_SET;
+	int err = 0;
+	bool ok;
+	TALLOC_CTX *ctx = talloc_new(NULL);
+	if (ctx == NULL) {
+		return 1;
+	}
+
+	ok = next_token_talloc(ctx, &cmd_ptr, &buf, NULL);
+	if (!ok) {
+		d_printf("setmode <filename> <[+|-]rsha>\n");
+		err = 1;
+		goto out;
+	}
+
+	fname = talloc_asprintf(ctx,
+				"%s%s",
+				client_get_cur_dir(),
+				buf);
+	if (fname == NULL) {
+		err = 1;
+		goto out;
+	}
+
+	while (next_token_talloc(ctx, &cmd_ptr, &buf, NULL)) {
+		const char *s = buf;
+
+		while (*s) {
+			switch (*s++) {
+			case '+':
+				mode = ATTR_SET;
+				break;
+			case '-':
+				mode = ATTR_UNSET;
+				break;
+			case 'r':
+				attr[mode] |= FILE_ATTRIBUTE_READONLY;
+				break;
+			case 'h':
+				attr[mode] |= FILE_ATTRIBUTE_HIDDEN;
+				break;
+			case 's':
+				attr[mode] |= FILE_ATTRIBUTE_SYSTEM;
+				break;
+			case 'a':
+				attr[mode] |= FILE_ATTRIBUTE_ARCHIVE;
+				break;
+			default:
+				d_printf("setmode <filename> <perm=[+|-]rsha>\n");
+				err = 1;
+				goto out;
+			}
+		}
+	}
+
+	if (attr[ATTR_SET] == 0 && attr[ATTR_UNSET] == 0) {
+		d_printf("setmode <filename> <[+|-]rsha>\n");
+		err = 1;
+		goto out;
+	}
+
+	DEBUG(2, ("perm set %d %d\n", attr[ATTR_SET], attr[ATTR_UNSET]));
+
+	/* ignore return value: server might not store DOS attributes */
+	set_remote_attr(fname, attr[ATTR_SET], ATTR_SET);
+	set_remote_attr(fname, attr[ATTR_UNSET], ATTR_UNSET);
+out:
+	talloc_free(ctx);
+	return err;
+}
+
 /****************************************************************************
  iosize command
 ***************************************************************************/
@@ -4642,7 +4889,7 @@ static struct {
    {COMPL_NONE,COMPL_NONE}},
   {"altname",cmd_altname,"<file> show alt name",{COMPL_NONE,COMPL_NONE}},
   {"archive",cmd_archive,"<level>\n0=ignore archive bit\n1=only get archive files\n2=only get archive files and reset archive bit\n3=get all files and reset archive bit",{COMPL_NONE,COMPL_NONE}},
-  {"backup",cmd_backup,"toggle backup intent state",{COMPL_NONE,COMPL_NONE}},  
+  {"backup",cmd_backup,"toggle backup intent state",{COMPL_NONE,COMPL_NONE}},
   {"blocksize",cmd_block,"blocksize <number> (default 20)",{COMPL_NONE,COMPL_NONE}},
   {"cancel",cmd_cancel,"<jobid> cancel a print queue entry",{COMPL_NONE,COMPL_NONE}},
   {"case_sensitive",cmd_setcase,"toggle the case sensitive flag to server",{COMPL_NONE,COMPL_NONE}},
@@ -4666,14 +4913,14 @@ static struct {
   {"lcd",cmd_lcd,"[directory] change/report the local current working directory",{COMPL_LOCAL,COMPL_NONE}},
   {"link",cmd_link,"<oldname> <newname> create a UNIX hard link",{COMPL_REMOTE,COMPL_REMOTE}},
   {"lock",cmd_lock,"lock <fnum> [r|w] <hex-start> <hex-len> : set a POSIX lock",{COMPL_REMOTE,COMPL_REMOTE}},
-  {"lowercase",cmd_lowercase,"toggle lowercasing of filenames for get",{COMPL_NONE,COMPL_NONE}},  
+  {"lowercase",cmd_lowercase,"toggle lowercasing of filenames for get",{COMPL_NONE,COMPL_NONE}},
   {"ls",cmd_dir,"<mask> list the contents of the current directory",{COMPL_REMOTE,COMPL_NONE}},
   {"l",cmd_dir,"<mask> list the contents of the current directory",{COMPL_REMOTE,COMPL_NONE}},
   {"mask",cmd_select,"<mask> mask all filenames against this",{COMPL_REMOTE,COMPL_NONE}},
   {"md",cmd_mkdir,"<directory> make a directory",{COMPL_NONE,COMPL_NONE}},
   {"mget",cmd_mget,"<mask> get all the matching files",{COMPL_REMOTE,COMPL_NONE}},
   {"mkdir",cmd_mkdir,"<directory> make a directory",{COMPL_NONE,COMPL_NONE}},
-  {"more",cmd_more,"<remote name> view a remote file with your pager",{COMPL_REMOTE,COMPL_NONE}},  
+  {"more",cmd_more,"<remote name> view a remote file with your pager",{COMPL_REMOTE,COMPL_NONE}},
   {"mput",cmd_mput,"<mask> put all matching files",{COMPL_REMOTE,COMPL_NONE}},
   {"newer",cmd_newer,"<file> only mget files newer than the specified local file",{COMPL_LOCAL,COMPL_NONE}},
   {"notify",cmd_notify,"<file>Get notified of dir changes",{COMPL_REMOTE,COMPL_NONE}},
@@ -4685,7 +4932,7 @@ static struct {
   {"posix_rmdir",cmd_posix_rmdir,"<name> removes a directory using POSIX interface",{COMPL_REMOTE,COMPL_NONE}},
   {"posix_unlink",cmd_posix_unlink,"<name> removes a file using POSIX interface",{COMPL_REMOTE,COMPL_NONE}},
   {"print",cmd_print,"<file name> print a file",{COMPL_NONE,COMPL_NONE}},
-  {"prompt",cmd_prompt,"toggle prompting for filenames for mget and mput",{COMPL_NONE,COMPL_NONE}},  
+  {"prompt",cmd_prompt,"toggle prompting for filenames for mget and mput",{COMPL_NONE,COMPL_NONE}},
   {"put",cmd_put,"<local name> [remote name] put a file",{COMPL_LOCAL,COMPL_REMOTE}},
   {"pwd",cmd_pwd,"show current remote directory (same as 'cd' with no args)",{COMPL_NONE,COMPL_NONE}},
   {"q",cmd_quit,"logoff the server",{COMPL_NONE,COMPL_NONE}},
@@ -4693,16 +4940,17 @@ static struct {
   {"quit",cmd_quit,"logoff the server",{COMPL_NONE,COMPL_NONE}},
   {"readlink",cmd_readlink,"filename Do a UNIX extensions readlink call on a symlink",{COMPL_REMOTE,COMPL_REMOTE}},
   {"rd",cmd_rmdir,"<directory> remove a directory",{COMPL_NONE,COMPL_NONE}},
-  {"recurse",cmd_recurse,"toggle directory recursion for mget and mput",{COMPL_NONE,COMPL_NONE}},  
+  {"recurse",cmd_recurse,"toggle directory recursion for mget and mput",{COMPL_NONE,COMPL_NONE}},
   {"reget",cmd_reget,"<remote name> [local name] get a file restarting at end of local file",{COMPL_REMOTE,COMPL_LOCAL}},
   {"rename",cmd_rename,"<src> <dest> rename some files",{COMPL_REMOTE,COMPL_REMOTE}},
   {"reput",cmd_reput,"<local name> [remote name] put a file restarting at end of remote file",{COMPL_LOCAL,COMPL_REMOTE}},
   {"rm",cmd_del,"<mask> delete all matching files",{COMPL_REMOTE,COMPL_NONE}},
   {"rmdir",cmd_rmdir,"<directory> remove a directory",{COMPL_REMOTE,COMPL_NONE}},
-  {"showacls",cmd_showacls,"toggle if ACLs are shown or not",{COMPL_NONE,COMPL_NONE}},  
+  {"showacls",cmd_showacls,"toggle if ACLs are shown or not",{COMPL_NONE,COMPL_NONE}},
   {"setea", cmd_setea, "<file name> <eaname> <eaval> Set an EA of a file",
    {COMPL_REMOTE, COMPL_LOCAL}},
   {"setmode",cmd_setmode,"<file name> <setmode string> change modes of file",{COMPL_REMOTE,COMPL_NONE}},
+  {"scopy",cmd_scopy,"<src> <dest> server-side copy file",{COMPL_REMOTE,COMPL_REMOTE}},
   {"stat",cmd_stat,"<file name> Do a UNIX extensions stat call on a file",{COMPL_REMOTE,COMPL_NONE}},
   {"symlink",cmd_symlink,"<oldname> <newname> create a UNIX symlink",{COMPL_REMOTE,COMPL_REMOTE}},
   {"tar",cmd_tar,"tar <c|x>[IXFqbgNan] current directory to/from <file name>",{COMPL_NONE,COMPL_NONE}},
@@ -5325,7 +5573,8 @@ static int do_host_query(const char *query_host)
 
 static int do_tar_op(const char *base_directory)
 {
-	int ret;
+	struct tar *tar_ctx = tar_get_ctx();
+	int ret = 0;
 
 	/* do we already have a connection? */
 	if (!cli) {
@@ -5336,26 +5585,27 @@ static int do_tar_op(const char *base_directory)
 				     service, auth_info, true, smb_encrypt,
 				     max_protocol, port, name_type, &cli);
 		if (!NT_STATUS_IS_OK(status)) {
-			return 1;
+            ret = 1;
+            goto out;
 		}
 		cli_set_timeout(cli, io_timeout*1000);
 	}
 
-	recurse=true;
+	recurse = true;
 
 	if (base_directory && *base_directory)  {
 		ret = do_cd(base_directory);
 		if (ret) {
-			cli_shutdown(cli);
-			return ret;
+            goto out_cli;
 		}
 	}
 
-	ret=process_tar();
+	ret = tar_process(tar_ctx);
 
+ out_cli:
 	cli_shutdown(cli);
-
-	return(ret);
+ out:
+	return ret;
 }
 
 /****************************************************************************
@@ -5385,7 +5635,7 @@ static int do_message_op(struct user_auth_info *a_info)
   main program
 ****************************************************************************/
 
- int main(int argc,char *argv[])
+int main(int argc,char *argv[])
 {
 	const char **const_argv = discard_const_p(const char *, argv);
 	char *base_directory = NULL;
@@ -5398,6 +5648,8 @@ static int do_message_op(struct user_auth_info *a_info)
 	int rc = 0;
 	bool tar_opt = false;
 	bool service_opt = false;
+	struct tar *tar_ctx = tar_get_ctx();
+
 	struct poptOption long_options[] = {
 		POPT_AUTOHELP
 
@@ -5409,7 +5661,7 @@ static int do_message_op(struct user_auth_info *a_info)
 		{ "max-protocol", 'm', POPT_ARG_STRING, NULL, 'm', "Set the max protocol level", "LEVEL" },
 		{ "tar", 'T', POPT_ARG_STRING, NULL, 'T', "Command line tar", "<c|x>IXFqgbNan" },
 		{ "directory", 'D', POPT_ARG_STRING, NULL, 'D', "Start from directory", "DIR" },
-		{ "command", 'c', POPT_ARG_STRING, &cmdstr, 'c', "Execute semicolon separated commands" }, 
+		{ "command", 'c', POPT_ARG_STRING, &cmdstr, 'c', "Execute semicolon separated commands" },
 		{ "send-buffer", 'b', POPT_ARG_INT, &io_bufsize, 'b', "Changes the transmit/send buffer", "BYTES" },
 		{ "timeout", 't', POPT_ARG_INT, &io_timeout, 'b', "Changes the per-operation timeout", "SECONDS" },
 		{ "port", 'p', POPT_ARG_INT, &port, 'p', "Port to connect to", "PORT" },
@@ -5428,7 +5680,7 @@ static int do_message_op(struct user_auth_info *a_info)
 
         /* set default debug level to 1 regardless of what smb.conf sets */
 	setup_logging( "smbclient", DEBUG_DEFAULT_STDERR );
-	load_case_tables();
+	smb_init_locale();
 
 	lp_set_cmdline("log level", "1");
 
@@ -5514,12 +5766,14 @@ static int do_message_op(struct user_auth_info *a_info)
 			 * position of the -T option in the raw argv[]. */
 			{
 				int i;
+
 				for (i = 1; i < argc; i++) {
 					if (strncmp("-T", argv[i],2)==0)
 						break;
 				}
 				i++;
-				if (!tar_parseargs(argc, argv, poptGetOptArg(pc), i)) {
+				if (tar_parse_args(tar_ctx, poptGetOptArg(pc),
+						   const_argv + i, argc - i)) {
 					poptPrintUsage(pc, stderr, 0);
 					exit(1);
 				}
@@ -5612,7 +5866,7 @@ static int do_message_op(struct user_auth_info *a_info)
 	if(new_name_resolve_order)
 		lp_set_cmdline("name resolve order", new_name_resolve_order);
 
-	if (!tar_type && !query_host && !service && !message) {
+	if (!tar_to_process(tar_ctx) && !query_host && !service && !message) {
 		poptPrintUsage(pc, stderr, 0);
 		exit(1);
 	}
@@ -5625,9 +5879,9 @@ static int do_message_op(struct user_auth_info *a_info)
 	/* Ensure we have a password (or equivalent). */
 	set_cmdline_auth_info_getpass(auth_info);
 
-	max_protocol = lp_cli_maxprotocol();
+	max_protocol = lp_client_max_protocol();
 
-	if (tar_type) {
+	if (tar_to_process(tar_ctx)) {
 		if (cmdstr)
 			process_command_string(cmdstr);
 		rc = do_tar_op(base_directory);

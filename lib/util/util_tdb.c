@@ -317,84 +317,6 @@ int32_t tdb_change_int32_atomic(struct tdb_context *tdb, const char *keystr, int
 	return ret;
 }
 
-static sig_atomic_t gotalarm;
-
-/***************************************************************
- Signal function to tell us we timed out.
-****************************************************************/
-
-static void gotalarm_sig(int signum)
-{
-	gotalarm = 1;
-}
-
-/****************************************************************************
- Lock a chain with timeout (in seconds).
-****************************************************************************/
-
-static int tdb_chainlock_with_timeout_internal( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout, int rw_type)
-{
-	/* Allow tdb_chainlock to be interrupted by an alarm. */
-	int ret;
-	gotalarm = 0;
-
-	if (timeout) {
-		CatchSignal(SIGALRM, gotalarm_sig);
-		tdb_setalarm_sigptr(tdb, &gotalarm);
-		alarm(timeout);
-	}
-
-	if (rw_type == F_RDLCK)
-		ret = tdb_chainlock_read(tdb, key);
-	else
-		ret = tdb_chainlock(tdb, key);
-
-	if (timeout) {
-		alarm(0);
-		tdb_setalarm_sigptr(tdb, NULL);
-		CatchSignal(SIGALRM, SIG_IGN);
-		if (gotalarm && (ret != 0)) {
-			DEBUG(0,("tdb_chainlock_with_timeout_internal: alarm (%u) timed out for key %s in tdb %s\n",
-				timeout, key.dptr, tdb_name(tdb)));
-			/* TODO: If we time out waiting for a lock, it might
-			 * be nice to use F_GETLK to get the pid of the
-			 * process currently holding the lock and print that
-			 * as part of the debugging message. -- mbp */
-			return -1;
-		}
-	}
-
-	return ret == 0 ? 0 : -1;
-}
-
-/****************************************************************************
- Write lock a chain. Return non-zero if timeout or lock failed.
-****************************************************************************/
-
-int tdb_chainlock_with_timeout( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout)
-{
-	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_WRLCK);
-}
-
-int tdb_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval,
-				   int timeout)
-{
-	TDB_DATA key = string_term_tdb_data(keyval);
-
-	return tdb_chainlock_with_timeout(tdb, key, timeout);
-}
-
-/****************************************************************************
- Read lock a chain by string. Return non-zero if timeout or lock failed.
-****************************************************************************/
-
-int tdb_read_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval, unsigned int timeout)
-{
-	TDB_DATA key = string_term_tdb_data(keyval);
-
-	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_RDLCK);
-}
-
 /****************************************************************************
  Atomic unsigned integer change. Returns old value. To create, set initial value in *oldval. 
 ****************************************************************************/
@@ -503,4 +425,94 @@ NTSTATUS map_nt_error_from_tdb(enum TDB_ERROR err)
 		break;
 	};
 	return result;
+}
+
+int map_unix_error_from_tdb(enum TDB_ERROR err)
+{
+	int result = EINVAL;
+
+	switch (err) {
+	case TDB_SUCCESS:
+		result = 0;
+		break;
+	case TDB_ERR_CORRUPT:
+		result = EILSEQ;
+		break;
+	case TDB_ERR_IO:
+		result = EIO;
+		break;
+	case TDB_ERR_OOM:
+		result = ENOMEM;
+		break;
+	case TDB_ERR_EXISTS:
+		result = EEXIST;
+		break;
+
+	case TDB_ERR_LOCK:
+		/*
+		 * TDB_ERR_LOCK is very broad, we could for example
+		 * distinguish between fcntl locks and invalid lock
+		 * sequences. EWOULDBLOCK is wrong, but there is no real
+		 * generic lock error code in errno.h
+		 */
+		result = EWOULDBLOCK;
+		break;
+
+	case TDB_ERR_NOLOCK:
+	case TDB_ERR_LOCK_TIMEOUT:
+		/*
+		 * These two ones in the enum are not actually used
+		 */
+		result = ENOLCK;
+		break;
+	case TDB_ERR_NOEXIST:
+		result = ENOENT;
+		break;
+	case TDB_ERR_EINVAL:
+		result = EINVAL;
+		break;
+	case TDB_ERR_RDONLY:
+		result = EROFS;
+		break;
+	case TDB_ERR_NESTING:
+		/*
+		 * Well, this db is already busy...
+		 */
+		result = EBUSY;
+		break;
+	};
+	return result;
+}
+
+struct tdb_fetch_talloc_state {
+	TALLOC_CTX *mem_ctx;
+	uint8_t *buf;
+};
+
+static int tdb_fetch_talloc_parser(TDB_DATA key, TDB_DATA data,
+                                   void *private_data)
+{
+	struct tdb_fetch_talloc_state *state = private_data;
+	state->buf = talloc_memdup(state->mem_ctx, data.dptr, data.dsize);
+	return 0;
+}
+
+int tdb_fetch_talloc(struct tdb_context *tdb, TDB_DATA key,
+		     TALLOC_CTX *mem_ctx, uint8_t **buf)
+{
+	struct tdb_fetch_talloc_state state = { .mem_ctx = mem_ctx };
+	int ret;
+
+	ret = tdb_parse_record(tdb, key, tdb_fetch_talloc_parser, &state);
+	if (ret == -1) {
+		enum TDB_ERROR err = tdb_error(tdb);
+		return map_unix_error_from_tdb(err);
+	}
+
+	if (state.buf == NULL) {
+		return ENOMEM;
+	}
+
+	*buf = state.buf;
+	return 0;
 }

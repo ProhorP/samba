@@ -430,21 +430,21 @@ static WERROR dcesrv_drsuapi_DsCrackNames(struct dcesrv_call_state *dce_call, TA
 	switch (r->in.level) {
 		case 1: {
 			switch(r->in.req->req1.format_offered){
-			case DRSUAPI_DS_NAME_FORMAT_UPN_AND_ALTSECID:
 			case DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT_NAME_SANS_DOMAIN_EX:
-			case DRSUAPI_DS_NAME_FORMAT_LIST_GLOBAL_CATALOG_SERVERS:
-			case DRSUAPI_DS_NAME_FORMAT_UPN_FOR_LOGON:
-			case DRSUAPI_DS_NAME_FORMAT_LIST_SERVERS_WITH_DCS_IN_SITE:
+			case DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT_NAME_SANS_DOMAIN:
 			case DRSUAPI_DS_NAME_FORMAT_STRING_SID_NAME:
 			case DRSUAPI_DS_NAME_FORMAT_ALT_SECURITY_IDENTITIES_NAME:
+			case DRSUAPI_DS_NAME_FORMAT_MAP_SCHEMA_GUID:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_NCS:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_DOMAINS:
-			case DRSUAPI_DS_NAME_FORMAT_MAP_SCHEMA_GUID:
-			case DRSUAPI_DS_NAME_FORMAT_NT4_ACCOUNT_NAME_SANS_DOMAIN:
+			case DRSUAPI_DS_NAME_FORMAT_LIST_GLOBAL_CATALOG_SERVERS:
+			case DRSUAPI_DS_NAME_FORMAT_LIST_SERVERS_WITH_DCS_IN_SITE:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_SERVERS_FOR_DOMAIN_IN_SITE:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_DOMAINS_IN_SITE:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_SERVERS_IN_SITE:
 			case DRSUAPI_DS_NAME_FORMAT_LIST_SITES:
+			case DRSUAPI_DS_NAME_FORMAT_UPN_AND_ALTSECID:
+			case DRSUAPI_DS_NAME_FORMAT_UPN_FOR_LOGON:
 				DEBUG(0, ("DsCrackNames: Unsupported operation requested: %X",
 					  r->in.req->req1.format_offered));
 				return WERR_OK;
@@ -773,6 +773,8 @@ static WERROR dcesrv_drsuapi_DsGetDomainControllerInfo_1(struct drsuapi_bind_sta
 
 		}
 		break;
+	default:
+		return WERR_UNKNOWN_LEVEL;
 	}
 	return WERR_OK;
 }
@@ -805,6 +807,7 @@ static WERROR dcesrv_drsuapi_DsExecuteKCC(struct dcesrv_call_state *dce_call, TA
 				  struct drsuapi_DsExecuteKCC *r)
 {
 	WERROR status;
+	uint32_t timeout;
 	status = drs_security_level_check(dce_call, "DsExecuteKCC", SECURITY_DOMAIN_CONTROLLER, NULL);
 
 	if (!W_ERROR_IS_OK(status)) {
@@ -813,9 +816,20 @@ static WERROR dcesrv_drsuapi_DsExecuteKCC(struct dcesrv_call_state *dce_call, TA
 	if (r->in.req->ctr1.taskID != 0) {
 		return WERR_INVALID_PARAM;
 	}
+	if (r->in.req->ctr1.flags & DRSUAPI_DS_EXECUTE_KCC_ASYNCHRONOUS_OPERATION) {
+		timeout = IRPC_CALL_TIMEOUT;
+	} else {
+		/*
+		 * use Infinite time for timeout in case
+		 * the caller made a sync call
+		 */
+		timeout = IRPC_CALL_TIMEOUT_INF;
+	}
+
 	dcesrv_irpc_forward_rpc_call(dce_call, mem_ctx, r, NDR_DRSUAPI_DSEXECUTEKCC,
 				     &ndr_table_drsuapi, "kccsrv", "DsExecuteKCC",
-				     IRPC_CALL_TIMEOUT);
+				     timeout);
+	DEBUG(0, ("Forwarded the call to execute the KCC\n"));
 	return WERR_OK;
 }
 

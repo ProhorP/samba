@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/ndr_wbint_c.h"
+#include "librpc/gen_ndr/ndr_winbind_c.h"
 
 struct winbindd_dsgetdcname_state {
 	struct GUID guid;
@@ -57,7 +57,7 @@ struct tevent_req *winbindd_dsgetdcname_send(TALLOC_CTX *mem_ctx,
 	DEBUG(3, ("[%5lu]: dsgetdcname for %s\n", (unsigned long)cli->pid,
 		  request->data.dsgetdcname.domain_name));
 
-	ds_flags = get_dsgetdc_flags(request->flags);
+	ds_flags = get_dsgetdc_flags(request->data.dsgetdcname.flags);
 
 	status = GUID_from_string(request->data.dsgetdcname.domain_guid,
 				  &state->guid);
@@ -101,6 +101,7 @@ NTSTATUS winbindd_dsgetdcname_recv(struct tevent_req *req,
 {
 	struct winbindd_dsgetdcname_state *state = tevent_req_data(
 		req, struct winbindd_dsgetdcname_state);
+	struct GUID_txt_buf guid_str_buf;
 	char *guid_str;
 	NTSTATUS status;
 
@@ -109,10 +110,6 @@ NTSTATUS winbindd_dsgetdcname_recv(struct tevent_req *req,
 		return status;
 	}
 
-	guid_str = GUID_string(talloc_tos(), &state->dc_info->domain_guid);
-	if (guid_str == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
 
 	fstrcpy(response->data.dsgetdcname.dc_unc,
 		state->dc_info->dc_unc);
@@ -120,8 +117,11 @@ NTSTATUS winbindd_dsgetdcname_recv(struct tevent_req *req,
 		state->dc_info->dc_address);
 	response->data.dsgetdcname.dc_address_type =
 		state->dc_info->dc_address_type;
+
+	guid_str = GUID_buf_string(&state->dc_info->domain_guid,
+				   &guid_str_buf);
 	fstrcpy(response->data.dsgetdcname.domain_guid, guid_str);
-	TALLOC_FREE(guid_str);
+
 	fstrcpy(response->data.dsgetdcname.domain_name,
 		state->dc_info->domain_name);
 	fstrcpy(response->data.dsgetdcname.forest_name,

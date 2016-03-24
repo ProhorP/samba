@@ -21,8 +21,17 @@ DC_USERNAME="$3"
 DC_PASSWORD="$4"
 
 wbinfo="$VALGRIND $BINDIR/wbinfo"
-ldbadd="$BINDIR/ldbadd"
-ldbdel="$BINDIR/ldbdel"
+
+ldbadd="ldbadd"
+if [ -x "$BINDIR/ldbadd" ]; then
+	ldbadd="$BINDIR/ldbadd"
+fi
+
+ldbdel="ldbdel"
+if [ -x "$BINDIR/ldbdel" ]; then
+	ldbdel="$BINDIR/ldbdel"
+fi
+
 failed=0
 
 . `dirname $0`/../../testprogs/blackbox/subunit.sh
@@ -95,24 +104,24 @@ testit "add second ldap group mapping record" $VALGRIND $ldbadd -H ldap://$DC_SE
 
 rm -f $PREFIX/tmpldbmodify
 
-testit "wbinfo --name-to-sid" $wbinfo --name-to-sid "$DOMAIN\\$USERNAME" || failed=$(expr $failed + 1)
-user_sid=$($wbinfo -n "$DOMAIN\\$USERNAME" | cut -d " " -f1)
-echo "$DOMAIN\\$USERNAME resolved to $user_sid"
+testit "wbinfo --name-to-sid" $wbinfo --name-to-sid "$DOMAIN/$USERNAME" || failed=$(expr $failed + 1)
+user_sid=$($wbinfo -n "$DOMAIN/$USERNAME" | cut -d " " -f1)
+echo "$DOMAIN/$USERNAME resolved to $user_sid"
 
 testit "wbinfo --sid-to-uid=$user_sid" $wbinfo --sid-to-uid=$user_sid || failed=$(expr $failed + 1)
 user_uid=$($wbinfo --sid-to-uid=$user_sid | cut -d " " -f1)
-echo "$DOMAIN\\$USERNAME resolved to $user_uid"
+echo "$DOMAIN/$USERNAME resolved to $user_uid"
 
 testit "test $user_uid -eq $USERUID" test $user_uid -eq $USERUID || failed=$(expr $failed + 1)
 
 # Not sure how to get group names with spaces to resolve through testit
-#testit "wbinfo --name-to-sid" $wbinfo --name-to-sid="$DOMAIN\\$GROUPNAME" || failed=$(expr $failed + 1)
-group_sid=$($wbinfo --name-to-sid="$DOMAIN\\$GROUPNAME" | cut -d " " -f1)
-echo "$DOMAIN\\$GROUPNAME resolved to $group_sid"
+#testit "wbinfo --name-to-sid" $wbinfo --name-to-sid="$DOMAIN/$GROUPNAME" || failed=$(expr $failed + 1)
+group_sid=$($wbinfo --name-to-sid="$DOMAIN/$GROUPNAME" | cut -d " " -f1)
+echo "$DOMAIN/$GROUPNAME resolved to $group_sid"
 
 testit "wbinfo --sid-to-gid=$group_sid" $wbinfo --sid-to-gid=$group_sid || failed=$(expr $failed + 1)
 group_gid=$($wbinfo --sid-to-gid=$group_sid | cut -d " " -f1)
-echo "$DOMAIN\\$GROUPNAME resolved to $group_gid"
+echo "$DOMAIN/$GROUPNAME resolved to $group_gid"
 
 testit "test $group_gid -eq $GROUPGID" test $group_gid -eq $GROUPGID || failed=$(expr $failed + 1)
 
@@ -126,7 +135,7 @@ testit "$wbinfo --sid-to-name=$user_sid2" $wbinfo --sid-to-name=$user_sid2 || fa
 user_name2=$($wbinfo --sid-to-name=$user_sid2 | cut -d " " -f1)
 echo "SID $user_sid2 resolved to $user_name2"
 
-testit "test $user_name2 = $DOMAIN\\$USERNAME2" test "$(echo $user_name2 | tr A-Z a-z)" = "$(echo $DOMAIN\\$USERNAME2 | tr A-Z a-z)" || failed=$(expr $failed + 1)
+testit "test $user_name2 = $DOMAIN/$USERNAME2" test "$(echo $user_name2 | tr A-Z a-z)" = "$(echo $DOMAIN/$USERNAME2 | tr A-Z a-z)" || failed=$(expr $failed + 1)
 
 testit "$wbinfo --gid-to-sid=$GROUPGID2" $wbinfo --gid-to-sid=$GROUPGID2 || failed=$(expr $failed + 1)
 group_sid2=$($wbinfo --gid-to-sid=$GROUPGID2 | cut -d " " -f1)
@@ -136,7 +145,7 @@ testit "$wbinfo --sid-to-name=$group_sid2" $wbinfo --sid-to-name=$group_sid2 || 
 group_name2=$($wbinfo --sid-to-name=$group_sid2 | cut -d " " -f1)
 echo "SID $group_sid2 resolved to $group_name2"
 
-testit "test $group_name2 = $DOMAIN\\$GROUPNAME2" test "$(echo $group_name2 | tr A-Z a-z)" = "$(echo $DOMAIN\\$GROUPNAME2 | tr A-Z a-z)" || failed=$(expr $failed + 1)
+testit "test $group_name2 = $DOMAIN/$GROUPNAME2" test "$(echo $group_name2 | tr A-Z a-z)" = "$(echo $DOMAIN/$GROUPNAME2 | tr A-Z a-z)" || failed=$(expr $failed + 1)
 
 # Delete LDAP records
 $VALGRIND $ldbdel -H ldap://$DC_SERVER -U$DOMAIN/$DC_USERNAME%$DC_PASSWORD "cn=$USERNAME,$LDAPPREFIX"

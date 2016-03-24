@@ -40,7 +40,7 @@ extern const struct generic_mapping file_generic_mapping;
 #define SMB_ACE4_INT_MAGIC 0x76F8A967
 typedef struct _SMB_ACE4_INT_T
 {
-	uint32	magic;
+	uint32_t magic;
 	SMB_ACE4PROP_T	prop;
 	void	*next;
 } SMB_ACE4_INT_T;
@@ -48,8 +48,9 @@ typedef struct _SMB_ACE4_INT_T
 #define SMB_ACL4_INT_MAGIC 0x29A3E792
 typedef struct _SMB_ACL4_INT_T
 {
-	uint32	magic;
-	uint32	naces;
+	uint32_t magic;
+	uint16_t controlflags;
+	uint32_t naces;
 	SMB_ACE4_INT_T	*first;
 	SMB_ACE4_INT_T	*last;
 } SMB_ACL4_INT_T;
@@ -85,16 +86,29 @@ static int smbacl4_get_vfs_params(
 		{ e_merge, "merge" },
 		{ -1 , NULL }
 	};
+	int enumval;
 
 	memset(params, 0, sizeof(smbacl4_vfs_params));
-	params->mode = (enum smbacl4_mode_enum)lp_parm_enum(
-		SNUM(conn), type_name,
-		"mode", enum_smbacl4_modes, e_simple);
+
+	enumval = lp_parm_enum(SNUM(conn), type_name, "mode",
+			       enum_smbacl4_modes, e_simple);
+	if (enumval == -1) {
+		DEBUG(10, ("value for %s:mode unknown\n", type_name));
+		return -1;
+	}
+	params->mode = (enum smbacl4_mode_enum)enumval;
+
 	params->do_chown = lp_parm_bool(SNUM(conn), type_name,
 		"chown", true);
-	params->acedup = (enum smbacl4_acedup_enum)lp_parm_enum(
-		SNUM(conn), type_name,
-		"acedup", enum_smbacl4_acedups, e_dontcare);
+
+	enumval = lp_parm_enum(SNUM(conn), type_name, "acedup",
+			       enum_smbacl4_acedups, e_dontcare);
+	if (enumval == -1) {
+		DEBUG(10, ("value for %s:acedup unknown\n", type_name));
+		return -1;
+	}
+	params->acedup = (enum smbacl4_acedup_enum)enumval;
+
 	params->map_full_control = lp_acl_map_full_control(SNUM(conn));
 
 	DEBUG(10, ("mode:%s, do_chown:%s, acedup: %s map full control:%s\n",
@@ -205,6 +219,7 @@ SMB4ACL_T *smb_create_smb4acl(TALLOC_CTX *mem_ctx)
 		return NULL;
 	}
 	theacl->magic = SMB_ACL4_INT_MAGIC;
+	theacl->controlflags = SEC_DESC_SELF_RELATIVE;
 	/* theacl->first, last = NULL not needed */
 	return (SMB4ACL_T *)theacl;
 }
@@ -266,13 +281,32 @@ SMB4ACE_T *smb_first_ace4(SMB4ACL_T *theacl)
 	return (SMB4ACE_T *)aclint->first;
 }
 
-uint32 smb_get_naces(SMB4ACL_T *theacl)
+uint32_t smb_get_naces(SMB4ACL_T *theacl)
 {
 	SMB_ACL4_INT_T *aclint = get_validated_aclint(theacl);
 	if (aclint==NULL)
 		return 0;
 
 	return aclint->naces;
+}
+
+uint16_t smbacl4_get_controlflags(SMB4ACL_T *theacl)
+{
+	SMB_ACL4_INT_T *aclint = get_validated_aclint(theacl);
+	if (aclint==NULL)
+		return 0;
+
+	return aclint->controlflags;
+}
+
+bool smbacl4_set_controlflags(SMB4ACL_T *theacl, uint16_t controlflags)
+{
+	SMB_ACL4_INT_T *aclint = get_validated_aclint(theacl);
+	if (aclint==NULL)
+		return false;
+
+	aclint->controlflags = controlflags;
+	return true;
 }
 
 static int smbacl4_GetFileOwner(struct connection_struct *conn,
@@ -325,18 +359,18 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx,
 	struct security_ace *nt_ace_list = NULL;
 	int good_aces = 0;
 
-	DEBUG(10, ("smbacl_nfs42win entered\n"));
+	DEBUG(10, ("%s entered\n", __func__));
 
 	aclint = get_validated_aclint(theacl);
-	/* We do not check for naces being 0 or theacl being NULL here
-	   because it is done upstream in smb_get_nt_acl_nfs4().
+	/* We do not check for theacl being NULL here
+	   because this is already checked in smb_get_nt_acl_nfs4().
 	   We reserve twice the number of input aces because one nfs4
 	   ace might result in 2 nt aces.*/
 	nt_ace_list = (struct security_ace *)TALLOC_ZERO_SIZE(
 		mem_ctx, 2 * aclint->naces * sizeof(struct security_ace));
 	if (nt_ace_list==NULL)
 	{
-		DEBUG(10, ("talloc error"));
+		DEBUG(10, ("talloc error with %d aces", aclint->naces));
 		errno = ENOMEM;
 		return false;
 	}
@@ -473,10 +507,12 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx,
 		}
 	}
 
-	nt_ace_list = (struct security_ace *)TALLOC_REALLOC(mem_ctx,
-					nt_ace_list,
-					good_aces * sizeof(struct security_ace));
-	if (nt_ace_list == NULL) {
+	nt_ace_list = (struct security_ace *)
+		TALLOC_REALLOC(mem_ctx, nt_ace_list,
+				       good_aces * sizeof(struct security_ace));
+	/* returns a NULL ace list when good_aces is zero. */
+	if (good_aces && nt_ace_list == NULL) {
+		DEBUG(10, ("realloc error with %d aces", good_aces));
 		errno = ENOMEM;
 		return false;
 	}
@@ -489,7 +525,7 @@ static bool smbacl4_nfs42win(TALLOC_CTX *mem_ctx,
 
 static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 					   smbacl4_vfs_params *params,
-					   uint32 security_info,
+					   uint32_t security_info,
 					   TALLOC_CTX *mem_ctx,
 					   struct security_descriptor **ppdesc,
 					   SMB4ACL_T *theacl)
@@ -501,11 +537,11 @@ static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 	struct security_acl *psa = NULL;
 	TALLOC_CTX *frame = talloc_stackframe();
 
-	if (theacl==NULL || smb_get_naces(theacl)==0) {
+	if (theacl==NULL) {
 		TALLOC_FREE(frame);
 		return NT_STATUS_ACCESS_DENIED; /* special because we
-						 * shouldn't alloc 0 for
-						 * win */
+						 * need to think through
+						 * the null case.*/
 	}
 
 	uid_to_sid(&sid_owner, sbuf->st_ex_uid);
@@ -513,7 +549,7 @@ static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 
 	if (smbacl4_nfs42win(mem_ctx, params, theacl, &sid_owner, &sid_group,
 			     S_ISDIR(sbuf->st_ex_mode),
-				&nt_ace_list, &good_aces)==false) {
+			     &nt_ace_list, &good_aces)==false) {
 		DEBUG(8,("smbacl4_nfs42win failed\n"));
 		TALLOC_FREE(frame);
 		return map_nt_error_from_unix(errno);
@@ -528,7 +564,7 @@ static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 
 	DEBUG(10,("after make sec_acl\n"));
 	*ppdesc = make_sec_desc(
-		mem_ctx, SD_REVISION, SEC_DESC_SELF_RELATIVE,
+		mem_ctx, SD_REVISION, smbacl4_get_controlflags(theacl),
 		(security_info & SECINFO_OWNER) ? &sid_owner : NULL,
 		(security_info & SECINFO_GROUP) ? &sid_group : NULL,
 		NULL, psa, &sd_size);
@@ -547,7 +583,7 @@ static NTSTATUS smb_get_nt_acl_nfs4_common(const SMB_STRUCT_STAT *sbuf,
 }
 
 NTSTATUS smb_fget_nt_acl_nfs4(files_struct *fsp,
-			      uint32 security_info,
+			      uint32_t security_info,
 			      TALLOC_CTX *mem_ctx,
 			      struct security_descriptor **ppdesc,
 			      SMB4ACL_T *theacl)
@@ -572,7 +608,7 @@ NTSTATUS smb_fget_nt_acl_nfs4(files_struct *fsp,
 
 NTSTATUS smb_get_nt_acl_nfs4(struct connection_struct *conn,
 			     const char *name,
-			     uint32 security_info,
+			     uint32_t security_info,
 			     TALLOC_CTX *mem_ctx,
 			     struct security_descriptor **ppdesc,
 			     SMB4ACL_T *theacl)
@@ -742,6 +778,9 @@ static bool smbacl4_fill_ace4(
 			ace_v4->who.gid = gid;
 		} else if (sid_to_uid(&ace_nt->trustee, &uid)) {
 			ace_v4->who.uid = uid;
+		} else if (dom_sid_compare_domain(&ace_nt->trustee,
+						  &global_sid_Unix_NFS) == 0) {
+			return false;
 		} else {
 			DEBUG(1, ("nfs4_acls.c: file [%s]: could not "
 				  "convert %s to uid or gid\n",
@@ -876,7 +915,7 @@ static SMB4ACL_T *smbacl4_win2nfs4(
 )
 {
 	SMB4ACL_T *theacl;
-	uint32	i;
+	uint32_t i;
 	const char *filename = fsp->fsp_name->base_name;
 
 	DEBUG(10, ("smbacl4_win2nfs4 invoked\n"));
@@ -920,7 +959,7 @@ static SMB4ACL_T *smbacl4_win2nfs4(
 }
 
 NTSTATUS smb_set_nt_acl_nfs4(vfs_handle_struct *handle, files_struct *fsp,
-	uint32 security_info_sent,
+	uint32_t security_info_sent,
 	const struct security_descriptor *psd,
 	set_nfs4acl_native_fn_t set_nfs4_native)
 {
@@ -1013,6 +1052,7 @@ NTSTATUS smb_set_nt_acl_nfs4(vfs_handle_struct *handle, files_struct *fsp,
 		return map_nt_error_from_unix(errno);
 	}
 
+	smbacl4_set_controlflags(theacl, psd->type);
 	smbacl4_dump_nfs4acl(10, theacl);
 
 	if (set_acl_as_root) {

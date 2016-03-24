@@ -160,7 +160,7 @@ bool trustdom_cache_fetch(const char* name, struct dom_sid* sid)
 	if (!key)
 		return False;
 
-	if (!gencache_get(key, &value, &timeout)) {
+	if (!gencache_get(key, talloc_tos(), &value, &timeout)) {
 		DEBUG(5, ("no entry for trusted domain %s found.\n", name));
 		SAFE_FREE(key);
 		return False;
@@ -172,11 +172,11 @@ bool trustdom_cache_fetch(const char* name, struct dom_sid* sid)
 	/* convert sid string representation into struct dom_sid structure */
 	if(! string_to_sid(sid, value)) {
 		sid = NULL;
-		SAFE_FREE(value);
+		TALLOC_FREE(value);
 		return False;
 	}
 
-	SAFE_FREE(value);
+	TALLOC_FREE(value);
 	return True;
 }
 
@@ -185,13 +185,13 @@ bool trustdom_cache_fetch(const char* name, struct dom_sid* sid)
  fetch the timestamp from the last update 
 *******************************************************************/
 
-uint32 trustdom_cache_fetch_timestamp( void )
+uint32_t trustdom_cache_fetch_timestamp( void )
 {
 	char *value = NULL;
 	time_t timeout;
-	uint32 timestamp;
+	uint32_t timestamp;
 
-	if (!gencache_get(TDOMTSKEY, &value, &timeout)) {
+	if (!gencache_get(TDOMTSKEY, talloc_tos(), &value, &timeout)) {
 		DEBUG(5, ("no timestamp for trusted domain cache located.\n"));
 		SAFE_FREE(value);
 		return 0;
@@ -199,7 +199,7 @@ uint32 trustdom_cache_fetch_timestamp( void )
 
 	timestamp = atoi(value);
 
-	SAFE_FREE(value);
+	TALLOC_FREE(value);
 	return timestamp;
 }
 
@@ -207,7 +207,7 @@ uint32 trustdom_cache_fetch_timestamp( void )
  store the timestamp from the last update 
 *******************************************************************/
 
-bool trustdom_cache_store_timestamp( uint32 t, time_t timeout )
+bool trustdom_cache_store_timestamp( uint32_t t, time_t timeout )
 {
 	fstring value;
 
@@ -254,14 +254,14 @@ void trustdom_cache_flush(void)
 *********************************************************************/
 
 static bool enumerate_domain_trusts( TALLOC_CTX *mem_ctx, const char *domain,
-                                     char ***domain_names, uint32 *num_domains,
+                                     char ***domain_names, uint32_t *num_domains,
 				     struct dom_sid **sids )
 {
 	struct policy_handle 	pol;
 	NTSTATUS status, result;
 	fstring 	dc_name;
 	struct sockaddr_storage	dc_ss;
-	uint32 		enum_ctx = 0;
+	uint32_t 		enum_ctx = 0;
 	struct cli_state *cli = NULL;
 	struct rpc_pipe_client *lsa_pipe = NULL;
 	struct lsa_DomainList dom_list;
@@ -289,7 +289,7 @@ static bool enumerate_domain_trusts( TALLOC_CTX *mem_ctx, const char *domain,
 
 	/* open the LSARPC_PIPE	*/
 
-	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					  &lsa_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto done;
@@ -357,8 +357,8 @@ void update_trustdom_cache( void )
 {
 	char **domain_names;
 	struct dom_sid *dom_sids;
-	uint32 num_domains;
-	uint32 last_check;
+	uint32_t num_domains;
+	uint32_t last_check;
 	int time_diff;
 	TALLOC_CTX *mem_ctx = NULL;
 	time_t now = time(NULL);

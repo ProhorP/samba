@@ -91,7 +91,7 @@ static char *lpcfg_common_path(TALLOC_CTX* mem_ctx,
 	}
 	trim_string(dname,"","/");
 
-	ok = directory_create_or_exist(dname, geteuid(), 0755);
+	ok = directory_create_or_exist(dname, 0755);
 	if (!ok) {
 		DEBUG(1, ("Unable to create directory %s for file %s. "
 			  "Error was %s\n", dname, name, strerror(errno)));
@@ -114,7 +114,7 @@ static char *lpcfg_common_path(TALLOC_CTX* mem_ctx,
 char *lpcfg_lock_path(TALLOC_CTX* mem_ctx, struct loadparm_context *lp_ctx,
 			 const char *name)
 {
-	return lpcfg_common_path(mem_ctx, lpcfg_lockdir(lp_ctx), name);
+	return lpcfg_common_path(mem_ctx, lpcfg_lock_directory(lp_ctx), name);
 }
 
 /**
@@ -123,7 +123,7 @@ char *lpcfg_lock_path(TALLOC_CTX* mem_ctx, struct loadparm_context *lp_ctx,
 char *lpcfg_state_path(TALLOC_CTX* mem_ctx, struct loadparm_context *lp_ctx,
 		       const char *name)
 {
-	return lpcfg_common_path(mem_ctx, lpcfg_statedir(lp_ctx), name);
+	return lpcfg_common_path(mem_ctx, lpcfg_state_directory(lp_ctx), name);
 }
 
 /**
@@ -132,7 +132,7 @@ char *lpcfg_state_path(TALLOC_CTX* mem_ctx, struct loadparm_context *lp_ctx,
 char *lpcfg_cache_path(TALLOC_CTX* mem_ctx, struct loadparm_context *lp_ctx,
 		       const char *name)
 {
-	return lpcfg_common_path(mem_ctx, lpcfg_cachedir(lp_ctx), name);
+	return lpcfg_common_path(mem_ctx, lpcfg_cache_directory(lp_ctx), name);
 }
 
 /**
@@ -193,9 +193,7 @@ char *lpcfg_private_path(TALLOC_CTX* mem_ctx,
  * @brief Returns an absolute path to a NTDB or TDB file in the Samba
  * private directory.
  *
- * @param name File to find, relative to PRIVATEDIR, without .(n)tdb extension.
- * Only provide fixed-string names which are supposed to change with "use ntdb"
- * option.
+ * @param name File to find, relative to PRIVATEDIR, without .tdb extension.
  *
  * @retval Pointer to a talloc'ed string containing the full path, for
  * use with dbwrap_local_open().
@@ -204,14 +202,8 @@ char *lpcfg_private_db_path(TALLOC_CTX *mem_ctx,
 			    struct loadparm_context *lp_ctx,
 			    const char *name)
 {
-	const char *extension = ".tdb";
-
-	if (lpcfg_use_ntdb(lp_ctx)) {
-		extension = ".ntdb";
-	}
-
-	return talloc_asprintf(mem_ctx, "%s/%s%s",
-			       lpcfg_private_dir(lp_ctx), name, extension);
+	return talloc_asprintf(mem_ctx, "%s/%s.tdb",
+			       lpcfg_private_dir(lp_ctx), name);
 }
 
 /**
@@ -231,7 +223,7 @@ char *smbd_tmp_path(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	ok = directory_create_or_exist(dname, geteuid(), 0755);
+	ok = directory_create_or_exist(dname, 0755);
 	if (!ok) {
 		return NULL;
 	}

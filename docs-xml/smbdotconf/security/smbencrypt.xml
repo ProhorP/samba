@@ -1,7 +1,6 @@
 <samba:parameter name="smb encrypt"
                  context="S"
 				 type="enum"
-                 basic="1"
 		 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>
@@ -143,7 +142,7 @@
 		</itemizedlist>
 
 		<para>
-		These features can be crontrolled with settings of
+		These features can be controlled with settings of
 		<emphasis>smb encrypt</emphasis> as follows:
 		</para>
 

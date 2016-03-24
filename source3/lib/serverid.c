@@ -39,46 +39,40 @@ struct serverid_data {
 	uint32_t msg_flags;
 };
 
-bool serverid_parent_init(TALLOC_CTX *mem_ctx)
+static struct db_context *serverid_db(void)
 {
-	struct tdb_wrap *db;
-	struct loadparm_context *lp_ctx;
+	static struct db_context *db;
+	char *db_path;
 
-	lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
-	if (lp_ctx == NULL) {
-		DEBUG(0, ("loadparm_init_s3 failed\n"));
-		return false;
+	if (db != NULL) {
+		return db;
 	}
 
-	/*
-	 * Open the tdb in the parent process (smbd) so that our
-	 * CLEAR_IF_FIRST optimization in tdb_reopen_all can properly
-	 * work.
-	 */
+	db_path = lock_path("serverid.tdb");
+	if (db_path == NULL) {
+		return NULL;
+	}
 
-	db = tdb_wrap_open(mem_ctx, lock_path("serverid.tdb"),
-			   0, TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH, O_RDWR|O_CREAT,
-			   0644, lp_ctx);
-	talloc_unlink(mem_ctx, lp_ctx);
+	db = db_open(NULL, db_path, 0,
+		     TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
+		     O_RDWR|O_CREAT, 0644, DBWRAP_LOCK_ORDER_2,
+		     DBWRAP_FLAG_NONE);
+	TALLOC_FREE(db_path);
+	return db;
+}
+
+bool serverid_parent_init(TALLOC_CTX *mem_ctx)
+{
+	struct db_context *db;
+
+	db = serverid_db();
 	if (db == NULL) {
 		DEBUG(1, ("could not open serverid.tdb: %s\n",
 			  strerror(errno)));
 		return false;
 	}
+
 	return true;
-}
-
-static struct db_context *serverid_db(void)
-{
-	static struct db_context *db;
-
-	if (db != NULL) {
-		return db;
-	}
-	db = db_open(NULL, lock_path("serverid.tdb"), 0,
-		     TDB_DEFAULT|TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
-		     O_RDWR|O_CREAT, 0644, DBWRAP_LOCK_ORDER_2);
-	return db;
 }
 
 static void serverid_fill_key(const struct server_id *id,
@@ -125,66 +119,14 @@ bool serverid_register(const struct server_id id, uint32_t msg_flags)
 			  nt_errstr(status)));
 		goto done;
 	}
-#ifdef HAVE_CTDB_CONTROL_CHECK_SRVIDS_DECL
-	if (lp_clustering()) {
-		register_with_ctdbd(messaging_ctdbd_connection(), id.unique_id);
-	}
-#endif
-	ret = true;
-done:
-	TALLOC_FREE(rec);
-	return ret;
-}
 
-bool serverid_register_msg_flags(const struct server_id id, bool do_reg,
-				 uint32_t msg_flags)
-{
-	struct db_context *db;
-	struct serverid_key key;
-	struct serverid_data *data;
-	struct db_record *rec;
-	TDB_DATA tdbkey;
-	TDB_DATA value;
-	NTSTATUS status;
-	bool ret = false;
-
-	db = serverid_db();
-	if (db == NULL) {
-		return false;
+	if (lp_clustering() &&
+	    ctdb_serverids_exist_supported(messaging_ctdbd_connection()))
+	{
+		register_with_ctdbd(messaging_ctdbd_connection(), id.unique_id,
+				    NULL, NULL);
 	}
 
-	serverid_fill_key(&id, &key);
-	tdbkey = make_tdb_data((uint8_t *)&key, sizeof(key));
-
-	rec = dbwrap_fetch_locked(db, talloc_tos(), tdbkey);
-	if (rec == NULL) {
-		DEBUG(1, ("Could not fetch_lock serverid.tdb record\n"));
-		return false;
-	}
-
-	value = dbwrap_record_get_value(rec);
-
-	if (value.dsize != sizeof(struct serverid_data)) {
-		DEBUG(1, ("serverid record has unexpected size %d "
-			  "(wanted %d)\n", (int)value.dsize,
-			  (int)sizeof(struct serverid_data)));
-		goto done;
-	}
-
-	data = (struct serverid_data *)value.dptr;
-
-	if (do_reg) {
-		data->msg_flags |= msg_flags;
-	} else {
-		data->msg_flags &= ~msg_flags;
-	}
-
-	status = dbwrap_record_store(rec, value, 0);
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("Storing serverid.tdb record failed: %s\n",
-			  nt_errstr(status)));
-		goto done;
-	}
 	ret = true;
 done:
 	TALLOC_FREE(rec);
@@ -340,8 +282,9 @@ bool serverids_exist(const struct server_id *ids, int num_ids, bool *results)
 		remote_num += 1;
 	}
 
-#ifdef HAVE_CTDB_CONTROL_CHECK_SRVIDS_DECL
-	if (remote_num != 0) {
+	if (remote_num != 0 &&
+	    ctdb_serverids_exist_supported(messaging_ctdbd_connection()))
+	{
 		int old_remote_num = remote_num;
 
 		remote_num = 0;
@@ -383,7 +326,6 @@ bool serverids_exist(const struct server_id *ids, int num_ids, bool *results)
 			results[idx] = todo_results[t];
 		}
 	}
-#endif
 
 	if (remote_num != 0) {
 		todo_num = 0;
@@ -396,13 +338,11 @@ bool serverids_exist(const struct server_id *ids, int num_ids, bool *results)
 			todo_num += 1;
 		}
 
-#ifdef CLUSTER_SUPPORT
 		if (!ctdb_processes_exist(messaging_ctdbd_connection(),
 					  todo_ids, todo_num,
 					  todo_results)) {
 			goto fail;
 		}
-#endif
 
 		for (t=0; t<todo_num; t++) {
 			idx = todo_idx[t];

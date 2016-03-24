@@ -267,7 +267,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	struct cli_state *c = NULL;
 	const char *server_n = server;
         int is_ipc = (share != NULL && strcmp(share, "IPC$") == 0);
-	uint32 fs_attrs = 0;
+	uint32_t fs_attrs = 0;
         const char *username_used;
  	NTSTATUS status;
 	char *newserver, *newshare;
@@ -472,8 +472,8 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	cli_set_timeout(c, smbc_getTimeout(context));
 
 	status = smbXcli_negprot(c->conn, c->timeout,
-				 lp_cli_minprotocol(),
-				 lp_cli_maxprotocol());
+				 lp_client_min_protocol(),
+				 lp_client_max_protocol());
 	if (!NT_STATUS_IS_OK(status)) {
 		cli_shutdown(c);
 		errno = ETIMEDOUT;
@@ -507,14 +507,6 @@ SMBC_server_internal(TALLOC_CTX *ctx,
                         errno = EPERM;
                         return NULL;
                 }
-	}
-
-	status = cli_init_creds(c, username_used,
-				*pp_workgroup, *pp_password);
-	if (!NT_STATUS_IS_OK(status)) {
-		errno = map_errno_from_nt_status(status);
-		cli_shutdown(c);
-		return NULL;
 	}
 
 	DEBUG(4,(" session setup ok\n"));
@@ -628,7 +620,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
 	}
 
 	ZERO_STRUCTP(srv);
-	srv->cli = c;
+	DLIST_ADD(srv->cli, c);
 	srv->dev = (dev_t)(str_checksum(server) ^ str_checksum(share));
         srv->no_pathinfo = False;
         srv->no_pathinfo2 = False;
@@ -824,10 +816,10 @@ SMBC_attr_server(TALLOC_CTX *ctx,
                 }
 
                 ZERO_STRUCTP(ipc_srv);
-                ipc_srv->cli = ipc_cli;
+                DLIST_ADD(ipc_srv->cli, ipc_cli);
 
                 nt_status = cli_rpc_pipe_open_noauth(
-			ipc_srv->cli, &ndr_table_lsarpc.syntax_id, &pipe_hnd);
+			ipc_srv->cli, &ndr_table_lsarpc, &pipe_hnd);
                 if (!NT_STATUS_IS_OK(nt_status)) {
                         DEBUG(1, ("cli_nt_session_open fail!\n"));
                         errno = ENOTSUP;

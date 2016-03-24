@@ -22,7 +22,7 @@
 #include "smbd/globals.h"
 #include "../lib/util/memcache.h"
 #include "messages.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 
 int aio_pending_size = 100;	/* tevent supports 100 signals SA_SIGINFO */
 int outstanding_aio_calls = 0;
@@ -30,9 +30,6 @@ int outstanding_aio_calls = 0;
 #ifdef USE_DMAPI
 struct smbd_dmapi_context *dmapi_ctx = NULL;
 #endif
-
-
-bool dfree_broken = false;
 
 /* how many write cache buffers have been allocated */
 unsigned int allocated_write_caches = 0;
@@ -90,7 +87,7 @@ struct smbd_parent_context *am_parent = NULL;
 struct memcache *smbd_memcache_ctx = NULL;
 bool exit_firsttime = true;
 
-struct smbXsrv_connection *global_smbXsrv_connection = NULL;
+struct smbXsrv_client *global_smbXsrv_client = NULL;
 
 struct memcache *smbd_memcache(void)
 {

@@ -1,7 +1,6 @@
 <samba:parameter name="dns update command"
                  context="G"
-                 type="string"
-                 advanced="1"
+                 type="list"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>This option sets the command that is called when there are
@@ -10,6 +9,6 @@
 	</para>
 </description>
 
-<value type="default">$prefix/sbin/samba_dnsupdate</value>
+<value type="default">&pathconfig.SCRIPTSBINDIR;/samba_dnsupdate</value>
 <value type="example">/usr/local/sbin/dnsupdate</value>
 </samba:parameter>

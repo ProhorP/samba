@@ -1,4 +1,4 @@
-/* 
+/*
    Unix SMB/CIFS implementation.
    Utility to extract pcap files from samba (log level 10) log files
 
@@ -74,47 +74,47 @@ int hexformat = 0;
 
 /* tcpdump file format */
 struct tcpdump_file_header {
-	uint32 magic;
-	uint16 major;
-	uint16 minor;
-	int32 zone;
-	uint32 sigfigs;
-	uint32 snaplen;
-	uint32 linktype;
+	uint32_t magic;
+	uint16_t major;
+	uint16_t minor;
+	int32_t zone;
+	uint32_t sigfigs;
+	uint32_t snaplen;
+	uint32_t linktype;
 };
 
 struct tcpdump_packet {
 	struct timeval ts;
-	uint32 caplen;
-	uint32 len;
+	uint32_t caplen;
+	uint32_t len;
 };
 
 typedef struct {
-    uint8  ver_hdrlen;
-    uint8  dscp;
-    uint16 packet_length;
-    uint16 identification;
-    uint8  flags;
-    uint8  fragment;
-    uint8  ttl;
-    uint8  protocol;
-    uint16 hdr_checksum;
-    uint32 src_addr;
-    uint32 dest_addr;
+    uint8_t  ver_hdrlen;
+    uint8_t  dscp;
+    uint16_t packet_length;
+    uint16_t identification;
+    uint8_t  flags;
+    uint8_t  fragment;
+    uint8_t  ttl;
+    uint8_t  protocol;
+    uint16_t hdr_checksum;
+    uint32_t src_addr;
+    uint32_t dest_addr;
 } hdr_ip_t;
 
 static hdr_ip_t HDR_IP = {0x45, 0, 0, 0x3412, 0, 0, 0xff, 6, 0, 0x01010101, 0x02020202};
 
 typedef struct {
-    uint16 source_port;
-    uint16 dest_port;
-    uint32 seq_num;
-    uint32 ack_num;
-    uint8  hdr_length;
-    uint8  flags;
-    uint16 window;
-    uint16 checksum;
-    uint16 urg;
+    uint16_t source_port;
+    uint16_t dest_port;
+    uint32_t seq_num;
+    uint32_t ack_num;
+    uint8_t  hdr_length;
+    uint8_t  flags;
+    uint16_t window;
+    uint16_t checksum;
+    uint16_t urg;
 } hdr_tcp_t;
 
 static hdr_tcp_t HDR_TCP = {139, 139, 0, 0, 0x50, 0, 0, 0, 0};
@@ -154,7 +154,6 @@ static void print_hex_packet(FILE *out, unsigned char *data, long length)
 		for(i = cur; i < length && i < cur + 16; i++) {
 			fprintf(out, "%02x ", data[i]);
 		}
-	
 		cur = i;
 		fprintf(out, "\n");
 	}
@@ -162,10 +161,10 @@ static void print_hex_packet(FILE *out, unsigned char *data, long length)
 
 static void print_netbios_packet(FILE *out, unsigned char *data, long length,
 				 long actual_length)
-{	
+{
 	unsigned char *newdata; long offset = 0;
 	long newlen;
-	
+
 	newlen = length+sizeof(HDR_IP)+sizeof(HDR_TCP);
 	newdata = (unsigned char *)malloc(newlen);
 
@@ -176,7 +175,7 @@ static void print_netbios_packet(FILE *out, unsigned char *data, long length,
 	memcpy(newdata+offset, &HDR_IP, sizeof(HDR_IP));offset+=sizeof(HDR_IP);
 	memcpy(newdata+offset, &HDR_TCP, sizeof(HDR_TCP));offset+=sizeof(HDR_TCP);
 	memcpy(newdata+offset,data,length);
-	
+
 	print_pcap_packet(out, newdata, newlen, actual_length+offset);
 	free(newdata);
 }
@@ -296,7 +295,7 @@ static long read_log_data(FILE *in, unsigned char *buffer, long data_length)
 	return data_length;
 }
 
-int main (int argc, char **argv)
+int main(int argc, const char **argv)
 {
 	const char *infile, *outfile;
 	FILE *out, *in;
@@ -312,12 +311,12 @@ int main (int argc, char **argv)
 		{ "hex", 'h', POPT_ARG_NONE, &hexformat, 0, "Output format readable by text2pcap" },
 		POPT_TABLEEND
 	};
-	
-	pc = poptGetContext(NULL, argc, (const char **) argv, long_options,
+
+	pc = poptGetContext(NULL, argc, argv, long_options,
 			    POPT_CONTEXT_KEEP_FIRST);
 	poptSetOtherOptionHelp(pc, "[<infile> [<outfile>]]");
-	
-	
+
+
 	while((opt = poptGetNextOpt(pc)) != -1) {
 		switch (opt) {
 		}
@@ -334,13 +333,13 @@ int main (int argc, char **argv)
 			return 1;
 		}
 	} else in = stdin;
-	
+
 	outfile = poptGetArg(pc);
 
 	if(outfile) {
 		out = fopen(outfile, "w+");
-		if(!out) { 
-			perror("fopen"); 
+		if(!out) {
+			perror("fopen");
 			fprintf(stderr, "Can't find %s, using stdout...\n", outfile);
 			return 1;
 		}
@@ -359,15 +358,15 @@ int main (int argc, char **argv)
 				read_log_msg(in, &curpacket, &curpacket_len, &data_offset, &data_length);
 			} else if(in_packet && strstr(buffer, "dump_data")) {
 				data_bytes_read = read_log_data(in, curpacket+data_offset, data_length);
-			}  else { 
-				if(in_packet){ 
-					if(hexformat) print_hex_packet(out, curpacket, curpacket_len); 
+			}  else {
+				if(in_packet){
+					if(hexformat) print_hex_packet(out, curpacket, curpacket_len);
 					else print_netbios_packet(out, curpacket, curpacket_len, data_bytes_read+data_offset);
-					free(curpacket); 
+					free(curpacket);
 				}
 				in_packet = 0;
 			}
-		} 
+		}
 	}
 
 	if (in != stdin) {

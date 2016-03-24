@@ -113,7 +113,7 @@ int sys_get_nfs_quota(const char *path, const char *bdev,
 	enum clnt_stat clnt_stat;
 
 	int ret = -1;
-	uint32 qflags = 0;
+	uint32_t qflags = 0;
 
 	if (!path || !bdev || !dp) {
 		smb_panic("sys_get_nfs_quota: called with NULL pointer");
@@ -155,7 +155,7 @@ int sys_get_nfs_quota(const char *path, const char *bdev,
 
 	DEBUG(10, ("sys_get_nfs_quotas: Asking for quota of path '%s' on "
 		   "host '%s', rpcprog '%i', rpcvers '%i', network '%s'\n",
-		    host, testpath+1, RQUOTAPROG, RQUOTAVERS, "udp"));
+		   host, testpath+1, (int)RQUOTAPROG, (int)RQUOTAVERS, "udp"));
 
 	clnt = clnt_create(host, RQUOTAPROG, RQUOTAVERS, "udp");
 	if (clnt == NULL) {

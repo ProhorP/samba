@@ -26,7 +26,7 @@
 #include "librpc/gen_ndr/xattr.h"
 #include "librpc/gen_ndr/ndr_xattr.h"
 #include "../librpc/gen_ndr/ndr_netlogon.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "ntvfs/posix/posix_eadb.h"
 #include "param/param.h"
@@ -257,8 +257,8 @@ static bool posix_eadb_init(int snum, struct tdb_wrap **p_db)
 
 	become_root();
 	db = tdb_wrap_open(NULL, eadb, 50000,
-			   TDB_DEFAULT, O_RDWR|O_CREAT, 0600,
-			   lp_ctx);
+			   lpcfg_tdb_flags(lp_ctx, TDB_DEFAULT),
+			   O_RDWR|O_CREAT, 0600);
 
 	unbecome_root();
 	talloc_unlink(NULL, lp_ctx);

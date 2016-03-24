@@ -42,8 +42,8 @@
  */
 static bool kccsrv_same_source_dsa(struct repsFromToBlob *r1, struct repsFromToBlob *r2)
 {
-	return GUID_compare(&r1->ctr.ctr1.source_dsa_obj_guid,
-			    &r2->ctr.ctr1.source_dsa_obj_guid) == 0;
+	return GUID_equal(&r1->ctr.ctr1.source_dsa_obj_guid,
+			  &r2->ctr.ctr1.source_dsa_obj_guid);
 }
 
 /*
@@ -498,7 +498,7 @@ NTSTATUS kccsrv_simple_update(struct kccsrv_service *s, TALLOC_CTX *mem_ctx)
 		struct GUID ntds_guid, invocation_id;
 
 		ntds_guid = samdb_result_guid(res->msgs[i], "objectGUID");
-		if (GUID_compare(&ntds_guid, &s->ntds_guid) == 0) {
+		if (GUID_equal(&ntds_guid, &s->ntds_guid)) {
 			/* don't replicate with ourselves */
 			continue;
 		}
@@ -606,7 +606,7 @@ static void kccsrv_periodic_run(struct kccsrv_service *service)
 	mem_ctx = talloc_new(service);
 
         if (service->samba_kcc_code)
-		status = kccsrv_samba_kcc(service, mem_ctx);
+		status = kccsrv_samba_kcc(service);
 	else {
 		status = kccsrv_simple_update(service, mem_ctx);
 		if (!NT_STATUS_IS_OK(status))
@@ -651,8 +651,7 @@ static void samba_kcc_done(struct tevent_req *subreq)
 /* Invocation of the samba_kcc python script for replication
  * topology generation.
  */
-NTSTATUS kccsrv_samba_kcc(struct kccsrv_service *service,
-			TALLOC_CTX *ctxp)
+NTSTATUS kccsrv_samba_kcc(struct kccsrv_service *service)
 {
 	NTSTATUS status = NT_STATUS_OK;
 	const char * const *samba_kcc_command =
@@ -661,7 +660,7 @@ NTSTATUS kccsrv_samba_kcc(struct kccsrv_service *service,
 	/* kill any existing child */
 	TALLOC_FREE(service->periodic.subreq);
 
-	DEBUG(0,("Calling samba_kcc script\n"));
+	DEBUG(2, ("Calling samba_kcc script\n"));
 	service->periodic.subreq = samba_runcmd_send(service,
 					service->task->event_ctx,
 					timeval_current_ofs(40, 0),

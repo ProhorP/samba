@@ -52,11 +52,11 @@ struct netlogon_creds_CredentialState *netlogon_creds_server_init(TALLOC_CTX *me
 								  const struct netr_Credential *client_challenge,
 								  const struct netr_Credential *server_challenge,
 								  const struct samr_Password *machine_password,
-								  struct netr_Credential *credentials_in,
+								  const struct netr_Credential *credentials_in,
 								  struct netr_Credential *credentials_out,
 								  uint32_t negotiate_flags);
 NTSTATUS netlogon_creds_server_step_check(struct netlogon_creds_CredentialState *creds,
-				 struct netr_Authenticator *received_authenticator,
+				 const struct netr_Authenticator *received_authenticator,
 				 struct netr_Authenticator *return_authenticator) ;
 void netlogon_creds_decrypt_samlogon_validation(struct netlogon_creds_CredentialState *creds,
 						uint16_t validation_level,
@@ -64,6 +64,15 @@ void netlogon_creds_decrypt_samlogon_validation(struct netlogon_creds_Credential
 void netlogon_creds_encrypt_samlogon_validation(struct netlogon_creds_CredentialState *creds,
 						uint16_t validation_level,
 						union netr_Validation *validation);
+void netlogon_creds_decrypt_samlogon_logon(struct netlogon_creds_CredentialState *creds,
+					   enum netr_LogonInfoClass level,
+					   union netr_LogonLevel *logon);
+void netlogon_creds_encrypt_samlogon_logon(struct netlogon_creds_CredentialState *creds,
+					   enum netr_LogonInfoClass level,
+					   union netr_LogonLevel *logon);
+union netr_LogonLevel *netlogon_creds_shallow_copy_logon(TALLOC_CTX *mem_ctx,
+					enum netr_LogonInfoClass level,
+					const union netr_LogonLevel *in);
 
 /* The following definitions come from /home/jeremy/src/samba/git/master/source3/../source4/../libcli/auth/session.c  */
 
@@ -180,6 +189,7 @@ bool set_pw_in_buffer(uint8_t buffer[516], DATA_BLOB *password);
 ************************************************************/
 bool extract_pw_from_buffer(TALLOC_CTX *mem_ctx, 
 			    uint8_t in_buffer[516], DATA_BLOB *new_pass);
+struct wkssvc_PasswordBuffer;
 void encode_wkssvc_join_password_buffer(TALLOC_CTX *mem_ctx,
 					const char *pwd,
 					DATA_BLOB *session_key,

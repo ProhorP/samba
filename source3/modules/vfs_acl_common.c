@@ -343,6 +343,9 @@ static NTSTATUS add_directory_inheritable_components(vfs_handle_struct *handle,
 	if (psd->dacl) {
 		psd->dacl->aces = new_ace_list;
 		psd->dacl->num_aces += 3;
+		psd->dacl->size += new_ace_list[num_aces].size +
+			new_ace_list[num_aces+1].size +
+			new_ace_list[num_aces+2].size;
 	} else {
 		psd->dacl = make_sec_acl(psd,
 				NT4_ACL_REVISION,
@@ -789,6 +792,15 @@ static NTSTATUS fset_nt_acl_common(vfs_handle_struct *handle, files_struct *fsp,
 		psd->group_sid = orig_psd->group_sid;
 	}
 	if (security_info_sent & SECINFO_DACL) {
+		if (security_descriptor_with_ms_nfs(orig_psd)) {
+			/*
+			 * If the sd contains a MS NFS SID, do
+			 * nothing, it's a chmod() request from OS X
+			 * with AAPL context.
+			 */
+			TALLOC_FREE(frame);
+			return NT_STATUS_OK;
+		}
 		psd->dacl = orig_psd->dacl;
 		psd->type |= SEC_DESC_DACL_PRESENT;
 	}
@@ -1077,7 +1089,7 @@ static int chmod_acl_module_common(struct vfs_handle_struct *handle,
 static int fchmod_acl_module_common(struct vfs_handle_struct *handle,
 			struct files_struct *fsp, mode_t mode)
 {
-	if (fsp->posix_open) {
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 		/* Only allow this on POSIX opens. */
 		return SMB_VFS_NEXT_FCHMOD(handle, fsp, mode);
 	}
@@ -1097,7 +1109,7 @@ static int chmod_acl_acl_module_common(struct vfs_handle_struct *handle,
 static int fchmod_acl_acl_module_common(struct vfs_handle_struct *handle,
 			struct files_struct *fsp, mode_t mode)
 {
-	if (fsp->posix_open) {
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 		/* Only allow this on POSIX opens. */
 		return SMB_VFS_NEXT_FCHMOD_ACL(handle, fsp, mode);
 	}

@@ -66,70 +66,11 @@ bool cli_set_backup_intent(struct cli_state *cli, bool flag)
 }
 
 /****************************************************************************
- Initialize Domain, user or password.
-****************************************************************************/
-
-NTSTATUS cli_set_domain(struct cli_state *cli, const char *domain)
-{
-	TALLOC_FREE(cli->domain);
-	cli->domain = talloc_strdup(cli, domain ? domain : "");
-	if (cli->domain == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	return NT_STATUS_OK;
-}
-
-NTSTATUS cli_set_username(struct cli_state *cli, const char *username)
-{
-	TALLOC_FREE(cli->user_name);
-	cli->user_name = talloc_strdup(cli, username ? username : "");
-	if (cli->user_name == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	return NT_STATUS_OK;
-}
-
-NTSTATUS cli_set_password(struct cli_state *cli, const char *password)
-{
-	TALLOC_FREE(cli->password);
-
-	/* Password can be NULL. */
-	if (password) {
-		cli->password = talloc_strdup(cli, password);
-		if (cli->password == NULL) {
-			return NT_STATUS_NO_MEMORY;
-		}
-	} else {
-		/* Use zero NTLMSSP hashes and session key. */
-		cli->password = NULL;
-	}
-
-	return NT_STATUS_OK;
-}
-
-/****************************************************************************
- Initialise credentials of a client structure.
-****************************************************************************/
-
-NTSTATUS cli_init_creds(struct cli_state *cli, const char *username, const char *domain, const char *password)
-{
-	NTSTATUS status = cli_set_username(cli, username);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
-	}
-	status = cli_set_domain(cli, domain);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
-	}
-	DEBUG(10,("cli_init_creds: user %s domain %s\n", cli->user_name, cli->domain));
-
-	return cli_set_password(cli, password);
-}
-
-/****************************************************************************
  Initialise a client structure. Always returns a talloc'ed struct.
  Set the signing state (used from the command line).
 ****************************************************************************/
+
+struct GUID cli_state_client_guid;
 
 struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 				   int fd,
@@ -144,7 +85,13 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 	bool use_level_II_oplocks = false;
 	uint32_t smb1_capabilities = 0;
 	uint32_t smb2_capabilities = 0;
-	struct GUID client_guid = GUID_random();
+	struct GUID client_guid;
+
+	if (!GUID_all_zero(&cli_state_client_guid)) {
+		client_guid = cli_state_client_guid;
+	} else {
+		client_guid = GUID_random();
+	}
 
 	/* Check the effective uid - make sure we are not setuid */
 	if (is_setuid_root()) {
@@ -371,7 +318,7 @@ uint16_t cli_state_get_vc_num(struct cli_state *cli)
  Set the PID to use for smb messages. Return the old pid.
 ****************************************************************************/
 
-uint16 cli_setpid(struct cli_state *cli, uint16 pid)
+uint16_t cli_setpid(struct cli_state *cli, uint16_t pid)
 {
 	uint16_t ret = cli->smb1.pid;
 	cli->smb1.pid = pid;
@@ -582,8 +529,7 @@ NTSTATUS cli_echo(struct cli_state *cli, uint16_t num_echos, DATA_BLOB data)
 		goto fail;
 	}
 
-	if (!tevent_req_poll(req, ev)) {
-		status = map_nt_error_from_unix(errno);
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
 

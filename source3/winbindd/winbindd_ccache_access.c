@@ -109,7 +109,7 @@ static NTSTATUS do_ntlm_auth_with_stored_pw(const char *username,
 	dummy_msg = data_blob_null;
 	reply = data_blob_null;
 	status = gensec_update(auth_generic_state->gensec_security,
-			       talloc_tos(), NULL, dummy_msg, &reply);
+			       talloc_tos(), dummy_msg, &reply);
 	data_blob_free(&reply);
 
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
@@ -120,7 +120,7 @@ static NTSTATUS do_ntlm_auth_with_stored_pw(const char *username,
 
 	/* Now we are ready to handle the server's actual response. */
 	status = gensec_update(auth_generic_state->gensec_security,
-			       NULL, NULL, challenge_msg, &reply);
+			       NULL, challenge_msg, &reply);
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OK)) {
 		DEBUG(1, ("We didn't get a response to the challenge! [%s]\n",
 			nt_errstr(status)));
@@ -185,7 +185,7 @@ void winbindd_ccache_ntlm_auth(struct winbindd_cli_state *state)
 	NTSTATUS result = NT_STATUS_NOT_SUPPORTED;
 	struct WINBINDD_MEMORY_CREDS *entry;
 	DATA_BLOB initial, challenge, auth;
-	uint32 initial_blob_len, challenge_blob_len, extra_len;
+	uint32_t initial_blob_len, challenge_blob_len, extra_len;
 
 	/* Ensure null termination */
 	state->request->data.ccache_ntlm_auth.user[

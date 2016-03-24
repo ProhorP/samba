@@ -1,7 +1,6 @@
 <samba:parameter name="server services"
                  context="G"
                  type="list"
-                 advanced="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>This option contains the services that the Samba daemon will
@@ -13,6 +12,6 @@
 		<constant>-</constant>.  </para>
 </description>
 
-<value type="default">s3fs rpc nbt wrepl ldap cldap kdc drepl winbind ntp_signd kcc dnsupdate dns</value>
-<value type="example">-s3fs +smb</value>
+<value type="default">s3fs, rpc, nbt, wrepl, ldap, cldap, kdc, drepl, winbindd, ntp_signd, kcc, dnsupdate, dns</value>
+<value type="example">-s3fs, +smb</value>
 </samba:parameter>

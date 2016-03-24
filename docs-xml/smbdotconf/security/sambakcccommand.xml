@@ -1,7 +1,6 @@
 <samba:parameter name="samba kcc command"
                  context="G"
-                 type="string"
-                 advanced="1" 
+                 type="list"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>This option specifies the path to the Samba KCC command.
@@ -14,6 +13,6 @@
 	</para>
 </description>
 
-<value type="default">$prefix/sbin/samba_kcc</value>
+<value type="default">&pathconfig.SCRIPTSBINDIR;/samba_kcc</value>
 <value type="example">/usr/local/bin/kcc</value>
 </samba:parameter>

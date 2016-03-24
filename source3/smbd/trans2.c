@@ -40,6 +40,7 @@
 #include "rpc_server/srv_pipe_hnd.h"
 #include "printing.h"
 #include "lib/util_ea.h"
+#include "lib/readdir_attr.h"
 
 #define DIR_ENTRY_SAFETY_MARGIN 4096
 
@@ -148,7 +149,7 @@ uint64_t get_FileIndex(connection_struct *conn, const SMB_STRUCT_STAT *psbuf)
  Refuse to allow clients to overwrite our private xattrs.
 ****************************************************************************/
 
-static bool samba_private_attr_name(const char *unix_ea_name)
+bool samba_private_attr_name(const char *unix_ea_name)
 {
 	static const char * const prohibited_ea_names[] = {
 		SAMBA_POSIX_INHERITANCE_EA_NAME,
@@ -207,7 +208,7 @@ NTSTATUS get_ea_value(TALLOC_CTX *mem_ctx, connection_struct *conn,
 	}
 
 	DEBUG(10,("get_ea_value: EA %s is of length %u\n", ea_name, (unsigned int)sizeret));
-	dump_data(10, (uint8 *)val, sizeret);
+	dump_data(10, (uint8_t *)val, sizeret);
 
 	pea->flags = 0;
 	if (strnequal(ea_name, "user.", 5)) {
@@ -296,8 +297,8 @@ NTSTATUS get_ea_names_from_file(TALLOC_CTX *mem_ctx, connection_struct *conn,
 		return map_nt_error_from_unix(errno);
 	}
 
-	DEBUG(10, ("get_ea_list_from_file: ea_namelist size = %u\n",
-		   (unsigned int)sizeret));
+	DEBUG(10, ("%s: ea_namelist size = %u\n",
+		   __func__, (unsigned int)sizeret));
 
 	if (sizeret == 0) {
 		TALLOC_FREE(names);
@@ -898,8 +899,8 @@ void send_trans2_replies(connection_struct *conn,
 	int alignment_offset = 1; /* JRA. This used to be 3. Set to 1 to make netmon parse ok. */
 	int data_alignment_offset = 0;
 	bool overflow = False;
-	struct smbd_server_connection *sconn = req->sconn;
-	int max_send = sconn->smb1.sessions.max_send;
+	struct smbXsrv_connection *xconn = req->xconn;
+	int max_send = xconn->smb1.sessions.max_send;
 
 	/* Modify the data_to_send and datasize and set the error if
 	   we're trying to send more than max_data_bytes. We still send
@@ -926,7 +927,7 @@ void send_trans2_replies(connection_struct *conn,
 					__LINE__,__FILE__);
 		}
 		show_msg((char *)req->outbuf);
-		if (!srv_send_smb(sconn,
+		if (!srv_send_smb(xconn,
 				(char *)req->outbuf,
 				true, req->seqnum+1,
 				IS_CONN_ENCRYPTED(conn),
@@ -1066,7 +1067,7 @@ void send_trans2_replies(connection_struct *conn,
 
 		/* Send the packet */
 		show_msg((char *)req->outbuf);
-		if (!srv_send_smb(sconn,
+		if (!srv_send_smb(xconn,
 				(char *)req->outbuf,
 				true, req->seqnum+1,
 				IS_CONN_ENCRYPTED(conn),
@@ -1106,7 +1107,7 @@ static void call_trans2open(connection_struct *conn,
 	char *params = *pparams;
 	char *pdata = *ppdata;
 	int deny_mode;
-	int32 open_attr;
+	int32_t open_attr;
 	bool oplock_request;
 #if 0
 	bool return_additional_info;
@@ -1114,7 +1115,7 @@ static void call_trans2open(connection_struct *conn,
 	time_t open_time;
 #endif
 	int open_ofun;
-	uint32 open_size;
+	uint32_t open_size;
 	char *pname;
 	char *fname = NULL;
 	off_t size=0;
@@ -1123,12 +1124,12 @@ static void call_trans2open(connection_struct *conn,
 	int smb_action = 0;
 	files_struct *fsp;
 	struct ea_list *ea_list = NULL;
-	uint16 flags = 0;
+	uint16_t flags = 0;
 	NTSTATUS status;
-	uint32 access_mask;
-	uint32 share_mode;
-	uint32 create_disposition;
-	uint32 create_options = 0;
+	uint32_t access_mask;
+	uint32_t share_mode;
+	uint32_t create_disposition;
+	uint32_t create_options = 0;
 	uint32_t private_flags = 0;
 	TALLOC_CTX *ctx = talloc_tos();
 
@@ -1260,15 +1261,17 @@ static void call_trans2open(connection_struct *conn,
 		create_options,				/* create_options */
 		open_attr,				/* file_attributes */
 		oplock_request,				/* oplock_request */
+		NULL,					/* lease */
 		open_size,				/* allocation_size */
 		private_flags,
 		NULL,					/* sd */
 		ea_list,				/* ea_list */
 		&fsp,					/* result */
-		&smb_action);				/* psbuf */
+		&smb_action,				/* psbuf */
+		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
-		if (open_was_deferred(req->sconn, req->mid)) {
+		if (open_was_deferred(req->xconn, req->mid)) {
 			/* We have re-scheduled this call. */
 			goto out;
 		}
@@ -1297,7 +1300,7 @@ static void call_trans2open(connection_struct *conn,
 	SSVAL(params,0,fsp->fnum);
 	SSVAL(params,2,fattr);
 	srv_put_dos_date2(params,4, mtime);
-	SIVAL(params,8, (uint32)size);
+	SIVAL(params,8, (uint32_t)size);
 	SSVAL(params,12,deny_mode);
 	SSVAL(params,14,0); /* open_type - file or directory. */
 	SSVAL(params,16,0); /* open_state - only valid for IPC device. */
@@ -1314,7 +1317,7 @@ static void call_trans2open(connection_struct *conn,
 	SIVAL(params,20,inode);
 	SSVAL(params,24,0); /* Padding. */
 	if (flags & 8) {
-		uint32 ea_size = estimate_ea_size(conn, fsp,
+		uint32_t ea_size = estimate_ea_size(conn, fsp,
 						  smb_fname);
 		SIVAL(params, 26, ea_size);
 	} else {
@@ -1358,7 +1361,7 @@ static bool exact_match(bool has_wild,
  Return the filetype for UNIX extensions.
 ****************************************************************************/
 
-static uint32 unix_filetype(mode_t mode)
+static uint32_t unix_filetype(mode_t mode)
 {
 	if(S_ISREG(mode))
 		return UNIX_TYPE_FILE;
@@ -1397,7 +1400,7 @@ enum perm_type { PERM_NEW_FILE, PERM_NEW_DIR, PERM_EXISTING_FILE, PERM_EXISTING_
 
 static NTSTATUS unix_perms_from_wire( connection_struct *conn,
 				const SMB_STRUCT_STAT *psbuf,
-				uint32 perms,
+				uint32_t perms,
 				enum perm_type ptype,
 				mode_t *ret_perms)
 {
@@ -1444,9 +1447,9 @@ static NTSTATUS unix_perms_from_wire( connection_struct *conn,
 		 * "directory mask"/"force directory mode" are
 		 * only applied to new directories, not existing ones.
 		 */
-		ret &= lp_dir_mask(SNUM(conn));
+		ret &= lp_directory_mask(SNUM(conn));
 		/* Add in force bits */
-		ret |= lp_force_dir_mode(SNUM(conn));
+		ret |= lp_force_directory_mode(SNUM(conn));
 	}
 
 	*ret_perms = ret;
@@ -1506,6 +1509,31 @@ static bool smbd_dirptr_lanman2_match_fn(TALLOC_CTX *ctx,
 
 	/* Mangle fname if it's an illegal name. */
 	if (mangle_must_mangle(dname, state->conn->params)) {
+		/*
+		 * Slow path - ensure we can push the original name as UCS2. If
+		 * not, then just don't return this name.
+		 */
+		NTSTATUS status;
+		size_t ret_len = 0;
+		size_t len = (strlen(dname) + 2) * 4; /* Allow enough space. */
+		uint8_t *tmp = talloc_array(talloc_tos(),
+					uint8_t,
+					len);
+
+		status = srvstr_push(NULL,
+			FLAGS2_UNICODE_STRINGS,
+			tmp,
+			dname,
+			len,
+			STR_TERMINATE,
+			&ret_len);
+
+		TALLOC_FREE(tmp);
+
+		if (!NT_STATUS_IS_OK(status)) {
+			return false;
+		}
+
 		ok = name_to_8_3(dname, mangled_name,
 				 true, state->conn->params);
 		if (!ok) {
@@ -1607,7 +1635,7 @@ static bool smbd_dirptr_lanman2_mode_fn(TALLOC_CTX *ctx,
 	return true;
 }
 
-static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
+static NTSTATUS smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 				    connection_struct *conn,
 				    uint16_t flags2,
 				    uint32_t info_level,
@@ -1623,7 +1651,6 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 				    char *base_data,
 				    char **ppdata,
 				    char *end_data,
-				    bool *out_of_space,
 				    uint64_t *last_entry_off)
 {
 	char *p, *q, *pdata = *ppdata;
@@ -1631,26 +1658,31 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	uint64_t file_size = 0;
 	uint64_t allocation_size = 0;
 	uint64_t file_index = 0;
-	uint32_t len;
-	struct timespec mdate_ts, adate_ts, cdate_ts, create_date_ts;
+	size_t len = 0;
+	struct timespec mdate_ts = {0};
+	struct timespec adate_ts = {0};
+	struct timespec cdate_ts = {0};
+	struct timespec create_date_ts = {0};
 	time_t mdate = (time_t)0, adate = (time_t)0, create_date = (time_t)0;
 	char *nameptr;
 	char *last_entry_ptr;
 	bool was_8_3;
 	int off;
 	int pad = 0;
-
-	*out_of_space = false;
-
-	ZERO_STRUCT(mdate_ts);
-	ZERO_STRUCT(adate_ts);
-	ZERO_STRUCT(create_date_ts);
-	ZERO_STRUCT(cdate_ts);
+	NTSTATUS status;
+	struct readdir_attr_data *readdir_attr_data = NULL;
 
 	if (!(mode & FILE_ATTRIBUTE_DIRECTORY)) {
 		file_size = get_file_size_stat(&smb_fname->st);
 	}
 	allocation_size = SMB_VFS_GET_ALLOC_SIZE(conn, NULL, &smb_fname->st);
+
+	status = SMB_VFS_READDIR_ATTR(conn, smb_fname, ctx, &readdir_attr_data);
+	if (!NT_STATUS_IS_OK(status)) {
+		if (!NT_STATUS_EQUAL(NT_STATUS_NOT_SUPPORTED, status)) {
+			return status;
+		}
+	}
 
 	file_index = get_FileIndex(conn, &smb_fname->st);
 
@@ -1678,12 +1710,11 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	pad -= off;
 
 	if (pad && pad > space_remaining) {
-		*out_of_space = true;
 		DEBUG(9,("smbd_marshall_dir_entry: out of space "
 			"for padding (wanted %u, had %d)\n",
 			(unsigned int)pad,
 			space_remaining ));
-		return false; /* Not finished - just out of space */
+		return STATUS_MORE_ENTRIES; /* Not finished - just out of space */
 	}
 
 	off += pad;
@@ -1713,17 +1744,20 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		srv_put_dos_date2(p,0,create_date);
 		srv_put_dos_date2(p,4,adate);
 		srv_put_dos_date2(p,8,mdate);
-		SIVAL(p,12,(uint32)file_size);
-		SIVAL(p,16,(uint32)allocation_size);
+		SIVAL(p,12,(uint32_t)file_size);
+		SIVAL(p,16,(uint32_t)allocation_size);
 		SSVAL(p,20,mode);
 		p += 23;
 		nameptr = p;
 		if (flags2 & FLAGS2_UNICODE_STRINGS) {
 			p += ucs2_align(base_data, p, 0);
 		}
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE);
+				  STR_TERMINATE, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		if (flags2 & FLAGS2_UNICODE_STRINGS) {
 			if (len > 2) {
 				SCVAL(nameptr, -1, len - 2);
@@ -1749,8 +1783,8 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		srv_put_dos_date2(p,0,create_date);
 		srv_put_dos_date2(p,4,adate);
 		srv_put_dos_date2(p,8,mdate);
-		SIVAL(p,12,(uint32)file_size);
-		SIVAL(p,16,(uint32)allocation_size);
+		SIVAL(p,12,(uint32_t)file_size);
+		SIVAL(p,16,(uint32_t)allocation_size);
 		SSVAL(p,20,mode);
 		{
 			unsigned int ea_size = estimate_ea_size(conn, NULL,
@@ -1759,9 +1793,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		}
 		p += 27;
 		nameptr = p - 1;
-		len = srvstr_push(base_data, flags2,
+		status = srvstr_push(base_data, flags2,
 				  p, fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE | STR_NOALIGN);
+				  STR_TERMINATE | STR_NOALIGN, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		if (flags2 & FLAGS2_UNICODE_STRINGS) {
 			if (len > 2) {
 				len -= 2;
@@ -1784,11 +1821,10 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	{
 		struct ea_list *file_list = NULL;
 		size_t ea_len = 0;
-		NTSTATUS status;
 
 		DEBUG(10,("smbd_marshall_dir_entry: SMB_FIND_EA_LIST\n"));
 		if (!name_list) {
-			return false;
+			return NT_STATUS_INVALID_PARAMETER;
 		}
 		if (requires_resume_key) {
 			SIVAL(p,0,reskey);
@@ -1797,8 +1833,8 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		srv_put_dos_date2(p,0,create_date);
 		srv_put_dos_date2(p,4,adate);
 		srv_put_dos_date2(p,8,mdate);
-		SIVAL(p,12,(uint32)file_size);
-		SIVAL(p,16,(uint32)allocation_size);
+		SIVAL(p,12,(uint32_t)file_size);
+		SIVAL(p,16,(uint32_t)allocation_size);
 		SSVAL(p,20,mode);
 		p += 22; /* p now points to the EA area. */
 
@@ -1813,20 +1849,22 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		/* We need to determine if this entry will fit in the space available. */
 		/* Max string size is 255 bytes. */
 		if (PTR_DIFF(p + 255 + ea_len,pdata) > space_remaining) {
-			*out_of_space = true;
 			DEBUG(9,("smbd_marshall_dir_entry: out of space "
 				"(wanted %u, had %d)\n",
 				(unsigned int)PTR_DIFF(p + 255 + ea_len,pdata),
 				space_remaining ));
-			return False; /* Not finished - just out of space */
+			return STATUS_MORE_ENTRIES; /* Not finished - just out of space */
 		}
 
 		/* Push the ea_data followed by the name. */
 		p += fill_ea_buffer(ctx, p, space_remaining, conn, name_list);
 		nameptr = p;
-		len = srvstr_push(base_data, flags2,
+		status = srvstr_push(base_data, flags2,
 				  p + 1, fname, PTR_DIFF(end_data, p+1),
-				  STR_TERMINATE | STR_NOALIGN);
+				  STR_TERMINATE | STR_NOALIGN, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		if (flags2 & FLAGS2_UNICODE_STRINGS) {
 			if (len > 2) {
 				len -= 2;
@@ -1879,9 +1917,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 				memset(mangled_name,'\0',12);
 			}
 			mangled_name[12] = 0;
-			len = srvstr_push(base_data, flags2,
+			status = srvstr_push(base_data, flags2,
 					  p+2, mangled_name, 24,
-					  STR_UPPER|STR_UNICODE);
+					  STR_UPPER|STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			if (len < 24) {
 				memset(p + 2 + len,'\0',24 - len);
 			}
@@ -1890,9 +1931,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 			memset(p,'\0',26);
 		}
 		p += 2 + 24;
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(q,0,len);
 		p += len;
 
@@ -1926,9 +1970,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		SOFF_T(p,0,file_size); p += 8;
 		SOFF_T(p,0,allocation_size); p += 8;
 		SIVAL(p,0,mode); p += 4;
-		len = srvstr_push(base_data, flags2,
+		status = srvstr_push(base_data, flags2,
 				  p + 4, fname, PTR_DIFF(end_data, p+4),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(p,0,len);
 		p += 4 + len;
 
@@ -1969,9 +2016,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 			SIVAL(p,0,ea_size); /* Extended attributes */
 			p +=4;
 		}
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(q, 0, len);
 		p += len;
 
@@ -2001,9 +2051,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		p += 4;
 		/* this must *not* be null terminated or w2k gets in a loop trying to set an
 		   acl on a dir (tridge) */
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(p, -4, len);
 		p += len;
 
@@ -2048,9 +2101,12 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		p += 4;
 		SIVAL(p,0,0); p += 4; /* Unknown - reserved ? */
 		SBVAL(p,0,file_index); p += 8;
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(q, 0, len);
 		p += len;
 
@@ -2088,17 +2144,41 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		q = p; p += 4; /* q is placeholder for name length */
 		if (mode & FILE_ATTRIBUTE_REPARSE_POINT) {
 			SIVAL(p, 0, IO_REPARSE_TAG_DFS);
+		} else if (readdir_attr_data &&
+			   readdir_attr_data->type == RDATTR_AAPL) {
+			/*
+			 * OS X specific SMB2 extension negotiated via
+			 * AAPL create context: return max_access in
+			 * ea_size field.
+			 */
+			SIVAL(p, 0, readdir_attr_data->attr_data.aapl.max_access);
 		} else {
 			unsigned int ea_size = estimate_ea_size(conn, NULL,
 								smb_fname);
 			SIVAL(p,0,ea_size); /* Extended attributes */
 		}
 		p += 4;
-		/* Clear the short name buffer. This is
-		 * IMPORTANT as not doing so will trigger
-		 * a Win2k client bug. JRA.
-		 */
-		if (!was_8_3 && check_mangled_names) {
+
+		if (readdir_attr_data &&
+		    readdir_attr_data->type == RDATTR_AAPL) {
+			/*
+			 * OS X specific SMB2 extension negotiated via
+			 * AAPL create context: return resource fork
+			 * length and compressed FinderInfo in
+			 * shortname field.
+			 *
+			 * According to documentation short_name_len
+			 * should be 0, but on the wire behaviour
+			 * shows its set to 24 by clients.
+			 */
+			SSVAL(p, 0, 24);
+
+			/* Resourefork length */
+			SBVAL(p, 2, readdir_attr_data->attr_data.aapl.rfork_size);
+
+			/* Compressed FinderInfo */
+			memcpy(p + 10, &readdir_attr_data->attr_data.aapl.finder_info, 16);
+		} else if (!was_8_3 && check_mangled_names) {
 			char mangled_name[13]; /* mangled 8.3 name. */
 			if (!name_to_8_3(fname,mangled_name,True,
 					conn->params)) {
@@ -2106,23 +2186,48 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 				memset(mangled_name,'\0',12);
 			}
 			mangled_name[12] = 0;
-			len = srvstr_push(base_data, flags2,
+			status = srvstr_push(base_data, flags2,
 					  p+2, mangled_name, 24,
-					  STR_UPPER|STR_UNICODE);
+					  STR_UPPER|STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SSVAL(p, 0, len);
 			if (len < 24) {
 				memset(p + 2 + len,'\0',24 - len);
 			}
 			SSVAL(p, 0, len);
 		} else {
+			/* Clear the short name buffer. This is
+			 * IMPORTANT as not doing so will trigger
+			 * a Win2k client bug. JRA.
+			 */
 			memset(p,'\0',26);
 		}
 		p += 26;
-		SSVAL(p,0,0); p += 2; /* Reserved ? */
+
+		/* Reserved ? */
+		if (readdir_attr_data &&
+		    readdir_attr_data->type == RDATTR_AAPL) {
+			/*
+			 * OS X specific SMB2 extension negotiated via
+			 * AAPL create context: return UNIX mode in
+			 * reserved field.
+			 */
+			uint16_t aapl_mode = (uint16_t)readdir_attr_data->attr_data.aapl.unix_mode;
+			SSVAL(p, 0, aapl_mode);
+		} else {
+			SSVAL(p, 0, 0);
+		}
+		p += 2;
+
 		SBVAL(p,0,file_index); p += 8;
-		len = srvstr_push(base_data, flags2, p,
+		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
-				  STR_TERMINATE_ASCII);
+				  STR_TERMINATE_ASCII, &len);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
 		SIVAL(q,0,len);
 		p += len;
 
@@ -2158,17 +2263,23 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 			DEBUG(10,("smbd_marshall_dir_entry: SMB_FIND_FILE_UNIX\n"));
 			p = store_file_unix_basic(conn, p,
 						NULL, &smb_fname->st);
-			len = srvstr_push(base_data, flags2, p,
+			status = srvstr_push(base_data, flags2, p,
 					  fname, PTR_DIFF(end_data, p),
-					  STR_TERMINATE);
+					  STR_TERMINATE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 		} else {
 			DEBUG(10,("smbd_marshall_dir_entry: SMB_FIND_FILE_UNIX_INFO2\n"));
 			p = store_file_unix_basic_info2(conn, p,
 						NULL, &smb_fname->st);
 			nameptr = p;
 			p += 4;
-			len = srvstr_push(base_data, flags2, p, fname,
-					  PTR_DIFF(end_data, p), 0);
+			status = srvstr_push(base_data, flags2, p, fname,
+					  PTR_DIFF(end_data, p), 0, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SIVAL(nameptr, 0, len);
 		}
 
@@ -2196,16 +2307,15 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		break;
 
 	default:
-		return false;
+		return NT_STATUS_INVALID_LEVEL;
 	}
 
 	if (PTR_DIFF(p,pdata) > space_remaining) {
-		*out_of_space = true;
 		DEBUG(9,("smbd_marshall_dir_entry: out of space "
 			"(wanted %u, had %d)\n",
 			(unsigned int)PTR_DIFF(p,pdata),
 			space_remaining ));
-		return false; /* Not finished - just out of space */
+		return STATUS_MORE_ENTRIES; /* Not finished - just out of space */
 	}
 
 	/* Setup the last entry pointer, as an offset from base_data */
@@ -2213,15 +2323,15 @@ static bool smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 	/* Advance the data pointer to the next slot */
 	*ppdata = p;
 
-	return true;
+	return NT_STATUS_OK;
 }
 
-bool smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
+NTSTATUS smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 			       connection_struct *conn,
 			       struct dptr_struct *dirptr,
-			       uint16 flags2,
+			       uint16_t flags2,
 			       const char *path_mask,
-			       uint32 dirtype,
+			       uint32_t dirtype,
 			       int info_level,
 			       int requires_resume_key,
 			       bool dont_descend,
@@ -2232,7 +2342,6 @@ bool smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 			       char *base_data,
 			       char *end_data,
 			       int space_remaining,
-			       bool *out_of_space,
 			       bool *got_exact_match,
 			       int *_last_entry_off,
 			       struct ea_list *name_list)
@@ -2246,15 +2355,15 @@ bool smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 	struct smbd_dirptr_lanman2_state state;
 	bool ok;
 	uint64_t last_entry_off = 0;
+	NTSTATUS status;
 
 	ZERO_STRUCT(state);
 	state.conn = conn;
 	state.info_level = info_level;
-	state.check_mangled_names = lp_manglednames(conn->params);
+	state.check_mangled_names = lp_mangled_names(conn->params);
 	state.has_wild = dptr_has_wild(dirptr);
 	state.got_exact_match = false;
 
-	*out_of_space = false;
 	*got_exact_match = false;
 
 	p = strrchr_m(path_mask,'/');
@@ -2282,12 +2391,12 @@ bool smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 				   &mode,
 				   &prev_dirpos);
 	if (!ok) {
-		return false;
+		return NT_STATUS_END_OF_FILE;
 	}
 
 	*got_exact_match = state.got_exact_match;
 
-	ok = smbd_marshall_dir_entry(ctx,
+	status = smbd_marshall_dir_entry(ctx,
 				     conn,
 				     flags2,
 				     info_level,
@@ -2303,28 +2412,31 @@ bool smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 				     base_data,
 				     ppdata,
 				     end_data,
-				     out_of_space,
 				     &last_entry_off);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_ILLEGAL_CHARACTER)) {
+		DEBUG(1,("Conversion error: illegal character: %s\n",
+			 smb_fname_str_dbg(smb_fname)));
+	}
 	TALLOC_FREE(fname);
 	TALLOC_FREE(smb_fname);
-	if (*out_of_space) {
+	if (NT_STATUS_EQUAL(status, STATUS_MORE_ENTRIES)) {
 		dptr_SeekDir(dirptr, prev_dirpos);
-		return false;
+		return status;
 	}
-	if (!ok) {
-		return false;
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	*_last_entry_off = last_entry_off;
-	return true;
+	return NT_STATUS_OK;
 }
 
-static bool get_lanman2_dir_entry(TALLOC_CTX *ctx,
+static NTSTATUS get_lanman2_dir_entry(TALLOC_CTX *ctx,
 				connection_struct *conn,
 				struct dptr_struct *dirptr,
-				uint16 flags2,
+				uint16_t flags2,
 				const char *path_mask,
-				uint32 dirtype,
+				uint32_t dirtype,
 				int info_level,
 				bool requires_resume_key,
 				bool dont_descend,
@@ -2333,7 +2445,6 @@ static bool get_lanman2_dir_entry(TALLOC_CTX *ctx,
 				char *base_data,
 				char *end_data,
 				int space_remaining,
-				bool *out_of_space,
 				bool *got_exact_match,
 				int *last_entry_off,
 				struct ea_list *name_list)
@@ -2352,7 +2463,7 @@ static bool get_lanman2_dir_entry(TALLOC_CTX *ctx,
 					 align, do_pad,
 					 ppdata, base_data, end_data,
 					 space_remaining,
-					 out_of_space, got_exact_match,
+					 got_exact_match,
 					 last_entry_off, name_list);
 }
 
@@ -2375,9 +2486,9 @@ static void call_trans2findfirst(connection_struct *conn,
 	char *params = *pparams;
 	char *pdata = *ppdata;
 	char *data_end;
-	uint32 dirtype;
+	uint32_t dirtype;
 	int maxentries;
-	uint16 findfirst_flags;
+	uint16_t findfirst_flags;
 	bool close_after_first;
 	bool close_if_end;
 	bool requires_resume_key;
@@ -2526,7 +2637,7 @@ close_if_end = %d requires_resume_key = %d backup_priv = %d level = 0x%x, max_da
 	DEBUG(5,("dir=%s, mask = %s\n",directory, mask));
 
 	if (info_level == SMB_FIND_EA_LIST) {
-		uint32 ea_size;
+		uint32_t ea_size;
 
 		if (total_data < 4) {
 			reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2554,6 +2665,11 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		}
 	}
 
+	if (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN < max_data_bytes) {
+		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		goto out;
+	}
+
 	*ppdata = (char *)SMB_REALLOC(
 		*ppdata, max_data_bytes + DIR_ENTRY_SAFETY_MARGIN);
 	if(*ppdata == NULL ) {
@@ -2562,7 +2678,11 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 	}
 	pdata = *ppdata;
 	data_end = pdata + max_data_bytes + DIR_ENTRY_SAFETY_MARGIN - 1;
-
+	/*
+	 * squash valgrind "writev(vector[...]) points to uninitialised byte(s)"
+	 * error.
+	 */
+	memset(pdata + total_data, 0, ((max_data_bytes + DIR_ENTRY_SAFETY_MARGIN) - total_data));
 	/* Realloc the params space */
 	*pparams = (char *)SMB_REALLOC(*pparams, 10);
 	if (*pparams == NULL) {
@@ -2607,8 +2727,8 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		a different TRANS2 call. */
 
 	DEBUG(8,("dirpath=<%s> dontdescend=<%s>\n",
-		 directory,lp_dontdescend(ctx, SNUM(conn))));
-	if (in_list(directory,lp_dontdescend(ctx, SNUM(conn)),conn->case_sensitive))
+		 directory,lp_dont_descend(ctx, SNUM(conn))));
+	if (in_list(directory,lp_dont_descend(ctx, SNUM(conn)),conn->case_sensitive))
 		dont_descend = True;
 
 	p = pdata;
@@ -2624,7 +2744,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 			out_of_space = True;
 			finished = False;
 		} else {
-			finished = !get_lanman2_dir_entry(ctx,
+			ntstatus = get_lanman2_dir_entry(ctx,
 					conn,
 					dirptr,
 					req->flags2,
@@ -2632,13 +2752,23 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 					requires_resume_key,dont_descend,
 					ask_sharemode,
 					&p,pdata,data_end,
-					space_remaining, &out_of_space,
+					space_remaining,
 					&got_exact_match,
 					&last_entry_off, ea_list);
+			if (NT_STATUS_EQUAL(ntstatus,
+					NT_STATUS_ILLEGAL_CHARACTER)) {
+				/*
+				 * Bad character conversion on name. Ignore this
+				 * entry.
+				 */
+				continue;
+			}
+			if (NT_STATUS_EQUAL(ntstatus, STATUS_MORE_ENTRIES)) {
+				out_of_space = true;
+			} else {
+				finished = !NT_STATUS_IS_OK(ntstatus);
+			}
 		}
-
-		if (finished && out_of_space)
-			finished = False;
 
 		if (!finished && !out_of_space)
 			numentries++;
@@ -2752,9 +2882,9 @@ static void call_trans2findnext(connection_struct *conn,
 	char *data_end;
 	int dptr_num;
 	int maxentries;
-	uint16 info_level;
-	uint32 resume_key;
-	uint16 findnext_flags;
+	uint16_t info_level;
+	uint32_t resume_key;
+	uint16_t findnext_flags;
 	bool close_after_request;
 	bool close_if_end;
 	bool requires_resume_key;
@@ -2764,7 +2894,7 @@ static void call_trans2findnext(connection_struct *conn,
 	const char *mask = NULL;
 	const char *directory = NULL;
 	char *p = NULL;
-	uint16 dirtype;
+	uint16_t dirtype;
 	int numentries = 0;
 	int i, last_entry_off=0;
 	bool finished = False;
@@ -2856,7 +2986,7 @@ resume_key = %d resume name = %s continue=%d level = %d\n",
 	}
 
 	if (info_level == SMB_FIND_EA_LIST) {
-		uint32 ea_size;
+		uint32_t ea_size;
 
 		if (total_data < 4) {
 			reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -2884,6 +3014,11 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		}
 	}
 
+	if (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN < max_data_bytes) {
+		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		return;
+	}
+
 	*ppdata = (char *)SMB_REALLOC(
 		*ppdata, max_data_bytes + DIR_ENTRY_SAFETY_MARGIN);
 	if(*ppdata == NULL) {
@@ -2894,6 +3029,11 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 	pdata = *ppdata;
 	data_end = pdata + max_data_bytes + DIR_ENTRY_SAFETY_MARGIN - 1;
 
+	/*
+	 * squash valgrind "writev(vector[...]) points to uninitialised byte(s)"
+	 * error.
+	 */
+	memset(pdata + total_data, 0, (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN) - total_data);
 	/* Realloc the params space */
 	*pparams = (char *)SMB_REALLOC(*pparams, 6*SIZEOFWORD);
 	if(*pparams == NULL ) {
@@ -2937,8 +3077,8 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		a different TRANS2 call. */
 
 	DEBUG(8,("dirpath=<%s> dontdescend=<%s>\n",
-		 directory,lp_dontdescend(ctx, SNUM(conn))));
-	if (in_list(directory,lp_dontdescend(ctx, SNUM(conn)),conn->case_sensitive))
+		 directory,lp_dont_descend(ctx, SNUM(conn))));
+	if (in_list(directory,lp_dont_descend(ctx, SNUM(conn)),conn->case_sensitive))
 		dont_descend = True;
 
 	p = pdata;
@@ -2997,7 +3137,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 			out_of_space = True;
 			finished = False;
 		} else {
-			finished = !get_lanman2_dir_entry(ctx,
+			ntstatus = get_lanman2_dir_entry(ctx,
 						conn,
 						dirptr,
 						req->flags2,
@@ -3005,13 +3145,23 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 						requires_resume_key,dont_descend,
 						ask_sharemode,
 						&p,pdata,data_end,
-						space_remaining, &out_of_space,
+						space_remaining,
 						&got_exact_match,
 						&last_entry_off, ea_list);
+			if (NT_STATUS_EQUAL(ntstatus,
+					NT_STATUS_ILLEGAL_CHARACTER)) {
+				/*
+				 * Bad character conversion on name. Ignore this
+				 * entry.
+				 */
+				continue;
+			}
+			if (NT_STATUS_EQUAL(ntstatus, STATUS_MORE_ENTRIES)) {
+				out_of_space = true;
+			} else {
+				finished = !NT_STATUS_IS_OK(ntstatus);
+			}
 		}
-
-		if (finished && out_of_space)
-			finished = False;
 
 		if (!finished && !out_of_space)
 			numentries++;
@@ -3096,7 +3246,8 @@ static void samba_extended_info_version(struct smb_extended_info *extended_info)
 		  "%s", samba_version_string());
 }
 
-NTSTATUS smbd_do_qfsinfo(connection_struct *conn,
+NTSTATUS smbd_do_qfsinfo(struct smbXsrv_connection *xconn,
+			 connection_struct *conn,
 			 TALLOC_CTX *mem_ctx,
 			 uint16_t info_level,
 			 uint16_t flags2,
@@ -3107,15 +3258,18 @@ NTSTATUS smbd_do_qfsinfo(connection_struct *conn,
 			 int *ret_data_len)
 {
 	char *pdata, *end_data;
-	int data_len = 0, len;
+	int data_len = 0;
+	size_t len = 0;
 	const char *vname = volume_label(talloc_tos(), SNUM(conn));
 	int snum = SNUM(conn);
-	char *fstype = lp_fstype(talloc_tos(), SNUM(conn));
-	char *filename = NULL;
-	uint32 additional_flags = 0;
+	const char *fstype = lp_fstype(SNUM(conn));
+	const char *filename = NULL;
+	const uint64_t bytes_per_sector = 512;
+	uint32_t additional_flags = 0;
 	struct smb_filename smb_fname;
 	SMB_STRUCT_STAT st;
 	NTSTATUS status = NT_STATUS_OK;
+	uint64_t df_ret;
 
 	if (fname == NULL || fname->base_name == NULL) {
 		filename = ".";
@@ -3144,6 +3298,10 @@ NTSTATUS smbd_do_qfsinfo(connection_struct *conn,
 
 	st = smb_fname.st;
 
+	if (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN < max_data_bytes) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
 	*ppdata = (char *)SMB_REALLOC(
 		*ppdata, max_data_bytes + DIR_ENTRY_SAFETY_MARGIN);
 	if (*ppdata == NULL) {
@@ -3159,9 +3317,11 @@ NTSTATUS smbd_do_qfsinfo(connection_struct *conn,
 	switch (info_level) {
 		case SMB_INFO_ALLOCATION:
 		{
-			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit,bytes_per_sector;
+			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit;
 			data_len = 18;
-			if (get_dfree_info(conn,filename,False,&bsize,&dfree,&dsize) == (uint64_t)-1) {
+			df_ret = get_dfree_info(conn, filename, &bsize, &dfree,
+						&dsize);
+			if (df_ret == (uint64_t)-1) {
 				return map_nt_error_from_unix(errno);
 			}
 
@@ -3178,7 +3338,6 @@ NTSTATUS smbd_do_qfsinfo(connection_struct *conn,
 				dsize *= factor;
 				dfree *= factor;
 			}
-			bytes_per_sector = 512;
 			sectors_per_unit = bsize/bytes_per_sector;
 
 			DEBUG(5,("smbd_do_qfsinfo : SMB_INFO_ALLOCATION id=%x, bsize=%u, cSectorUnit=%u, \
@@ -3206,16 +3365,19 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 			 * this call so try fixing this by adding a terminating null to
 			 * the pushed string. The change here was adding the STR_TERMINATE. JRA.
 			 */
-			len = srvstr_push(
+			status = srvstr_push(
 				pdata, flags2,
 				pdata+l2_vol_szVolLabel, vname,
 				PTR_DIFF(end_data, pdata+l2_vol_szVolLabel),
-				STR_NOALIGN|STR_TERMINATE);
+				STR_NOALIGN|STR_TERMINATE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SCVAL(pdata,l2_vol_cch,len);
 			data_len = l2_vol_szVolLabel + len;
-			DEBUG(5,("smbd_do_qfsinfo : time = %x, namelen = %d, name = %s\n",
+			DEBUG(5,("smbd_do_qfsinfo : time = %x, namelen = %u, name = %s\n",
 				 (unsigned)convert_timespec_to_time_t(st.st_ex_ctime),
-				 len, vname));
+				 (unsigned)len, vname));
 			break;
 
 		case SMB_QUERY_FS_ATTRIBUTE_INFO:
@@ -3243,9 +3405,12 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 			SIVAL(pdata,4,255); /* Max filename component length */
 			/* NOTE! the fstype must *not* be null terminated or win98 won't recognise it
 				and will think we can't do long filenames */
-			len = srvstr_push(pdata, flags2, pdata+12, fstype,
+			status = srvstr_push(pdata, flags2, pdata+12, fstype,
 					  PTR_DIFF(end_data, pdata+12),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SIVAL(pdata,8,len);
 			data_len = 12 + len;
 			if (max_data_bytes >= 16 && data_len > max_data_bytes) {
@@ -3259,8 +3424,11 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 
 		case SMB_QUERY_FS_LABEL_INFO:
 		case SMB_FS_LABEL_INFORMATION:
-			len = srvstr_push(pdata, flags2, pdata+4, vname,
-					  PTR_DIFF(end_data, pdata+4), 0);
+			status = srvstr_push(pdata, flags2, pdata+4, vname,
+					  PTR_DIFF(end_data, pdata+4), 0, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			data_len = 4 + len;
 			SIVAL(pdata,0,len);
 			break;
@@ -3276,9 +3444,12 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 				(str_checksum(get_local_machine_name())<<16));
 
 			/* Max label len is 32 characters. */
-			len = srvstr_push(pdata, flags2, pdata+18, vname,
+			status = srvstr_push(pdata, flags2, pdata+18, vname,
 					  PTR_DIFF(end_data, pdata+18),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SIVAL(pdata,12,len);
 			data_len = 18+len;
 
@@ -3297,9 +3468,11 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 		case SMB_QUERY_FS_SIZE_INFO:
 		case SMB_FS_SIZE_INFORMATION:
 		{
-			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit,bytes_per_sector;
+			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit;
 			data_len = 24;
-			if (get_dfree_info(conn,filename,False,&bsize,&dfree,&dsize) == (uint64_t)-1) {
+			df_ret = get_dfree_info(conn, filename, &bsize, &dfree,
+						&dsize);
+			if (df_ret == (uint64_t)-1) {
 				return map_nt_error_from_unix(errno);
 			}
 			block_size = lp_block_size(snum);
@@ -3315,7 +3488,6 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)st.st_ex_dev, (u
 				dsize *= factor;
 				dfree *= factor;
 			}
-			bytes_per_sector = 512;
 			sectors_per_unit = bsize/bytes_per_sector;
 			DEBUG(5,("smbd_do_qfsinfo : SMB_QUERY_FS_SIZE_INFO bsize=%u, cSectorUnit=%u, \
 cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned int)sectors_per_unit,
@@ -3330,9 +3502,11 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 
 		case SMB_FS_FULL_SIZE_INFORMATION:
 		{
-			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit,bytes_per_sector;
+			uint64_t dfree,dsize,bsize,block_size,sectors_per_unit;
 			data_len = 32;
-			if (get_dfree_info(conn,filename,False,&bsize,&dfree,&dsize) == (uint64_t)-1) {
+			df_ret = get_dfree_info(conn, filename, &bsize, &dfree,
+						&dsize);
+			if (df_ret == (uint64_t)-1) {
 				return map_nt_error_from_unix(errno);
 			}
 			block_size = lp_block_size(snum);
@@ -3348,7 +3522,6 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 				dsize *= factor;
 				dfree *= factor;
 			}
-			bytes_per_sector = 512;
 			sectors_per_unit = bsize/bytes_per_sector;
 			DEBUG(5,("smbd_do_qfsinfo : SMB_QUERY_FS_FULL_SIZE_INFO bsize=%u, cSectorUnit=%u, \
 cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned int)sectors_per_unit,
@@ -3413,7 +3586,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 
 			/* access check */
 			if (get_current_uid(conn) != 0) {
-				DEBUG(0,("set_user_quota: access_denied "
+				DEBUG(0,("get_user_quota: access_denied "
 					 "service [%s] user [%s]\n",
 					 lp_servicename(talloc_tos(), SNUM(conn)),
 					 conn->session_info->unix_info->unix_name));
@@ -3466,6 +3639,34 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			break;
 		}
 
+		case SMB_FS_SECTOR_SIZE_INFORMATION:
+		{
+			data_len = 28;
+			/*
+			 * These values match a physical Windows Server 2012
+			 * share backed by NTFS atop spinning rust.
+			 */
+			DEBUG(5, ("SMB_FS_SECTOR_SIZE_INFORMATION:"));
+			/* logical_bytes_per_sector */
+			SIVAL(pdata, 0, bytes_per_sector);
+			/* phys_bytes_per_sector_atomic */
+			SIVAL(pdata, 4, bytes_per_sector);
+			/* phys_bytes_per_sector_perf */
+			SIVAL(pdata, 8, bytes_per_sector);
+			/* fs_effective_phys_bytes_per_sector_atomic */
+			SIVAL(pdata, 12, bytes_per_sector);
+			/* flags */
+			SIVAL(pdata, 16, SSINFO_FLAGS_ALIGNED_DEVICE
+				| SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE);
+			/* byte_off_sector_align */
+			SIVAL(pdata, 20, 0);
+			/* byte_off_partition_align */
+			SIVAL(pdata, 24, 0);
+			*fixed_portion = 28;
+			break;
+		}
+
+
 		/*
 		 * Query the version and capabilities of the CIFS UNIX extensions
 		 * in use.
@@ -3474,8 +3675,8 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 		case SMB_QUERY_CIFS_UNIX_INFO:
 		{
 			bool large_write = lp_min_receive_file_size() &&
-					!srv_is_signing_active(conn->sconn);
-			bool large_read = !srv_is_signing_active(conn->sconn);
+					!srv_is_signing_active(xconn);
+			bool large_read = !srv_is_signing_active(xconn);
 			int encrypt_caps = 0;
 
 			if (!lp_unix_extensions()) {
@@ -3656,7 +3857,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			 * Thursby MAC extension... ONLY on NTFS filesystems
 			 * once we do streams then we don't need this
 			 */
-			if (strequal(lp_fstype(talloc_tos(), SNUM(conn)),"NTFS")) {
+			if (strequal(lp_fstype(SNUM(conn)),"NTFS")) {
 				data_len = 88;
 				SIVAL(pdata,84,0x100); /* Don't support mac... */
 				break;
@@ -3705,7 +3906,7 @@ static void call_trans2qfsinfo(connection_struct *conn,
 
 	DEBUG(3,("call_trans2qfsinfo: level = %d\n", info_level));
 
-	status = smbd_do_qfsinfo(conn, req,
+	status = smbd_do_qfsinfo(req->xconn, conn, req,
 				 info_level,
 				 req->flags2,
 				 max_data_bytes,
@@ -3736,10 +3937,10 @@ static void call_trans2setfsinfo(connection_struct *conn,
 				 char **ppdata, int total_data,
 				 unsigned int max_data_bytes)
 {
-	struct smbd_server_connection *sconn = req->sconn;
+	struct smbXsrv_connection *xconn = req->xconn;
 	char *pdata = *ppdata;
 	char *params = *pparams;
-	uint16 info_level;
+	uint16_t info_level;
 
 	DEBUG(10,("call_trans2setfsinfo: for service [%s]\n",
 		  lp_servicename(talloc_tos(), SNUM(conn))));
@@ -3793,31 +3994,31 @@ static void call_trans2setfsinfo(connection_struct *conn,
 					NT_STATUS_INVALID_PARAMETER);
 				return;
 			}
-			sconn->smb1.unix_info.client_major = SVAL(pdata,0);
-			sconn->smb1.unix_info.client_minor = SVAL(pdata,2);
-			sconn->smb1.unix_info.client_cap_low = IVAL(pdata,4);
-			sconn->smb1.unix_info.client_cap_high = IVAL(pdata,8);
+			xconn->smb1.unix_info.client_major = SVAL(pdata,0);
+			xconn->smb1.unix_info.client_minor = SVAL(pdata,2);
+			xconn->smb1.unix_info.client_cap_low = IVAL(pdata,4);
+			xconn->smb1.unix_info.client_cap_high = IVAL(pdata,8);
 			/* Just print these values for now. */
 			DEBUG(10, ("call_trans2setfsinfo: set unix_info info. "
 				   "major = %u, minor = %u cap_low = 0x%x, "
 				   "cap_high = 0x%xn",
-				   (unsigned int)sconn->
+				   (unsigned int)xconn->
 				   smb1.unix_info.client_major,
-				   (unsigned int)sconn->
+				   (unsigned int)xconn->
 				   smb1.unix_info.client_minor,
-				   (unsigned int)sconn->
+				   (unsigned int)xconn->
 				   smb1.unix_info.client_cap_low,
-				   (unsigned int)sconn->
+				   (unsigned int)xconn->
 				   smb1.unix_info.client_cap_high));
 
 			/* Here is where we must switch to posix pathname processing... */
-			if (sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
+			if (xconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATHNAMES_CAP) {
 				lp_set_posix_pathnames();
 				mangle_change_to_posix();
 			}
 
-			if ((sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_FCNTL_LOCKS_CAP) &&
-			    !(sconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATH_OPERATIONS_CAP)) {
+			if ((xconn->smb1.unix_info.client_cap_low & CIFS_UNIX_FCNTL_LOCKS_CAP) &&
+			    !(xconn->smb1.unix_info.client_cap_low & CIFS_UNIX_POSIX_PATH_OPERATIONS_CAP)) {
 				/* Client that knows how to do posix locks,
 				 * but not posix open/mkdir operations. Set a
 				 * default type for read/write checks. */
@@ -3847,7 +4048,7 @@ static void call_trans2setfsinfo(connection_struct *conn,
 					return;
 				}
 
-				if (req->sconn->smb1.echo_handler.trusted_fde) {
+				if (xconn->smb1.echo_handler.trusted_fde) {
 					DEBUG( 2,("call_trans2setfsinfo: "
 						"request transport encryption disabled"
 						"with 'fork echo handler = yes'\n"));
@@ -3911,7 +4112,7 @@ static void call_trans2setfsinfo(connection_struct *conn,
 					return;
 				}
 
-				/* note: normaly there're 48 bytes,
+				/* note: normally there're 48 bytes,
 				 * but we didn't use the last 6 bytes for now 
 				 * --metze 
 				 */
@@ -4190,7 +4391,7 @@ static const struct {unsigned stat_fflag; unsigned smb_fflag;}
 };
 
 static void map_info2_flags_from_sbuf(const SMB_STRUCT_STAT *psbuf,
-				uint32 *smb_fflags, uint32 *smb_fmask)
+				uint32_t *smb_fflags, uint32_t *smb_fmask)
 {
 	int i;
 
@@ -4203,11 +4404,11 @@ static void map_info2_flags_from_sbuf(const SMB_STRUCT_STAT *psbuf,
 }
 
 static bool map_info2_flags_to_sbuf(const SMB_STRUCT_STAT *psbuf,
-				const uint32 smb_fflags,
-				const uint32 smb_fmask,
+				const uint32_t smb_fflags,
+				const uint32_t smb_fmask,
 				int *stat_fflags)
 {
-	uint32 max_fmask = 0;
+	uint32_t max_fmask = 0;
 	int i;
 
 	*stat_fflags = psbuf->st_ex_flags;
@@ -4247,8 +4448,8 @@ static char *store_file_unix_basic_info2(connection_struct *conn,
 				files_struct *fsp,
 				const SMB_STRUCT_STAT *psbuf)
 {
-	uint32 file_flags = 0;
-	uint32 flags_mask = 0;
+	uint32_t file_flags = 0;
+	uint32_t flags_mask = 0;
 
 	pdata = store_file_unix_basic(conn, pdata, fsp, psbuf);
 
@@ -4360,7 +4561,7 @@ static void call_trans2qpipeinfo(connection_struct *conn,
 	char *pdata = *ppdata;
 	unsigned int data_size = 0;
 	unsigned int param_size = 2;
-	uint16 info_level;
+	uint16_t info_level;
 	files_struct *fsp;
 
 	if (!params) {
@@ -4388,6 +4589,10 @@ static void call_trans2qpipeinfo(connection_struct *conn,
 	}
 	params = *pparams;
 	SSVAL(params,0,0);
+	if (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN < max_data_bytes) {
+		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		return;
+	}
 	data_size = max_data_bytes + DIR_ENTRY_SAFETY_MARGIN;
 	*ppdata = (char *)SMB_REALLOC(*ppdata, data_size); 
 	if (*ppdata == NULL ) {
@@ -4449,6 +4654,7 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 	uint64_t allocation_size = 0;
 	uint64_t file_index = 0;
 	uint32_t access_mask = 0;
+	size_t len = 0;
 
 	if (INFO_LEVEL_IS_UNIX(info_level) && !lp_unix_extensions()) {
 		return NT_STATUS_INVALID_LEVEL;
@@ -4468,6 +4674,10 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 
 	if ((nlink > 0) && delete_pending) {
 		nlink -= 1;
+	}
+
+	if (max_data_bytes + DIR_ENTRY_SAFETY_MARGIN < max_data_bytes) {
+		return NT_STATUS_INVALID_PARAMETER;
 	}
 
 	data_size = max_data_bytes + DIR_ENTRY_SAFETY_MARGIN;
@@ -4574,8 +4784,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 			srv_put_dos_date2(pdata,l1_fdateCreation,create_time);
 			srv_put_dos_date2(pdata,l1_fdateLastAccess,atime);
 			srv_put_dos_date2(pdata,l1_fdateLastWrite,mtime); /* write time */
-			SIVAL(pdata,l1_cbFile,(uint32)file_size);
-			SIVAL(pdata,l1_cbFileAlloc,(uint32)allocation_size);
+			SIVAL(pdata,l1_cbFile,(uint32_t)file_size);
+			SIVAL(pdata,l1_cbFileAlloc,(uint32_t)allocation_size);
 			SSVAL(pdata,l1_attrFile,mode);
 			break;
 
@@ -4589,8 +4799,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 			srv_put_dos_date2(pdata,0,create_time);
 			srv_put_dos_date2(pdata,4,atime);
 			srv_put_dos_date2(pdata,8,mtime); /* write time */
-			SIVAL(pdata,12,(uint32)file_size);
-			SIVAL(pdata,16,(uint32)allocation_size);
+			SIVAL(pdata,12,(uint32_t)file_size);
+			SIVAL(pdata,16,(uint32_t)allocation_size);
 			SSVAL(pdata,20,mode);
 			SIVAL(pdata,22,ea_size);
 			break;
@@ -4746,17 +4956,19 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 		case SMB_QUERY_FILE_ALT_NAME_INFO:
 		case SMB_FILE_ALTERNATE_NAME_INFORMATION:
 		{
-			int len;
 			char mangled_name[13];
 			DEBUG(10,("smbd_do_qfilepathinfo: SMB_FILE_ALTERNATE_NAME_INFORMATION\n"));
 			if (!name_to_8_3(base_name,mangled_name,
 						True,conn->params)) {
 				return NT_STATUS_NO_MEMORY;
 			}
-			len = srvstr_push(dstart, flags2,
+			status = srvstr_push(dstart, flags2,
 					  pdata+4, mangled_name,
 					  PTR_DIFF(dend, pdata+4),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			data_size = 4 + len;
 			SIVAL(pdata,0,len);
 			*fixed_portion = 8;
@@ -4765,14 +4977,16 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 
 		case SMB_QUERY_FILE_NAME_INFO:
 		{
-			int len;
 			/*
 			  this must be *exactly* right for ACLs on mapped drives to work
 			 */
-			len = srvstr_push(dstart, flags2,
+			status = srvstr_push(dstart, flags2,
 					  pdata+4, dos_fname,
 					  PTR_DIFF(dend, pdata+4),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			DEBUG(10,("smbd_do_qfilepathinfo: SMB_QUERY_FILE_NAME_INFO\n"));
 			data_size = 4 + len;
 			SIVAL(pdata,0,len);
@@ -4796,7 +5010,6 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 		case SMB_QUERY_FILE_ALL_INFO:
 		case SMB_FILE_ALL_INFORMATION:
 		{
-			int len;
 			unsigned int ea_size =
 			    estimate_ea_size(conn, fsp, smb_fname);
 			DEBUG(10,("smbd_do_qfilepathinfo: SMB_FILE_ALL_INFORMATION\n"));
@@ -4816,10 +5029,13 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 			pdata += 24;
 			SIVAL(pdata,0,ea_size);
 			pdata += 4; /* EA info */
-			len = srvstr_push(dstart, flags2,
+			status = srvstr_push(dstart, flags2,
 					  pdata+4, dos_fname,
 					  PTR_DIFF(dend, pdata+4),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SIVAL(pdata,0,len);
 			pdata += 4 + len;
 			data_size = PTR_DIFF(pdata,(*ppdata));
@@ -4829,7 +5045,6 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 
 		case 0xFF12:/*SMB2_FILE_ALL_INFORMATION*/
 		{
-			int len;
 			unsigned int ea_size =
 			    estimate_ea_size(conn, fsp, smb_fname);
 			DEBUG(10,("smbd_do_qfilepathinfo: SMB2_FILE_ALL_INFORMATION\n"));
@@ -4854,10 +5069,13 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 
 			pdata += 0x60;
 
-			len = srvstr_push(dstart, flags2,
+			status = srvstr_push(dstart, flags2,
 					  pdata+4, dos_fname,
 					  PTR_DIFF(dend, pdata+4),
-					  STR_UNICODE);
+					  STR_UNICODE, &len);
+			if (!NT_STATUS_IS_OK(status)) {
+				return status;
+			}
 			SIVAL(pdata,0,len);
 			pdata += 4 + len;
 			data_size = PTR_DIFF(pdata,(*ppdata));
@@ -5029,7 +5247,7 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 
 		case SMB_QUERY_FILE_UNIX_LINK:
 			{
-				int len;
+				int link_len = 0;
 				char *buffer = talloc_array(mem_ctx, char, PATH_MAX+1);
 
 				if (!buffer) {
@@ -5044,17 +5262,20 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 #else
 				return NT_STATUS_DOS(ERRDOS, ERRbadlink);
 #endif
-				len = SMB_VFS_READLINK(conn,
+				link_len = SMB_VFS_READLINK(conn,
 						       smb_fname->base_name,
 						       buffer, PATH_MAX);
-				if (len == -1) {
+				if (link_len == -1) {
 					return map_nt_error_from_unix(errno);
 				}
-				buffer[len] = 0;
-				len = srvstr_push(dstart, flags2,
+				buffer[link_len] = 0;
+				status = srvstr_push(dstart, flags2,
 						  pdata, buffer,
 						  PTR_DIFF(dend, pdata),
-						  STR_TERMINATE);
+						  STR_TERMINATE, &len);
+				if (!NT_STATUS_IS_OK(status)) {
+					return status;
+				}
 				pdata += len;
 				data_size = PTR_DIFF(pdata,(*ppdata));
 
@@ -5066,8 +5287,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 			{
 				SMB_ACL_T file_acl = NULL;
 				SMB_ACL_T def_acl = NULL;
-				uint16 num_file_acls = 0;
-				uint16 num_def_acls = 0;
+				uint16_t num_file_acls = 0;
+				uint16_t num_def_acls = 0;
 
 				status = refuse_symlink(conn,
 						fsp,
@@ -5195,15 +5416,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 			}
 
 			smblctx = (uint64_t)IVAL(pdata, POSIX_LOCK_PID_OFFSET);
-#if defined(HAVE_LONGLONG)
-			offset = (((uint64_t) IVAL(pdata,(POSIX_LOCK_START_OFFSET+4))) << 32) |
-					((uint64_t) IVAL(pdata,POSIX_LOCK_START_OFFSET));
-			count = (((uint64_t) IVAL(pdata,(POSIX_LOCK_LEN_OFFSET+4))) << 32) |
-					((uint64_t) IVAL(pdata,POSIX_LOCK_LEN_OFFSET));
-#else /* HAVE_LONGLONG */
-			offset = (uint64_t)IVAL(pdata,POSIX_LOCK_START_OFFSET);
-			count = (uint64_t)IVAL(pdata,POSIX_LOCK_LEN_OFFSET);
-#endif /* HAVE_LONGLONG */
+			offset = BVAL(pdata,POSIX_LOCK_START_OFFSET);
+			count = BVAL(pdata,POSIX_LOCK_LEN_OFFSET);
 
 			status = query_lock(fsp,
 					&smblctx,
@@ -5219,15 +5433,8 @@ NTSTATUS smbd_do_qfilepathinfo(connection_struct *conn,
 				SSVAL(pdata, POSIX_LOCK_TYPE_OFFSET, lock_type);
 				SSVAL(pdata, POSIX_LOCK_FLAGS_OFFSET, 0);
 				SIVAL(pdata, POSIX_LOCK_PID_OFFSET, (uint32_t)smblctx);
-#if defined(HAVE_LONGLONG)
-				SIVAL(pdata, POSIX_LOCK_START_OFFSET, (uint32)(offset & 0xFFFFFFFF));
-				SIVAL(pdata, POSIX_LOCK_START_OFFSET + 4, (uint32)((offset >> 32) & 0xFFFFFFFF));
-				SIVAL(pdata, POSIX_LOCK_LEN_OFFSET, (uint32)(count & 0xFFFFFFFF));
-				SIVAL(pdata, POSIX_LOCK_LEN_OFFSET + 4, (uint32)((count >> 32) & 0xFFFFFFFF));
-#else /* HAVE_LONGLONG */
-				SIVAL(pdata, POSIX_LOCK_START_OFFSET, offset);
-				SIVAL(pdata, POSIX_LOCK_LEN_OFFSET, count);
-#endif /* HAVE_LONGLONG */
+				SBVAL(pdata, POSIX_LOCK_START_OFFSET, offset);
+				SBVAL(pdata, POSIX_LOCK_LEN_OFFSET, count);
 
 			} else if (NT_STATUS_IS_OK(status)) {
 				/* For success we just return a copy of what we sent
@@ -5263,7 +5470,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 {
 	char *params = *pparams;
 	char *pdata = *ppdata;
-	uint16 info_level;
+	uint16_t info_level;
 	unsigned int data_size = 0;
 	unsigned int param_size = 2;
 	struct smb_filename *smb_fname = NULL;
@@ -5535,7 +5742,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 		case SMB_INFO_QUERY_EAS_FROM_LIST:
 		{
 			/* Pull any EA list from the data portion. */
-			uint32 ea_size;
+			uint32_t ea_size;
 
 			if (total_data < 4) {
 				reply_nterror(
@@ -5726,7 +5933,7 @@ NTSTATUS smb_set_file_time(connection_struct *conn,
 			   bool setting_write_time)
 {
 	struct smb_filename smb_fname_base;
-	uint32 action =
+	uint32_t action =
 		FILE_NOTIFY_CHANGE_LAST_ACCESS
 		|FILE_NOTIFY_CHANGE_LAST_WRITE
 		|FILE_NOTIFY_CHANGE_CREATION;
@@ -5821,7 +6028,7 @@ NTSTATUS smb_set_file_time(connection_struct *conn,
 
 static NTSTATUS smb_set_file_dosmode(connection_struct *conn,
 				     const struct smb_filename *smb_fname,
-				     uint32 dosmode)
+				     uint32_t dosmode)
 {
 	struct smb_filename *smb_fname_base;
 	NTSTATUS status;
@@ -5929,13 +6136,15 @@ static NTSTATUS smb_set_file_size(connection_struct *conn,
 		FILE_OPEN,				/* create_disposition*/
 		0,					/* create_options */
 		FILE_ATTRIBUTE_NORMAL,			/* file_attributes */
-		FORCE_OPLOCK_BREAK_TO_NONE,		/* oplock_request */
+		0,					/* oplock_request */
+		NULL,					/* lease */
 		0,					/* allocation_size */
 		0,					/* private_flags */
 		NULL,					/* sd */
 		NULL,					/* ea_list */
 		&new_fsp,				/* result */
-		NULL);					/* pinfo */
+		NULL,					/* pinfo */
+		NULL, NULL);				/* create context */
 
 	TALLOC_FREE(smb_fname_tmp);
 
@@ -6065,7 +6274,7 @@ static NTSTATUS smb_set_file_disposition_info(connection_struct *conn,
 {
 	NTSTATUS status = NT_STATUS_OK;
 	bool delete_on_close;
-	uint32 dosmode = 0;
+	uint32_t dosmode = 0;
 
 	if (total_data < 1) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -6138,7 +6347,7 @@ static NTSTATUS smb_file_mode_information(connection_struct *conn,
 				const char *pdata,
 				int total_data)
 {
-	uint32 mode;
+	uint32_t mode;
 
 	if (total_data < 4) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -6171,7 +6380,7 @@ static NTSTATUS smb_set_file_unix_link(connection_struct *conn,
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	if (!lp_symlinks(SNUM(conn))) {
+	if (!lp_follow_symlinks(SNUM(conn))) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -6412,8 +6621,8 @@ static NTSTATUS smb_file_rename_information(connection_struct *conn,
 					    struct smb_filename *smb_fname_src)
 {
 	bool overwrite;
-	uint32 root_fid;
-	uint32 len;
+	uint32_t root_fid;
+	uint32_t len;
 	char *newname = NULL;
 	struct smb_filename *smb_fname_dst = NULL;
 	bool dest_has_wcard = False;
@@ -6580,9 +6789,9 @@ static NTSTATUS smb_set_posix_acl(connection_struct *conn,
 				files_struct *fsp,
 				const struct smb_filename *smb_fname)
 {
-	uint16 posix_acl_version;
-	uint16 num_file_acls;
-	uint16 num_def_acls;
+	uint16_t posix_acl_version;
+	uint16_t num_file_acls;
+	uint16_t num_def_acls;
 	bool valid_file_acls = True;
 	bool valid_def_acls = True;
 	NTSTATUS status;
@@ -6696,15 +6905,10 @@ static NTSTATUS smb_set_posix_lock(connection_struct *conn,
 	}
 
 	smblctx = (uint64_t)IVAL(pdata, POSIX_LOCK_PID_OFFSET);
-#if defined(HAVE_LONGLONG)
 	offset = (((uint64_t) IVAL(pdata,(POSIX_LOCK_START_OFFSET+4))) << 32) |
 			((uint64_t) IVAL(pdata,POSIX_LOCK_START_OFFSET));
 	count = (((uint64_t) IVAL(pdata,(POSIX_LOCK_LEN_OFFSET+4))) << 32) |
 			((uint64_t) IVAL(pdata,POSIX_LOCK_LEN_OFFSET));
-#else /* HAVE_LONGLONG */
-	offset = (uint64_t)IVAL(pdata,POSIX_LOCK_START_OFFSET);
-	count = (uint64_t)IVAL(pdata,POSIX_LOCK_LEN_OFFSET);
-#endif /* HAVE_LONGLONG */
 
 	DEBUG(10,("smb_set_posix_lock: file %s, lock_type = %u,"
 			"smblctx = %llu, count = %.0f, offset = %.0f\n",
@@ -6733,8 +6937,7 @@ static NTSTATUS smb_set_posix_lock(connection_struct *conn,
 							POSIX_LOCK,
 							blocking_lock,
 							&status,
-							&block_smblctx,
-							NULL);
+							&block_smblctx);
 
 		if (br_lck && blocking_lock && ERROR_WAS_LOCK_DENIED(status)) {
 			/*
@@ -6775,7 +6978,7 @@ static NTSTATUS smb_set_file_basic_info(connection_struct *conn,
 {
 	/* Patch to do this correctly from Paul Eggert <eggert@twinsun.com>. */
 	struct smb_file_time ft;
-	uint32 dosmode = 0;
+	uint32_t dosmode = 0;
 	NTSTATUS status = NT_STATUS_OK;
 
 	ZERO_STRUCT(ft);
@@ -6926,13 +7129,15 @@ static NTSTATUS smb_set_file_allocation_info(connection_struct *conn,
 		FILE_OPEN,				/* create_disposition*/
 		0,					/* create_options */
 		FILE_ATTRIBUTE_NORMAL,			/* file_attributes */
-		FORCE_OPLOCK_BREAK_TO_NONE,		/* oplock_request */
+		0,					/* oplock_request */
+		NULL,					/* lease */
 		0,					/* allocation_size */
 		0,					/* private_flags */
 		NULL,					/* sd */
 		NULL,					/* ea_list */
 		&new_fsp,				/* result */
-		NULL);					/* pinfo */
+		NULL,					/* pinfo */
+		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
 		/* NB. We check for open_was_deferred in the caller. */
@@ -6954,7 +7159,6 @@ static NTSTATUS smb_set_file_allocation_info(connection_struct *conn,
 	 * if there are no pending writes.
 	 */
 	trigger_write_time_update_immediate(new_fsp);
-
 	close_file(req, new_fsp, NORMAL_CLOSE);
 	return NT_STATUS_OK;
 }
@@ -7000,13 +7204,13 @@ static NTSTATUS smb_unix_mknod(connection_struct *conn,
 					int total_data,
 					const struct smb_filename *smb_fname)
 {
-	uint32 file_type = IVAL(pdata,56);
+	uint32_t file_type = IVAL(pdata,56);
 #if defined(HAVE_MAKEDEV)
-	uint32 dev_major = IVAL(pdata,60);
-	uint32 dev_minor = IVAL(pdata,68);
+	uint32_t dev_major = IVAL(pdata,60);
+	uint32_t dev_minor = IVAL(pdata,68);
 #endif
 	SMB_DEV_T dev = (SMB_DEV_T)0;
-	uint32 raw_unixmode = IVAL(pdata,84);
+	uint32_t raw_unixmode = IVAL(pdata,84);
 	NTSTATUS status;
 	mode_t unixmode;
 
@@ -7062,7 +7266,7 @@ static NTSTATUS smb_unix_mknod(connection_struct *conn,
  	 * don't want to end up with a half-constructed mknod.
  	 */
 
-	if (lp_inherit_perms(SNUM(conn))) {
+	if (lp_inherit_permissions(SNUM(conn))) {
 		char *parent;
 		if (!parent_dirname(talloc_tos(), smb_fname->base_name,
 				    &parent, NULL)) {
@@ -7088,7 +7292,7 @@ static NTSTATUS smb_set_file_unix_basic(connection_struct *conn,
 					const struct smb_filename *smb_fname)
 {
 	struct smb_file_time ft;
-	uint32 raw_unixmode;
+	uint32_t raw_unixmode;
 	mode_t unixmode;
 	off_t size = 0;
 	uid_t set_owner = (uid_t)SMB_UID_NO_CHANGE;
@@ -7344,8 +7548,8 @@ static NTSTATUS smb_set_file_unix_info2(connection_struct *conn,
 					const struct smb_filename *smb_fname)
 {
 	NTSTATUS status;
-	uint32 smb_fflags;
-	uint32 smb_fmask;
+	uint32_t smb_fflags;
+	uint32_t smb_fmask;
 
 	if (total_data < 116) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -7406,11 +7610,11 @@ static NTSTATUS smb_posix_mkdir(connection_struct *conn,
 				int *pdata_return_size)
 {
 	NTSTATUS status = NT_STATUS_OK;
-	uint32 raw_unixmode = 0;
-	uint32 mod_unixmode = 0;
+	uint32_t raw_unixmode = 0;
+	uint32_t mod_unixmode = 0;
 	mode_t unixmode = (mode_t)0;
 	files_struct *fsp = NULL;
-	uint16 info_level_return = 0;
+	uint16_t info_level_return = 0;
 	int info;
 	char *pdata = *ppdata;
 
@@ -7427,7 +7631,7 @@ static NTSTATUS smb_posix_mkdir(connection_struct *conn,
 		return status;
 	}
 
-	mod_unixmode = (uint32)unixmode | FILE_FLAG_POSIX_SEMANTICS;
+	mod_unixmode = (uint32_t)unixmode | FILE_FLAG_POSIX_SEMANTICS;
 
 	DEBUG(10,("smb_posix_mkdir: file %s, mode 0%o\n",
 		  smb_fname_str_dbg(smb_fname), (unsigned int)unixmode));
@@ -7443,12 +7647,14 @@ static NTSTATUS smb_posix_mkdir(connection_struct *conn,
 		FILE_DIRECTORY_FILE,			/* create_options */
 		mod_unixmode,				/* file_attributes */
 		0,					/* oplock_request */
+		NULL,					/* lease */
 		0,					/* allocation_size */
 		0,					/* private_flags */
 		NULL,					/* sd */
 		NULL,					/* ea_list */
 		&fsp,					/* result */
-		&info);					/* pinfo */
+		&info,					/* pinfo */
+		NULL, NULL);				/* create context */
 
         if (NT_STATUS_IS_OK(status)) {
                 close_file(req, fsp, NORMAL_CLOSE);
@@ -7514,19 +7720,19 @@ static NTSTATUS smb_posix_open(connection_struct *conn,
 {
 	bool extended_oplock_granted = False;
 	char *pdata = *ppdata;
-	uint32 flags = 0;
-	uint32 wire_open_mode = 0;
-	uint32 raw_unixmode = 0;
-	uint32 mod_unixmode = 0;
-	uint32 create_disp = 0;
-	uint32 access_mask = 0;
-	uint32 create_options = FILE_NON_DIRECTORY_FILE;
+	uint32_t flags = 0;
+	uint32_t wire_open_mode = 0;
+	uint32_t raw_unixmode = 0;
+	uint32_t mod_unixmode = 0;
+	uint32_t create_disp = 0;
+	uint32_t access_mask = 0;
+	uint32_t create_options = FILE_NON_DIRECTORY_FILE;
 	NTSTATUS status = NT_STATUS_OK;
 	mode_t unixmode = (mode_t)0;
 	files_struct *fsp = NULL;
 	int oplock_request = 0;
 	int info = 0;
-	uint16 info_level_return = 0;
+	uint16_t info_level_return = 0;
 
 	if (total_data < 18) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -7637,7 +7843,7 @@ static NTSTATUS smb_posix_open(connection_struct *conn,
 		return status;
 	}
 
-	mod_unixmode = (uint32)unixmode | FILE_FLAG_POSIX_SEMANTICS;
+	mod_unixmode = (uint32_t)unixmode | FILE_FLAG_POSIX_SEMANTICS;
 
 	if (wire_open_mode & SMB_O_SYNC) {
 		create_options |= FILE_WRITE_THROUGH;
@@ -7675,12 +7881,14 @@ static NTSTATUS smb_posix_open(connection_struct *conn,
 		create_options,				/* create_options */
 		mod_unixmode,				/* file_attributes */
 		oplock_request,				/* oplock_request */
+		NULL,					/* lease */
 		0,					/* allocation_size */
 		0,					/* private_flags */
 		NULL,					/* sd */
 		NULL,					/* ea_list */
 		&fsp,					/* result */
-		&info);					/* pinfo */
+		&info,					/* pinfo */
+		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -7763,7 +7971,7 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 {
 	NTSTATUS status = NT_STATUS_OK;
 	files_struct *fsp = NULL;
-	uint16 flags = 0;
+	uint16_t flags = 0;
 	char del = 1;
 	int info = 0;
 	int create_options = 0;
@@ -7805,12 +8013,14 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 		create_options,				/* create_options */
 		FILE_FLAG_POSIX_SEMANTICS|0777,		/* file_attributes */
 		0,					/* oplock_request */
+		NULL,					/* lease */
 		0,					/* allocation_size */
 		0,					/* private_flags */
 		NULL,					/* sd */
 		NULL,					/* ea_list */
 		&fsp,					/* result */
-		&info);					/* pinfo */
+		&info,					/* pinfo */
+		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -8166,7 +8376,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 {
 	char *params = *pparams;
 	char *pdata = *ppdata;
-	uint16 info_level;
+	uint16_t info_level;
 	struct smb_filename *smb_fname = NULL;
 	files_struct *fsp = NULL;
 	NTSTATUS status = NT_STATUS_OK;
@@ -8340,7 +8550,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 					 ppdata, total_data,
 					 &data_return_size);
 	if (!NT_STATUS_IS_OK(status)) {
-		if (open_was_deferred(req->sconn, req->mid)) {
+		if (open_was_deferred(req->xconn, req->mid)) {
 			/* We have re-scheduled this call. */
 			return;
 		}
@@ -8515,7 +8725,7 @@ static void call_trans2findnotifyfirst(connection_struct *conn,
 				       unsigned int max_data_bytes)
 {
 	char *params = *pparams;
-	uint16 info_level;
+	uint16_t info_level;
 
 	if (total_params < 6) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -8652,6 +8862,8 @@ static void call_trans2ioctl(connection_struct *conn,
 {
 	char *pdata = *ppdata;
 	files_struct *fsp = file_fsp(req, SVAL(req->vwv+15, 0));
+	NTSTATUS status;
+	size_t len = 0;
 
 	/* check for an invalid fid before proceeding */
 
@@ -8675,12 +8887,20 @@ static void call_trans2ioctl(connection_struct *conn,
 		/* Job number */
 		SSVAL(pdata, 0, print_spool_rap_jobid(fsp->print_file));
 
-		srvstr_push(pdata, req->flags2, pdata + 2,
+		status = srvstr_push(pdata, req->flags2, pdata + 2,
 			    lp_netbios_name(), 15,
-			    STR_ASCII|STR_TERMINATE); /* Our NetBIOS name */
-		srvstr_push(pdata, req->flags2, pdata+18,
+			    STR_ASCII|STR_TERMINATE, &len); /* Our NetBIOS name */
+		if (!NT_STATUS_IS_OK(status)) {
+			reply_nterror(req, status);
+			return;
+		}
+		status = srvstr_push(pdata, req->flags2, pdata+18,
 			    lp_servicename(talloc_tos(), SNUM(conn)), 13,
-			    STR_ASCII|STR_TERMINATE); /* Service name */
+			    STR_ASCII|STR_TERMINATE, &len); /* Service name */
+		if (!NT_STATUS_IS_OK(status)) {
+			reply_nterror(req, status);
+			return;
+		}
 		send_trans2_replies(conn, req, NT_STATUS_OK, *pparams, 0, *ppdata, 32,
 				    max_data_bytes);
 		return;

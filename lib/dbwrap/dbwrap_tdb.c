@@ -24,7 +24,7 @@
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "lib/util/util_tdb.h"
 #include "system/filesys.h"
-#include "ccan/str/str.h"
+#include "lib/param/param.h"
 
 struct db_tdb_ctx {
 	struct tdb_wrap *wtdb;
@@ -401,17 +401,12 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
 			       const char *name,
 			       int hash_size, int tdb_flags,
 			       int open_flags, mode_t mode,
-			       enum dbwrap_lock_order lock_order)
+			       enum dbwrap_lock_order lock_order,
+			       uint64_t dbrwap_flags)
 {
 	struct db_context *result = NULL;
 	struct db_tdb_ctx *db_tdb;
 	struct stat st;
-
-	/* Extra paranoia. */
-	if (name && strends(name, ".ntdb")) {
-		DEBUG(0, ("can't try to open %s with tdb!\n", name));
-		return NULL;
-	}
 
 	result = talloc_zero(mem_ctx, struct db_context);
 	if (result == NULL) {
@@ -426,8 +421,13 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
 	}
 	result->lock_order = lock_order;
 
-	db_tdb->wtdb = tdb_wrap_open(db_tdb, name, hash_size, tdb_flags,
-				     open_flags, mode, lp_ctx);
+	if (hash_size == 0) {
+		hash_size = lpcfg_tdb_hash_size(lp_ctx, name);
+	}
+
+	db_tdb->wtdb = tdb_wrap_open(db_tdb, name, hash_size,
+				     lpcfg_tdb_flags(lp_ctx, tdb_flags),
+				     open_flags, mode);
 	if (db_tdb->wtdb == NULL) {
 		DEBUG(3, ("Could not open tdb: %s\n", strerror(errno)));
 		goto fail;

@@ -35,6 +35,8 @@
 #include "includes.h"
 #include "kdc/kdc-glue.h"
 #include "kdc/db-glue.h"
+#include "auth/auth_sam.h"
+#include <ldb.h>
 
 static krb5_error_code hdb_samba4_open(krb5_context context, HDB *db, int flags, mode_t mode)
 {
@@ -126,12 +128,15 @@ hdb_samba4_check_constrained_delegation(krb5_context context, HDB *db,
 					krb5_const_principal target_principal)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
+	struct samba_kdc_entry *skdc_entry;
 
 	kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
 					   struct samba_kdc_db_context);
+	skdc_entry = talloc_get_type_abort(entry->ctx,
+					   struct samba_kdc_entry);
 
 	return samba_kdc_check_s4u2proxy(context, kdc_db_ctx,
-					 entry,
+					 skdc_entry,
 					 target_principal);
 }
 
@@ -141,12 +146,15 @@ hdb_samba4_check_pkinit_ms_upn_match(krb5_context context, HDB *db,
 				     krb5_const_principal certificate_principal)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
+	struct samba_kdc_entry *skdc_entry;
 
 	kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
 					   struct samba_kdc_db_context);
+	skdc_entry = talloc_get_type_abort(entry->ctx,
+					   struct samba_kdc_entry);
 
 	return samba_kdc_check_pkinit_ms_upn_match(context, kdc_db_ctx,
-						   entry,
+						   skdc_entry,
 						   certificate_principal);
 }
 
@@ -156,13 +164,35 @@ hdb_samba4_check_s4u2self(krb5_context context, HDB *db,
 			  krb5_const_principal target_principal)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
+	struct samba_kdc_entry *skdc_entry;
 
 	kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
 					   struct samba_kdc_db_context);
+	skdc_entry = talloc_get_type_abort(entry->ctx,
+					   struct samba_kdc_entry);
 
 	return samba_kdc_check_s4u2self(context, kdc_db_ctx,
-					entry,
-					target_principal);
+				        skdc_entry,
+				        target_principal);
+}
+
+static krb5_error_code hdb_samba4_auth_status(krb5_context context, HDB *db,
+					      hdb_entry_ex *entry,
+					      int hdb_auth_status)
+{
+	struct samba_kdc_db_context *kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
+									struct samba_kdc_db_context);
+	struct samba_kdc_entry *p = talloc_get_type(entry->ctx, struct samba_kdc_entry);
+
+	struct ldb_dn *domain_dn = ldb_get_default_basedn(kdc_db_ctx->samdb);
+
+	if (hdb_auth_status == HDB_AUTH_WRONG_PASSWORD) {
+		authsam_update_bad_pwd_count(kdc_db_ctx->samdb, p->msg, domain_dn);
+	} else if (hdb_auth_status == HDB_AUTH_SUCCESS) {
+		authsam_logon_success_accounting(kdc_db_ctx->samdb, p->msg,
+						 domain_dn, true);
+	}
+	return 0;
 }
 
 /* This interface is to be called by the KDC and libnet_keytab_dump,
@@ -189,7 +219,7 @@ NTSTATUS hdb_samba4_create_kdc(struct samba_kdc_base_context *base_ctx,
 
 	(*db)->hdb_master_key_set = 0;
 	(*db)->hdb_db = NULL;
-	(*db)->hdb_capability_flags = 0;
+	(*db)->hdb_capability_flags = HDB_CAP_F_HANDLE_ENTERPRISE_PRINCIPAL;
 
 	nt_status = samba_kdc_setup_db_ctx(*db, base_ctx, &kdc_db_ctx);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -216,7 +246,7 @@ NTSTATUS hdb_samba4_create_kdc(struct samba_kdc_base_context *base_ctx,
 	(*db)->hdb__del = NULL;
 	(*db)->hdb_destroy = hdb_samba4_destroy;
 
-	(*db)->hdb_auth_status = NULL;
+	(*db)->hdb_auth_status = hdb_samba4_auth_status;
 	(*db)->hdb_check_constrained_delegation = hdb_samba4_check_constrained_delegation;
 	(*db)->hdb_check_pkinit_ms_upn_match = hdb_samba4_check_pkinit_ms_upn_match;
 	(*db)->hdb_check_s4u2self = hdb_samba4_check_s4u2self;

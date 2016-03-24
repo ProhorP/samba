@@ -30,6 +30,7 @@
 #include "passdb/pdb_ldap_schema.h"
 #include "lib/privileges.h"
 #include "secrets.h"
+#include "idmap.h"
 
 /*
  * Set a user's data
@@ -141,7 +142,7 @@ static int net_sam_set_workstations(struct net_context *c, int argc,
 
 static int net_sam_set_userflag(struct net_context *c, int argc,
 				const char **argv, const char *field,
-				uint16 flag)
+				uint16_t flag)
 {
 	struct samu *sam_acct = NULL;
 	struct dom_sid sid;
@@ -479,8 +480,8 @@ static int net_sam_set(struct net_context *c, int argc, const char **argv)
 static int net_sam_policy_set(struct net_context *c, int argc, const char **argv)
 {
 	const char *account_policy = NULL;
-	uint32 value = 0;
-	uint32 old_value = 0;
+	uint32_t value = 0;
+	uint32_t old_value = 0;
 	enum pdb_policy_type field;
 	char *endptr;
 
@@ -549,7 +550,7 @@ static int net_sam_policy_set(struct net_context *c, int argc, const char **argv
 static int net_sam_policy_show(struct net_context *c, int argc, const char **argv)
 {
 	const char *account_policy = NULL;
-        uint32 old_value;
+        uint32_t old_value;
         enum pdb_policy_type field;
 
         if (argc != 1 || c->display_usage) {
@@ -824,7 +825,7 @@ static int net_sam_rights(struct net_context *c, int argc, const char **argv)
 static NTSTATUS map_unix_group(const struct group *grp, GROUP_MAP *map)
 {
 	const char *dom, *name;
-	uint32 rid;
+	uint32_t rid;
 
 	if (pdb_getgrgid(map, grp->gr_gid)) {
 		return NT_STATUS_GROUP_EXISTS;
@@ -912,6 +913,7 @@ static int net_sam_mapunixgroup(struct net_context *c, int argc, const char **ar
 static NTSTATUS unmap_unix_group(const struct group *grp)
 {
         struct dom_sid dom_sid;
+	struct unixid id;
 
         if (!lookup_name(talloc_tos(), grp->gr_name, LOOKUP_NAME_LOCAL,
                         NULL, NULL, NULL, NULL)) {
@@ -919,7 +921,9 @@ static NTSTATUS unmap_unix_group(const struct group *grp)
                 return NT_STATUS_NO_SUCH_GROUP;
         }
 
-        if (!pdb_gid_to_sid(grp->gr_gid, &dom_sid)) {
+	id.id = grp->gr_gid;
+	id.type = ID_TYPE_GID;
+        if (!pdb_id_to_sid(&id, &dom_sid)) {
                 return NT_STATUS_UNSUCCESSFUL;
         }
 
@@ -966,7 +970,7 @@ static int net_sam_createdomaingroup(struct net_context *c, int argc,
 				     const char **argv)
 {
 	NTSTATUS status;
-	uint32 rid;
+	uint32_t rid;
 
 	if (argc != 1 || c->display_usage) {
 		d_fprintf(stderr, "%s\n%s",
@@ -1042,7 +1046,7 @@ static int net_sam_deletedomaingroup(struct net_context *c, int argc,
 static int net_sam_createlocalgroup(struct net_context *c, int argc, const char **argv)
 {
 	NTSTATUS status;
-	uint32 rid;
+	uint32_t rid;
 
 	if (argc != 1 || c->display_usage) {
 		d_fprintf(stderr, "%s\n%s",
@@ -1120,7 +1124,7 @@ static int net_sam_deletelocalgroup(struct net_context *c, int argc, const char 
 static int net_sam_createbuiltingroup(struct net_context *c, int argc, const char **argv)
 {
 	NTSTATUS status;
-	uint32 rid;
+	uint32_t rid;
 	enum lsa_SidType type;
 	fstring groupname;
 	struct dom_sid sid;
@@ -1950,7 +1954,7 @@ doma_done:
 		goto failed;
 	}
 
-	if (!pdb_getsampwnam(samuser, lp_guestaccount())) {
+	if (!pdb_getsampwnam(samuser, lp_guest_account())) {
 		LDAPMod **mods = NULL;
 		struct dom_sid sid;
 		char *dn;
@@ -1962,7 +1966,7 @@ doma_done:
 
 		sid_compose(&sid, get_global_sam_sid(), DOMAIN_RID_GUEST);
 
-		pwd = Get_Pwnam_alloc(tc, lp_guestaccount());
+		pwd = Get_Pwnam_alloc(tc, lp_guest_account());
 
 		if (!pwd) {
 			if (domusers_gid == -1) {
@@ -1975,7 +1979,7 @@ doma_done:
 				d_fprintf(stderr, _("talloc failed\n"));
 				goto done;
 			}
-			pwd->pw_name = talloc_strdup(pwd, lp_guestaccount());
+			pwd->pw_name = talloc_strdup(pwd, lp_guest_account());
 
 			if (is_ipa) {
 				pwd->pw_uid = 999;
@@ -2044,7 +2048,7 @@ doma_done:
 		}
 
 		if (is_ipa) {
-			if (!pdb_getsampwnam(samuser, lp_guestaccount())) {
+			if (!pdb_getsampwnam(samuser, lp_guest_account())) {
 				d_fprintf(stderr, _("Failed to read just "
 						    "created user.\n"));
 				goto failed;
@@ -2056,7 +2060,7 @@ doma_done:
 
 	d_printf(_("Checking Guest's group.\n"));
 
-	pwd = Get_Pwnam_alloc(tc, lp_guestaccount());
+	pwd = Get_Pwnam_alloc(tc, lp_guest_account());
 	if (!pwd) {
 		d_fprintf(stderr,
 			  _("Failed to find just created Guest account!\n"

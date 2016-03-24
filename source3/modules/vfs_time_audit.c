@@ -157,8 +157,7 @@ static void smb_time_audit_disconnect(vfs_handle_struct *handle)
 }
 
 static uint64_t smb_time_audit_disk_free(vfs_handle_struct *handle,
-					 const char *path,
-					 bool small_query, uint64_t *bsize,
+					 const char *path, uint64_t *bsize,
 					 uint64_t *dfree, uint64_t *dsize)
 {
 	uint64_t result;
@@ -166,8 +165,7 @@ static uint64_t smb_time_audit_disk_free(vfs_handle_struct *handle,
 	double timediff;
 
 	clock_gettime_mono(&ts1);
-	result = SMB_VFS_NEXT_DISK_FREE(handle, path, small_query, bsize,
-					dfree, dsize);
+	result = SMB_VFS_NEXT_DISK_FREE(handle, path, bsize, dfree, dsize);
 	clock_gettime_mono(&ts2);
 	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
 
@@ -279,9 +277,78 @@ static uint32_t smb_time_audit_fs_capabilities(struct vfs_handle_struct *handle,
 	return result;
 }
 
+static NTSTATUS smb_time_audit_snap_check_path(struct vfs_handle_struct *handle,
+					       TALLOC_CTX *mem_ctx,
+					       const char *service_path,
+					       char **base_volume)
+{
+	NTSTATUS status;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	status = SMB_VFS_NEXT_SNAP_CHECK_PATH(handle, mem_ctx, service_path,
+					      base_volume);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2, &ts1) * 1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log("snap_check_path", timediff);
+	}
+
+	return status;
+}
+
+static NTSTATUS smb_time_audit_snap_create(struct vfs_handle_struct *handle,
+					   TALLOC_CTX *mem_ctx,
+					   const char *base_volume,
+					   time_t *tstamp,
+					   bool rw,
+					   char **base_path,
+					   char **snap_path)
+{
+	NTSTATUS status;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	status = SMB_VFS_NEXT_SNAP_CREATE(handle, mem_ctx, base_volume, tstamp,
+					  rw, base_path, snap_path);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2 ,&ts1) * 1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log("snap_create", timediff);
+	}
+
+	return status;
+}
+
+static NTSTATUS smb_time_audit_snap_delete(struct vfs_handle_struct *handle,
+					   TALLOC_CTX *mem_ctx,
+					   char *base_path,
+					   char *snap_path)
+{
+	NTSTATUS status;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	status = SMB_VFS_NEXT_SNAP_DELETE(handle, mem_ctx, base_path,
+					  snap_path);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2, &ts1) * 1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log("snap_delete", timediff);
+	}
+
+	return status;
+}
+
 static DIR *smb_time_audit_opendir(vfs_handle_struct *handle,
-					      const char *fname,
-					      const char *mask, uint32 attr)
+				   const char *fname,
+				   const char *mask, uint32_t attr)
 {
 	DIR *result;
 	struct timespec ts1,ts2;
@@ -301,7 +368,7 @@ static DIR *smb_time_audit_opendir(vfs_handle_struct *handle,
 
 static DIR *smb_time_audit_fdopendir(vfs_handle_struct *handle,
 					      files_struct *fsp,
-					      const char *mask, uint32 attr)
+					      const char *mask, uint32_t attr)
 {
 	DIR *result;
 	struct timespec ts1,ts2;
@@ -496,12 +563,15 @@ static NTSTATUS smb_time_audit_create_file(vfs_handle_struct *handle,
 					   uint32_t create_options,
 					   uint32_t file_attributes,
 					   uint32_t oplock_request,
+					   struct smb2_lease *lease,
 					   uint64_t allocation_size,
 					   uint32_t private_flags,
 					   struct security_descriptor *sd,
 					   struct ea_list *ea_list,
 					   files_struct **result_fsp,
-					   int *pinfo)
+					   int *pinfo,
+					   const struct smb2_create_blobs *in_context_blobs,
+					   struct smb2_create_blobs *out_context_blobs)
 {
 	NTSTATUS result;
 	struct timespec ts1,ts2;
@@ -519,12 +589,14 @@ static NTSTATUS smb_time_audit_create_file(vfs_handle_struct *handle,
 		create_options,				/* create_options */
 		file_attributes,			/* file_attributes */
 		oplock_request,				/* oplock_request */
+		lease,					/* lease */
 		allocation_size,			/* allocation_size */
 		private_flags,
 		sd,					/* sd */
 		ea_list,				/* ea_list */
 		result_fsp,				/* result */
-		pinfo);
+		pinfo,
+		in_context_blobs, out_context_blobs);   /* create context */
 	clock_gettime_mono(&ts2);
 	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
 
@@ -1206,7 +1278,7 @@ static int smb_time_audit_ftruncate(vfs_handle_struct *handle,
 
 static int smb_time_audit_fallocate(vfs_handle_struct *handle,
 				    files_struct *fsp,
-				    enum vfs_fallocate_mode mode,
+				    uint32_t mode,
 				    off_t offset,
 				    off_t len)
 {
@@ -1254,7 +1326,7 @@ static bool smb_time_audit_lock(vfs_handle_struct *handle, files_struct *fsp,
 
 static int smb_time_audit_kernel_flock(struct vfs_handle_struct *handle,
 				       struct files_struct *fsp,
-				       uint32 share_mode, uint32 access_mask)
+				       uint32_t share_mode, uint32_t access_mask)
 {
 	int result;
 	struct timespec ts1,ts2;
@@ -1411,34 +1483,6 @@ static char *smb_time_audit_realpath(vfs_handle_struct *handle,
 	return result;
 }
 
-static NTSTATUS smb_time_audit_notify_watch(struct vfs_handle_struct *handle,
-			struct sys_notify_context *ctx,
-			const char *path,
-			uint32_t *filter,
-			uint32_t *subdir_filter,
-			void (*callback)(struct sys_notify_context *ctx,
-					void *private_data,
-					struct notify_event *ev),
-			void *private_data, void *handle_p)
-{
-	NTSTATUS result;
-	struct timespec ts1,ts2;
-	double timediff;
-
-	clock_gettime_mono(&ts1);
-	result = SMB_VFS_NEXT_NOTIFY_WATCH(handle, ctx, path,
-					   filter, subdir_filter, callback,
-					   private_data, handle_p);
-	clock_gettime_mono(&ts2);
-	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
-
-	if (timediff > audit_timeout) {
-		smb_time_audit_log_fname("notify_watch", timediff, path);
-	}
-
-	return result;
-}
-
 static int smb_time_audit_chflags(vfs_handle_struct *handle,
 				  const char *path, unsigned int flags)
 {
@@ -1549,8 +1593,7 @@ static const char *smb_time_audit_connectpath(vfs_handle_struct *handle,
 static NTSTATUS smb_time_audit_brl_lock_windows(struct vfs_handle_struct *handle,
 						struct byte_range_lock *br_lck,
 						struct lock_struct *plock,
-						bool blocking_lock,
-						struct blocking_lock_record *blr)
+						bool blocking_lock)
 {
 	NTSTATUS result;
 	struct timespec ts1,ts2;
@@ -1558,13 +1601,13 @@ static NTSTATUS smb_time_audit_brl_lock_windows(struct vfs_handle_struct *handle
 
 	clock_gettime_mono(&ts1);
 	result = SMB_VFS_NEXT_BRL_LOCK_WINDOWS(handle, br_lck, plock,
-					       blocking_lock, blr);
+					       blocking_lock);
 	clock_gettime_mono(&ts2);
 	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
 
 	if (timediff > audit_timeout) {
 		smb_time_audit_log_fsp("brl_lock_windows", timediff,
-				       br_lck->fsp);
+				       brl_fsp(br_lck));
 	}
 
 	return result;
@@ -1587,7 +1630,7 @@ static bool smb_time_audit_brl_unlock_windows(struct vfs_handle_struct *handle,
 
 	if (timediff > audit_timeout) {
 		smb_time_audit_log_fsp("brl_unlock_windows", timediff,
-				       br_lck->fsp);
+				       brl_fsp(br_lck));
 	}
 
 	return result;
@@ -1595,21 +1638,20 @@ static bool smb_time_audit_brl_unlock_windows(struct vfs_handle_struct *handle,
 
 static bool smb_time_audit_brl_cancel_windows(struct vfs_handle_struct *handle,
 					      struct byte_range_lock *br_lck,
-					      struct lock_struct *plock,
-					      struct blocking_lock_record *blr)
+					      struct lock_struct *plock)
 {
 	bool result;
 	struct timespec ts1,ts2;
 	double timediff;
 
 	clock_gettime_mono(&ts1);
-	result = SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock, blr);
+	result = SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock);
 	clock_gettime_mono(&ts2);
 	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
 
 	if (timediff > audit_timeout) {
 		smb_time_audit_log_fsp("brl_cancel_windows", timediff,
-				       br_lck->fsp);
+				       brl_fsp(br_lck));
 	}
 
 	return result;
@@ -1757,9 +1799,81 @@ static NTSTATUS smb_time_audit_copy_chunk_recv(struct vfs_handle_struct *handle,
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS smb_time_audit_get_compression(vfs_handle_struct *handle,
+					       TALLOC_CTX *mem_ctx,
+					       struct files_struct *fsp,
+					       struct smb_filename *smb_fname,
+					       uint16_t *_compression_fmt)
+{
+	NTSTATUS result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_GET_COMPRESSION(handle, mem_ctx, fsp, smb_fname,
+					      _compression_fmt);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		if (fsp !=  NULL) {
+			smb_time_audit_log_fsp("get_compression",
+					       timediff, fsp);
+		} else {
+			smb_time_audit_log_smb_fname("get_compression",
+						     timediff, smb_fname);
+		}
+	}
+
+	return result;
+}
+
+static NTSTATUS smb_time_audit_set_compression(vfs_handle_struct *handle,
+					       TALLOC_CTX *mem_ctx,
+					       struct files_struct *fsp,
+					       uint16_t compression_fmt)
+{
+	NTSTATUS result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_SET_COMPRESSION(handle, mem_ctx, fsp,
+					      compression_fmt);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_fsp("set_compression", timediff, fsp);
+	}
+
+	return result;
+}
+
+static NTSTATUS smb_time_audit_readdir_attr(struct vfs_handle_struct *handle,
+					    const struct smb_filename *fname,
+					    TALLOC_CTX *mem_ctx,
+					    struct readdir_attr_data **pattr_data)
+{
+	NTSTATUS status;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	status = SMB_VFS_NEXT_READDIR_ATTR(handle, fname, mem_ctx, pattr_data);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_smb_fname("readdir_attr", timediff, fname);
+	}
+
+	return status;
+}
+
 static NTSTATUS smb_time_audit_fget_nt_acl(vfs_handle_struct *handle,
 					   files_struct *fsp,
-					   uint32 security_info,
+					   uint32_t security_info,
 					   TALLOC_CTX *mem_ctx,
 					   struct security_descriptor **ppdesc)
 {
@@ -1782,7 +1896,7 @@ static NTSTATUS smb_time_audit_fget_nt_acl(vfs_handle_struct *handle,
 
 static NTSTATUS smb_time_audit_get_nt_acl(vfs_handle_struct *handle,
 					  const char *name,
-					  uint32 security_info,
+					  uint32_t security_info,
 					  TALLOC_CTX *mem_ctx,
 					  struct security_descriptor **ppdesc)
 {
@@ -1805,7 +1919,7 @@ static NTSTATUS smb_time_audit_get_nt_acl(vfs_handle_struct *handle,
 
 static NTSTATUS smb_time_audit_fset_nt_acl(vfs_handle_struct *handle,
 					   files_struct *fsp,
-					   uint32 security_info_sent,
+					   uint32_t security_info_sent,
 					   const struct security_descriptor *psd)
 {
 	NTSTATUS result;
@@ -2191,7 +2305,113 @@ static bool smb_time_audit_aio_force(struct vfs_handle_struct *handle,
 	return result;
 }
 
+static bool smb_time_audit_is_offline(struct vfs_handle_struct *handle,
+				      const struct smb_filename *fname,
+				      SMB_STRUCT_STAT *sbuf)
+{
+	bool result;
+	struct timespec ts1,ts2;
+	double timediff;
 
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_IS_OFFLINE(handle, fname, sbuf);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_smb_fname("is_offline", timediff, fname);
+	}
+
+	return result;
+}
+
+static int smb_time_audit_set_offline(struct vfs_handle_struct *handle,
+				      const struct smb_filename *fname)
+{
+	int result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_SET_OFFLINE(handle, fname);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_smb_fname("set_offline", timediff, fname);
+	}
+
+	return result;
+}
+
+static NTSTATUS smb_time_audit_durable_cookie(struct vfs_handle_struct *handle,
+					      struct files_struct *fsp,
+					      TALLOC_CTX *mem_ctx,
+					      DATA_BLOB *cookie)
+{
+	NTSTATUS result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_DURABLE_COOKIE(handle, fsp, mem_ctx, cookie);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_fsp("durable_cookie", timediff, fsp);
+	}
+
+	return result;
+}
+
+static NTSTATUS smb_time_audit_durable_disconnect(struct vfs_handle_struct *handle,
+						  struct files_struct *fsp,
+						  const DATA_BLOB old_cookie,
+						  TALLOC_CTX *mem_ctx,
+						  DATA_BLOB *new_cookie)
+{
+	NTSTATUS result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_DURABLE_DISCONNECT(handle, fsp, old_cookie,
+						 mem_ctx, new_cookie);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log_fsp("durable_disconnect", timediff, fsp);
+	}
+
+	return result;
+}
+
+static NTSTATUS smb_time_audit_durable_reconnect(struct vfs_handle_struct *handle,
+						 struct smb_request *smb1req,
+						 struct smbXsrv_open *op,
+						 const DATA_BLOB old_cookie,
+						 TALLOC_CTX *mem_ctx,
+						 struct files_struct **fsp,
+						 DATA_BLOB *new_cookie)
+{
+	NTSTATUS result;
+	struct timespec ts1,ts2;
+	double timediff;
+
+	clock_gettime_mono(&ts1);
+	result = SMB_VFS_NEXT_DURABLE_RECONNECT(handle, smb1req, op, old_cookie,
+						mem_ctx, fsp, new_cookie);
+	clock_gettime_mono(&ts2);
+	timediff = nsec_time_diff(&ts2,&ts1)*1.0e-9;
+
+	if (timediff > audit_timeout) {
+		smb_time_audit_log("durable_reconnect", timediff);
+	}
+
+	return result;
+}
 
 /* VFS operations */
 
@@ -2204,6 +2424,9 @@ static struct vfs_fn_pointers vfs_time_audit_fns = {
 	.get_shadow_copy_data_fn = smb_time_audit_get_shadow_copy_data,
 	.statvfs_fn = smb_time_audit_statvfs,
 	.fs_capabilities_fn = smb_time_audit_fs_capabilities,
+	.snap_check_path_fn = smb_time_audit_snap_check_path,
+	.snap_create_fn = smb_time_audit_snap_create,
+	.snap_delete_fn = smb_time_audit_snap_delete,
 	.opendir_fn = smb_time_audit_opendir,
 	.fdopendir_fn = smb_time_audit_fdopendir,
 	.readdir_fn = smb_time_audit_readdir,
@@ -2256,7 +2479,6 @@ static struct vfs_fn_pointers vfs_time_audit_fns = {
 	.link_fn = smb_time_audit_link,
 	.mknod_fn = smb_time_audit_mknod,
 	.realpath_fn = smb_time_audit_realpath,
-	.notify_watch_fn = smb_time_audit_notify_watch,
 	.chflags_fn = smb_time_audit_chflags,
 	.file_id_create_fn = smb_time_audit_file_id_create,
 	.streaminfo_fn = smb_time_audit_streaminfo,
@@ -2270,6 +2492,9 @@ static struct vfs_fn_pointers vfs_time_audit_fns = {
 	.translate_name_fn = smb_time_audit_translate_name,
 	.copy_chunk_send_fn = smb_time_audit_copy_chunk_send,
 	.copy_chunk_recv_fn = smb_time_audit_copy_chunk_recv,
+	.get_compression_fn = smb_time_audit_get_compression,
+	.set_compression_fn = smb_time_audit_set_compression,
+	.readdir_attr_fn = smb_time_audit_readdir_attr,
 	.fget_nt_acl_fn = smb_time_audit_fget_nt_acl,
 	.get_nt_acl_fn = smb_time_audit_get_nt_acl,
 	.fset_nt_acl_fn = smb_time_audit_fset_nt_acl,
@@ -2291,6 +2516,11 @@ static struct vfs_fn_pointers vfs_time_audit_fns = {
 	.setxattr_fn = smb_time_audit_setxattr,
 	.fsetxattr_fn = smb_time_audit_fsetxattr,
 	.aio_force_fn = smb_time_audit_aio_force,
+	.is_offline_fn = smb_time_audit_is_offline,
+	.set_offline_fn = smb_time_audit_set_offline,
+	.durable_cookie_fn = smb_time_audit_durable_cookie,
+	.durable_disconnect_fn = smb_time_audit_durable_disconnect,
+	.durable_reconnect_fn = smb_time_audit_durable_reconnect,
 };
 
 

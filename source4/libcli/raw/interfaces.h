@@ -25,6 +25,7 @@
 #include "source4/libcli/raw/smb.h"
 #include "../libcli/smb/smb_common.h"
 #include "librpc/gen_ndr/misc.h" /* for struct GUID */
+#include "librpc/gen_ndr/smb2_lease_struct.h"
 
 /* this structure is just a wrapper for a string, the only reason we
    bother with this is that it allows us to check the length provided
@@ -56,6 +57,7 @@ struct smb2_handle {
 
 struct smb2_lease_break {
 	struct smb2_lease current_lease;
+	uint16_t new_epoch; /* only for v2 leases */
 	uint32_t break_flags;
 	uint32_t new_lease_state;
 	uint32_t break_reason; /* should be 0 */
@@ -1165,7 +1167,9 @@ enum smb_fsinfo_level {
 		   RAW_QFS_ATTRIBUTE_INFORMATION          = SMB_QFS_ATTRIBUTE_INFORMATION,
 		   RAW_QFS_QUOTA_INFORMATION              = SMB_QFS_QUOTA_INFORMATION,
 		   RAW_QFS_FULL_SIZE_INFORMATION          = SMB_QFS_FULL_SIZE_INFORMATION,
-		   RAW_QFS_OBJECTID_INFORMATION           = SMB_QFS_OBJECTID_INFORMATION};
+		   RAW_QFS_OBJECTID_INFORMATION           = SMB_QFS_OBJECTID_INFORMATION,
+		   RAW_QFS_SECTOR_SIZE_INFORMATION        = SMB_QFS_SECTOR_SIZE_INFORMATION,
+};
 
 
 /* union for fsinfo() backend call. Note that there are no in
@@ -1329,6 +1333,22 @@ union smb_fsinfo {
 			uint64_t unknown[6];
 		} out;
 	} objectid_information;	
+
+	/* trans2 RAW_QFS_SECTOR_SIZE_INFORMATION interface */
+	struct {
+		enum smb_fsinfo_level level;
+		struct smb2_handle handle; /* only for smb2 */
+
+		struct {
+			uint32_t logical_bytes_per_sector;
+			uint32_t phys_bytes_per_sector_atomic;
+			uint32_t phys_bytes_per_sector_perf;
+			uint32_t fs_effective_phys_bytes_per_sector_atomic;
+			uint32_t flags;
+			uint32_t byte_off_sector_align;
+			uint32_t byte_off_partition_align;
+		} out;
+	} sector_size_info;
 };
 
 
@@ -1338,12 +1358,12 @@ enum smb_setfsinfo_level {
 union smb_setfsinfo {
 	/* generic interface */
 	struct {
-		enum smb_fsinfo_level level;
+		enum smb_setfsinfo_level level;
 	} generic;
 
 	/* TRANS2 RAW_QFS_UNIX_INFO interface */
 	struct {
-		enum smb_fsinfo_level level;
+		enum smb_setfsinfo_level level;
 
 		struct {
 			uint16_t major_version;
@@ -1808,6 +1828,8 @@ union smb_read {
 			uint16_t remaining;
 			uint16_t compaction_mode;
 			uint32_t nread;
+			uint16_t flags2;
+			uint16_t data_offset;
 		} out;
 	} readx, generic;
 
@@ -2736,6 +2758,7 @@ union smb_search_data {
 		uint32_t  attrib;
 		uint32_t  ea_size;
 		uint64_t file_id;
+		uint8_t short_name_buf[24];
 		struct smb_wire_string short_name;
 		struct smb_wire_string name;
 	} id_both_directory_info;

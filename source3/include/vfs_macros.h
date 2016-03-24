@@ -21,11 +21,12 @@
 #ifndef _VFS_MACROS_H
 #define _VFS_MACROS_H
 
-/*******************************************************************
- Don't access conn->vfs.ops.* directly!!!
- Use this macros!
- (Fixes should go also into the vfs_opaque_* and vfs_next_* macros!)
-********************************************************************/
+/*
+ * These macros SMB_VFS_<FOO> (and SMB_VFS_NEXT_<FOO>) are our
+ * interface for the VFS.
+ *
+ * Don't access conn->vfs_handles[->next]->fns->* directly!
+ */
 
 /* Disk operations */
 #define SMB_VFS_CONNECT(conn, service, user) \
@@ -38,10 +39,10 @@
 #define SMB_VFS_NEXT_DISCONNECT(handle) \
 	smb_vfs_call_disconnect((handle)->next)
 
-#define SMB_VFS_DISK_FREE(conn, path, small_query, bsize, dfree ,dsize) \
-	smb_vfs_call_disk_free((conn)->vfs_handles, (path), (small_query), (bsize), (dfree), (dsize))
-#define SMB_VFS_NEXT_DISK_FREE(handle, path, small_query, bsize, dfree ,dsize)\
-	smb_vfs_call_disk_free((handle)->next, (path), (small_query), (bsize), (dfree), (dsize))
+#define SMB_VFS_DISK_FREE(conn, path, bsize, dfree ,dsize) \
+	smb_vfs_call_disk_free((conn)->vfs_handles, (path), (bsize), (dfree), (dsize))
+#define SMB_VFS_NEXT_DISK_FREE(handle, path, bsize, dfree ,dsize)\
+	smb_vfs_call_disk_free((handle)->next, (path), (bsize), (dfree), (dsize))
 
 #define SMB_VFS_GET_QUOTA(conn, qtype, id, qt) \
 	smb_vfs_call_get_quota((conn)->vfs_handles, (qtype), (id), (qt))
@@ -135,13 +136,15 @@
 	smb_vfs_call_open((handle)->next, (fname), (fsp), (flags), (mode))
 
 #define SMB_VFS_CREATE_FILE(conn, req, root_dir_fid, smb_fname, access_mask, share_access, create_disposition, \
-        create_options, file_attributes, oplock_request, allocation_size, private_flags, sd, ea_list, result, pinfo) \
-	smb_vfs_call_create_file((conn)->vfs_handles, (req), (root_dir_fid), (smb_fname), (access_mask), (share_access), (create_disposition), \
-        (create_options), (file_attributes), (oplock_request), (allocation_size), (private_flags), (sd), (ea_list), (result), (pinfo))
+        create_options, file_attributes, oplock_request, lease, allocation_size, private_flags, sd, ea_list, result, pinfo, in_context_blobs, out_context_blobs) \
+        smb_vfs_call_create_file((conn)->vfs_handles, (req), (root_dir_fid), (smb_fname), (access_mask), (share_access), (create_disposition), \
+        (create_options), (file_attributes), (oplock_request), (lease), (allocation_size), (private_flags), (sd), (ea_list), (result), (pinfo), \
+	(in_context_blobs), (out_context_blobs))
 #define SMB_VFS_NEXT_CREATE_FILE(handle, req, root_dir_fid, smb_fname, access_mask, share_access, create_disposition, \
-        create_options, file_attributes, oplock_request, allocation_size, private_flags, sd, ea_list, result, pinfo) \
+	create_options, file_attributes, oplock_request, lease, allocation_size, private_flags, sd, ea_list, result, pinfo, in_context_blobs, out_context_blobs) \
 	smb_vfs_call_create_file((handle)->next, (req), (root_dir_fid), (smb_fname), (access_mask), (share_access), (create_disposition), \
-        (create_options), (file_attributes), (oplock_request), (allocation_size), (private_flags), (sd), (ea_list), (result), (pinfo))
+        (create_options), (file_attributes), (oplock_request), (lease), (allocation_size), (private_flags), (sd), (ea_list), (result), (pinfo), \
+	(in_context_blobs), (out_context_blobs))
 
 #define SMB_VFS_CLOSE(fsp) \
 	smb_vfs_call_close((fsp)->conn->vfs_handles, (fsp))
@@ -333,11 +336,6 @@
 #define SMB_VFS_NEXT_REALPATH(handle, path) \
 	smb_vfs_call_realpath((handle)->next, (path))
 
-#define SMB_VFS_NOTIFY_WATCH(conn, ctx, path, filter, subdir_filter, callback, private_data, handle_p) \
-	smb_vfs_call_notify_watch((conn)->vfs_handles, (ctx), (path), (filter), (subdir_filter), (callback), (private_data), (handle_p))
-#define SMB_VFS_NEXT_NOTIFY_WATCH(conn, ctx, path, filter, subdir_filter, callback, private_data, handle_p) \
-	smb_vfs_call_notify_watch((conn)->next, (ctx), (path), (filter), (subdir_filter), (callback), (private_data), (handle_p))
-
 #define SMB_VFS_CHFLAGS(conn, path, flags) \
 	smb_vfs_call_chflags((conn)->vfs_handles, (path), (flags))
 #define SMB_VFS_NEXT_CHFLAGS(handle, path, flags) \
@@ -363,20 +361,20 @@
 #define SMB_VFS_NEXT_CONNECTPATH(conn, fname) \
 	smb_vfs_call_connectpath((conn)->next, (fname))
 
-#define SMB_VFS_BRL_LOCK_WINDOWS(conn, br_lck, plock, blocking_lock, blr) \
-	smb_vfs_call_brl_lock_windows((conn)->vfs_handles, (br_lck), (plock), (blocking_lock), (blr))
-#define SMB_VFS_NEXT_BRL_LOCK_WINDOWS(handle, br_lck, plock, blocking_lock, blr) \
-	smb_vfs_call_brl_lock_windows((handle)->next, (br_lck), (plock), (blocking_lock), (blr))
+#define SMB_VFS_BRL_LOCK_WINDOWS(conn, br_lck, plock, blocking_lock) \
+	smb_vfs_call_brl_lock_windows((conn)->vfs_handles, (br_lck), (plock), (blocking_lock))
+#define SMB_VFS_NEXT_BRL_LOCK_WINDOWS(handle, br_lck, plock, blocking_lock) \
+	smb_vfs_call_brl_lock_windows((handle)->next, (br_lck), (plock), (blocking_lock))
 
 #define SMB_VFS_BRL_UNLOCK_WINDOWS(conn, msg_ctx, br_lck, plock) \
 	smb_vfs_call_brl_unlock_windows((conn)->vfs_handles, (msg_ctx), (br_lck), (plock))
 #define SMB_VFS_NEXT_BRL_UNLOCK_WINDOWS(handle, msg_ctx, br_lck, plock) \
 	smb_vfs_call_brl_unlock_windows((handle)->next, (msg_ctx), (br_lck), (plock))
 
-#define SMB_VFS_BRL_CANCEL_WINDOWS(conn, br_lck, plock, blr) \
-	smb_vfs_call_brl_cancel_windows((conn)->vfs_handles, (br_lck), (plock), (blr))
-#define SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock, blr) \
-	smb_vfs_call_brl_cancel_windows((handle)->next, (br_lck), (plock), (blr))
+#define SMB_VFS_BRL_CANCEL_WINDOWS(conn, br_lck, plock) \
+	smb_vfs_call_brl_cancel_windows((conn)->vfs_handles, (br_lck), (plock))
+#define SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock) \
+	smb_vfs_call_brl_cancel_windows((handle)->next, (br_lck), (plock))
 
 #define SMB_VFS_STRICT_LOCK(conn, fsp, plock) \
 	smb_vfs_call_strict_lock((conn)->vfs_handles, (fsp), (plock))
@@ -409,8 +407,33 @@
 #define SMB_VFS_NEXT_COPY_CHUNK_RECV(handle, req, copied) \
 	smb_vfs_call_copy_chunk_recv((handle)->next, (req), (copied))
 
+#define SMB_VFS_GET_COMPRESSION(conn, mem_ctx, fsp, smb_fname, _compression_fmt)		\
+	smb_vfs_call_get_compression((conn)->vfs_handles, (mem_ctx), (fsp), (smb_fname), (_compression_fmt))
+#define SMB_VFS_NEXT_GET_COMPRESSION(handle, mem_ctx, fsp, smb_fname, _compression_fmt)		\
+	smb_vfs_call_get_compression((handle)->next, (mem_ctx), (fsp), (smb_fname), (_compression_fmt))
+
+#define SMB_VFS_SET_COMPRESSION(conn, mem_ctx, fsp, compression_fmt)		\
+	smb_vfs_call_set_compression((conn)->vfs_handles, (mem_ctx), (fsp), (compression_fmt))
+#define SMB_VFS_NEXT_SET_COMPRESSION(handle, mem_ctx, fsp, compression_fmt)		\
+	smb_vfs_call_set_compression((handle)->next, (mem_ctx), (fsp), (compression_fmt))
+
+#define SMB_VFS_SNAP_CHECK_PATH(conn, mem_ctx, service_path, base_volume) \
+	smb_vfs_call_snap_check_path((conn)->vfs_handles, (mem_ctx), (service_path), (base_volume))
+#define SMB_VFS_NEXT_SNAP_CHECK_PATH(handle, mem_ctx, service_path, base_volume) \
+	smb_vfs_call_snap_check_path((handle)->next, (mem_ctx), (service_path), (base_volume))
+
+#define SMB_VFS_SNAP_CREATE(conn, mem_ctx, base_volume, tstamp, rw, base_path, snap_path) \
+	smb_vfs_call_snap_create((conn)->vfs_handles, (mem_ctx), (base_volume), (tstamp), (rw), (base_path), (snap_path))
+#define SMB_VFS_NEXT_SNAP_CREATE(handle, mem_ctx, base_volume, tstamp, rw, base_path, snap_path) \
+	smb_vfs_call_snap_create((handle)->next, (mem_ctx), (base_volume), (tstamp), (rw), (base_path), (snap_path))
+
+#define SMB_VFS_SNAP_DELETE(conn, mem_ctx, base_path, snap_path) \
+	smb_vfs_call_snap_delete((conn)->vfs_handles, (mem_ctx), (base_path), (snap_path))
+#define SMB_VFS_NEXT_SNAP_DELETE(handle, mem_ctx, base_path, snap_path) \
+	smb_vfs_call_snap_delete((handle)->next, (mem_ctx), (base_path), (snap_path))
+
 #define SMB_VFS_FGET_NT_ACL(fsp, security_info, mem_ctx, ppdesc)		\
-		smb_vfs_call_fget_nt_acl((fsp)->conn->vfs_handles, (fsp), (security_info), (mem_ctx), (ppdesc))
+	smb_vfs_call_fget_nt_acl((fsp)->conn->vfs_handles, (fsp), (security_info), (mem_ctx), (ppdesc))
 #define SMB_VFS_NEXT_FGET_NT_ACL(handle, fsp, security_info, mem_ctx, ppdesc) \
 	smb_vfs_call_fget_nt_acl((handle)->next, (fsp), (security_info), (mem_ctx), (ppdesc))
 
@@ -535,7 +558,7 @@
 	smb_vfs_call_durable_cookie((fsp)->conn->vfs_handles, \
 				    (fsp), (mem_ctx), (cookie))
 #define SMB_VFS_NEXT_DURABLE_COOKIE(handle, fsp, mem_ctx, cookie) \
-	smb_vfs_call_durable_cookie(((handle)->next, \
+	smb_vfs_call_durable_cookie((handle)->next, \
 				    (fsp), (mem_ctx), (cookie))
 
 #define SMB_VFS_DURABLE_DISCONNECT(fsp, old_cookie, mem_ctx, new_cookie) \
@@ -553,5 +576,10 @@
 	smb_vfs_call_durable_reconnect((handle)->next, \
 					(smb1req), (op), (old_cookie), \
 					(mem_ctx), (fsp), (new_cookie))
+
+#define SMB_VFS_READDIR_ATTR(conn, fname, mem_ctx, attr_data) \
+	smb_vfs_call_readdir_attr((conn)->vfs_handles, (fname), (mem_ctx), (attr_data))
+#define SMB_VFS_NEXT_READDIR_ATTR(conn, fname, mem_ctx, attr_data) \
+	smb_vfs_call_readdir_attr((handle)->next, (fname), (mem_ctx), (attr_data))
 
 #endif /* _VFS_MACROS_H */

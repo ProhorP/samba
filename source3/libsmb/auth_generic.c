@@ -48,12 +48,21 @@ NTSTATUS auth_generic_set_password(struct auth_generic_state *ans,
 	return NT_STATUS_OK;
 }
 
+NTSTATUS auth_generic_set_creds(struct auth_generic_state *ans,
+				struct cli_credentials *creds)
+{
+	talloc_unlink(ans->credentials, creds);
+	ans->credentials = creds;
+	return NT_STATUS_OK;
+}
+
 NTSTATUS auth_generic_client_prepare(TALLOC_CTX *mem_ctx, struct auth_generic_state **auth_generic_state)
 {
 	struct auth_generic_state *ans;
 	NTSTATUS nt_status;
 	size_t idx = 0;
 	struct gensec_settings *gensec_settings;
+	const struct gensec_security_ops **backends = NULL;
 	struct loadparm_context *lp_ctx;
 
 	ans = talloc_zero(mem_ctx, struct auth_generic_state);
@@ -76,24 +85,26 @@ NTSTATUS auth_generic_client_prepare(TALLOC_CTX *mem_ctx, struct auth_generic_st
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	gensec_settings->backends = talloc_zero_array(gensec_settings,
-					struct gensec_security_ops *, 4);
-	if (gensec_settings->backends == NULL) {
+	backends = talloc_zero_array(gensec_settings,
+				     const struct gensec_security_ops *, 6);
+	if (backends == NULL) {
 		TALLOC_FREE(ans);
 		return NT_STATUS_NO_MEMORY;
 	}
+	gensec_settings->backends = backends;
 
 	gensec_init();
 
 	/* These need to be in priority order, krb5 before NTLMSSP */
 #if defined(HAVE_KRB5)
-	gensec_settings->backends[idx++] = &gensec_gse_krb5_security_ops;
+	backends[idx++] = &gensec_gse_krb5_security_ops;
 #endif
 
-	gensec_settings->backends[idx++] = &gensec_ntlmssp3_client_ops;
+	backends[idx++] = &gensec_ntlmssp3_client_ops;
 
-	gensec_settings->backends[idx++] = gensec_security_by_oid(NULL,
-						GENSEC_OID_SPNEGO);
+	backends[idx++] = gensec_security_by_oid(NULL, GENSEC_OID_SPNEGO);
+	backends[idx++] = gensec_security_by_auth_type(NULL, DCERPC_AUTH_TYPE_SCHANNEL);
+	backends[idx++] = gensec_security_by_auth_type(NULL, DCERPC_AUTH_TYPE_NCALRPC_AS_SYSTEM);
 
 	nt_status = gensec_client_start(ans, &ans->gensec_security, gensec_settings);
 

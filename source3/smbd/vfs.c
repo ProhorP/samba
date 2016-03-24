@@ -222,7 +222,7 @@ bool vfs_init_custom(connection_struct *conn, const char *vfs_object)
  be refactored if it becomes more widely used.
 ******************************************************************/
 
-#define EXT_DATA_AREA(e) ((uint8 *)(e) + sizeof(struct vfs_fsp_data))
+#define EXT_DATA_AREA(e) ((uint8_t *)(e) + sizeof(struct vfs_fsp_data))
 
 void *vfs_add_fsp_extension_notype(vfs_handle_struct *handle,
 				   files_struct *fsp, size_t ext_size,
@@ -393,28 +393,6 @@ ssize_t vfs_read_data(files_struct *fsp, char *buf, size_t byte_count)
 	return (ssize_t)total;
 }
 
-ssize_t vfs_pread_data(files_struct *fsp, char *buf,
-                size_t byte_count, off_t offset)
-{
-	size_t total=0;
-
-	while (total < byte_count)
-	{
-		ssize_t ret = SMB_VFS_PREAD(fsp, buf + total,
-					byte_count - total, offset + total);
-
-		if (ret == 0) return total;
-		if (ret == -1) {
-			if (errno == EINTR)
-				continue;
-			else
-				return -1;
-		}
-		total += ret;
-	}
-	return (ssize_t)total;
-}
-
 /****************************************************************************
  Write data to a fd on the vfs.
 ****************************************************************************/
@@ -428,7 +406,7 @@ ssize_t vfs_write_data(struct smb_request *req,
 	ssize_t ret;
 
 	if (req && req->unread_bytes) {
-		int sockfd = req->sconn->sock;
+		int sockfd = req->xconn->transport.sock;
 		int old_flags;
 		SMB_ASSERT(req->unread_bytes == N);
 		/* VFS_RECVFILE must drain the socket
@@ -472,25 +450,52 @@ ssize_t vfs_pwrite_data(struct smb_request *req,
 	ssize_t ret;
 
 	if (req && req->unread_bytes) {
-		int sockfd = req->sconn->sock;
-		int old_flags;
+		int sockfd = req->xconn->transport.sock;
 		SMB_ASSERT(req->unread_bytes == N);
 		/* VFS_RECVFILE must drain the socket
 		 * before returning. */
 		req->unread_bytes = 0;
-		/* Ensure the socket is blocking. */
-		old_flags = fcntl(sockfd, F_GETFL, 0);
-		if (set_blocking(sockfd, true) == -1) {
-			return (ssize_t)-1;
+		/*
+		 * Leave the socket non-blocking and
+		 * use SMB_VFS_RECVFILE. If it returns
+		 * EAGAIN || EWOULDBLOCK temporarily set
+		 * the socket blocking and retry
+		 * the RECVFILE.
+		 */
+		while (total < N) {
+			ret = SMB_VFS_RECVFILE(sockfd,
+						fsp,
+						offset + total,
+						N - total);
+			if (ret == 0 || (ret == -1 &&
+					 (errno == EAGAIN ||
+					  errno == EWOULDBLOCK))) {
+				int old_flags;
+				/* Ensure the socket is blocking. */
+				old_flags = fcntl(sockfd, F_GETFL, 0);
+				if (set_blocking(sockfd, true) == -1) {
+					return (ssize_t)-1;
+				}
+				ret = SMB_VFS_RECVFILE(sockfd,
+							fsp,
+							offset + total,
+							N - total);
+				if (fcntl(sockfd, F_SETFL, old_flags) == -1) {
+					return (ssize_t)-1;
+				}
+				if (ret == -1) {
+					return (ssize_t)-1;
+				}
+				total += ret;
+				return (ssize_t)total;
+			}
+			/* Any other error case. */
+			if (ret == -1) {
+				return ret;
+			}
+			total += ret;
 		}
-		ret = SMB_VFS_RECVFILE(sockfd,
-					fsp,
-					offset,
-					N);
-		if (fcntl(sockfd, F_SETFL, old_flags) == -1) {
-			return (ssize_t)-1;
-		}
-		return ret;
+		return (ssize_t)total;
 	}
 
 	while (total < N) {
@@ -551,7 +556,7 @@ int vfs_allocate_file_space(files_struct *fsp, uint64_t len)
 
 		contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_ALLOC_SHRINK);
 
-		flush_write_cache(fsp, SIZECHANGE_FLUSH);
+		flush_write_cache(fsp, SAMBA_SIZECHANGE_FLUSH);
 		if ((ret = SMB_VFS_FTRUNCATE(fsp, (off_t)len)) != -1) {
 			set_filelen_write_cache(fsp, len);
 		}
@@ -561,16 +566,18 @@ int vfs_allocate_file_space(files_struct *fsp, uint64_t len)
 		return ret;
 	}
 
-	if (!lp_strict_allocate(SNUM(fsp->conn)))
-		return 0;
-
 	/* Grow - we need to test if we have enough space. */
 
 	contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_ALLOC_GROW);
 
-	/* See if we have a syscall that will allocate beyond end-of-file
-	   without changing EOF. */
-	ret = SMB_VFS_FALLOCATE(fsp, VFS_FALLOCATE_KEEP_SIZE, 0, len);
+	if (lp_strict_allocate(SNUM(fsp->conn))) {
+		/* See if we have a syscall that will allocate beyond
+		   end-of-file without changing EOF. */
+		ret = SMB_VFS_FALLOCATE(fsp, VFS_FALLOCATE_FL_KEEP_SIZE,
+					0, len);
+	} else {
+		ret = 0;
+	}
 
 	contend_level2_oplocks_end(fsp, LEVEL2_CONTEND_ALLOC_GROW);
 
@@ -586,7 +593,7 @@ int vfs_allocate_file_space(files_struct *fsp, uint64_t len)
 
 	len -= fsp->fsp_name->st.st_ex_size;
 	len /= 1024; /* Len is now number of 1k blocks needed. */
-	space_avail = get_dfree_info(conn, fsp->fsp_name->base_name, false,
+	space_avail = get_dfree_info(conn, fsp->fsp_name->base_name,
 				     &bsize, &dfree, &dsize);
 	if (space_avail == (uint64_t)-1) {
 		return -1;
@@ -619,7 +626,7 @@ int vfs_set_filelen(files_struct *fsp, off_t len)
 
 	DEBUG(10,("vfs_set_filelen: ftruncate %s to len %.0f\n",
 		  fsp_str_dbg(fsp), (double)len));
-	flush_write_cache(fsp, SIZECHANGE_FLUSH);
+	flush_write_cache(fsp, SAMBA_SIZECHANGE_FLUSH);
 	if ((ret = SMB_VFS_FTRUNCATE(fsp, len)) != -1) {
 		set_filelen_write_cache(fsp, len);
 		notify_fname(fsp->conn, NOTIFY_ACTION_MODIFIED,
@@ -710,7 +717,7 @@ int vfs_fill_sparse(files_struct *fsp, off_t len)
 
 	contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_FILL_SPARSE);
 
-	flush_write_cache(fsp, SIZECHANGE_FLUSH);
+	flush_write_cache(fsp, SAMBA_SIZECHANGE_FLUSH);
 
 	offset = fsp->fsp_name->st.st_ex_size;
 	num_to_write = len - fsp->fsp_name->st.st_ex_size;
@@ -722,8 +729,7 @@ int vfs_fill_sparse(files_struct *fsp, off_t len)
 		 * emulation is being done by the libc (like on AIX with JFS1). In that
 		 * case we do our own emulation. fallocate implementations can
 		 * return ENOTSUP or EINVAL in cases like that. */
-		ret = SMB_VFS_FALLOCATE(fsp, VFS_FALLOCATE_EXTEND_SIZE,
-				offset, num_to_write);
+		ret = SMB_VFS_FALLOCATE(fsp, 0, offset, num_to_write);
 		if (ret == -1 && errno == ENOSPC) {
 			goto out;
 		}
@@ -750,24 +756,24 @@ int vfs_fill_sparse(files_struct *fsp, off_t len)
  Transfer some data (n bytes) between two file_struct's.
 ****************************************************************************/
 
-static ssize_t vfs_read_fn(void *file, void *buf, size_t len)
+static ssize_t vfs_pread_fn(void *file, void *buf, size_t len, off_t offset)
 {
 	struct files_struct *fsp = (struct files_struct *)file;
 
-	return SMB_VFS_READ(fsp, buf, len);
+	return SMB_VFS_PREAD(fsp, buf, len, offset);
 }
 
-static ssize_t vfs_write_fn(void *file, const void *buf, size_t len)
+static ssize_t vfs_pwrite_fn(void *file, const void *buf, size_t len, off_t offset)
 {
 	struct files_struct *fsp = (struct files_struct *)file;
 
-	return SMB_VFS_WRITE(fsp, buf, len);
+	return SMB_VFS_PWRITE(fsp, buf, len, offset);
 }
 
 off_t vfs_transfer_file(files_struct *in, files_struct *out, off_t n)
 {
 	return transfer_file_internal((void *)in, (void *)out, n,
-				      vfs_read_fn, vfs_write_fn);
+				      vfs_pread_fn, vfs_pwrite_fn);
 }
 
 /*******************************************************************
@@ -827,7 +833,7 @@ int vfs_ChDir(connection_struct *conn, const char *path)
 		LastDir = SMB_STRDUP("");
 	}
 
-	if (strcsequal(path,".")) {
+	if (ISDOT(path)) {
 		return 0;
 	}
 
@@ -976,7 +982,6 @@ NTSTATUS check_reduced_name_with_privilege(connection_struct *conn,
 	struct smb_filename *smb_fname_cwd = NULL;
 	struct privilege_paths *priv_paths = NULL;
 	int ret;
-	bool matched;
 
 	DEBUG(3,("check_reduced_name_with_privilege [%s] [%s]\n",
 			fname,
@@ -1071,18 +1076,32 @@ NTSTATUS check_reduced_name_with_privilege(connection_struct *conn,
 	}
 
 	rootdir_len = strlen(conn_rootdir);
-	matched = (strncmp(conn_rootdir, resolved_name, rootdir_len) == 0);
 
-	if (!matched || (resolved_name[rootdir_len] != '/' &&
-			 resolved_name[rootdir_len] != '\0')) {
-		DEBUG(2, ("check_reduced_name_with_privilege: Bad access "
-			"attempt: %s is a symlink outside the "
-			"share path\n",
-			dir_name));
-		DEBUGADD(2, ("conn_rootdir =%s\n", conn_rootdir));
-		DEBUGADD(2, ("resolved_name=%s\n", resolved_name));
-		status = NT_STATUS_ACCESS_DENIED;
-		goto err;
+	/*
+	 * In the case of rootdir_len == 1, we know that conn_rootdir is
+	 * "/", and we also know that resolved_name starts with a slash.
+	 * So, in this corner case, resolved_name is automatically a
+	 * sub-directory of the conn_rootdir. Thus we can skip the string
+	 * comparison and the next character checks (which are even
+	 * wrong in this case).
+	 */
+	if (rootdir_len != 1) {
+		bool matched;
+
+		matched = (strncmp(conn_rootdir, resolved_name,
+				rootdir_len) == 0);
+
+		if (!matched || (resolved_name[rootdir_len] != '/' &&
+				 resolved_name[rootdir_len] != '\0')) {
+			DEBUG(2, ("check_reduced_name_with_privilege: Bad "
+				"access attempt: %s is a symlink outside the "
+				"share path\n",
+				dir_name));
+			DEBUGADD(2, ("conn_rootdir =%s\n", conn_rootdir));
+			DEBUGADD(2, ("resolved_name=%s\n", resolved_name));
+			status = NT_STATUS_ACCESS_DENIED;
+			goto err;
+		}
 	}
 
 	/* Now ensure that the last component either doesn't
@@ -1138,7 +1157,7 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 	bool allow_symlinks = true;
 	bool allow_widelinks = false;
 
-	DEBUG(3,("check_reduced_name [%s] [%s]\n", fname, conn->connectpath));
+	DBG_DEBUG("check_reduced_name [%s] [%s]\n", fname, conn->connectpath);
 
 	resolved_name = SMB_VFS_REALPATH(conn,fname);
 
@@ -1208,13 +1227,12 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 	}
 
 	allow_widelinks = lp_widelinks(SNUM(conn));
-	allow_symlinks = lp_symlinks(SNUM(conn));
+	allow_symlinks = lp_follow_symlinks(SNUM(conn));
 
 	/* Common widelinks and symlinks checks. */
 	if (!allow_widelinks || !allow_symlinks) {
 		const char *conn_rootdir;
 		size_t rootdir_len;
-		bool matched;
 
 		conn_rootdir = SMB_VFS_CONNECTPATH(conn, fname);
 		if (conn_rootdir == NULL) {
@@ -1225,17 +1243,33 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 		}
 
 		rootdir_len = strlen(conn_rootdir);
-		matched = (strncmp(conn_rootdir, resolved_name,
-				rootdir_len) == 0);
-		if (!matched || (resolved_name[rootdir_len] != '/' &&
-				 resolved_name[rootdir_len] != '\0')) {
-			DEBUG(2, ("check_reduced_name: Bad access "
-				"attempt: %s is a symlink outside the "
-				"share path\n", fname));
-			DEBUGADD(2, ("conn_rootdir =%s\n", conn_rootdir));
-			DEBUGADD(2, ("resolved_name=%s\n", resolved_name));
-			SAFE_FREE(resolved_name);
-			return NT_STATUS_ACCESS_DENIED;
+
+		/*
+		 * In the case of rootdir_len == 1, we know that
+		 * conn_rootdir is "/", and we also know that
+		 * resolved_name starts with a slash.  So, in this
+		 * corner case, resolved_name is automatically a
+		 * sub-directory of the conn_rootdir. Thus we can skip
+		 * the string comparison and the next character checks
+		 * (which are even wrong in this case).
+		 */
+		if (rootdir_len != 1) {
+			bool matched;
+
+			matched = (strncmp(conn_rootdir, resolved_name,
+					rootdir_len) == 0);
+			if (!matched || (resolved_name[rootdir_len] != '/' &&
+					 resolved_name[rootdir_len] != '\0')) {
+				DEBUG(2, ("check_reduced_name: Bad access "
+					"attempt: %s is a symlink outside the "
+					"share path\n", fname));
+				DEBUGADD(2, ("conn_rootdir =%s\n",
+					     conn_rootdir));
+				DEBUGADD(2, ("resolved_name=%s\n",
+					     resolved_name));
+				SAFE_FREE(resolved_name);
+				return NT_STATUS_ACCESS_DENIED;
+			}
 		}
 
 		/* Extra checks if all symlinks are disallowed. */
@@ -1270,65 +1304,9 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 
   out:
 
-	DEBUG(3,("check_reduced_name: %s reduced to %s\n", fname,
-		 resolved_name));
+	DBG_INFO("%s reduced to %s\n", fname, resolved_name);
 	SAFE_FREE(resolved_name);
 	return NT_STATUS_OK;
-}
-
-/**
- * XXX: This is temporary and there should be no callers of this once
- * smb_filename is plumbed through all path based operations.
- */
-int vfs_stat_smb_fname(struct connection_struct *conn, const char *fname,
-		       SMB_STRUCT_STAT *psbuf)
-{
-	struct smb_filename *smb_fname;
-	int ret;
-
-	smb_fname = synthetic_smb_fname_split(talloc_tos(), fname, NULL);
-	if (smb_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-
-	if (lp_posix_pathnames()) {
-		ret = SMB_VFS_LSTAT(conn, smb_fname);
-	} else {
-		ret = SMB_VFS_STAT(conn, smb_fname);
-	}
-
-	if (ret != -1) {
-		*psbuf = smb_fname->st;
-	}
-
-	TALLOC_FREE(smb_fname);
-	return ret;
-}
-
-/**
- * XXX: This is temporary and there should be no callers of this once
- * smb_filename is plumbed through all path based operations.
- */
-int vfs_lstat_smb_fname(struct connection_struct *conn, const char *fname,
-			SMB_STRUCT_STAT *psbuf)
-{
-	struct smb_filename *smb_fname;
-	int ret;
-
-	smb_fname = synthetic_smb_fname_split(talloc_tos(), fname, NULL);
-	if (smb_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-
-	ret = SMB_VFS_LSTAT(conn, smb_fname);
-	if (ret != -1) {
-		*psbuf = smb_fname->st;
-	}
-
-	TALLOC_FREE(smb_fname);
-	return ret;
 }
 
 /**
@@ -1366,7 +1344,7 @@ NTSTATUS vfs_stat_fsp(files_struct *fsp)
 	int ret;
 
 	if(fsp->fh->fd == -1) {
-		if (fsp->posix_open) {
+		if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 			ret = SMB_VFS_LSTAT(fsp->conn, fsp->fsp_name);
 		} else {
 			ret = SMB_VFS_STAT(fsp->conn, fsp->fsp_name);
@@ -1419,13 +1397,11 @@ void smb_vfs_call_disconnect(struct vfs_handle_struct *handle)
 }
 
 uint64_t smb_vfs_call_disk_free(struct vfs_handle_struct *handle,
-				const char *path, bool small_query,
-				uint64_t *bsize, uint64_t *dfree,
-				uint64_t *dsize)
+				const char *path, uint64_t *bsize,
+				uint64_t *dfree, uint64_t *dsize)
 {
 	VFS_FIND(disk_free);
-	return handle->fns->disk_free_fn(handle, path, small_query, bsize, 
-					 dfree, dsize);
+	return handle->fns->disk_free_fn(handle, path, bsize, dfree, dsize);
 }
 
 int smb_vfs_call_get_quota(struct vfs_handle_struct *handle,
@@ -1477,7 +1453,7 @@ NTSTATUS smb_vfs_call_get_dfs_referrals(struct vfs_handle_struct *handle,
 
 DIR *smb_vfs_call_opendir(struct vfs_handle_struct *handle,
 				     const char *fname, const char *mask,
-				     uint32 attributes)
+				     uint32_t attributes)
 {
 	VFS_FIND(opendir);
 	return handle->fns->opendir_fn(handle, fname, mask, attributes);
@@ -1486,7 +1462,7 @@ DIR *smb_vfs_call_opendir(struct vfs_handle_struct *handle,
 DIR *smb_vfs_call_fdopendir(struct vfs_handle_struct *handle,
 					struct files_struct *fsp,
 					const char *mask,
-					uint32 attributes)
+					uint32_t attributes)
 {
 	VFS_FIND(fdopendir);
 	return handle->fns->fdopendir_fn(handle, fsp, mask, attributes);
@@ -1566,20 +1542,23 @@ NTSTATUS smb_vfs_call_create_file(struct vfs_handle_struct *handle,
 				  uint32_t create_options,
 				  uint32_t file_attributes,
 				  uint32_t oplock_request,
+				  struct smb2_lease *lease,
 				  uint64_t allocation_size,
 				  uint32_t private_flags,
 				  struct security_descriptor *sd,
 				  struct ea_list *ea_list,
 				  files_struct **result,
-				  int *pinfo)
+				  int *pinfo,
+				  const struct smb2_create_blobs *in_context_blobs,
+				  struct smb2_create_blobs *out_context_blobs)
 {
 	VFS_FIND(create_file);
 	return handle->fns->create_file_fn(
 		handle, req, root_dir_fid, smb_fname, access_mask,
 		share_access, create_disposition, create_options,
-		file_attributes, oplock_request, allocation_size,
+		file_attributes, oplock_request, lease, allocation_size,
 		private_flags, sd, ea_list,
-		result, pinfo);
+		result, pinfo, in_context_blobs, out_context_blobs);
 }
 
 int smb_vfs_call_close(struct vfs_handle_struct *handle,
@@ -1995,7 +1974,7 @@ NTSTATUS vfs_chown_fsp(files_struct *fsp, uid_t uid, gid_t gid)
                 path = fsp->fsp_name->base_name;
         }
 
-	if (fsp->posix_open || as_root) {
+	if ((fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) || as_root) {
 		ret = SMB_VFS_LCHOWN(fsp->conn,
 			path,
 			uid, gid);
@@ -2049,17 +2028,17 @@ int smb_vfs_call_ftruncate(struct vfs_handle_struct *handle,
 }
 
 int smb_vfs_call_fallocate(struct vfs_handle_struct *handle,
-				struct files_struct *fsp,
-				enum vfs_fallocate_mode mode,
-				off_t offset,
-				off_t len)
+			   struct files_struct *fsp,
+			   uint32_t mode,
+			   off_t offset,
+			   off_t len)
 {
 	VFS_FIND(fallocate);
 	return handle->fns->fallocate_fn(handle, fsp, mode, offset, len);
 }
 
 int smb_vfs_call_kernel_flock(struct vfs_handle_struct *handle,
-			      struct files_struct *fsp, uint32 share_mode,
+			      struct files_struct *fsp, uint32_t share_mode,
 			      uint32_t access_mask)
 {
 	VFS_FIND(kernel_flock);
@@ -2106,22 +2085,6 @@ char *smb_vfs_call_realpath(struct vfs_handle_struct *handle, const char *path)
 {
 	VFS_FIND(realpath);
 	return handle->fns->realpath_fn(handle, path);
-}
-
-NTSTATUS smb_vfs_call_notify_watch(struct vfs_handle_struct *handle,
-				   struct sys_notify_context *ctx,
-				   const char *path,
-				   uint32_t *filter,
-				   uint32_t *subdir_filter,
-				   void (*callback)(struct sys_notify_context *ctx,
-						    void *private_data,
-						    struct notify_event *ev),
-				   void *private_data, void *handle_p)
-{
-	VFS_FIND(notify_watch);
-	return handle->fns->notify_watch_fn(handle, ctx, path,
-					    filter, subdir_filter, callback,
-					    private_data, handle_p);
 }
 
 int smb_vfs_call_chflags(struct vfs_handle_struct *handle, const char *path,
@@ -2232,9 +2195,63 @@ NTSTATUS smb_vfs_call_copy_chunk_recv(struct vfs_handle_struct *handle,
 	return handle->fns->copy_chunk_recv_fn(handle, req, copied);
 }
 
+NTSTATUS smb_vfs_call_get_compression(vfs_handle_struct *handle,
+				      TALLOC_CTX *mem_ctx,
+				      struct files_struct *fsp,
+				      struct smb_filename *smb_fname,
+				      uint16_t *_compression_fmt)
+{
+	VFS_FIND(get_compression);
+	return handle->fns->get_compression_fn(handle, mem_ctx, fsp, smb_fname,
+					       _compression_fmt);
+}
+
+NTSTATUS smb_vfs_call_set_compression(vfs_handle_struct *handle,
+				      TALLOC_CTX *mem_ctx,
+				      struct files_struct *fsp,
+				      uint16_t compression_fmt)
+{
+	VFS_FIND(set_compression);
+	return handle->fns->set_compression_fn(handle, mem_ctx, fsp,
+					       compression_fmt);
+}
+
+NTSTATUS smb_vfs_call_snap_check_path(vfs_handle_struct *handle,
+				      TALLOC_CTX *mem_ctx,
+				      const char *service_path,
+				      char **base_volume)
+{
+	VFS_FIND(snap_check_path);
+	return handle->fns->snap_check_path_fn(handle, mem_ctx, service_path,
+					       base_volume);
+}
+
+NTSTATUS smb_vfs_call_snap_create(struct vfs_handle_struct *handle,
+				  TALLOC_CTX *mem_ctx,
+				  const char *base_volume,
+				  time_t *tstamp,
+				  bool rw,
+				  char **base_path,
+				  char **snap_path)
+{
+	VFS_FIND(snap_create);
+	return handle->fns->snap_create_fn(handle, mem_ctx, base_volume, tstamp,
+					   rw, base_path, snap_path);
+}
+
+NTSTATUS smb_vfs_call_snap_delete(struct vfs_handle_struct *handle,
+				  TALLOC_CTX *mem_ctx,
+				  char *base_path,
+				  char *snap_path)
+{
+	VFS_FIND(snap_delete);
+	return handle->fns->snap_delete_fn(handle, mem_ctx, base_path,
+					   snap_path);
+}
+
 NTSTATUS smb_vfs_call_fget_nt_acl(struct vfs_handle_struct *handle,
 				  struct files_struct *fsp,
-				  uint32 security_info,
+				  uint32_t security_info,
 				  TALLOC_CTX *mem_ctx,
 				  struct security_descriptor **ppdesc)
 {
@@ -2245,7 +2262,7 @@ NTSTATUS smb_vfs_call_fget_nt_acl(struct vfs_handle_struct *handle,
 
 NTSTATUS smb_vfs_call_get_nt_acl(struct vfs_handle_struct *handle,
 				 const char *name,
-				 uint32 security_info,
+				 uint32_t security_info,
 				 TALLOC_CTX *mem_ctx,
 				 struct security_descriptor **ppdesc)
 {
@@ -2255,7 +2272,7 @@ NTSTATUS smb_vfs_call_get_nt_acl(struct vfs_handle_struct *handle,
 
 NTSTATUS smb_vfs_call_fset_nt_acl(struct vfs_handle_struct *handle,
 				  struct files_struct *fsp,
-				  uint32 security_info_sent,
+				  uint32_t security_info_sent,
 				  const struct security_descriptor *psd)
 {
 	VFS_FIND(fset_nt_acl);
@@ -2465,4 +2482,13 @@ NTSTATUS smb_vfs_call_durable_reconnect(struct vfs_handle_struct *handle,
 	return handle->fns->durable_reconnect_fn(handle, smb1req, op,
 					         old_cookie, mem_ctx, fsp,
 					         new_cookie);
+}
+
+NTSTATUS smb_vfs_call_readdir_attr(struct vfs_handle_struct *handle,
+				   const struct smb_filename *fname,
+				   TALLOC_CTX *mem_ctx,
+				   struct readdir_attr_data **attr_data)
+{
+	VFS_FIND(readdir_attr);
+	return handle->fns->readdir_attr_fn(handle, fname, mem_ctx, attr_data);
 }

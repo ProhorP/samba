@@ -34,11 +34,12 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 	const char *dn = NULL;
 	struct GROUP_POLICY_OBJECT *gpo_list = NULL;
 	struct GROUP_POLICY_OBJECT *read_list = NULL;
-	uint32 uac = 0;
-	uint32 flags = 0;
+	uint32_t uac = 0;
+	uint32_t flags = 0;
 	struct GROUP_POLICY_OBJECT *gpo;
 	NTSTATUS result;
 	struct security_token *token = NULL;
+	char *gpo_cache_path;
 
 	if (argc < 1 || c->display_usage) {
 		d_printf("%s\n%s\n%s",
@@ -78,7 +79,7 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 
 	d_printf(_("* fetching token "));
 	if (uac & UF_WORKSTATION_TRUST_ACCOUNT) {
-		status = gp_get_machine_token(ads, mem_ctx, NULL, dn, &token);
+		status = gp_get_machine_token(ads, mem_ctx, dn, &token);
 	} else {
 		status = ads_get_sid_token(ads, mem_ctx, dn, &token);
 	}
@@ -99,11 +100,17 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 	d_printf(_("finished\n"));
 
 	d_printf(_("* Refreshing Group Policy Data "));
-	if (!NT_STATUS_IS_OK(result = check_refresh_gpo_list(ads, mem_ctx,
-	                                                     cache_path(GPO_CACHE_DIR),
-	                                                     NULL,
-							     flags,
-							     gpo_list))) {
+	gpo_cache_path = cache_path(GPO_CACHE_DIR);
+	if (gpo_cache_path == NULL) {
+		d_printf(_("failed: %s\n"), nt_errstr(NT_STATUS_NO_MEMORY));
+		goto out;
+	}
+	result = check_refresh_gpo_list(ads, mem_ctx,
+					gpo_cache_path,
+					flags,
+					gpo_list);
+	TALLOC_FREE(gpo_cache_path);
+	if (!NT_STATUS_IS_OK(result)) {
 		d_printf(_("failed: %s\n"), nt_errstr(result));
 		goto out;
 	}
@@ -128,7 +135,7 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 
 		for (gpo = gpo_list; gpo; gpo = gpo->next) {
 
-			dump_gpo(ads, mem_ctx, gpo, 0);
+			dump_gpo(gpo, 0);
 #if 0
 		char *server, *share, *nt_path, *unix_path;
 
@@ -173,7 +180,7 @@ static int net_ads_gpo_refresh(struct net_context *c, int argc, const char **arg
 
 		for (gpo = read_list; gpo; gpo = gpo->next) {
 
-			dump_gpo(ads, mem_ctx, gpo, 0);
+			dump_gpo(gpo, 0);
 
 #if 0
 		char *server, *share, *nt_path, *unix_path;
@@ -279,7 +286,7 @@ static int net_ads_gpo_list_all(struct net_context *c, int argc, const char **ar
 			goto out;
 		}
 
-		dump_gpo(ads, mem_ctx, &gpo, 0);
+		dump_gpo(&gpo, 0);
 	}
 
 out:
@@ -298,8 +305,8 @@ static int net_ads_gpo_list(struct net_context *c, int argc, const char **argv)
 	LDAPMessage *res = NULL;
 	TALLOC_CTX *mem_ctx;
 	const char *dn = NULL;
-	uint32 uac = 0;
-	uint32 flags = 0;
+	uint32_t uac = 0;
+	uint32_t flags = 0;
 	struct GROUP_POLICY_OBJECT *gpo_list;
 	struct security_token *token = NULL;
 
@@ -337,7 +344,7 @@ static int net_ads_gpo_list(struct net_context *c, int argc, const char **argv)
 		argv[0], dn);
 
 	if (uac & UF_WORKSTATION_TRUST_ACCOUNT) {
-		status = gp_get_machine_token(ads, mem_ctx, NULL, dn, &token);
+		status = gp_get_machine_token(ads, mem_ctx, dn, &token);
 	} else {
 		status = ads_get_sid_token(ads, mem_ctx, dn, &token);
 	}
@@ -351,7 +358,7 @@ static int net_ads_gpo_list(struct net_context *c, int argc, const char **argv)
 		goto out;
 	}
 
-	dump_gpo_list(ads, mem_ctx, gpo_list, 0);
+	dump_gpo_list(gpo_list, 0);
 
 out:
 	ads_msgfree(ads, res);
@@ -369,8 +376,8 @@ static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 	ADS_STATUS status;
 	const char *dn = NULL;
 	struct GROUP_POLICY_OBJECT *gpo_list;
-	uint32 uac = 0;
-	uint32 flags = 0;
+	uint32_t uac = 0;
+	uint32_t flags = 0;
 	struct security_token *token = NULL;
 	const char *filter = NULL;
 
@@ -420,7 +427,7 @@ static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 		argv[0], dn);
 
 	if (uac & UF_WORKSTATION_TRUST_ACCOUNT) {
-		status = gp_get_machine_token(ads, mem_ctx, NULL, dn, &token);
+		status = gp_get_machine_token(ads, mem_ctx, dn, &token);
 	} else {
 		status = ads_get_sid_token(ads, mem_ctx, dn, &token);
 	}
@@ -434,8 +441,8 @@ static int net_ads_gpo_apply(struct net_context *c, int argc, const char **argv)
 		goto out;
 	}
 
-	status = gpo_process_gpo_list(ads, mem_ctx, token, gpo_list,
-				      filter, flags);
+	status = ADS_ERROR_NT(gpo_process_gpo_list(mem_ctx, token, NULL, gpo_list,
+						   filter, flags));
 	if (!ADS_ERR_OK(status)) {
 		d_printf("failed to process gpo list: %s\n",
 			ads_errstr(status));
@@ -481,7 +488,7 @@ static int net_ads_gpo_link_get(struct net_context *c, int argc, const char **ar
 		goto out;
 	}
 
-	dump_gplink(ads, mem_ctx, &gp_link);
+	dump_gplink(&gp_link);
 
 out:
 	talloc_destroy(mem_ctx);
@@ -494,7 +501,7 @@ static int net_ads_gpo_link_add(struct net_context *c, int argc, const char **ar
 {
 	ADS_STRUCT *ads;
 	ADS_STATUS status;
-	uint32 gpo_opt = 0;
+	uint32_t gpo_opt = 0;
 	TALLOC_CTX *mem_ctx;
 
 	if (argc < 2 || c->display_usage) {
@@ -589,7 +596,7 @@ static int net_ads_gpo_get_gpo(struct net_context *c, int argc, const char **arg
 		d_printf("%s\n%s\n%s",
 			 _("Usage:"),
 			 _("net ads gpo getgpo <gpo>"),
-			 _("  List speciefied GPO\n"
+			 _("  List specified GPO\n"
 			   "    gpo\t\tGPO to list\n"));
 		return -1;
 	}
@@ -616,7 +623,7 @@ static int net_ads_gpo_get_gpo(struct net_context *c, int argc, const char **arg
 		goto out;
 	}
 
-	dump_gpo(ads, mem_ctx, &gpo, 1);
+	dump_gpo(&gpo, 1);
 
 out:
 	talloc_destroy(mem_ctx);

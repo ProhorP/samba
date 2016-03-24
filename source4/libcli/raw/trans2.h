@@ -22,25 +22,6 @@
 #ifndef _TRANS2_H_
 #define _TRANS2_H_
 
-/* These are the TRANS2 sub commands */
-#define TRANSACT2_OPEN                        0
-#define TRANSACT2_FINDFIRST                   1
-#define TRANSACT2_FINDNEXT                    2
-#define TRANSACT2_QFSINFO                     3
-#define TRANSACT2_SETFSINFO                   4
-#define TRANSACT2_QPATHINFO                   5
-#define TRANSACT2_SETPATHINFO                 6
-#define TRANSACT2_QFILEINFO                   7
-#define TRANSACT2_SETFILEINFO                 8
-#define TRANSACT2_FSCTL                       9
-#define TRANSACT2_IOCTL                     0xA
-#define TRANSACT2_FINDNOTIFYFIRST           0xB
-#define TRANSACT2_FINDNOTIFYNEXT            0xC
-#define TRANSACT2_MKDIR                     0xD
-#define TRANSACT2_SESSION_SETUP             0xE
-#define TRANSACT2_GET_DFS_REFERRAL         0x10
-#define TRANSACT2_REPORT_DFS_INCONSISTANCY 0x11
-
 
 /* trans2 Query FS info levels */
 /*
@@ -82,6 +63,7 @@ Found 4 aliased levels
 #define SMB_QFS_QUOTA_INFORMATION			1006
 #define SMB_QFS_FULL_SIZE_INFORMATION			1007
 #define SMB_QFS_OBJECTID_INFORMATION			1008
+#define SMB_QFS_SECTOR_SIZE_INFORMATION			1011
 
 
 /* trans2 qfileinfo/qpathinfo */
@@ -302,6 +284,13 @@ Found 0 aliased levels
 #define QFS_TYPE_MOUNTED			0x20
 #define QFS_TYPE_VIRTUAL			0x40
 
+/* SMB_QFS_SECTOR_SIZE_INFORMATION values */
+#define QFS_SSINFO_FLAGS_ALIGNED_DEVICE			0x00000001
+#define QFS_SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE	0x00000002
+#define QFS_SSINFO_FLAGS_NO_SEEK_PENALTY		0x00000004
+#define QFS_SSINFO_FLAGS_TRIM_ENABLED			0x00000008
+
+#define QFS_SSINFO_OFFSET_UNKNOWN			0xffffffff
 
 /*
  * Thursby MAC extensions....

@@ -353,9 +353,8 @@ static int dbwrap_tool_listwatchers_cb(const uint8_t *db_id, size_t db_id_len,
 	dump_data_file(key.dptr, key.dsize, false, stdout);
 
 	for (i=0; i<num_watchers; i++) {
-		char *str = server_id_str(talloc_tos(), &watchers[i]);
-		printf("%s\n", str);
-		TALLOC_FREE(str);
+		struct server_id_buf idbuf;
+		printf("%s\n", server_id_str_buf(watchers[i], &idbuf));
 	}
 	printf("\n");
 	return 0;
@@ -411,6 +410,7 @@ int main(int argc, const char **argv)
 	enum dbwrap_type type;
 	const char *valuestr = "0";
 	int persistent = 0;
+	int non_persistent = 0;
 	int tdb_flags = TDB_DEFAULT;
 
 	TALLOC_CTX *mem_ctx = talloc_stackframe();
@@ -420,7 +420,13 @@ int main(int argc, const char **argv)
 	struct poptOption popt_options[] = {
 		POPT_AUTOHELP
 		POPT_COMMON_SAMBA
-		{ "persistent", 'p', POPT_ARG_NONE, &persistent, 0, "treat the database as persistent", NULL },
+		{ "non-persistent", 0, POPT_ARG_NONE, &non_persistent, 0,
+		  "treat the database as non-persistent "
+		  "(CAVEAT: This mode might wipe your database!)",
+		  NULL },
+		{ "persistent", 0, POPT_ARG_NONE, &persistent, 0,
+		  "treat the database as persistent",
+		  NULL },
 		POPT_TABLEEND
 	};
 	int opt;
@@ -428,7 +434,7 @@ int main(int argc, const char **argv)
 	int extra_argc = 0;
 	poptContext pc;
 
-	load_case_tables();
+	smb_init_locale();
 	lp_set_cmdline("log level", "0");
 	setup_logging(argv[0], DEBUG_STDERR);
 
@@ -461,6 +467,16 @@ int main(int argc, const char **argv)
 			  "       types: int32, uint32, string, hex\n",
 			 argv[0]);
 		goto done;
+	}
+
+	if ((persistent == 0 && non_persistent == 0) ||
+	    (persistent == 1 && non_persistent == 1))
+	{
+		d_fprintf(stderr, "ERROR: you must specify exactly one "
+			  "of --persistent and --non-persistent\n");
+		goto done;
+	} else if (non_persistent == 1) {
+		tdb_flags |= TDB_CLEAR_IF_FIRST;
 	}
 
 	dbname = extra_argv[0];
@@ -563,10 +579,6 @@ int main(int argc, const char **argv)
 		goto done;
 	}
 
-	if (persistent == 0) {
-		tdb_flags |= TDB_CLEAR_IF_FIRST;
-	}
-
 	switch (op) {
 	case OP_FETCH:
 	case OP_STORE:
@@ -575,7 +587,7 @@ int main(int argc, const char **argv)
 	case OP_LISTKEYS:
 	case OP_EXISTS:
 		db = db_open(mem_ctx, dbname, 0, tdb_flags, O_RDWR | O_CREAT,
-			     0644, DBWRAP_LOCK_ORDER_1);
+			     0644, DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 		if (db == NULL) {
 			d_fprintf(stderr, "ERROR: could not open dbname\n");
 			goto done;

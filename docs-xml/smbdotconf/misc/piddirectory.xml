@@ -1,7 +1,7 @@
 <samba:parameter name="pid directory"
                  context="G"
 				 type="string"
-                 advanced="1" developer="1"
+                 constant="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>
@@ -9,6 +9,6 @@
 	</para>
 </description>
 
-<value type="default">${prefix}/var/locks</value>
+<value type="default">&pathconfig.PIDDIR;</value>
 <value type="example">/var/run/</value>
 </samba:parameter>

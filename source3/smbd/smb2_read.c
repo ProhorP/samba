@@ -26,11 +26,13 @@
 #include "libcli/security/security.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "rpc_server/srv_pipe_hnd.h"
+#include "lib/sys_rw_data.h"
 
 static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
 					      struct smbd_smb2_request *smb2req,
 					      struct files_struct *in_fsp,
+					      uint8_t in_flags,
 					      uint32_t in_length,
 					      uint64_t in_offset,
 					      uint32_t in_minimum,
@@ -43,8 +45,10 @@ static NTSTATUS smbd_smb2_read_recv(struct tevent_req *req,
 static void smbd_smb2_request_read_done(struct tevent_req *subreq);
 NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 {
+	struct smbXsrv_connection *xconn = req->xconn;
 	NTSTATUS status;
 	const uint8_t *inbody;
+	uint8_t in_flags;
 	uint32_t in_length;
 	uint64_t in_offset;
 	uint64_t in_file_id_persistent;
@@ -60,6 +64,11 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	}
 	inbody = SMBD_SMB2_IN_BODY_PTR(req);
 
+	if (xconn->protocol >= PROTOCOL_SMB3_02) {
+		in_flags		= CVAL(inbody, 0x03);
+	} else {
+		in_flags		= 0;
+	}
 	in_length		= IVAL(inbody, 0x04);
 	in_offset		= BVAL(inbody, 0x08);
 	in_file_id_persistent	= BVAL(inbody, 0x10);
@@ -68,10 +77,10 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 	in_remaining_bytes	= IVAL(inbody, 0x28);
 
 	/* check the max read size */
-	if (in_length > req->sconn->smb2.max_read) {
+	if (in_length > xconn->smb2.server.max_read) {
 		DEBUG(2,("smbd_smb2_request_process_read: "
 			 "client ignored max read: %s: 0x%08X: 0x%08X\n",
-			__location__, in_length, req->sconn->smb2.max_read));
+			__location__, in_length, xconn->smb2.server.max_read));
 		return smbd_smb2_request_error(req, NT_STATUS_INVALID_PARAMETER);
 	}
 
@@ -87,6 +96,7 @@ NTSTATUS smbd_smb2_request_process_read(struct smbd_smb2_request *req)
 
 	subreq = smbd_smb2_read_send(req, req->sconn->ev_ctx,
 				     req, in_fsp,
+				     in_flags,
 				     in_length,
 				     in_offset,
 				     in_minimum_count,
@@ -119,7 +129,7 @@ static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 	if (!NT_STATUS_IS_OK(status)) {
 		error = smbd_smb2_request_error(req, status);
 		if (!NT_STATUS_IS_OK(error)) {
-			smbd_server_connection_terminate(req->sconn,
+			smbd_server_connection_terminate(req->xconn,
 							 nt_errstr(error));
 			return;
 		}
@@ -128,11 +138,11 @@ static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 
 	out_data_offset = SMB2_HDR_BODY + 0x10;
 
-	outbody = data_blob_talloc(req->out.vector, NULL, 0x10);
+	outbody = smbd_smb2_generate_outbody(req, 0x10);
 	if (outbody.data == NULL) {
 		error = smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
 		if (!NT_STATUS_IS_OK(error)) {
-			smbd_server_connection_terminate(req->sconn,
+			smbd_server_connection_terminate(req->xconn,
 							 nt_errstr(error));
 			return;
 		}
@@ -153,7 +163,7 @@ static void smbd_smb2_request_read_done(struct tevent_req *subreq)
 
 	error = smbd_smb2_request_done(req, outbody, &outdyn);
 	if (!NT_STATUS_IS_OK(error)) {
-		smbd_server_connection_terminate(req->sconn,
+		smbd_server_connection_terminate(req->xconn,
 						 nt_errstr(error));
 		return;
 	}
@@ -163,13 +173,20 @@ struct smbd_smb2_read_state {
 	struct smbd_smb2_request *smb2req;
 	struct smb_request *smbreq;
 	files_struct *fsp;
+	uint8_t in_flags;
 	uint32_t in_length;
 	uint64_t in_offset;
 	uint32_t in_minimum;
 	DATA_BLOB out_headers;
+	uint8_t _out_hdr_buf[NBT_HDR_SIZE + SMB2_HDR_BODY + 0x10];
 	DATA_BLOB out_data;
 	uint32_t out_remaining;
 };
+
+static int smb2_smb2_read_state_deny_destructor(struct smbd_smb2_read_state *state)
+{
+	return -1;
+}
 
 /* struct smbd_smb2_read_state destructor. Send the SMB2_READ data. */
 static int smb2_sendfile_send_data(struct smbd_smb2_read_state *state)
@@ -179,10 +196,13 @@ static int smb2_sendfile_send_data(struct smbd_smb2_read_state *state)
 	uint64_t in_offset = state->in_offset;
 	files_struct *fsp = state->fsp;
 	const DATA_BLOB *hdr = state->smb2req->queue_entry.sendfile_header;
+	NTSTATUS *pstatus = state->smb2req->queue_entry.sendfile_status;
+	struct smbXsrv_connection *xconn = state->smb2req->xconn;
 	ssize_t nread;
 	ssize_t ret;
+	int saved_errno;
 
-	nread = SMB_VFS_SENDFILE(fsp->conn->sconn->sock,
+	nread = SMB_VFS_SENDFILE(xconn->transport.sock,
 				 fsp,
 				 hdr,
 				 in_offset,
@@ -192,6 +212,8 @@ static int smb2_sendfile_send_data(struct smbd_smb2_read_state *state)
 		fsp_str_dbg(fsp) ));
 
 	if (nread == -1) {
+		saved_errno = errno;
+
 		/*
 		 * Returning ENOSYS means no data at all was sent.
 		   Do this as a normal read. */
@@ -206,24 +228,26 @@ static int smb2_sendfile_send_data(struct smbd_smb2_read_state *state)
 			 * Fake this up by doing read/write calls.
 			 */
 			set_use_sendfile(SNUM(fsp->conn), false);
-			nread = fake_sendfile(fsp, in_offset, in_length);
+			nread = fake_sendfile(xconn, fsp, in_offset, in_length);
 			if (nread == -1) {
-				DEBUG(0,("smb2_sendfile_send_data: "
-					"fake_sendfile failed for "
-					"file %s (%s).\n",
-					fsp_str_dbg(fsp),
-					strerror(errno)));
-				exit_server_cleanly("smb2_sendfile_send_data: "
-					"fake_sendfile failed");
+				saved_errno = errno;
+				DEBUG(0,("smb2_sendfile_send_data: fake_sendfile "
+					 "failed for file %s (%s) for client %s. "
+					 "Terminating\n",
+					 fsp_str_dbg(fsp), strerror(saved_errno),
+					 smbXsrv_connection_dbg(xconn)));
+				*pstatus = map_nt_error_from_unix_common(saved_errno);
+				return 0;
 			}
 			goto out;
 		}
 
 		DEBUG(0,("smb2_sendfile_send_data: sendfile failed for file "
-			"%s (%s). Terminating\n",
-			fsp_str_dbg(fsp),
-			strerror(errno)));
-		exit_server_cleanly("smb2_sendfile_send_data: sendfile failed");
+			 "%s (%s) for client %s. Terminating\n",
+			 fsp_str_dbg(fsp), strerror(saved_errno),
+			 smbXsrv_connection_dbg(xconn)));
+		*pstatus = map_nt_error_from_unix_common(saved_errno);
+		return 0;
 	} else if (nread == 0) {
 		/*
 		 * Some sendfile implementations return 0 to indicate
@@ -245,40 +269,45 @@ static int smb2_sendfile_send_data(struct smbd_smb2_read_state *state)
 
 normal_read:
 	/* Send out the header. */
-	ret = write_data(fsp->conn->sconn->sock,
+	ret = write_data(xconn->transport.sock,
 			 (const char *)hdr->data, hdr->length);
 	if (ret != hdr->length) {
-		char addr[INET6_ADDRSTRLEN];
-		/*
-		 * Try and give an error message saying what
-		 * client failed.
-		 */
-		DEBUG(0, ("smb2_sendfile_send_data: write_data failed "
-			  "for client %s. Error %s\n",
-			  get_peer_addr(fsp->conn->sconn->sock, addr,
-					sizeof(addr)),
-			  strerror(errno)));
-
+		saved_errno = errno;
 		DEBUG(0,("smb2_sendfile_send_data: write_data failed for file "
-			 "%s (%s). Terminating\n", fsp_str_dbg(fsp),
-			 strerror(errno)));
-		exit_server_cleanly("smb2_sendfile_send_data: write_data failed");
+			 "%s (%s) for client %s. Terminating\n",
+			 fsp_str_dbg(fsp), strerror(saved_errno),
+			 smbXsrv_connection_dbg(xconn)));
+		*pstatus = map_nt_error_from_unix_common(saved_errno);
+		return 0;
 	}
-	nread = fake_sendfile(fsp, in_offset, in_length);
+	nread = fake_sendfile(xconn, fsp, in_offset, in_length);
 	if (nread == -1) {
-		DEBUG(0,("smb2_sendfile_send_data: "
-			"fake_sendfile failed for file "
-			"%s (%s). Terminating\n",
-			fsp_str_dbg(fsp),
-			strerror(errno)));
-		exit_server_cleanly("smb2_sendfile_send_data: "
-			"fake_sendfile failed");
+		saved_errno = errno;
+		DEBUG(0,("smb2_sendfile_send_data: fake_sendfile "
+			 "failed for file %s (%s) for client %s. "
+			 "Terminating\n",
+			 fsp_str_dbg(fsp), strerror(saved_errno),
+			 smbXsrv_connection_dbg(xconn)));
+		*pstatus = map_nt_error_from_unix_common(saved_errno);
+		return 0;
 	}
 
   out:
 
 	if (nread < in_length) {
-		sendfile_short_send(fsp, nread, hdr->length, in_length);
+		ret = sendfile_short_send(xconn, fsp, nread,
+					  hdr->length, in_length);
+		if (ret == -1) {
+			saved_errno = errno;
+			DEBUG(0,("%s: sendfile_short_send "
+				 "failed for file %s (%s) for client %s. "
+				 "Terminating\n",
+				 __func__,
+				 fsp_str_dbg(fsp), strerror(saved_errno),
+				 smbXsrv_connection_dbg(xconn)));
+			*pstatus = map_nt_error_from_unix_common(saved_errno);
+			return 0;
+		}
 	}
 
 	init_strict_lock_struct(fsp,
@@ -289,13 +318,14 @@ normal_read:
 				&lock);
 
 	SMB_VFS_STRICT_UNLOCK(fsp->conn, fsp, &lock);
+
+	*pstatus = NT_STATUS_OK;
 	return 0;
 }
 
 static NTSTATUS schedule_smb2_sendfile_read(struct smbd_smb2_request *smb2req,
 					struct smbd_smb2_read_state *state)
 {
-	struct smbd_smb2_read_state *state_copy = NULL;
 	files_struct *fsp = state->fsp;
 
 	/*
@@ -330,16 +360,8 @@ static NTSTATUS schedule_smb2_sendfile_read(struct smbd_smb2_request *smb2req,
 	state->out_data.length = state->in_length;
 	state->out_remaining = 0;
 
-	/* Make a copy of state attached to the smb2req. Attach
-	   the destructor here as this will trigger the sendfile
-	   call when the request is destroyed. */
-	state_copy = talloc(smb2req, struct smbd_smb2_read_state);
-	if (!state_copy) {
-		return NT_STATUS_NO_MEMORY;
-	}
-	*state_copy = *state;
-	talloc_set_destructor(state_copy, smb2_sendfile_send_data);
-	state->smb2req->queue_entry.sendfile_header = &state_copy->out_headers;
+	state->out_headers = data_blob_const(state->_out_hdr_buf,
+					     sizeof(state->_out_hdr_buf));
 	return NT_STATUS_OK;
 }
 
@@ -409,6 +431,7 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
 					      struct smbd_smb2_request *smb2req,
 					      struct files_struct *fsp,
+					      uint8_t in_flags,
 					      uint32_t in_length,
 					      uint64_t in_offset,
 					      uint32_t in_minimum,
@@ -429,6 +452,7 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 	state->smb2req = smb2req;
+	state->in_flags = in_flags;
 	state->in_length = in_length;
 	state->in_offset = in_offset;
 	state->in_minimum = in_minimum;
@@ -619,6 +643,15 @@ static NTSTATUS smbd_smb2_read_recv(struct tevent_req *req,
 	talloc_steal(mem_ctx, out_data->data);
 	*out_remaining = state->out_remaining;
 
-	tevent_req_received(req);
+	if (state->out_headers.length > 0) {
+		talloc_steal(mem_ctx, state);
+		talloc_set_destructor(state, smb2_smb2_read_state_deny_destructor);
+		tevent_req_received(req);
+		state->smb2req->queue_entry.sendfile_header = &state->out_headers;
+		talloc_set_destructor(state, smb2_sendfile_send_data);
+	} else {
+		tevent_req_received(req);
+	}
+
 	return NT_STATUS_OK;
 }

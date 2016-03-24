@@ -97,12 +97,10 @@ static int process_options(int argc, char **argv, int local_flags)
 	while ((ch = getopt(argc, argv, "c:axdehminjr:sw:R:D:U:LW")) != EOF) {
 		switch(ch) {
 		case 'L':
-#if !defined(NSS_WRAPPER)
 			if (getuid() != 0) {
 				fprintf(stderr, "smbpasswd -L can only be used by root.\n");
 				exit(1);
 			}
-#endif
 			local_flags |= LOCAL_AM_ROOT;
 			break;
 		case 'c':
@@ -599,7 +597,7 @@ int main(int argc, char **argv)
 		local_flags = LOCAL_AM_ROOT;
 	}
 
-	load_case_tables();
+	smb_init_locale();
 
 	local_flags = process_options(argc, argv, local_flags);
 

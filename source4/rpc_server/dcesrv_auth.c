@@ -80,20 +80,30 @@ bool dcesrv_auth_bind(struct dcesrv_call_state *call)
 					   server_credentials,
 					   NULL,
 					   &auth->gensec_security);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(1, ("Failed to call samba_server_gensec_start %s\n",
+			  nt_errstr(status)));
+		return false;
+	}
+
+	if (call->conn->remote_address != NULL) {
+		status = gensec_set_remote_address(auth->gensec_security,
+						call->conn->remote_address);
+		if (!NT_STATUS_IS_OK(status)) {
+			DEBUG(1, ("Failed to call gensec_set_remote_address() %s\n",
+				  nt_errstr(status)));
+			return false;
+		}
+	}
 
 	status = gensec_start_mech_by_authtype(auth->gensec_security, auth->auth_info->auth_type, 
 					       auth->auth_info->auth_level);
-
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("Failed to start GENSEC mechanism for DCERPC server: auth_type=%d, auth_level=%d: %s\n",
 			  (int)auth->auth_info->auth_type,
 			  (int)auth->auth_info->auth_level,
 			  nt_errstr(status)));
 		return false;
-	}
-
-	if (call->conn->state_flags & DCESRV_CALL_STATE_FLAG_HEADER_SIGNING) {
-		gensec_want_feature(auth->gensec_security, GENSEC_FEATURE_SIGN_PKT_HEADER);
 	}
 
 	return true;
@@ -107,12 +117,22 @@ NTSTATUS dcesrv_auth_bind_ack(struct dcesrv_call_state *call, struct ncacn_packe
 {
 	struct dcesrv_connection *dce_conn = call->conn;
 	NTSTATUS status;
+	bool want_header_signing = false;
 
 	if (!call->conn->auth_state.gensec_security) {
 		return NT_STATUS_OK;
 	}
 
-	status = gensec_update(dce_conn->auth_state.gensec_security,
+	if (call->pkt.pfc_flags & DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN) {
+		dce_conn->auth_state.client_hdr_signing = true;
+		want_header_signing = true;
+	}
+
+	if (!lpcfg_parm_bool(call->conn->dce_ctx->lp_ctx, NULL, "dcesrv","header signing", true)) {
+		want_header_signing = false;
+	}
+
+	status = gensec_update_ev(dce_conn->auth_state.gensec_security,
 			       call, call->event_ctx,
 			       dce_conn->auth_state.auth_info->credentials, 
 			       &dce_conn->auth_state.auth_info->credentials);
@@ -126,9 +146,17 @@ NTSTATUS dcesrv_auth_bind_ack(struct dcesrv_call_state *call, struct ncacn_packe
 			return status;
 		}
 
-		if (dce_conn->state_flags & DCESRV_CALL_STATE_FLAG_HEADER_SIGNING) {
+		if (!gensec_have_feature(dce_conn->auth_state.gensec_security,
+					 GENSEC_FEATURE_SIGN_PKT_HEADER))
+		{
+			want_header_signing = false;
+		}
+
+		if (want_header_signing) {
 			gensec_want_feature(dce_conn->auth_state.gensec_security,
 					    GENSEC_FEATURE_SIGN_PKT_HEADER);
+			dce_conn->auth_state.hdr_signing = true;
+			pkt->pfc_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
 		}
 
 		/* Now that we are authenticated, go back to the generic session key... */
@@ -137,6 +165,20 @@ NTSTATUS dcesrv_auth_bind_ack(struct dcesrv_call_state *call, struct ncacn_packe
 	} else if (NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)) {
 		dce_conn->auth_state.auth_info->auth_pad_length = 0;
 		dce_conn->auth_state.auth_info->auth_reserved = 0;
+
+		if (!gensec_have_feature(dce_conn->auth_state.gensec_security,
+					 GENSEC_FEATURE_SIGN_PKT_HEADER))
+		{
+			want_header_signing = false;
+		}
+
+		if (want_header_signing) {
+			gensec_want_feature(dce_conn->auth_state.gensec_security,
+					    GENSEC_FEATURE_SIGN_PKT_HEADER);
+			dce_conn->auth_state.hdr_signing = true;
+			pkt->pfc_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
+		}
+
 		return NT_STATUS_OK;
 	} else {
 		DEBUG(4, ("GENSEC mech rejected the incoming authentication at bind_ack: %s\n",
@@ -170,7 +212,7 @@ bool dcesrv_auth_auth3(struct dcesrv_call_state *call)
 	}
 
 	/* Pass the extra data we got from the client down to gensec for processing */
-	status = gensec_update(dce_conn->auth_state.gensec_security,
+	status = gensec_update_ev(dce_conn->auth_state.gensec_security,
 			       call, call->event_ctx,
 			       dce_conn->auth_state.auth_info->credentials, 
 			       &dce_conn->auth_state.auth_info->credentials);
@@ -249,7 +291,7 @@ NTSTATUS dcesrv_auth_alter_ack(struct dcesrv_call_state *call, struct ncacn_pack
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	status = gensec_update(dce_conn->auth_state.gensec_security,
+	status = gensec_update_ev(dce_conn->auth_state.gensec_security,
 			       call, call->event_ctx,
 			       dce_conn->auth_state.auth_info->credentials, 
 			       &dce_conn->auth_state.auth_info->credentials);
@@ -291,6 +333,9 @@ bool dcesrv_auth_request(struct dcesrv_call_state *call, DATA_BLOB *full_packet)
 
 	if (!dce_conn->auth_state.auth_info ||
 	    !dce_conn->auth_state.gensec_security) {
+		if (pkt->auth_length != 0) {
+			return false;
+		}
 		return true;
 	}
 
@@ -322,6 +367,18 @@ bool dcesrv_auth_request(struct dcesrv_call_state *call, DATA_BLOB *full_packet)
 					  &pkt->u.request.stub_and_verifier,
 					  &auth, &auth_length, false);
 	if (!NT_STATUS_IS_OK(status)) {
+		return false;
+	}
+
+	if (auth.auth_type != dce_conn->auth_state.auth_info->auth_type) {
+		return false;
+	}
+
+	if (auth.auth_level != dce_conn->auth_state.auth_info->auth_level) {
+		return false;
+	}
+
+	if (auth.auth_context_id != dce_conn->auth_state.auth_info->auth_context_id) {
 		return false;
 	}
 

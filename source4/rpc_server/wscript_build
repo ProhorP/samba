@@ -79,7 +79,7 @@ bld.SAMBA_MODULE('dcesrv_samr',
 	autoproto='samr/proto.h',
 	subsystem='dcerpc_server',
 	init_function='dcerpc_server_samr_init',
-	deps='samdb DCERPC_COMMON ndr-standard'
+	deps='samdb DCERPC_COMMON ndr-standard auth4_sam'
 	)
 
 
@@ -114,7 +114,8 @@ bld.SAMBA_MODULE('dcerpc_backupkey',
 	autoproto='backupkey/proto.h',
 	subsystem='dcerpc_server',
 	init_function='dcerpc_server_backupkey_init',
-	deps='samdb DCERPC_COMMON NDR_BACKUPKEY RPC_NDR_BACKUPKEY krb5 hx509 hcrypto'
+	deps='samdb DCERPC_COMMON NDR_BACKUPKEY RPC_NDR_BACKUPKEY krb5 hx509 hcrypto gnutls gcrypt',
+	enabled=bld.CONFIG_SET('SAMBA4_USES_HEIMDAL')
 	)
 
 

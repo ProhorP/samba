@@ -38,6 +38,22 @@ struct dc_set {
 	uint32_t count;
 };
 
+static void shuffle_dc_set(struct dc_set *list)
+{
+	uint32_t i;
+
+	for (i = list->count; i > 1; i--) {
+		uint32_t r;
+		const char *tmp;
+
+		r = generate_random() % i;
+
+		tmp = list->names[i - 1];
+		list->names[i - 1] = list->names[r];
+		list->names[r] = tmp;
+	}
+}
+
 /*
   fill a referral type structure
  */
@@ -198,11 +214,17 @@ static NTSTATUS get_dcs_insite(TALLOC_CTX *ctx, struct ldb_context *ldb,
 	 * Search all the object of class server in this site
 	 */
 	dc_list = talloc_array(r, const char *, r->count);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(dc_list, r);
+	if (dc_list == NULL) {
+		TALLOC_FREE(r);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	/* TODO put some random here in the order */
 	list->names = talloc_realloc(list, list->names, const char *, list->count + r->count);
-	NT_STATUS_HAVE_NO_MEMORY_AND_FREE(list->names, r);
+	if (list->names == NULL) {
+		TALLOC_FREE(r);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	for (i = 0; i<r->count; i++) {
 		struct ldb_dn  *dn;
@@ -230,7 +252,10 @@ static NTSTATUS get_dcs_insite(TALLOC_CTX *ctx, struct ldb_context *ldb,
 			}
 
 			list->names[list->count] = talloc_strdup(list->names, dns);
-			NT_STATUS_HAVE_NO_MEMORY_AND_FREE(list->names[list->count], r);
+			if (list->names[list->count] == NULL) {
+				TALLOC_FREE(r);
+				return NT_STATUS_NO_MEMORY;
+			}
 		} else {
 			char *tmp;
 			const char *aname = ldb_msg_find_attr_as_string(msg, "sAMAccountName", NULL);
@@ -242,7 +267,10 @@ static NTSTATUS get_dcs_insite(TALLOC_CTX *ctx, struct ldb_context *ldb,
 			}
 
 			tmp = talloc_strdup(list->names, aname);
-			NT_STATUS_HAVE_NO_MEMORY_AND_FREE(tmp, r);
+			if (tmp == NULL) {
+				TALLOC_FREE(r);
+				return NT_STATUS_NO_MEMORY;
+			}
 
 			/* Netbios name is also the sAMAccountName for
 			   computer but without the final $ */
@@ -252,6 +280,8 @@ static NTSTATUS get_dcs_insite(TALLOC_CTX *ctx, struct ldb_context *ldb,
 		list->count++;
 		talloc_free(msg);
 	}
+
+	shuffle_dc_set(list);
 
 	talloc_free(r);
 	return NT_STATUS_OK;
@@ -334,14 +364,27 @@ static NTSTATUS get_dcs(TALLOC_CTX *ctx, struct ldb_context *ldb,
 		/* All of this was to get the DN of the searched_site */
 		sitedn = r->msgs[0]->dn;
 
-		set_list = talloc_realloc(subctx, set_list, struct dc_set *, current_pos+1);
-		NT_STATUS_HAVE_NO_MEMORY_AND_FREE(set_list, subctx);
+		/*
+		 * We will realloc + 2 because we will need one additional place
+		 * for element at current_pos + 1 for the NULL element
+		 */
+		set_list = talloc_realloc(subctx, set_list, struct dc_set *, current_pos+2);
+		if (set_list == NULL) {
+			TALLOC_FREE(subctx);
+			return NT_STATUS_NO_MEMORY;
+		}
 
 		set_list[current_pos] = talloc(set_list, struct dc_set);
-		NT_STATUS_HAVE_NO_MEMORY_AND_FREE(set_list[current_pos], subctx);
+		if (set_list[current_pos] == NULL) {
+			TALLOC_FREE(subctx);
+			return NT_STATUS_NO_MEMORY;
+		}
 
 		set_list[current_pos]->names = NULL;
 		set_list[current_pos]->count = 0;
+
+		set_list[current_pos+1] = NULL;
+
 		status = get_dcs_insite(subctx, ldb, sitedn,
 					set_list[current_pos], need_fqdn);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -384,10 +427,16 @@ static NTSTATUS get_dcs(TALLOC_CTX *ctx, struct ldb_context *ldb,
 		 */
 		set_list = talloc_realloc(subctx, set_list, struct dc_set *,
 					  current_pos+2);
-		NT_STATUS_HAVE_NO_MEMORY_AND_FREE(set_list, subctx);
+		if (set_list == NULL) {
+			TALLOC_FREE(subctx);
+			return NT_STATUS_NO_MEMORY;
+		}
 
 		set_list[current_pos] = talloc(ctx, struct dc_set);
-		NT_STATUS_HAVE_NO_MEMORY_AND_FREE(set_list[current_pos], subctx);
+		if (set_list[current_pos] == NULL) {
+			TALLOC_FREE(subctx);
+			return NT_STATUS_NO_MEMORY;
+		}
 
 		set_list[current_pos]->names = NULL;
 		set_list[current_pos]->count = 0;
@@ -424,8 +473,6 @@ static NTSTATUS get_dcs(TALLOC_CTX *ctx, struct ldb_context *ldb,
 			}
 		}
 	}
-	current_pos++;
-	set_list[current_pos] = NULL;
 
 	*pset_list = talloc_move(ctx, &set_list);
 	talloc_free(subctx);
@@ -752,6 +799,7 @@ NTSTATUS dfs_server_ad_get_referrals(struct loadparm_context *lp_ctx,
 	const char *netbios_name;
 	const char *dns_name;
 	const char **netbios_aliases;
+	char path_separator;
 
 	if (!lpcfg_host_msdfs(lp_ctx)) {
 		return NT_STATUS_FS_DRIVER_REQUIRED;
@@ -779,16 +827,18 @@ NTSTATUS dfs_server_ad_get_referrals(struct loadparm_context *lp_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	while(*server_name && *server_name == '\\') {
+	path_separator = (*server_name == '/') ? '/' : '\\';
+
+	while(*server_name && *server_name == path_separator) {
 		server_name++;
 	}
 
-	dfs_name = strchr(server_name, '\\');
+	dfs_name = strchr_m(server_name, path_separator);
 	if (dfs_name != NULL) {
 		dfs_name[0] = '\0';
 		dfs_name++;
 
-		link_path = strchr(dfs_name, '\\');
+		link_path = strchr_m(dfs_name, path_separator);
 		if (link_path != NULL) {
 			link_path[0] = '\0';
 			link_path++;

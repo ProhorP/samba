@@ -161,7 +161,7 @@ static NTSTATUS cmd_lsa_query_info_policy(struct rpc_pipe_client *cli,
 	union lsa_PolicyInformation *info = NULL;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
-	uint32 info_class = 3;
+	uint32_t info_class = 3;
 
 	if (argc > 2) {
 		printf("Usage: %s [info_class]\n", argv[0]);
@@ -434,9 +434,16 @@ static NTSTATUS cmd_lsa_lookup_sids(struct rpc_pipe_client *cli, TALLOC_CTX *mem
 		fstring sid_str;
 
 		sid_to_fstring(sid_str, &sids[i]);
-		printf("%s %s\\%s (%d)\n", sid_str, 
-		       domains[i] ? domains[i] : "*unknown*", 
-		       names[i] ? names[i] : "*unknown*", types[i]);
+		if (types[i] == SID_NAME_DOMAIN) {
+			printf("%s %s (%d)\n", sid_str,
+			       domains[i] ? domains[i] : "*unknown*",
+			       types[i]);
+		} else {
+			printf("%s %s\\%s (%d)\n", sid_str,
+			       domains[i] ? domains[i] : "*unknown*",
+			       names[i] ? names[i] : "*unknown*",
+			       types[i]);
+		}
 	}
 
 	dcerpc_lsa_Close(b, mem_ctx, &pol, &result);
@@ -539,7 +546,7 @@ static NTSTATUS cmd_lsa_enum_trust_dom(struct rpc_pipe_client *cli,
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
 	/* defaults, but may be changed using params */
-	uint32 enum_ctx = 0;
+	uint32_t enum_ctx = 0;
 	int i;
 	uint32_t max_size = (uint32_t)-1;
 
@@ -610,8 +617,8 @@ static NTSTATUS cmd_lsa_enum_privilege(struct rpc_pipe_client *cli,
 	struct lsa_PrivArray priv_array;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
-	uint32 enum_context=0;
-	uint32 pref_max_length=0x1000;
+	uint32_t enum_context=0;
+	uint32_t pref_max_length=0x1000;
 	int i;
 
 	if (argc > 3) {
@@ -672,9 +679,9 @@ static NTSTATUS cmd_lsa_get_dispname(struct rpc_pipe_client *cli,
 	NTSTATUS status, result;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
-	uint16 lang_id=0;
-	uint16 lang_id_sys=0;
-	uint16 lang_id_desc;
+	uint16_t lang_id=0;
+	uint16_t lang_id_sys=0;
+	uint16_t lang_id_desc;
 	struct lsa_String lsa_name;
 	struct lsa_StringLarge *description = NULL;
 
@@ -725,8 +732,8 @@ static NTSTATUS cmd_lsa_enum_sids(struct rpc_pipe_client *cli,
 	NTSTATUS status, result;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
-	uint32 enum_context=0;
-	uint32 pref_max_length=0x1000;
+	uint32_t enum_context=0;
+	uint32_t pref_max_length=0x1000;
 	struct lsa_SidArray sid_array;
 	int i;
 
@@ -785,7 +792,7 @@ static NTSTATUS cmd_lsa_create_account(struct rpc_pipe_client *cli,
 	struct policy_handle dom_pol;
 	struct policy_handle user_pol;
 	NTSTATUS status, result;
-	uint32 des_access = 0x000f000f;
+	uint32_t des_access = 0x000f000f;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
 	struct dom_sid sid;
@@ -837,7 +844,7 @@ static NTSTATUS cmd_lsa_enum_privsaccounts(struct rpc_pipe_client *cli,
 	struct policy_handle dom_pol;
 	struct policy_handle user_pol;
 	NTSTATUS status, result;
-	uint32 access_desired = 0x000f000f;
+	uint32_t access_desired = 0x000f000f;
 	struct dom_sid sid;
 	struct lsa_PrivilegeSet *privs = NULL;
 	int i;
@@ -1129,7 +1136,7 @@ static NTSTATUS cmd_lsa_query_secobj(struct rpc_pipe_client *cli,
 	struct policy_handle pol;
 	NTSTATUS status, result;
 	struct sec_desc_buf *sdb;
-	uint32 sec_info = SECINFO_DACL;
+	uint32_t sec_info = SECINFO_DACL;
 	struct dcerpc_binding_handle *b = cli->binding_handle;
 
 	if (argc < 1 || argc > 2) {
@@ -1215,7 +1222,7 @@ static NTSTATUS cmd_lsa_query_trustdominfobysid(struct rpc_pipe_client *cli,
 	struct policy_handle pol;
 	NTSTATUS status, result;
 	struct dom_sid dom_sid;
-	uint32 access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	union lsa_TrustedDomainInfo *info = NULL;
 	enum lsa_TrustDomInfoEnum info_class = 1;
 	DATA_BLOB session_key;
@@ -1270,7 +1277,7 @@ static NTSTATUS cmd_lsa_query_trustdominfobyname(struct rpc_pipe_client *cli,
 {
 	struct policy_handle pol;
 	NTSTATUS status, result;
-	uint32 access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	union lsa_TrustedDomainInfo *info = NULL;
 	enum lsa_TrustDomInfoEnum info_class = 1;
 	struct lsa_String trusted_domain;
@@ -1325,7 +1332,7 @@ static NTSTATUS cmd_lsa_set_trustdominfo(struct rpc_pipe_client *cli,
 {
 	struct policy_handle pol, trustdom_pol;
 	NTSTATUS status, result;
-	uint32 access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	union lsa_TrustedDomainInfo info;
 	struct dom_sid dom_sid;
 	enum lsa_TrustDomInfoEnum info_class = 1;
@@ -1395,7 +1402,7 @@ static NTSTATUS cmd_lsa_query_trustdominfo(struct rpc_pipe_client *cli,
 {
 	struct policy_handle pol, trustdom_pol;
 	NTSTATUS status, result;
-	uint32 access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
+	uint32_t access_mask = SEC_FLAG_MAXIMUM_ALLOWED;
 	union lsa_TrustedDomainInfo *info = NULL;
 	struct dom_sid dom_sid;
 	enum lsa_TrustDomInfoEnum info_class = 1;
@@ -1462,7 +1469,6 @@ static NTSTATUS cmd_lsa_get_username(struct rpc_pipe_client *cli,
                                      TALLOC_CTX *mem_ctx, int argc,
                                      const char **argv)
 {
-	struct policy_handle pol;
 	NTSTATUS status, result;
 	const char *servername = cli->desthost;
 	struct lsa_String *account_name = NULL;
@@ -1472,14 +1478,6 @@ static NTSTATUS cmd_lsa_get_username(struct rpc_pipe_client *cli,
 	if (argc > 2) {
 		printf("Usage: %s servername\n", argv[0]);
 		return NT_STATUS_OK;
-	}
-
-	status = rpccli_lsa_open_policy(cli, mem_ctx, true,
-					SEC_FLAG_MAXIMUM_ALLOWED,
-					&pol);
-
-	if (!NT_STATUS_IS_OK(status)) {
-		goto done;
 	}
 
 	status = dcerpc_lsa_GetUserName(b, mem_ctx,
@@ -1501,7 +1499,6 @@ static NTSTATUS cmd_lsa_get_username(struct rpc_pipe_client *cli,
 		account_name->string, authority_name ? authority_name->string :
 		"");
 
-	dcerpc_lsa_Close(b, mem_ctx, &pol, &result);
  done:
 	return status;
 }

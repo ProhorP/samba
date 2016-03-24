@@ -45,6 +45,7 @@
 #include "serverid.h"
 #include "messages.h"
 #include "../lib/util/pidfile.h"
+#include "smbprofile.h"
 
 static struct files_struct *log_writeable_file_fn(
 	struct files_struct *fsp, void *private_data)
@@ -85,12 +86,17 @@ static void exit_server_common(enum server_exit_reason how,
 static void exit_server_common(enum server_exit_reason how,
 	const char *reason)
 {
-	struct smbXsrv_connection *conn = global_smbXsrv_connection;
+	struct smbXsrv_client *client = global_smbXsrv_client;
+	struct smbXsrv_connection *xconn = NULL;
 	struct smbd_server_connection *sconn = NULL;
 	struct messaging_context *msg_ctx = server_messaging_context();
 
-	if (conn != NULL) {
-		sconn = conn->sconn;
+	if (client != NULL) {
+		sconn = client->sconn;
+		/*
+		 * Here we typically have just one connection
+		 */
+		xconn = client->connections;
 	}
 
 	if (!exit_firsttime)
@@ -99,32 +105,44 @@ static void exit_server_common(enum server_exit_reason how,
 
 	change_to_root_user();
 
-	if (sconn) {
-		NTSTATUS status;
-
-		if (NT_STATUS_IS_OK(sconn->status)) {
+	if (xconn != NULL) {
+		/*
+		 * This is typically the disconnect for the only
+		 * (or with multi-channel last) connection of the client
+		 */
+		if (NT_STATUS_IS_OK(xconn->transport.status)) {
 			switch (how) {
 			case SERVER_EXIT_ABNORMAL:
-				sconn->status = NT_STATUS_INTERNAL_ERROR;
+				xconn->transport.status = NT_STATUS_INTERNAL_ERROR;
 				break;
 			case SERVER_EXIT_NORMAL:
-				sconn->status = NT_STATUS_LOCAL_DISCONNECT;
+				xconn->transport.status = NT_STATUS_LOCAL_DISCONNECT;
 				break;
 			}
 		}
 
-		TALLOC_FREE(sconn->smb1.negprot.auth_context);
+		TALLOC_FREE(xconn->smb1.negprot.auth_context);
+	}
 
+	change_to_root_user();
+
+	if (sconn != NULL) {
 		if (lp_log_writeable_files_on_exit()) {
 			bool found = false;
 			files_forall(sconn, log_writeable_file_fn, &found);
 		}
+	}
+
+	change_to_root_user();
+
+	if (xconn != NULL) {
+		NTSTATUS status;
 
 		/*
 		 * Note: this is a no-op for smb2 as
 		 * conn->tcon_table is empty
 		 */
-		status = smb1srv_tcon_disconnect_all(conn);
+		status = smb1srv_tcon_disconnect_all(xconn);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("Server exit (%s)\n",
 				(reason ? reason : "normal exit")));
@@ -135,7 +153,7 @@ static void exit_server_common(enum server_exit_reason how,
 			reason = "smb1srv_tcon_disconnect_all failed";
 		}
 
-		status = smbXsrv_session_logoff_all(conn);
+		status = smbXsrv_session_logoff_all(xconn);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0,("Server exit (%s)\n",
 				(reason ? reason : "normal exit")));
@@ -145,9 +163,9 @@ static void exit_server_common(enum server_exit_reason how,
 			how = SERVER_EXIT_ABNORMAL;
 			reason = "smbXsrv_session_logoff_all failed";
 		}
-
-		change_to_root_user();
 	}
+
+	change_to_root_user();
 
 	/* 3 second timeout. */
 	print_notify_send_messages(msg_ctx, 3);
@@ -200,9 +218,22 @@ static void exit_server_common(enum server_exit_reason how,
 	 * we need to force the order of freeing the following,
 	 * because smbd_msg_ctx is not a talloc child of smbd_server_conn.
 	 */
+	if (client != NULL) {
+		struct smbXsrv_connection *next;
+
+		for (; xconn != NULL; xconn = next) {
+			next = xconn->next;
+			DLIST_REMOVE(client->connections, xconn);
+			talloc_free(xconn);
+			DO_PROFILE_INC(disconnect);
+		}
+		TALLOC_FREE(client->sconn);
+	}
 	sconn = NULL;
-	conn = NULL;
-	TALLOC_FREE(global_smbXsrv_connection);
+	xconn = NULL;
+	client = NULL;
+	TALLOC_FREE(global_smbXsrv_client);
+	smbprofile_dump();
 	server_messaging_context_free();
 	server_event_context_free();
 	TALLOC_FREE(smbd_memcache_ctx);
@@ -220,7 +251,7 @@ static void exit_server_common(enum server_exit_reason how,
 		DEBUG(3,("Server exit (%s)\n",
 			(reason ? reason : "normal exit")));
 		if (am_parent) {
-			pidfile_unlink(lp_piddir(), "smbd");
+			pidfile_unlink(lp_pid_directory(), "smbd");
 		}
 		gencache_stabilize();
 	}
@@ -236,4 +267,16 @@ void smbd_exit_server(const char *const explanation)
 void smbd_exit_server_cleanly(const char *const explanation)
 {
 	exit_server_common(SERVER_EXIT_NORMAL, explanation);
+}
+
+/*
+ * reinit_after_fork() wrapper that should be called when forking from
+ * smbd.
+ */
+NTSTATUS smbd_reinit_after_fork(struct messaging_context *msg_ctx,
+				struct tevent_context *ev_ctx,
+				bool parent_longlived)
+{
+	am_parent = NULL;
+	return reinit_after_fork(msg_ctx, ev_ctx, parent_longlived);
 }

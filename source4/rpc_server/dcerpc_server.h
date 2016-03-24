@@ -101,7 +101,6 @@ struct dcesrv_call_state {
 	 */
 #define DCESRV_CALL_STATE_FLAG_ASYNC (1<<0)
 #define DCESRV_CALL_STATE_FLAG_MAY_ASYNC (1<<1)
-#define DCESRV_CALL_STATE_FLAG_HEADER_SIGNING (1<<2)
 #define DCESRV_CALL_STATE_FLAG_MULTIPLEXED (1<<3)
 #define DCESRV_CALL_STATE_FLAG_PROCESS_PENDING_CALL (1<<4)
 	uint32_t state_flags;
@@ -151,6 +150,8 @@ struct dcesrv_auth {
 	struct gensec_security *gensec_security;
 	struct auth_session_info *session_info;
 	NTSTATUS (*session_key)(struct dcesrv_connection *, DATA_BLOB *session_key);
+	bool client_hdr_signing;
+	bool hdr_signing;
 };
 
 struct dcesrv_connection_context {
@@ -274,6 +275,13 @@ struct dcesrv_assoc_group {
 
 /* server-wide context information for the dcerpc server */
 struct dcesrv_context {
+	/*
+	 * The euid at startup time.
+	 *
+	 * This is required for DCERPC_AUTH_TYPE_NCALRPC_AS_SYSTEM
+	 */
+	uid_t initial_euid;
+
 	/* the list of endpoints that have registered 
 	 * by the configured endpoint servers 
 	 */

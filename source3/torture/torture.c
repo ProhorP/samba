@@ -41,6 +41,7 @@
 #include "util_tdb.h"
 #include "../libcli/smb/read_smb.h"
 #include "../libcli/smb/smbXcli_base.h"
+#include "lib/sys_rw_data.h"
 
 extern char *optarg;
 extern int optind;
@@ -78,8 +79,8 @@ static double create_procs(bool (*fn)(int), bool *result);
 static bool force_cli_encryption(struct cli_state *c,
 			const char *sharename)
 {
-	uint16 major, minor;
-	uint32 caplow, caphigh;
+	uint16_t major, minor;
+	uint32_t caplow, caphigh;
 	NTSTATUS status;
 
 	if (!SERVER_HAS_UNIX_CIFS(c)) {
@@ -408,26 +409,21 @@ bool torture_init_connection(struct cli_state **pcli)
 	return true;
 }
 
-bool torture_cli_session_setup2(struct cli_state *cli, uint16 *new_vuid)
+bool torture_cli_session_setup2(struct cli_state *cli, uint16_t *new_vuid)
 {
 	uint16_t old_vuid = cli_state_get_uid(cli);
-	fstring old_user_name;
 	size_t passlen = strlen(password);
 	NTSTATUS status;
 	bool ret;
 
-	fstrcpy(old_user_name, cli->user_name);
 	cli_state_set_uid(cli, 0);
-	ret = NT_STATUS_IS_OK(cli_session_setup(cli, username,
-						password, passlen,
-						password, passlen,
-						workgroup));
+	status = cli_session_setup(cli, username,
+				   password, passlen,
+				   password, passlen,
+				   workgroup);
+	ret = NT_STATUS_IS_OK(status);
 	*new_vuid = cli_state_get_uid(cli);
 	cli_state_set_uid(cli, old_vuid);
-	status = cli_set_username(cli, old_user_name);
-	if (!NT_STATUS_IS_OK(status)) {
-		return false;
-	}
 	return ret;
 }
 
@@ -451,11 +447,11 @@ bool torture_close_connection(struct cli_state *c)
 
 /* check if the server produced the expected dos or nt error code */
 static bool check_both_error(int line, NTSTATUS status,
-			     uint8 eclass, uint32 ecode, NTSTATUS nterr)
+			     uint8_t eclass, uint32_t ecode, NTSTATUS nterr)
 {
 	if (NT_STATUS_IS_DOS(status)) {
-		uint8 cclass;
-		uint32 num;
+		uint8_t cclass;
+		uint32_t num;
 
 		/* Check DOS error */
 		cclass = NT_STATUS_DOS_CLASS(status);
@@ -485,11 +481,11 @@ static bool check_both_error(int line, NTSTATUS status,
 
 /* check if the server produced the expected error code */
 static bool check_error(int line, NTSTATUS status,
-			uint8 eclass, uint32 ecode, NTSTATUS nterr)
+			uint8_t eclass, uint32_t ecode, NTSTATUS nterr)
 {
 	if (NT_STATUS_IS_DOS(status)) {
-                uint8 cclass;
-                uint32 num;
+                uint8_t cclass;
+                uint32_t num;
 
                 /* Check DOS error */
 
@@ -521,7 +517,7 @@ static bool check_error(int line, NTSTATUS status,
 }
 
 
-static bool wait_lock(struct cli_state *c, int fnum, uint32 offset, uint32 len)
+static bool wait_lock(struct cli_state *c, int fnum, uint32_t offset, uint32_t len)
 {
 	NTSTATUS status;
 
@@ -681,7 +677,7 @@ static bool rw_torture3(struct cli_state *c, char *lockfname)
 	NTSTATUS status = NT_STATUS_OK;
 
 	srandom(1);
-	for (i = 0; i < sizeof(buf); i += sizeof(uint32))
+	for (i = 0; i < sizeof(buf); i += sizeof(uint32_t))
 	{
 		SIVAL(buf, i, sys_random());
 	}
@@ -1311,9 +1307,9 @@ static bool run_tcon_test(int dummy)
 {
 	static struct cli_state *cli;
 	const char *fname = "\\tcontest.tmp";
-	uint16 fnum1;
-	uint16 cnum1, cnum2, cnum3;
-	uint16 vuid1, vuid2;
+	uint16_t fnum1;
+	uint16_t cnum1, cnum2, cnum3;
+	uint16_t vuid1, vuid2;
 	char buf[4];
 	bool ret = True;
 	NTSTATUS status;
@@ -1428,7 +1424,7 @@ static bool run_tcon_test(int dummy)
 static bool run_tcon2_test(int dummy)
 {
 	static struct cli_state *cli;
-	uint16 cnum, max_xmit;
+	uint16_t cnum, max_xmit;
 	char *service;
 	NTSTATUS status;
 
@@ -1745,11 +1741,11 @@ static bool run_locktest3(int dummy)
 	const char *fname = "\\lockt3.lck";
 	uint16_t fnum1, fnum2;
 	int i;
-	uint32 offset;
+	uint32_t offset;
 	bool correct = True;
 	NTSTATUS status;
 
-#define NEXT_OFFSET offset += (~(uint32)0) / torture_numops
+#define NEXT_OFFSET offset += (~(uint32_t)0) / torture_numops
 
 	if (!torture_open_connection(&cli1, 0) || !torture_open_connection(&cli2, 1)) {
 		return False;
@@ -2770,10 +2766,10 @@ static bool run_fdpasstest(int dummy)
 static bool run_fdsesstest(int dummy)
 {
 	struct cli_state *cli;
-	uint16 new_vuid;
-	uint16 saved_vuid;
-	uint16 new_cnum;
-	uint16 saved_cnum;
+	uint16_t new_vuid;
+	uint16_t saved_vuid;
+	uint16_t new_cnum;
+	uint16_t saved_cnum;
 	const char *fname = "\\fdsess.tst";
 	const char *fname1 = "\\fdsess1.tst";
 	uint16_t fnum1;
@@ -3110,7 +3106,7 @@ static bool run_randomipc(int dummy)
 
 
 
-static void browse_callback(const char *sname, uint32 stype, 
+static void browse_callback(const char *sname, uint32_t stype,
 			    const char *comment, void *state)
 {
 	printf("\t%20.20s %08x %s\n", sname, stype, comment);
@@ -3384,7 +3380,7 @@ static bool run_trans2test(int dummy)
 static NTSTATUS new_trans(struct cli_state *pcli, int fnum, int level)
 {
 	uint8_t *buf = NULL;
-	uint32 len;
+	uint32_t len;
 	NTSTATUS status;
 
 	status = cli_qfileinfo(talloc_tos(), pcli, fnum, level, 0,
@@ -3394,7 +3390,7 @@ static NTSTATUS new_trans(struct cli_state *pcli, int fnum, int level)
 		       nt_errstr(status));
 	} else {
 		printf("qfileinfo: level %d, len = %u\n", level, len);
-		dump_data(0, (uint8 *)buf, len);
+		dump_data(0, (uint8_t *)buf, len);
 		printf("\n");
 	}
 	TALLOC_FREE(buf);
@@ -4414,6 +4410,72 @@ static bool run_deletetest(int dummy)
 	return correct;
 }
 
+
+/*
+  Test wildcard delete.
+ */
+static bool run_wild_deletetest(int dummy)
+{
+	struct cli_state *cli = NULL;
+	const char *dname = "\\WTEST";
+	const char *fname = "\\WTEST\\A";
+	const char *wunlink_name = "\\WTEST\\*";
+	uint16_t fnum1 = (uint16_t)-1;
+	bool correct = false;
+	NTSTATUS status;
+
+	printf("starting wildcard delete test\n");
+
+	if (!torture_open_connection(&cli, 0)) {
+		return false;
+	}
+
+	smbXcli_conn_set_sockopt(cli->conn, sockops);
+
+	cli_unlink(cli, fname, 0);
+	cli_rmdir(cli, dname);
+	status = cli_mkdir(cli, dname);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("mkdir of %s failed %s!\n", dname, nt_errstr(status));
+		goto fail;
+	}
+	status = cli_openx(cli, fname, O_CREAT|O_RDONLY, DENY_NONE, &fnum1);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("open of %s failed %s!\n", fname, nt_errstr(status));
+		goto fail;
+	}
+	status = cli_close(cli, fnum1);
+	fnum1 = -1;
+
+	/*
+	 * Note the unlink attribute-type of zero. This should
+	 * map into FILE_ATTRIBUTE_NORMAL at the server even
+	 * on a wildcard delete.
+	 */
+
+	status = cli_unlink(cli, wunlink_name, 0);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("unlink of %s failed %s!\n",
+			wunlink_name, nt_errstr(status));
+		goto fail;
+	}
+
+	printf("finished wildcard delete test\n");
+
+	correct = true;
+
+  fail:
+
+	if (fnum1 != (uint16_t)-1) cli_close(cli, fnum1);
+	cli_unlink(cli, fname, 0);
+	cli_rmdir(cli, dname);
+
+	if (cli && !torture_close_connection(cli)) {
+		correct = false;
+	}
+	return correct;
+}
+
 static bool run_deletetest_ln(int dummy)
 {
 	struct cli_state *cli;
@@ -5326,8 +5388,8 @@ static bool run_opentest(int dummy)
 
 NTSTATUS torture_setup_unix_extensions(struct cli_state *cli)
 {
-	uint16 major, minor;
-	uint32 caplow, caphigh;
+	uint16_t major, minor;
+	uint32_t caplow, caphigh;
 	NTSTATUS status;
 
 	if (!SERVER_HAS_UNIX_CIFS(cli)) {
@@ -5755,7 +5817,7 @@ static bool run_simple_posix_open_test(int dummy)
 }
 
 /*
- Test POSIX and Windows ACLs are rejected on symlinks.
+  Test POSIX and Windows ACLs are rejected on symlinks.
  */
 static bool run_acl_symlink_test(int dummy)
 {
@@ -6129,7 +6191,7 @@ static bool run_ea_symlink_test(int dummy)
 	return correct;
 }
 
-static uint32 open_attrs_table[] = {
+static uint32_t open_attrs_table[] = {
 		FILE_ATTRIBUTE_NORMAL,
 		FILE_ATTRIBUTE_ARCHIVE,
 		FILE_ATTRIBUTE_READONLY,
@@ -6151,9 +6213,9 @@ static uint32 open_attrs_table[] = {
 
 struct trunc_open_results {
 	unsigned int num;
-	uint32 init_attr;
-	uint32 trunc_attr;
-	uint32 result_attr;
+	uint32_t init_attr;
+	uint32_t trunc_attr;
+	uint32_t result_attr;
 };
 
 static struct trunc_open_results attr_results[] = {
@@ -6191,7 +6253,7 @@ static bool run_openattrtest(int dummy)
 	const char *fname = "\\openattr.file";
 	uint16_t fnum1;
 	bool correct = True;
-	uint16 attr;
+	uint16_t attr;
 	unsigned int i, j, k, l;
 	NTSTATUS status;
 
@@ -6203,7 +6265,7 @@ static bool run_openattrtest(int dummy)
 
 	smbXcli_conn_set_sockopt(cli1->conn, sockops);
 
-	for (k = 0, i = 0; i < sizeof(open_attrs_table)/sizeof(uint32); i++) {
+	for (k = 0, i = 0; i < sizeof(open_attrs_table)/sizeof(uint32_t); i++) {
 		cli_setatr(cli1, fname, 0, 0);
 		cli_unlink(cli1, fname, FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN);
 
@@ -6221,7 +6283,7 @@ static bool run_openattrtest(int dummy)
 			return False;
 		}
 
-		for (j = 0; j < sizeof(open_attrs_table)/sizeof(uint32); j++) {
+		for (j = 0; j < sizeof(open_attrs_table)/sizeof(uint32_t); j++) {
 			status = cli_ntcreate(cli1, fname, 0,
 					      FILE_READ_DATA|FILE_WRITE_DATA,
 					      open_attrs_table[j],
@@ -6427,7 +6489,7 @@ bool torture_ioctl_test(int dummy)
 	for (device=0;device<0x100;device++) {
 		printf("ioctl test with device = 0x%x\n", device);
 		for (function=0;function<0x100;function++) {
-			uint32 code = (device<<16) | function;
+			uint32_t code = (device<<16) | function;
 
 			status = cli_raw_ioctl(cli, fnum, code, &blob);
 
@@ -6761,10 +6823,10 @@ static bool run_error_map_extract(int dummy) {
 	static struct cli_state *c_nt;
 	NTSTATUS status;
 
-	uint32 error;
+	uint32_t error;
 
-	uint32 errnum;
-        uint8 errclass;
+	uint32_t errnum;
+        uint8_t errclass;
 
 	NTSTATUS nt_status;
 
@@ -7130,10 +7192,9 @@ static void torture_createdel_created(struct tevent_req *subreq)
 
 	status = cli_ntcreate_recv(subreq, &fnum, NULL);
 	TALLOC_FREE(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (tevent_req_nterror(req, status)) {
 		DEBUG(10, ("cli_ntcreate_recv returned %s\n",
 			   nt_errstr(status)));
-		tevent_req_nterror(req, status);
 		return;
 	}
 
@@ -7151,9 +7212,8 @@ static void torture_createdel_closed(struct tevent_req *subreq)
 	NTSTATUS status;
 
 	status = cli_close_recv(subreq);
-	if (!NT_STATUS_IS_OK(status)) {
+	if (tevent_req_nterror(req, status)) {
 		DEBUG(10, ("cli_close_recv returned %s\n", nt_errstr(status)));
-		tevent_req_nterror(req, status);
 		return;
 	}
 	tevent_req_done(req);
@@ -7634,7 +7694,8 @@ static size_t calc_expected_return(struct cli_state *cli, size_t len_requested)
 		len_requested &= 0xFFFF;
 	}
 
-	return MIN(len_requested, max_pdu - (MIN_SMB_SIZE + VWV(12)));
+	return MIN(len_requested,
+		   max_pdu - (MIN_SMB_SIZE + VWV(12) + 1 /* padding byte */));
 }
 
 static bool check_read_call(struct cli_state *cli,
@@ -8495,23 +8556,48 @@ static bool run_local_base64(int dummy)
 	return ret;
 }
 
+static void parse_fn(time_t timeout, DATA_BLOB blob, void *private_data)
+{
+	return;
+}
+
 static bool run_local_gencache(int dummy)
 {
 	char *val;
 	time_t tm;
 	DATA_BLOB blob;
+	char v;
+	struct memcache *mem;
+	int i;
+
+	mem = memcache_init(NULL, 0);
+	if (mem == NULL) {
+		d_printf("%s: memcache_init failed\n", __location__);
+		return false;
+	}
+	memcache_set_global(mem);
 
 	if (!gencache_set("foo", "bar", time(NULL) + 1000)) {
 		d_printf("%s: gencache_set() failed\n", __location__);
 		return False;
 	}
 
-	if (!gencache_get("foo", NULL, NULL)) {
+	if (!gencache_get("foo", NULL, NULL, NULL)) {
 		d_printf("%s: gencache_get() failed\n", __location__);
 		return False;
 	}
 
-	if (!gencache_get("foo", &val, &tm)) {
+	for (i=0; i<1000000; i++) {
+		gencache_parse("foo", parse_fn, NULL);
+	}
+
+	if (!gencache_get("foo", talloc_tos(), &val, &tm)) {
+		d_printf("%s: gencache_get() failed\n", __location__);
+		return False;
+	}
+	TALLOC_FREE(val);
+
+	if (!gencache_get("foo", talloc_tos(), &val, &tm)) {
 		d_printf("%s: gencache_get() failed\n", __location__);
 		return False;
 	}
@@ -8519,11 +8605,11 @@ static bool run_local_gencache(int dummy)
 	if (strcmp(val, "bar") != 0) {
 		d_printf("%s: gencache_get() returned %s, expected %s\n",
 			 __location__, val, "bar");
-		SAFE_FREE(val);
+		TALLOC_FREE(val);
 		return False;
 	}
 
-	SAFE_FREE(val);
+	TALLOC_FREE(val);
 
 	if (!gencache_del("foo")) {
 		d_printf("%s: gencache_del() failed\n", __location__);
@@ -8535,7 +8621,7 @@ static bool run_local_gencache(int dummy)
 		return False;
 	}
 
-	if (gencache_get("foo", &val, &tm)) {
+	if (gencache_get("foo", talloc_tos(), &val, &tm)) {
 		d_printf("%s: gencache_get() on deleted entry "
 			 "succeeded\n", __location__);
 		return False;
@@ -8549,7 +8635,7 @@ static bool run_local_gencache(int dummy)
 		return False;
 	}
 
-	if (!gencache_get_data_blob("foo", &blob, NULL, NULL)) {
+	if (!gencache_get_data_blob("foo", talloc_tos(), &blob, NULL, NULL)) {
 		d_printf("%s: gencache_get_data_blob() failed\n", __location__);
 		return False;
 	}
@@ -8573,10 +8659,24 @@ static bool run_local_gencache(int dummy)
 		return False;
 	}
 
-	if (gencache_get_data_blob("foo", &blob, NULL, NULL)) {
+	if (gencache_get_data_blob("foo", talloc_tos(), &blob, NULL, NULL)) {
 		d_printf("%s: gencache_get_data_blob() on deleted entry "
 			 "succeeded\n", __location__);
 		return False;
+	}
+
+	v = 1;
+	blob.data = (uint8_t *)&v;
+	blob.length = sizeof(v);
+
+	if (!gencache_set_data_blob("blob", &blob, tm)) {
+		d_printf("%s: gencache_set_data_blob() failed\n",
+			 __location__);
+		return false;
+	}
+	if (gencache_get("blob", talloc_tos(), &val, &tm)) {
+		d_printf("%s: gencache_get succeeded\n", __location__);
+		return false;
 	}
 
 	return True;
@@ -8622,11 +8722,29 @@ static bool rbt_testval(struct db_context *db, const char *key,
 	return ret;
 }
 
+static int local_rbtree_traverse_read(struct db_record *rec, void *private_data)
+{
+	int *count2 = (int *)private_data;
+	(*count2)++;
+	return 0;
+}
+
+static int local_rbtree_traverse_delete(struct db_record *rec, void *private_data)
+{
+	int *count2 = (int *)private_data;
+	(*count2)++;
+	dbwrap_record_delete(rec);
+	return 0;
+}
+
 static bool run_local_rbtree(int dummy)
 {
 	struct db_context *db;
 	bool ret = false;
 	int i;
+	NTSTATUS status;
+	int count = 0;
+	int count2 = 0;
 
 	db = db_open_rbt(NULL);
 
@@ -8669,6 +8787,27 @@ static bool run_local_rbtree(int dummy)
 	}
 
 	ret = true;
+	count = 0; count2 = 0;
+	status = dbwrap_traverse_read(db, local_rbtree_traverse_read,
+				      &count2, &count);
+	printf("%s: read1: %d %d, %s\n", __func__, count, count2, nt_errstr(status));
+	if ((count != count2) || (count != 1000)) {
+		ret = false;
+	}
+	count = 0; count2 = 0;
+	status = dbwrap_traverse(db, local_rbtree_traverse_delete,
+				 &count2, &count);
+	printf("%s: delete: %d %d, %s\n", __func__, count, count2, nt_errstr(status));
+	if ((count != count2) || (count != 1000)) {
+		ret = false;
+	}
+	count = 0; count2 = 0;
+	status = dbwrap_traverse_read(db, local_rbtree_traverse_read,
+				      &count2, &count);
+	printf("%s: read2: %d %d, %s\n", __func__, count, count2, nt_errstr(status));
+	if ((count != count2) || (count != 0)) {
+		ret = false;
+	}
 
  done:
 	TALLOC_FREE(db);
@@ -8845,6 +8984,22 @@ static bool run_local_string_to_sid(int dummy) {
 		printf("allowing S-1-5-32-545-abc\n");
 		return false;
 	}
+	if (string_to_sid(&sid, "S-300-5-32-545")) {
+		printf("allowing S-300-5-32-545\n");
+		return false;
+	}
+	if (string_to_sid(&sid, "S-1-0xfffffffffffffe-32-545")) {
+		printf("allowing S-1-0xfffffffffffffe-32-545\n");
+		return false;
+	}
+	if (string_to_sid(&sid, "S-1-0xffffffffffff-5294967297-545")) {
+		printf("allowing S-1-0xffffffffffff-5294967297-545\n");
+		return false;
+	}
+	if (!string_to_sid(&sid, "S-1-0xfffffffffffe-32-545")) {
+		printf("could not parse S-1-0xfffffffffffe-32-545\n");
+		return false;
+	}
 	if (!string_to_sid(&sid, "S-1-5-32-545")) {
 		printf("could not parse S-1-5-32-545\n");
 		return false;
@@ -8854,6 +9009,35 @@ static bool run_local_string_to_sid(int dummy) {
 		       sid_string_tos(&sid));
 		return false;
 	}
+	return true;
+}
+
+static bool sid_to_string_test(const char *expected) {
+	char *str;
+	bool res = true;
+	struct dom_sid sid;
+
+	if (!string_to_sid(&sid, expected)) {
+		printf("could not parse %s\n", expected);
+		return false;
+	}
+
+	str = dom_sid_string(NULL, &sid);
+	if (strcmp(str, expected)) {
+		printf("Comparison failed (%s != %s)\n", str, expected);
+		res = false;
+	}
+	TALLOC_FREE(str);
+	return res;
+}
+
+static bool run_local_sid_to_string(int dummy) {
+	if (!sid_to_string_test("S-1-0xffffffffffff-1-1-1-1-1-1-1-1-1-1-1-1"))
+		return false;
+	if (!sid_to_string_test("S-1-545"))
+		return false;
+	if (!sid_to_string_test("S-255-3840-1-1-1-1"))
+		return false;
 	return true;
 }
 
@@ -9230,7 +9414,7 @@ static void wbclient_done(struct tevent_req *req)
 	d_printf("wb_trans_recv %d returned %s\n", *i, wbcErrorString(wbc_err));
 }
 
-static bool run_local_wbclient(int dummy)
+static bool run_wbclient_multi_ping(int dummy)
 {
 	struct tevent_context *ev;
 	struct wb_context **wb_ctx;
@@ -9240,7 +9424,7 @@ static bool run_local_wbclient(int dummy)
 
 	BlockSignals(True, SIGPIPE);
 
-	ev = tevent_context_init_byname(talloc_tos(), "epoll");
+	ev = tevent_context_init(talloc_tos());
 	if (ev == NULL) {
 		goto fail;
 	}
@@ -9385,7 +9569,8 @@ static bool run_local_dbtrans(int dummy)
 	TDB_DATA value;
 
 	db = db_open(talloc_tos(), "transtest.tdb", 0, TDB_DEFAULT,
-		     O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_1);
+		     O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_1,
+		     DBWRAP_FLAG_NONE);
 	if (db == NULL) {
 		printf("Could not open transtest.db\n");
 		return false;
@@ -9845,6 +10030,7 @@ static struct {
 	{"XCOPY", run_xcopy, 0},
 	{"RENAME", run_rename, 0},
 	{"DELETE", run_deletetest, 0},
+	{"WILDDELETE", run_wild_deletetest, 0},
 	{"DELETE-LN", run_deletetest_ln, 0},
 	{"PROPERTIES", run_properties, 0},
 	{"MANGLE", torture_mangle, 0},
@@ -9889,18 +10075,26 @@ static struct {
 	{ "CLEANUP2", run_cleanup2 },
 	{ "CLEANUP3", run_cleanup3 },
 	{ "CLEANUP4", run_cleanup4 },
+	{ "OPLOCK-CANCEL", run_oplock_cancel },
 	{ "LOCAL-SUBSTITUTE", run_local_substitute, 0},
 	{ "LOCAL-GENCACHE", run_local_gencache, 0},
 	{ "LOCAL-TALLOC-DICT", run_local_talloc_dict, 0},
-	{ "LOCAL-CTDB-CONN", run_ctdb_conn, 0},
-	{ "LOCAL-MSG", run_msg_test, 0},
 	{ "LOCAL-DBWRAP-WATCH1", run_dbwrap_watch1, 0 },
+	{ "LOCAL-MESSAGING-READ1", run_messaging_read1, 0 },
+	{ "LOCAL-MESSAGING-READ2", run_messaging_read2, 0 },
+	{ "LOCAL-MESSAGING-READ3", run_messaging_read3, 0 },
+	{ "LOCAL-MESSAGING-READ4", run_messaging_read4, 0 },
+	{ "LOCAL-MESSAGING-FDPASS1", run_messaging_fdpass1, 0 },
+	{ "LOCAL-MESSAGING-FDPASS2", run_messaging_fdpass2, 0 },
+	{ "LOCAL-MESSAGING-FDPASS2a", run_messaging_fdpass2a, 0 },
+	{ "LOCAL-MESSAGING-FDPASS2b", run_messaging_fdpass2b, 0 },
 	{ "LOCAL-BASE64", run_local_base64, 0},
 	{ "LOCAL-RBTREE", run_local_rbtree, 0},
 	{ "LOCAL-MEMCACHE", run_local_memcache, 0},
 	{ "LOCAL-STREAM-NAME", run_local_stream_name, 0},
-	{ "LOCAL-WBCLIENT", run_local_wbclient, 0},
+	{ "WBCLIENT-MULTI-PING", run_wbclient_multi_ping, 0},
 	{ "LOCAL-string_to_sid", run_local_string_to_sid, 0},
+	{ "LOCAL-sid_to_string", run_local_sid_to_string, 0},
 	{ "LOCAL-binary_to_sid", run_local_binary_to_sid, 0},
 	{ "LOCAL-DBTRANS", run_local_dbtrans, 0},
 	{ "LOCAL-TEVENT-SELECT", run_local_tevent_select, 0},
@@ -9913,6 +10107,8 @@ static struct {
 	{ "local-tdb-opener", run_local_tdb_opener, 0 },
 	{ "local-tdb-writer", run_local_tdb_writer, 0 },
 	{ "LOCAL-DBWRAP-CTDB", run_local_dbwrap_ctdb, 0 },
+	{ "LOCAL-BENCH-PTHREADPOOL", run_bench_pthreadpool, 0 },
+	{ "qpathinfo-bufsize", run_qpathinfo_bufsize, 0 },
 	{NULL, NULL, 0}};
 
 /*
@@ -9987,7 +10183,7 @@ static void usage(void)
 
 	printf("\t-d debuglevel\n");
 	printf("\t-U user%%pass\n");
-	printf("\t-k               use kerberos\n");
+	printf("\t-k                    use kerberos\n");
 	printf("\t-N numprocs\n");
 	printf("\t-n my_netbios_name\n");
 	printf("\t-W workgroup\n");
@@ -9995,12 +10191,13 @@ static void usage(void)
 	printf("\t-O socket_options\n");
 	printf("\t-m maximum protocol\n");
 	printf("\t-L use oplocks\n");
-	printf("\t-c CLIENT.TXT   specify client load file for NBENCH\n");
+	printf("\t-c CLIENT.TXT         specify client load file for NBENCH\n");
 	printf("\t-A showall\n");
 	printf("\t-p port\n");
 	printf("\t-s seed\n");
 	printf("\t-b unclist_filename   specify multiple shares for multiple connections\n");
-	printf("\t-f filename   filename to test\n");
+	printf("\t-f filename           filename to test\n");
+	printf("\t-e                    encrypt\n");
 	printf("\n\n");
 
 	printf("tests are:");
@@ -10033,7 +10230,7 @@ static void usage(void)
 
 	setup_logging("smbtorture", DEBUG_STDOUT);
 
-	load_case_tables();
+	smb_init_locale();
 	fault_setup();
 
 	if (is_default_dyn_CONFIGFILE()) {

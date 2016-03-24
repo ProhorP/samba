@@ -64,7 +64,7 @@ ace_compare(struct security_ace *ace1,
         bool b2;
 
         /* If the ACEs are equal, we have nothing more to do. */
-        if (sec_ace_equal(ace1, ace2)) {
+        if (security_ace_equal(ace1, ace2)) {
 		return 0;
         }
 
@@ -146,13 +146,14 @@ ace_compare(struct security_ace *ace1,
 static void
 sort_acl(struct security_acl *the_acl)
 {
-	uint32 i;
+	uint32_t i;
 	if (!the_acl) return;
 
 	TYPESAFE_QSORT(the_acl->aces, the_acl->num_aces, ace_compare);
 
 	for (i=1;i<the_acl->num_aces;) {
-		if (sec_ace_equal(&the_acl->aces[i-1], &the_acl->aces[i])) {
+		if (security_ace_equal(&the_acl->aces[i-1],
+				       &the_acl->aces[i])) {
 			int j;
 			for (j=i; j<the_acl->num_aces-1; j++) {
 				the_acl->aces[j] = the_acl->aces[j+1];
@@ -202,9 +203,8 @@ convert_sid_to_string(struct cli_state *ipc_cli,
 
 	/* Converted OK */
 
-	slprintf(str, sizeof(fstring) - 1, "%s%s%s",
-		 domains[0], lp_winbind_separator(),
-		 names[0]);
+	fstr_sprintf(str, "%s%s%s",
+		     domains[0], lp_winbind_separator(), names[0]);
 
 	TALLOC_FREE(ctx);
 }
@@ -271,7 +271,7 @@ parse_ace(struct cli_state *ipc_cli,
 	const struct perm_value *v;
         struct perm_value {
                 const char perm[7];
-                uint32 mask;
+                uint32_t mask;
         };
 	TALLOC_CTX *frame = talloc_stackframe();
 
@@ -557,7 +557,7 @@ dos_attr_query(SMBCCTX *context,
         struct timespec access_time_ts;
         struct timespec change_time_ts;
         off_t size = 0;
-        uint16 mode = 0;
+        uint16_t mode = 0;
 	SMB_INO_T inode = 0;
         DOS_ATTR_DESC *ret;
 
@@ -707,7 +707,7 @@ cacl_get(SMBCCTX *context,
          char *buf,
          int bufsize)
 {
-	uint32 i;
+	uint32_t i;
         int n = 0;
         int n_used;
         bool all;
@@ -745,7 +745,7 @@ cacl_get(SMBCCTX *context,
         time_t access_time = (time_t)0;
         time_t change_time = (time_t)0;
 	off_t size = 0;
-	uint16 mode = 0;
+	uint16_t mode = 0;
 	SMB_INO_T ino = 0;
 	struct cli_state *cli = srv->cli;
         struct {
@@ -1514,7 +1514,7 @@ cacl_set(SMBCCTX *context,
         struct security_acl *dacl = NULL;
 	struct dom_sid *owner_sid = NULL;
 	struct dom_sid *group_sid = NULL;
-	uint32 i, j;
+	uint32_t i, j;
 	size_t sd_size;
 	int ret = 0;
         char *p;
@@ -1592,9 +1592,9 @@ cacl_set(SMBCCTX *context,
 			bool found = False;
 
 			for (j=0;old->dacl && j<old->dacl->num_aces;j++) {
-                                if (sec_ace_equal(&sd->dacl->aces[i],
-                                                  &old->dacl->aces[j])) {
-					uint32 k;
+                                if (security_ace_equal(&sd->dacl->aces[i],
+						       &old->dacl->aces[j])) {
+					uint32_t k;
 					for (k=j; k<old->dacl->num_aces-1;k++) {
 						old->dacl->aces[k] =
                                                         old->dacl->aces[k+1];

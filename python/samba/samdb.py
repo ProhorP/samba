@@ -39,6 +39,7 @@ class SamDB(samba.Ldb):
     """The SAM database."""
 
     hash_oid_name = {}
+    hash_well_known = {}
 
     def __init__(self, url=None, lp=None, modules_dir=None, session_info=None,
                  credentials=None, flags=0, options=None, global_schema=True,
@@ -169,7 +170,8 @@ pwdLastSet: 0
         self.modify_ldif(mod)
 
     def newgroup(self, groupname, groupou=None, grouptype=None,
-                 description=None, mailaddress=None, notes=None, sd=None):
+                 description=None, mailaddress=None, notes=None, sd=None,
+                 gidnumber=None, nisdomain=None):
         """Adds a new group with additional parameters
 
         :param groupname: Name of the new group
@@ -177,6 +179,8 @@ pwdLastSet: 0
         :param description: Description of the new group
         :param mailaddress: Email address of the new group
         :param notes: Notes of the new group
+        :param gidnumber: GID Number of the new group
+        :param nisdomain: NIS Domain Name of the new group
         :param sd: security descriptor of the object
         """
 
@@ -199,6 +203,13 @@ pwdLastSet: 0
 
         if notes is not None:
             ldbmessage["info"] = notes
+
+        if gidnumber is not None:
+            ldbmessage["gidNumber"] = normalise_int32(gidnumber)
+
+        if nisdomain is not None:
+            ldbmessage["msSFU30Name"] = groupname
+            ldbmessage["msSFU30NisDomain"] = nisdomain
 
         if sd is not None:
             ldbmessage["nTSecurityDescriptor"] = ndr_pack(sd)
@@ -260,7 +271,7 @@ changetype: modify
                     ldb.binary_encode(member), ldb.binary_encode(member)), attrs=[])
 
                 if len(targetmember) != 1:
-                    continue
+                    raise Exception('Unable to find "%s". Operation cancelled.' % member)
 
                 if add_members_operation is True and (targetgroup[0].get('member') is None or str(targetmember[0].dn) not in targetgroup[0]['member']):
                     modified = True
@@ -291,7 +302,7 @@ member: %s
             description=None, mailaddress=None, internetaddress=None,
             telephonenumber=None, physicaldeliveryoffice=None, sd=None,
             setpassword=True, uidnumber=None, gidnumber=None, gecos=None,
-            loginshell=None, uid=None):
+            loginshell=None, uid=None, nisdomain=None, unixhome=None):
         """Adds a new user with additional parameters
 
         :param username: Name of the new user
@@ -322,6 +333,8 @@ member: %s
         :param gecos: RFC2307 Unix GECOS field of the new user
         :param loginshell: RFC2307 Unix login shell of the new user
         :param uid: RFC2307 Unix username of the new user
+        :param nisdomain: RFC2307 Unix NIS domain of the new user
+        :param unixhome: RFC2307 Unix home directory of the new user
         """
 
         displayname = ""
@@ -402,7 +415,8 @@ member: %s
             ldbmessage["nTSecurityDescriptor"] = ndr_pack(sd)
 
         ldbmessage2 = None
-        if any(map(lambda b: b is not None, (uid, uidnumber, gidnumber, gecos, loginshell))):
+        if any(map(lambda b: b is not None, (uid, uidnumber, gidnumber, gecos,
+                loginshell, nisdomain, unixhome))):
             ldbmessage2 = ldb.Message()
             ldbmessage2.dn = ldb.Dn(self, user_dn)
             ldbmessage2["objectClass"] = ldb.MessageElement('posixAccount', ldb.FLAG_MOD_ADD, 'objectClass')
@@ -416,6 +430,17 @@ member: %s
                 ldbmessage2["gecos"] = ldb.MessageElement(str(gecos), ldb.FLAG_MOD_REPLACE, 'gecos')
             if loginshell is not None:
                 ldbmessage2["loginShell"] = ldb.MessageElement(str(loginshell), ldb.FLAG_MOD_REPLACE, 'loginShell')
+            if unixhome is not None:
+                ldbmessage2["unixHomeDirectory"] = ldb.MessageElement(
+                    str(unixhome), ldb.FLAG_MOD_REPLACE, 'unixHomeDirectory')
+            if nisdomain is not None:
+                ldbmessage2["msSFU30NisDomain"] = ldb.MessageElement(
+                    str(nisdomain), ldb.FLAG_MOD_REPLACE, 'msSFU30NisDomain')
+                ldbmessage2["msSFU30Name"] = ldb.MessageElement(
+                    str(username), ldb.FLAG_MOD_REPLACE, 'msSFU30Name')
+                ldbmessage2["unixUserPassword"] = ldb.MessageElement(
+                    'ABCD!efgh12345$67890', ldb.FLAG_MOD_REPLACE,
+                    'unixUserPassword')
 
         self.transaction_start()
         try:
@@ -769,7 +794,19 @@ accountExpires: %u
         return dsdb._dsdb_get_nc_root(self, dn)
 
     def get_wellknown_dn(self, nc_root, wkguid):
-        return dsdb._dsdb_get_wellknown_dn(self, nc_root, wkguid)
+        h_nc = self.hash_well_known.get(str(nc_root))
+        dn = None
+        if h_nc is not None:
+            dn = h_nc.get(wkguid)
+        if dn is None:
+            dn = dsdb._dsdb_get_wellknown_dn(self, nc_root, wkguid)
+            if dn is None:
+                return dn
+            if h_nc is None:
+                self.hash_well_known[str(nc_root)] = {}
+                h_nc = self.hash_well_known[str(nc_root)]
+            h_nc[wkguid] = dn
+        return dn
 
     def set_minPwdAge(self, value):
         m = ldb.Message()

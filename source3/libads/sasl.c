@@ -28,7 +28,7 @@
 
 #ifdef HAVE_LDAP
 
-static ADS_STATUS ads_sasl_ntlmssp_wrap(ADS_STRUCT *ads, uint8 *buf, uint32 len)
+static ADS_STATUS ads_sasl_ntlmssp_wrap(ADS_STRUCT *ads, uint8_t *buf, uint32_t len)
 {
 	struct gensec_security *gensec_security =
 		talloc_get_type_abort(ads->ldap.wrap_private_data,
@@ -177,7 +177,7 @@ static ADS_STATUS ads_sasl_spnego_ntlmssp_bind(ADS_STRUCT *ads)
 
 	do {
 		nt_status = gensec_update(auth_generic_state->gensec_security,
-					  talloc_tos(), NULL, blob_in, &blob_out);
+					  talloc_tos(), blob_in, &blob_out);
 		data_blob_free(&blob_in);
 		if ((NT_STATUS_EQUAL(nt_status, NT_STATUS_MORE_PROCESSING_REQUIRED) 
 		     || NT_STATUS_IS_OK(nt_status))
@@ -250,11 +250,12 @@ static ADS_STATUS ads_sasl_spnego_ntlmssp_bind(ADS_STRUCT *ads)
 	} while (rc == LDAP_SASL_BIND_IN_PROGRESS && !NT_STATUS_IS_OK(nt_status));
 	
 	if (ads->ldap.wrap_type > ADS_SASLWRAP_TYPE_PLAIN) {
-		uint32_t sig_size = gensec_sig_size(auth_generic_state->gensec_security, 0);
-		ads->ldap.out.max_unwrapped = ADS_SASL_WRAPPING_OUT_MAX_WRAPPED - sig_size;
-		ads->ldap.out.sig_size = sig_size;
+		size_t max_wrapped = gensec_max_wrapped_size(auth_generic_state->gensec_security);
+		ads->ldap.out.max_unwrapped = gensec_max_input_size(auth_generic_state->gensec_security);
+
+		ads->ldap.out.sig_size = max_wrapped - ads->ldap.out.max_unwrapped;
 		ads->ldap.in.min_wrapped = ads->ldap.out.sig_size;
-		ads->ldap.in.max_wrapped = ADS_SASL_WRAPPING_IN_MAX_WRAPPED;
+		ads->ldap.in.max_wrapped = max_wrapped;
 		status = ads_setup_sasl_wrapping(ads, &ads_sasl_ntlmssp_ops, auth_generic_state->gensec_security);
 		if (!ADS_ERR_OK(status)) {
 			DEBUG(0, ("ads_setup_sasl_wrapping() failed: %s\n",
@@ -339,12 +340,12 @@ done:
 	return status;
 }
 
-static ADS_STATUS ads_sasl_gssapi_wrap(ADS_STRUCT *ads, uint8 *buf, uint32 len)
+static ADS_STATUS ads_sasl_gssapi_wrap(ADS_STRUCT *ads, uint8_t *buf, uint32_t len)
 {
 	gss_ctx_id_t context_handle = (gss_ctx_id_t)ads->ldap.wrap_private_data;
 	ADS_STATUS status;
 	int gss_rc;
-	uint32 minor_status;
+	uint32_t minor_status;
 	gss_buffer_desc unwrapped, wrapped;
 	int conf_req_flag, conf_state;
 
@@ -385,7 +386,7 @@ static ADS_STATUS ads_sasl_gssapi_unwrap(ADS_STRUCT *ads)
 	gss_ctx_id_t context_handle = (gss_ctx_id_t)ads->ldap.wrap_private_data;
 	ADS_STATUS status;
 	int gss_rc;
-	uint32 minor_status;
+	uint32_t minor_status;
 	gss_buffer_desc unwrapped, wrapped;
 	int conf_state;
 
@@ -421,7 +422,7 @@ static ADS_STATUS ads_sasl_gssapi_unwrap(ADS_STRUCT *ads)
 static void ads_sasl_gssapi_disconnect(ADS_STRUCT *ads)
 {
 	gss_ctx_id_t context_handle = (gss_ctx_id_t)ads->ldap.wrap_private_data;
-	uint32 minor_status;
+	uint32_t minor_status;
 
 	gss_delete_sec_context(&minor_status, &context_handle, GSS_C_NO_BUFFER);
 
@@ -443,7 +444,7 @@ static ADS_STATUS ads_sasl_spnego_gsskrb5_bind(ADS_STRUCT *ads, const gss_name_t
 {
 	ADS_STATUS status;
 	bool ok;
-	uint32 minor_status;
+	uint32_t minor_status;
 	int gss_rc, rc;
 	gss_cred_id_t gss_cred = GSS_C_NO_CREDENTIAL;
 	gss_OID_desc krb5_mech_type =
@@ -453,8 +454,8 @@ static ADS_STATUS ads_sasl_spnego_gsskrb5_bind(ADS_STRUCT *ads, const gss_name_t
 	const char *spnego_mechs[] = {OID_KERBEROS5_OLD, OID_KERBEROS5, OID_NTLMSSP, NULL};
 	gss_ctx_id_t context_handle = GSS_C_NO_CONTEXT;
 	gss_buffer_desc input_token, output_token;
-	uint32 req_flags, ret_flags;
-	uint32 req_tmp, ret_tmp;
+	uint32_t req_flags, ret_flags;
+	uint32_t req_tmp, ret_tmp;
 	DATA_BLOB unwrapped;
 	DATA_BLOB wrapped;
 	struct berval cred, *scred = NULL;
@@ -675,7 +676,7 @@ static ADS_STATUS ads_sasl_spnego_gsskrb5_bind(ADS_STRUCT *ads, const gss_name_t
 	}
 
 	if (ads->ldap.wrap_type > ADS_SASLWRAP_TYPE_PLAIN) {
-		uint32 max_msg_size = ADS_SASL_WRAPPING_OUT_MAX_WRAPPED;
+		uint32_t max_msg_size = ADS_SASL_WRAPPING_OUT_MAX_WRAPPED;
 
 		gss_rc = gss_wrap_size_limit(&minor_status, context_handle,
 					     (ads->ldap.wrap_type == ADS_SASLWRAP_TYPE_SEAL),
@@ -726,7 +727,7 @@ static void ads_free_service_principal(struct ads_service_principal *p)
 
 #ifdef HAVE_KRB5
 	if (p->name) {
-		uint32 minor_status;
+		uint32_t minor_status;
 		gss_release_name(&minor_status, &p->name);
 	}
 #endif
@@ -839,7 +840,7 @@ static ADS_STATUS ads_generate_service_principal(ADS_STRUCT *ads,
 	/* GSS_KRB5_NT_PRINCIPAL_NAME */
 	gss_OID_desc nt_principal =
 	{10, discard_const_p(char, "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x01")};
-	uint32 minor_status;
+	uint32_t minor_status;
 	int gss_rc;
 #endif
 
@@ -1059,20 +1060,20 @@ failed:
 */
 static ADS_STATUS ads_sasl_gssapi_do_bind(ADS_STRUCT *ads, const gss_name_t serv_name)
 {
-	uint32 minor_status;
+	uint32_t minor_status;
 	gss_cred_id_t gss_cred = GSS_C_NO_CREDENTIAL;
 	gss_ctx_id_t context_handle = GSS_C_NO_CONTEXT;
 	gss_OID mech_type = GSS_C_NULL_OID;
 	gss_buffer_desc output_token, input_token;
-	uint32 req_flags, ret_flags;
+	uint32_t req_flags, ret_flags;
 	int conf_state;
 	struct berval cred;
 	struct berval *scred = NULL;
 	int i=0;
 	int gss_rc, rc;
-	uint8 *p;
-	uint32 max_msg_size = ADS_SASL_WRAPPING_OUT_MAX_WRAPPED;
-	uint8 wrap_type = ADS_SASLWRAP_TYPE_PLAIN;
+	uint8_t *p;
+	uint32_t max_msg_size = ADS_SASL_WRAPPING_OUT_MAX_WRAPPED;
+	uint8_t wrap_type = ADS_SASLWRAP_TYPE_PLAIN;
 	ADS_STATUS status;
 
 	input_token.value = NULL;
@@ -1149,7 +1150,7 @@ static ADS_STATUS ads_sasl_gssapi_do_bind(ADS_STRUCT *ads, const gss_name_t serv
 		goto failed;
 	}
 
-	p = (uint8 *)output_token.value;
+	p = (uint8_t *)output_token.value;
 
 #if 0
 	file_save("sasl_gssapi.dat", output_token.value, output_token.length);
@@ -1187,7 +1188,7 @@ static ADS_STATUS ads_sasl_gssapi_do_bind(ADS_STRUCT *ads, const gss_name_t serv
 		status = ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
 		goto failed;
 	}
-	p = (uint8 *)output_token.value;
+	p = (uint8_t *)output_token.value;
 
 	RSIVAL(p,0,max_msg_size);
 	SCVAL(p,0,ads->ldap.wrap_type);

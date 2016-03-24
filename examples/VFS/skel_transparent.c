@@ -49,11 +49,10 @@ static void skel_disconnect(vfs_handle_struct *handle)
 }
 
 static uint64_t skel_disk_free(vfs_handle_struct *handle, const char *path,
-			       bool small_query, uint64_t *bsize,
+			       uint64_t *bsize,
 			       uint64_t *dfree, uint64_t *dsize)
 {
-	return SMB_VFS_NEXT_DISK_FREE(handle, path, small_query, bsize,
-				      dfree, dsize);
+	return SMB_VFS_NEXT_DISK_FREE(handle, path, bsize, dfree, dsize);
 }
 
 static int skel_get_quota(vfs_handle_struct *handle, enum SMB_QUOTA_TYPE qtype,
@@ -96,13 +95,42 @@ static NTSTATUS skel_get_dfs_referrals(struct vfs_handle_struct *handle,
 }
 
 static DIR *skel_opendir(vfs_handle_struct *handle, const char *fname,
-			 const char *mask, uint32 attr)
+			 const char *mask, uint32_t attr)
 {
 	return SMB_VFS_NEXT_OPENDIR(handle, fname, mask, attr);
 }
 
+static NTSTATUS skel_snap_check_path(struct vfs_handle_struct *handle,
+				     TALLOC_CTX *mem_ctx,
+				     const char *service_path,
+				     char **base_volume)
+{
+	return SMB_VFS_NEXT_SNAP_CHECK_PATH(handle, mem_ctx, service_path,
+					    base_volume);
+}
+
+static NTSTATUS skel_snap_create(struct vfs_handle_struct *handle,
+				 TALLOC_CTX *mem_ctx,
+				 const char *base_volume,
+				 time_t *tstamp,
+				 bool rw,
+				 char **base_path,
+				 char **snap_path)
+{
+	return SMB_VFS_NEXT_SNAP_CREATE(handle, mem_ctx, base_volume, tstamp,
+					rw, base_path, snap_path);
+}
+
+static NTSTATUS skel_snap_delete(struct vfs_handle_struct *handle,
+				 TALLOC_CTX *mem_ctx,
+				 char *base_path,
+				 char *snap_path)
+{
+	return SMB_VFS_NEXT_SNAP_DELETE(handle, mem_ctx, base_path, snap_path);
+}
+
 static DIR *skel_fdopendir(vfs_handle_struct *handle, files_struct *fsp,
-			   const char *mask, uint32 attr)
+			   const char *mask, uint32_t attr)
 {
 	return SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attr);
 }
@@ -164,11 +192,14 @@ static NTSTATUS skel_create_file(struct vfs_handle_struct *handle,
 				 uint32_t create_options,
 				 uint32_t file_attributes,
 				 uint32_t oplock_request,
+				 struct smb2_lease *lease,
 				 uint64_t allocation_size,
 				 uint32_t private_flags,
 				 struct security_descriptor *sd,
 				 struct ea_list *ea_list,
-				 files_struct ** result, int *pinfo)
+				 files_struct ** result, int *pinfo,
+				 const struct smb2_create_blobs *in_context_blobs,
+				 struct smb2_create_blobs *out_context_blobs)
 {
 	return SMB_VFS_NEXT_CREATE_FILE(handle,
 					req,
@@ -180,9 +211,11 @@ static NTSTATUS skel_create_file(struct vfs_handle_struct *handle,
 					create_options,
 					file_attributes,
 					oplock_request,
+					lease,
 					allocation_size,
 					private_flags,
-					sd, ea_list, result, pinfo);
+					sd, ea_list, result, pinfo,
+					in_context_blobs, out_context_blobs);
 }
 
 static int skel_close_fn(vfs_handle_struct *handle, files_struct *fsp)
@@ -486,7 +519,7 @@ static int skel_ftruncate(vfs_handle_struct *handle, files_struct *fsp,
 }
 
 static int skel_fallocate(vfs_handle_struct *handle, files_struct *fsp,
-			  enum vfs_fallocate_mode mode, off_t offset, off_t len)
+			  uint32_t mode, off_t offset, off_t len)
 {
 	return SMB_VFS_NEXT_FALLOCATE(handle, fsp, mode, offset, len);
 }
@@ -498,8 +531,8 @@ static bool skel_lock(vfs_handle_struct *handle, files_struct *fsp, int op,
 }
 
 static int skel_kernel_flock(struct vfs_handle_struct *handle,
-			     struct files_struct *fsp, uint32 share_mode,
-			     uint32 access_mask)
+			     struct files_struct *fsp, uint32_t share_mode,
+			     uint32_t access_mask)
 {
 	return SMB_VFS_NEXT_KERNEL_FLOCK(handle, fsp, share_mode, access_mask);
 }
@@ -544,21 +577,6 @@ static int skel_mknod(vfs_handle_struct *handle, const char *path, mode_t mode,
 static char *skel_realpath(vfs_handle_struct *handle, const char *path)
 {
 	return SMB_VFS_NEXT_REALPATH(handle, path);
-}
-
-static NTSTATUS skel_notify_watch(struct vfs_handle_struct *handle,
-				  struct sys_notify_context *ctx,
-				  const char *path,
-				  uint32_t *filter,
-				  uint32_t *subdir_filter,
-				  void (*callback) (struct sys_notify_context *ctx,
-						    void *private_data,
-						    struct notify_event *ev),
-				  void *private_data, void *handle_p)
-{
-	return SMB_VFS_NEXT_NOTIFY_WATCH(handle, ctx, path,
-					 filter, subdir_filter, callback,
-					 private_data, handle_p);
 }
 
 static int skel_chflags(vfs_handle_struct *handle, const char *path,
@@ -645,6 +663,25 @@ static NTSTATUS skel_copy_chunk_recv(struct vfs_handle_struct *handle,
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS skel_get_compression(struct vfs_handle_struct *handle,
+				     TALLOC_CTX *mem_ctx,
+				     struct files_struct *fsp,
+				     struct smb_filename *smb_fname,
+				     uint16_t *_compression_fmt)
+{
+	return SMB_VFS_NEXT_GET_COMPRESSION(handle, mem_ctx, fsp, smb_fname,
+					    _compression_fmt);
+}
+
+static NTSTATUS skel_set_compression(struct vfs_handle_struct *handle,
+				     TALLOC_CTX *mem_ctx,
+				     struct files_struct *fsp,
+				     uint16_t compression_fmt)
+{
+	return SMB_VFS_NEXT_SET_COMPRESSION(handle, mem_ctx, fsp,
+					    compression_fmt);
+}
+
 static NTSTATUS skel_streaminfo(struct vfs_handle_struct *handle,
 				struct files_struct *fsp,
 				const char *fname,
@@ -675,11 +712,10 @@ static const char *skel_connectpath(struct vfs_handle_struct *handle,
 static NTSTATUS skel_brl_lock_windows(struct vfs_handle_struct *handle,
 				      struct byte_range_lock *br_lck,
 				      struct lock_struct *plock,
-				      bool blocking_lock,
-				      struct blocking_lock_record *blr)
+				      bool blocking_lock)
 {
 	return SMB_VFS_NEXT_BRL_LOCK_WINDOWS(handle,
-					     br_lck, plock, blocking_lock, blr);
+					     br_lck, plock, blocking_lock);
 }
 
 static bool skel_brl_unlock_windows(struct vfs_handle_struct *handle,
@@ -692,10 +728,9 @@ static bool skel_brl_unlock_windows(struct vfs_handle_struct *handle,
 
 static bool skel_brl_cancel_windows(struct vfs_handle_struct *handle,
 				    struct byte_range_lock *br_lck,
-				    struct lock_struct *plock,
-				    struct blocking_lock_record *blr)
+				    struct lock_struct *plock)
 {
-	return SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock, blr);
+	return SMB_VFS_NEXT_BRL_CANCEL_WINDOWS(handle, br_lck, plock);
 }
 
 static bool skel_strict_lock(struct vfs_handle_struct *handle,
@@ -740,8 +775,16 @@ static NTSTATUS skel_fsctl(struct vfs_handle_struct *handle,
 				  in_len, _out_data, max_out_len, out_len);
 }
 
+static NTSTATUS skel_readdir_attr(struct vfs_handle_struct *handle,
+				  const struct smb_filename *fname,
+				  TALLOC_CTX *mem_ctx,
+				  struct readdir_attr_data **pattr_data)
+{
+	return SMB_VFS_NEXT_READDIR_ATTR(handle, fname, mem_ctx, pattr_data);
+}
+
 static NTSTATUS skel_fget_nt_acl(vfs_handle_struct *handle, files_struct *fsp,
-				 uint32 security_info,
+				 uint32_t security_info,
 				 TALLOC_CTX *mem_ctx,
 				 struct security_descriptor **ppdesc)
 {
@@ -750,7 +793,7 @@ static NTSTATUS skel_fget_nt_acl(vfs_handle_struct *handle, files_struct *fsp,
 }
 
 static NTSTATUS skel_get_nt_acl(vfs_handle_struct *handle,
-				const char *name, uint32 security_info,
+				const char *name, uint32_t security_info,
 				TALLOC_CTX *mem_ctx,
 				struct security_descriptor **ppdesc)
 {
@@ -759,7 +802,7 @@ static NTSTATUS skel_get_nt_acl(vfs_handle_struct *handle,
 }
 
 static NTSTATUS skel_fset_nt_acl(vfs_handle_struct *handle, files_struct *fsp,
-				 uint32 security_info_sent,
+				 uint32_t security_info_sent,
 				 const struct security_descriptor *psd)
 {
 	return SMB_VFS_NEXT_FSET_NT_ACL(handle, fsp, security_info_sent, psd);
@@ -910,6 +953,9 @@ struct vfs_fn_pointers skel_transparent_fns = {
 	.statvfs_fn = skel_statvfs,
 	.fs_capabilities_fn = skel_fs_capabilities,
 	.get_dfs_referrals_fn = skel_get_dfs_referrals,
+	.snap_check_path_fn = skel_snap_check_path,
+	.snap_create_fn = skel_snap_create,
+	.snap_delete_fn = skel_snap_delete,
 
 	/* Directory operations */
 
@@ -968,11 +1014,12 @@ struct vfs_fn_pointers skel_transparent_fns = {
 	.link_fn = skel_link,
 	.mknod_fn = skel_mknod,
 	.realpath_fn = skel_realpath,
-	.notify_watch_fn = skel_notify_watch,
 	.chflags_fn = skel_chflags,
 	.file_id_create_fn = skel_file_id_create,
 	.copy_chunk_send_fn = skel_copy_chunk_send,
 	.copy_chunk_recv_fn = skel_copy_chunk_recv,
+	.get_compression_fn = skel_get_compression,
+	.set_compression_fn = skel_set_compression,
 
 	.streaminfo_fn = skel_streaminfo,
 	.get_real_filename_fn = skel_get_real_filename,
@@ -984,6 +1031,7 @@ struct vfs_fn_pointers skel_transparent_fns = {
 	.strict_unlock_fn = skel_strict_unlock,
 	.translate_name_fn = skel_translate_name,
 	.fsctl_fn = skel_fsctl,
+	.readdir_attr_fn = skel_readdir_attr,
 
 	/* NT ACL operations. */
 

@@ -75,6 +75,19 @@ WERROR _netr_LogonControl(struct pipes_struct *p,
 		return WERR_UNKNOWN_LEVEL;
 	}
 
+	switch (r->in.function_code) {
+	case NETLOGON_CONTROL_QUERY:
+	case NETLOGON_CONTROL_REPLICATE:
+	case NETLOGON_CONTROL_SYNCHRONIZE:
+	case NETLOGON_CONTROL_PDC_REPLICATE:
+	case NETLOGON_CONTROL_BREAKPOINT:
+	case NETLOGON_CONTROL_BACKUP_CHANGE_LOG:
+	case NETLOGON_CONTROL_TRUNCATE_LOG:
+		break;
+	default:
+		return WERR_NOT_SUPPORTED;
+	}
+
 	l.in.logon_server	= r->in.logon_server;
 	l.in.function_code	= r->in.function_code;
 	l.in.level		= r->in.level;
@@ -184,7 +197,6 @@ WERROR _netr_LogonControl2Ex(struct pipes_struct *p,
 	struct netr_NETLOGON_INFO_3 *info3;
 	struct netr_NETLOGON_INFO_4 *info4;
 	const char *fn;
-	uint32_t acct_ctrl;
 	NTSTATUS status;
 	struct netr_DsRGetDCNameInfo *dc_info;
 
@@ -202,20 +214,26 @@ WERROR _netr_LogonControl2Ex(struct pipes_struct *p,
 		return WERR_INVALID_PARAM;
 	}
 
-	acct_ctrl = p->session_info->info->acct_flags;
-
-	switch (r->in.function_code) {
-	case NETLOGON_CONTROL_TC_VERIFY:
-	case NETLOGON_CONTROL_CHANGE_PASSWORD:
-	case NETLOGON_CONTROL_REDISCOVER:
-		if ((geteuid() != sec_initial_uid()) &&
-		    !nt_token_check_domain_rid(p->session_info->security_token, DOMAIN_RID_ADMINS) &&
-		    !nt_token_check_sid(&global_sid_Builtin_Administrators, p->session_info->security_token) &&
-		    !(acct_ctrl & (ACB_WSTRUST | ACB_SVRTRUST))) {
-			return WERR_ACCESS_DENIED;
-		}
+	switch (r->in.level) {
+	case 1:
+	case 2:
+	case 3:
+	case 4:
 		break;
 	default:
+		return WERR_INVALID_LEVEL;
+	}
+
+	switch (r->in.function_code) {
+	case NETLOGON_CONTROL_QUERY:
+		break;
+	default:
+		if ((geteuid() != sec_initial_uid()) &&
+		    !nt_token_check_domain_rid(p->session_info->security_token, DOMAIN_RID_ADMINS) &&
+		    !nt_token_check_sid(&global_sid_Builtin_Administrators, p->session_info->security_token))
+		{
+			return WERR_ACCESS_DENIED;
+		}
 		break;
 	}
 
@@ -223,6 +241,14 @@ WERROR _netr_LogonControl2Ex(struct pipes_struct *p,
 
 	switch (r->in.function_code) {
 	case NETLOGON_CONTROL_QUERY:
+		switch (r->in.level) {
+		case 1:
+		case 3:
+			break;
+		default:
+			return WERR_INVALID_PARAMETER;
+		}
+
 		tc_status = WERR_OK;
 		break;
 	case NETLOGON_CONTROL_REPLICATE:
@@ -230,26 +256,12 @@ WERROR _netr_LogonControl2Ex(struct pipes_struct *p,
 	case NETLOGON_CONTROL_PDC_REPLICATE:
 	case NETLOGON_CONTROL_BACKUP_CHANGE_LOG:
 	case NETLOGON_CONTROL_BREAKPOINT:
-		if (acct_ctrl & ACB_NORMAL) {
-			return WERR_NOT_SUPPORTED;
-		} else if (acct_ctrl & (ACB_WSTRUST | ACB_SVRTRUST)) {
-			return WERR_ACCESS_DENIED;
-		} else {
-			return WERR_ACCESS_DENIED;
-		}
 	case NETLOGON_CONTROL_TRUNCATE_LOG:
-		if (acct_ctrl & ACB_NORMAL) {
-			break;
-		} else if (acct_ctrl & (ACB_WSTRUST | ACB_SVRTRUST)) {
-			return WERR_ACCESS_DENIED;
-		} else {
-			return WERR_ACCESS_DENIED;
-		}
-
 	case NETLOGON_CONTROL_TRANSPORT_NOTIFY:
 	case NETLOGON_CONTROL_FORCE_DNS_REG:
 	case NETLOGON_CONTROL_QUERY_DNS_REG:
 		return WERR_NOT_SUPPORTED;
+
 	case NETLOGON_CONTROL_FIND_USER:
 		if (!r->in.data || !r->in.data->user) {
 			return WERR_NOT_SUPPORTED;
@@ -336,7 +348,7 @@ WERROR _netr_LogonControl2Ex(struct pipes_struct *p,
 		/* no idea what this should be */
 		DEBUG(0,("%s: unimplemented function level [%d]\n",
 			fn, r->in.function_code));
-		return WERR_UNKNOWN_LEVEL;
+		return WERR_NOT_SUPPORTED;
 	}
 
 	/* prepare the response */
@@ -698,12 +710,10 @@ static NTSTATUS get_md4pw(struct samr_Password *md4pw, const char *mach_acct,
 		goto out;
 	}
 
-	become_root();
 	status = samr_find_machine_account(mem_ctx, h, mach_acct,
 					   SEC_FLAG_MAXIMUM_ALLOWED,
 					   &domain_sid, &user_rid,
 					   &user_handle);
-	unbecome_root();
 	if (!NT_STATUS_IS_OK(status)) {
 		goto out;
 	}
@@ -1020,6 +1030,7 @@ NTSTATUS _netr_ServerAuthenticate3(struct pipes_struct *p,
 	talloc_unlink(p->mem_ctx, lp_ctx);
 
 	if (!NT_STATUS_IS_OK(status)) {
+		ZERO_STRUCTP(r->out.return_credentials);
 		goto out;
 	}
 
@@ -1476,6 +1487,15 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 	struct auth_context *auth_context = NULL;
 	const char *fn;
 
+#ifdef DEBUG_PASSWORD
+	logon = netlogon_creds_shallow_copy_logon(p->mem_ctx,
+						  r->in.logon_level,
+						  r->in.logon);
+	if (logon == NULL) {
+		logon = r->in.logon;
+	}
+#endif
+
 	switch (p->opnum) {
 		case NDR_NETR_LOGONSAMLOGON:
 			fn = "_netr_LogonSamLogon";
@@ -1556,6 +1576,10 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 
 	status = NT_STATUS_OK;
 
+	netlogon_creds_decrypt_samlogon_logon(creds,
+					      r->in.logon_level,
+					      logon);
+
 	switch (r->in.logon_level) {
 	case NetlogonNetworkInformation:
 	case NetlogonNetworkTransitiveInformation:
@@ -1575,7 +1599,8 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 		if (*wksname == '\\') wksname++;
 
 		/* Standard challenge/response authentication */
-		if (!make_user_info_netlogon_network(&user_info,
+		if (!make_user_info_netlogon_network(talloc_tos(),
+						     &user_info,
 						     nt_username, nt_domain,
 						     wksname,
 						     p->remote_address,
@@ -1601,32 +1626,16 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 		uint8_t chal[8];
 
 #ifdef DEBUG_PASSWORD
-		DEBUG(100,("lm owf password:"));
-		dump_data(100, logon->password->lmpassword.hash, 16);
+		if (logon != r->in.logon) {
+			DEBUG(100,("lm owf password:"));
+			dump_data(100,
+				  r->in.logon->password->lmpassword.hash, 16);
 
-		DEBUG(100,("nt owf password:"));
-		dump_data(100, logon->password->ntpassword.hash, 16);
-#endif
-		if (creds->negotiate_flags & NETLOGON_NEG_SUPPORTS_AES) {
-			netlogon_creds_aes_decrypt(creds,
-						   logon->password->lmpassword.hash,
-						   16);
-			netlogon_creds_aes_decrypt(creds,
-						   logon->password->ntpassword.hash,
-						   16);
-		} else if (creds->negotiate_flags & NETLOGON_NEG_ARCFOUR) {
-			netlogon_creds_arcfour_crypt(creds,
-						     logon->password->lmpassword.hash,
-						     16);
-			netlogon_creds_arcfour_crypt(creds,
-						     logon->password->ntpassword.hash,
-						     16);
-		} else {
-			netlogon_creds_des_decrypt(creds, &logon->password->lmpassword);
-			netlogon_creds_des_decrypt(creds, &logon->password->ntpassword);
+			DEBUG(100,("nt owf password:"));
+			dump_data(100,
+				  r->in.logon->password->ntpassword.hash, 16);
 		}
 
-#ifdef DEBUG_PASSWORD
 		DEBUG(100,("decrypt of lm owf password:"));
 		dump_data(100, logon->password->lmpassword.hash, 16);
 
@@ -1641,7 +1650,8 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 
 		auth_get_ntlm_challenge(auth_context, chal);
 
-		if (!make_user_info_netlogon_interactive(&user_info,
+		if (!make_user_info_netlogon_interactive(talloc_tos(),
+							 &user_info,
 							 nt_username, nt_domain,
 							 nt_workstation,
 							 p->remote_address,
@@ -1659,12 +1669,14 @@ static NTSTATUS _netr_LogonSamLogon_base(struct pipes_struct *p,
 	} /* end switch */
 
 	if ( NT_STATUS_IS_OK(status) ) {
-		status = auth_check_ntlm_password(auth_context,
-			user_info, &server_info);
+		status = auth_check_ntlm_password(p->mem_ctx,
+						  auth_context,
+						  user_info,
+						  &server_info);
 	}
 
 	TALLOC_FREE(auth_context);
-	free_user_info(&user_info);
+	TALLOC_FREE(user_info);
 
 	DEBUG(5,("%s: check_password returned status %s\n",
 		  fn, nt_errstr(status)));
@@ -2191,11 +2203,11 @@ NTSTATUS _netr_LogonGetDomainInfo(struct pipes_struct *p,
 /****************************************************************
 ****************************************************************/
 
-WERROR _netr_ServerPasswordGet(struct pipes_struct *p,
-			       struct netr_ServerPasswordGet *r)
+NTSTATUS _netr_ServerPasswordGet(struct pipes_struct *p,
+				 struct netr_ServerPasswordGet *r)
 {
 	p->fault_state = DCERPC_FAULT_OP_RNG_ERROR;
-	return WERR_NOT_SUPPORTED;
+	return NT_STATUS_NOT_SUPPORTED;
 }
 
 /****************************************************************

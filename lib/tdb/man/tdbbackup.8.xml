@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN" "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
 <refentry id="tdbbackup.8">
+<refentryinfo><date>2015-04-25</date></refentryinfo>
 
 <refmeta>
 	<refentrytitle>tdbbackup</refentrytitle>
@@ -22,6 +23,7 @@
 		<arg choice="opt">-s suffix</arg>
 		<arg choice="opt">-v</arg>
 		<arg choice="opt">-h</arg>
+		<arg choice="opt">-l</arg>
 	</cmdsynopsis>
 </refsynopsisdiv>
 
@@ -68,6 +70,17 @@
 		</para></listitem>
 		</varlistentry>
 
+		<varlistentry>
+		<term>-l</term>
+		<listitem><para>
+		This options disables any locking, by passing TDB_NOLOCK
+		to tdb_open_ex(). Only use this for database files which
+		are not used by any other process! And also only if it is otherwise not
+		possible to open the database, e.g. databases which were created with
+		mutex locking.
+		</para></listitem>
+		</varlistentry>
+
 	</variablelist>
 </refsect1>
 
@@ -90,11 +103,6 @@
 	</para>
 
 	<para>tdbbackup -v [-s suffix] *.tdb</para>
-
-	<para>
-	Note that Samba 4 can use .ntdb files instead, so you should
-	use <command>ntdbbackup</command> on those files.
-	</para>
 
 	<para>
 	Samba .tdb files are stored in various locations, be sure to run backup all

@@ -57,10 +57,10 @@ testit "wbinfo -u against $TARGET" $wbinfo -u || failed=`expr $failed + 1`
 testit "wbinfo -g against $TARGET" $wbinfo -g || failed=`expr $failed + 1`
 # Convert netbios name to IP
 # Does not work yet
-knownfail "wbinfo -N against $TARGET" $wbinfo -N $NETBIOSNAME || failed=`expr $failed + 1`
+testit "wbinfo -N against $TARGET" $wbinfo -N $NETBIOSNAME || failed=`expr $failed + 1`
 # Convert IP to netbios name
 # Does not work yet
-knownfail "wbinfo -I against $TARGET" $wbinfo -I $SERVER_IP || failed=`expr $failed + 1`
+testit "wbinfo -I against $TARGET" $wbinfo -I $SERVER_IP || failed=`expr $failed + 1`
 
 # Convert name to SID
 testit "wbinfo -n against $TARGET" $wbinfo -n "$DOMAIN/$USERNAME" || failed=`expr $failed + 1`
@@ -151,8 +151,8 @@ testfail "wbinfo -Y against $TARGET using invalid SID" $wbinfo -Y "S-1-22-1-3000
 testit "wbinfo -t against $TARGET" $wbinfo -t || failed=`expr $failed + 1`
 
 #didn't really work anyway
-knownfail "wbinfo  --trusted-domains against $TARGET" $wbinfo --trusted-domains || failed=`expr $failed + 1`
-knownfail "wbinfo --all-domains against $TARGET" $wbinfo --all-domains || failed=`expr $failed + 1`
+testit "wbinfo  --trusted-domains against $TARGET" $wbinfo --trusted-domains || failed=`expr $failed + 1`
+testit "wbinfo --all-domains against $TARGET" $wbinfo --all-domains || failed=`expr $failed + 1`
 
 testit "wbinfo --own-domain against $TARGET" $wbinfo --own-domain || failed=`expr $failed + 1`
 
@@ -174,10 +174,8 @@ testit "wbinfo -D against $TARGET" $wbinfo -D $DOMAIN || failed=`expr $failed + 
 
 testit "wbinfo -i against $TARGET" $wbinfo -i "$DOMAIN/$USERNAME" || failed=`expr $failed + 1`
 
-testit "wbinfo --uid-info against $TARGET" $wbinfo --uid-info $admin_uid || failed=`expr $failed + 1`
-
 echo "test: wbinfo --group-info against $TARGET"
-rawgid=`$wbinfo --group-info "Domain admins" | sed 's/.*:\([0-9][0-9]*\):/\1/'`
+gid=`$wbinfo --group-info "$DOMAIN/Domain users" | cut -d: -f3`
 if test x$? = x0; then
 	echo "success: wbinfo --group-info against $TARGET"
 else
@@ -185,9 +183,53 @@ else
 	failed=`expr $failed + 1`
 fi
 
+test_name="wbinfo -i against $TARGET"
+subunit_start_test "$test_name"
+passwd_line=`$wbinfo -i "$DOMAIN/$USERNAME"`
+if test x$? = x0; then
+	subunit_pass_test "$test_name"
+else
+	subunit_fail_test "$test_name"
+	failed=`expr $failed + 1`
+fi
+
+test_name="confirm output of wbinfo -i against $TARGET"
+subunit_start_test "$test_name"
+
+# The full name (GECOS) is based on name (the RDN, in this case CN)
+# and displayName in winbindd_ads, and is based only on displayName in
+# winbindd_msrpc and winbindd_rpc.  Allow both versions.
+expected_line="$DOMAIN/administrator:*:$admin_uid:$gid:Administrator:/home/$DOMAIN/administrator:/bin/false"
+expected2_line="$DOMAIN/administrator:*:$admin_uid:$gid::/home/$DOMAIN/administrator:/bin/false"
+
+if test x$passwd_line = x"$expected_line" -o x$passwd_line = x"$expected2_line"; then
+	subunit_pass_test "$test_name"
+else
+	echo "expected '$expected_line' or '$expected2_line' got '$passwd_line'" | subunit_fail_test "$test_name"
+	failed=`expr $failed + 1`
+fi
+
+test_name="wbinfo --uid-info against $TARGET"
+subunit_start_test "$test_name"
+passwd_line=`$wbinfo --uid-info=$admin_uid`
+if test x$? = x0; then
+	subunit_pass_test "$test_name"
+else
+	subunit_fail_test "$test_name"
+	failed=`expr $failed + 1`
+fi
+
+test_name="confirm output of wbinfo --uid-info against $TARGET"
+subunit_start_test "$test_name"
+if test x$passwd_line = x"$expected_line" -o x$passwd_line = x"$expected2_line"; then
+	subunit_pass_test "$test_name"
+else
+	echo "expected '$expected_line' or '$expected2_line' got '$passwd_line'" | subunit_fail_test "$test_name"
+	failed=`expr $failed + 1`
+fi
+
 testfail "wbinfo --group-info against $TARGET with $USERNAME" $wbinfo --group-info $USERNAME && failed=`expr $failed + 1`
 
-gid=`echo $rawgid | sed 's/.*:\([0-9][0-9]*\):/\1/'`
 testit "wbinfo --gid-info against $TARGET" $wbinfo --gid-info $gid || failed=`expr $failed + 1`
 
 testit "wbinfo -r against $TARGET" $wbinfo -r "$DOMAIN/$USERNAME" || failed=`expr $failed + 1`

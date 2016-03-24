@@ -60,7 +60,7 @@ static bool acl_tdb_init(void)
 
 	become_root();
 	acl_db = db_open(NULL, dbname, 0, TDB_DEFAULT, O_RDWR|O_CREAT, 0600,
-			 DBWRAP_LOCK_ORDER_1);
+			 DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 	unbecome_root();
 
 	if (acl_db == NULL) {
@@ -99,7 +99,7 @@ static struct db_record *acl_tdb_lock(TALLOC_CTX *mem_ctx,
 					struct db_context *db,
 					const struct file_id *id)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 
 	/* For backwards compatibility only store the dev/inode. */
 	push_file_id_16((char *)id_buf, id);
@@ -146,7 +146,7 @@ static NTSTATUS get_acl_blob(TALLOC_CTX *ctx,
 			const char *name,
 			DATA_BLOB *pblob)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 	TDB_DATA data;
 	struct file_id id;
 	struct db_context *db = acl_db;
@@ -202,7 +202,7 @@ static NTSTATUS store_acl_blob_fsp(vfs_handle_struct *handle,
 				files_struct *fsp,
 				DATA_BLOB *pblob)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 	struct file_id id;
 	TDB_DATA data;
 	struct db_context *db = acl_db;

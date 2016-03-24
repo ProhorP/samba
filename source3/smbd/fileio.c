@@ -53,7 +53,7 @@ static bool read_from_write_cache(files_struct *fsp,char *data,off_t pos,size_t 
 
 	memcpy(data, wcp->data + (pos - wcp->offset), n);
 
-	DO_PROFILE_INC(writecache_read_hits);
+	DO_PROFILE_INC(writecache_cached_reads);
 
 	return True;
 }
@@ -82,7 +82,7 @@ ssize_t read_file(files_struct *fsp,char *data,off_t pos,size_t n)
 		return n;
 	}
 
-	flush_write_cache(fsp, READ_FLUSH);
+	flush_write_cache(fsp, SAMBA_READ_FLUSH);
 
 	fsp->fh->pos = pos;
 
@@ -193,7 +193,7 @@ void trigger_write_time_update(struct files_struct *fsp)
 {
 	int delay;
 
-	if (fsp->posix_open) {
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 		/* Don't use delayed writes on POSIX files. */
 		return;
 	}
@@ -238,7 +238,7 @@ void trigger_write_time_update_immediate(struct files_struct *fsp)
 {
 	struct smb_file_time ft;
 
-	if (fsp->posix_open) {
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 		/* Don't use delayed writes on POSIX files. */
 		return;
 	}
@@ -284,7 +284,7 @@ void mark_file_modified(files_struct *fsp)
 	}
 	trigger_write_time_update(fsp);
 
-	if (fsp->posix_open) {
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 		return;
 	}
 	if (!(lp_store_dos_attributes(SNUM(fsp->conn)) ||
@@ -339,18 +339,21 @@ ssize_t write_file(struct smb_request *req,
 	if (!fsp->modified &&
 	    EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type) &&
 	    (wcp == NULL)) {
+		/*
+		 * Note: no write cache with leases!
+		 * as the handles would have to share the write cache
+		 * that's possible but an improvement for another day...
+		 */
 		setup_write_cache(fsp, fsp->fsp_name->st.st_ex_size);
 		wcp = fsp->wcp;
 	}
 
 	mark_file_modified(fsp);
 
-#ifdef WITH_PROFILE
 	DO_PROFILE_INC(writecache_total_writes);
 	if (!fsp->oplock_type) {
 		DO_PROFILE_INC(writecache_non_oplock_writes);
 	}
-#endif
 
 	/*
 	 * If this file is level II oplocked then we need
@@ -364,36 +367,11 @@ ssize_t write_file(struct smb_request *req,
 	contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_WRITE);
 	contend_level2_oplocks_end(fsp, LEVEL2_CONTEND_WRITE);
 
-#ifdef WITH_PROFILE
-	if (profile_p && profile_p->writecache_total_writes % 500 == 0) {
-		DEBUG(3,("WRITECACHE: initwrites=%u abutted=%u total=%u \
-nonop=%u allocated=%u active=%u direct=%u perfect=%u readhits=%u\n",
-			profile_p->writecache_init_writes,
-			profile_p->writecache_abutted_writes,
-			profile_p->writecache_total_writes,
-			profile_p->writecache_non_oplock_writes,
-			profile_p->writecache_allocated_write_caches,
-			profile_p->writecache_num_write_caches,
-			profile_p->writecache_direct_writes,
-			profile_p->writecache_num_perfect_writes,
-			profile_p->writecache_read_hits ));
-
-		DEBUG(3,("WRITECACHE: Flushes SEEK=%d, READ=%d, WRITE=%d, READRAW=%d, OPLOCK=%d, CLOSE=%d, SYNC=%d\n",
-			profile_p->writecache_flushed_writes[SEEK_FLUSH],
-			profile_p->writecache_flushed_writes[READ_FLUSH],
-			profile_p->writecache_flushed_writes[WRITE_FLUSH],
-			profile_p->writecache_flushed_writes[READRAW_FLUSH],
-			profile_p->writecache_flushed_writes[OPLOCK_RELEASE_FLUSH],
-			profile_p->writecache_flushed_writes[CLOSE_FLUSH],
-			profile_p->writecache_flushed_writes[SYNC_FLUSH] ));
-	}
-#endif
-
 	if (wcp && req->unread_bytes) {
 		/* If we're using receivefile don't
 		 * deal with a write cache.
 		 */
-		flush_write_cache(fsp, WRITE_FLUSH);
+		flush_write_cache(fsp, SAMBA_WRITE_FLUSH);
 		delete_write_cache(fsp);
 		wcp = NULL;
 	}
@@ -689,7 +667,7 @@ nonop=%u allocated=%u active=%u direct=%u perfect=%u readhits=%u\n",
                                  +-----------------------+--------+
                         */
 
-			flush_write_cache(fsp, WRITE_FLUSH);
+			flush_write_cache(fsp, SAMBA_WRITE_FLUSH);
 			wcp->offset = wcp->file_size;
 			wcp->data_size = pos - wcp->file_size + 1;
 			memset(wcp->data, '\0', wcp->data_size);
@@ -793,12 +771,12 @@ cache: fd = %d, off=%.0f, size=%u\n", fsp->fh->fd, (double)wcp->offset, (unsigne
 		}
 
 		if (cache_flush_needed) {
-			DEBUG(3,("WRITE_FLUSH:%d: due to noncontinuous write: fd = %d, size = %.0f, pos = %.0f, \
+			DEBUG(3,("SAMBA_WRITE_FLUSH:%d: due to noncontinuous write: fd = %d, size = %.0f, pos = %.0f, \
 n = %u, wcp->offset=%.0f, wcp->data_size=%u\n",
 				write_path, fsp->fh->fd, (double)wcp->file_size, (double)pos, (unsigned int)n,
 				(double)wcp->offset, (unsigned int)wcp->data_size ));
 
-			flush_write_cache(fsp, WRITE_FLUSH);
+			flush_write_cache(fsp, SAMBA_WRITE_FLUSH);
 		}
 	}
 
@@ -826,13 +804,12 @@ n = %u, wcp->offset=%.0f, wcp->data_size=%u\n",
 	 */
 
 	if (n) {
-#ifdef WITH_PROFILE
+		DO_PROFILE_INC(writecache_cached_writes);
 		if (wcp->data_size) {
 			DO_PROFILE_INC(writecache_abutted_writes);
 		} else {
 			DO_PROFILE_INC(writecache_init_writes);
 		}
-#endif
 
 		if ((wcp->data_size == 0)
 		    && (pos > wcp->file_size)
@@ -856,7 +833,6 @@ n = %u, wcp->offset=%.0f, wcp->data_size=%u\n",
 		memcpy(wcp->data+wcp->data_size, data, n);
 		if (wcp->data_size == 0) {
 			wcp->offset = pos;
-			DO_PROFILE_INC(writecache_num_write_caches);
 		}
 		wcp->data_size += n;
 
@@ -895,7 +871,7 @@ void delete_write_cache(files_struct *fsp)
 		return;
 	}
 
-	DO_PROFILE_DEC(writecache_allocated_write_caches);
+	DO_PROFILE_INC(writecache_deallocations);
 	allocated_write_caches--;
 
 	SMB_ASSERT(wcp->data_size == 0);
@@ -943,7 +919,7 @@ static bool setup_write_cache(files_struct *fsp, off_t file_size)
 	memset(wcp->data, '\0', wcp->alloc_size );
 
 	fsp->wcp = wcp;
-	DO_PROFILE_INC(writecache_allocated_write_caches);
+	DO_PROFILE_INC(writecache_allocations);
 	allocated_write_caches++;
 
 	DEBUG(10,("setup_write_cache: File %s allocated write cache size %lu\n",
@@ -992,16 +968,41 @@ ssize_t flush_write_cache(files_struct *fsp, enum flush_reason_enum reason)
 	data_size = wcp->data_size;
 	wcp->data_size = 0;
 
-	DO_PROFILE_DEC_INC(writecache_num_write_caches,writecache_flushed_writes[reason]);
+	switch (reason) {
+	case SAMBA_SEEK_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_seek);
+		break;
+	case SAMBA_READ_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_read);
+		break;
+	case SAMBA_WRITE_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_write);;
+		break;
+	case SAMBA_READRAW_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_readraw);
+		break;
+	case SAMBA_OPLOCK_RELEASE_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_oplock);
+		break;
+	case SAMBA_CLOSE_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_close);
+		break;
+	case SAMBA_SYNC_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_sync);
+		break;
+	case SAMBA_SIZECHANGE_FLUSH:
+		DO_PROFILE_INC(writecache_flush_reason_sizechange);
+		break;
+	default:
+		break;
+	}
 
 	DEBUG(9,("flushing write cache: fd = %d, off=%.0f, size=%u\n",
 		fsp->fh->fd, (double)wcp->offset, (unsigned int)data_size));
 
-#ifdef WITH_PROFILE
 	if(data_size == wcp->alloc_size) {
-		DO_PROFILE_INC(writecache_num_perfect_writes);
+		DO_PROFILE_INC(writecache_perfect_writes);
 	}
-#endif
 
 	ret = real_write_file(NULL, fsp, wcp->data, wcp->offset, data_size);
 
@@ -1026,8 +1027,8 @@ NTSTATUS sync_file(connection_struct *conn, files_struct *fsp, bool write_throug
 		return NT_STATUS_INVALID_HANDLE;
 
 	if (lp_strict_sync(SNUM(conn)) &&
-	    (lp_syncalways(SNUM(conn)) || write_through)) {
-		int ret = flush_write_cache(fsp, SYNC_FLUSH);
+	    (lp_sync_always(SNUM(conn)) || write_through)) {
+		int ret = flush_write_cache(fsp, SAMBA_SYNC_FLUSH);
 		if (ret == -1) {
 			return map_nt_error_from_unix(errno);
 		}
@@ -1046,7 +1047,7 @@ NTSTATUS sync_file(connection_struct *conn, files_struct *fsp, bool write_throug
 int fsp_stat(files_struct *fsp)
 {
 	if (fsp->fh->fd == -1) {
-		if (fsp->posix_open) {
+		if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
 			return SMB_VFS_LSTAT(fsp->conn, fsp->fsp_name);
 		} else {
 			return SMB_VFS_STAT(fsp->conn, fsp->fsp_name);

@@ -8,8 +8,8 @@ import base64
 import re
 sys.path.insert(0, "bin/python")
 import samba
-samba.ensure_external_module("testtools", "testtools")
-samba.ensure_external_module("subunit", "subunit/python")
+
+from samba.tests.subunitrun import SubunitOptions, TestProgram
 
 import samba.getopt as options
 from samba.join import dc_join
@@ -20,7 +20,7 @@ from ldb import (
 from ldb import ERR_CONSTRAINT_VIOLATION
 from ldb import ERR_OPERATIONS_ERROR
 from ldb import Message, MessageElement, Dn
-from ldb import FLAG_MOD_REPLACE, FLAG_MOD_ADD
+from ldb import FLAG_MOD_REPLACE, FLAG_MOD_ADD, FLAG_MOD_DELETE
 from samba.dcerpc import security, drsuapi, misc
 
 from samba.auth import system_session
@@ -29,8 +29,6 @@ from samba.samdb import SamDB
 from samba.credentials import Credentials, DONT_USE_KERBEROS
 import samba.tests
 from samba.tests import delete_force
-from subunit.run import SubunitTestRunner
-import unittest
 import samba.dsdb
 
 parser = optparse.OptionParser("acl.py [options] <host>")
@@ -41,6 +39,9 @@ parser.add_option_group(options.VersionOptions(parser))
 # use command line creds if available
 credopts = options.CredentialsOptions(parser)
 parser.add_option_group(credopts)
+subunitopts = SubunitOptions(parser)
+parser.add_option_group(subunitopts)
+
 opts, args = parser.parse_args()
 
 if len(args) < 1:
@@ -67,12 +68,12 @@ class AclTests(samba.tests.TestCase):
 
     def setUp(self):
         super(AclTests, self).setUp()
-        self.ldb_admin = ldb
-        self.base_dn = ldb.domain_dn()
-        self.domain_sid = security.dom_sid(ldb.get_domain_sid())
+        self.ldb_admin = SamDB(ldaphost, credentials=creds, session_info=system_session(lp), lp=lp)
+        self.base_dn = self.ldb_admin.domain_dn()
+        self.domain_sid = security.dom_sid(self.ldb_admin.get_domain_sid())
         self.user_pass = "samba123@"
         self.configuration_dn = self.ldb_admin.get_config_basedn().get_linearized()
-        self.sd_utils = sd_utils.SDUtils(ldb)
+        self.sd_utils = sd_utils.SDUtils(self.ldb_admin)
         #used for anonymous login
         self.creds_tmp = Credentials()
         self.creds_tmp.set_username("")
@@ -620,6 +621,19 @@ class AclSearchTests(AclTests):
 
     def setUp(self):
         super(AclSearchTests, self).setUp()
+        # Get the old "dSHeuristics" if it was set
+        dsheuristics = self.ldb_admin.get_dsheuristics()
+        # Reset the "dSHeuristics" as they were before
+        self.addCleanup(self.ldb_admin.set_dsheuristics, dsheuristics)
+        # Set the "dSHeuristics" to activate the correct "userPassword" behaviour
+        self.ldb_admin.set_dsheuristics("000000001")
+        # Get the old "minPwdAge"
+        minPwdAge = self.ldb_admin.get_minPwdAge()
+        # Reset the "minPwdAge" as it was before
+        self.addCleanup(self.ldb_admin.set_minPwdAge, minPwdAge)
+        # Set it temporarely to "0"
+        self.ldb_admin.set_minPwdAge("0")
+
         self.u1 = "search_u1"
         self.u2 = "search_u2"
         self.u3 = "search_u3"
@@ -1281,6 +1295,20 @@ class AclCARTests(AclTests):
 
     def setUp(self):
         super(AclCARTests, self).setUp()
+
+        # Get the old "dSHeuristics" if it was set
+        dsheuristics = self.ldb_admin.get_dsheuristics()
+        # Reset the "dSHeuristics" as they were before
+        self.addCleanup(self.ldb_admin.set_dsheuristics, dsheuristics)
+        # Set the "dSHeuristics" to activate the correct "userPassword" behaviour
+        self.ldb_admin.set_dsheuristics("000000001")
+        # Get the old "minPwdAge"
+        minPwdAge = self.ldb_admin.get_minPwdAge()
+        # Reset the "minPwdAge" as it was before
+        self.addCleanup(self.ldb_admin.set_minPwdAge, minPwdAge)
+        # Set it temporarely to "0"
+        self.ldb_admin.set_minPwdAge("0")
+
         self.user_with_wp = "acl_car_user1"
         self.user_with_pc = "acl_car_user2"
         self.ldb_admin.newuser(self.user_with_wp, self.user_pass)
@@ -1609,6 +1637,136 @@ class AclExtendedTests(AclTests):
         self.assertEqual(len(res),1)
         self.assertTrue("nTSecurityDescriptor" in res[0].keys())
 
+class AclUndeleteTests(AclTests):
+
+    def setUp(self):
+        super(AclUndeleteTests, self).setUp()
+        self.regular_user = "undeleter1"
+        self.ou1 = "OU=undeleted_ou,"
+        self.testuser1 = "to_be_undeleted1"
+        self.testuser2 = "to_be_undeleted2"
+        self.testuser3 = "to_be_undeleted3"
+        self.testuser4 = "to_be_undeleted4"
+        self.testuser5 = "to_be_undeleted5"
+        self.testuser6 = "to_be_undeleted6"
+
+        self.new_dn_ou = "CN="+ self.testuser4 + "," + self.ou1 + self.base_dn
+
+        # Create regular user
+        self.testuser1_dn = self.get_user_dn(self.testuser1)
+        self.testuser2_dn = self.get_user_dn(self.testuser2)
+        self.testuser3_dn = self.get_user_dn(self.testuser3)
+        self.testuser4_dn = self.get_user_dn(self.testuser4)
+        self.testuser5_dn = self.get_user_dn(self.testuser5)
+        self.deleted_dn1 = self.create_delete_user(self.testuser1)
+        self.deleted_dn2 = self.create_delete_user(self.testuser2)
+        self.deleted_dn3 = self.create_delete_user(self.testuser3)
+        self.deleted_dn4 = self.create_delete_user(self.testuser4)
+        self.deleted_dn5 = self.create_delete_user(self.testuser5)
+
+        self.ldb_admin.create_ou(self.ou1 + self.base_dn)
+
+        self.ldb_admin.newuser(self.regular_user, self.user_pass)
+        self.ldb_admin.add_remove_group_members("Domain Admins", [self.regular_user],
+                       add_members_operation=True)
+        self.ldb_user = self.get_ldb_connection(self.regular_user, self.user_pass)
+        self.sid = self.sd_utils.get_object_sid(self.get_user_dn(self.regular_user))
+
+    def tearDown(self):
+        super(AclUndeleteTests, self).tearDown()
+        delete_force(self.ldb_admin, self.get_user_dn(self.regular_user))
+        delete_force(self.ldb_admin, self.get_user_dn(self.testuser1))
+        delete_force(self.ldb_admin, self.get_user_dn(self.testuser2))
+        delete_force(self.ldb_admin, self.get_user_dn(self.testuser3))
+        delete_force(self.ldb_admin, self.get_user_dn(self.testuser4))
+        delete_force(self.ldb_admin, self.get_user_dn(self.testuser5))
+        delete_force(self.ldb_admin, self.new_dn_ou)
+        delete_force(self.ldb_admin, self.ou1 + self.base_dn)
+
+    def GUID_string(self, guid):
+        return ldb.schema_format_value("objectGUID", guid)
+
+    def create_delete_user(self, new_user):
+        self.ldb_admin.newuser(new_user, self.user_pass)
+
+        res = self.ldb_admin.search(expression="(objectClass=*)",
+                                    base=self.get_user_dn(new_user),
+                                    scope=SCOPE_BASE,
+                                    controls=["show_deleted:1"])
+        guid = res[0]["objectGUID"][0]
+        self.ldb_admin.delete(self.get_user_dn(new_user))
+        res = self.ldb_admin.search(base="<GUID=%s>" % self.GUID_string(guid),
+                         scope=SCOPE_BASE, controls=["show_deleted:1"])
+        self.assertEquals(len(res), 1)
+        return str(res[0].dn)
+
+    def undelete_deleted(self, olddn, newdn):
+        msg = Message()
+        msg.dn = Dn(self.ldb_user, olddn)
+        msg["isDeleted"] = MessageElement([], FLAG_MOD_DELETE, "isDeleted")
+        msg["distinguishedName"] = MessageElement([newdn], FLAG_MOD_REPLACE, "distinguishedName")
+        res = self.ldb_user.modify(msg, ["show_recycled:1"])
+
+    def undelete_deleted_with_mod(self, olddn, newdn):
+        msg = Message()
+        msg.dn = Dn(ldb, olddn)
+        msg["isDeleted"] = MessageElement([], FLAG_MOD_DELETE, "isDeleted")
+        msg["distinguishedName"] = MessageElement([newdn], FLAG_MOD_REPLACE, "distinguishedName")
+        msg["url"] = MessageElement(["www.samba.org"], FLAG_MOD_REPLACE, "url")
+        res = self.ldb_user.modify(msg, ["show_deleted:1"])
+
+    def test_undelete(self):
+        # it appears the user has to have LC on the old parent to be able to move the object
+        # otherwise we get no such object. Since only System can modify the SD on deleted object
+        # we cannot grant this permission via LDAP, and this leaves us with "negative" tests at the moment
+
+        # deny write property on rdn, should fail
+        mod = "(OD;;WP;bf967a0e-0de6-11d0-a285-00aa003049e2;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.deleted_dn1, mod)
+        try:
+            self.undelete_deleted(self.deleted_dn1, self.testuser1_dn)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
+
+        # seems that permissions on isDeleted and distinguishedName are irrelevant
+        mod = "(OD;;WP;bf96798f-0de6-11d0-a285-00aa003049e2;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.deleted_dn2, mod)
+        mod = "(OD;;WP;bf9679e4-0de6-11d0-a285-00aa003049e2;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.deleted_dn2, mod)
+        self.undelete_deleted(self.deleted_dn2, self.testuser2_dn)
+
+        # attempt undelete with simultanious addition of url, WP to which is denied
+        mod = "(OD;;WP;9a9a0221-4a5b-11d1-a9c3-0000f80367c1;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.deleted_dn3, mod)
+        try:
+            self.undelete_deleted_with_mod(self.deleted_dn3, self.testuser3_dn)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
+
+        # undelete in an ou, in which we have no right to create children
+        mod = "(D;;CC;;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.ou1 + self.base_dn, mod)
+        try:
+            self.undelete_deleted(self.deleted_dn4, self.new_dn_ou)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
+
+        # delete is not required
+        mod = "(D;;SD;;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.deleted_dn5, mod)
+        self.undelete_deleted(self.deleted_dn5, self.testuser5_dn)
+
+        # deny Reanimate-Tombstone, should fail
+        mod = "(OD;;CR;45ec5156-db7e-47bb-b53f-dbeb2d03c40f;;%s)" % str(self.sid)
+        self.sd_utils.dacl_add_ace(self.base_dn, mod)
+        try:
+            self.undelete_deleted(self.deleted_dn4, self.testuser4_dn)
+            self.fail()
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
 
 class AclSPNTests(AclTests):
 
@@ -1669,6 +1827,7 @@ class AclSPNTests(AclTests):
     # same as for join_RODC, but do not set any SPNs
     def create_rodc(self, ctx):
          ctx.nc_list = [ ctx.base_dn, ctx.config_dn, ctx.schema_dn ]
+         ctx.full_nc_list = [ ctx.base_dn, ctx.config_dn, ctx.schema_dn ]
          ctx.krbtgt_dn = "CN=krbtgt_%s,CN=Users,%s" % (ctx.myname, ctx.base_dn)
 
          ctx.never_reveal_sid = [ "<SID=%s-%s>" % (ctx.domsid, security.DOMAIN_RID_RODC_DENY),
@@ -1699,6 +1858,7 @@ class AclSPNTests(AclTests):
 
     def create_dc(self, ctx):
         ctx.nc_list = [ ctx.base_dn, ctx.config_dn, ctx.schema_dn ]
+        ctx.full_nc_list = [ ctx.base_dn, ctx.config_dn, ctx.schema_dn ]
         ctx.userAccountControl = samba.dsdb.UF_SERVER_TRUST_ACCOUNT | samba.dsdb.UF_TRUSTED_FOR_DELEGATION
         ctx.secure_channel_type = misc.SEC_CHAN_BDC
         ctx.replica_flags = (drsuapi.DRSUAPI_DRS_WRIT_REP |
@@ -1873,36 +2033,4 @@ class AclSPNTests(AclTests):
 
 ldb = SamDB(ldaphost, credentials=creds, session_info=system_session(lp), lp=lp)
 
-runner = SubunitTestRunner()
-rc = 0
-if not runner.run(unittest.makeSuite(AclAddTests)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(AclModifyTests)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(AclDeleteTests)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(AclRenameTests)).wasSuccessful():
-    rc = 1
-
-# Get the old "dSHeuristics" if it was set
-dsheuristics = ldb.get_dsheuristics()
-# Set the "dSHeuristics" to activate the correct "userPassword" behaviour
-ldb.set_dsheuristics("000000001")
-# Get the old "minPwdAge"
-minPwdAge = ldb.get_minPwdAge()
-# Set it temporarely to "0"
-ldb.set_minPwdAge("0")
-if not runner.run(unittest.makeSuite(AclCARTests)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(AclSearchTests)).wasSuccessful():
-    rc = 1
-# Reset the "dSHeuristics" as they were before
-ldb.set_dsheuristics(dsheuristics)
-# Reset the "minPwdAge" as it was before
-ldb.set_minPwdAge(minPwdAge)
-
-if not runner.run(unittest.makeSuite(AclExtendedTests)).wasSuccessful():
-    rc = 1
-if not runner.run(unittest.makeSuite(AclSPNTests)).wasSuccessful():
-    rc = 1
-sys.exit(rc)
+TestProgram(module=__name__, opts=subunitopts)

@@ -96,14 +96,13 @@ static bool fetch_map_from_gencache(TALLOC_CTX *ctx,
 	if (key == NULL) {
 		return false;
 	}
-	found = gencache_get(key, &value, NULL);
+	found = gencache_get(key, ctx, &value, NULL);
 	TALLOC_FREE(key);
 	if (!found) {
 		return false;
 	}
 	TALLOC_FREE(*p_user_out);
-	*p_user_out = talloc_strdup(ctx, value);
-	SAFE_FREE(value);
+	*p_user_out = value;
 	if (!*p_user_out) {
 		return false;
 	}
@@ -189,7 +188,7 @@ bool user_in_netgroup(TALLOC_CTX *ctx, const char *user, const char *ngname)
  and netgroup lists.
 ****************************************************************************/
 
-bool user_in_list(TALLOC_CTX *ctx, const char *user,const char **list)
+bool user_in_list(TALLOC_CTX *ctx, const char *user, const char * const *list)
 {
 	if (!list || !*list)
 		return False;
@@ -400,7 +399,7 @@ bool map_username(TALLOC_CTX *ctx, const char *user_in, char **p_user_out)
 		}
 
 		if (strchr_m(dosname,'*') ||
-		    user_in_list(ctx, user_in, (const char **)dosuserlist)) {
+		    user_in_list(ctx, user_in, (const char * const *)dosuserlist)) {
 			DEBUG(3,("Mapped user %s to %s\n",user_in,unixname));
 			mapped_user = True;
 

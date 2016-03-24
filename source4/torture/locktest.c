@@ -221,7 +221,7 @@ static bool test_one(struct smbcli_state *cli[NSERVERS][NCONNECTIONS],
 	uint64_t len = rec->len;
 	enum brl_type op = rec->lock_type;
 	int server;
-	bool ret[NSERVERS];
+	/* bool ret[NSERVERS]; */
 	NTSTATUS status[NSERVERS];
 
 	switch (rec->lock_op) {
@@ -256,8 +256,8 @@ static bool test_one(struct smbcli_state *cli[NSERVERS][NCONNECTIONS],
 				res = smb_raw_lock(tree, &parms);
 			}
 
-			ret[server] = NT_STATUS_IS_OK(res); 
-			status[server] = smbcli_nt_error(cli[server][conn]->tree);
+			/* ret[server] = NT_STATUS_IS_OK(res); */
+			status[server] = res;
 			if (!exact_error_codes && 
 			    NT_STATUS_EQUAL(status[server], 
 					    NT_STATUS_FILE_LOCK_CONFLICT)) {
@@ -302,8 +302,8 @@ static bool test_one(struct smbcli_state *cli[NSERVERS][NCONNECTIONS],
 				res = smb_raw_lock(tree, &parms);
 			}
 
-			ret[server] = NT_STATUS_IS_OK(res);
-			status[server] = smbcli_nt_error(cli[server][conn]->tree);
+			/* ret[server] = NT_STATUS_IS_OK(res); */
+			status[server] = res;
 		}
 		if (showall || 
 		    (!hide_unlock_fails && !NT_STATUS_EQUAL(status[0],status[1]))) {
@@ -547,7 +547,7 @@ static void usage(poptContext pc)
 /****************************************************************************
   main program
 ****************************************************************************/
- int main(int argc,char *argv[])
+int main(int argc, const char *argv[])
 {
 	char *share[NSERVERS];
 	int opt;
@@ -584,7 +584,7 @@ static void usage(poptContext pc)
 	setlinebuf(stdout);
 	seed = time(NULL);
 
-	pc = poptGetContext("locktest", argc, (const char **) argv, long_options, 
+	pc = poptGetContext("locktest", argc, argv, long_options,
 			    POPT_CONTEXT_KEEP_FIRST);
 
 	poptSetOtherOptionHelp(pc, "<unc1> <unc2>");

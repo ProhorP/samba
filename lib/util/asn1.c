@@ -44,7 +44,6 @@ bool asn1_write(struct asn1_data *data, const void *p, int len)
 		uint8_t *newp;
 		newp = talloc_realloc(data, data->data, uint8_t, data->ofs+len);
 		if (!newp) {
-			asn1_free(data);
 			data->has_error = true;
 			return false;
 		}
@@ -941,7 +940,9 @@ bool asn1_read_enumerated(struct asn1_data *data, int *v)
 	if (!asn1_start_tag(data, ASN1_ENUMERATED)) return false;
 	while (!data->has_error && asn1_tag_remaining(data)>0) {
 		uint8_t b;
-		asn1_read_uint8(data, &b);
+		if (!asn1_read_uint8(data, &b)) {
+			return false;
+		}
 		*v = (*v << 8) + b;
 	}
 	return asn1_end_tag(data);	

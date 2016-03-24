@@ -20,6 +20,7 @@
 #include "includes.h"
 #include "param/pyparam.h"
 #include "auth/gensec/gensec.h"
+#include "auth/gensec/gensec_internal.h" /* TODO: remove this */
 #include "auth/credentials/pycredentials.h"
 #include "libcli/util/pyerrors.h"
 #include "python/modules.h"
@@ -213,6 +214,42 @@ static PyObject *py_gensec_start_server(PyTypeObject *type, PyObject *args, PyOb
 	return (PyObject *)self;
 }
 
+static PyObject *py_gensec_set_target_hostname(PyObject *self, PyObject *args)
+{
+	struct gensec_security *security = pytalloc_get_type(self, struct gensec_security);
+	char *target_hostname;
+	NTSTATUS status;
+
+	if (!PyArg_ParseTuple(args, "s", &target_hostname))
+		return NULL;
+
+	status = gensec_set_target_hostname(security, target_hostname);
+	if (!NT_STATUS_IS_OK(status)) {
+		PyErr_SetNTSTATUS(status);
+		return NULL;
+	}
+	
+	Py_RETURN_NONE;
+}
+
+static PyObject *py_gensec_set_target_service(PyObject *self, PyObject *args)
+{
+	struct gensec_security *security = pytalloc_get_type(self, struct gensec_security);
+	char *target_service;
+	NTSTATUS status;
+
+	if (!PyArg_ParseTuple(args, "s", &target_service))
+		return NULL;
+
+	status = gensec_set_target_service(security, target_service);
+	if (!NT_STATUS_IS_OK(status)) {
+		PyErr_SetNTSTATUS(status);
+		return NULL;
+	}
+	
+	Py_RETURN_NONE;
+}
+
 static PyObject *py_gensec_set_credentials(PyObject *self, PyObject *args)
 {
 	PyObject *py_creds = Py_None;
@@ -400,7 +437,6 @@ static PyObject *py_gensec_update(PyObject *self, PyObject *args)
 	PyObject *ret, *py_in;
 	struct gensec_security *security = pytalloc_get_type(self, struct gensec_security);
 	PyObject *finished_processing;
-	struct tevent_context *ev;
 
 	if (!PyArg_ParseTuple(args, "O", &py_in))
 		return NULL;
@@ -415,14 +451,7 @@ static PyObject *py_gensec_update(PyObject *self, PyObject *args)
 	in.data = (uint8_t *)PyString_AsString(py_in);
 	in.length = PyString_Size(py_in);
 
-	ev = samba_tevent_context_init(mem_ctx);
-	if (ev == NULL) {
-		PyErr_NoMemory();
-		PyObject_Del(self);
-		return NULL;
-	}
-
-	status = gensec_update(security, mem_ctx, ev, in, &out);
+	status = gensec_update(security, mem_ctx, in, &out);
 
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_MORE_PROCESSING_REQUIRED)
 	    && !NT_STATUS_IS_OK(status)) {
@@ -518,6 +547,10 @@ static PyMethodDef py_gensec_security_methods[] = {
 		"S.start_server(auth_ctx, settings) -> gensec" },
 	{ "set_credentials", (PyCFunction)py_gensec_set_credentials, METH_VARARGS, 
 		"S.start_client(credentials)" },
+	{ "set_target_hostname", (PyCFunction)py_gensec_set_target_hostname, METH_VARARGS, 
+		"S.start_target_hostname(target_hostname)" },
+	{ "set_target_service", (PyCFunction)py_gensec_set_target_service, METH_VARARGS, 
+		"S.start_target_service(target_service)" },
 	{ "session_info", (PyCFunction)py_gensec_session_info, METH_NOARGS,
 		"S.session_info() -> info" },
 	{ "session_key", (PyCFunction)py_gensec_session_key, METH_NOARGS,

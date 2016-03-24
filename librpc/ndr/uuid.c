@@ -197,15 +197,7 @@ _PUBLIC_ bool GUID_all_zero(const struct GUID *u)
 
 _PUBLIC_ bool GUID_equal(const struct GUID *u1, const struct GUID *u2)
 {
-	if (u1->time_low != u2->time_low ||
-	    u1->time_mid != u2->time_mid ||
-	    u1->time_hi_and_version != u2->time_hi_and_version ||
-	    u1->clock_seq[0] != u2->clock_seq[0] ||
-	    u1->clock_seq[1] != u2->clock_seq[1] ||
-	    memcmp(u1->node, u2->node, 6) != 0) {
-		return false;
-	}
-	return true;
+	return (GUID_compare(u1, u2) == 0);
 }
 
 _PUBLIC_ int GUID_compare(const struct GUID *u1, const struct GUID *u2)
@@ -238,15 +230,30 @@ _PUBLIC_ int GUID_compare(const struct GUID *u1, const struct GUID *u2)
 */
 _PUBLIC_ char *GUID_string(TALLOC_CTX *mem_ctx, const struct GUID *guid)
 {
-	return talloc_asprintf(mem_ctx, 
-			       "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-			       guid->time_low, guid->time_mid,
-			       guid->time_hi_and_version,
-			       guid->clock_seq[0],
-			       guid->clock_seq[1],
-			       guid->node[0], guid->node[1],
-			       guid->node[2], guid->node[3],
-			       guid->node[4], guid->node[5]);
+	struct GUID_txt_buf buf;
+	return talloc_strdup(mem_ctx, GUID_buf_string(guid, &buf));
+}
+
+/**
+ * Does the same without allocating memory, using the structure buffer.
+ * Useful for debug messages, so that you do not have to talloc_free the result
+ */
+_PUBLIC_ char* GUID_buf_string(const struct GUID *guid,
+			       struct GUID_txt_buf *dst)
+{
+	if (!guid) {
+		return NULL;
+	}
+	snprintf(dst->buf, sizeof(dst->buf),
+		 "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		 guid->time_low, guid->time_mid,
+		 guid->time_hi_and_version,
+		 guid->clock_seq[0],
+		 guid->clock_seq[1],
+		 guid->node[0], guid->node[1],
+		 guid->node[2], guid->node[3],
+		 guid->node[4], guid->node[5]);
+	return dst->buf;
 }
 
 _PUBLIC_ char *GUID_string2(TALLOC_CTX *mem_ctx, const struct GUID *guid)

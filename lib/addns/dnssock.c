@@ -63,6 +63,7 @@ static DNS_ERROR dns_tcp_open( const char *nameserver,
 	ret = getaddrinfo(nameserver, service, &hints, &ai_result);
 	if (ret != 0) {
 		DEBUG(1,("dns_tcp_open: getaddrinfo: %s\n", gai_strerror(ret)));
+		TALLOC_FREE(conn);
 		return ERROR_DNS_INVALID_NAME_SERVER;
 	}
 
@@ -94,13 +95,12 @@ static DNS_ERROR dns_tcp_open( const char *nameserver,
 	talloc_set_destructor(conn, destroy_dns_connection);
 
 	conn->hType = DNS_TCP;
-
 	*result = conn;
 	return ERROR_DNS_SUCCESS;
 }
 
 /********************************************************************
-********************************************************************/
+ * ********************************************************************/
 
 static DNS_ERROR dns_udp_open( const char *nameserver,
 			       TALLOC_CTX *mem_ctx,
@@ -154,7 +154,7 @@ static DNS_ERROR dns_udp_open( const char *nameserver,
 	/* Failed to connect with any address */
 	if (rp == NULL) {
 		TALLOC_FREE(conn);
-                return ERROR_DNS_CONNECTION_FAILED;
+		return ERROR_DNS_CONNECTION_FAILED;
 	}
 
 	talloc_set_destructor(conn, destroy_dns_connection);
@@ -200,7 +200,11 @@ static DNS_ERROR write_all(int fd, uint8_t *data, size_t len)
 
 	while (total < len) {
 
-		ssize_t ret = write(fd, data + total, len - total);
+		ssize_t ret;
+
+		do {
+			ret = write(fd, data + total, len - total);
+		} while ((ret == -1) && (errno == EINTR));
 
 		if (ret <= 0) {
 			/*
@@ -232,9 +236,11 @@ static DNS_ERROR dns_send_udp(struct dns_connection *conn,
 {
 	ssize_t ret;
 
-	ret = sendto(conn->s, buf->data, buf->offset, 0,
+	do {
+		ret = sendto(conn->s, buf->data, buf->offset, 0,
 		     (struct sockaddr *)&conn->RecvAddr,
 		     sizeof(conn->RecvAddr));
+	} while ((ret == -1) && (errno == EINTR));
 
 	if (ret != buf->offset) {
 		return ERROR_DNS_SOCKET_ERROR;
@@ -270,12 +276,21 @@ static DNS_ERROR read_all(int fd, uint8_t *data, size_t len)
 		pfd.events = POLLIN|POLLHUP;
 
 		fd_ready = poll(&pfd, 1, 10000);
+		if (fd_ready == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			return ERROR_DNS_SOCKET_ERROR;
+		}
 		if ( fd_ready == 0 ) {
 			/* read timeout */
 			return ERROR_DNS_SOCKET_ERROR;
 		}
 
-		ret = read(fd, data + total, len - total);
+		do {
+			ret = read(fd, data + total, len - total);
+		} while ((ret == -1) && (errno == EINTR));
+
 		if (ret <= 0) {
 			/* EOF or error */
 			return ERROR_DNS_SOCKET_ERROR;
@@ -306,16 +321,17 @@ static DNS_ERROR dns_receive_tcp(TALLOC_CTX *mem_ctx,
 
 	buf->size = ntohs(len);
 
-	if (buf->size) {
-		if (!(buf->data = talloc_array(buf, uint8_t, buf->size))) {
-			TALLOC_FREE(buf);
-			return ERROR_DNS_NO_MEMORY;
-		}
-	} else {
-		buf->data = NULL;
+	if (buf->size == 0) {
+		*presult = buf;
+		return ERROR_DNS_SUCCESS;
 	}
 
-	err = read_all(conn->s, buf->data, buf->size);
+	if (!(buf->data = talloc_array(buf, uint8_t, buf->size))) {
+		TALLOC_FREE(buf);
+		return ERROR_DNS_NO_MEMORY;
+	}
+
+	err = read_all(conn->s, buf->data, talloc_get_size(buf->data));
 	if (!ERR_DNS_IS_OK(err)) {
 		TALLOC_FREE(buf);
 		return err;
@@ -345,7 +361,9 @@ static DNS_ERROR dns_receive_udp(TALLOC_CTX *mem_ctx,
 		return ERROR_DNS_NO_MEMORY;
 	}
 
-	received = recv(conn->s, (void *)buf->data, 512, 0);
+	do {
+		received = recv(conn->s, (void *)buf->data, 512, 0);
+	} while ((received == -1) && (errno == EINTR));
 
 	if (received == -1) {
 		TALLOC_FREE(buf);

@@ -21,7 +21,7 @@
 #include <Python.h>
 #include "includes.h"
 #include "system/filesys.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "librpc/ndr/libndr.h"
 #include "ntvfs/posix/posix_eadb.h"
@@ -57,7 +57,8 @@ static PyObject *py_wrap_setxattr(PyObject *self, PyObject *args)
 	blob.length = blobsize;
 	mem_ctx = talloc_new(NULL);
 	eadb = db_open_tdb(mem_ctx, py_default_loadparm_context(mem_ctx), tdbname, 50000,
-			   TDB_DEFAULT, O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_2);
+			   TDB_DEFAULT, O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_2,
+			   DBWRAP_FLAG_NONE);
 
 	if (eadb == NULL) {
 		PyErr_SetFromErrno(PyExc_IOError);
@@ -104,7 +105,8 @@ static PyObject *py_wrap_getxattr(PyObject *self, PyObject *args)
 	mem_ctx = talloc_new(NULL);
 
 	eadb = db_open_tdb(mem_ctx, py_default_loadparm_context(mem_ctx), tdbname, 50000,
-			   TDB_DEFAULT, O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_2);
+			   TDB_DEFAULT, O_RDWR|O_CREAT, 0600, DBWRAP_LOCK_ORDER_2,
+			   DBWRAP_FLAG_NONE);
 
 	if (eadb == NULL) {
 		PyErr_SetFromErrno(PyExc_IOError);

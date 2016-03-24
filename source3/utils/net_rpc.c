@@ -37,6 +37,8 @@
 #include "secrets.h"
 #include "lib/netapi/netapi.h"
 #include "lib/netapi/netapi_net.h"
+#include "librpc/gen_ndr/libnet_join.h"
+#include "libnet/libnet_join.h"
 #include "rpc_client/init_lsa.h"
 #include "../libcli/security/security.h"
 #include "libsmb/libsmb.h"
@@ -82,7 +84,7 @@ NTSTATUS net_get_remote_domain_sid(struct cli_state *cli, TALLOC_CTX *mem_ctx,
 	union lsa_PolicyInformation *info = NULL;
 	struct dcerpc_binding_handle *b;
 
-	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					  &lsa_pipe);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, _("Could not initialise lsa pipe\n"));
@@ -190,10 +192,11 @@ int run_rpc_command(struct net_context *c,
 		    && (ndr_syntax_id_equal(&table->syntax_id,
 					    &ndr_table_netlogon.syntax_id))) {
 			/* Always try and create an schannel netlogon pipe. */
+			TALLOC_FREE(c->netlogon_creds);
 			nt_status = cli_rpc_pipe_open_schannel(
-				cli, &table->syntax_id, NCACN_NP,
-				DCERPC_AUTH_LEVEL_PRIVACY, domain_name,
-				&pipe_hnd);
+				cli, c->msg_ctx, table, NCACN_NP,
+				domain_name,
+				&pipe_hnd, c, &c->netlogon_creds);
 			if (!NT_STATUS_IS_OK(nt_status)) {
 				DEBUG(0, ("Could not initialise schannel netlogon pipe. Error was %s\n",
 					nt_errstr(nt_status) ));
@@ -205,6 +208,7 @@ int run_rpc_command(struct net_context *c,
 					cli, table,
 					(conn_flags & NET_FLAGS_TCP) ?
 					NCACN_IP_TCP : NCACN_NP,
+					CRED_DONT_USE_KERBEROS,
 					DCERPC_AUTH_TYPE_NTLMSSP,
 					DCERPC_AUTH_LEVEL_PRIVACY,
 					smbXcli_conn_remote_name(cli->conn),
@@ -212,7 +216,7 @@ int run_rpc_command(struct net_context *c,
 					c->opt_password, &pipe_hnd);
 			} else {
 				nt_status = cli_rpc_pipe_open_noauth(
-					cli, &table->syntax_id,
+					cli, table,
 					&pipe_hnd);
 			}
 			if (!NT_STATUS_IS_OK(nt_status)) {
@@ -276,7 +280,11 @@ static NTSTATUS rpc_changetrustpw_internals(struct net_context *c,
 {
 	NTSTATUS status;
 
-	status = trust_pw_find_change_and_store_it(pipe_hnd, mem_ctx, c->opt_target_workgroup);
+	status = trust_pw_change(c->netlogon_creds,
+				 c->msg_ctx,
+				 pipe_hnd->binding_handle,
+				 c->opt_target_workgroup,
+				 true); /* force */
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, _("Failed to change machine account password: %s\n"),
 			nt_errstr(status));
@@ -314,113 +322,13 @@ int net_rpc_changetrustpw(struct net_context *c, int argc, const char **argv)
 }
 
 /**
- * Join a domain, the old way.
+ * Join a domain, the old way.  This function exists to allow
+ * the message to be displayed when oldjoin was explicitly
+ * requested, but not when it was implied by "net rpc join".
  *
  * This uses 'machinename' as the inital password, and changes it.
  *
  * The password should be created with 'server manager' or equiv first.
- *
- * All parameters are provided by the run_rpc_command function, except for
- * argc, argv which are passed through.
- *
- * @param domain_sid The domain sid acquired from the remote server.
- * @param cli A cli_state connected to the server.
- * @param mem_ctx Talloc context, destroyed on completion of the function.
- * @param argc  Standard main() style argc.
- * @param argv  Standard main() style argv. Initial components are already
- *              stripped.
- *
- * @return Normal NTSTATUS return.
- **/
-
-static NTSTATUS rpc_oldjoin_internals(struct net_context *c,
-					const struct dom_sid *domain_sid,
-					const char *domain_name,
-					struct cli_state *cli,
-					struct rpc_pipe_client *pipe_hnd,
-					TALLOC_CTX *mem_ctx,
-					int argc,
-					const char **argv)
-{
-
-	fstring trust_passwd;
-	unsigned char orig_trust_passwd_hash[16];
-	NTSTATUS result;
-	enum netr_SchannelType sec_channel_type;
-
-	result = cli_rpc_pipe_open_noauth(cli, &ndr_table_netlogon.syntax_id,
-					  &pipe_hnd);
-	if (!NT_STATUS_IS_OK(result)) {
-		DEBUG(0,("rpc_oldjoin_internals: netlogon pipe open to machine %s failed. "
-			"error was %s\n",
-			smbXcli_conn_remote_name(cli->conn),
-			nt_errstr(result) ));
-		return result;
-	}
-
-	/*
-	   check what type of join - if the user want's to join as
-	   a BDC, the server must agree that we are a BDC.
-	*/
-	if (argc >= 0) {
-		sec_channel_type = get_sec_channel_type(argv[0]);
-	} else {
-		sec_channel_type = get_sec_channel_type(NULL);
-	}
-
-	fstrcpy(trust_passwd, lp_netbios_name());
-	if (!strlower_m(trust_passwd)) {
-		return NT_STATUS_UNSUCCESSFUL;
-	}
-
-	/*
-	 * Machine names can be 15 characters, but the max length on
-	 * a password is 14.  --jerry
-	 */
-
-	trust_passwd[14] = '\0';
-
-	E_md4hash(trust_passwd, orig_trust_passwd_hash);
-
-	result = trust_pw_change_and_store_it(pipe_hnd, mem_ctx, c->opt_target_workgroup,
-					      lp_netbios_name(),
-					      orig_trust_passwd_hash,
-					      sec_channel_type);
-
-	if (NT_STATUS_IS_OK(result))
-		printf(_("Joined domain %s.\n"), c->opt_target_workgroup);
-
-
-	if (!secrets_store_domain_sid(c->opt_target_workgroup, domain_sid)) {
-		DEBUG(0, ("error storing domain sid for %s\n", c->opt_target_workgroup));
-		result = NT_STATUS_UNSUCCESSFUL;
-	}
-
-	return result;
-}
-
-/**
- * Join a domain, the old way.
- *
- * @param argc  Standard main() style argc.
- * @param argv  Standard main() style argv. Initial components are already
- *              stripped.
- *
- * @return A shell status integer (0 for success).
- **/
-
-static int net_rpc_perform_oldjoin(struct net_context *c, int argc, const char **argv)
-{
-	return run_rpc_command(c, NULL, &ndr_table_netlogon,
-			       NET_FLAGS_NO_PIPE | NET_FLAGS_ANONYMOUS | NET_FLAGS_PDC,
-			       rpc_oldjoin_internals,
-			       argc, argv);
-}
-
-/**
- * Join a domain, the old way.  This function exists to allow
- * the message to be displayed when oldjoin was explicitly
- * requested, but not when it was implied by "net rpc join".
  *
  * @param argc  Standard main() style argc.
  * @param argv  Standard main() style argv. Initial components are already
@@ -431,24 +339,287 @@ static int net_rpc_perform_oldjoin(struct net_context *c, int argc, const char *
 
 static int net_rpc_oldjoin(struct net_context *c, int argc, const char **argv)
 {
-	int rc = -1;
+	struct libnet_JoinCtx *r = NULL;
+	TALLOC_CTX *mem_ctx;
+	WERROR werr;
+	const char *domain = lp_workgroup(); /* FIXME */
+	bool modify_config = lp_config_backend_is_registry();
+	enum netr_SchannelType sec_chan_type;
+	char *pw = NULL;
 
 	if (c->display_usage) {
-		d_printf(  "%s\n"
-			   "net rpc oldjoin\n"
-			   "    %s\n",
-			 _("Usage:"),
-			 _("Join a domain the old way"));
+		d_printf("Usage:\n"
+			 "net rpc oldjoin\n"
+			 "    Join a domain the old way\n");
 		return 0;
 	}
 
-	rc = net_rpc_perform_oldjoin(c, argc, argv);
-
-	if (rc) {
-		d_fprintf(stderr, _("Failed to join domain\n"));
+	mem_ctx = talloc_init("net_rpc_oldjoin");
+	if (!mem_ctx) {
+		return -1;
 	}
 
-	return rc;
+	werr = libnet_init_JoinCtx(mem_ctx, &r);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto fail;
+	}
+
+	/*
+	   check what type of join - if the user want's to join as
+	   a BDC, the server must agree that we are a BDC.
+	*/
+	if (argc >= 0) {
+		sec_chan_type = get_sec_channel_type(argv[0]);
+	} else {
+		sec_chan_type = get_sec_channel_type(NULL);
+	}
+
+	if (!c->msg_ctx) {
+		d_fprintf(stderr, _("Could not initialise message context. "
+			"Try running as root\n"));
+		werr = WERR_ACCESS_DENIED;
+		goto fail;
+	}
+
+	pw = talloc_strndup(r, lp_netbios_name(), 14);
+	if (pw == NULL) {
+		werr = WERR_NOMEM;
+		goto fail;
+	}
+
+	r->in.msg_ctx			= c->msg_ctx;
+	r->in.domain_name		= domain;
+	r->in.secure_channel_type	= sec_chan_type;
+	r->in.dc_name			= c->opt_host;
+	r->in.admin_account		= "";
+	r->in.admin_password		= strlower_talloc(r, pw);
+	if (r->in.admin_password == NULL) {
+		werr = WERR_NOMEM;
+		goto fail;
+	}
+	r->in.debug			= true;
+	r->in.modify_config		= modify_config;
+	r->in.join_flags		= WKSSVC_JOIN_FLAGS_JOIN_TYPE |
+					  WKSSVC_JOIN_FLAGS_JOIN_UNSECURE |
+					  WKSSVC_JOIN_FLAGS_MACHINE_PWD_PASSED;
+
+	werr = libnet_Join(mem_ctx, r);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto fail;
+	}
+
+	/* Check the short name of the domain */
+
+	if (!modify_config && !strequal(lp_workgroup(), r->out.netbios_domain_name)) {
+		d_printf("The workgroup in %s does not match the short\n", get_dyn_CONFIGFILE());
+		d_printf("domain name obtained from the server.\n");
+		d_printf("Using the name [%s] from the server.\n", r->out.netbios_domain_name);
+		d_printf("You should set \"workgroup = %s\" in %s.\n",
+			 r->out.netbios_domain_name, get_dyn_CONFIGFILE());
+	}
+
+	d_printf("Using short domain name -- %s\n", r->out.netbios_domain_name);
+
+	if (r->out.dns_domain_name) {
+		d_printf("Joined '%s' to realm '%s'\n", r->in.machine_name,
+			r->out.dns_domain_name);
+	} else {
+		d_printf("Joined '%s' to domain '%s'\n", r->in.machine_name,
+			r->out.netbios_domain_name);
+	}
+
+	TALLOC_FREE(mem_ctx);
+
+	return 0;
+
+fail:
+	if (c->opt_flags & NET_FLAGS_EXPECT_FALLBACK) {
+		goto cleanup;
+	}
+
+	/* issue an overall failure message at the end. */
+	d_fprintf(stderr, _("Failed to join domain: %s\n"),
+		r && r->out.error_string ? r->out.error_string :
+		get_friendly_werror_msg(werr));
+
+cleanup:
+	TALLOC_FREE(mem_ctx);
+
+	return -1;
+}
+
+/**
+ * check that a join is OK
+ *
+ * @return A shell status integer (0 for success)
+ *
+ **/
+int net_rpc_testjoin(struct net_context *c, int argc, const char **argv)
+{
+	NTSTATUS status;
+	TALLOC_CTX *mem_ctx;
+	const char *domain = c->opt_target_workgroup;
+	const char *dc = c->opt_host;
+
+	if (c->display_usage) {
+		d_printf("Usage\n"
+			 "net rpc testjoin\n"
+			 "    Test if a join is OK\n");
+		return 0;
+	}
+
+	mem_ctx = talloc_init("net_rpc_testjoin");
+	if (!mem_ctx) {
+		return -1;
+	}
+
+	if (!dc) {
+		struct netr_DsRGetDCNameInfo *info;
+
+		if (!c->msg_ctx) {
+			d_fprintf(stderr, _("Could not initialise message context. "
+				"Try running as root\n"));
+			talloc_destroy(mem_ctx);
+			return -1;
+		}
+
+		status = dsgetdcname(mem_ctx,
+				     c->msg_ctx,
+				     domain,
+				     NULL,
+				     NULL,
+				     DS_RETURN_DNS_NAME,
+				     &info);
+		if (!NT_STATUS_IS_OK(status)) {
+			talloc_destroy(mem_ctx);
+			return -1;
+		}
+
+		dc = strip_hostname(info->dc_unc);
+	}
+
+	/* Display success or failure */
+	status = libnet_join_ok(c->msg_ctx,
+				c->opt_workgroup,
+				dc,
+				c->opt_kerberos);
+	if (!NT_STATUS_IS_OK(status)) {
+		fprintf(stderr,"Join to domain '%s' is not valid: %s\n",
+			domain, nt_errstr(status));
+		talloc_destroy(mem_ctx);
+		return -1;
+	}
+
+	printf("Join to '%s' is OK\n",domain);
+	talloc_destroy(mem_ctx);
+
+	return 0;
+}
+
+/**
+ * Join a domain using the administrator username and password
+ *
+ * @param argc  Standard main() style argc
+ * @param argc  Standard main() style argv.  Initial components are already
+ *              stripped.  Currently not used.
+ * @return A shell status integer (0 for success)
+ *
+ **/
+
+static int net_rpc_join_newstyle(struct net_context *c, int argc, const char **argv)
+{
+	struct libnet_JoinCtx *r = NULL;
+	TALLOC_CTX *mem_ctx;
+	WERROR werr;
+	const char *domain = lp_workgroup(); /* FIXME */
+	bool modify_config = lp_config_backend_is_registry();
+	enum netr_SchannelType sec_chan_type;
+
+	if (c->display_usage) {
+		d_printf("Usage:\n"
+			 "net rpc join\n"
+			 "    Join a domain the new way\n");
+		return 0;
+	}
+
+	mem_ctx = talloc_init("net_rpc_join_newstyle");
+	if (!mem_ctx) {
+		return -1;
+	}
+
+	werr = libnet_init_JoinCtx(mem_ctx, &r);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto fail;
+	}
+
+	/*
+	   check what type of join - if the user want's to join as
+	   a BDC, the server must agree that we are a BDC.
+	*/
+	if (argc >= 0) {
+		sec_chan_type = get_sec_channel_type(argv[0]);
+	} else {
+		sec_chan_type = get_sec_channel_type(NULL);
+	}
+
+	if (!c->msg_ctx) {
+		d_fprintf(stderr, _("Could not initialise message context. "
+			"Try running as root\n"));
+		werr = WERR_ACCESS_DENIED;
+		goto fail;
+	}
+
+	r->in.msg_ctx			= c->msg_ctx;
+	r->in.domain_name		= domain;
+	r->in.secure_channel_type	= sec_chan_type;
+	r->in.dc_name			= c->opt_host;
+	r->in.admin_account		= c->opt_user_name;
+	r->in.admin_password		= net_prompt_pass(c, c->opt_user_name);
+	r->in.debug			= true;
+	r->in.use_kerberos		= c->opt_kerberos;
+	r->in.modify_config		= modify_config;
+	r->in.join_flags		= WKSSVC_JOIN_FLAGS_JOIN_TYPE |
+					  WKSSVC_JOIN_FLAGS_ACCOUNT_CREATE |
+					  WKSSVC_JOIN_FLAGS_DOMAIN_JOIN_IF_JOINED;
+
+	werr = libnet_Join(mem_ctx, r);
+	if (!W_ERROR_IS_OK(werr)) {
+		goto fail;
+	}
+
+	/* Check the short name of the domain */
+
+	if (!modify_config && !strequal(lp_workgroup(), r->out.netbios_domain_name)) {
+		d_printf("The workgroup in %s does not match the short\n", get_dyn_CONFIGFILE());
+		d_printf("domain name obtained from the server.\n");
+		d_printf("Using the name [%s] from the server.\n", r->out.netbios_domain_name);
+		d_printf("You should set \"workgroup = %s\" in %s.\n",
+			 r->out.netbios_domain_name, get_dyn_CONFIGFILE());
+	}
+
+	d_printf("Using short domain name -- %s\n", r->out.netbios_domain_name);
+
+	if (r->out.dns_domain_name) {
+		d_printf("Joined '%s' to realm '%s'\n", r->in.machine_name,
+			r->out.dns_domain_name);
+	} else {
+		d_printf("Joined '%s' to domain '%s'\n", r->in.machine_name,
+			r->out.netbios_domain_name);
+	}
+
+	TALLOC_FREE(mem_ctx);
+
+	return 0;
+
+fail:
+	/* issue an overall failure message at the end. */
+	d_printf("Failed to join domain: %s\n",
+		r && r->out.error_string ? r->out.error_string :
+		get_friendly_werror_msg(werr));
+
+	TALLOC_FREE(mem_ctx);
+
+	return -1;
 }
 
 /**
@@ -465,6 +636,8 @@ static int net_rpc_oldjoin(struct net_context *c, int argc, const char **argv)
 
 int net_rpc_join(struct net_context *c, int argc, const char **argv)
 {
+	int ret;
+
 	if (c->display_usage) {
 		d_printf("%s\n%s",
 			 _("Usage:"),
@@ -492,8 +665,12 @@ int net_rpc_join(struct net_context *c, int argc, const char **argv)
 		return -1;
 	}
 
-	if ((net_rpc_perform_oldjoin(c, argc, argv) == 0))
+	c->opt_flags |= NET_FLAGS_EXPECT_FALLBACK;
+	ret = net_rpc_oldjoin(c, argc, argv);
+	c->opt_flags &= ~NET_FLAGS_EXPECT_FALLBACK;
+	if (ret == 0) {
 		return 0;
+	}
 
 	return net_rpc_join_newstyle(c, argc, argv);
 }
@@ -1159,7 +1336,7 @@ static NTSTATUS rpc_sh_handle_user(struct net_context *c,
 	struct policy_handle connect_pol, domain_pol, user_pol;
 	NTSTATUS status, result;
 	struct dom_sid sid;
-	uint32 rid;
+	uint32_t rid;
 	enum lsa_SidType type;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -1173,7 +1350,7 @@ static NTSTATUS rpc_sh_handle_user(struct net_context *c,
 	ZERO_STRUCT(domain_pol);
 	ZERO_STRUCT(user_pol);
 
-	status = net_rpc_lookup_name(c, mem_ctx, rpc_pipe_np_smb_conn(pipe_hnd),
+	status = net_rpc_lookup_name(c, mem_ctx, ctx->cli,
 				     argv[0], NULL, NULL, &sid, &type);
 	if (!NT_STATUS_IS_OK(status)) {
 		d_fprintf(stderr, _("Could not lookup %s: %s\n"), argv[0],
@@ -1413,7 +1590,7 @@ static NTSTATUS rpc_sh_user_flag_edit_internals(struct net_context *c,
 	NTSTATUS status, result;
 	const char *username;
 	const char *oldval = "unknown";
-	uint32 oldflags, newflags;
+	uint32_t oldflags, newflags;
 	bool newval;
 	union samr_UserInfo *info = NULL;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
@@ -1966,7 +2143,7 @@ static NTSTATUS get_sid_from_name(struct cli_state *cli,
 	NTSTATUS status, result;
 	struct dcerpc_binding_handle *b;
 
-	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					  &pipe_hnd);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto done;
@@ -2019,7 +2196,7 @@ static NTSTATUS rpc_add_groupmem(struct rpc_pipe_client *pipe_hnd,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 group_rid;
+	uint32_t group_rid;
 	struct policy_handle group_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2123,13 +2300,14 @@ static NTSTATUS rpc_add_groupmem(struct rpc_pipe_client *pipe_hnd,
 }
 
 static NTSTATUS rpc_add_aliasmem(struct rpc_pipe_client *pipe_hnd,
-				TALLOC_CTX *mem_ctx,
-				const struct dom_sid *alias_sid,
-				const char *member)
+				 struct cli_state *cli,
+				 TALLOC_CTX *mem_ctx,
+				 const struct dom_sid *alias_sid,
+				 const char *member)
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 alias_rid;
+	uint32_t alias_rid;
 	struct policy_handle alias_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2144,7 +2322,7 @@ static NTSTATUS rpc_add_aliasmem(struct rpc_pipe_client *pipe_hnd,
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	result = get_sid_from_name(rpc_pipe_np_smb_conn(pipe_hnd), mem_ctx,
+	result = get_sid_from_name(cli, mem_ctx,
 				   member, &member_sid, &member_type);
 
 	if (!NT_STATUS_IS_OK(result)) {
@@ -2251,7 +2429,7 @@ static NTSTATUS rpc_group_addmem_internals(struct net_context *c,
 	}
 
 	if (group_type == SID_NAME_ALIAS) {
-		NTSTATUS result = rpc_add_aliasmem(pipe_hnd, mem_ctx,
+		NTSTATUS result = rpc_add_aliasmem(pipe_hnd, cli, mem_ctx,
 						   &group_sid, argv[1]);
 
 		if (!NT_STATUS_IS_OK(result)) {
@@ -2282,7 +2460,7 @@ static NTSTATUS rpc_del_groupmem(struct net_context *c,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 group_rid;
+	uint32_t group_rid;
 	struct policy_handle group_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2383,13 +2561,14 @@ static NTSTATUS rpc_del_groupmem(struct net_context *c,
 }
 
 static NTSTATUS rpc_del_aliasmem(struct rpc_pipe_client *pipe_hnd,
-				TALLOC_CTX *mem_ctx,
-				const struct dom_sid *alias_sid,
-				const char *member)
+				 struct cli_state *cli,
+				 TALLOC_CTX *mem_ctx,
+				 const struct dom_sid *alias_sid,
+				 const char *member)
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 alias_rid;
+	uint32_t alias_rid;
 	struct policy_handle alias_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2403,7 +2582,7 @@ static NTSTATUS rpc_del_aliasmem(struct rpc_pipe_client *pipe_hnd,
 	if (!sid_split_rid(&sid, &alias_rid))
 		return NT_STATUS_UNSUCCESSFUL;
 
-	result = get_sid_from_name(rpc_pipe_np_smb_conn(pipe_hnd), mem_ctx,
+	result = get_sid_from_name(cli, mem_ctx,
 				   member, &member_sid, &member_type);
 
 	if (!NT_STATUS_IS_OK(result)) {
@@ -2512,7 +2691,7 @@ static NTSTATUS rpc_group_delmem_internals(struct net_context *c,
 	}
 
 	if (group_type == SID_NAME_ALIAS) {
-		NTSTATUS result = rpc_del_aliasmem(pipe_hnd, mem_ctx,
+		NTSTATUS result = rpc_del_aliasmem(pipe_hnd, cli, mem_ctx,
 						   &group_sid, argv[1]);
 
 		if (!NT_STATUS_IS_OK(result)) {
@@ -2562,7 +2741,7 @@ static NTSTATUS rpc_group_list_internals(struct net_context *c,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 start_idx=0, max_entries=250, num_entries, i, loop_count = 0;
+	uint32_t start_idx=0, max_entries=250, num_entries, i, loop_count = 0;
 	struct samr_SamArray *groups = NULL;
 	bool global = false;
 	bool local = false;
@@ -2840,11 +3019,11 @@ static NTSTATUS rpc_list_group_members(struct net_context *c,
 					const char *domain_name,
 					const struct dom_sid *domain_sid,
 					struct policy_handle *domain_pol,
-					uint32 rid)
+					uint32_t rid)
 {
 	NTSTATUS result, status;
 	struct policy_handle group_pol;
-	uint32 num_members, *group_rids;
+	uint32_t num_members, *group_rids;
 	int i;
 	struct samr_RidAttrArray *rids = NULL;
 	struct lsa_Strings names;
@@ -2930,15 +3109,16 @@ static NTSTATUS rpc_list_group_members(struct net_context *c,
 }
 
 static NTSTATUS rpc_list_alias_members(struct net_context *c,
-					struct rpc_pipe_client *pipe_hnd,
-					TALLOC_CTX *mem_ctx,
-					struct policy_handle *domain_pol,
-					uint32 rid)
+				       struct rpc_pipe_client *pipe_hnd,
+				       struct cli_state *cli,
+				       TALLOC_CTX *mem_ctx,
+				       struct policy_handle *domain_pol,
+				       uint32_t rid)
 {
 	NTSTATUS result, status;
 	struct rpc_pipe_client *lsa_pipe;
 	struct policy_handle alias_pol, lsa_pol;
-	uint32 num_members;
+	uint32_t num_members;
 	struct dom_sid *alias_sids;
 	char **domains;
 	char **names;
@@ -2979,8 +3159,8 @@ static NTSTATUS rpc_list_alias_members(struct net_context *c,
 		return NT_STATUS_OK;
 	}
 
-	result = cli_rpc_pipe_open_noauth(rpc_pipe_np_smb_conn(pipe_hnd),
-					  &ndr_table_lsarpc.syntax_id,
+	result = cli_rpc_pipe_open_noauth(cli,
+					  &ndr_table_lsarpc,
 					  &lsa_pipe);
 	if (!NT_STATUS_IS_OK(result)) {
 		d_fprintf(stderr, _("Couldn't open LSA pipe. Error was %s\n"),
@@ -3157,7 +3337,7 @@ static NTSTATUS rpc_group_members_internals(struct net_context *c,
 	}
 
 	if (rid_types.ids[0] == SID_NAME_ALIAS) {
-		return rpc_list_alias_members(c, pipe_hnd, mem_ctx, &domain_pol,
+		return rpc_list_alias_members(c, pipe_hnd, cli, mem_ctx, &domain_pol,
 					      rids.ids[0]);
 	}
 
@@ -3335,8 +3515,8 @@ static int rpc_share_add(struct net_context *c, int argc, const char **argv)
 	NET_API_STATUS status;
 	char *sharename;
 	char *path;
-	uint32 type = STYPE_DISKTREE; /* only allow disk shares to be added */
-	uint32 num_users=0, perms=0;
+	uint32_t type = STYPE_DISKTREE; /* only allow disk shares to be added */
+	uint32_t num_users=0, perms=0;
 	char *password=NULL; /* don't allow a share password */
 	struct SHARE_INFO_2 i2;
 	uint32_t parm_error = 0;
@@ -3418,7 +3598,7 @@ static void display_share_info_1(struct net_context *c,
 static WERROR get_share_info(struct net_context *c,
 			     struct rpc_pipe_client *pipe_hnd,
 			     TALLOC_CTX *mem_ctx,
-			     uint32 level,
+			     uint32_t level,
 			     int argc,
 			     const char **argv,
 			     struct srvsvc_NetShareInfoCtr *info_ctr)
@@ -3589,7 +3769,7 @@ static bool check_share_availability(struct cli_state *cli, const char *netname)
 }
 
 static bool check_share_sanity(struct net_context *c, struct cli_state *cli,
-			       const char *netname, uint32 type)
+			       const char *netname, uint32_t type)
 {
 	/* only support disk shares */
 	if (! ( type == STYPE_DISKTREE || type == (STYPE_DISKTREE | STYPE_HIDDEN)) ) {
@@ -3640,10 +3820,10 @@ static NTSTATUS rpc_share_migrate_shares_internals(struct net_context *c,
 	WERROR result;
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
-	uint32 i;
+	uint32_t i;
 	struct rpc_pipe_client *srvsvc_pipe = NULL;
 	struct cli_state *cli_dst = NULL;
-	uint32 level = 502; /* includes secdesc */
+	uint32_t level = 502; /* includes secdesc */
 	uint32_t parm_error = 0;
 	struct dcerpc_binding_handle *b;
 
@@ -3654,7 +3834,7 @@ static NTSTATUS rpc_share_migrate_shares_internals(struct net_context *c,
 
 	/* connect destination PI_SRVSVC */
         nt_status = connect_dst_pipe(c, &cli_dst, &srvsvc_pipe,
-				     &ndr_table_srvsvc.syntax_id);
+				     &ndr_table_srvsvc);
         if (!NT_STATUS_IS_OK(nt_status))
                 return nt_status;
 
@@ -3965,8 +4145,8 @@ static NTSTATUS rpc_share_migrate_files_internals(struct net_context *c,
 	WERROR result;
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
-	uint32 i;
-	uint32 level = 502;
+	uint32_t i;
+	uint32_t level = 502;
 	struct copy_clistate cp_clistate;
 	bool got_src_share = false;
 	bool got_dst_share = false;
@@ -4125,10 +4305,10 @@ static NTSTATUS rpc_share_migrate_security_internals(struct net_context *c,
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
 	union srvsvc_NetShareInfo info;
-	uint32 i;
+	uint32_t i;
 	struct rpc_pipe_client *srvsvc_pipe = NULL;
 	struct cli_state *cli_dst = NULL;
-	uint32 level = 502; /* includes secdesc */
+	uint32_t level = 502; /* includes secdesc */
 	uint32_t parm_error = 0;
 	struct dcerpc_binding_handle *b;
 
@@ -4140,7 +4320,7 @@ static NTSTATUS rpc_share_migrate_security_internals(struct net_context *c,
 
 	/* connect destination PI_SRVSVC */
         nt_status = connect_dst_pipe(c, &cli_dst, &srvsvc_pipe,
-				     &ndr_table_srvsvc.syntax_id);
+				     &ndr_table_srvsvc);
         if (!NT_STATUS_IS_OK(nt_status))
                 return nt_status;
 
@@ -4332,7 +4512,7 @@ static int rpc_share_migrate(struct net_context *c, int argc, const char **argv)
 
 struct full_alias {
 	struct dom_sid sid;
-	uint32 num_members;
+	uint32_t num_members;
 	struct dom_sid *members;
 };
 
@@ -4376,7 +4556,7 @@ static NTSTATUS rpc_fetch_domain_aliases(struct rpc_pipe_client *pipe_hnd,
 					struct policy_handle *connect_pol,
 					const struct dom_sid *domain_sid)
 {
-	uint32 start_idx, max_entries, num_entries, i;
+	uint32_t start_idx, max_entries, num_entries, i;
 	struct samr_SamArray *groups = NULL;
 	NTSTATUS result, status;
 	struct policy_handle domain_pol;
@@ -4898,20 +5078,20 @@ static bool get_user_tokens_from_file(FILE *f,
  */
 
 static void show_userlist(struct rpc_pipe_client *pipe_hnd,
-			TALLOC_CTX *mem_ctx,
-			const char *netname,
-			int num_tokens,
-			struct user_token *tokens)
+			  struct cli_state *cli,
+			  TALLOC_CTX *mem_ctx,
+			  const char *netname,
+			  int num_tokens,
+			  struct user_token *tokens)
 {
 	uint16_t fnum;
 	struct security_descriptor *share_sd = NULL;
 	struct security_descriptor *root_sd = NULL;
-	struct cli_state *cli = rpc_pipe_np_smb_conn(pipe_hnd);
 	int i;
 	union srvsvc_NetShareInfo info;
 	WERROR result;
 	NTSTATUS status;
-	uint16 cnum;
+	uint16_t cnum;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
 	status = dcerpc_srvsvc_NetShareGetInfo(b, mem_ctx,
@@ -4946,7 +5126,7 @@ static void show_userlist(struct rpc_pipe_client *pipe_hnd,
 	}
 
 	for (i=0; i<num_tokens; i++) {
-		uint32 acc_granted;
+		uint32_t acc_granted;
 
 		if (share_sd != NULL) {
 			status = se_access_check(share_sd, &tokens[i].token,
@@ -5091,7 +5271,7 @@ static NTSTATUS rpc_share_allowedusers_internals(struct net_context *c,
 
 		d_printf("%s\n", netname);
 
-		show_userlist(pipe_hnd, mem_ctx, netname,
+		show_userlist(pipe_hnd, cli, mem_ctx, netname,
 			      num_tokens, tokens);
 	}
  done:
@@ -5423,7 +5603,7 @@ static void display_file_info_3(struct FILE_INFO_3 *r)
 static int rpc_file_user(struct net_context *c, int argc, const char **argv)
 {
 	NET_API_STATUS status;
-	uint32 preferred_len = 0xffffffff, i;
+	uint32_t preferred_len = 0xffffffff, i;
 	char *username=NULL;
 	uint32_t total_entries = 0;
 	uint32_t entries_read = 0;
@@ -5687,7 +5867,7 @@ NTSTATUS rpc_init_shutdown_internals(struct net_context *c,
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	WERROR result;
         const char *msg = N_("This machine will be shutdown shortly");
-	uint32 timeout = 20;
+	uint32_t timeout = 20;
 	struct lsa_StringLarge msg_string;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -5743,7 +5923,7 @@ NTSTATUS rpc_reg_shutdown_internals(struct net_context *c,
 				    const char **argv)
 {
         const char *msg = N_("This machine will be shutdown shortly");
-	uint32 timeout = 20;
+	uint32_t timeout = 20;
 	struct lsa_StringLarge msg_string;
 	NTSTATUS result;
 	WERROR werr;
@@ -5848,9 +6028,9 @@ static NTSTATUS rpc_trustdom_add_internals(struct net_context *c,
 	NTSTATUS status, result;
 	char *acct_name;
 	struct lsa_String lsa_acct_name;
-	uint32 acb_info;
-	uint32 acct_flags=0;
-	uint32 user_rid;
+	uint32_t acb_info;
+	uint32_t acct_flags=0;
+	uint32_t user_rid;
 	uint32_t access_granted = 0;
 	union samr_UserInfo info;
 	unsigned int orig_timeout;
@@ -6248,7 +6428,7 @@ static NTSTATUS rpc_trustdom_get_pdc(struct net_context *c,
 
 	/* Try netr_GetDcName */
 
-	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_netlogon.syntax_id,
+	status = cli_rpc_pipe_open_noauth(cli, &ndr_table_netlogon,
 					  &netr);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -6395,7 +6575,7 @@ static int rpc_trustdom_establish(struct net_context *c, int argc,
 	 * Call LsaOpenPolicy and LsaQueryInfo
 	 */
 
-	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					     &pipe_hnd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0, ("Could not initialise lsa pipe. Error was %s\n", nt_errstr(nt_status) ));
@@ -6672,7 +6852,7 @@ static int rpc_trustdom_vampire(struct net_context *c, int argc,
 		return -1;
 	};
 
-	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					     &pipe_hnd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0, ("Could not initialise lsa pipe. Error was %s\n",
@@ -6850,7 +7030,7 @@ static int rpc_trustdom_list(struct net_context *c, int argc, const char **argv)
 		return -1;
 	};
 
-	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc.syntax_id,
+	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_lsarpc,
 					     &pipe_hnd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0, ("Could not initialise lsa pipe. Error was %s\n",
@@ -6966,7 +7146,7 @@ static int rpc_trustdom_list(struct net_context *c, int argc, const char **argv)
 	/*
 	 * Open \PIPE\samr and get needed policy handles
 	 */
-	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_samr.syntax_id,
+	nt_status = cli_rpc_pipe_open_noauth(cli, &ndr_table_samr,
 					     &pipe_hnd);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		DEBUG(0, ("Could not initialise samr pipe. Error was %s\n", nt_errstr(nt_status)));

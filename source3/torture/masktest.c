@@ -482,7 +482,7 @@ static void usage(void)
 	argc -= 1;
 	argv += 1;
 
-	load_case_tables();
+	smb_init_locale();
 	lp_load_global(get_dyn_CONFIGFILE());
 	load_interfaces();
 
@@ -548,7 +548,7 @@ static void usage(void)
 	argc -= optind;
 	argv += optind;
 
-	max_protocol = lp_cli_maxprotocol();
+	max_protocol = lp_client_max_protocol();
 
 	cli = connect_one(share);
 	if (!cli) {

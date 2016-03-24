@@ -80,6 +80,10 @@ struct tevent_req *samba_runcmd_send(TALLOC_CTX *mem_ctx,
 	char **argv;
 	va_list ap;
 
+	if (argv0 == NULL) {
+		return NULL;
+	}
+
 	req = tevent_req_create(mem_ctx, &state,
 				struct samba_runcmd_state);
 	if (req == NULL) {
@@ -204,13 +208,16 @@ struct tevent_req *samba_runcmd_send(TALLOC_CTX *mem_ctx,
 
 	va_start(ap, argv0);
 	while (1) {
+		const char **l;
 		char *arg = va_arg(ap, char *);
 		if (arg == NULL) break;
-		argv = discard_const_p(char *, str_list_add((const char **)argv, arg));
-		if (!argv) {
+		l = discard_const_p(const char *, argv);
+		l = str_list_add(l, arg);
+		if (l == NULL) {
 			fprintf(stderr, "Out of memory in child\n");
 			_exit(255);
 		}
+		argv = discard_const_p(char *, l);
 	}
 	va_end(ap);
 
@@ -281,7 +288,11 @@ static void samba_runcmd_io_handler(struct tevent_context *ev,
 					   SIGCHLD in the standard
 					   process model.
 					*/
-					tevent_req_done(req);
+					DEBUG(0, ("Error in waitpid() unexpectedly got ECHILD "
+						  "for %s child %d - %s, "
+						  "someone has set SIGCHLD to SIG_IGN!\n",
+					state->arg0, (int)state->pid, strerror(errno)));
+					tevent_req_error(req, errno);
 					return;
 				}
 				DEBUG(0,("Error in waitpid() for child %s - %s \n",

@@ -58,7 +58,7 @@ static bool cli_open_policy_hnd(void)
 		NTSTATUS ret;
 		cli_ipc = connect_one("IPC$");
 		ret = cli_rpc_pipe_open_noauth(cli_ipc,
-					       &ndr_table_lsarpc.syntax_id,
+					       &ndr_table_lsarpc,
 					       &global_pipe_hnd);
 		if (!NT_STATUS_IS_OK(ret)) {
 				return False;
@@ -332,11 +332,11 @@ static void dump_ntquota_list(SMB_NTQUOTA_LIST **qtl, bool _verbose,
 
 static int do_quota(struct cli_state *cli,
 		enum SMB_QUOTA_TYPE qtype,
-		uint16 cmd,
+		uint16_t cmd,
 		const char *username_str,
 		SMB_NTQUOTA_STRUCT *pqt)
 {
-	uint32 fs_attrs = 0;
+	uint32_t fs_attrs = 0;
 	uint16_t quota_fnum = 0;
 	SMB_NTQUOTA_LIST *qtl = NULL;
 	SMB_NTQUOTA_STRUCT qt;
@@ -553,8 +553,9 @@ static struct cli_state *connect_one(const char *share)
 /****************************************************************************
   main program
 ****************************************************************************/
- int main(int argc, const char *argv[])
+int main(int argc, char *argv[])
 {
+	const char **argv_const = discard_const_p(const char *, argv);
 	char *share;
 	int opt;
 	int result;
@@ -588,7 +589,7 @@ FSQFLAGS:QUOTA_ENABLED/DENY_DISK/LOG_SOFTLIMIT/LOG_HARD_LIMIT", "SETSTRING" },
 		{ NULL }
 	};
 
-	load_case_tables();
+	smb_init_locale();
 
 	ZERO_STRUCT(qt);
 
@@ -609,7 +610,7 @@ FSQFLAGS:QUOTA_ENABLED/DENY_DISK/LOG_SOFTLIMIT/LOG_HARD_LIMIT", "SETSTRING" },
 	}
 	popt_common_set_auth_info(smbcquotas_auth_info);
 
-	pc = poptGetContext("smbcquotas", argc, argv, long_options, 0);
+	pc = poptGetContext("smbcquotas", argc, argv_const, long_options, 0);
 
 	poptSetOtherOptionHelp(pc, "//server1/share1");
 

@@ -1,7 +1,6 @@
 <samba:parameter name="lpq command"
                  context="S"
 				 type="string"
-		 print="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
  <description>
     <para>This parameter specifies the command to be 
@@ -38,5 +37,5 @@
 <related>printing</related>
 
 <value type="example">/usr/bin/lpq -P%p</value>
-<value type="default"></value>
+<value type="default"><comment>determined by printing parameter</comment></value>
 </samba:parameter>

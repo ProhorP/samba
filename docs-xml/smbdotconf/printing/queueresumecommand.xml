@@ -1,7 +1,6 @@
 <samba:parameter name="queueresume command"
                  context="S"
 				 type="string"
-		 print="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
     <para>This parameter specifies the command to be 
@@ -26,6 +25,6 @@
 	server.</para>
 </description>
 
-<value type="default"></value>
+<value type="default"><comment>determined by printing parameter</comment></value>
 <value type="example">enable %p</value>
 </samba:parameter>

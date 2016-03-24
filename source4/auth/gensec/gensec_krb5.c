@@ -27,13 +27,13 @@
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
 #include "auth/auth.h"
-#include "lib/socket/socket.h"
 #include "lib/tsocket/tsocket.h"
-#include "librpc/rpc/dcerpc.h"
+#include "librpc/gen_ndr/dcerpc.h"
 #include "auth/credentials/credentials.h"
 #include "auth/credentials/credentials_krb5.h"
 #include "auth/kerberos/kerberos_credentials.h"
 #include "auth/gensec/gensec.h"
+#include "auth/gensec/gensec_internal.h"
 #include "auth/gensec/gensec_proto.h"
 #include "auth/gensec/gensec_toplevel_proto.h"
 #include "param/param.h"
@@ -402,29 +402,30 @@ static NTSTATUS gensec_fake_gssapi_krb5_client_start(struct gensec_security *gen
 static DATA_BLOB gensec_gssapi_gen_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLOB *ticket, const uint8_t tok_id[2])
 {
 	struct asn1_data *data;
-	DATA_BLOB ret;
+	DATA_BLOB ret = data_blob_null;
 
 	data = asn1_init(mem_ctx);
 	if (!data || !ticket->data) {
-		return data_blob(NULL,0);
+		return ret;
 	}
 
-	asn1_push_tag(data, ASN1_APPLICATION(0));
-	asn1_write_OID(data, GENSEC_OID_KERBEROS5);
+	if (!asn1_push_tag(data, ASN1_APPLICATION(0))) goto err;
+	if (!asn1_write_OID(data, GENSEC_OID_KERBEROS5)) goto err;
 
-	asn1_write(data, tok_id, 2);
-	asn1_write(data, ticket->data, ticket->length);
-	asn1_pop_tag(data);
+	if (!asn1_write(data, tok_id, 2)) goto err;
+	if (!asn1_write(data, ticket->data, ticket->length)) goto err;
+	if (!asn1_pop_tag(data)) goto err;
 
-	if (data->has_error) {
-		DEBUG(1,("Failed to build krb5 wrapper at offset %d\n", (int)data->ofs));
-		asn1_free(data);
-		return data_blob(NULL,0);
-	}
 
 	ret = data_blob_talloc(mem_ctx, data->data, data->length);
 	asn1_free(data);
 
+	return ret;
+
+  err:
+
+	DEBUG(1,("Failed to build krb5 wrapper at offset %d\n", (int)data->ofs));
+	asn1_free(data);
 	return ret;
 }
 
@@ -433,7 +434,7 @@ static DATA_BLOB gensec_gssapi_gen_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLO
 */
 static bool gensec_gssapi_parse_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLOB *blob, DATA_BLOB *ticket, uint8_t tok_id[2])
 {
-	bool ret;
+	bool ret = false;
 	struct asn1_data *data = asn1_init(mem_ctx);
 	int data_remaining;
 
@@ -441,24 +442,26 @@ static bool gensec_gssapi_parse_krb5_wrap(TALLOC_CTX *mem_ctx, const DATA_BLOB *
 		return false;
 	}
 
-	asn1_load(data, *blob);
-	asn1_start_tag(data, ASN1_APPLICATION(0));
-	asn1_check_OID(data, GENSEC_OID_KERBEROS5);
+	if (!asn1_load(data, *blob)) goto err;
+	if (!asn1_start_tag(data, ASN1_APPLICATION(0))) goto err;
+	if (!asn1_check_OID(data, GENSEC_OID_KERBEROS5)) goto err;
 
 	data_remaining = asn1_tag_remaining(data);
 
 	if (data_remaining < 3) {
 		data->has_error = true;
 	} else {
-		asn1_read(data, tok_id, 2);
+		if (!asn1_read(data, tok_id, 2)) goto err;
 		data_remaining -= 2;
 		*ticket = data_blob_talloc(mem_ctx, NULL, data_remaining);
-		asn1_read(data, ticket->data, ticket->length);
+		if (!asn1_read(data, ticket->data, ticket->length)) goto err;
 	}
 
-	asn1_end_tag(data);
+	if (!asn1_end_tag(data)) goto err;
 
 	ret = !data->has_error;
+
+  err:
 
 	asn1_free(data);
 
@@ -585,6 +588,16 @@ static NTSTATUS gensec_krb5_update(struct gensec_security *gensec_security,
 		if (ret) {
 			DEBUG(2,("Failed to make credentials from principal: %s\n", error_string));
 			return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
+		}
+
+		if (keytab->password_based || obtained < CRED_SPECIFIED) {
+			/* 
+			 * Use match-by-key in this case (matches
+			 * cli_credentials_get_server_gss_creds()
+			 * behaviour).  No need to free the memory,
+			 * this is handled with a talloc destructor.
+			 */
+			server_in_keytab = NULL;
 		}
 
 		/* Parse the GSSAPI wrapping, if it's there... (win2k3 allows it to be omited) */
@@ -718,6 +731,7 @@ static NTSTATUS gensec_krb5_session_info(struct gensec_security *gensec_security
 	} else {
 		/* Found pac */
 		pac_blob = data_blob_talloc(tmp_ctx, pac_data.data, pac_data.length);
+		kerberos_free_data_contents(context, &pac_data);
 		if (!pac_blob.data) {
 			free(principal_string);
 			krb5_free_principal(context, client_principal);
@@ -898,7 +912,7 @@ _PUBLIC_ NTSTATUS gensec_krb5_init(void)
 	ret = gensec_register(&gensec_fake_gssapi_krb5_security_ops);
 	if (!NT_STATUS_IS_OK(ret)) {
 		DEBUG(0,("Failed to register '%s' gensec backend!\n",
-			gensec_krb5_security_ops.name));
+			gensec_fake_gssapi_krb5_security_ops.name));
 		return ret;
 	}
 

@@ -20,11 +20,7 @@
 #ifndef _DCERPC_EP_H_
 #define _DCERPC_EP_H_
 
-struct dcerpc_binding_vector {
-    struct dcerpc_binding *bindings;
-    uint32_t count;
-    uint32_t allocated;
-};
+struct dcerpc_binding_vector;
 
 /**
  * @brief Allocate a new binding vector.
@@ -55,9 +51,9 @@ NTSTATUS dcerpc_binding_vector_add_np_default(const struct ndr_interface_table *
  *
  * @param[in] iface     The rpc interface to add.
  *
- * @param[in] bvec      The binding vector to add the intface, host and port.
+ * @param[in] bvec      The binding vector to add the interface, host and port.
  *
- * @param[in] host      The ip address of the network inteface bound.
+ * @param[in] host      The ip address of the network interface bound.
  *
  * @param[in] port      The port bound.
  *
@@ -73,7 +69,7 @@ NTSTATUS dcerpc_binding_vector_add_port(const struct ndr_interface_table *iface,
  *
  * @param[in] iface     The rpc interface to add.
  *
- * @param[in] bvec      The binding vector to add the intface, host and port.
+ * @param[in] bvec      The binding vector to add the interface, host and port.
  *
  * @param[in] name      The name of the unix socket.
  *

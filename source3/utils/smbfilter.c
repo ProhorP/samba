@@ -22,6 +22,7 @@
 #include "system/select.h"
 #include "../lib/util/select.h"
 #include "libsmb/nmblib.h"
+#include "lib/sys_rw_data.h"
 
 #define SECURITY_MASK 0
 #define SECURITY_SET  0
@@ -84,7 +85,8 @@ static void filter_request(char *buf, size_t buf_len)
 	int type = CVAL(buf,smb_com);
 	unsigned x;
 	fstring name1,name2;
-	int name_len1, name_len2;
+	int name_len1 = 0;
+	int name_len2;
 	int name_type1, name_type2;
 
 	if (msg_type) {
@@ -177,19 +179,18 @@ static void filter_child(int c, struct sockaddr_storage *dest_ss)
 {
 	NTSTATUS status;
 	int s = -1;
-	uint8_t packet[128*1024];
+	char packet[128*1024];
 
 	/* we have a connection from a new client, now connect to the server */
 	status = open_socket_out(dest_ss, TCP_SMB_PORT, LONG_CONNECT_TIMEOUT, &s);
-
-	if (s == -1) {
+	if (!NT_STATUS_IS_OK(status)) {
 		char addr[INET6_ADDRSTRLEN];
 		if (dest_ss) {
 			print_sockaddr(addr, sizeof(addr), dest_ss);
 		}
 
 		d_printf("Unable to connect to %s (%s)\n",
-			 dest_ss?addr:"NULL",strerror(errno));
+			 dest_ss?addr:"NULL", nt_errstr(status));
 		exit(1);
 	}
 
@@ -322,7 +323,7 @@ int main(int argc, char *argv[])
 	const char *configfile;
 	TALLOC_CTX *frame = talloc_stackframe();
 
-	load_case_tables();
+	smb_init_locale();
 
 	setup_logging(argv[0], DEBUG_STDOUT);
 

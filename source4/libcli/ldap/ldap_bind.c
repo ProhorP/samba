@@ -27,7 +27,8 @@
 #include "libcli/ldap/ldap_client.h"
 #include "lib/tls/tls.h"
 #include "auth/gensec/gensec.h"
-#include "auth/gensec/gensec_socket.h"
+#include "auth/gensec/gensec_internal.h" /* TODO: remove this */
+#include "source4/auth/gensec/gensec_tstream.h"
 #include "auth/credentials/credentials.h"
 #include "lib/stream/packet.h"
 #include "param/param.h"
@@ -214,6 +215,7 @@ _PUBLIC_ NTSTATUS ldap_bind_sasl(struct ldap_connection *conn,
 	struct ldap_message **sasl_mechs_msgs;
 	struct ldap_SearchResEntry *search;
 	int count, i;
+	bool first = true;
 
 	const char **sasl_names;
 	uint32_t old_gensec_features;
@@ -222,6 +224,27 @@ _PUBLIC_ NTSTATUS ldap_bind_sasl(struct ldap_connection *conn,
 		NULL 
 	};
 	unsigned int logon_retries = 0;
+	size_t queue_length;
+
+	if (conn->sockets.active == NULL) {
+		status = NT_STATUS_CONNECTION_DISCONNECTED;
+		goto failed;
+	}
+
+	queue_length = tevent_queue_length(conn->sockets.send_queue);
+	if (queue_length != 0) {
+		status = NT_STATUS_INVALID_PARAMETER_MIX;
+		DEBUG(1, ("SASL bind triggered with non empty send_queue[%zu]: %s\n",
+			  queue_length, nt_errstr(status)));
+		goto failed;
+	}
+
+	if (conn->pending != NULL) {
+		status = NT_STATUS_INVALID_PARAMETER_MIX;
+		DEBUG(1, ("SASL bind triggered with pending requests: %s\n",
+			  nt_errstr(status)));
+		goto failed;
+	}
 
 	status = ildap_search(conn, "", LDAP_SEARCH_SCOPE_BASE, "", supported_sasl_mech_attrs,
 			      false, NULL, NULL, &sasl_mechs_msgs);
@@ -279,7 +302,7 @@ try_logon_again:
 	/* require Kerberos SIGN/SEAL only if we don't use SSL
 	 * Windows seem not to like double encryption */
 	old_gensec_features = cli_credentials_get_gensec_features(creds);
-	if (tls_enabled(conn->sock)) {
+	if (conn->sockets.active == conn->sockets.tls) {
 		cli_credentials_set_gensec_features(creds, old_gensec_features & ~(GENSEC_FEATURE_SIGN|GENSEC_FEATURE_SEAL));
 	}
 
@@ -325,7 +348,7 @@ try_logon_again:
 		struct ldap_request *req;
 		int result = LDAP_OTHER;
 	
-		status = gensec_update(conn->gensec, tmp_ctx,
+		status = gensec_update_ev(conn->gensec, tmp_ctx,
 				       conn->event.event_ctx,
 				       input,
 				       &output);
@@ -336,7 +359,13 @@ try_logon_again:
 		 * avoid mutal authentication requirements.
 		 *
 		 * Likewise, you must not feed GENSEC too much (after the OK),
-		 * it doesn't like that either
+		 * it doesn't like that either.
+		 *
+		 * For SASL/EXTERNAL, there is no data to send, but we still
+		 * must send the actual Bind request the first time around.
+		 * Otherwise, a result of NT_STATUS_OK with 0 output means the
+		 * end of a multi-step authentication, and no message must be
+		 * sent.
 		 */
 
 		gensec_status = status;
@@ -346,8 +375,10 @@ try_logon_again:
 			break;
 		}
 		if (NT_STATUS_IS_OK(status) && output.length == 0) {
-			break;
+			if (!first)
+				break;
 		}
+		first = false;
 
 		/* Perhaps we should make gensec_start_mech_by_sasl_list() return the name we got? */
 		msg = new_ldap_sasl_bind_msg(tmp_ctx, conn->gensec->ops->sasl_name, (output.data?&output:NULL));
@@ -426,27 +457,31 @@ try_logon_again:
 		}
 	}
 
-	talloc_free(tmp_ctx);
+	TALLOC_FREE(tmp_ctx);
 
-	if (NT_STATUS_IS_OK(status)) {
-		struct socket_context *sasl_socket;
-		status = gensec_socket_init(conn->gensec, 
-					    conn,
-					    conn->sock,
-					    conn->event.event_ctx, 
-					    ldap_read_io_handler,
-					    conn,
-					    &sasl_socket);
-		if (!NT_STATUS_IS_OK(status)) goto failed;
-
-		conn->sock = sasl_socket;
-		packet_set_socket(conn->packet, conn->sock);
-
-		conn->bind.type = LDAP_BIND_SASL;
-		conn->bind.creds = creds;
+	if (!NT_STATUS_IS_OK(status)) {
+		goto failed;
 	}
 
-	return status;
+	conn->bind.type = LDAP_BIND_SASL;
+	conn->bind.creds = creds;
+
+	if (!gensec_have_feature(conn->gensec, GENSEC_FEATURE_SIGN) &&
+	    !gensec_have_feature(conn->gensec, GENSEC_FEATURE_SEAL)) {
+		return NT_STATUS_OK;
+	}
+
+	status = gensec_create_tstream(conn->sockets.raw,
+				       conn->gensec,
+				       conn->sockets.raw,
+				       &conn->sockets.sasl);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto failed;
+	}
+
+	conn->sockets.active = conn->sockets.sasl;
+
+	return NT_STATUS_OK;
 
 failed:
 	talloc_free(tmp_ctx);

@@ -2,6 +2,7 @@
 
 # top level waf build script for samba4
 
+import Options
 import os
 srcdir = "."
 
@@ -20,7 +21,7 @@ bld.env.build_public_headers = 'include/public'
 
 # these are includes which appear in public headers, but with #ifdef conditional
 # compilation, so they are safe
-bld.env.public_headers_skip = ['lib/param/param_proto.h']
+bld.env.public_headers_skip = ['lib/param/param_proto.h', 'lib/param/param_functions.h']
 
 samba_version.load_version(bld.env, is_install=bld.is_install)
 bld.SAMBA_MKVERSION('version.h')
@@ -38,11 +39,8 @@ bld.RECURSE('lib/replace')
 bld.RECURSE('lib/socket')
 bld.RECURSE('lib/talloc')
 bld.RECURSE('lib/tevent')
+bld.RECURSE('lib/texpect')
 bld.RECURSE('lib/addns')
-bld.RECURSE('lib/ccan')
-bld.RECURSE('lib/tdb_compat')
-if not bld.env.disable_ntdb:
-    bld.RECURSE('lib/ntdb')
 bld.RECURSE('lib/ldb')
 bld.RECURSE('lib/param')
 bld.RECURSE('dynconfig')
@@ -68,19 +66,25 @@ bld.RECURSE('source4/lib/registry')
 bld.RECURSE('source4/lib/messaging')
 bld.RECURSE('source4/lib/events')
 bld.RECURSE('source4/lib/cmdline')
-bld.RECURSE('lib/socket_wrapper')
-bld.RECURSE('lib/nss_wrapper')
-bld.RECURSE('lib/uid_wrapper')
-bld.RECURSE('lib/popt')
-bld.RECURSE('lib/iniparser/src')
+bld.RECURSE('source4/lib/http')
+if bld.CONFIG_GET('NSS_WRAPPER'):
+    bld.RECURSE('lib/nss_wrapper')
+if bld.CONFIG_GET('SOCKET_WRAPPER'):
+    bld.RECURSE('lib/socket_wrapper')
+if bld.CONFIG_GET('RESOLV_WRAPPER'):
+    bld.RECURSE('lib/resolv_wrapper')
+if bld.CONFIG_GET('UID_WRAPPER'):
+    bld.RECURSE('lib/uid_wrapper')
+if bld.CHECK_FOR_THIRD_PARTY():
+    bld.RECURSE('third_party')
 bld.RECURSE('source4/lib/stream')
+bld.RECURSE('lib/afs')
 bld.RECURSE('lib/util')
 bld.RECURSE('lib/tdb_wrap')
 bld.RECURSE('lib/tdr')
 bld.RECURSE('lib/tsocket')
 bld.RECURSE('lib/crypto')
 bld.RECURSE('lib/torture')
-bld.RECURSE('lib/zlib')
 bld.RECURSE('source4/lib/com')
 bld.RECURSE('source4/dns_server')
 bld.RECURSE('source4/echo_server')
@@ -103,7 +107,6 @@ bld.RECURSE('source4/libcli')
 bld.RECURSE('libcli/smb')
 bld.RECURSE('libcli/util')
 bld.RECURSE('libcli/cldap')
-bld.RECURSE('lib/subunit/c')
 bld.RECURSE('lib/smbconf')
 bld.RECURSE('lib/async_req')
 bld.RECURSE('lib/dbwrap')
@@ -133,9 +136,10 @@ else:
     bld.PROCESS_SEPARATE_RULE('system_mitkrb5')
 
 bld.RECURSE('libcli/smbreadline')
-bld.RECURSE('codepages')
 if bld.AD_DC_BUILD_IS_ENABLED():
     bld.RECURSE('source4/setup')
+if bld.env.with_ctdb:
+    bld.RECURSE('ctdb')
 bld.RECURSE('source4/scripting')
 bld.RECURSE('pidl')
 bld.RECURSE('lib')

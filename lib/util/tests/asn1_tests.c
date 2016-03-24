@@ -23,6 +23,7 @@
 
 #include "includes.h"
 #include "torture/torture.h"
+#include "torture/local/proto.h"
 #include "../asn1.h"
 
 struct oid_data {
@@ -110,47 +111,47 @@ static const struct {
 	int value;
 } integer_tests[] = {
         {
-		.blob = {"\x02\x01\x00", 3},
+		.blob = { discard_const_p(uint8_t, "\x02\x01\x00"), 3},
 		.value = 0
 	},
 	{
-		.blob = {"\x02\x01\x7f", 3},
+		.blob = { discard_const_p(uint8_t, "\x02\x01\x7f"), 3},
 		.value = 127
 	},
 	{
-		.blob = {"\x02\x02\x00\x80", 4},
+		.blob = { discard_const_p(uint8_t, "\x02\x02\x00\x80"), 4},
 		.value = 128
 	},
 	{
-		.blob = {"\x02\x02\x01\x00", 4},
+		.blob = { discard_const_p(uint8_t, "\x02\x02\x01\x00"), 4},
 		.value = 256
 	},
 	{
-		.blob = {"\x02\x01\x80", 3},
+		.blob = { discard_const_p(uint8_t, "\x02\x01\x80"), 3},
 		.value = -128
 	},
 	{
-		.blob = {"\x02\x02\xff\x7f", 4},
+		.blob = { discard_const_p(uint8_t, "\x02\x02\xff\x7f"), 4},
 		.value = -129
 	},
 	{
-		.blob = {"\x02\x01\xff", 3},
+		.blob = { discard_const_p(uint8_t, "\x02\x01\xff"), 3},
 		.value = -1
 	},
 	{
-		.blob = {"\x02\x02\xff\x01", 4},
+		.blob = { discard_const_p(uint8_t, "\x02\x02\xff\x01"), 4},
 		.value = -255
 	},
 	{
-		.blob = {"\x02\x02\x00\xff", 4},
+		.blob = { discard_const_p(uint8_t, "\x02\x02\x00\xff"), 4},
 		.value = 255
 	},
 	{
-		.blob = {"\x02\x04\x80\x00\x00\x00", 6},
+		.blob = { discard_const_p(uint8_t, "\x02\x04\x80\x00\x00\x00"), 6},
 		.value = 0x80000000
 	},
 	{
-		.blob = {"\x02\x04\x7f\xff\xff\xff", 6},
+		.blob = { discard_const_p(uint8_t, "\x02\x04\x7f\xff\xff\xff"), 6},
 		.value = 0x7fffffff
 	}
 };
@@ -320,6 +321,7 @@ static bool test_asn1_Integer(struct torture_context *tctx)
 {
 	int i;
 	TALLOC_CTX *mem_ctx;
+	bool ret = false;
 
 	mem_ctx = talloc_new(tctx);
 
@@ -330,25 +332,28 @@ static bool test_asn1_Integer(struct torture_context *tctx)
 
 		data = asn1_init(mem_ctx);
 		if (!data) {
-			return -1;
+			goto err;
 		}
 
-		asn1_write_Integer(data, integer_tests[i].value);
+		if (!asn1_write_Integer(data, integer_tests[i].value)) goto err;
 
 		blob.data = data->data;
 		blob.length = data->length;
 		torture_assert_data_blob_equal(tctx, blob, integer_tests[i].blob, "asn1_write_Integer gave incorrect result");
 
-		asn1_load(data, blob);
+		if (!asn1_load(data, blob)) goto err;
 		torture_assert(tctx, asn1_read_Integer(data, &val), "asn1_write_Integer output could not be read by asn1_read_Integer()");
 
 		torture_assert_int_equal(tctx, val, integer_tests[i].value,
 			"readback of asn1_write_Integer output by asn1_read_Integer() failed");
 	}
 
-	talloc_free(mem_ctx);
+	ret = true;
 
-	return true;
+  err:
+
+	talloc_free(mem_ctx);
+	return ret;
 }
 
 
