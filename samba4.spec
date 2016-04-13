@@ -32,8 +32,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.3.6
-Release: alt1.M70P.1
+Version: 4.3.8
+Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1329,6 +1329,18 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Wed Apr 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70P.1
+- New version
+- Security fixes:
+  - CVE-2015-5370 (Multiple errors in DCE-RPC code)
+  - CVE-2016-2110 (Man in the middle attacks possible with NTLMSSP)
+  - CVE-2016-2111 (NETLOGON Spoofing Vulnerability)
+  - CVE-2016-2112 (LDAP client and server don't enforce integrity)
+  - CVE-2016-2113 (Missing TLS certificate validation)
+  - CVE-2016-2114 ("server signing = mandatory" not enforced)
+  - CVE-2016-2115 (SMB IPC traffic is not integrity protected)
+  - CVE-2016-2118 (SAMR and LSA man in the middle attacks possible)
+
 * Thu Mar 24 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt1.M70P.1
 - Backport new version to p7 branch
 
