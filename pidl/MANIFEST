@@ -18,7 +18,6 @@ tests/ndr_tagtype.pl
 tests/header.pl
 lib/Parse/Pidl/Samba3/ClientNDR.pm
 lib/Parse/Pidl/Samba3/ServerNDR.pm
-lib/Parse/Pidl/Samba3/Template.pm
 lib/Parse/Pidl/Samba4/NDR/Server.pm
 lib/Parse/Pidl/Samba4/NDR/Parser.pm
 lib/Parse/Pidl/Samba4/NDR/Client.pm

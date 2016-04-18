@@ -46,7 +46,7 @@
 
 extern struct winbindd_methods reconnect_methods;
 #ifdef HAVE_ADS
-extern struct winbindd_methods ads_methods;
+extern struct winbindd_methods reconnect_ads_methods;
 #endif
 extern struct winbindd_methods builtin_passdb_methods;
 extern struct winbindd_methods sam_passdb_methods;
@@ -168,7 +168,7 @@ static struct winbind_cache *get_cache(struct winbindd_domain *domain)
 		    && domain->active_directory
 		    && !lp_winbind_rpc_only()) {
 			DEBUG(5,("get_cache: Setting ADS methods for domain %s\n", domain->name));
-			domain->backend = &ads_methods;
+			domain->backend = &reconnect_ads_methods;
 		} else {
 #endif	/* HAVE_ADS */
 			DEBUG(5,("get_cache: Setting MS-RPC methods for domain %s\n", domain->name));
@@ -3100,7 +3100,7 @@ void wcache_invalidate_samlogon(struct winbindd_domain *domain,
         fstring key_str, sid_string;
 	struct winbind_cache *cache;
 
-	/* dont clear cached U/SID and UG/SID entries when we want to logon
+	/* don't clear cached U/SID and UG/SID entries when we want to logon
 	 * offline - gd */
 
 	if (lp_winbind_offline_logon()) {

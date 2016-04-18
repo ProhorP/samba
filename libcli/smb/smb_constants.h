@@ -95,6 +95,7 @@ enum protocol_types {
 #define PROTOCOL_LATEST PROTOCOL_SMB3_11
 
 enum smb_signing_setting {
+	SMB_SIGNING_IPC_DEFAULT = -2, /* Only used in C code */
 	SMB_SIGNING_DEFAULT = -1,
 	SMB_SIGNING_OFF = 0,
 	SMB_SIGNING_IF_REQUIRED = 1,
@@ -309,7 +310,6 @@ enum csc_policy {
 #define FLAGS2_READ_PERMIT_EXECUTE     0x2000
 #define FLAGS2_32_BIT_ERROR_CODES      0x4000
 #define FLAGS2_UNICODE_STRINGS         0x8000
-#define FLAGS2_WIN2K_SIGNATURE         0xC852 /* Hack alert ! For now... JRA. */
 
 /* FileAttributes (search attributes) field */
 #define FILE_ATTRIBUTE_READONLY		0x0001L

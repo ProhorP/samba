@@ -231,7 +231,7 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	posix_open = fsp->posix_open;
+	posix_open = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN);
 	smb_fname = cp_smb_filename(talloc_tos(), fsp->fsp_name);
 	if (smb_fname == NULL) {
 		return NT_STATUS_NO_MEMORY;
@@ -322,7 +322,6 @@ static struct tevent_req *smbd_smb2_close_send(TALLOC_CTX *mem_ctx,
 	state->in_flags = in_flags;
 
 	if (in_fsp->num_aio_requests != 0) {
-
 		in_fsp->deferred_close = tevent_wait_send(in_fsp, ev);
 		if (tevent_req_nomem(in_fsp->deferred_close, req)) {
 			return tevent_req_post(req, ev);

@@ -88,26 +88,7 @@ int map_errno_from_nt_status(NTSTATUS status);
 
 struct file_id vfs_file_id_from_sbuf(connection_struct *conn, const SMB_STRUCT_STAT *sbuf);
 
-/* The following definitions come from lib/gencache.c  */
-
-bool gencache_set(const char *keystr, const char *value, time_t timeout);
-bool gencache_del(const char *keystr);
-bool gencache_get(const char *keystr, TALLOC_CTX *mem_ctx, char **value,
-		  time_t *ptimeout);
-bool gencache_parse(const char *keystr,
-		    void (*parser)(time_t timeout, DATA_BLOB blob,
-				   void *private_data),
-		    void *private_data);
-bool gencache_get_data_blob(const char *keystr, TALLOC_CTX *mem_ctx,
-			    DATA_BLOB *blob,
-			    time_t *timeout, bool *was_expired);
-bool gencache_stabilize(void);
-bool gencache_set_data_blob(const char *keystr, const DATA_BLOB *blob, time_t timeout);
-void gencache_iterate_blobs(void (*fn)(const char *key, DATA_BLOB value,
-				       time_t timeout, void *private_data),
-			    void *private_data, const char *pattern);
-void gencache_iterate(void (*fn)(const char* key, const char *value, time_t timeout, void* dptr),
-                      void* data, const char* keystr_pattern);
+#include "lib/gencache.h"
 
 /* The following definitions come from lib/interface.c  */
 
@@ -347,6 +328,7 @@ struct passwd *Get_Pwnam_alloc(TALLOC_CTX *mem_ctx, const char *user);
 
 /* The following definitions come from lib/util_names.c  */
 const char *get_global_sam_name(void);
+const char *my_sam_name(void);
 
 /* The following definitions come from lib/util.c  */
 
@@ -376,10 +358,12 @@ int set_blocking(int fd, bool set);
 NTSTATUS init_before_fork(void);
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 			   struct tevent_context *ev_ctx,
-			   bool parent_longlived);
+			   bool parent_longlived,
+			   const char *comment);
 NTSTATUS smbd_reinit_after_fork(struct messaging_context *msg_ctx,
 				struct tevent_context *ev_ctx,
-				bool parent_longlived);
+				bool parent_longlived,
+				const char *comment);
 void *malloc_(size_t size);
 void *Realloc(void *p, size_t size, bool free_old_on_error);
 void add_to_large_array(TALLOC_CTX *mem_ctx, size_t element_size,
@@ -417,9 +401,7 @@ int smb_mkstemp(char *name_template);
 void *smb_xmalloc_array(size_t size, unsigned int count);
 char *myhostname(void);
 char *myhostname_upper(void);
-char *lock_path(const char *name);
-char *state_path(const char *name);
-char *cache_path(const char *name);
+#include "lib/util_path.h"
 bool parent_dirname(TALLOC_CTX *mem_ctx, const char *dir, char **parent,
 		    const char **name);
 bool ms_has_wild(const char *s);
@@ -429,19 +411,12 @@ bool mask_match_search(const char *string, const char *pattern, bool is_case_sen
 bool mask_match_list(const char *string, char **list, int listLen, bool is_case_sensitive);
 bool unix_wild_match(const char *pattern, const char *string);
 bool name_to_fqdn(fstring fqdn, const char *name);
-void *talloc_append_blob(TALLOC_CTX *mem_ctx, void *buf, DATA_BLOB blob);
 uint32_t map_share_mode_to_deny_mode(uint32_t share_access, uint32_t private_options);
-pid_t procid_to_pid(const struct server_id *proc);
-void set_my_vnn(uint32_t vnn);
-uint32_t get_my_vnn(void);
-void set_my_unique_id(uint64_t unique_id);
-struct server_id pid_to_procid(pid_t pid);
-struct server_id procid_self(void);
+
+#include "lib/util_procid.h"
+
 #define serverid_equal(p1, p2) server_id_equal(p1,p2)
-bool procid_is_me(const struct server_id *pid);
 struct server_id interpret_pid(const char *pid_string);
-bool procid_valid(const struct server_id *pid);
-bool procid_is_local(const struct server_id *pid);
 bool is_offset_safe(const char *buf_base, size_t buf_len, char *ptr, size_t off);
 char *get_safe_ptr(const char *buf_base, size_t buf_len, char *ptr, size_t off);
 char *get_safe_str_ptr(const char *buf_base, size_t buf_len, char *ptr, size_t off);
@@ -525,7 +500,7 @@ char *sid_to_fstring(fstring sidstr_out, const struct dom_sid *sid);
 char *sid_string_talloc(TALLOC_CTX *mem_ctx, const struct dom_sid *sid);
 char *sid_string_dbg(const struct dom_sid *sid);
 char *sid_string_tos(const struct dom_sid *sid);
-bool sid_linearize(char *outbuf, size_t len, const struct dom_sid *sid);
+bool sid_linearize(uint8_t *outbuf, size_t len, const struct dom_sid *sid);
 bool non_mappable_sid(struct dom_sid *sid);
 char *sid_binstring_hex_talloc(TALLOC_CTX *mem_ctx, const struct dom_sid *sid);
 struct netr_SamInfo3;
@@ -626,17 +601,6 @@ struct tevent_req *getaddrinfo_send(TALLOC_CTX *mem_ctx,
 int getaddrinfo_recv(struct tevent_req *req, struct addrinfo **res);
 int poll_one_fd(int fd, int events, int timeout, int *revents);
 int poll_intr_one_fd(int fd, int events, int timeout, int *revents);
-struct tstream_context;
-struct tevent_req *tstream_read_packet_send(TALLOC_CTX *mem_ctx,
-					    struct tevent_context *ev,
-					    struct tstream_context *stream,
-					    size_t initial,
-					    ssize_t (*more)(uint8_t *buf,
-							    size_t buflen,
-							    void *private_data),
-					    void *private_data);
-ssize_t tstream_read_packet_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
-				 uint8_t **pbuf, int *perrno);
 
 /* The following definitions come from lib/util_str.c  */
 
@@ -729,13 +693,6 @@ bool wins_server_tag_ips(const char *tag, TALLOC_CTX *mem_ctx,
 			 struct in_addr **pservers, int *pnum_servers);
 unsigned wins_srv_count_tag(const char *tag);
 
-/* The following definitions come from libsmb/clispnego.c  */
-
-DATA_BLOB spnego_gen_negTokenInit(TALLOC_CTX *ctx,
-				  const char *OIDs[],
-				  DATA_BLOB *psecblob,
-				  const char *principal);
-
 #ifndef ASN1_MAX_OIDS
 #define ASN1_MAX_OIDS 20
 #endif
@@ -745,18 +702,6 @@ bool spnego_parse_negTokenInit(TALLOC_CTX *ctx,
 			       char **principal,
 			       DATA_BLOB *secblob);
 DATA_BLOB spnego_gen_krb5_wrap(TALLOC_CTX *ctx, const DATA_BLOB ticket, const uint8_t tok_id[2]);
-int spnego_gen_krb5_negTokenInit(TALLOC_CTX *ctx,
-			    const char *principal, int time_offset,
-			    DATA_BLOB *targ,
-			    DATA_BLOB *session_key_krb5, uint32_t extra_ap_opts,
-			    const char *ccname, time_t *expire_time);
-bool spnego_parse_challenge(TALLOC_CTX *ctx, const DATA_BLOB blob,
-			    DATA_BLOB *chal1, DATA_BLOB *chal2);
-DATA_BLOB spnego_gen_auth(TALLOC_CTX *ctx, DATA_BLOB blob);
-bool spnego_parse_auth_response(TALLOC_CTX *ctx,
-				DATA_BLOB blob, NTSTATUS nt_status,
-				const char *mechOID,
-				DATA_BLOB *auth);
 
 /* The following definitions come from libsmb/conncache.c  */
 
@@ -768,7 +713,6 @@ void flush_negative_conn_cache_for_domain(const char *domain);
 
 struct netr_DsRGetDCNameInfo;
 
-void debug_dsdcinfo_flags(int lvl, uint32_t flags);
 NTSTATUS dsgetdcname(TALLOC_CTX *mem_ctx,
 		     struct messaging_context *msg_ctx,
 		     const char *domain_name,
@@ -899,31 +843,6 @@ bool get_dc_name(const char *domain,
 		fstring srv_name,
 		struct sockaddr_storage *ss_out);
 
-/* The following definitions come from libsmb/ntlmssp.c  */
-struct ntlmssp_state;
-NTSTATUS ntlmssp_set_username(struct ntlmssp_state *ntlmssp_state, const char *user) ;
-NTSTATUS ntlmssp_set_password(struct ntlmssp_state *ntlmssp_state, const char *password) ;
-NTSTATUS ntlmssp_set_password_hash(struct ntlmssp_state *ntlmssp_state,
-				   const char *hash);
-NTSTATUS ntlmssp_set_domain(struct ntlmssp_state *ntlmssp_state, const char *domain) ;
-void ntlmssp_want_feature_list(struct ntlmssp_state *ntlmssp_state, char *feature_list);
-void ntlmssp_want_feature(struct ntlmssp_state *ntlmssp_state, uint32_t feature);
-NTSTATUS ntlmssp_update(struct ntlmssp_state *ntlmssp_state,
-			const DATA_BLOB in, DATA_BLOB *out) ;
-bool ntlmssp_is_anonymous(struct ntlmssp_state *ntlmssp_state);
-NTSTATUS ntlmssp_server_start(TALLOC_CTX *mem_ctx,
-			      bool is_standalone,
-			      const char *netbios_name,
-			      const char *netbios_domain,
-			      const char *dns_name,
-			      const char *dns_domain,
-			      struct ntlmssp_state **ntlmssp_state);
-NTSTATUS ntlmssp_client_start(TALLOC_CTX *mem_ctx,
-			      const char *netbios_name,
-			      const char *netbios_domain,
-			      bool use_ntlmv2,
-			      struct ntlmssp_state **_ntlmssp_state);
-
 /* The following definitions come from libsmb/passchange.c  */
 
 NTSTATUS remote_password_change(const char *remote_machine, const char *user_name, 
@@ -984,7 +903,9 @@ const char *lp_idmap_backend(const char *domain_name);
 const char *lp_idmap_default_backend (void);
 int lp_security(void);
 int lp_client_max_protocol(void);
-int lp_winbindd_max_protocol(void);
+int lp_client_ipc_min_protocol(void);
+int lp_client_ipc_max_protocol(void);
+int lp_client_ipc_signing(void);
 int lp_smb2_max_credits(void);
 int lp_cups_encrypt(void);
 bool lp_widelinks(int );
@@ -1003,6 +924,9 @@ const char *lp_parm_const_string_service(struct loadparm_service *service, const
 const char **lp_parm_string_list(int snum, const char *type, const char *option, const char **def);
 int lp_parm_int(int snum, const char *type, const char *option, int def);
 unsigned long lp_parm_ulong(int snum, const char *type, const char *option, unsigned long def);
+unsigned long long lp_parm_ulonglong(int snum, const char *type,
+				     const char *option,
+				     unsigned long long def);
 bool lp_parm_bool(int snum, const char *type, const char *option, bool def);
 struct enum_list;
 int lp_parm_enum(int snum, const char *type, const char *option,
@@ -1094,7 +1018,6 @@ uint32_t lp_get_spoolss_state( void );
 struct smb_signing_state;
 bool lp_use_sendfile(int snum, struct smb_signing_state *signing_state);
 void set_use_sendfile(int snum, bool val);
-void set_store_dos_attributes(int snum, bool val);
 void lp_set_mangling_method(const char *new_method);
 bool lp_posix_pathnames(void);
 void lp_set_posix_pathnames(void);
@@ -1212,6 +1135,11 @@ bool sid_check_is_unix_groups(const struct dom_sid *sid);
 bool sid_check_is_in_unix_groups(const struct dom_sid *sid);
 const char *unix_groups_domain_name(void);
 bool lookup_unix_group_name(const char *name, struct dom_sid *sid);
+
+/* The following definitions come from lib/util_specialsids.c  */
+bool sid_check_is_asserted_identity(const struct dom_sid *sid);
+bool sid_check_is_in_asserted_identity(const struct dom_sid *sid);
+const char *asserted_identity_domain_name(void);
 
 /* The following definitions come from lib/filename_util.c */
 

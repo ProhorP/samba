@@ -31,7 +31,18 @@
 #define _LOADPARM_H
 
 #include <talloc.h>
-#include "../lib/util/parmlist.h"
+
+struct parmlist_entry {
+	struct parmlist_entry *prev, *next;
+	char *key;
+	char *value;
+	char **list; /* For the source3 parametric options, to save the parsed list */
+	int priority;
+};
+
+struct parmlist {
+	struct parmlist_entry *entries;
+};
 
 /* the following are used by loadparm for option lists */
 typedef enum {
@@ -193,6 +204,12 @@ enum printing_types {PRINT_BSD,PRINT_SYSV,PRINT_AIX,PRINT_HPUX,
 #define ADS_AUTH_SASL_FORCE       0x0080
 #define ADS_AUTH_USER_CREDS       0x0100
 
+enum ldap_server_require_strong_auth {
+	LDAP_SERVER_REQUIRE_STRONG_AUTH_NO,
+	LDAP_SERVER_REQUIRE_STRONG_AUTH_ALLOW_SASL_OVER_TLS,
+	LDAP_SERVER_REQUIRE_STRONG_AUTH_YES,
+};
+
 /* DNS update settings */
 enum dns_update_settings {DNS_UPDATE_OFF, DNS_UPDATE_ON, DNS_UPDATE_SIGNED};
 
@@ -232,15 +249,9 @@ enum case_handling {CASE_LOWER,CASE_UPPER};
 #define DEFAULT_SMB2_MAX_CREDITS 8192
 
 #define LOADPARM_EXTRA_LOCALS						\
-	bool valid;						        \
 	int usershare;							\
 	struct timespec usershare_last_mod;				\
-	int iMaxPrintJobs;						\
-	char *szCopy;							\
 	char *szService;						\
-	char *szInclude;						\
-	bool bWidelinks;						\
-	bool bAvailable;							\
 	struct parmlist_entry *param_opt;				\
 	struct bitmap *copymap;						\
 	char dummy[3];		/* for alignment */
@@ -249,20 +260,8 @@ enum case_handling {CASE_LOWER,CASE_UPPER};
 
 #define LOADPARM_EXTRA_GLOBALS \
 	struct parmlist_entry *param_opt;				\
-	char *realm_original;						\
-	int iminreceivefile;						\
-	char *szPrintcapname;						\
-	int CupsEncrypt;						\
-	int  iPreferredMaster;						\
-	char *szLdapMachineSuffix;					\
-	char *szLdapUserSuffix;						\
-	char *szLdapIdmapSuffix;					\
-	char *szLdapGroupSuffix;					\
-	char *szIdmapUID;						\
-	char *szIdmapGID;						\
-	char *szIdmapBackend;						\
-	int winbindMaxDomainConnections;				\
-	int ismb2_max_credits;
+	char *dnsdomain;						\
+	char *realm_original;
 
 const char* server_role_str(uint32_t role);
 int lp_find_server_role(int server_role, int security, int domain_logons, int domain_master);

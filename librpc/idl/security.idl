@@ -285,6 +285,9 @@ interface security
 	const string SID_NT_TRUSTED_INSTALLER =
 		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
+	const string SID_AUTHENTICATION_AUTHORITY_ASSERTED_IDENTITY = "S-1-18-1";
+	const string SID_SERVICE_ASSERTED_IDENTITY = "S-1-18-2";
+
 	/* well-known domain RIDs */
 	const int DOMAIN_RID_LOGON                   = 9;
 	const int DOMAIN_RID_ENTERPRISE_READONLY_DCS = 498;
@@ -647,6 +650,15 @@ interface security
 		SECINFO_SCOPE		|
 		SECINFO_BACKUP 		|
 		0);
+
+	/*
+	 * See [MS-KILE] 2.2.5 LSAP_TOKEN_INFO_INTEGRITY
+	 */
+	typedef [public,gensize,flag(NDR_PAHEX)] struct {
+		uint32 Flags;
+		uint32 TokenIL;
+		uint8 MachineId[32];
+	} LSAP_TOKEN_INFO_INTEGRITY;
 
 	/*
 	 * See [MS-KILE] 2.2.6 Supported Encryption Types Bit Flags

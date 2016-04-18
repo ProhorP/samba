@@ -78,7 +78,7 @@ tests = ["RW1", "RW2", "RW3"]
 for t in tests:
     plantestsuite("samba3.smbtorture_s3.vfs_aio_fork(simpleserver).%s" % t, "simpleserver", [os.path.join(samba3srcdir, "script/tests/test_smbtorture_s3.sh"), t, '//$SERVER_IP/vfs_aio_fork', '$USERNAME', '$PASSWORD', smbtorture3, "", "-l $LOCAL_PATH"])
 
-posix_tests = ["POSIX", "POSIX-APPEND"]
+posix_tests = ["POSIX", "POSIX-APPEND", "POSIX-SYMLINK-ACL", "POSIX-SYMLINK-EA"]
 
 for t in posix_tests:
     plantestsuite("samba3.smbtorture_s3.plain(nt4_dc).%s" % t, "nt4_dc", [os.path.join(samba3srcdir, "script/tests/test_smbtorture_s3.sh"), t, '//$SERVER_IP/posix_share', '$USERNAME', '$PASSWORD', smbtorture3, "", "-l $LOCAL_PATH"])
@@ -136,6 +136,9 @@ for env in ["nt4_dc", "nt4_member", "ad_member"]:
     plantestsuite("samba3.blackbox.smbclient_auth.plain (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smbclient_auth.sh"), '$SERVER', '$SERVER_IP', '$DC_USERNAME', '$DC_PASSWORD', smbclient3, configuration])
     plantestsuite("samba3.blackbox.smbclient_auth.plain (%s) member creds" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smbclient_auth.sh"), '$SERVER', '$SERVER_IP', '$SERVER/$USERNAME', '$PASSWORD', smbclient3, configuration])
 
+env="nt4_dc"
+plantestsuite("samba3.blackbox.smbclient_auth.plain (%s) ipv6" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smbclient_auth.sh"), '$SERVER', '$SERVER_IPV6', '$SERVER/$USERNAME', '$PASSWORD', smbclient3, configuration])
+
 for env in ["nt4_member", "ad_member"]:
     plantestsuite("samba3.blackbox.net_cred_change.(%s:local)" % env, "%s:local" % env, [os.path.join(samba3srcdir, "script/tests/test_net_cred_change.sh"), configuration])
 
@@ -177,6 +180,12 @@ for env in ["nt4_dc"]:
 for env in ["fileserver"]:
     plantestsuite("samba3.blackbox.preserve_case (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_preserve_case.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
     plantestsuite("samba3.blackbox.dfree_command (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_dfree_command.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
+    plantestsuite("samba3.blackbox.dfree_quota (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_dfree_quota.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH', smbclient3, smbcquotas])
+    plantestsuite("samba3.blackbox.valid_users (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_valid_users.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
+    plantestsuite("samba3.blackbox.offline (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_offline.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH/offline', smbclient3])
+    plantestsuite("samba3.blackbox.shadow_copy2 (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_shadow_copy.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH/shadow', smbclient3])
+    plantestsuite("samba3.blackbox.smbclient.forceuser_validusers (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_forceuser_validusers.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH', smbclient3])
+    plantestsuite("samba3.blackbox.smbget (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smbget.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', 'smbget_user', '$PASSWORD', '$LOCAL_PATH/smbget', smbget])
 
     #
     # tar command tests
@@ -345,8 +354,8 @@ for t in tests:
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD', 'over ncacn_np ')
         plansmbtorture4testsuite(t, "ad_dc", 'ncacn_ip_tcp:$SERVER_IP -U$USERNAME%$PASSWORD', 'over ncacn_ip_tcp ')
     elif t == "rpc.samr.passwords.validate":
-        plansmbtorture4testsuite(t, "nt4_dc", 'ncacn_ip_tcp:$SERVER_IP -U$USERNAME%$PASSWORD', 'over ncacn_ip_tcp ')
-        plansmbtorture4testsuite(t, "ad_dc", 'ncacn_ip_tcp:$SERVER_IP -U$USERNAME%$PASSWORD', 'over ncacn_ip_tcp ')
+        plansmbtorture4testsuite(t, "nt4_dc", 'ncacn_ip_tcp:$SERVER_IP[seal] -U$USERNAME%$PASSWORD', 'over ncacn_ip_tcp ')
+        plansmbtorture4testsuite(t, "ad_dc", 'ncacn_ip_tcp:$SERVER_IP[seal] -U$USERNAME%$PASSWORD', 'over ncacn_ip_tcp ')
     elif t == "smb2.durable-open" or t == "smb2.durable-v2-open" or t == "smb2.replay":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/durable -U$USERNAME%$PASSWORD')
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/durable -U$USERNAME%$PASSWORD')
@@ -380,8 +389,8 @@ for t in tests:
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmpsort -U$USERNAME%$PASSWORD')
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD')
     elif t == "vfs.fruit":
-        plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=torture:share1=vfs_fruit --option=torture:share2=tmp --option=torture:localdir=$SELFTEST_PREFIX/nt4_dc/share')
-        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=torture:share1=vfs_fruit --option=torture:share2=tmp --option=torture:localdir=$SELFTEST_PREFIX/ad_dc/share')
+        plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD --option=torture:localdir=$SELFTEST_PREFIX/nt4_dc/share')
+        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD --option=torture:localdir=$SELFTEST_PREFIX/ad_dc/share')
     elif t == "rpc.schannel_anon_setpw":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$%', description="anonymous password set")
         plansmbtorture4testsuite(t, "nt4_dc_schannel", '//$SERVER_IP/tmp -U$%', description="anonymous password set (schannel enforced server-side)")

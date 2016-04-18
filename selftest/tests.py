@@ -48,7 +48,7 @@ planpythontestsuite("none", "api", name="ldb.python", extra_path=['lib/ldb/tests
 planpythontestsuite("none", "samba.tests.credentials")
 planpythontestsuite("none", "samba.tests.registry")
 planpythontestsuite("none", "samba.tests.auth")
-planpythontestsuite("none", "samba.tests.getopt")
+planpythontestsuite("none", "samba.tests.get_opt")
 planpythontestsuite("none", "samba.tests.security")
 planpythontestsuite("none", "samba.tests.dcerpc.misc")
 planpythontestsuite("none", "samba.tests.dcerpc.integer")
@@ -67,6 +67,10 @@ planpythontestsuite(
     "none", "wafsamba.tests.test_suite",
     extra_path=[os.path.join(samba4srcdir, "..", "buildtools"),
                 os.path.join(samba4srcdir, "..", "third_party", "waf", "wafadmin")])
+plantestsuite(
+    "samba4.blackbox.demote-saveddb", "none",
+    ["PYTHON=%s" % python, os.path.join(bbdir, "demote-saveddb.sh"),
+     '$PREFIX_ABS/demote', configuration])
 plantestsuite(
     "samba4.blackbox.dbcheck.alpha13", "none",
     ["PYTHON=%s" % python, os.path.join(bbdir, "dbcheck-oldrelease.sh"),

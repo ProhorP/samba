@@ -19,7 +19,6 @@
 %def_without libsmbclient
 %def_without libwbclient
 %def_without libnetapi
-%def_without pam_smbpass
 %def_with docs
 
 %def_with dc
@@ -44,7 +43,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.3.3
+Version: 4.4.2
 Release: alt0.M70C.1
 
 Group:   System/Servers
@@ -87,7 +86,6 @@ Requires: libwbclient-DC = %version-%release
 BuildRequires: /proc
 BuildRequires: libe2fs-devel
 BuildRequires: libacl-devel
-BuildRequires: libaio-devel
 BuildRequires: libattr-devel
 BuildRequires: libgnutls-devel
 BuildRequires: libncurses-devel
@@ -277,16 +275,6 @@ Conflicts: %rname-test
 samba4-test provides testing tools for both the server and client
 packages of Samba.
 
-%package test-devel
-Summary: Testing devel files for Samba servers and clients
-Group: Development/C
-Requires: %name-test = %version-%release
-Conflicts: %rname-test-devel
-
-%description test-devel
-samba-test-devel provides testing devel files for both the server and client
-packages of Samba.
-
 %if_with winbind
 %package winbind
 Summary: Samba winbind
@@ -365,19 +353,6 @@ projects to store temporary data. If an application is already using TDB for
 temporary data it is very easy to convert that application to be cluster aware
 and use CTDB instead.
 
-%package ctdb-devel
-Summary: CTDB clustered database development package
-Group: Development/C
-Requires: %name-ctdb = %version-%release
-Conflicts: ctdb-devel
-
-%description ctdb-devel
-Libraries, include files, etc you can use to develop CTDB applications.
-CTDB is a cluster implementation of the TDB database used by Samba and other
-projects to store temporary data. If an application is already using TDB for
-temporary data it is very easy to convert that application to be cluster aware
-and use CTDB instead.
-
 %package ctdb-tests
 Summary: CTDB clustered database test suite
 Group: Development/Other
@@ -385,6 +360,9 @@ Requires: %name-libs = %version-%release
 Requires: %name-ctdb = %version-%release
 Requires: nc
 Conflicts: ctdb-tests
+Conflicts: ctdb-devel
+Provides:  %name-ctdb-devel = %version-%release
+Obsoletes: %name-ctdb-devel < %version-%release
 
 %description ctdb-tests
 Test suite for CTDB.
@@ -445,9 +423,9 @@ Microsoft Active Directory.
 %define _ntdb_lib ,!ntdb,!pyntdb
 %endif
 
-%define _ldb_lib ,ldb,pyldb
+%define _ldb_lib ,ldb,pyldb,pyldb-util
 %if_without ldb
-%define _ldb_lib ,!ldb,!pyldb
+%define _ldb_lib ,!ldb,!pyldb,!pyldb-util
 %endif
 
 %define _samba4_libraries heimdal,!zlib,!popt%{_talloc_lib}%{_tevent_lib}%{_tdb_lib}%{_ntdb_lib}%{_ldb_lib}
@@ -526,9 +504,6 @@ Microsoft Active Directory.
 %if_with clustering_support
 	--with-cluster-support \
 %endif
-%if_without pam_smbpass
-	--without-pam_smbpass \
-%endif
 %if_with testsuite
 	--enable-selftest \
 %endif
@@ -598,11 +573,13 @@ for i in nmb smb winbind samba; do
     cat packaging/systemd/$i.service | sed -e 's@\[Service\]@[Service]\nEnvironment=KRB5CCNAME=FILE:/run/samba/krb5cc_samba@g' >tmp$i.service
     install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
 done
+subst 's,Type=notify,Type=forking,' %buildroot%_unitdir/*.service
 %if_with clustering_support
 install -m755 %SOURCE12 %buildroot%_initrddir/ctdb
 install -m 0644 ctdb/config/ctdb.service %buildroot%_unitdir
 install -m 0644 ctdb/config/ctdb.sysconfig %buildroot%_sysconfdir/sysconfig/ctdb
 echo "d /var/run/ctdb 755 root root" >> %buildroot%_tmpfilesdir/ctdb.conf
+touch %buildroot%_sysconfdir/ctdb/nodes
 %endif
 
 install -m644 packaging/systemd/samba.conf.tmp %buildroot%_tmpfilesdir/%rname.conf
@@ -653,6 +630,9 @@ cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%rname/
 /bin/rm -f %buildroot%_man7dir/libsmbclient.7*
 %endif
 
+# Install pidl/lib/Parse/Pidl/Samba3/Template.pm
+cp -a pidl/lib/Parse/Pidl/Samba3/Template.pm %buildroot%_datadir/perl5/Parse/Pidl/Samba3/
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -679,7 +659,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with winbind
 %pre winbind
-%_sbindir/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
+%_sbindir/groupadd -f -r wbpriv >/dev/null 2>&1 || :
 
 %post winbind
 %post_service winbind
@@ -757,9 +737,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbpasswd
 %_bindir/smbprint
 %_bindir/smbspool
-%_bindir/smbta-util
+#_bindir/smbta-util
 %_bindir/smbtar
 %_bindir/smbtree
+%_libexecdir/samba/smbspool_krb5_wrapper
 %{cups_serverbin}/backend/smb
 %_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
@@ -782,7 +763,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_man1dir/smbtree.1*
 %_man8dir/smbpasswd.8*
 %_man8dir/smbspool.8*
-%_man8dir/smbta-util.8*
+%_man8dir/smbspool_krb5_wrapper.8*
+#_man8dir/smbta-util.8*
+%_man8dir/cifsdd.8*
 
 %if_with ntdb
 %_bindir/ntdbbackup
@@ -858,53 +841,44 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0
 
 %exclude %_includedir/samba-4.0/netapi.h
-%exclude %_includedir/samba-4.0/torture.h
+#%exclude %_includedir/samba-4.0/torture.h
 %if_with libsmbclient
 %exclude %_includedir/samba-4.0/libsmbclient.h
 %endif
 %if_with libwbclient
 %exclude %_includedir/samba-4.0/wbclient.h
 %endif
-%if_with clustering_support
-%exclude %_includedir/samba-4.0/ctdb*
-%endif
 
-%_samba_libdir/libdcerpc-atsvc.so
 %_samba_libdir/libdcerpc-binding.so
 %_samba_libdir/libdcerpc-samr.so
 %_samba_libdir/libdcerpc.so
-%_samba_libdir/libgensec.so
 %_samba_libdir/libndr-krb5pac.so
 %_samba_libdir/libndr-nbt.so
 %_samba_libdir/libndr-standard.so
 %_samba_libdir/libndr.so
-%_samba_libdir/libregistry.so
 %_samba_libdir/libsamba-credentials.so
+%_samba_libdir/libsamba-errors.so
 %_samba_libdir/libsamba-hostconfig.so
 %_samba_libdir/libsamba-policy.so
 %_samba_libdir/libsamba-util.so
 %_samba_libdir/libsamdb.so
-%_samba_libdir/libsmbclient-raw.so
 %_samba_libdir/libsmbconf.so
 %_samba_libdir/libtevent-util.so
+%_samba_libdir/libtevent-unix-util.so
 %_samba_libdir/libsamba-passdb.so
 %_samba_libdir/libsmbldap.so
 
 %_pkgconfigdir/dcerpc.pc
-%_pkgconfigdir/dcerpc_atsvc.pc
 %_pkgconfigdir/dcerpc_samr.pc
-%_pkgconfigdir/gensec.pc
 %_pkgconfigdir/ndr.pc
 %_pkgconfigdir/ndr_krb5pac.pc
 %_pkgconfigdir/ndr_nbt.pc
 %_pkgconfigdir/ndr_standard.pc
-%_pkgconfigdir/registry.pc
 %_pkgconfigdir/samba-credentials.pc
 %_pkgconfigdir/samba-hostconfig.pc
 %_pkgconfigdir/samba-policy.pc
 %_pkgconfigdir/samba-util.pc
 %_pkgconfigdir/samdb.pc
-%_pkgconfigdir/smbclient-raw.pc
 
 %if_with dc
 %_samba_libdir/libdcerpc-server.so
@@ -912,24 +886,22 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %files libs
-%_samba_libdir/libdcerpc-atsvc.so.*
 %_samba_libdir/libdcerpc-binding.so.*
 %_samba_libdir/libdcerpc-samr.so.*
 %_samba_libdir/libdcerpc.so.*
-%_samba_libdir/libgensec.so.*
 %_samba_libdir/libndr-krb5pac.so.*
 %_samba_libdir/libndr-nbt.so.*
 %_samba_libdir/libndr-standard.so.*
 %_samba_libdir/libndr.so.*
-%_samba_libdir/libregistry.so.*
 %_samba_libdir/libsamba-credentials.so.*
+%_samba_libdir/libsamba-errors.so.*
 %_samba_libdir/libsamba-hostconfig.so.*
 %_samba_libdir/libsamba-policy.so.*
 %_samba_libdir/libsamba-util.so.*
 %_samba_libdir/libsamdb.so.*
-%_samba_libdir/libsmbclient-raw.so.*
 %_samba_libdir/libsmbconf.so.*
 %_samba_libdir/libtevent-util.so.*
+%_samba_libdir/libtevent-unix-util.so.*
 %_samba_libdir/libsamba-passdb.so.*
 %_samba_libdir/libsmbldap.so.*
 %_samba_mod_libdir/auth
@@ -959,10 +931,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libdbwrap-samba4.so
 %_samba_mod_libdir/libdcerpc-samba-samba4.so
 %_samba_mod_libdir/libdcerpc-samba4.so
-%_samba_mod_libdir/liberrors-samba4.so
 %_samba_mod_libdir/libevents-samba4.so
 %_samba_mod_libdir/libflag-mapping-samba4.so
 %_samba_mod_libdir/libgenrand-samba4.so
+%_samba_mod_libdir/libgensec-samba4.so
 %_samba_mod_libdir/libgpo-samba4.so
 %_samba_mod_libdir/libgse-samba4.so
 %_samba_mod_libdir/libhttp-samba4.so
@@ -985,6 +957,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libnon-posix-acls-samba4.so
 %_samba_mod_libdir/libnpa-tstream-samba4.so
 %_samba_mod_libdir/libprinting-migrate-samba4.so
+%_samba_mod_libdir/libregistry-samba4.so
 %_samba_mod_libdir/libreplace-samba4.so
 %_samba_mod_libdir/libsamba-cluster-support-samba4.so
 %_samba_mod_libdir/libsamba-debug-samba4.so
@@ -999,6 +972,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libserver-role-samba4.so
 %_samba_mod_libdir/libshares-samba4.so
 %_samba_mod_libdir/libsamba3-util-samba4.so
+%_samba_mod_libdir/libsmbclient-raw-samba4.so
 %_samba_mod_libdir/libsmbd-base-samba4.so
 %_samba_mod_libdir/libsmbd-conn-samba4.so
 %_samba_mod_libdir/libsmbd-shim-samba4.so
@@ -1010,6 +984,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libtalloc-report-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
 %_samba_mod_libdir/libtime-basic-samba4.so
+%_samba_mod_libdir/libtorture-samba4.so
 %_samba_mod_libdir/libtrusts-util-samba4.so
 %_samba_mod_libdir/libutil-cmdline-samba4.so
 %_samba_mod_libdir/libutil-reg-samba4.so
@@ -1034,6 +1009,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libdb-glue-samba4.so
 %_samba_mod_libdir/libHDB-SAMBA4-samba4.so
 %_samba_mod_libdir/libasn1-samba4.so.*
+%_samba_mod_libdir/libcom_err-samba4.so.*
 %_samba_mod_libdir/libgssapi-samba4.so.*
 %_samba_mod_libdir/libhcrypto-samba4.so.*
 %_samba_mod_libdir/libhdb-samba4.so.*
@@ -1134,8 +1110,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/masktest
 %_bindir/ndrdump
 %_bindir/smbtorture
-%_bindir/async_connect_send_test
-%_samba_libdir/libtorture.so.*
+#%_samba_libdir/libtorture.so.*
 %if_with dc
 %_samba_mod_libdir/libdlz-bind9-for-torture-samba4.so
 %else
@@ -1154,11 +1129,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsocket-wrapper-samba4.so
 %_samba_mod_libdir/libuid-wrapper-samba4.so
 %endif
-
-%files test-devel
-%_includedir/samba-4.0/torture.h
-%_samba_libdir/libtorture.so
-%_pkgconfigdir/torture.pc
 
 %if_with winbind
 %files winbind -f pam_winbind.lang
@@ -1198,6 +1168,7 @@ TDB_NO_FSYNC=1 %make_build test
 #doc ctdb/README
 %config(noreplace) %_sysconfdir/sysconfig/ctdb
 %dir %_sysconfdir/ctdb
+%config(noreplace) %_sysconfdir/ctdb/nodes
 %config(noreplace) %_sysconfdir/ctdb/notify.sh
 %config(noreplace) %_sysconfdir/ctdb/debug-hung-script.sh
 %config(noreplace) %_sysconfdir/ctdb/ctdb-crash-cleanup.sh
@@ -1219,13 +1190,15 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/ctdbd
 %_sbindir/ctdbd_wrapper
 %_bindir/ctdb
-%_bindir/smnotify
-%_bindir/ping_pong
-%_bindir/ltdbtool
 %_bindir/ctdb_diagnostics
+%_bindir/ltdbtool
 %_bindir/onnode
-%_bindir/ctdb_lock_helper
-%_bindir/ctdb_event_helper
+%_bindir/ping_pong
+%_libexecdir/ctdb/ctdb_event_helper
+%_libexecdir/ctdb/ctdb_lock_helper
+%_libexecdir/ctdb/ctdb_natgw
+%_libexecdir/ctdb/ctdb_recovery_helper
+%_libexecdir/ctdb/smnotify
 
 %_man1dir/ctdb.1*
 %_man1dir/ctdbd.1*
@@ -1238,10 +1211,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/ctdb-tunables.7*
 %_man7dir/ctdb-statistics.7*
 
-%files ctdb-devel
-%_includedir/samba-4.0/ctdb*
-%_libdir/pkgconfig/ctdb.pc
-
 %files ctdb-tests
 %_libdir/samba-dc/ctdb-tests
 %_bindir/ctdb_run_tests
@@ -1252,6 +1221,59 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Tue Apr 12 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt0.M70C.1
+- New version
+- Security fixes:
+  - CVE-2015-5370 (Multiple errors in DCE-RPC code)
+  - CVE-2016-2110 (Man in the middle attacks possible with NTLMSSP)
+  - CVE-2016-2111 (NETLOGON Spoofing Vulnerability)
+  - CVE-2016-2112 (LDAP client and server don't enforce integrity)
+  - CVE-2016-2113 (Missing TLS certificate validation)
+  - CVE-2016-2114 ("server signing = mandatory" not enforced)
+  - CVE-2016-2115 (SMB IPC traffic is not integrity protected)
+  - CVE-2016-2118 (SAMR and LSA man in the middle attacks possible)
+
+* Wed Mar 23 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.0-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Tue Mar 22 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.0-alt1
+- New version (https://www.samba.org/samba/history/samba-4.4.0.html)
+- Remove samba-DC-test-build and samba-DC-ctdb-devel
+
+* Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt1.M70P.1
+- Rebuild with downgraded libtalloc (ALT #31881)
+
+* Sun Mar 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt2
+- Rebuild with new libtalloc
+
+* Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Wed Mar 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.6-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.6.html)
+- Security fixes:
+  - CVE-2015-7560 (Incorrect ACL get/set allowed on symlink path)
+  - CVE-2016-0771 (Out-of-bounds read in internal DNS server)
+- Do not use specified GID for wbpriv group
+
+* Fri Mar 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.5-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Thu Mar 03 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.5-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.5.html)
+
+* Thu Jan 14 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.4-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Tue Jan 12 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.4-alt1
+- New version (https://www.samba.org/samba/history/samba-4.3.4.html)
+
+* Thu Dec 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt1.M70P.1
+- Change services type from notify to forking
+
+* Sat Dec 19 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt0.M70P.2
+- Backport new version with security fixes from Sisyphus to p7 branch
+
 * Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt0.M70C.1
 - New version (https://www.samba.org/samba/history/samba-4.3.3.html)
 - Security fixes:
@@ -1268,318 +1290,3 @@ TDB_NO_FSYNC=1 %make_build test
 
 * Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1.M70C.1
 - Backport to c7 branch
-
-* Tue Sep 22 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt2
-- Exclude libnss_win* from debuginfo
-- Make libnss_win* symlinks to /lib*
-- Package unit samba.service for systemd
-- Add conditional build of winbind part
-- Move all libraries to samba-DC-libs
-- Remove duplicated requirements
-
-* Thu Sep 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.0-alt1
-- New version (https://www.samba.org/samba/history/samba-4.3.0.html)
-- Requires /proc for doc generation
-
-* Mon Aug 24 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt2
-- Build in dc mode in %_libdir/samba-dc to prevent link conflict
-  with ordinary samba in repository
-- Build without libsmbclient, libwbclient and libnetapi
-- Move documentation to /usr/share/doc/samba
-
-* Wed Aug 19 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.3-alt0.M70P.1
-- New version of Samba AD DC
-
-* Wed Jun 03 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.2-alt0.M70P.1
-- New version of Samba AD DC
-- Fix post/postun hooks for samba init script
-
-* Mon Jun 01 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.2-alt1
-- New version of Samba AD DC
-
-* Fri Apr 10 2015 Andrey Cherepanov <cas@altlinux.org> 4.2.0-alt1
-- New version of Samba AD DC
-- Enable documentation build
-
-* Mon Feb 23 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.17-alt0.M70P.1
-- New version
-- Security fixes:
-  + fixes CVE-2015-0240 (security flaw in the smbd file server daemon)
-
-* Thu Jan 15 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.16-alt0.M70P.1
-- New version
-- Security fixes:
-  + CVE-2014-8143: Samba's AD DC allows the administrator to delegate
-    creation of user or computer accounts to specific users or groups.
-    However, all released versions of Samba's AD DC did not implement the
-    additional required check on the UF_SERVER_TRUST_ACCOUNT bit in the
-    userAccountControl attributes.
-
-* Mon Jan 12 2015 Andrey Cherepanov <cas@altlinux.org> 4.1.15-alt0.M70P.1
-- New version
-
-* Thu Dec 25 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.14-alt0.M70P.1
-- New version
-- Disable build documentation because it cannot built
-
-* Mon Oct 20 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.13-alt0.M70P.1
-- New version
-- Do not use pidfile to stop service samba
-
-* Tue Oct 14 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.12-alt0.M70P.1
-- New version
-
-* Mon Oct 13 2014 Andrey Cherepanov <cas@altlinux.org> 4.1.11-alt1.M70P.1
-- Build in DC mode
-- Fix mitkrb5 support with and without DC mode
-- Build on all available cores. Increase build and install verbosity
-- Add setproctitle support
-- Set verbosity level of make by VERBOSE option (-v, -vv or -vvv)
-- Remove missing upgradeprovision programm
-- Add initscript for samba
-- Add dlz_bind9_9.so
-- Rename to samba-DC conflicted by ordinary samba
-- Add tdb-utils for samba_upgradedns program
-- Use %%force_with to really set flag for tests
-
-* Wed Aug 27 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.11-alt2
-- update init scripts for ALTLinux
-
-* Tue Aug 05 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.11-alt1
-- 4.1.11
-- fixed unstrcpy macro length is invalid(CVE-2014-3560)
-
-* Mon Jul 28 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.10-alt1
-- 4.1.10
-
-* Tue Jun 24 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.9-alt1
-- 4.1.9
-- fixed nmbd denial of service(CVE-2014-0244)
-- fixed Segmentation fault in smbd_marshall_dir_entry(CVE-2014-3493)
-
-* Wed Jun 04 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.8-alt1
-- 4.1.8
-- fixed CVE-2014-0239, CVE-2014-0178
-
-* Wed May 07 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.7-alt2
-- add winbind-krb5-locator package
-
-* Mon May 05 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.7-alt1
-- 4.1.7
-
-* Mon Mar 17 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.6-alt1
-- 4.1.6
-- fixed CVE-2013-4496, CVE-2013-6442
-
-* Wed Jan 15 2014 Alexey Shabalin <shaba@altlinux.ru> 4.1.4-alt1
-- 4.1.4
-
-* Mon Dec 09 2013 Alexey Shabalin <shaba@altlinux.ru> 4.1.3-alt1
-- 4.1.3
-- fixed CVE-2013-4408, CVE-2012-6150
-
-* Wed Dec 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.1.2-alt1
-- 4.1.2
-- drop swat package
-- change build options:
-  + --with-profiling-data
-  + drop --disable-ntdb
-  + --without-fam
-  + drop --builtin-libraries=ccan
-- build with avahi support
-- build with external libntdb
-
-* Wed Nov 27 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.12-alt1
-- 4.0.12
-
-* Tue Nov 12 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.11-alt1
-- 4.0.11
-- fixed CVE-2013-4475, CVE-2013-4476
-
-* Tue Oct 08 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.10-alt1
-- 4.0.10
-
-* Mon Aug 26 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.9-alt1
-- 4.0.9
-- add -D options for default forking type start of services to sysV init and systemd
-
-* Wed Aug 07 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.8-alt1
-- 4.0.8
-- fixed CVE-2013-4124
-
-* Wed Jul 03 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.7-alt1
-- 4.0.7
-
-* Thu May 23 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.6-alt1
-- 4.0.6
-
-* Tue Apr 09 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.5-alt1
-- 4.0.5
-
-* Tue Mar 19 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.4-alt1
-- 4.0.4 (fixed CVE-2013-186)
-- add /var/cache/samba to samba-common package (ALT#28601)
-
-* Mon Feb 25 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.3-alt2
-- make systemctl reference indirect in packaging/NetworkManager/30-winbind-systemd (ALT#28585)
-
-* Fri Feb 15 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.3-alt1
-- 4.0.3
-- build as default samba, replaced samba4 packages
-- rename pdb_ldap to pdb_ldapsam
-
-* Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt2
-- obsoletes libnetapi4,libwbclient4,libsmbclient4 by samba4-libs if build without them
-
-* Mon Feb 04 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.2-alt1
-- 4.0.2
-- fixed gensec: Allow login without a PAC by default (samba bug #9581)
-
-* Fri Feb 01 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt3
-- build without libnetapi
-- add symlink ldapsam.so to ldap.so
-
-* Thu Jan 31 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt2
-- build without libsmbclient and libwbclient
-
-* Mon Jan 28 2013 Alexey Shabalin <shaba@altlinux.ru> 4.0.1-alt1
-- 4.0.1
-
-* Fri Dec 21 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt2
-- 4.0.0 release
-
-* Wed Mar 28 2012 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha18
-- alpha18
-
-* Sat Oct 22 2011 Vitaly Kuznetsov <vitty@altlinux.ru> 4.0.0-alt1.alpha16.1
-- Rebuild with Python-2.7
-
-* Mon Aug 08 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha16
-- alpha16
-
-* Wed May 11 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha15
-- alpha15
-
-* Thu Apr 14 2011 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt0.alpha15
-- pre alpha15 snapshot
-
-* Thu Sep 23 2010 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha13
-- Upgrade to alpha13
-
-* Fri Aug 13 2010 Alexey Shabalin <shaba@altlinux.ru> 4.0.0-alt1.alpha11
-- initial build for ALT Linux Sisyphus
-
-* Mon Jun 28 2010 Ralf Corsépius <corsepiu@fedoraproject.org> - 4.0.0-24.alpha11
-- Revert changes to %%Release, use %%main_release instead.
-- Rebuild for perl-5.12.x.
-
-* Mon Jun 28 2010 Ralf Corsépius <corsepiu@fedoraproject.org> - 4.0.0-23.alpha11.2
-- Once again rebuild for perl-5.12.x.
-
-* Wed Jun 02 2010 Marcela Maslanova <mmaslano@redhat.com> - 4.0.0-23.alpha11.1
-- Mass rebuild with perl-5.12.0
-
-* Wed Feb 24 2010 Stephen Gallagher <sgallagh@redhat.com> - 4.0.0-23.alpha11
-- Rebuild against newer libtevent
-
-* Sun Jan 24 2010 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-22.alpha11
-- Upgrade to alpha11
-
-* Fri Jan 08 2010 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-21.alpha10
-- Bump ldb_version to 0.9.10.
-
-* Fri Jan 08 2010 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-20.alpha10
-- Only install new command-line utilities if enable_samba4 is non-zero.
-
-* Wed Jan 06 2010 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-19.alpha10
-- Upgrade to alpha10
-
-* Thu Sep 17 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-18.1.alpha8_git20090916
-- Need docbook stuff to build man pages
-
-* Thu Sep 17 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-18.alpha8_git20090916
-- Fix broken dependencies
-
-* Wed Sep 16 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-17.alpha8_git20090916
-- Upgrade to alpha8-git20090916
-
-* Wed Sep 16 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-16.alpha7
-- Stop building libtevent, it is now an external package
-
-* Sun Jul 26 2009 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 4.0.0-15.2alpha7.1
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_12_Mass_Rebuild
-
-* Fri May 22 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-15.2alpha7
-- Fix dependency
-
-* Sat May 09 2009  Simo Sorce <ssorce@redhat.com> - 4.0.0-15.1alpha7
-- Don't build talloc and tdb, they are now separate packages
-
-* Mon Apr 06 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-14alpha7
-- Fix a build issue in samba4-common (RH bug #494243).
-
-* Wed Mar 25 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-13alpha7
-- rebuild with correct CFLAGS (also fixes debuginfo)
-
-* Tue Mar 10 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-12alpha7
-- Second part of fix for the ldb segfault problem from upstream
-
-* Mon Mar 09 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-11alpha7
-- Add upstream patch to fix a problem within ldb
-
-* Sun Mar 08 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-10alpha7
-- Remove ldb.pc from samba4-devel (RH bug #489186).
-
-* Wed Mar  4 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-9alpha7
-- Make talloc,tdb,tevent,ldb easy to exclude using defines
-- Fix package for non-mock "dirty" systems by deleting additional
-  files we are not interested in atm
-
-* Wed Mar  4 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-8alpha7
-- Fix typo in Requires
-
-* Mon Mar  2 2009 Simo Sorce <ssorce@redhat.com> - 4.0.0-7alpha7
-- Compile and have separate packages for additional samba libraries
-  Package in their own packages: talloc, tdb, tevent, ldb
-
-* Fri Feb 27 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-4.alpha7
-- Update to 4.0.0alpha7
-
-* Wed Feb 25 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-3.alpha6
-- Formal package review cleanups.
-
-* Mon Feb 23 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-2.alpha6
-- Disable subpackages not needed by OpenChange.
-- Incorporate package review feedback.
-
-* Mon Jan 19 2009 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-1.alpha6
-- Update to 4.0.0alpha6
-
-* Wed Dec 17 2008 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-0.8.alpha6.GIT.3508a66
-- Fix another file conflict: smbstatus
-
-* Fri Dec 12 2008 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-0.7.alpha6.GIT.3508a66
-- Disable the winbind subpackage because it conflicts with samba-winbind
-  and isn't needed to support OpenChange.
-
-* Fri Dec 12 2008 Matthew Barnes <mbarnes@redhat.com> - 4.0.0-0.6.alpha6.GIT.3508a66
-- Update to the GIT revision OpenChange is now requiring.
-
-* Fri Aug 29 2008 Andrew Bartlett <abartlet@samba.org> - 0:4.0.0-0.5.alpha5.fc10
-- Fix licence tag (the binaries are built into a GPLv3 whole, so the BSD licence need not be mentioned)
-
-* Fri Jul 25 2008 Andrew Bartlett <abartlet@samba.org> - 0:4.0.0-0.4.alpha5.fc10
-- Remove talloc and tdb dependency (per https://bugzilla.redhat.com/show_bug.cgi?id=453083)
-- Fix deps on chkconfig and service to main pkg (not -common)
-  (per https://bugzilla.redhat.com/show_bug.cgi?id=453083)
-
-* Mon Jul 21 2008 Brad Hards <bradh@frogmouth.ent> - 0:4.0.0-0.3.alpha5.fc10
-- Use --sysconfdir instead of --with-configdir
-- Add patch for C++ header compatibility
-
-* Mon Jun 30 2008 Andrew Bartlett <abartlet@samba.org> - 0:4.0.0-0.2.alpha5.fc9
-- Update per review feedback
-- Update for alpha5
-
-* Thu Jun 26 2008 Andrew Bartlett <abartlet@samba.org> - 0:4.0.0-0.1.alpha4.fc9
-- Rework Fedora's Samba 3.2.0-1.rc2.16 spec file for Samba4

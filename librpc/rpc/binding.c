@@ -591,7 +591,7 @@ _PUBLIC_ void dcerpc_binding_get_auth_info(const struct dcerpc_binding *b,
 	} else if (b->flags & DCERPC_CONNECT) {
 		auth_level = DCERPC_AUTH_LEVEL_CONNECT;
 	} else if (auth_type != DCERPC_AUTH_TYPE_NONE) {
-		auth_level = DCERPC_AUTH_LEVEL_CONNECT;
+		auth_level = DCERPC_AUTH_LEVEL_INTEGRITY;
 	} else {
 		auth_level = DCERPC_AUTH_LEVEL_NONE;
 	}
@@ -1226,7 +1226,7 @@ _PUBLIC_ enum dcerpc_transport_t dcerpc_transport_by_tower(const struct epm_towe
 			continue; 
 		}
 
-		for (j = 0; j < transports[i].num_protocols; j++) {
+		for (j = 0; j < transports[i].num_protocols && j < MAX_PROTSEQ; j++) {
 			if (transports[i].protseq[j] != tower->floors[j+2].lhs.protocol) {
 				break;
 			}
