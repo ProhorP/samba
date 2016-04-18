@@ -161,39 +161,61 @@ struct smb_filename *cp_smb_filename(TALLOC_CTX *mem_ctx,
 				     const struct smb_filename *in)
 {
 	struct smb_filename *out;
+	size_t base_len = 0;
+	size_t stream_len = 0;
+	size_t lcomp_len = 0;
+	int num = 0;
 
 	/* stream_name must always be NULL if there is no stream. */
 	if (in->stream_name) {
 		SMB_ASSERT(in->stream_name[0] != '\0');
 	}
 
-	out = talloc_zero(mem_ctx, struct smb_filename);
+	if (in->base_name != NULL) {
+		base_len = strlen(in->base_name) + 1;
+		num += 1;
+	}
+	if (in->stream_name != NULL) {
+		stream_len = strlen(in->stream_name) + 1;
+		num += 1;
+	}
+	if (in->original_lcomp != NULL) {
+		lcomp_len = strlen(in->original_lcomp) + 1;
+		num += 1;
+	}
+
+	out = talloc_pooled_object(mem_ctx, struct smb_filename,
+				num, stream_len + base_len + lcomp_len);
 	if (out == NULL) {
 		return NULL;
 	}
+	ZERO_STRUCTP(out);
+
+	/*
+	 * The following allocations cannot fail as we
+	 * pre-allocated space for them in the out pooled
+	 * object.
+	 */
 	if (in->base_name != NULL) {
-		out->base_name = talloc_strdup(out, in->base_name);
-		if (out->base_name == NULL) {
-			goto fail;
-		}
+		out->base_name = talloc_memdup(
+				out, in->base_name, base_len);
+		talloc_set_name_const(out->base_name,
+				      out->base_name);
 	}
 	if (in->stream_name != NULL) {
-		out->stream_name = talloc_strdup(out, in->stream_name);
-		if (out->stream_name == NULL) {
-			goto fail;
-		}
+		out->stream_name = talloc_memdup(
+				out, in->stream_name, stream_len);
+		talloc_set_name_const(out->stream_name,
+				      out->stream_name);
 	}
 	if (in->original_lcomp != NULL) {
-		out->original_lcomp = talloc_strdup(out, in->original_lcomp);
-		if (out->original_lcomp == NULL) {
-			goto fail;
-		}
+		out->original_lcomp = talloc_memdup(
+				out, in->original_lcomp, lcomp_len);
+		talloc_set_name_const(out->original_lcomp,
+				      out->original_lcomp);
 	}
 	out->st = in->st;
 	return out;
-fail:
-	TALLOC_FREE(out);
-	return NULL;
 }
 
 /****************************************************************************

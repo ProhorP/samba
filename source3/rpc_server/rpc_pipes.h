@@ -33,7 +33,7 @@ typedef struct _output_data {
 	DATA_BLOB rdata;
 
 	/* The amount of data sent from the current rdata struct. */
-	uint32 data_sent_length;
+	uint32_t data_sent_length;
 
 	/*
 	 * The current fragment being returned. This inclues
@@ -42,7 +42,7 @@ typedef struct _output_data {
 	DATA_BLOB frag;
 
 	/* The amount of data sent from the current PDU. */
-	uint32 current_pdu_sent;
+	uint32_t current_pdu_sent;
 } output_data;
 
 typedef struct _input_data {
@@ -61,7 +61,7 @@ typedef struct _input_data {
 	 * If this is zero, then we are at the start of a new
 	 * pdu.
 	 */
-	uint32 pdu_needed_len;
+	uint32_t pdu_needed_len;
 
 	/*
 	 * This is the collection of input data with all
@@ -79,7 +79,7 @@ struct pipes_struct;
 
 struct api_struct {
 	const char *name;
-	uint8 opnum;
+	uint8_t opnum;
 	bool (*fn) (struct pipes_struct *);
 };
 
@@ -94,6 +94,10 @@ struct pipe_rpc_fns {
 	uint32_t context_id;
 	struct ndr_syntax_id syntax;
 
+	/*
+	 * shall we allow "connect" auth level for this interface ?
+	 */
+	bool allow_connect;
 };
 
 /*
@@ -120,13 +124,18 @@ struct pipes_struct {
 
 	struct pipe_auth_data auth;
 
-	bool ncalrpc_as_system;
-
 	/*
 	 * Set to true when an RPC bind has been done on this pipe.
 	 */
 
 	bool pipe_bound;
+
+	/*
+	 * States we can be in.
+	 */
+	bool allow_alter;
+	bool allow_bind;
+	bool allow_auth3;
 
 	/*
 	 * Set the DCERPC_FAULT to return.
@@ -164,6 +173,9 @@ struct pipes_struct {
 	/* operation number retrieved from the rpc header */
 	uint16_t opnum;
 
+	/* rpc header information to check fragments for consistency */
+	struct dcerpc_sec_vt_header2 header2;
+
 	/* private data for the interface implementation */
 	void *private_data;
 
@@ -173,7 +185,7 @@ int make_base_pipes_struct(TALLOC_CTX *mem_ctx,
 			   struct messaging_context *msg_ctx,
 			   const char *pipe_name,
 			   enum dcerpc_transport_t transport,
-			   bool endian, bool ncalrpc_as_system,
+			   bool endian,
 			   const struct tsocket_address *remote_address,
 			   const struct tsocket_address *local_address,
 			   struct pipes_struct **_p);

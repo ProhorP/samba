@@ -9,6 +9,7 @@
 #include "../common/open.c"
 #include "../common/check.c"
 #include "../common/hash.c"
+#include "../common/mutex.c"
 #include "tap-interface.h"
 #include <stdlib.h>
 
@@ -27,15 +28,17 @@ static void log_fn(struct tdb_context *tdb, enum tdb_debug_level level, const ch
 static unsigned int hdr_rwlocks(const char *fname)
 {
 	struct tdb_header hdr;
+	ssize_t nread;
 
 	int fd = open(fname, O_RDONLY);
 	if (fd == -1)
 		return -1;
 
-	if (read(fd, &hdr, sizeof(hdr)) != sizeof(hdr))
-		return -1;
-
+	nread = read(fd, &hdr, sizeof(hdr));
 	close(fd);
+	if (nread != sizeof(hdr)) {
+		return -1;
+	}
 	return hdr.rwlocks;
 }
 
@@ -61,7 +64,7 @@ int main(int argc, char *argv[])
 				  NULL);
 		ok1(tdb);
 		ok1(log_count == 0);
-		d.dptr = (void *)"Hello";
+		d.dptr = discard_const_p(uint8_t, "Hello");
 		d.dsize = 5;
 		ok1(tdb_store(tdb, d, d, TDB_INSERT) == 0);
 		tdb_close(tdb);
@@ -106,7 +109,7 @@ int main(int argc, char *argv[])
 				  NULL);
 		ok1(tdb);
 		ok1(log_count == 0);
-		d.dptr = (void *)"Hello";
+		d.dptr = discard_const_p(uint8_t, "Hello");
 		d.dsize = 5;
 		ok1(tdb_store(tdb, d, d, TDB_INSERT) == 0);
 		tdb_close(tdb);
@@ -153,7 +156,7 @@ int main(int argc, char *argv[])
 				  tdb_dumb_hash);
 		ok1(tdb);
 		ok1(log_count == 0);
-		d.dptr = (void *)"Hello";
+		d.dptr = discard_const_p(uint8_t, "Hello");
 		d.dsize = 5;
 		ok1(tdb_store(tdb, d, d, TDB_INSERT) == 0);
 		tdb_close(tdb);

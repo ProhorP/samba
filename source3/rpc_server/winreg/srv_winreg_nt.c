@@ -659,11 +659,11 @@ static int validate_reg_filename(TALLOC_CTX *ctx, char **pp_fname )
 	/* has to exist within a valid file share */
 
 	for (snum=0; snum<num_services; snum++) {
-		if (!lp_snum_ok(snum) || lp_print_ok(snum)) {
+		if (!lp_snum_ok(snum) || lp_printable(snum)) {
 			continue;
 		}
 
-		share_path = lp_pathname(talloc_tos(), snum);
+		share_path = lp_path(talloc_tos(), snum);
 
 		/* make sure we have a path (e.g. [homes] ) */
 		if (strlen(share_path) == 0) {
@@ -866,7 +866,7 @@ WERROR _winreg_GetKeySecurity(struct pipes_struct *p,
 	struct registry_key *key = find_regkey_by_hnd(p, r->in.handle);
 	WERROR err = WERR_OK;
 	struct security_descriptor *secdesc = NULL;
-	uint8 *data = NULL;
+	uint8_t *data = NULL;
 	size_t len = 0;
 
 	if ( !key )

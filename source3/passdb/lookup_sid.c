@@ -46,7 +46,7 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 	const char *tmp;
 	const char *domain = NULL;
 	const char *name = NULL;
-	uint32 rid;
+	uint32_t rid;
 	struct dom_sid sid;
 	enum lsa_SidType type;
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
@@ -140,7 +140,31 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 		return false;
 	}
 
-	if ((domain[0] == '\0') && (!(flags & LOOKUP_NAME_ISOLATED))) {
+	/*
+	 * Finally check for a well known domain name ("NT Authority"),
+	 * this is taken care if in lookup_wellknown_name().
+	 */
+	if ((domain[0] != '\0') &&
+	    (flags & LOOKUP_NAME_WKN) &&
+	    lookup_wellknown_name(tmp_ctx, name, &sid, &domain))
+	{
+		type = SID_NAME_WKN_GRP;
+		goto ok;
+	}
+
+	/*
+	 * If we're told not to look up 'isolated' names then we're
+	 * done.
+	 */
+	if (!(flags & LOOKUP_NAME_ISOLATED)) {
+		TALLOC_FREE(tmp_ctx);
+		return false;
+	}
+
+	/*
+	 * No domain names beyond this point
+	 */
+	if (domain[0] != '\0') {
 		TALLOC_FREE(tmp_ctx);
 		return false;
 	}
@@ -151,6 +175,11 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 	 * November 27, 2005 */
 
 	/* 1. well-known names */
+
+	/*
+	 * Check for well known names without a domain name.
+	 * e.g. \Creator Owner.
+	 */
 
 	if ((flags & LOOKUP_NAME_WKN) &&
 	    lookup_wellknown_name(tmp_ctx, name, &sid, &domain))
@@ -450,7 +479,7 @@ bool lookup_name_smbconf(TALLOC_CTX *mem_ctx,
 
 static bool wb_lookup_rids(TALLOC_CTX *mem_ctx,
 			   const struct dom_sid *domain_sid,
-			   int num_rids, uint32 *rids,
+			   int num_rids, uint32_t *rids,
 			   const char **domain_name,
 			   const char **names, enum lsa_SidType *types)
 {
@@ -671,7 +700,7 @@ static bool lookup_as_domain(const struct dom_sid *sid, TALLOC_CTX *mem_ctx,
 	}
 
 	if (IS_DC) {
-		uint32 i, num_domains;
+		uint32_t i, num_domains;
 		struct trustdom_info **domains;
 
 		/* This is relatively expensive, but it happens only on DCs
@@ -923,13 +952,18 @@ NTSTATUS lookup_sids(TALLOC_CTX *mem_ctx, int num_sids,
 			break;
 		}
 
-		if (dom->num_idxs) {
-			if (!(rids = talloc_array(tmp_ctx, uint32, dom->num_idxs))) {
-				result = NT_STATUS_NO_MEMORY;
-				goto fail;
-			}
-		} else {
-			rids = NULL;
+		if (dom->num_idxs == 0) {
+			/*
+			 * This happens only if the only sid related to
+			 * this domain is the domain sid itself, which
+			 * is mapped to SID_NAME_DOMAIN above.
+			 */
+			continue;
+		}
+
+		if (!(rids = talloc_array(tmp_ctx, uint32_t, dom->num_idxs))) {
+			result = NT_STATUS_NO_MEMORY;
+			goto fail;
 		}
 
 		for (j=0; j<dom->num_idxs; j++) {
@@ -1048,11 +1082,15 @@ bool lookup_sid(TALLOC_CTX *mem_ctx, const struct dom_sid *sid,
 static void legacy_uid_to_sid(struct dom_sid *psid, uid_t uid)
 {
 	bool ret;
+	struct unixid id;
 
 	ZERO_STRUCTP(psid);
 
+	id.id = uid;
+	id.type = ID_TYPE_UID;
+
 	become_root();
-	ret = pdb_uid_to_sid(uid, psid);
+	ret = pdb_id_to_sid(&id, psid);
 	unbecome_root();
 
 	if (ret) {
@@ -1063,6 +1101,13 @@ static void legacy_uid_to_sid(struct dom_sid *psid, uid_t uid)
 	/* This is an unmapped user */
 
 	uid_to_unix_users_sid(uid, psid);
+
+	{
+		struct unixid xid = {
+			.id = uid, .type = ID_TYPE_UID
+		};
+		idmap_cache_set_sid2unixid(psid, &xid);
+	}
 
  done:
 	DEBUG(10,("LEGACY: uid %u -> sid %s\n", (unsigned int)uid,
@@ -1078,11 +1123,15 @@ static void legacy_uid_to_sid(struct dom_sid *psid, uid_t uid)
 static void legacy_gid_to_sid(struct dom_sid *psid, gid_t gid)
 {
 	bool ret;
+	struct unixid id;
 
 	ZERO_STRUCTP(psid);
 
+	id.id = gid;
+	id.type = ID_TYPE_GID;
+
 	become_root();
-	ret = pdb_gid_to_sid(gid, psid);
+	ret = pdb_id_to_sid(&id, psid);
 	unbecome_root();
 
 	if (ret) {
@@ -1093,6 +1142,13 @@ static void legacy_gid_to_sid(struct dom_sid *psid, gid_t gid)
 	/* This is an unmapped group */
 
 	gid_to_unix_groups_sid(gid, psid);
+
+	{
+		struct unixid xid = {
+			.id = gid, .type = ID_TYPE_GID
+		};
+		idmap_cache_set_sid2unixid(psid, &xid);
+	}
 
  done:
 	DEBUG(10,("LEGACY: gid %u -> sid %s\n", (unsigned int)gid,
@@ -1370,7 +1426,7 @@ bool sid_to_uid(const struct dom_sid *psid, uid_t *puid)
 {
 	bool expired = true;
 	bool ret;
-	uint32 rid;
+	uint32_t rid;
 
 	/* Optimize for the Unix Users Domain
 	 * as the conversion is straightforward */
@@ -1423,7 +1479,7 @@ bool sid_to_gid(const struct dom_sid *psid, gid_t *pgid)
 {
 	bool expired = true;
 	bool ret;
-	uint32 rid;
+	uint32_t rid;
 
 	/* Optimize for the Unix Groups Domain
 	 * as the conversion is straightforward */
@@ -1510,7 +1566,7 @@ NTSTATUS get_primary_group_sid(TALLOC_CTX *mem_ctx,
 	if (!pwd) {
 		pwd = Get_Pwnam_alloc(mem_ctx, username);
 		if (!pwd) {
-			DEBUG(0, ("Failed to find a Unix account for %s",
+			DEBUG(0, ("Failed to find a Unix account for %s\n",
 				  username));
 			TALLOC_FREE(tmp_ctx);
 			return NT_STATUS_NO_SUCH_USER;
@@ -1546,8 +1602,13 @@ NTSTATUS get_primary_group_sid(TALLOC_CTX *mem_ctx,
 			}
 		} else {
 			/* Try group mapping */
+			struct unixid id;
+
+			id.id = pwd->pw_gid;
+			id.type = ID_TYPE_GID;
+
 			ZERO_STRUCTP(group_sid);
-			if (pdb_gid_to_sid(pwd->pw_gid, group_sid)) {
+			if (pdb_id_to_sid(&id, group_sid)) {
 				need_lookup_sid = true;
 			}
 		}

@@ -41,6 +41,7 @@
 
 struct file_elem {
 	char *name;
+	NTTIME create_time;
 	bool found;
 };
 
@@ -54,7 +55,7 @@ static NTSTATUS populate_tree(struct torture_context *tctx,
 	struct smb2_create create;
 	char **strs = NULL;
 	NTSTATUS status;
-	bool ret;
+	bool ret = true;
 	int i;
 
 	smb2_deltree(tree, DNAME);
@@ -89,9 +90,14 @@ static NTSTATUS populate_tree(struct torture_context *tctx,
 		    DNAME, files[i].name);
 		status = smb2_create(tree, mem_ctx, &create);
 		torture_assert_ntstatus_ok_goto(tctx, status, ret, done, "");
+		files[i].create_time = create.out.create_time;
 		smb2_util_close(tree, create.out.file.handle);
 	}
  done:
+	if (!ret) {
+		return status;
+	}
+
 	return status;
 }
 
@@ -130,17 +136,26 @@ static bool test_find(struct torture_context *tctx,
 		for (i = 0; i < count; i++) {
 			bool expected;
 			const char *found = d[i].both_directory_info.name.s;
+			NTTIME ct = d[i].both_directory_info.create_time;
 
 			if (!strcmp(found, ".") || !strcmp(found, ".."))
 				continue;
 
 			expected = false;
 			for (j = 0; j < NFILES; j++) {
-				if (!strcmp(files[j].name, found)) {
-					files[j].found = true;
-					expected = true;
-					break;
+				if (strcmp(files[j].name, found) != 0) {
+					continue;
 				}
+
+				torture_assert_u64_equal_goto(tctx,
+							files[j].create_time,
+							ct, ret, done,
+							talloc_asprintf(tctx,
+							"file[%d]\n", j));
+
+				files[j].found = true;
+				expected = true;
+				break;
 			}
 
 			if (expected)
@@ -715,6 +730,9 @@ static NTSTATUS multiple_smb2_search(struct smb2_tree *tree,
 		}
 	} while (count != 0);
 done:
+	if (!ret) {
+		return status;
+	}
 	return status;
 }
 
@@ -813,8 +831,6 @@ static bool test_many_files(struct torture_context *tctx,
 
 		for (i=0;i<result.count;i++) {
 			const char *s;
-			enum smb_search_level level;
-			level = RAW_SEARCH_SMB2;
 			s = extract_name(&result.list[i],
 					 search_types[t].level,
 					 compare_data_level);
@@ -883,7 +899,6 @@ static bool check_result(struct torture_context *tctx,
 static bool test_modify_search(struct torture_context *tctx,
 			       struct smb2_tree *tree)
 {
-	int num_files = 700;
 	struct multiple_result result;
 	union smb_setfileinfo sfinfo;
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
@@ -891,7 +906,8 @@ static bool test_modify_search(struct torture_context *tctx,
 	struct smb2_handle h;
 	struct smb2_find f;
 	union smb_search_data *d;
-	struct file_elem files[702] = {};
+	struct file_elem files[703] = {};
+	int num_files = ARRAY_SIZE(files)-3;
 	NTSTATUS status;
 	bool ret = true;
 	int i;

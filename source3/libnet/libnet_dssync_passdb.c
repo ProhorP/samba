@@ -670,11 +670,11 @@ static NTSTATUS smb_create_user(TALLOC_CTX *mem_ctx,
 
 	/* Create appropriate user */
 	if (acct_flags & ACB_NORMAL) {
-		add_script = lp_adduser_script(mem_ctx);
+		add_script = lp_add_user_script(mem_ctx);
 	} else if ( (acct_flags & ACB_WSTRUST) ||
 		    (acct_flags & ACB_SVRTRUST) ||
 		    (acct_flags & ACB_DOMTRUST) ) {
-		add_script = lp_addmachine_script(mem_ctx);
+		add_script = lp_add_machine_script(mem_ctx);
 	} else {
 		DEBUG(1, ("Unknown user type: %s\n",
 			  pdb_encode_acct_ctrl(acct_flags, NEW_PW_FORMAT_SPACE_PADDED_LEN)));
@@ -1119,7 +1119,6 @@ static NTSTATUS sam_account_from_object(struct samu *account,
 	const char *profilePath;
 	const char *description;
 	const char *userWorkstations;
-	const char *comment;
 	DATA_BLOB userParameters;
 	struct dom_sid objectSid;
 	uint32_t primaryGroupID;
@@ -1151,7 +1150,6 @@ static NTSTATUS sam_account_from_object(struct samu *account,
 	GET_STRING(profilePath);
 	GET_STRING(description);
 	GET_STRING(userWorkstations);
-	GET_STRING(comment);
 	GET_BLOB(userParameters);
 	GET_UINT32(primaryGroupID);
 	GET_UINT32(userAccountControl);
@@ -1367,12 +1365,10 @@ static NTSTATUS handle_account_object(struct dssync_passdb *pctx,
 	uint32_t rid;
 
 	const char *sAMAccountName;
-	uint32_t sAMAccountType;
 	uint32_t userAccountControl;
 
 	user_sid = cur->object.identifier->sid;
 	GET_STRING_EX(sAMAccountName, true);
-	GET_UINT32_EX(sAMAccountType, true);
 	GET_UINT32_EX(userAccountControl, true);
 
 	status = dom_sid_split_rid(mem_ctx, &user_sid, NULL, &rid);
@@ -1489,8 +1485,6 @@ static NTSTATUS handle_alias_object(struct dssync_passdb *pctx,
 	bool insert = true;
 
 	const char *sAMAccountName;
-	uint32_t sAMAccountType;
-	uint32_t groupType;
 	const char *description;
 	uint32_t i;
 	uint32_t num_members = 0;
@@ -1498,8 +1492,6 @@ static NTSTATUS handle_alias_object(struct dssync_passdb *pctx,
 
 	group_sid = cur->object.identifier->sid;
 	GET_STRING_EX(sAMAccountName, true);
-	GET_UINT32_EX(sAMAccountType, true);
-	GET_UINT32_EX(groupType, true);
 	GET_STRING(description);
 
 	status = find_drsuapi_attr_dn(obj, cur, DRSUAPI_ATTID_member,
@@ -1628,8 +1620,6 @@ static NTSTATUS handle_group_object(struct dssync_passdb *pctx,
 	bool insert = true;
 
 	const char *sAMAccountName;
-	uint32_t sAMAccountType;
-	uint32_t groupType;
 	const char *description;
 	uint32_t i;
 	uint32_t num_members = 0;
@@ -1637,8 +1627,6 @@ static NTSTATUS handle_group_object(struct dssync_passdb *pctx,
 
 	group_sid = cur->object.identifier->sid;
 	GET_STRING_EX(sAMAccountName, true);
-	GET_UINT32_EX(sAMAccountType, true);
-	GET_UINT32_EX(groupType, true);
 	GET_STRING(description);
 
 	status = find_drsuapi_attr_dn(obj, cur, DRSUAPI_ATTID_member,
@@ -1781,7 +1769,6 @@ static NTSTATUS parse_object(struct dssync_passdb *pctx,
 	struct drsuapi_DsReplicaAttribute *attr;
 
 	char *name = NULL;
-	uint32_t uacc = 0;
 	uint32_t sam_type = 0;
 
 	DEBUG(3, ("parsing object '%s'\n", cur->object.identifier->dn));
@@ -1808,9 +1795,6 @@ static NTSTATUS parse_object(struct dssync_passdb *pctx,
 				break;
 			case DRSUAPI_ATTID_sAMAccountType:
 				sam_type = IVAL(blob->data, 0);
-				break;
-			case DRSUAPI_ATTID_userAccountControl:
-				uacc = IVAL(blob->data, 0);
 				break;
 			default:
 				break;

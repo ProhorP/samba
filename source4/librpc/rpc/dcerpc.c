@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "system/filesys.h"
 #include "../lib/util/dlinklist.h"
 #include "lib/events/events.h"
 #include "librpc/rpc/dcerpc.h"
@@ -31,6 +32,9 @@
 #include "param/param.h"
 #include "lib/util/tevent_ntstatus.h"
 #include "librpc/rpc/rpc_common.h"
+#include "lib/tsocket/tsocket.h"
+#include "libcli/smb/tstream_smbXcli_np.h"
+
 
 enum rpc_request_state {
 	RPC_REQUEST_QUEUED,
@@ -61,14 +65,8 @@ struct rpc_request {
 	DATA_BLOB request_data;
 	bool ignore_timeout;
 	bool wait_for_sync;
-
-	/* use by the ndr level async recv call */
-	struct {
-		const struct ndr_interface_table *table;
-		uint32_t opnum;
-		void *struct_ptr;
-		TALLOC_CTX *mem_ctx;
-	} ndr;
+	bool verify_bitmask1;
+	bool verify_pcontext;
 
 	struct {
 		void (*callback)(struct rpc_request *);
@@ -105,6 +103,10 @@ static NTSTATUS dcerpc_ndr_validate_out(struct dcecli_connection *c,
 					ndr_push_flags_fn_t ndr_push,
 					ndr_pull_flags_fn_t ndr_pull,
 					ndr_print_function_t ndr_print);
+static NTSTATUS dcerpc_shutdown_pipe(struct dcecli_connection *p, NTSTATUS status);
+static NTSTATUS dcerpc_send_request(struct dcecli_connection *p, DATA_BLOB *data,
+			     bool trigger_read);
+static NTSTATUS dcerpc_send_read(struct dcecli_connection *p);
 
 /* destroy a dcerpc connection */
 static int dcerpc_connection_destructor(struct dcecli_connection *conn)
@@ -139,13 +141,20 @@ static struct dcecli_connection *dcerpc_connection_init(TALLOC_CTX *mem_ctx,
 	}
 
 	c->call_id = 1;
-	c->security_state.auth_info = NULL;
+	c->security_state.auth_type = DCERPC_AUTH_TYPE_NONE;
+	c->security_state.auth_level = DCERPC_AUTH_LEVEL_NONE;
+	c->security_state.auth_context_id = 0;
 	c->security_state.session_key = dcerpc_generic_session_key;
 	c->security_state.generic_state = NULL;
-	c->binding_string = NULL;
 	c->flags = 0;
-	c->srv_max_xmit_frag = 0;
-	c->srv_max_recv_frag = 0;
+	/*
+	 * Windows uses 5840 for ncacn_ip_tcp,
+	 * so we also use it (for every transport)
+	 * by default. But we give the transport
+	 * the chance to overwrite it.
+	 */
+	c->srv_max_xmit_frag = 5840;
+	c->srv_max_recv_frag = 5840;
 	c->pending = NULL;
 
 	c->io_trigger = tevent_create_immediate(c);
@@ -198,6 +207,25 @@ static uint32_t dcerpc_bh_set_timeout(struct dcerpc_binding_handle *h,
 	hs->p->request_timeout = timeout;
 
 	return old;
+}
+
+static void dcerpc_bh_auth_info(struct dcerpc_binding_handle *h,
+				enum dcerpc_AuthType *auth_type,
+				enum dcerpc_AuthLevel *auth_level)
+{
+	struct dcerpc_bh_state *hs = dcerpc_binding_handle_data(h,
+				     struct dcerpc_bh_state);
+
+	if (hs->p == NULL) {
+		return;
+	}
+
+	if (hs->p->conn == NULL) {
+		return;
+	}
+
+	*auth_type = hs->p->conn->security_state.auth_type;
+	*auth_level = hs->p->conn->security_state.auth_level;
 }
 
 struct dcerpc_bh_raw_call_state {
@@ -457,10 +485,12 @@ static void dcerpc_bh_ndr_pull_failed(struct dcerpc_binding_handle *h,
 
 	for (i=0;i<num_examples;i++) {
 		char *name=NULL;
-		asprintf(&name, "%s/rpclog/%s-out.%d",
-			 hs->p->conn->packet_log_dir,
-			 call->name, i);
-		if (name == NULL) {
+		int ret;
+
+		ret = asprintf(&name, "%s/rpclog/%s-out.%d",
+			       hs->p->conn->packet_log_dir,
+			       call->name, i);
+		if (ret == -1) {
 			return;
 		}
 		if (!file_exist(name)) {
@@ -552,6 +582,7 @@ static const struct dcerpc_binding_handle_ops dcerpc_bh_ops = {
 	.name			= "dcerpc",
 	.is_connected		= dcerpc_bh_is_connected,
 	.set_timeout		= dcerpc_bh_set_timeout,
+	.auth_info		= dcerpc_bh_auth_info,
 	.raw_call_send		= dcerpc_bh_raw_call_send,
 	.raw_call_recv		= dcerpc_bh_raw_call_recv,
 	.disconnect_send	= dcerpc_bh_disconnect_send,
@@ -689,6 +720,7 @@ static NTSTATUS ncacn_pull(struct dcecli_connection *c, DATA_BLOB *blob, TALLOC_
 	}
 
 	ndr_err = ndr_pull_ncacn_packet(ndr, NDR_SCALARS|NDR_BUFFERS, pkt);
+	TALLOC_FREE(ndr);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return ndr_map_error2ntstatus(ndr_err);
 	}
@@ -711,12 +743,16 @@ static NTSTATUS ncacn_pull_request_auth(struct dcecli_connection *c, TALLOC_CTX 
 	struct dcerpc_auth auth;
 	uint32_t auth_length;
 
-	if (!c->security_state.auth_info ||
-	    !c->security_state.generic_state) {
-		return NT_STATUS_OK;
+	status = dcerpc_verify_ncacn_packet_header(pkt, DCERPC_PKT_RESPONSE,
+					pkt->u.response.stub_and_verifier.length,
+					0, /* required_flags */
+					DCERPC_PFC_FLAG_FIRST |
+					DCERPC_PFC_FLAG_LAST);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
-	switch (c->security_state.auth_info->auth_level) {
+	switch (c->security_state.auth_level) {
 	case DCERPC_AUTH_LEVEL_PRIVACY:
 	case DCERPC_AUTH_LEVEL_INTEGRITY:
 		break;
@@ -736,6 +772,14 @@ static NTSTATUS ncacn_pull_request_auth(struct dcecli_connection *c, TALLOC_CTX 
 		return NT_STATUS_INVALID_LEVEL;
 	}
 
+	if (pkt->auth_length == 0) {
+		return NT_STATUS_INVALID_NETWORK_RESPONSE;
+	}
+
+	if (c->security_state.generic_state == NULL) {
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
 	status = dcerpc_pull_auth_trailer(pkt, mem_ctx,
 					  &pkt->u.response.stub_and_verifier,
 					  &auth, &auth_length, false);
@@ -743,8 +787,20 @@ static NTSTATUS ncacn_pull_request_auth(struct dcecli_connection *c, TALLOC_CTX 
 
 	pkt->u.response.stub_and_verifier.length -= auth_length;
 
+	if (auth.auth_type != c->security_state.auth_type) {
+		return NT_STATUS_RPC_PROTOCOL_ERROR;
+	}
+
+	if (auth.auth_level != c->security_state.auth_level) {
+		return NT_STATUS_RPC_PROTOCOL_ERROR;
+	}
+
+	if (auth.auth_context_id != c->security_state.auth_context_id) {
+		return NT_STATUS_RPC_PROTOCOL_ERROR;
+	}
+
 	/* check signature or unseal the packet */
-	switch (c->security_state.auth_info->auth_level) {
+	switch (c->security_state.auth_level) {
 	case DCERPC_AUTH_LEVEL_PRIVACY:
 		status = gensec_unseal_packet(c->security_state.generic_state, 
 					      raw_packet->data + DCERPC_REQUEST_LENGTH,
@@ -800,13 +856,13 @@ static NTSTATUS ncacn_push_request_sign(struct dcecli_connection *c,
 	size_t payload_length;
 	enum ndr_err_code ndr_err;
 	size_t hdr_size = DCERPC_REQUEST_LENGTH;
+	struct dcerpc_auth auth_info = {
+		.auth_type = c->security_state.auth_type,
+		.auth_level = c->security_state.auth_level,
+		.auth_context_id = c->security_state.auth_context_id,
+	};
 
-	/* non-signed packets are simpler */
-	if (c->security_state.auth_info == NULL) {
-		return ncacn_push_auth(blob, mem_ctx, pkt, NULL);
-	}
-
-	switch (c->security_state.auth_info->auth_level) {
+	switch (c->security_state.auth_level) {
 	case DCERPC_AUTH_LEVEL_PRIVACY:
 	case DCERPC_AUTH_LEVEL_INTEGRITY:
 		if (sig_size == 0) {
@@ -853,21 +909,18 @@ static NTSTATUS ncacn_push_request_sign(struct dcecli_connection *c,
 	   ndr_push_align() as that is relative to the start of the
 	   whole packet, whereas w2k8 wants it relative to the start
 	   of the stub */
-	c->security_state.auth_info->auth_pad_length =
+	auth_info.auth_pad_length =
 		DCERPC_AUTH_PAD_LENGTH(pkt->u.request.stub_and_verifier.length);
-	ndr_err = ndr_push_zero(ndr, c->security_state.auth_info->auth_pad_length);
+	ndr_err = ndr_push_zero(ndr, auth_info.auth_pad_length);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return ndr_map_error2ntstatus(ndr_err);
 	}
 
 	payload_length = pkt->u.request.stub_and_verifier.length + 
-		c->security_state.auth_info->auth_pad_length;
-
-	/* we start without signature, it will appended later */
-	c->security_state.auth_info->credentials = data_blob(NULL,0);
+		auth_info.auth_pad_length;
 
 	/* add the auth verifier */
-	ndr_err = ndr_push_dcerpc_auth(ndr, NDR_SCALARS|NDR_BUFFERS, c->security_state.auth_info);
+	ndr_err = ndr_push_dcerpc_auth(ndr, NDR_SCALARS|NDR_BUFFERS, &auth_info);
 	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
 		return ndr_map_error2ntstatus(ndr_err);
 	}
@@ -885,7 +938,7 @@ static NTSTATUS ncacn_push_request_sign(struct dcecli_connection *c,
 	dcerpc_set_auth_length(blob, sig_size);
 
 	/* sign or seal the packet */
-	switch (c->security_state.auth_info->auth_level) {
+	switch (c->security_state.auth_level) {
 	case DCERPC_AUTH_LEVEL_PRIVACY:
 		status = gensec_seal_packet(c->security_state.generic_state, 
 					    mem_ctx, 
@@ -925,7 +978,7 @@ static NTSTATUS ncacn_push_request_sign(struct dcecli_connection *c,
 		DEBUG(3,("ncacn_push_request_sign: creds2.length[%u] != sig_size[%u] pad[%u] stub[%u]\n",
 			(unsigned) creds2.length,
 			(unsigned) sig_size,
-			(unsigned) c->security_state.auth_info->auth_pad_length,
+			(unsigned) auth_info.auth_pad_length,
 			(unsigned) pkt->u.request.stub_and_verifier.length));
 		dcerpc_set_frag_length(blob, blob->length + creds2.length);
 		dcerpc_set_auth_length(blob, creds2.length);
@@ -959,13 +1012,42 @@ static void init_ncacn_hdr(struct dcecli_connection *c, struct ncacn_packet *pkt
 /*
   map a bind nak reason to a NTSTATUS
 */
-static NTSTATUS dcerpc_map_reason(uint16_t reason)
+static NTSTATUS dcerpc_map_nak_reason(enum dcerpc_bind_nak_reason reason)
 {
 	switch (reason) {
-	case DCERPC_BIND_REASON_ASYNTAX:
-		return NT_STATUS_RPC_UNSUPPORTED_NAME_SYNTAX;
-	case DCERPC_BIND_REASON_INVALID_AUTH_TYPE:
+	case DCERPC_BIND_NAK_REASON_PROTOCOL_VERSION_NOT_SUPPORTED:
+		return NT_STATUS_REVISION_MISMATCH;
+	case DCERPC_BIND_NAK_REASON_INVALID_AUTH_TYPE:
 		return NT_STATUS_INVALID_PARAMETER;
+	default:
+		break;
+	}
+	return NT_STATUS_UNSUCCESSFUL;
+}
+
+static NTSTATUS dcerpc_map_ack_reason(const struct dcerpc_ack_ctx *ack)
+{
+	if (ack == NULL) {
+		return NT_STATUS_RPC_PROTOCOL_ERROR;
+	}
+
+	switch (ack->result) {
+	case DCERPC_BIND_ACK_RESULT_NEGOTIATE_ACK:
+		/*
+		 * We have not asked for this...
+		 */
+		return NT_STATUS_RPC_PROTOCOL_ERROR;
+	default:
+		break;
+	}
+
+	switch (ack->reason.value) {
+	case DCERPC_BIND_ACK_REASON_ABSTRACT_SYNTAX_NOT_SUPPORTED:
+		return NT_STATUS_RPC_UNSUPPORTED_NAME_SYNTAX;
+	case DCERPC_BIND_ACK_REASON_TRANSFER_SYNTAXES_NOT_SUPPORTED:
+		return NT_STATUS_RPC_UNSUPPORTED_NAME_SYNTAX;
+	default:
+		break;
 	}
 	return NT_STATUS_UNSUCCESSFUL;
 }
@@ -1001,11 +1083,7 @@ static void dcerpc_connection_dead(struct dcecli_connection *conn, NTSTATUS stat
 	TALLOC_FREE(conn->io_trigger);
 	conn->io_trigger_pending = false;
 
-	conn->transport.recv_data = NULL;
-
-	if (conn->transport.shutdown_pipe) {
-		conn->transport.shutdown_pipe(conn, status);
-	}
+	dcerpc_shutdown_pipe(conn, status);
 
 	/* all pending requests get the error */
 	while (conn->pending) {
@@ -1050,6 +1128,10 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 static void dcerpc_recv_data(struct dcecli_connection *conn, DATA_BLOB *blob, NTSTATUS status)
 {
 	struct ncacn_packet pkt;
+
+	if (conn->dead) {
+		return;
+	}
 
 	if (NT_STATUS_IS_OK(status) && blob->length == 0) {
 		status = NT_STATUS_UNEXPECTED_NETWORK_ERROR;
@@ -1117,6 +1199,7 @@ struct tevent_req *dcerpc_bind_send(TALLOC_CTX *mem_ctx,
 	DATA_BLOB blob;
 	NTSTATUS status;
 	struct rpc_request *subreq;
+	uint32_t flags;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct dcerpc_bind_state);
@@ -1130,6 +1213,8 @@ struct tevent_req *dcerpc_bind_send(TALLOC_CTX *mem_ctx,
 	p->syntax = *syntax;
 	p->transfer_syntax = *transfer_syntax;
 
+	flags = dcerpc_binding_get_flags(p->binding);
+
 	init_ncacn_hdr(p->conn, &pkt);
 
 	pkt.ptype = DCERPC_PKT_BIND;
@@ -1137,17 +1222,17 @@ struct tevent_req *dcerpc_bind_send(TALLOC_CTX *mem_ctx,
 	pkt.call_id = p->conn->call_id;
 	pkt.auth_length = 0;
 
-	if (p->binding->flags & DCERPC_CONCURRENT_MULTIPLEX) {
+	if (flags & DCERPC_CONCURRENT_MULTIPLEX) {
 		pkt.pfc_flags |= DCERPC_PFC_FLAG_CONC_MPX;
 	}
 
-	if (p->binding->flags & DCERPC_HEADER_SIGNING) {
+	if (p->conn->flags & DCERPC_PROPOSE_HEADER_SIGNING) {
 		pkt.pfc_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
 	}
 
-	pkt.u.bind.max_xmit_frag = 5840;
-	pkt.u.bind.max_recv_frag = 5840;
-	pkt.u.bind.assoc_group_id = p->binding->assoc_group_id;
+	pkt.u.bind.max_xmit_frag = p->conn->srv_max_xmit_frag;
+	pkt.u.bind.max_recv_frag = p->conn->srv_max_recv_frag;
+	pkt.u.bind.assoc_group_id = dcerpc_binding_get_assoc_group_id(p->binding);
 	pkt.u.bind.num_contexts = 1;
 	pkt.u.bind.ctx_list = talloc_array(mem_ctx, struct dcerpc_ctx_list, 1);
 	if (tevent_req_nomem(pkt.u.bind.ctx_list, req)) {
@@ -1161,12 +1246,10 @@ struct tevent_req *dcerpc_bind_send(TALLOC_CTX *mem_ctx,
 
 	/* construct the NDR form of the packet */
 	status = ncacn_push_auth(&blob, state, &pkt,
-				 p->conn->security_state.auth_info);
+				 p->conn->security_state.tmp_auth_info.out);
 	if (tevent_req_nterror(req, status)) {
 		return tevent_req_post(req, ev);
 	}
-
-	p->conn->transport.recv_data = dcerpc_recv_data;
 
 	/*
 	 * we allocate a dcerpc_request so we can be in the same
@@ -1186,7 +1269,7 @@ struct tevent_req *dcerpc_bind_send(TALLOC_CTX *mem_ctx,
 	DLIST_ADD_END(p->conn->pending, subreq, struct rpc_request *);
 	talloc_set_destructor(subreq, dcerpc_req_dequeue);
 
-	status = p->conn->transport.send_request(p->conn, &blob, true);
+	status = dcerpc_send_request(p->conn, &blob, true);
 	if (tevent_req_nterror(req, status)) {
 		return tevent_req_post(req, ev);
 	}
@@ -1236,7 +1319,10 @@ static void dcerpc_bind_recv_handler(struct rpc_request *subreq,
 		tevent_req_data(req,
 		struct dcerpc_bind_state);
 	struct dcecli_connection *conn = state->p->conn;
+	struct dcecli_security *sec = &conn->security_state;
+	struct dcerpc_binding *b = NULL;
 	NTSTATUS status;
+	uint32_t flags;
 
 	/*
 	 * Note that pkt is allocated under raw_packet->data,
@@ -1258,7 +1344,7 @@ static void dcerpc_bind_recv_handler(struct rpc_request *subreq,
 	tevent_req_defer_callback(req, state->ev);
 
 	if (pkt->ptype == DCERPC_PKT_BIND_NAK) {
-		status = dcerpc_map_reason(pkt->u.bind_nak.reject_reason);
+		status = dcerpc_map_nak_reason(pkt->u.bind_nak.reject_reason);
 
 		DEBUG(2,("dcerpc: bind_nak reason %d - %s\n",
 			 pkt->u.bind_nak.reject_reason, nt_errstr(status)));
@@ -1267,39 +1353,87 @@ static void dcerpc_bind_recv_handler(struct rpc_request *subreq,
 		return;
 	}
 
-	if ((pkt->ptype != DCERPC_PKT_BIND_ACK) ||
-	    (pkt->u.bind_ack.num_results == 0) ||
-	    (pkt->u.bind_ack.ctx_list[0].result != 0)) {
+	status = dcerpc_verify_ncacn_packet_header(pkt,
+					DCERPC_PKT_BIND_ACK,
+					pkt->u.bind_ack.auth_info.length,
+					DCERPC_PFC_FLAG_FIRST |
+					DCERPC_PFC_FLAG_LAST,
+					DCERPC_PFC_FLAG_CONC_MPX |
+					DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN);
+	if (!NT_STATUS_IS_OK(status)) {
 		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
 		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
 		return;
 	}
 
-	conn->srv_max_xmit_frag = pkt->u.bind_ack.max_xmit_frag;
-	conn->srv_max_recv_frag = pkt->u.bind_ack.max_recv_frag;
+	if (pkt->u.bind_ack.num_results != 1) {
+		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
+		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
+		return;
+	}
 
-	if ((state->p->binding->flags & DCERPC_CONCURRENT_MULTIPLEX) &&
+	if (pkt->u.bind_ack.ctx_list[0].result != 0) {
+		status = dcerpc_map_ack_reason(&pkt->u.bind_ack.ctx_list[0]);
+		DEBUG(2,("dcerpc: bind_ack failed - reason %d - %s\n",
+			 pkt->u.bind_ack.ctx_list[0].reason.value,
+			 nt_errstr(status)));
+		tevent_req_nterror(req, status);
+		return;
+	}
+
+	/*
+	 * DCE-RPC 1.1 (c706) specifies
+	 * CONST_MUST_RCV_FRAG_SIZE as 1432
+	 */
+	if (pkt->u.bind_ack.max_xmit_frag < 1432) {
+		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
+		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
+		return;
+	}
+	if (pkt->u.bind_ack.max_recv_frag < 1432) {
+		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
+		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
+		return;
+	}
+	conn->srv_max_xmit_frag = MIN(conn->srv_max_xmit_frag,
+				      pkt->u.bind_ack.max_xmit_frag);
+	conn->srv_max_recv_frag = MIN(conn->srv_max_recv_frag,
+				      pkt->u.bind_ack.max_recv_frag);
+
+	flags = dcerpc_binding_get_flags(state->p->binding);
+
+	if ((flags & DCERPC_CONCURRENT_MULTIPLEX) &&
 	    (pkt->pfc_flags & DCERPC_PFC_FLAG_CONC_MPX)) {
 		conn->flags |= DCERPC_CONCURRENT_MULTIPLEX;
 	}
 
-	if ((state->p->binding->flags & DCERPC_HEADER_SIGNING) &&
+	if ((conn->flags & DCERPC_PROPOSE_HEADER_SIGNING) &&
 	    (pkt->pfc_flags & DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN)) {
 		conn->flags |= DCERPC_HEADER_SIGNING;
 	}
 
 	/* the bind_ack might contain a reply set of credentials */
-	if (conn->security_state.auth_info && pkt->u.bind_ack.auth_info.length) {
+	if (pkt->auth_length != 0 && sec->tmp_auth_info.in != NULL) {
 		uint32_t auth_length;
 
-		status = dcerpc_pull_auth_trailer(pkt, conn, &pkt->u.bind_ack.auth_info,
-						  conn->security_state.auth_info, &auth_length, true);
+		status = dcerpc_pull_auth_trailer(pkt, sec->tmp_auth_info.mem,
+						  &pkt->u.bind_ack.auth_info,
+						  sec->tmp_auth_info.in,
+						  &auth_length, true);
 		if (tevent_req_nterror(req, status)) {
 			return;
 		}
 	}
 
-	state->p->assoc_group_id = pkt->u.bind_ack.assoc_group_id;
+	/*
+	 * We're the owner of the binding, so we're allowed to modify it.
+	 */
+	b = discard_const_p(struct dcerpc_binding, state->p->binding);
+	status = dcerpc_binding_set_assoc_group_id(b,
+						   pkt->u.bind_ack.assoc_group_id);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
 
 	tevent_req_done(req);
 }
@@ -1318,6 +1452,9 @@ NTSTATUS dcerpc_auth3(struct dcerpc_pipe *p,
 	struct ncacn_packet pkt;
 	NTSTATUS status;
 	DATA_BLOB blob;
+	uint32_t flags;
+
+	flags = dcerpc_binding_get_flags(p->binding);
 
 	init_ncacn_hdr(p->conn, &pkt);
 
@@ -1327,24 +1464,19 @@ NTSTATUS dcerpc_auth3(struct dcerpc_pipe *p,
 	pkt.auth_length = 0;
 	pkt.u.auth3.auth_info = data_blob(NULL, 0);
 
-	if (p->binding->flags & DCERPC_CONCURRENT_MULTIPLEX) {
+	if (flags & DCERPC_CONCURRENT_MULTIPLEX) {
 		pkt.pfc_flags |= DCERPC_PFC_FLAG_CONC_MPX;
 	}
 
-	if (p->binding->flags & DCERPC_HEADER_SIGNING) {
-		pkt.pfc_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
-	}
-
 	/* construct the NDR form of the packet */
-	status = ncacn_push_auth(&blob, mem_ctx,
-				 &pkt,
-				 p->conn->security_state.auth_info);
+	status = ncacn_push_auth(&blob, mem_ctx, &pkt,
+				 p->conn->security_state.tmp_auth_info.out);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
 
 	/* send it on its way */
-	status = p->conn->transport.send_request(p->conn, &blob, false);
+	status = dcerpc_send_request(p->conn, &blob, false);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
 	}
@@ -1374,8 +1506,7 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 	  to run the auth routines so that we don't get the sign/seal
 	  info out of step with the server
 	*/
-	if (c->security_state.auth_info && c->security_state.generic_state &&
-	    pkt->ptype == DCERPC_PKT_RESPONSE) {
+	if (pkt->ptype == DCERPC_PKT_RESPONSE) {
 		status = ncacn_pull_request_auth(c, raw_packet->data, raw_packet, pkt);
 	}
 
@@ -1415,7 +1546,16 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 	}
 
 	if (pkt->ptype == DCERPC_PKT_FAULT) {
+		status = dcerpc_fault_to_nt_status(pkt->u.fault.status);
 		DEBUG(5,("rpc fault: %s\n", dcerpc_errstr(c, pkt->u.fault.status)));
+		if (NT_STATUS_EQUAL(status, NT_STATUS_RPC_PROTOCOL_ERROR)) {
+			dcerpc_connection_dead(c, status);
+			return;
+		}
+		if (NT_STATUS_EQUAL(status, NT_STATUS_RPC_SEC_PKG_ERROR)) {
+			dcerpc_connection_dead(c, status);
+			return;
+		}
 		req->fault_code = pkt->u.fault.status;
 		req->status = NT_STATUS_NET_WRITE_FAULT;
 		goto req_done;
@@ -1424,19 +1564,26 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 	if (pkt->ptype != DCERPC_PKT_RESPONSE) {
 		DEBUG(2,("Unexpected packet type %d in dcerpc response\n",
 			 (int)pkt->ptype)); 
-		req->fault_code = DCERPC_FAULT_OTHER;
-		req->status = NT_STATUS_NET_WRITE_FAULT;
-		goto req_done;
+		dcerpc_connection_dead(c, NT_STATUS_RPC_PROTOCOL_ERROR);
+		return;
 	}
 
 	/* now check the status from the auth routines, and if it failed then fail
 	   this request accordingly */
 	if (!NT_STATUS_IS_OK(status)) {
-		req->status = status;
-		goto req_done;
+		dcerpc_connection_dead(c, status);
+		return;
 	}
 
 	length = pkt->u.response.stub_and_verifier.length;
+
+	if (req->payload.length + length > DCERPC_NCACN_PAYLOAD_MAX_SIZE) {
+		DEBUG(2,("Unexpected total payload 0x%X > 0x%X dcerpc response\n",
+			 (unsigned)req->payload.length + length,
+			 DCERPC_NCACN_PAYLOAD_MAX_SIZE));
+		dcerpc_connection_dead(c, NT_STATUS_RPC_PROTOCOL_ERROR);
+		return;
+	}
 
 	if (length > 0) {
 		req->payload.data = talloc_realloc(req, 
@@ -1453,8 +1600,16 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 	}
 
 	if (!(pkt->pfc_flags & DCERPC_PFC_FLAG_LAST)) {
-		c->transport.send_read(c);
+		data_blob_free(raw_packet);
+		dcerpc_send_read(c);
 		return;
+	}
+
+	if (req->verify_bitmask1) {
+		req->p->conn->security_state.verified_bitmask1 = true;
+	}
+	if (req->verify_pcontext) {
+		req->p->verified_pcontext = true;
 	}
 
 	if (!(pkt->drep[0] & DCERPC_DREP_LE)) {
@@ -1463,8 +1618,9 @@ static void dcerpc_request_recv_data(struct dcecli_connection *c,
 		req->flags &= ~DCERPC_PULL_BIGENDIAN;
 	}
 
-
 req_done:
+	data_blob_free(raw_packet);
+
 	/* we've got the full payload */
 	dcerpc_req_dequeue(req);
 	req->state = RPC_REQUEST_DONE;
@@ -1480,6 +1636,8 @@ req_done:
 	}
 }
 
+static NTSTATUS dcerpc_request_prepare_vt(struct rpc_request *req);
+
 /*
   perform the send side of a async dcerpc request
 */
@@ -1490,8 +1648,7 @@ static struct rpc_request *dcerpc_request_send(TALLOC_CTX *mem_ctx,
 					       DATA_BLOB *stub_data)
 {
 	struct rpc_request *req;
-
-	p->conn->transport.recv_data = dcerpc_recv_data;
+	NTSTATUS status;
 
 	req = talloc_zero(mem_ctx, struct rpc_request);
 	if (req == NULL) {
@@ -1514,18 +1671,138 @@ static struct rpc_request *dcerpc_request_send(TALLOC_CTX *mem_ctx,
 	req->request_data.length = stub_data->length;
 	req->request_data.data = stub_data->data;
 
+	status = dcerpc_request_prepare_vt(req);
+	if (!NT_STATUS_IS_OK(status)) {
+		talloc_free(req);
+		return NULL;
+	}
+
 	DLIST_ADD_END(p->conn->request_queue, req, struct rpc_request *);
 	talloc_set_destructor(req, dcerpc_req_dequeue);
 
 	dcerpc_schedule_io_trigger(p->conn);
 
 	if (p->request_timeout) {
-		tevent_add_timer(dcerpc_event_context(p), req,
+		tevent_add_timer(p->conn->event_ctx, req,
 				timeval_current_ofs(p->request_timeout, 0), 
 				dcerpc_timeout_handler, req);
 	}
 
 	return req;
+}
+
+static NTSTATUS dcerpc_request_prepare_vt(struct rpc_request *req)
+{
+	struct dcecli_security *sec = &req->p->conn->security_state;
+	struct dcerpc_sec_verification_trailer *t;
+	struct dcerpc_sec_vt *c = NULL;
+	struct ndr_push *ndr = NULL;
+	enum ndr_err_code ndr_err;
+
+	if (sec->auth_level < DCERPC_AUTH_LEVEL_INTEGRITY) {
+		return NT_STATUS_OK;
+	}
+
+	t = talloc_zero(req, struct dcerpc_sec_verification_trailer);
+	if (t == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	if (!sec->verified_bitmask1) {
+		t->commands = talloc_realloc(t, t->commands,
+					     struct dcerpc_sec_vt,
+					     t->count.count + 1);
+		if (t->commands == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		c = &t->commands[t->count.count++];
+		ZERO_STRUCTP(c);
+
+		c->command = DCERPC_SEC_VT_COMMAND_BITMASK1;
+		if (req->p->conn->flags & DCERPC_PROPOSE_HEADER_SIGNING) {
+			c->u.bitmask1 = DCERPC_SEC_VT_CLIENT_SUPPORTS_HEADER_SIGNING;
+		}
+		req->verify_bitmask1 = true;
+	}
+
+	if (!req->p->verified_pcontext) {
+		t->commands = talloc_realloc(t, t->commands,
+					     struct dcerpc_sec_vt,
+					     t->count.count + 1);
+		if (t->commands == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		c = &t->commands[t->count.count++];
+		ZERO_STRUCTP(c);
+
+		c->command = DCERPC_SEC_VT_COMMAND_PCONTEXT;
+		c->u.pcontext.abstract_syntax = req->p->syntax;
+		c->u.pcontext.transfer_syntax = req->p->transfer_syntax;
+
+		req->verify_pcontext = true;
+	}
+
+	if (!(req->p->conn->flags & DCERPC_HEADER_SIGNING)) {
+		t->commands = talloc_realloc(t, t->commands,
+					     struct dcerpc_sec_vt,
+					     t->count.count + 1);
+		if (t->commands == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		c = &t->commands[t->count.count++];
+		ZERO_STRUCTP(c);
+
+		c->command = DCERPC_SEC_VT_COMMAND_HEADER2;
+		c->u.header2.ptype = DCERPC_PKT_REQUEST;
+		if (req->p->conn->flags & DCERPC_PUSH_BIGENDIAN) {
+			c->u.header2.drep[0] = 0;
+		} else {
+			c->u.header2.drep[0] = DCERPC_DREP_LE;
+		}
+		c->u.header2.drep[1] = 0;
+		c->u.header2.drep[2] = 0;
+		c->u.header2.drep[3] = 0;
+		c->u.header2.call_id = req->call_id;
+		c->u.header2.context_id = req->p->context_id;
+		c->u.header2.opnum = req->opnum;
+	}
+
+	if (t->count.count == 0) {
+		TALLOC_FREE(t);
+		return NT_STATUS_OK;
+	}
+
+	c = &t->commands[t->count.count - 1];
+	c->command |= DCERPC_SEC_VT_COMMAND_END;
+
+	if (DEBUGLEVEL >= 10) {
+		NDR_PRINT_DEBUG(dcerpc_sec_verification_trailer, t);
+	}
+
+	ndr = ndr_push_init_ctx(req);
+	if (ndr == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	/*
+	 * for now we just copy and append
+	 */
+
+	ndr_err = ndr_push_bytes(ndr, req->request_data.data,
+				 req->request_data.length);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return ndr_map_error2ntstatus(ndr_err);
+	}
+
+	ndr_err = ndr_push_dcerpc_sec_verification_trailer(ndr,
+						NDR_SCALARS | NDR_BUFFERS,
+						t);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return ndr_map_error2ntstatus(ndr_err);
+	}
+	req->request_data = ndr_push_blob(ndr);
+
+	return NT_STATUS_OK;
 }
 
 /*
@@ -1557,25 +1834,9 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 		need_async = true;
 	}
 
-	if (c->security_state.auth_info &&
-	    c->security_state.generic_state)
-	{
-		struct gensec_security *gensec = c->security_state.generic_state;
-
-		switch (c->security_state.auth_info->auth_level) {
-		case DCERPC_AUTH_LEVEL_PRIVACY:
-		case DCERPC_AUTH_LEVEL_INTEGRITY:
-			can_async = gensec_have_feature(gensec,
+	if (c->security_state.auth_level >= DCERPC_AUTH_LEVEL_INTEGRITY) {
+		can_async = gensec_have_feature(c->security_state.generic_state,
 						GENSEC_FEATURE_ASYNC_REPLIES);
-			break;
-		case DCERPC_AUTH_LEVEL_CONNECT:
-		case DCERPC_AUTH_LEVEL_NONE:
-			can_async = true;
-			break;
-		default:
-			can_async = false;
-			break;
-		}
 	}
 
 	if (need_async && !can_async) {
@@ -1595,8 +1856,7 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 	   request header size */
 	chunk_size = p->conn->srv_max_recv_frag;
 	chunk_size -= DCERPC_REQUEST_LENGTH;
-	if (c->security_state.auth_info &&
-	    c->security_state.generic_state) {
+	if (c->security_state.auth_level >= DCERPC_AUTH_LEVEL_INTEGRITY) {
 		size_t max_payload = chunk_size;
 
 		max_payload -= DCERPC_AUTH_TRAILER_LENGTH;
@@ -1615,7 +1875,6 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 	pkt.call_id = req->call_id;
 	pkt.auth_length = 0;
 	pkt.pfc_flags = 0;
-	pkt.u.request.alloc_hint = remaining;
 	pkt.u.request.context_id = p->context_id;
 	pkt.u.request.opnum = req->opnum;
 
@@ -1642,6 +1901,7 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 			last_frag = true;
 		}
 
+		pkt.u.request.alloc_hint = remaining;
 		pkt.u.request.stub_and_verifier.data = stub_data->data + 
 			(stub_data->length - remaining);
 		pkt.u.request.stub_and_verifier.length = chunk;
@@ -1657,7 +1917,7 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 			do_trans = true;
 		}
 
-		req->status = p->conn->transport.send_request(p->conn, &blob, do_trans);
+		req->status = dcerpc_send_request(p->conn, &blob, do_trans);
 		if (!NT_STATUS_IS_OK(req->status)) {
 			req->state = RPC_REQUEST_DONE;
 			DLIST_REMOVE(p->conn->pending, req);
@@ -1665,7 +1925,7 @@ static void dcerpc_ship_next_request(struct dcecli_connection *c)
 		}		
 
 		if (last_frag && !do_trans) {
-			req->status = p->conn->transport.send_read(p->conn);
+			req->status = dcerpc_send_read(p->conn);
 			if (!NT_STATUS_IS_OK(req->status)) {
 				req->state = RPC_REQUEST_DONE;
 				DLIST_REMOVE(p->conn->pending, req);
@@ -1719,17 +1979,6 @@ static void dcerpc_schedule_io_trigger(struct dcecli_connection *c)
 }
 
 /*
-  return the event context for a dcerpc pipe
-  used by callers who wish to operate asynchronously
-*/
-_PUBLIC_ struct tevent_context *dcerpc_event_context(struct dcerpc_pipe *p)
-{
-	return p->conn->event_ctx;
-}
-
-
-
-/*
   perform the receive side of a async dcerpc request
 */
 static NTSTATUS dcerpc_request_recv(struct rpc_request *req,
@@ -1739,7 +1988,7 @@ static NTSTATUS dcerpc_request_recv(struct rpc_request *req,
 	NTSTATUS status;
 
 	while (req->state != RPC_REQUEST_DONE) {
-		struct tevent_context *ctx = dcerpc_event_context(req->p);
+		struct tevent_context *ctx = req->p->conn->event_ctx;
 		if (tevent_loop_once(ctx) != 0) {
 			return NT_STATUS_CONNECTION_DISCONNECTED;
 		}
@@ -1955,13 +2204,7 @@ static NTSTATUS dcerpc_ndr_validate_out(struct dcecli_connection *c,
 */
 _PUBLIC_ const char *dcerpc_server_name(struct dcerpc_pipe *p)
 {
-	if (!p->conn->transport.target_hostname) {
-		if (!p->conn->transport.peer_name) {
-			return "";
-		}
-		return p->conn->transport.peer_name(p->conn);
-	}
-	return p->conn->transport.target_hostname(p->conn);
+	return p->conn ? p->conn->server_name : NULL;
 }
 
 
@@ -2006,6 +2249,7 @@ struct tevent_req *dcerpc_alter_context_send(TALLOC_CTX *mem_ctx,
 	DATA_BLOB blob;
 	NTSTATUS status;
 	struct rpc_request *subreq;
+	uint32_t flags;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct dcerpc_alter_context_state);
@@ -2019,6 +2263,8 @@ struct tevent_req *dcerpc_alter_context_send(TALLOC_CTX *mem_ctx,
 	p->syntax = *syntax;
 	p->transfer_syntax = *transfer_syntax;
 
+	flags = dcerpc_binding_get_flags(p->binding);
+
 	init_ncacn_hdr(p->conn, &pkt);
 
 	pkt.ptype = DCERPC_PKT_ALTER;
@@ -2026,17 +2272,13 @@ struct tevent_req *dcerpc_alter_context_send(TALLOC_CTX *mem_ctx,
 	pkt.call_id = p->conn->call_id;
 	pkt.auth_length = 0;
 
-	if (p->binding->flags & DCERPC_CONCURRENT_MULTIPLEX) {
+	if (flags & DCERPC_CONCURRENT_MULTIPLEX) {
 		pkt.pfc_flags |= DCERPC_PFC_FLAG_CONC_MPX;
 	}
 
-	if (p->binding->flags & DCERPC_HEADER_SIGNING) {
-		pkt.pfc_flags |= DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN;
-	}
-
-	pkt.u.alter.max_xmit_frag = 5840;
-	pkt.u.alter.max_recv_frag = 5840;
-	pkt.u.alter.assoc_group_id = p->binding->assoc_group_id;
+	pkt.u.alter.max_xmit_frag = p->conn->srv_max_xmit_frag;
+	pkt.u.alter.max_recv_frag = p->conn->srv_max_recv_frag;
+	pkt.u.alter.assoc_group_id = dcerpc_binding_get_assoc_group_id(p->binding);
 	pkt.u.alter.num_contexts = 1;
 	pkt.u.alter.ctx_list = talloc_array(state, struct dcerpc_ctx_list, 1);
 	if (tevent_req_nomem(pkt.u.alter.ctx_list, req)) {
@@ -2050,12 +2292,10 @@ struct tevent_req *dcerpc_alter_context_send(TALLOC_CTX *mem_ctx,
 
 	/* construct the NDR form of the packet */
 	status = ncacn_push_auth(&blob, state, &pkt,
-				 p->conn->security_state.auth_info);
+				 p->conn->security_state.tmp_auth_info.out);
 	if (tevent_req_nterror(req, status)) {
 		return tevent_req_post(req, ev);
 	}
-
-	p->conn->transport.recv_data = dcerpc_recv_data;
 
 	/*
 	 * we allocate a dcerpc_request so we can be in the same
@@ -2075,7 +2315,7 @@ struct tevent_req *dcerpc_alter_context_send(TALLOC_CTX *mem_ctx,
 	DLIST_ADD_END(p->conn->pending, subreq, struct rpc_request *);
 	talloc_set_destructor(subreq, dcerpc_req_dequeue);
 
-	status = p->conn->transport.send_request(p->conn, &blob, true);
+	status = dcerpc_send_request(p->conn, &blob, true);
 	if (tevent_req_nterror(req, status)) {
 		return tevent_req_post(req, ev);
 	}
@@ -2125,6 +2365,7 @@ static void dcerpc_alter_context_recv_handler(struct rpc_request *subreq,
 		tevent_req_data(req,
 		struct dcerpc_alter_context_state);
 	struct dcecli_connection *conn = state->p->conn;
+	struct dcecli_security *sec = &conn->security_state;
 	NTSTATUS status;
 
 	/*
@@ -2146,45 +2387,59 @@ static void dcerpc_alter_context_recv_handler(struct rpc_request *subreq,
 	 */
 	tevent_req_defer_callback(req, state->ev);
 
-	if (pkt->ptype == DCERPC_PKT_ALTER_RESP &&
-	    pkt->u.alter_resp.num_results == 1 &&
-	    pkt->u.alter_resp.ctx_list[0].result != 0) {
-		status = dcerpc_map_reason(pkt->u.alter_resp.ctx_list[0].reason);
-		DEBUG(2,("dcerpc: alter_resp failed - reason %d - %s\n",
-			 pkt->u.alter_resp.ctx_list[0].reason,
-			 nt_errstr(status)));
-		tevent_req_nterror(req, status);
-		return;
-	}
-
 	if (pkt->ptype == DCERPC_PKT_FAULT) {
 		DEBUG(5,("dcerpc: alter_resp - rpc fault: %s\n",
 			 dcerpc_errstr(state, pkt->u.fault.status)));
 		if (pkt->u.fault.status == DCERPC_FAULT_ACCESS_DENIED) {
 			state->p->last_fault_code = pkt->u.fault.status;
 			tevent_req_nterror(req, NT_STATUS_LOGON_FAILURE);
+		} else if (pkt->u.fault.status == DCERPC_FAULT_SEC_PKG_ERROR) {
+			state->p->last_fault_code = pkt->u.fault.status;
+			tevent_req_nterror(req, NT_STATUS_LOGON_FAILURE);
 		} else {
 			state->p->last_fault_code = pkt->u.fault.status;
-			tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
+			status = dcerpc_fault_to_nt_status(pkt->u.fault.status);
+			tevent_req_nterror(req, status);
 		}
 		return;
 	}
 
-	if (pkt->ptype != DCERPC_PKT_ALTER_RESP ||
-	    pkt->u.alter_resp.num_results == 0 ||
-	    pkt->u.alter_resp.ctx_list[0].result != 0) {
+	status = dcerpc_verify_ncacn_packet_header(pkt,
+					DCERPC_PKT_ALTER_RESP,
+					pkt->u.alter_resp.auth_info.length,
+					DCERPC_PFC_FLAG_FIRST |
+					DCERPC_PFC_FLAG_LAST,
+					DCERPC_PFC_FLAG_CONC_MPX |
+					DCERPC_PFC_FLAG_SUPPORT_HEADER_SIGN);
+	if (!NT_STATUS_IS_OK(status)) {
 		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
 		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
 		return;
 	}
 
+	if (pkt->u.alter_resp.num_results != 1) {
+		state->p->last_fault_code = DCERPC_NCA_S_PROTO_ERROR;
+		tevent_req_nterror(req, NT_STATUS_NET_WRITE_FAULT);
+		return;
+	}
+
+	if (pkt->u.alter_resp.ctx_list[0].result != 0) {
+		status = dcerpc_map_ack_reason(&pkt->u.alter_resp.ctx_list[0]);
+		DEBUG(2,("dcerpc: alter_resp failed - reason %d - %s\n",
+			 pkt->u.alter_resp.ctx_list[0].reason.value,
+			 nt_errstr(status)));
+		tevent_req_nterror(req, status);
+		return;
+	}
+
 	/* the alter_resp might contain a reply set of credentials */
-	if (conn->security_state.auth_info &&
-	    pkt->u.alter_resp.auth_info.length) {
+	if (pkt->auth_length != 0 && sec->tmp_auth_info.in != NULL) {
 		uint32_t auth_length;
 
-		status = dcerpc_pull_auth_trailer(pkt, conn, &pkt->u.alter_resp.auth_info,
-						  conn->security_state.auth_info, &auth_length, true);
+		status = dcerpc_pull_auth_trailer(pkt, sec->tmp_auth_info.mem,
+						  &pkt->u.alter_resp.auth_info,
+						  sec->tmp_auth_info.in,
+						  &auth_length, true);
 		if (tevent_req_nterror(req, status)) {
 			return;
 		}
@@ -2212,7 +2467,7 @@ _PUBLIC_ NTSTATUS dcerpc_alter_context(struct dcerpc_pipe *p,
 
 	/* TODO: create a new event context here */
 
-	subreq = dcerpc_alter_context_send(mem_ctx, p->conn->event_ctx,
+	subreq = dcerpc_alter_context_send(mem_ctx, ev,
 					   p, syntax, transfer_syntax);
 	if (subreq == NULL) {
 		return NT_STATUS_NO_MEMORY;
@@ -2228,3 +2483,306 @@ _PUBLIC_ NTSTATUS dcerpc_alter_context(struct dcerpc_pipe *p,
 	return dcerpc_alter_context_recv(subreq);
 }
 
+static void dcerpc_transport_dead(struct dcecli_connection *c, NTSTATUS status)
+{
+	if (c->transport.stream == NULL) {
+		return;
+	}
+
+	tevent_queue_stop(c->transport.write_queue);
+	TALLOC_FREE(c->transport.read_subreq);
+	TALLOC_FREE(c->transport.stream);
+
+	if (NT_STATUS_EQUAL(NT_STATUS_UNSUCCESSFUL, status)) {
+		status = NT_STATUS_UNEXPECTED_NETWORK_ERROR;
+	}
+
+	if (NT_STATUS_EQUAL(NT_STATUS_OK, status)) {
+		status = NT_STATUS_END_OF_FILE;
+	}
+
+	dcerpc_recv_data(c, NULL, status);
+}
+
+
+/*
+   shutdown SMB pipe connection
+*/
+struct dcerpc_shutdown_pipe_state {
+	struct dcecli_connection *c;
+	NTSTATUS status;
+};
+
+static void dcerpc_shutdown_pipe_done(struct tevent_req *subreq);
+
+static NTSTATUS dcerpc_shutdown_pipe(struct dcecli_connection *c, NTSTATUS status)
+{
+	struct dcerpc_shutdown_pipe_state *state;
+	struct tevent_req *subreq;
+
+	if (c->transport.stream == NULL) {
+		return NT_STATUS_OK;
+	}
+
+	state = talloc_zero(c, struct dcerpc_shutdown_pipe_state);
+	if (state == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	state->c = c;
+	state->status = status;
+
+	subreq = tstream_disconnect_send(state, c->event_ctx, c->transport.stream);
+	if (subreq == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	tevent_req_set_callback(subreq, dcerpc_shutdown_pipe_done, state);
+
+	return status;
+}
+
+static void dcerpc_shutdown_pipe_done(struct tevent_req *subreq)
+{
+	struct dcerpc_shutdown_pipe_state *state =
+		tevent_req_callback_data(subreq, struct dcerpc_shutdown_pipe_state);
+	struct dcecli_connection *c = state->c;
+	NTSTATUS status = state->status;
+	int error;
+
+	/*
+	 * here we ignore the return values...
+	 */
+	tstream_disconnect_recv(subreq, &error);
+	TALLOC_FREE(subreq);
+
+	TALLOC_FREE(state);
+
+	dcerpc_transport_dead(c, status);
+}
+
+
+
+struct dcerpc_send_read_state {
+	struct dcecli_connection *p;
+};
+
+static int dcerpc_send_read_state_destructor(struct dcerpc_send_read_state *state)
+{
+	struct dcecli_connection *p = state->p;
+
+	p->transport.read_subreq = NULL;
+
+	return 0;
+}
+
+static void dcerpc_send_read_done(struct tevent_req *subreq);
+
+static NTSTATUS dcerpc_send_read(struct dcecli_connection *p)
+{
+	struct dcerpc_send_read_state *state;
+
+	if (p->transport.read_subreq != NULL) {
+		p->transport.pending_reads++;
+		return NT_STATUS_OK;
+	}
+
+	state = talloc_zero(p, struct dcerpc_send_read_state);
+	if (state == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	state->p = p;
+
+	talloc_set_destructor(state, dcerpc_send_read_state_destructor);
+
+	p->transport.read_subreq = dcerpc_read_ncacn_packet_send(state,
+							  p->event_ctx,
+							  p->transport.stream);
+	if (p->transport.read_subreq == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	tevent_req_set_callback(p->transport.read_subreq, dcerpc_send_read_done, state);
+
+	return NT_STATUS_OK;
+}
+
+static void dcerpc_send_read_done(struct tevent_req *subreq)
+{
+	struct dcerpc_send_read_state *state =
+		tevent_req_callback_data(subreq,
+					 struct dcerpc_send_read_state);
+	struct dcecli_connection *p = state->p;
+	NTSTATUS status;
+	struct ncacn_packet *pkt;
+	DATA_BLOB blob;
+
+	status = dcerpc_read_ncacn_packet_recv(subreq, state,
+					       &pkt, &blob);
+	TALLOC_FREE(subreq);
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(state);
+		dcerpc_transport_dead(p, status);
+		return;
+	}
+
+	/*
+	 * here we steal into thet connection context,
+	 * but p->transport.recv_data() will steal or free it again
+	 */
+	talloc_steal(p, blob.data);
+	TALLOC_FREE(state);
+
+	if (p->transport.pending_reads > 0) {
+		p->transport.pending_reads--;
+
+		status = dcerpc_send_read(p);
+		if (!NT_STATUS_IS_OK(status)) {
+			dcerpc_transport_dead(p, status);
+			return;
+		}
+	}
+
+	dcerpc_recv_data(p, &blob, NT_STATUS_OK);
+}
+
+struct dcerpc_send_request_state {
+	struct dcecli_connection *p;
+	DATA_BLOB blob;
+	struct iovec iov;
+};
+
+static int dcerpc_send_request_state_destructor(struct dcerpc_send_request_state *state)
+{
+	struct dcecli_connection *p = state->p;
+
+	p->transport.read_subreq = NULL;
+
+	return 0;
+}
+
+static void dcerpc_send_request_wait_done(struct tevent_req *subreq);
+static void dcerpc_send_request_done(struct tevent_req *subreq);
+
+static NTSTATUS dcerpc_send_request(struct dcecli_connection *p, DATA_BLOB *data,
+				    bool trigger_read)
+{
+	struct dcerpc_send_request_state *state;
+	struct tevent_req *subreq;
+	bool use_trans = trigger_read;
+
+	if (p->transport.stream == NULL) {
+		return NT_STATUS_CONNECTION_DISCONNECTED;
+	}
+
+	state = talloc_zero(p, struct dcerpc_send_request_state);
+	if (state == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	state->p = p;
+
+	state->blob = data_blob_talloc(state, data->data, data->length);
+	if (state->blob.data == NULL) {
+		TALLOC_FREE(state);
+		return NT_STATUS_NO_MEMORY;
+	}
+	state->iov.iov_base = (void *)state->blob.data;
+	state->iov.iov_len = state->blob.length;
+
+	if (p->transport.read_subreq != NULL) {
+		use_trans = false;
+	}
+
+	if (!tstream_is_smbXcli_np(p->transport.stream)) {
+		use_trans = false;
+	}
+
+	if (use_trans) {
+		/*
+		 * we need to block reads until our write is
+		 * the next in the write queue.
+		 */
+		p->transport.read_subreq = tevent_queue_wait_send(state, p->event_ctx,
+							     p->transport.write_queue);
+		if (p->transport.read_subreq == NULL) {
+			TALLOC_FREE(state);
+			return NT_STATUS_NO_MEMORY;
+		}
+		tevent_req_set_callback(p->transport.read_subreq,
+					dcerpc_send_request_wait_done,
+					state);
+
+		talloc_set_destructor(state, dcerpc_send_request_state_destructor);
+
+		trigger_read = false;
+	}
+
+	subreq = tstream_writev_queue_send(state, p->event_ctx,
+					   p->transport.stream,
+					   p->transport.write_queue,
+					   &state->iov, 1);
+	if (subreq == NULL) {
+		TALLOC_FREE(state);
+		return NT_STATUS_NO_MEMORY;
+	}
+	tevent_req_set_callback(subreq, dcerpc_send_request_done, state);
+
+	if (trigger_read) {
+		dcerpc_send_read(p);
+	}
+
+	return NT_STATUS_OK;
+}
+
+static void dcerpc_send_request_wait_done(struct tevent_req *subreq)
+{
+	struct dcerpc_send_request_state *state =
+		tevent_req_callback_data(subreq,
+		struct dcerpc_send_request_state);
+	struct dcecli_connection *p = state->p;
+	NTSTATUS status;
+	bool ok;
+
+	p->transport.read_subreq = NULL;
+	talloc_set_destructor(state, NULL);
+
+	ok = tevent_queue_wait_recv(subreq);
+	if (!ok) {
+		TALLOC_FREE(state);
+		dcerpc_transport_dead(p, NT_STATUS_NO_MEMORY);
+		return;
+	}
+
+	if (tevent_queue_length(p->transport.write_queue) <= 2) {
+		status = tstream_smbXcli_np_use_trans(p->transport.stream);
+		if (!NT_STATUS_IS_OK(status)) {
+			TALLOC_FREE(state);
+			dcerpc_transport_dead(p, status);
+			return;
+		}
+	}
+
+	/* we free subreq after tstream_cli_np_use_trans */
+	TALLOC_FREE(subreq);
+
+	dcerpc_send_read(p);
+}
+
+static void dcerpc_send_request_done(struct tevent_req *subreq)
+{
+	struct dcerpc_send_request_state *state =
+		tevent_req_callback_data(subreq,
+		struct dcerpc_send_request_state);
+	int ret;
+	int error;
+
+	ret = tstream_writev_queue_recv(subreq, &error);
+	TALLOC_FREE(subreq);
+	if (ret == -1) {
+		struct dcecli_connection *p = state->p;
+		NTSTATUS status = map_nt_error_from_unix_common(error);
+
+		TALLOC_FREE(state);
+		dcerpc_transport_dead(p, status);
+		return;
+	}
+
+	TALLOC_FREE(state);
+}

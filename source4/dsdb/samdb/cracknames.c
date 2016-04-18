@@ -56,7 +56,7 @@ static WERROR dns_domain_from_principal(TALLOC_CTX *mem_ctx, struct smb_krb5_con
 	krb5_error_code ret;
 	krb5_principal principal;
 	/* perhaps it's a principal with a realm, so return the right 'domain only' response */
-	const char *realm;
+	char *realm;
 	ret = krb5_parse_name_flags(smb_krb5_context->krb5_context, name, 
 				    KRB5_PRINCIPAL_PARSE_REQUIRE_REALM, &principal);
 	if (ret) {
@@ -64,11 +64,11 @@ static WERROR dns_domain_from_principal(TALLOC_CTX *mem_ctx, struct smb_krb5_con
 		return WERR_OK;
 	}
 
-	/* This isn't an allocation assignemnt, so it is free'ed with the krb5_free_principal */
 	realm = smb_krb5_principal_get_realm(smb_krb5_context->krb5_context, principal);
 
 	info1->dns_domain_name	= talloc_strdup(mem_ctx, realm);
 	krb5_free_principal(smb_krb5_context->krb5_context, principal);
+	free(realm);
 
 	W_ERROR_HAVE_NO_MEMORY(info1->dns_domain_name);
 
@@ -271,7 +271,7 @@ static WERROR DsCrackNameUPN(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 	const char *result_filter = NULL;
 	krb5_error_code ret;
 	krb5_principal principal;
-	const char *realm;
+	char *realm;
 	char *unparsed_name_short;
 	const char *domain_attrs[] = { NULL };
 	struct ldb_result *domain_res = NULL;
@@ -301,6 +301,7 @@ static WERROR DsCrackNameUPN(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 			     ldb_binary_encode_string(mem_ctx, realm),
 			     LDB_OID_COMPARATOR_AND,
 			     SYSTEM_FLAG_CR_NTDS_DOMAIN);
+	free(realm);
 
 	if (ldb_ret != LDB_SUCCESS) {
 		DEBUG(2, ("DsCrackNameUPN domain ref search failed: %s\n", ldb_errstring(sam_ctx)));
@@ -322,8 +323,16 @@ static WERROR DsCrackNameUPN(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 		return WERR_OK;
 	}
 
+	/*
+	 * The important thing here is that a samAccountName may have
+	 * a space in it, and this must not be kerberos escaped to
+	 * match this filter, so we specify
+	 * KRB5_PRINCIPAL_UNPARSE_DISPLAY
+	 */
 	ret = krb5_unparse_name_flags(smb_krb5_context->krb5_context, principal, 
-				      KRB5_PRINCIPAL_UNPARSE_NO_REALM, &unparsed_name_short);
+				      KRB5_PRINCIPAL_UNPARSE_NO_REALM |
+				      KRB5_PRINCIPAL_UNPARSE_DISPLAY,
+				      &unparsed_name_short);
 	krb5_free_principal(smb_krb5_context->krb5_context, principal);
 
 	if (ret) {
@@ -679,8 +688,18 @@ WERROR DsCrackNameOneName(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx,
 
 		domain_filter = NULL;
 
-		/* By getting the unparsed name here, we ensure the escaping is correct (and trust the client less) */
-		ret = krb5_unparse_name(smb_krb5_context->krb5_context, principal, &unparsed_name);
+		/*
+		 * By getting the unparsed name here, we ensure the
+		 * escaping is removed correctly (and trust the client
+		 * less).  The important thing here is that a
+		 * userPrincipalName may have a space in it, and this
+		 * must not be kerberos escaped to match this filter,
+		 * so we specify KRB5_PRINCIPAL_UNPARSE_DISPLAY
+		 */
+		ret = krb5_unparse_name_flags(smb_krb5_context->krb5_context,
+					      principal,
+					      KRB5_PRINCIPAL_UNPARSE_DISPLAY,
+					      &unparsed_name);
 		if (ret) {
 			krb5_free_principal(smb_krb5_context->krb5_context, principal);
 			return WERR_NOMEM;
@@ -972,7 +991,9 @@ static WERROR DsCrackNameOneFilter(struct ldb_context *sam_ctx, TALLOC_CTX *mem_
 				  dsdb_flags,
 				  "%s", result_filter);
 		if (ret != LDB_SUCCESS) {
-			DEBUG(2, ("DsCrackNameOneFilter phantom root search failed: %s\n",
+			DEBUG(2, ("DsCrackNameOneFilter search from '%s' with flags 0x%08x failed: %s\n",
+				  ldb_dn_get_linearized(real_search_dn),
+				  dsdb_flags,
 				  ldb_errstring(sam_ctx)));
 			info1->status = DRSUAPI_DS_NAME_STATUS_RESOLVE_ERROR;
 			return WERR_OK;

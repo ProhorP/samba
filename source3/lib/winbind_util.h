@@ -43,7 +43,7 @@ struct passwd * winbind_getpwsid(const struct dom_sid *sid);
 wbcErr wb_is_trusted_domain(const char *domain);
 bool winbind_lookup_rids(TALLOC_CTX *mem_ctx,
 			 const struct dom_sid *domain_sid,
-			 int num_rids, uint32 *rids,
+			 int num_rids, uint32_t *rids,
 			 const char **domain_name,
 			 const char ***names, enum lsa_SidType **types);
 bool winbind_allocate_uid(uid_t *uid);
@@ -58,5 +58,9 @@ bool winbind_get_sid_aliases(TALLOC_CTX *mem_ctx,
 			     size_t num_members,
 			     uint32_t **pp_alias_rids,
 			     size_t *p_num_alias_rids);
+bool winbind_lookup_usersids(TALLOC_CTX *mem_ctx,
+			     const struct dom_sid *user_sid,
+			     uint32_t *p_num_sids,
+			     struct dom_sid **p_sids);
 
 #endif /* __LIB__WINBIND_UTIL_H__ */

@@ -290,6 +290,57 @@ SMBC_read_ctx(SMBCCTX *context,
 	return ret;  /* Success, ret bytes of data ... */
 }
 
+off_t
+SMBC_splice_ctx(SMBCCTX *context,
+                SMBCFILE *srcfile,
+                SMBCFILE *dstfile,
+                off_t count,
+                int (*splice_cb)(off_t n, void *priv),
+                void *priv)
+{
+	off_t written;
+	TALLOC_CTX *frame = talloc_stackframe();
+	NTSTATUS status;
+
+	if (!context || !context->internal->initialized) {
+		errno = EINVAL;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	if (!srcfile ||
+	    !SMBC_dlist_contains(context->internal->files, srcfile))
+	{
+		errno = EBADF;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	if (!dstfile ||
+	    !SMBC_dlist_contains(context->internal->files, dstfile))
+	{
+		errno = EBADF;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	status = cli_splice(srcfile->targetcli, dstfile->targetcli,
+			    srcfile->cli_fd, dstfile->cli_fd,
+			    count, srcfile->offset, dstfile->offset, &written,
+			    splice_cb, priv);
+	if (!NT_STATUS_IS_OK(status)) {
+		errno = SMBC_errno(context, srcfile->targetcli);
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	srcfile->offset += written;
+	dstfile->offset += written;
+
+	TALLOC_FREE(frame);
+	return written;
+}
+
 /*
  * Routine to write() a file ...
  */
@@ -401,7 +452,7 @@ bool
 SMBC_getatr(SMBCCTX * context,
             SMBCSRV *srv,
             const char *path,
-            uint16 *mode,
+            uint16_t *mode,
             off_t *size,
             struct timespec *create_time_ts,
             struct timespec *access_time_ts,
@@ -531,7 +582,7 @@ SMBC_setatr(SMBCCTX * context, SMBCSRV *srv, char *path,
             time_t access_time,
             time_t write_time,
             time_t change_time,
-            uint16 mode)
+            uint16_t mode)
 {
         uint16_t fd;
         int ret;
@@ -586,7 +637,7 @@ SMBC_setatr(SMBCCTX * context, SMBCSRV *srv, char *path,
                  * cli_setatr() for that, and with only this parameter, it
                  * seems to work on win98.
                  */
-                if (ret && mode != (uint16) -1) {
+                if (ret && mode != (uint16_t) -1) {
                         ret = NT_STATUS_IS_OK(cli_setatr(srv->cli, path, mode, 0));
                 }
 

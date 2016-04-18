@@ -21,25 +21,26 @@
 
 #include "includes.h"
 #include "system/filesys.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 #include <ldb.h>
 #include <ldb_errors.h>
 #include "ldb_wrap.h"
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "torture/smbtorture.h"
+#include "torture/local/proto.h"
 #include "param/param.h"
 
 float tdb_speed;
 
-static bool tdb_add_record(struct tdb_wrap *tdbw, const char *fmt1, 
-			   const char *fmt2, int i)
+static bool tdb_add_record(struct tdb_wrap *tdbw, const char *p1,
+			   const char *p2, int i)
 {
 	TDB_DATA key, data;
 	int ret;
 
-	key.dptr = (uint8_t *)talloc_asprintf(tdbw, fmt1, i);
+	key.dptr = (uint8_t *)talloc_asprintf(tdbw, "%s%u", p1, i);
 	key.dsize = strlen((char *)key.dptr)+1;
-	data.dptr = (uint8_t *)talloc_asprintf(tdbw, fmt2, i+10000);
+	data.dptr = (uint8_t *)talloc_asprintf(tdbw, "%s%u", p2, i+10000);
 	data.dsize = strlen((char *)data.dptr)+1;
 
 	ret = tdb_store(tdbw->tdb, key, data, TDB_INSERT);
@@ -64,8 +65,9 @@ static bool test_tdb_speed(struct torture_context *torture, const void *_data)
 
 	torture_comment(torture, "Testing tdb speed for sidmap\n");
 
-	tdbw = tdb_wrap_open(tmp_ctx, "test.tdb", 
-			     10000, 0, O_RDWR|O_CREAT|O_TRUNC, 0600, torture->lp_ctx);
+	tdbw = tdb_wrap_open(tmp_ctx, "test.tdb", 10000,
+			     lpcfg_tdb_flags(torture->lp_ctx, 0),
+			     O_RDWR|O_CREAT|O_TRUNC, 0600);
 	if (!tdbw) {
 		torture_result(torture, TORTURE_FAIL, "Failed to open test.tdb");
 		goto failed;
@@ -75,14 +77,14 @@ static bool test_tdb_speed(struct torture_context *torture, const void *_data)
 
 	for (i=0;i<torture_entries;i++) {
 		if (!tdb_add_record(tdbw, 
-				    "S-1-5-21-53173311-3623041448-2049097239-%u",
-				    "UID %u", i)) {
+				    "S-1-5-21-53173311-3623041448-2049097239-",
+				    "UID ", i)) {
 			torture_result(torture, TORTURE_FAIL, "Failed to add SID %d!", i);
 			goto failed;
 		}
 		if (!tdb_add_record(tdbw, 
-				    "UID %u",
-				    "S-1-5-21-53173311-3623041448-2049097239-%u", i)) {
+				    "UID ",
+				    "S-1-5-21-53173311-3623041448-2049097239-", i)) {
 			torture_result(torture, TORTURE_FAIL, "Failed to add UID %d!", i);
 			goto failed;
 		}
@@ -97,7 +99,7 @@ static bool test_tdb_speed(struct torture_context *torture, const void *_data)
 		i = random() % torture_entries;
 		key.dptr = (uint8_t *)talloc_asprintf(tmp_ctx, "S-1-5-21-53173311-3623041448-2049097239-%u", i);
 		key.dsize = strlen((char *)key.dptr)+1;
-		data = tdb_fetch_compat(tdbw->tdb, key);
+		data = tdb_fetch(tdbw->tdb, key);
 		talloc_free(key.dptr);
 		if (data.dptr == NULL) {
 			torture_result(torture, TORTURE_FAIL, "Failed to find SID %d!", i);
@@ -106,7 +108,7 @@ static bool test_tdb_speed(struct torture_context *torture, const void *_data)
 		free(data.dptr);
 		key.dptr = (uint8_t *)talloc_asprintf(tmp_ctx, "UID %u", i);
 		key.dsize = strlen((char *)key.dptr)+1;
-		data = tdb_fetch_compat(tdbw->tdb, key);
+		data = tdb_fetch(tdbw->tdb, key);
 		talloc_free(key.dptr);
 		if (data.dptr == NULL) {
 			torture_result(torture, TORTURE_FAIL, "Failed to find UID %d!", i);

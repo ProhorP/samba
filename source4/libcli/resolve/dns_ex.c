@@ -278,7 +278,7 @@ static struct dns_records_container get_srv_records(TALLOC_CTX *mem_ctx,
 	memset(&ret, 0, sizeof(struct dns_records_container));
 	/* this is the blocking call we are going to lots of trouble
 	   to avoid them in the parent */
-	status = ads_dns_lookup_srv(mem_ctx, NULL, name, &dclist, &count);
+	status = ads_dns_lookup_srv(mem_ctx, name, &dclist, &count);
 	if (!NT_STATUS_IS_OK(status)) {
 		return ret;
 	}
@@ -494,7 +494,7 @@ static void pipe_handler(struct tevent_context *ev, struct tevent_fd *fde,
 		return;
 	}
 
-	/* enusre the address looks good */
+	/* ensure the address looks good */
 	address[ret] = 0;
 
 	addrs = str_list_make(state, address, ",");

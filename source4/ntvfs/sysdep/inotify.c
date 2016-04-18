@@ -144,6 +144,7 @@ static void inotify_dispatch(struct inotify_private *in,
 	for (w=in->watches;w;w=next) {
 		next = w->next;
 		if (w->wd == e->wd && filter_match(w, e)) {
+			ne.dir = w->path;
 			w->callback(in->ctx, w->private_data, &ne);
 		}
 	}
@@ -163,6 +164,7 @@ static void inotify_dispatch(struct inotify_private *in,
 		next = w->next;
 		if (w->wd == e->wd && filter_match(w, e) &&
 		    !(w->filter & FILE_NOTIFY_CHANGE_CREATION)) {
+			ne.dir = w->path;
 			w->callback(in->ctx, w->private_data, &ne);
 		}
 	}
@@ -388,6 +390,7 @@ static struct sys_notify_backend inotify = {
 /*
   initialialise the inotify module
  */
+NTSTATUS sys_notify_inotify_init(void);
 NTSTATUS sys_notify_inotify_init(void)
 {
 	/* register ourselves as a system inotify module */

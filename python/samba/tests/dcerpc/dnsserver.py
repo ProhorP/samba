@@ -27,13 +27,9 @@ class DnsserverTests(RpcInterfaceTestCase):
         super(DnsserverTests, self).setUp()
         self.server = env_get_var_value("SERVER_IP")
         self.zone = env_get_var_value("REALM").lower()
-        self.conn = dnsserver.dnsserver("ncacn_ip_tcp:%s" % (self.server),
+        self.conn = dnsserver.dnsserver("ncacn_ip_tcp:%s[sign]" % (self.server),
                                         self.get_loadparm(),
                                         self.get_credentials())
-
-    def test_operation2(self):
-        pass
-
 
     def test_query2(self):
         typeid, result = self.conn.DnssrvQuery2(dnsserver.DNS_CLIENT_VERSION_W2K,

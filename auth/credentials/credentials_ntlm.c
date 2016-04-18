@@ -26,10 +26,13 @@
 #include "../lib/crypto/crypto.h"
 #include "libcli/auth/libcli_auth.h"
 #include "auth/credentials/credentials.h"
+#include "auth/credentials/credentials_internal.h"
 
 _PUBLIC_ NTSTATUS cli_credentials_get_ntlm_response(struct cli_credentials *cred, TALLOC_CTX *mem_ctx, 
 					   int *flags,
-					   DATA_BLOB challenge, DATA_BLOB target_info, 
+					   DATA_BLOB challenge,
+					   const NTTIME *server_timestamp,
+					   DATA_BLOB target_info,
 					   DATA_BLOB *_lm_response, DATA_BLOB *_nt_response, 
 					   DATA_BLOB *_lm_session_key, DATA_BLOB *_session_key) 
 {
@@ -101,7 +104,7 @@ _PUBLIC_ NTSTATUS cli_credentials_get_ntlm_response(struct cli_credentials *cred
 					   user, 
 					   domain, 
 					   nt_hash->hash, &challenge, 
-					   &target_info, 
+					   server_timestamp, &target_info,
 					   &lm_response, &nt_response, 
 					   NULL, &session_key)) {
 			return NT_STATUS_NO_MEMORY;
@@ -109,6 +112,12 @@ _PUBLIC_ NTSTATUS cli_credentials_get_ntlm_response(struct cli_credentials *cred
 
 		/* LM Key is incompatible... */
 		*flags &= ~CLI_CRED_LANMAN_AUTH;
+		if (lm_response.length != 0) {
+			/*
+			 * We should not expose the lm key.
+			 */
+			memset(lm_response.data, 0, lm_response.length);
+		}
 	} else if (*flags & CLI_CRED_NTLM2) {
 		MD5_CTX md5_session_nonce_ctx;
 		uint8_t session_nonce[16];
@@ -213,7 +222,107 @@ _PUBLIC_ NTSTATUS cli_credentials_get_ntlm_response(struct cli_credentials *cred
 	}
 	return NT_STATUS_OK;
 }
-	
+
+/*
+ * Set a utf16 password on the credentials context, including an indication
+ * of 'how' the password was obtained
+ *
+ * This is required because the nt_hash is calculated over the raw utf16 blob,
+ * which might not be completely valid utf16, which means the conversion
+ * from CH_UTF16MUNGED to CH_UTF8 might loose information.
+ */
+_PUBLIC_ bool cli_credentials_set_utf16_password(struct cli_credentials *cred,
+						 const DATA_BLOB *password_utf16,
+						 enum credentials_obtained obtained)
+{
+	if (password_utf16 == NULL) {
+		return cli_credentials_set_password(cred, NULL, obtained);
+	}
+
+	if (obtained >= cred->password_obtained) {
+		struct samr_Password *nt_hash = NULL;
+		char *password_talloc = NULL;
+		size_t password_len = 0;
+		bool ok;
+
+		nt_hash = talloc(cred, struct samr_Password);
+		if (nt_hash == NULL) {
+			return false;
+		}
+
+		ok = convert_string_talloc(cred,
+					   CH_UTF16MUNGED, CH_UTF8,
+					   password_utf16->data,
+					   password_utf16->length,
+					   (void *)&password_talloc,
+					   &password_len);
+		if (!ok) {
+			TALLOC_FREE(nt_hash);
+			return false;
+		}
+
+		ok = cli_credentials_set_password(cred, password_talloc, obtained);
+		TALLOC_FREE(password_talloc);
+		if (!ok) {
+			TALLOC_FREE(nt_hash);
+			return false;
+		}
+
+		mdfour(nt_hash->hash, password_utf16->data, password_utf16->length);
+		cred->nt_hash = nt_hash;
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * Set a old utf16 password on the credentials context.
+ *
+ * This is required because the nt_hash is calculated over the raw utf16 blob,
+ * which might not be completely valid utf16, which means the conversion
+ * from CH_UTF16MUNGED to CH_UTF8 might loose information.
+ */
+_PUBLIC_ bool cli_credentials_set_old_utf16_password(struct cli_credentials *cred,
+						     const DATA_BLOB *password_utf16)
+{
+	struct samr_Password *nt_hash = NULL;
+	char *password_talloc = NULL;
+	size_t password_len = 0;
+	bool ok;
+
+	if (password_utf16 == NULL) {
+		return cli_credentials_set_old_password(cred, NULL, CRED_SPECIFIED);
+	}
+
+	nt_hash = talloc(cred, struct samr_Password);
+	if (nt_hash == NULL) {
+		return false;
+	}
+
+	ok = convert_string_talloc(cred,
+				   CH_UTF16MUNGED, CH_UTF8,
+				   password_utf16->data,
+				   password_utf16->length,
+				   (void *)&password_talloc,
+				   &password_len);
+	if (!ok) {
+		TALLOC_FREE(nt_hash);
+		return false;
+	}
+
+	ok = cli_credentials_set_old_password(cred, password_talloc, CRED_SPECIFIED);
+	TALLOC_FREE(password_talloc);
+	if (!ok) {
+		TALLOC_FREE(nt_hash);
+		return false;
+	}
+
+	mdfour(nt_hash->hash, password_utf16->data, password_utf16->length);
+	cred->old_nt_hash = nt_hash;
+	return true;
+}
+
 _PUBLIC_ bool cli_credentials_set_nt_hash(struct cli_credentials *cred,
 				 const struct samr_Password *nt_hash, 
 				 enum credentials_obtained obtained)
@@ -222,6 +331,9 @@ _PUBLIC_ bool cli_credentials_set_nt_hash(struct cli_credentials *cred,
 		cli_credentials_set_password(cred, NULL, obtained);
 		if (nt_hash) {
 			cred->nt_hash = talloc(cred, struct samr_Password);
+			if (cred->nt_hash == NULL) {
+				return false;
+			}
 			*cred->nt_hash = *nt_hash;
 		} else {
 			cred->nt_hash = NULL;
@@ -230,6 +342,23 @@ _PUBLIC_ bool cli_credentials_set_nt_hash(struct cli_credentials *cred,
 	}
 
 	return false;
+}
+
+_PUBLIC_ bool cli_credentials_set_old_nt_hash(struct cli_credentials *cred,
+					      const struct samr_Password *nt_hash)
+{
+	cli_credentials_set_old_password(cred, NULL, CRED_SPECIFIED);
+	if (nt_hash) {
+		cred->old_nt_hash = talloc(cred, struct samr_Password);
+		if (cred->old_nt_hash == NULL) {
+			return false;
+		}
+		*cred->old_nt_hash = *nt_hash;
+	} else {
+		cred->old_nt_hash = NULL;
+	}
+
+	return true;
 }
 
 _PUBLIC_ bool cli_credentials_set_ntlm_response(struct cli_credentials *cred,

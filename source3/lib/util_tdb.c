@@ -45,17 +45,17 @@ int tdb_trans_store_bystring(TDB_CONTEXT *tdb, const char *keystr,
  integers and strings.
 ****************************************************************************/
 
-static size_t tdb_pack_va(uint8 *buf, int bufsize, const char *fmt, va_list ap)
+static size_t tdb_pack_va(uint8_t *buf, int bufsize, const char *fmt, va_list ap)
 {
-	uint8 bt;
-	uint16 w;
-	uint32 d;
+	uint8_t bt;
+	uint16_t w;
+	uint32_t d;
 	int i;
 	void *p;
 	int len;
 	char *s;
 	char c;
-	uint8 *buf0 = buf;
+	uint8_t *buf0 = buf;
 	const char *fmt0 = fmt;
 	int bufsize0 = bufsize;
 
@@ -63,19 +63,19 @@ static size_t tdb_pack_va(uint8 *buf, int bufsize, const char *fmt, va_list ap)
 		switch ((c = *fmt++)) {
 		case 'b': /* unsigned 8-bit integer */
 			len = 1;
-			bt = (uint8)va_arg(ap, int);
+			bt = (uint8_t)va_arg(ap, int);
 			if (bufsize && bufsize >= len)
 				SSVAL(buf, 0, bt);
 			break;
 		case 'w': /* unsigned 16-bit integer */
 			len = 2;
-			w = (uint16)va_arg(ap, int);
+			w = (uint16_t)va_arg(ap, int);
 			if (bufsize && bufsize >= len)
 				SSVAL(buf, 0, w);
 			break;
 		case 'd': /* signed 32-bit integer (standard int in most systems) */
 			len = 4;
-			d = va_arg(ap, uint32);
+			d = va_arg(ap, uint32_t);
 			if (bufsize && bufsize >= len)
 				SIVAL(buf, 0, d);
 			break;
@@ -129,7 +129,7 @@ static size_t tdb_pack_va(uint8 *buf, int bufsize, const char *fmt, va_list ap)
 	return PTR_DIFF(buf, buf0);
 }
 
-size_t tdb_pack(uint8 *buf, int bufsize, const char *fmt, ...)
+size_t tdb_pack(uint8_t *buf, int bufsize, const char *fmt, ...)
 {
 	va_list ap;
 	size_t result;
@@ -140,7 +140,7 @@ size_t tdb_pack(uint8 *buf, int bufsize, const char *fmt, ...)
 	return result;
 }
 
-bool tdb_pack_append(TALLOC_CTX *mem_ctx, uint8 **buf, size_t *len,
+bool tdb_pack_append(TALLOC_CTX *mem_ctx, uint8_t **buf, size_t *len,
 		     const char *fmt, ...)
 {
 	va_list ap;
@@ -151,10 +151,10 @@ bool tdb_pack_append(TALLOC_CTX *mem_ctx, uint8 **buf, size_t *len,
 	va_end(ap);
 
 	if (mem_ctx != NULL) {
-		*buf = talloc_realloc(mem_ctx, *buf, uint8,
+		*buf = talloc_realloc(mem_ctx, *buf, uint8_t,
 					    (*len) + len1);
 	} else {
-		*buf = SMB_REALLOC_ARRAY(*buf, uint8, (*len) + len1);
+		*buf = SMB_REALLOC_ARRAY(*buf, uint8_t, (*len) + len1);
 	}
 
 	if (*buf == NULL) {
@@ -179,18 +179,18 @@ bool tdb_pack_append(TALLOC_CTX *mem_ctx, uint8 **buf, size_t *len,
  integers and strings.
 ****************************************************************************/
 
-int tdb_unpack(const uint8 *buf, int bufsize, const char *fmt, ...)
+int tdb_unpack(const uint8_t *buf, int bufsize, const char *fmt, ...)
 {
 	va_list ap;
-	uint8 *bt;
-	uint16 *w;
-	uint32 *d;
+	uint8_t *bt;
+	uint16_t *w;
+	uint32_t *d;
 	int len;
 	int *i;
 	void **p;
 	char *s, **b, **ps;
 	char c;
-	const uint8 *buf0 = buf;
+	const uint8_t *buf0 = buf;
 	const char *fmt0 = fmt;
 	int bufsize0 = bufsize;
 
@@ -200,21 +200,21 @@ int tdb_unpack(const uint8 *buf, int bufsize, const char *fmt, ...)
 		switch ((c=*fmt++)) {
 		case 'b': /* unsigned 8-bit integer */
 			len = 1;
-			bt = va_arg(ap, uint8 *);
+			bt = va_arg(ap, uint8_t *);
 			if (bufsize < len)
 				goto no_space;
 			*bt = SVAL(buf, 0);
 			break;
 		case 'w': /* unsigned 16-bit integer */
 			len = 2;
-			w = va_arg(ap, uint16 *);
+			w = va_arg(ap, uint16_t *);
 			if (bufsize < len)
 				goto no_space;
 			*w = SVAL(buf, 0);
 			break;
 		case 'd': /* unsigned 32-bit integer (standard int in most systems) */
 			len = 4;
-			d = va_arg(ap, uint32 *);
+			d = va_arg(ap, uint32_t *);
 			if (bufsize < len)
 				goto no_space;
 			*d = IVAL(buf, 0);
@@ -323,6 +323,7 @@ TDB_CONTEXT *tdb_open_log(const char *name, int hash_size, int tdb_flags,
 			  int open_flags, mode_t mode)
 {
 	TDB_CONTEXT *tdb;
+	struct tdb_logging_context log_ctx = { .log_fn = tdb_log };
 
 	if (!lp_use_mmap())
 		tdb_flags |= TDB_NOMMAP;
@@ -338,8 +339,8 @@ TDB_CONTEXT *tdb_open_log(const char *name, int hash_size, int tdb_flags,
 		hash_size = lp_parm_int(-1, "tdb_hashsize", base, 0);
 	}
 
-	tdb = tdb_open_compat(name, hash_size, tdb_flags,
-			      open_flags, mode, tdb_log, NULL);
+	tdb = tdb_open_ex(name, hash_size, tdb_flags,
+			  open_flags, mode, &log_ctx, NULL);
 	if (!tdb)
 		return NULL;
 
@@ -450,4 +451,82 @@ char *tdb_data_string(TALLOC_CTX *mem_ctx, TDB_DATA d)
 done:
 	talloc_free(ost);
 	return ret;
+}
+
+static sig_atomic_t gotalarm;
+
+/***************************************************************
+ Signal function to tell us we timed out.
+****************************************************************/
+
+static void gotalarm_sig(int signum)
+{
+	gotalarm = 1;
+}
+
+/****************************************************************************
+ Lock a chain with timeout (in seconds).
+****************************************************************************/
+
+static int tdb_chainlock_with_timeout_internal( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout, int rw_type)
+{
+	/* Allow tdb_chainlock to be interrupted by an alarm. */
+	int ret;
+	gotalarm = 0;
+
+	if (timeout) {
+		CatchSignal(SIGALRM, gotalarm_sig);
+		tdb_setalarm_sigptr(tdb, &gotalarm);
+		alarm(timeout);
+	}
+
+	if (rw_type == F_RDLCK)
+		ret = tdb_chainlock_read(tdb, key);
+	else
+		ret = tdb_chainlock(tdb, key);
+
+	if (timeout) {
+		alarm(0);
+		tdb_setalarm_sigptr(tdb, NULL);
+		CatchSignal(SIGALRM, SIG_IGN);
+		if (gotalarm && (ret != 0)) {
+			DEBUG(0,("tdb_chainlock_with_timeout_internal: alarm (%u) timed out for key %s in tdb %s\n",
+				timeout, key.dptr, tdb_name(tdb)));
+			/* TODO: If we time out waiting for a lock, it might
+			 * be nice to use F_GETLK to get the pid of the
+			 * process currently holding the lock and print that
+			 * as part of the debugging message. -- mbp */
+			return -1;
+		}
+	}
+
+	return ret == 0 ? 0 : -1;
+}
+
+/****************************************************************************
+ Write lock a chain. Return non-zero if timeout or lock failed.
+****************************************************************************/
+
+int tdb_chainlock_with_timeout( TDB_CONTEXT *tdb, TDB_DATA key, unsigned int timeout)
+{
+	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_WRLCK);
+}
+
+int tdb_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval,
+				   int timeout)
+{
+	TDB_DATA key = string_term_tdb_data(keyval);
+
+	return tdb_chainlock_with_timeout(tdb, key, timeout);
+}
+
+/****************************************************************************
+ Read lock a chain by string. Return non-zero if timeout or lock failed.
+****************************************************************************/
+
+int tdb_read_lock_bystring_with_timeout(TDB_CONTEXT *tdb, const char *keyval, unsigned int timeout)
+{
+	TDB_DATA key = string_term_tdb_data(keyval);
+
+	return tdb_chainlock_with_timeout_internal(tdb, key, timeout, F_RDLCK);
 }

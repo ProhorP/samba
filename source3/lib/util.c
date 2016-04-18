@@ -28,9 +28,10 @@
 #include "ctdbd_conn.h"
 #include "../lib/util/util_pw.h"
 #include "messages.h"
-#include <ccan/hash/hash.h>
 #include "libcli/security/security.h"
 #include "serverid.h"
+#include "lib/sys_rw.h"
+#include "lib/sys_rw_data.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -197,7 +198,7 @@ void show_msg(const char *buf)
 	if (DEBUGLEVEL < 50)
 		bcc = MIN(bcc, 512);
 
-	dump_data(10, (const uint8 *)smb_buf_const(buf), bcc);
+	dump_data(10, (const uint8_t *)smb_buf_const(buf), bcc);
 }
 
 /*******************************************************************
@@ -217,12 +218,12 @@ int set_message_bcc(char *buf,int num_bytes)
  Return the bytes added
 ********************************************************************/
 
-ssize_t message_push_blob(uint8 **outbuf, DATA_BLOB blob)
+ssize_t message_push_blob(uint8_t **outbuf, DATA_BLOB blob)
 {
 	size_t newlen = smb_len(*outbuf) + 4 + blob.length;
-	uint8 *tmp;
+	uint8_t *tmp;
 
-	if (!(tmp = talloc_realloc(NULL, *outbuf, uint8, newlen))) {
+	if (!(tmp = talloc_realloc(NULL, *outbuf, uint8_t, newlen))) {
 		DEBUG(0, ("talloc failed\n"));
 		return -1;
 	}
@@ -451,8 +452,11 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 		goto done;
 	}
 
-	if (ev_ctx && tevent_re_initialise(ev_ctx) != 0) {
-		smb_panic(__location__ ": Failed to re-initialise event context");
+	if (ev_ctx != NULL) {
+		tevent_set_trace_callback(ev_ctx, NULL, NULL);
+		if (tevent_re_initialise(ev_ctx) != 0) {
+			smb_panic(__location__ ": Failed to re-initialise event context");
+		}
 	}
 
 	if (reinit_after_fork_pipe[0] != -1) {
@@ -486,7 +490,7 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 ****************************************************************************/
 
 void add_to_large_array(TALLOC_CTX *mem_ctx, size_t element_size,
-			void *element, void *_array, uint32 *num_elements,
+			void *element, void *_array, uint32_t *num_elements,
 			ssize_t *array_size)
 {
 	void **array = (void **)_array;
@@ -593,7 +597,7 @@ char *automount_lookup(TALLOC_CTX *ctx, const char *user_name)
 {
 	char *value = NULL;
 
-	char *nis_map = (char *)lp_nis_home_map_name();
+	char *nis_map = (char *)lp_homedir_map();
 
 	char buffer[NIS_MAXATTRVAL + 1];
 	nis_result *result;
@@ -645,7 +649,7 @@ char *automount_lookup(TALLOC_CTX *ctx, const char *user_name)
 	char *nis_result;     /* yp_match inits this */
 	int nis_result_len;  /* and set this */
 	char *nis_domain;     /* yp_get_default_domain inits this */
-	char *nis_map = lp_nis_home_map_name(talloc_tos());
+	char *nis_map = lp_homedir_map(talloc_tos());
 
 	if ((nis_error = yp_get_default_domain(&nis_domain)) != 0) {
 		DEBUG(3, ("YP Error: %s\n", yperr_string(nis_error)));
@@ -1316,9 +1320,14 @@ const char *tab_depth(int level, int depth)
 
 int str_checksum(const char *s)
 {
+	TDB_DATA key;
 	if (s == NULL)
 		return 0;
-	return hash(s, strlen(s), 0);
+
+	key = (TDB_DATA) { .dptr = discard_const_p(uint8_t, s),
+			   .dsize = strlen(s) };
+
+	return tdb_jenkins_hash(&key);
 }
 
 /*****************************************************************
@@ -1528,7 +1537,7 @@ static char *xx_path(const char *name, const char *rootpath)
 
 char *lock_path(const char *name)
 {
-	return xx_path(name, lp_lockdir());
+	return xx_path(name, lp_lock_directory());
 }
 
 /**
@@ -1541,7 +1550,7 @@ char *lock_path(const char *name)
 
 char *state_path(const char *name)
 {
-	return xx_path(name, lp_statedir());
+	return xx_path(name, lp_state_directory());
 }
 
 /**
@@ -1554,7 +1563,7 @@ char *state_path(const char *name)
 
 char *cache_path(const char *name)
 {
-	return xx_path(name, lp_cachedir());
+	return xx_path(name, lp_cache_directory());
 }
 
 /*******************************************************************
@@ -1833,7 +1842,7 @@ bool unix_wild_match(const char *pattern, const char *string)
   canonical name of the host. getaddrinfo() may use a variety of sources
   including /etc/hosts to obtain the domainname. It expects aliases in
   /etc/hosts to NOT be the FQDN. The FQDN should come first.
-***********************************************************************/
+************************************************************************/
 
 bool name_to_fqdn(fstring fqdn, const char *name)
 {
@@ -1873,7 +1882,7 @@ bool name_to_fqdn(fstring fqdn, const char *name)
 	}
 	if (full && (strcasecmp_m(full, "localhost.localdomain") == 0)) {
 		DEBUG(1, ("WARNING: your /etc/hosts file may be broken!\n"));
-		DEBUGADD(1, ("    Specifing the machine hostname for address 127.0.0.1 may lead\n"));
+		DEBUGADD(1, ("    Specifying the machine hostname for address 127.0.0.1 may lead\n"));
 		DEBUGADD(1, ("    to Kerberos authentication problems as localhost.localdomain\n"));
 		DEBUGADD(1, ("    may end up being used instead of the real machine FQDN.\n"));
 	}
@@ -1910,7 +1919,7 @@ void *talloc_append_blob(TALLOC_CTX *mem_ctx, void *buf, DATA_BLOB blob)
 	return result;
 }
 
-uint32 map_share_mode_to_deny_mode(uint32 share_access, uint32 private_options)
+uint32_t map_share_mode_to_deny_mode(uint32_t share_access, uint32_t private_options)
 {
 	switch (share_access & ~FILE_SHARE_DELETE) {
 		case FILE_SHARE_NONE:
@@ -1928,7 +1937,7 @@ uint32 map_share_mode_to_deny_mode(uint32 share_access, uint32 private_options)
 		return DENY_FCB;
 	}
 
-	return (uint32)-1;
+	return (uint32_t)-1;
 }
 
 pid_t procid_to_pid(const struct server_id *proc)
@@ -1936,15 +1945,15 @@ pid_t procid_to_pid(const struct server_id *proc)
 	return proc->pid;
 }
 
-static uint32 my_vnn = NONCLUSTER_VNN;
+static uint32_t my_vnn = NONCLUSTER_VNN;
 
-void set_my_vnn(uint32 vnn)
+void set_my_vnn(uint32_t vnn)
 {
 	DEBUG(10, ("vnn pid %d = %u\n", (int)getpid(), (unsigned int)vnn));
 	my_vnn = vnn;
 }
 
-uint32 get_my_vnn(void)
+uint32_t get_my_vnn(void)
 {
 	return my_vnn;
 }
@@ -1971,48 +1980,6 @@ struct server_id procid_self(void)
 	return pid_to_procid(getpid());
 }
 
-static struct idr_context *task_id_tree;
-
-static int free_task_id(struct server_id *server_id)
-{
-	idr_remove(task_id_tree, server_id->task_id);
-	return 0;
-}
-
-/* Return a server_id with a unique task_id element.  Free the
- * returned pointer to de-allocate the task_id via a talloc destructor
- * (ie, use talloc_free()) */
-struct server_id *new_server_id_task(TALLOC_CTX *mem_ctx)
-{
-	struct server_id *server_id;
-	int task_id;
-	if (!task_id_tree) {
-		task_id_tree = idr_init(NULL);
-		if (!task_id_tree) {
-			return NULL;
-		}
-	}
-
-	server_id = talloc(mem_ctx, struct server_id);
-
-	if (!server_id) {
-		return NULL;
-	}
-	*server_id = procid_self();
-
-	/* 0 is the default server_id, so we need to start with 1 */
-	task_id = idr_get_new_above(task_id_tree, server_id, 1, INT32_MAX);
-
-	if (task_id == -1) {
-		talloc_free(server_id);
-		return NULL;
-	}
-
-	talloc_set_destructor(server_id, free_task_id);
-	server_id->task_id = task_id;
-	return server_id;
-}
-
 bool procid_is_me(const struct server_id *pid)
 {
 	if (pid->pid != getpid())
@@ -2027,11 +1994,6 @@ bool procid_is_me(const struct server_id *pid)
 struct server_id interpret_pid(const char *pid_string)
 {
 	return server_id_from_string(get_my_vnn(), pid_string);
-}
-
-char *procid_str_static(const struct server_id *pid)
-{
-	return server_id_str(talloc_tos(), pid);
 }
 
 bool procid_valid(const struct server_id *pid)
@@ -2246,16 +2208,16 @@ bool is_executable(const char *fname)
 
 bool map_open_params_to_ntcreate(const char *smb_base_fname,
 				 int deny_mode, int open_func,
-				 uint32 *paccess_mask,
-				 uint32 *pshare_mode,
-				 uint32 *pcreate_disposition,
-				 uint32 *pcreate_options,
+				 uint32_t *paccess_mask,
+				 uint32_t *pshare_mode,
+				 uint32_t *pcreate_disposition,
+				 uint32_t *pcreate_options,
 				 uint32_t *pprivate_flags)
 {
-	uint32 access_mask;
-	uint32 share_mode;
-	uint32 create_disposition;
-	uint32 create_options = FILE_NON_DIRECTORY_FILE;
+	uint32_t access_mask;
+	uint32_t share_mode;
+	uint32_t create_disposition;
+	uint32_t create_options = FILE_NON_DIRECTORY_FILE;
 	uint32_t private_flags = 0;
 
 	DEBUG(10,("map_open_params_to_ntcreate: fname = %s, deny_mode = 0x%x, "

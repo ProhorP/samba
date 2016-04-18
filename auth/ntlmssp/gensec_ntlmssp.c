@@ -22,6 +22,7 @@
 #include "includes.h"
 #include "auth/ntlmssp/ntlmssp.h"
 #include "auth/gensec/gensec.h"
+#include "auth/gensec/gensec_internal.h"
 #include "auth/ntlmssp/ntlmssp_private.h"
 
 NTSTATUS gensec_ntlmssp_magic(struct gensec_security *gensec_security,
@@ -101,6 +102,19 @@ bool gensec_ntlmssp_have_feature(struct gensec_security *gensec_security,
 			return true;
 		}
 	}
+	if (feature & GENSEC_FEATURE_SIGN_PKT_HEADER) {
+		return true;
+	}
+	if (feature & GENSEC_FEATURE_NEW_SPNEGO) {
+		if (!ntlmssp_state->session_key.length) {
+			return false;
+		}
+		if (!(ntlmssp_state->neg_flags & NTLMSSP_NEGOTIATE_SIGN)) {
+			return false;
+		}
+		return ntlmssp_state->new_spnego;
+	}
+
 	return false;
 }
 

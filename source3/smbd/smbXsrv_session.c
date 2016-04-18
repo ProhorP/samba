@@ -37,8 +37,6 @@
 #include "librpc/gen_ndr/ndr_smbXsrv.h"
 #include "serverid.h"
 #include "lib/util/tevent_ntstatus.h"
-#include "msg_channel.h"
-#include "lib/smbd_tevent_queue.h"
 
 struct smbXsrv_session_table {
 	struct {
@@ -51,14 +49,17 @@ struct smbXsrv_session_table {
 	struct {
 		struct db_context *db_ctx;
 	} global;
-	struct msg_channel *close_channel;
 };
+
+static NTSTATUS smb2srv_session_lookup_raw(struct smbXsrv_session_table *table,
+					   uint64_t session_id, NTTIME now,
+					   struct smbXsrv_session **session);
 
 static struct db_context *smbXsrv_session_global_db_ctx = NULL;
 
 NTSTATUS smbXsrv_session_global_init(void)
 {
-	const char *global_path = NULL;
+	char *global_path = NULL;
 	struct db_context *db_ctx = NULL;
 
 	if (smbXsrv_session_global_db_ctx != NULL) {
@@ -69,6 +70,9 @@ NTSTATUS smbXsrv_session_global_init(void)
 	 * This contains secret information like session keys!
 	 */
 	global_path = lock_path("smbXsrv_session_global.tdb");
+	if (global_path == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	db_ctx = db_open(NULL, global_path,
 			 0, /* hash_size */
@@ -76,7 +80,9 @@ NTSTATUS smbXsrv_session_global_init(void)
 			 TDB_CLEAR_IF_FIRST |
 			 TDB_INCOMPATIBLE_HASH,
 			 O_RDWR | O_CREAT, 0600,
-			 DBWRAP_LOCK_ORDER_1);
+			 DBWRAP_LOCK_ORDER_1,
+			 DBWRAP_FLAG_NONE);
+	TALLOC_FREE(global_path);
 	if (db_ctx == NULL) {
 		NTSTATUS status;
 
@@ -166,10 +172,10 @@ static NTSTATUS smbXsrv_session_table_init(struct smbXsrv_connection *conn,
 					   uint32_t highest_id,
 					   uint32_t max_sessions)
 {
+	struct smbXsrv_client *client = conn->client;
 	struct smbXsrv_session_table *table;
 	NTSTATUS status;
 	struct tevent_req *subreq;
-	int ret;
 	uint64_t max_range;
 
 	if (lowest_id > highest_id) {
@@ -184,7 +190,7 @@ static NTSTATUS smbXsrv_session_table_init(struct smbXsrv_connection *conn,
 		return NT_STATUS_INTERNAL_ERROR;
 	}
 
-	table = talloc_zero(conn, struct smbXsrv_session_table);
+	table = talloc_zero(client, struct smbXsrv_session_table);
 	if (table == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -206,25 +212,17 @@ static NTSTATUS smbXsrv_session_table_init(struct smbXsrv_connection *conn,
 
 	table->global.db_ctx = smbXsrv_session_global_db_ctx;
 
-	dbwrap_watch_db(table->global.db_ctx, conn->msg_ctx);
+	dbwrap_watch_db(table->global.db_ctx, client->msg_ctx);
 
-	ret = msg_channel_init(table, conn->msg_ctx,
-			       MSG_SMBXSRV_SESSION_CLOSE,
-			       &table->close_channel);
-	if (ret != 0) {
-		status = map_nt_error_from_unix_common(errno);
-		TALLOC_FREE(table);
-		return status;
-	}
-
-	subreq = msg_read_send(table, conn->ev_ctx, table->close_channel);
+	subreq = messaging_read_send(table, client->ev_ctx, client->msg_ctx,
+				     MSG_SMBXSRV_SESSION_CLOSE);
 	if (subreq == NULL) {
 		TALLOC_FREE(table);
 		return NT_STATUS_NO_MEMORY;
 	}
-	tevent_req_set_callback(subreq, smbXsrv_session_close_loop, conn);
+	tevent_req_set_callback(subreq, smbXsrv_session_close_loop, client);
 
-	conn->session_table = table;
+	client->session_table = table;
 	return NT_STATUS_OK;
 }
 
@@ -232,10 +230,10 @@ static void smbXsrv_session_close_shutdown_done(struct tevent_req *subreq);
 
 static void smbXsrv_session_close_loop(struct tevent_req *subreq)
 {
-	struct smbXsrv_connection *conn =
+	struct smbXsrv_client *client =
 		tevent_req_callback_data(subreq,
-		struct smbXsrv_connection);
-	struct smbXsrv_session_table *table = conn->session_table;
+		struct smbXsrv_client);
+	struct smbXsrv_session_table *table = client->session_table;
 	int ret;
 	struct messaging_rec *rec = NULL;
 	struct smbXsrv_session_closeB close_blob;
@@ -246,7 +244,7 @@ static void smbXsrv_session_close_loop(struct tevent_req *subreq)
 	struct timeval tv = timeval_current();
 	NTTIME now = timeval_to_nttime(&tv);
 
-	ret = msg_read_recv(subreq, talloc_tos(), &rec);
+	ret = messaging_read_recv(subreq, talloc_tos(), &rec);
 	TALLOC_FREE(subreq);
 	if (ret != 0) {
 		goto next;
@@ -282,8 +280,9 @@ static void smbXsrv_session_close_loop(struct tevent_req *subreq)
 		goto next;
 	}
 
-	status = smb2srv_session_lookup(conn, close_info0->old_session_wire_id,
-					now, &session);
+	status = smb2srv_session_lookup_raw(client->session_table,
+					    close_info0->old_session_wire_id,
+					    now, &session);
 	if (NT_STATUS_EQUAL(status, NT_STATUS_USER_SESSION_DELETED)) {
 		DEBUG(4,("smbXsrv_session_close_loop: "
 			 "old_session_wire_id %llu not found\n",
@@ -333,7 +332,7 @@ static void smbXsrv_session_close_loop(struct tevent_req *subreq)
 		goto next;
 	}
 
-	subreq = smb2srv_session_shutdown_send(session, conn->ev_ctx,
+	subreq = smb2srv_session_shutdown_send(session, client->ev_ctx,
 					       session, NULL);
 	if (subreq == NULL) {
 		status = NT_STATUS_NO_MEMORY;
@@ -353,13 +352,15 @@ static void smbXsrv_session_close_loop(struct tevent_req *subreq)
 next:
 	TALLOC_FREE(rec);
 
-	subreq = msg_read_send(table, conn->ev_ctx, table->close_channel);
+	subreq = messaging_read_send(table, client->ev_ctx, client->msg_ctx,
+				     MSG_SMBXSRV_SESSION_CLOSE);
 	if (subreq == NULL) {
-		smbd_server_connection_terminate(conn->sconn,
-						 "msg_read_send() failed");
+		const char *r;
+		r = "messaging_read_send(MSG_SMBXSRV_SESSION_CLOSE) failed";
+		exit_server_cleanly(r);
 		return;
 	}
-	tevent_req_set_callback(subreq, smbXsrv_session_close_loop, conn);
+	tevent_req_set_callback(subreq, smbXsrv_session_close_loop, client);
 }
 
 static void smbXsrv_session_close_shutdown_done(struct tevent_req *subreq)
@@ -812,10 +813,12 @@ static void smbXsrv_session_global_verify_record(struct db_record *db_rec,
 
 	exists = serverid_exists(&global->channels[0].server_id);
 	if (!exists) {
+		struct server_id_buf idbuf;
 		DEBUG(2,("smbXsrv_session_global_verify_record: "
 			 "key '%s' server_id %s does not exist.\n",
 			 hex_encode_talloc(frame, key.dptr, key.dsize),
-			 server_id_str(frame, &global->channels[0].server_id)));
+			 server_id_str_buf(global->channels[0].server_id,
+					   &idbuf)));
 		if (DEBUGLVL(2)) {
 			NDR_PRINT_DEBUG(smbXsrv_session_globalB, &global_blob);
 		}
@@ -915,7 +918,7 @@ struct tevent_req *smb2srv_session_close_previous_send(TALLOC_CTX *mem_ctx,
 	struct smb2srv_session_close_previous_state *state;
 	uint32_t global_id = previous_session_id & UINT32_MAX;
 	uint64_t global_zeros = previous_session_id & 0xFFFFFFFF00000000LLU;
-	struct smbXsrv_session_table *table = conn->session_table;
+	struct smbXsrv_session_table *table = conn->client->session_table;
 	struct security_token *current_token = NULL;
 	uint8_t key_buf[SMBXSRV_SESSION_GLOBAL_TDB_KEY_SIZE];
 	TDB_DATA key;
@@ -1091,30 +1094,43 @@ NTSTATUS smb2srv_session_close_previous_recv(struct tevent_req *req)
 	return NT_STATUS_OK;
 }
 
-static int smbXsrv_session_destructor(struct smbXsrv_session *session)
+static NTSTATUS smbXsrv_session_clear_and_logoff(struct smbXsrv_session *session)
 {
 	NTSTATUS status;
-	struct smbd_smb2_request *preq = NULL;
+	struct smbXsrv_connection *xconn = NULL;
 
-	if (session->connection != NULL) {
-		preq = session->connection->sconn->smb2.requests;
+	if (session->client != NULL) {
+		xconn = session->client->connections;
 	}
 
-	for (; preq != NULL; preq = preq->next) {
-		if (preq->session != session) {
-			continue;
-		}
+	for (; xconn != NULL; xconn = xconn->next) {
+		struct smbd_smb2_request *preq;
 
-		preq->session = NULL;
-		/*
-		 * If we no longer have a session we can't
-		 * sign or encrypt replies.
-		 */
-		preq->do_signing = false;
-		preq->do_encryption = false;
+		for (preq = xconn->smb2.requests; preq != NULL; preq = preq->next) {
+			if (preq->session != session) {
+				continue;
+			}
+
+			preq->session = NULL;
+			/*
+			 * If we no longer have a session we can't
+			 * sign or encrypt replies.
+			 */
+			preq->do_signing = false;
+			preq->do_encryption = false;
+			preq->preauth = NULL;
+		}
 	}
 
 	status = smbXsrv_session_logoff(session);
+	return status;
+}
+
+static int smbXsrv_session_destructor(struct smbXsrv_session *session)
+{
+	NTSTATUS status;
+
+	status = smbXsrv_session_clear_and_logoff(session);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("smbXsrv_session_destructor: "
 			  "smbXsrv_session_logoff() failed: %s\n",
@@ -1130,7 +1146,7 @@ NTSTATUS smbXsrv_session_create(struct smbXsrv_connection *conn,
 				NTTIME now,
 				struct smbXsrv_session **_session)
 {
-	struct smbXsrv_session_table *table = conn->session_table;
+	struct smbXsrv_session_table *table = conn->client->session_table;
 	struct db_record *local_rec = NULL;
 	struct smbXsrv_session *session = NULL;
 	void *ptr = NULL;
@@ -1150,7 +1166,16 @@ NTSTATUS smbXsrv_session_create(struct smbXsrv_connection *conn,
 	session->table = table;
 	session->idle_time = now;
 	session->status = NT_STATUS_MORE_PROCESSING_REQUIRED;
-	session->connection = conn;
+	session->client = conn->client;
+
+	if (conn->protocol >= PROTOCOL_SMB3_10) {
+		session->preauth = talloc(session, struct smbXsrv_preauth);
+		if (session->preauth == NULL) {
+			TALLOC_FREE(session);
+			return NT_STATUS_NO_MEMORY;
+		}
+		*session->preauth = conn->smb2.preauth;
+	}
 
 	status = smbXsrv_session_global_allocate(table->global.db_ctx,
 						 session,
@@ -1240,6 +1265,7 @@ NTSTATUS smbXsrv_session_create(struct smbXsrv_connection *conn,
 		return NT_STATUS_NO_MEMORY;
 	}
 	channels[0].signing_key = data_blob_null;
+	channels[0].connection = conn;
 
 	ptr = session;
 	val = make_tdb_data((uint8_t const *)&ptr, sizeof(ptr));
@@ -1332,6 +1358,24 @@ NTSTATUS smbXsrv_session_update(struct smbXsrv_session *session)
 	return NT_STATUS_OK;
 }
 
+NTSTATUS smbXsrv_session_find_channel(const struct smbXsrv_session *session,
+				      const struct smbXsrv_connection *conn,
+				      struct smbXsrv_channel_global0 **_c)
+{
+	uint32_t i;
+
+	for (i=0; i < session->global->num_channels; i++) {
+		struct smbXsrv_channel_global0 *c = &session->global->channels[i];
+
+		if (c->connection == conn) {
+			*_c = c;
+			return NT_STATUS_OK;
+		}
+	}
+
+	return NT_STATUS_USER_SESSION_DELETED;
+}
+
 struct smb2srv_session_shutdown_state {
 	struct tevent_queue *wait_queue;
 };
@@ -1346,7 +1390,7 @@ struct tevent_req *smb2srv_session_shutdown_send(TALLOC_CTX *mem_ctx,
 	struct tevent_req *req;
 	struct smb2srv_session_shutdown_state *state;
 	struct tevent_req *subreq;
-	struct smbd_smb2_request *preq = NULL;
+	struct smbXsrv_connection *xconn = NULL;
 	size_t len = 0;
 
 	/*
@@ -1365,39 +1409,55 @@ struct tevent_req *smb2srv_session_shutdown_send(TALLOC_CTX *mem_ctx,
 		return tevent_req_post(req, ev);
 	}
 
-	if (session->connection != NULL) {
-		preq = session->connection->sconn->smb2.requests;
-	}
+	for (xconn = session->client->connections; xconn != NULL; xconn = xconn->next) {
+		struct smbd_smb2_request *preq;
 
-	for (; preq != NULL; preq = preq->next) {
-		if (preq == current_req) {
-			/* Can't cancel current request. */
-			continue;
-		}
-		if (preq->session != session) {
-			/* Request on different session. */
-			continue;
-		}
+		for (preq = xconn->smb2.requests; preq != NULL; preq = preq->next) {
+			if (preq == current_req) {
+				/* Can't cancel current request. */
+				continue;
+			}
+			if (preq->session != session) {
+				/* Request on different session. */
+				continue;
+			}
 
-		/*
-		 * Never cancel anything in a compound
-		 * request. Way too hard to deal with
-		 * the result.
-		 */
-		if (!preq->compound_related && preq->subreq != NULL) {
-			tevent_req_cancel(preq->subreq);
-		}
+			if (!NT_STATUS_IS_OK(xconn->transport.status)) {
+				preq->session = NULL;
+				/*
+				 * If we no longer have a session we can't
+				 * sign or encrypt replies.
+				 */
+				preq->do_signing = false;
+				preq->do_encryption = false;
+				preq->preauth = NULL;
 
-		/*
-		 * Now wait until the request is finished.
-		 *
-		 * We don't set a callback, as we just want to block the
-		 * wait queue and the talloc_free() of the request will
-		 * remove the item from the wait queue.
-		 */
-		subreq = smbd_tevent_queue_wait_send(preq, ev, state->wait_queue);
-		if (tevent_req_nomem(subreq, req)) {
-			return tevent_req_post(req, ev);
+				if (preq->subreq != NULL) {
+					tevent_req_cancel(preq->subreq);
+				}
+				continue;
+			}
+
+			/*
+			 * Never cancel anything in a compound
+			 * request. Way too hard to deal with
+			 * the result.
+			 */
+			if (!preq->compound_related && preq->subreq != NULL) {
+				tevent_req_cancel(preq->subreq);
+			}
+
+			/*
+			 * Now wait until the request is finished.
+			 *
+			 * We don't set a callback, as we just want to block the
+			 * wait queue and the talloc_free() of the request will
+			 * remove the item from the wait queue.
+			 */
+			subreq = tevent_queue_wait_send(preq, ev, state->wait_queue);
+			if (tevent_req_nomem(subreq, req)) {
+				return tevent_req_post(req, ev);
+			}
 		}
 	}
 
@@ -1412,7 +1472,7 @@ struct tevent_req *smb2srv_session_shutdown_send(TALLOC_CTX *mem_ctx,
 	 * this way we get notified when all pending requests are finished
 	 * and send to the socket.
 	 */
-	subreq = smbd_tevent_queue_wait_send(state, ev, state->wait_queue);
+	subreq = tevent_queue_wait_send(state, ev, state->wait_queue);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
@@ -1427,7 +1487,7 @@ static void smb2srv_session_shutdown_wait_done(struct tevent_req *subreq)
 		tevent_req_callback_data(subreq,
 		struct tevent_req);
 
-	smbd_tevent_queue_wait_recv(subreq);
+	tevent_queue_wait_recv(subreq);
 	TALLOC_FREE(subreq);
 
 	tevent_req_done(req);
@@ -1443,7 +1503,7 @@ NTSTATUS smbXsrv_session_logoff(struct smbXsrv_session *session)
 	struct smbXsrv_session_table *table;
 	struct db_record *local_rec = NULL;
 	struct db_record *global_rec = NULL;
-	struct smbXsrv_connection *conn;
+	struct smbd_server_connection *sconn = NULL;
 	NTSTATUS status;
 	NTSTATUS error = NT_STATUS_OK;
 
@@ -1454,8 +1514,8 @@ NTSTATUS smbXsrv_session_logoff(struct smbXsrv_session *session)
 	table = session->table;
 	session->table = NULL;
 
-	conn = session->connection;
-	session->connection = NULL;
+	sconn = session->client->sconn;
+	session->client = NULL;
 	session->status = NT_STATUS_USER_SESSION_DELETED;
 
 	global_rec = session->global->db_rec;
@@ -1537,10 +1597,13 @@ NTSTATUS smbXsrv_session_logoff(struct smbXsrv_session *session)
 	session->db_rec = NULL;
 
 	if (session->compat) {
-		file_close_user(conn->sconn, session->compat->vuid);
+		file_close_user(sconn, session->compat->vuid);
 	}
 
-	if (conn->protocol >= PROTOCOL_SMB2_02) {
+	if (session->tcon_table != NULL) {
+		/*
+		 * Note: We only have a tcon_table for SMB2.
+		 */
 		status = smb2srv_tcon_disconnect_all(session);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("smbXsrv_session_logoff(0x%08x): "
@@ -1552,7 +1615,7 @@ NTSTATUS smbXsrv_session_logoff(struct smbXsrv_session *session)
 	}
 
 	if (session->compat) {
-		invalidate_vuid(conn->sconn, session->compat->vuid);
+		invalidate_vuid(sconn, session->compat->vuid);
 		session->compat = NULL;
 	}
 
@@ -1569,7 +1632,7 @@ static int smbXsrv_session_logoff_all_callback(struct db_record *local_rec,
 
 NTSTATUS smbXsrv_session_logoff_all(struct smbXsrv_connection *conn)
 {
-	struct smbXsrv_session_table *table = conn->session_table;
+	struct smbXsrv_session_table *table = conn->client->session_table;
 	struct smbXsrv_session_logoff_all_state state;
 	NTSTATUS status;
 	int count = 0;
@@ -1611,7 +1674,6 @@ static int smbXsrv_session_logoff_all_callback(struct db_record *local_rec,
 	TDB_DATA val;
 	void *ptr = NULL;
 	struct smbXsrv_session *session = NULL;
-	struct smbd_smb2_request *preq = NULL;
 	NTSTATUS status;
 
 	val = dbwrap_record_get_value(local_rec);
@@ -1629,25 +1691,7 @@ static int smbXsrv_session_logoff_all_callback(struct db_record *local_rec,
 
 	session->db_rec = local_rec;
 
-	if (session->connection != NULL) {
-		preq = session->connection->sconn->smb2.requests;
-	}
-
-	for (; preq != NULL; preq = preq->next) {
-		if (preq->session != session) {
-			continue;
-		}
-
-		preq->session = NULL;
-		/*
-		 * If we no longer have a session we can't
-		 * sign or encrypt replies.
-		 */
-		preq->do_signing = false;
-		preq->do_encryption = false;
-	}
-
-	status = smbXsrv_session_logoff(session);
+	status = smbXsrv_session_clear_and_logoff(session);
 	if (!NT_STATUS_IS_OK(status)) {
 		if (NT_STATUS_IS_OK(state->first_status)) {
 			state->first_status = status;
@@ -1672,7 +1716,7 @@ NTSTATUS smb1srv_session_lookup(struct smbXsrv_connection *conn,
 				uint16_t vuid, NTTIME now,
 				struct smbXsrv_session **session)
 {
-	struct smbXsrv_session_table *table = conn->session_table;
+	struct smbXsrv_session_table *table = conn->client->session_table;
 	uint32_t local_id = vuid;
 
 	return smbXsrv_session_local_lookup(table, local_id, now, session);
@@ -1687,11 +1731,10 @@ NTSTATUS smb2srv_session_table_init(struct smbXsrv_connection *conn)
 					  UINT16_MAX - 1);
 }
 
-NTSTATUS smb2srv_session_lookup(struct smbXsrv_connection *conn,
-				uint64_t session_id, NTTIME now,
-				struct smbXsrv_session **session)
+static NTSTATUS smb2srv_session_lookup_raw(struct smbXsrv_session_table *table,
+					   uint64_t session_id, NTTIME now,
+					   struct smbXsrv_session **session)
 {
-	struct smbXsrv_session_table *table = conn->session_table;
 	uint32_t local_id = session_id & UINT32_MAX;
 	uint64_t local_zeros = session_id & 0xFFFFFFFF00000000LLU;
 
@@ -1700,6 +1743,14 @@ NTSTATUS smb2srv_session_lookup(struct smbXsrv_connection *conn,
 	}
 
 	return smbXsrv_session_local_lookup(table, local_id, now, session);
+}
+
+NTSTATUS smb2srv_session_lookup(struct smbXsrv_connection *conn,
+				uint64_t session_id, NTTIME now,
+				struct smbXsrv_session **session)
+{
+	struct smbXsrv_session_table *table = conn->client->session_table;
+	return smb2srv_session_lookup_raw(table, session_id, now, session);
 }
 
 struct smbXsrv_session_global_traverse_state {

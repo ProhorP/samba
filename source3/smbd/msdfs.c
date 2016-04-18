@@ -4,6 +4,7 @@
    MSDFS services for Samba
    Copyright (C) Shirish Kalele 2000
    Copyright (C) Jeremy Allison 2007
+   Copyright (C) Robin McCorkell 2015
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -246,9 +247,6 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 
 	sconn->ev_ctx = ev;
 	sconn->msg_ctx = msg;
-	sconn->sock = -1;
-	sconn->smb1.echo_handler.trusted_fd = -1;
-	sconn->smb1.echo_handler.socket_lock_fd = -1;
 
 	conn = conn_new(sconn);
 	if (conn == NULL) {
@@ -299,7 +297,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	set_conn_connectpath(conn, connpath);
 
 	/*
-	 * New code to check if there's a share security descripter
+	 * New code to check if there's a share security descriptor
 	 * added from NT server manager. This is done after the
 	 * smb.conf checks are done as we need a uid and token. JRA.
 	 *
@@ -313,7 +311,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 		if ((conn->share_access & FILE_WRITE_DATA) == 0) {
 			if ((conn->share_access & FILE_READ_DATA) == 0) {
 				/* No access, read or write. */
-				DEBUG(0,("create_conn_struct: connection to %s "
+				DEBUG(3,("create_conn_struct: connection to %s "
 					 "denied due to security "
 					 "descriptor.\n",
 					 servicename));
@@ -431,6 +429,21 @@ NTSTATUS create_conn_struct_cwd(TALLOC_CTX *ctx,
 	return NT_STATUS_OK;
 }
 
+static void shuffle_strlist(char **list, int count)
+{
+	int i;
+	uint32_t r;
+	char *tmp;
+
+	for (i = count; i > 1; i--) {
+		r = generate_random() % i;
+
+		tmp = list[i-1];
+		list[i-1] = list[r];
+		list[r] = tmp;
+	}
+}
+
 /**********************************************************************
  Parse the contents of a symlink to verify if it is an msdfs referral
  A valid referral is of the form:
@@ -451,6 +464,7 @@ NTSTATUS create_conn_struct_cwd(TALLOC_CTX *ctx,
  **********************************************************************/
 
 static bool parse_msdfs_symlink(TALLOC_CTX *ctx,
+				int snum,
 				const char *target,
 				struct referral **preflist,
 				int *refcount)
@@ -481,6 +495,11 @@ static bool parse_msdfs_symlink(TALLOC_CTX *ctx,
 	while((count<MAX_REFERRAL_COUNT) &&
 	      ((alt_path[count] = strtok_r(NULL, ",", &saveptr)) != NULL)) {
 		count++;
+	}
+
+	/* shuffle alternate paths */
+	if (lp_msdfs_shuffle_referrals(snum)) {
+		shuffle_strlist(alt_path, count);
 	}
 
 	DEBUG(10,("parse_msdfs_symlink: count=%d\n", count));
@@ -987,6 +1006,7 @@ NTSTATUS get_referred_path(TALLOC_CTX *ctx,
 	if (pdp->reqpath[0] == '\0') {
 		char *tmp;
 		struct referral *ref;
+		int refcount;
 
 		if (*lp_msdfs_proxy(talloc_tos(), snum) == '\0') {
 			TALLOC_FREE(pdp);
@@ -1002,39 +1022,20 @@ NTSTATUS get_referred_path(TALLOC_CTX *ctx,
  		 * the configured target share.
  		 */
 
-		jucn->referral_count = 1;
-		if ((ref = talloc_zero(ctx, struct referral)) == NULL) {
+		tmp = talloc_asprintf(talloc_tos(), "msdfs:%s",
+				      lp_msdfs_proxy(talloc_tos(), snum));
+		if (tmp == NULL) {
 			TALLOC_FREE(pdp);
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		if (!(tmp = talloc_strdup(ctx, lp_msdfs_proxy(talloc_tos(), snum)))) {
+		if (!parse_msdfs_symlink(ctx, snum, tmp, &ref, &refcount)) {
+			TALLOC_FREE(tmp);
 			TALLOC_FREE(pdp);
-			return NT_STATUS_NO_MEMORY;
+			return NT_STATUS_INVALID_PARAMETER;
 		}
-
-		trim_string(tmp, "\\", 0);
-
-		ref->alternate_path = talloc_asprintf(ctx, "\\%s", tmp);
 		TALLOC_FREE(tmp);
-
-		if (!ref->alternate_path) {
-			TALLOC_FREE(pdp);
-			return NT_STATUS_NO_MEMORY;
-		}
-
-		if (pdp->reqpath[0] != '\0') {
-			ref->alternate_path = talloc_asprintf_append(
-					ref->alternate_path,
-					"%s",
-					pdp->reqpath);
-			if (!ref->alternate_path) {
-				TALLOC_FREE(pdp);
-				return NT_STATUS_NO_MEMORY;
-			}
-		}
-		ref->proximity = 0;
-		ref->ttl = REFERRAL_TTL;
+		jucn->referral_count = refcount;
 		jucn->referral_list = ref;
 		*consumedcntp = strlen(dfs_path);
 		TALLOC_FREE(pdp);
@@ -1045,7 +1046,7 @@ NTSTATUS get_referred_path(TALLOC_CTX *ctx,
 					server_event_context(),
 					server_messaging_context(),
 					&conn, snum,
-					lp_pathname(talloc_tos(), snum), NULL, &oldpath);
+					lp_path(talloc_tos(), snum), NULL, &oldpath);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(pdp);
 		return status;
@@ -1077,7 +1078,7 @@ NTSTATUS get_referred_path(TALLOC_CTX *ctx,
 	}
 
 	/* We know this is a valid dfs link. Parse the targetpath. */
-	if (!parse_msdfs_symlink(ctx, targetpath,
+	if (!parse_msdfs_symlink(ctx, snum, targetpath,
 				&jucn->referral_list,
 				&jucn->referral_count)) {
 		DEBUG(3,("get_referred_path: failed to parse symlink "
@@ -1237,14 +1238,14 @@ static bool junction_to_local_path(const struct junction_map *jucn,
 					server_event_context(),
 					server_messaging_context(),
 					conn_out,
-					snum, lp_pathname(talloc_tos(), snum), NULL, oldpath);
+					snum, lp_path(talloc_tos(), snum), NULL, oldpath);
 	if (!NT_STATUS_IS_OK(status)) {
 		return False;
 	}
 
 	*pp_path_out = talloc_asprintf(*conn_out,
 			"%s/%s",
-			lp_pathname(talloc_tos(), snum),
+			lp_path(talloc_tos(), snum),
 			jucn->volume_name);
 	if (!*pp_path_out) {
 		vfs_ChDir(*conn_out, *oldpath);
@@ -1379,7 +1380,7 @@ static int count_dfs_links(TALLOC_CTX *ctx, int snum)
 	DIR *dirp = NULL;
 	const char *dname = NULL;
 	char *talloced = NULL;
-	const char *connect_path = lp_pathname(talloc_tos(), snum);
+	const char *connect_path = lp_path(talloc_tos(), snum);
 	const char *msdfs_proxy = lp_msdfs_proxy(talloc_tos(), snum);
 	connection_struct *conn;
 	NTSTATUS status;
@@ -1449,7 +1450,7 @@ static int form_junctions(TALLOC_CTX *ctx,
 	DIR *dirp = NULL;
 	const char *dname = NULL;
 	char *talloced = NULL;
-	const char *connect_path = lp_pathname(talloc_tos(), snum);
+	const char *connect_path = lp_path(talloc_tos(), snum);
 	char *service_name = lp_servicename(talloc_tos(), snum);
 	const char *msdfs_proxy = lp_msdfs_proxy(talloc_tos(), snum);
 	connection_struct *conn;
@@ -1538,7 +1539,7 @@ static int form_junctions(TALLOC_CTX *ctx,
 					conn,
 					dname, &link_target,
 					NULL)) {
-			if (parse_msdfs_symlink(ctx,
+			if (parse_msdfs_symlink(ctx, snum,
 					link_target,
 					&jucn[cnt].referral_list,
 					&jucn[cnt].referral_count)) {

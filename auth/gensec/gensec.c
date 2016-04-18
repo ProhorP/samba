@@ -22,11 +22,23 @@
 
 #include "includes.h"
 #include "system/network.h"
+#define TEVENT_DEPRECATED 1
 #include <tevent.h>
 #include "lib/tsocket/tsocket.h"
 #include "lib/util/tevent_ntstatus.h"
 #include "auth/gensec/gensec.h"
-#include "librpc/rpc/dcerpc.h"
+#include "auth/gensec/gensec_internal.h"
+#include "librpc/gen_ndr/dcerpc.h"
+
+_PRIVATE_ NTSTATUS gensec_may_reset_crypto(struct gensec_security *gensec_security,
+					   bool full_reset)
+{
+	if (!gensec_security->ops->may_reset_crypto) {
+		return NT_STATUS_OK;
+	}
+
+	return gensec_security->ops->may_reset_crypto(gensec_security, full_reset);
+}
 
 /*
   wrappers for the gensec function pointers
@@ -169,11 +181,12 @@ _PUBLIC_ NTSTATUS gensec_session_key(struct gensec_security *gensec_security,
 				     TALLOC_CTX *mem_ctx,
 				     DATA_BLOB *session_key)
 {
-	if (!gensec_security->ops->session_key) {
-		return NT_STATUS_NOT_IMPLEMENTED;
-	}
 	if (!gensec_have_feature(gensec_security, GENSEC_FEATURE_SESSION_KEY)) {
 		return NT_STATUS_NO_USER_SESSION_KEY;
+	}
+
+	if (!gensec_security->ops->session_key) {
+		return NT_STATUS_NOT_IMPLEMENTED;
 	}
 
 	return gensec_security->ops->session_key(gensec_security, mem_ctx, session_key);
@@ -214,27 +227,10 @@ _PUBLIC_ size_t gensec_max_update_size(struct gensec_security *gensec_security)
 	return gensec_security->max_update_size;
 }
 
-/**
- * Next state function for the GENSEC state machine
- *
- * @param gensec_security GENSEC State
- * @param out_mem_ctx The TALLOC_CTX for *out to be allocated on
- * @param in The request, as a DATA_BLOB
- * @param out The reply, as an talloc()ed DATA_BLOB, on *out_mem_ctx
- * @return Error, MORE_PROCESSING_REQUIRED if a reply is sent,
- *                or NT_STATUS_OK if the user is authenticated.
- */
-
-_PUBLIC_ NTSTATUS gensec_update(struct gensec_security *gensec_security, TALLOC_CTX *out_mem_ctx,
-				struct tevent_context *ev,
-				const DATA_BLOB in, DATA_BLOB *out)
+static NTSTATUS gensec_verify_dcerpc_auth_level(struct gensec_security *gensec_security)
 {
-	NTSTATUS status;
-
-	status = gensec_security->ops->update(gensec_security, out_mem_ctx,
-					      ev, in, out);
-	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+	if (gensec_security->dcerpc_auth_level == 0) {
+		return NT_STATUS_OK;
 	}
 
 	/*
@@ -275,16 +271,126 @@ _PUBLIC_ NTSTATUS gensec_update(struct gensec_security *gensec_security, TALLOC_
 	return NT_STATUS_OK;
 }
 
+_PUBLIC_ NTSTATUS gensec_update_ev(struct gensec_security *gensec_security,
+				   TALLOC_CTX *out_mem_ctx,
+				   struct tevent_context *ev,
+				   const DATA_BLOB in, DATA_BLOB *out)
+{
+	NTSTATUS status;
+	const struct gensec_security_ops *ops = gensec_security->ops;
+	TALLOC_CTX *frame = NULL;
+	struct tevent_req *subreq = NULL;
+	bool ok;
+
+	if (ops->update_send == NULL) {
+
+		if (ev == NULL) {
+			frame = talloc_stackframe();
+
+			ev = samba_tevent_context_init(frame);
+			if (ev == NULL) {
+				status = NT_STATUS_NO_MEMORY;
+				goto fail;
+			}
+
+			/*
+			 * TODO: remove this hack once the backends
+			 * are fixed.
+			 */
+			tevent_loop_allow_nesting(ev);
+		}
+
+		status = ops->update(gensec_security, out_mem_ctx,
+				     ev, in, out);
+		TALLOC_FREE(frame);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		/*
+		 * Because callers using the
+		 * gensec_start_mech_by_auth_type() never call
+		 * gensec_want_feature(), it isn't sensible for them
+		 * to have to call gensec_have_feature() manually, and
+		 * these are not points of negotiation, but are
+		 * asserted by the client
+		 */
+		status = gensec_verify_dcerpc_auth_level(gensec_security);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		return NT_STATUS_OK;
+	}
+
+	frame = talloc_stackframe();
+
+	if (ev == NULL) {
+		ev = samba_tevent_context_init(frame);
+		if (ev == NULL) {
+			status = NT_STATUS_NO_MEMORY;
+			goto fail;
+		}
+
+		/*
+		 * TODO: remove this hack once the backends
+		 * are fixed.
+		 */
+		tevent_loop_allow_nesting(ev);
+	}
+
+	subreq = ops->update_send(frame, ev, gensec_security, in);
+	if (subreq == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto fail;
+	}
+	ok = tevent_req_poll_ntstatus(subreq, ev, &status);
+	if (!ok) {
+		goto fail;
+	}
+	status = ops->update_recv(subreq, out_mem_ctx, out);
+ fail:
+	TALLOC_FREE(frame);
+	return status;
+}
+
+/**
+ * Next state function for the GENSEC state machine
+ *
+ * @param gensec_security GENSEC State
+ * @param out_mem_ctx The TALLOC_CTX for *out to be allocated on
+ * @param in The request, as a DATA_BLOB
+ * @param out The reply, as an talloc()ed DATA_BLOB, on *out_mem_ctx
+ * @return Error, MORE_PROCESSING_REQUIRED if a reply is sent,
+ *                or NT_STATUS_OK if the user is authenticated.
+ */
+
+_PUBLIC_ NTSTATUS gensec_update(struct gensec_security *gensec_security,
+				TALLOC_CTX *out_mem_ctx,
+				const DATA_BLOB in, DATA_BLOB *out)
+{
+	return gensec_update_ev(gensec_security, out_mem_ctx, NULL, in, out);
+}
+
 struct gensec_update_state {
-	struct tevent_immediate *im;
+	const struct gensec_security_ops *ops;
+	struct tevent_req *subreq;
 	struct gensec_security *gensec_security;
-	DATA_BLOB in;
 	DATA_BLOB out;
+
+	/*
+	 * only for sync backends, we should remove this
+	 * once all backends are async.
+	 */
+	struct tevent_immediate *im;
+	DATA_BLOB in;
 };
 
 static void gensec_update_async_trigger(struct tevent_context *ctx,
 					struct tevent_immediate *im,
 					void *private_data);
+static void gensec_update_subreq_done(struct tevent_req *subreq);
+
 /**
  * Next state function for the GENSEC state machine async version
  *
@@ -310,17 +416,31 @@ _PUBLIC_ struct tevent_req *gensec_update_send(TALLOC_CTX *mem_ctx,
 		return NULL;
 	}
 
-	state->gensec_security		= gensec_security;
-	state->in			= in;
-	state->out			= data_blob(NULL, 0);
-	state->im			= tevent_create_immediate(state);
-	if (tevent_req_nomem(state->im, req)) {
+	state->ops = gensec_security->ops;
+	state->gensec_security = gensec_security;
+
+	if (state->ops->update_send == NULL) {
+		state->in = in;
+		state->im = tevent_create_immediate(state);
+		if (tevent_req_nomem(state->im, req)) {
+			return tevent_req_post(req, ev);
+		}
+
+		tevent_schedule_immediate(state->im, ev,
+					  gensec_update_async_trigger,
+					  req);
+
+		return req;
+	}
+
+	state->subreq = state->ops->update_send(state, ev, gensec_security, in);
+	if (tevent_req_nomem(state->subreq, req)) {
 		return tevent_req_post(req, ev);
 	}
 
-	tevent_schedule_immediate(state->im, ev,
-				  gensec_update_async_trigger,
-				  req);
+	tevent_req_set_callback(state->subreq,
+				gensec_update_subreq_done,
+				req);
 
 	return req;
 }
@@ -335,8 +455,42 @@ static void gensec_update_async_trigger(struct tevent_context *ctx,
 		tevent_req_data(req, struct gensec_update_state);
 	NTSTATUS status;
 
-	status = gensec_update(state->gensec_security, state, ctx,
-			       state->in, &state->out);
+	status = state->ops->update(state->gensec_security, state, ctx,
+				    state->in, &state->out);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	tevent_req_done(req);
+}
+
+static void gensec_update_subreq_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req =
+		tevent_req_callback_data(subreq,
+		struct tevent_req);
+	struct gensec_update_state *state =
+		tevent_req_data(req,
+		struct gensec_update_state);
+	NTSTATUS status;
+
+	state->subreq = NULL;
+
+	status = state->ops->update_recv(subreq, state, &state->out);
+	TALLOC_FREE(subreq);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	/*
+	 * Because callers using the
+	 * gensec_start_mech_by_authtype() never call
+	 * gensec_want_feature(), it isn't sensible for them
+	 * to have to call gensec_have_feature() manually, and
+	 * these are not points of negotiation, but are
+	 * asserted by the client
+	 */
+	status = gensec_verify_dcerpc_auth_level(state->gensec_security);
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
@@ -400,7 +554,7 @@ _PUBLIC_ void gensec_want_feature(struct gensec_security *gensec_security,
 _PUBLIC_ bool gensec_have_feature(struct gensec_security *gensec_security,
 			 uint32_t feature)
 {
-	if (!gensec_security->ops->have_feature) {
+	if (!gensec_security->ops || !gensec_security->ops->have_feature) {
 		return false;
 	}
 

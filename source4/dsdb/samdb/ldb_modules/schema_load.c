@@ -29,8 +29,8 @@
 #include "librpc/gen_ndr/ndr_drsuapi.h"
 #include "librpc/gen_ndr/ndr_drsblobs.h"
 #include "param/param.h"
+#include <tdb.h>
 #include "lib/tdb_wrap/tdb_wrap.h"
-#include "lib/tdb_compat/tdb_compat.h"
 #include "dsdb/samdb/ldb_modules/util.h"
 
 #include "system/filesys.h"
@@ -94,8 +94,8 @@ static int schema_metadata_open(struct ldb_module *module)
 				       struct loadparm_context);
 
 	data->metadata = tdb_wrap_open(data, filename, 10,
-					      TDB_DEFAULT, open_flags, 0660,
-					      lp_ctx);
+				       lpcfg_tdb_flags(lp_ctx, TDB_DEFAULT),
+				       open_flags, 0660);
 	if (data->metadata == NULL) {
 		talloc_free(tmp_ctx);
 		return LDB_ERR_OPERATIONS_ERROR;
@@ -130,7 +130,7 @@ static int schema_metadata_get_uint64(struct ldb_module *module,
 	tdb_key.dptr = (uint8_t *)discard_const_p(char, key);
 	tdb_key.dsize = strlen(key);
 
-	tdb_data = tdb_fetch_compat(tdb, tdb_key);
+	tdb_data = tdb_fetch(tdb, tdb_key);
 	if (!tdb_data.dptr) {
 		if (tdb_error(tdb) == TDB_ERR_NOEXIST) {
 			*value = default_value;
@@ -139,7 +139,7 @@ static int schema_metadata_get_uint64(struct ldb_module *module,
 		} else {
 			talloc_free(tmp_ctx);
 			return ldb_module_error(module, LDB_ERR_OPERATIONS_ERROR,
-						tdb_errorstr_compat(tdb));
+						tdb_errorstr(tdb));
 		}
 	}
 

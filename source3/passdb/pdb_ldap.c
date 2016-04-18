@@ -482,7 +482,7 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 			*workstations = NULL,
 			*munged_dial = NULL;
 	uint32_t 		user_rid;
-	uint8 		smblmpwd[LM_HASH_LEN],
+	uint8_t 	smblmpwd[LM_HASH_LEN],
 			smbntpwd[NT_HASH_LEN];
 	bool 		use_samba_attrs = True;
 	uint32_t 		acct_ctrl = 0;
@@ -490,7 +490,7 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 	uint16_t 		bad_password_count = 0,
 			logon_count = 0;
 	uint32_t hours_len;
-	uint8 		hours[MAX_HOURS_LEN];
+	uint8_t 	hours[MAX_HOURS_LEN];
 	char *temp = NULL;
 	struct login_cache cache_entry;
 	uint32_t 		pwHistLen;
@@ -844,7 +844,7 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 
 	pdb_get_account_policy(PDB_POLICY_PASSWORD_HISTORY, &pwHistLen);
 	if (pwHistLen > 0){
-		uint8 *pwhist = NULL;
+		uint8_t *pwhist = NULL;
 		int i;
 		char *history_string = talloc_array(ctx, char,
 						MAX_PW_HISTORY_LEN*64);
@@ -855,13 +855,12 @@ static bool init_sam_from_ldap(struct ldapsam_privates *ldap_state,
 
 		pwHistLen = MIN(pwHistLen, MAX_PW_HISTORY_LEN);
 
-		pwhist = talloc_array(ctx, uint8,
-				      pwHistLen * PW_HISTORY_ENTRY_LEN);
+		pwhist = talloc_zero_array(ctx, uint8_t,
+					   pwHistLen * PW_HISTORY_ENTRY_LEN);
 		if (pwhist == NULL) {
 			DEBUG(0, ("init_sam_from_ldap: talloc failed!\n"));
 			goto fn_exit;
 		}
-		memset(pwhist, '\0', pwHistLen * PW_HISTORY_ENTRY_LEN);
 
 		if (smbldap_get_single_attribute(
 				ldap_state->smbldap_state->ldap_struct,
@@ -1307,7 +1306,7 @@ static bool init_ldap_from_sam (struct ldapsam_privates *ldap_state,
 			} else {
 				int i;
 				uint32_t currHistLen = 0;
-				const uint8 *pwhist = pdb_get_pw_history(sampass, &currHistLen);
+				const uint8_t *pwhist = pdb_get_pw_history(sampass, &currHistLen);
 				if (pwhist != NULL) {
 					/* We can only store (1024-1/64 password history entries. */
 					pwHistLen = MIN(pwHistLen, ((1024-1)/64));
@@ -1340,7 +1339,7 @@ static bool init_ldap_from_sam (struct ldapsam_privates *ldap_state,
 	}
 
 	if (need_update(sampass, PDB_HOURS)) {
-		const uint8 *hours = pdb_get_hours(sampass);
+		const uint8_t *hours = pdb_get_hours(sampass);
 		if (hours) {
 			char hourstr[44];
 			pdb_sethexhours(hourstr, hours);
@@ -1975,7 +1974,7 @@ static NTSTATUS ldapsam_rename_sam_account(struct pdb_methods *my_methods,
 	oldname = pdb_get_username(old_acct);
 
 	/* rename the posix user */
-	rename_script = lp_renameuser_script(talloc_tos());
+	rename_script = lp_rename_user_script(talloc_tos());
 	if (rename_script == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -3018,6 +3017,7 @@ static NTSTATUS ldapsam_add_group_mapping_entry(struct pdb_methods *methods,
 	NTSTATUS result;
 
 	struct dom_sid sid;
+	struct unixid id;
 
 	int rc;
 
@@ -3083,7 +3083,10 @@ static NTSTATUS ldapsam_add_group_mapping_entry(struct pdb_methods *methods,
 		goto done;
 	}
 
-	if (pdb_gid_to_sid(map->gid, &sid)) {
+	id.id = map->gid;
+	id.type = ID_TYPE_GID;
+
+	if (pdb_id_to_sid(&id, &sid)) {
 		DEBUG(3, ("Gid %u is already mapped to SID %s, refusing to "
 			  "add\n", (unsigned int)map->gid, sid_string_dbg(&sid)));
 		result = NT_STATUS_GROUP_EXISTS;
@@ -4970,7 +4973,6 @@ static bool ldapsam_sid_to_id(struct pdb_methods *methods,
 
 		id->id = strtoul(gid_str, NULL, 10);
 		id->type = ID_TYPE_GID;
-		idmap_cache_set_sid2unixid(sid, id);
 		ret = True;
 		goto done;
 	}
@@ -4987,7 +4989,6 @@ static bool ldapsam_sid_to_id(struct pdb_methods *methods,
 
 	id->id = strtoul(value, NULL, 10);
 	id->type = ID_TYPE_UID;
-	idmap_cache_set_sid2unixid(sid, id);
 
 	ret = True;
  done:
@@ -5013,7 +5014,6 @@ static bool ldapsam_uid_to_sid(struct pdb_methods *methods, uid_t uid,
 	struct dom_sid user_sid;
 	int rc;
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
-	struct unixid id;
 
 	filter = talloc_asprintf(tmp_ctx,
 				 "(&(uidNumber=%u)"
@@ -5058,11 +5058,6 @@ static bool ldapsam_uid_to_sid(struct pdb_methods *methods, uid_t uid,
 
 	sid_copy(sid, &user_sid);
 
-	id.id = uid;
-	id.type = ID_TYPE_UID;
-
-	idmap_cache_set_sid2unixid(sid, &id);
-
 	ret = true;
 
  done:
@@ -5088,7 +5083,6 @@ static bool ldapsam_gid_to_sid(struct pdb_methods *methods, gid_t gid,
 	struct dom_sid group_sid;
 	int rc;
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
-	struct unixid id;
 
 	filter = talloc_asprintf(tmp_ctx,
 				 "(&(gidNumber=%u)"
@@ -5131,16 +5125,26 @@ static bool ldapsam_gid_to_sid(struct pdb_methods *methods, gid_t gid,
 
 	sid_copy(sid, &group_sid);
 
-	id.id = gid;
-	id.type = ID_TYPE_GID;
-
-	idmap_cache_set_sid2unixid(sid, &id);
-
 	ret = true;
 
  done:
 	TALLOC_FREE(tmp_ctx);
 	return ret;
+}
+
+static bool ldapsam_id_to_sid(struct pdb_methods *methods, struct unixid *id,
+				   struct dom_sid *sid)
+{
+	switch (id->type) {
+	case ID_TYPE_UID:
+		return ldapsam_uid_to_sid(methods, id->id, sid);
+
+	case ID_TYPE_GID:
+		return ldapsam_gid_to_sid(methods, id->id, sid);
+
+	default:
+		return false;
+	}
 }
 
 
@@ -5168,6 +5172,7 @@ static NTSTATUS ldapsam_create_user(struct pdb_methods *my_methods,
 	uint32_t num_result;
 	bool is_machine = False;
 	bool add_posix = False;
+	bool init_okay = False;
 	LDAPMod **mods = NULL;
 	struct samu *user;
 	char *filter;
@@ -5285,7 +5290,10 @@ static NTSTATUS ldapsam_create_user(struct pdb_methods *my_methods,
 		return NT_STATUS_UNSUCCESSFUL;
 	}
 
-	if (!init_ldap_from_sam(ldap_state, entry, &mods, user, pdb_element_is_set_or_changed)) {
+	init_okay = init_ldap_from_sam(ldap_state, entry, &mods, user, pdb_element_is_set_or_changed);
+	smbldap_talloc_autofree_ldapmod(tmp_ctx, mods);
+
+	if (!init_okay) {
 		DEBUG(1,("ldapsam_create_user: Unable to fill user structs\n"));
 		return NT_STATUS_UNSUCCESSFUL;
 	}
@@ -5371,9 +5379,7 @@ static NTSTATUS ldapsam_create_user(struct pdb_methods *my_methods,
 		smbldap_set_mod(&mods, LDAP_MOD_ADD, "loginShell", shell);
 	}
 
-	smbldap_talloc_autofree_ldapmod(tmp_ctx, mods);
-
-	if (add_posix) {	
+	if (add_posix) {
 		rc = smbldap_add(ldap_state->smbldap_state, dn, mods);
 	} else {
 		rc = smbldap_modify(ldap_state->smbldap_state, dn, mods);
@@ -6500,8 +6506,7 @@ NTSTATUS pdb_ldapsam_init_common(struct pdb_methods **pdb_method,
 			ldapsam_enum_group_memberships;
 		(*pdb_method)->lookup_rids = ldapsam_lookup_rids;
 		(*pdb_method)->sid_to_id = ldapsam_sid_to_id;
-		(*pdb_method)->uid_to_sid = ldapsam_uid_to_sid;
-		(*pdb_method)->gid_to_sid = ldapsam_gid_to_sid;
+		(*pdb_method)->id_to_sid = ldapsam_id_to_sid;
 
 		if (lp_parm_bool(-1, "ldapsam", "editposix", False)) {
 			(*pdb_method)->create_user = ldapsam_create_user;

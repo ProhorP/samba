@@ -1,7 +1,6 @@
 <samba:parameter name="rpc big endian"
                  context="G"
-				 type="bool"
-                 advanced="1" developer="1"
+				 type="boolean"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>Setting this option will force the RPC client and server to
@@ -12,5 +11,5 @@
 	<para>The behaviour is independent of the endianness of the host machine.</para>
 </description>
 
-<value type="default">False</value>
+<value type="default">no</value>
 </samba:parameter>

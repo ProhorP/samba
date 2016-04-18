@@ -86,12 +86,6 @@ def vcs_dir_contents(path):
             env = dict(os.environ)
             env["GIT_DIR"] = os.path.join(repo, ".git")
             break
-        elif os.path.isdir(os.path.join(repo, ".bzr")):
-            ls_files_cmd = [ 'bzr', 'ls', '--recursive', '--versioned',
-                             os_path_relpath(path, repo)]
-            cwd = repo
-            env = None
-            break
         repo = os.path.dirname(repo)
     if repo == "/":
         raise Exception("unsupported or no vcs for %s" % path)
@@ -127,11 +121,14 @@ def dist(appname='', version=''):
             add_tarfile(tar, fname, abspath, srcsubdir)
 
 
-    def list_directory_files(abspath):
+    def list_directory_files(path):
+        curdir = os.getcwd()
+        os.chdir(srcdir)
         out_files = []
-        for root, dirs, files in os.walk(abspath):
+        for root, dirs, files in os.walk(path):
             for f in files:
                 out_files.append(os.path.join(root, f))
+        os.chdir(curdir)
         return out_files
 
 

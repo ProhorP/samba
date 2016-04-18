@@ -86,21 +86,21 @@ struct printer_handle {
 	struct printer_handle *prev, *next;
 	bool document_started;
 	bool page_started;
-	uint32 jobid; /* jobid in printing backend */
+	uint32_t jobid; /* jobid in printing backend */
 	int printer_type;
 	const char *servername;
 	fstring sharename;
-	uint32 type;
-	uint32 access_granted;
+	uint32_t type;
+	uint32_t access_granted;
 	struct {
-		uint32 flags;
-		uint32 options;
+		uint32_t flags;
+		uint32_t options;
 		fstring localmachine;
-		uint32 printerlocal;
+		uint32_t printerlocal;
 		struct spoolss_NotifyOption *option;
 		struct policy_handle cli_hnd;
 		struct notify_back_channel *cli_chan;
-		uint32 change;
+		uint32_t change;
 		/* are we in a FindNextPrinterChangeNotify() call? */
 		bool fnpcn;
 		struct messaging_context *msg_ctx;
@@ -138,6 +138,7 @@ struct notify_back_channel {
 
 	/* print notify back-channel pipe handle*/
 	struct rpc_pipe_client *cli_pipe;
+	struct cli_state *cli;
 	uint32_t active_connections;
 };
 
@@ -276,7 +277,7 @@ static void srv_spoolss_replycloseprinter(int snum,
 	/* if it's the last connection, deconnect the IPC$ share */
 	if (prn_hnd->notify.cli_chan->active_connections == 1) {
 
-		cli_shutdown(rpc_pipe_np_smb_conn(prn_hnd->notify.cli_chan->cli_pipe));
+		cli_shutdown(prn_hnd->notify.cli_chan->cli);
 		DLIST_REMOVE(back_channels, prn_hnd->notify.cli_chan);
 		TALLOC_FREE(prn_hnd->notify.cli_chan);
 
@@ -374,7 +375,7 @@ static WERROR delete_printer_hook(TALLOC_CTX *ctx, struct security_token *token,
 				  const char *sharename,
 				  struct messaging_context *msg_ctx)
 {
-	char *cmd = lp_deleteprinter_cmd(talloc_tos());
+	char *cmd = lp_deleteprinter_command(talloc_tos());
 	char *command = NULL;
 	int ret;
 	bool is_print_op = false;
@@ -621,25 +622,26 @@ static WERROR set_printer_hnd_name(TALLOC_CTX *mem_ctx,
 		found = true;
 	}
 
+	cache_key = talloc_asprintf(talloc_tos(), "PRINTERNAME/%s", aprinter);
+	if (cache_key == NULL) {
+		return WERR_NOMEM;
+	}
+
 	/*
 	 * With hundreds of printers, the "for" loop iterating all
 	 * shares can be quite expensive, as it is done on every
 	 * OpenPrinter. The loop maps "aprinter" to "sname", the
 	 * result of which we cache in gencache.
 	 */
-
-	cache_key = talloc_asprintf(talloc_tos(), "PRINTERNAME/%s",
-				    aprinter);
-	if ((cache_key != NULL) && gencache_get(cache_key, &tmp, NULL)) {
-
+	if (gencache_get(cache_key, talloc_tos(), &tmp, NULL)) {
 		found = (strcmp(tmp, printer_not_found) != 0);
 		if (!found) {
 			DEBUG(4, ("Printer %s not found\n", aprinter));
-			SAFE_FREE(tmp);
+			TALLOC_FREE(tmp);
 			return WERR_INVALID_PRINTER_NAME;
 		}
 		fstrcpy(sname, tmp);
-		SAFE_FREE(tmp);
+		TALLOC_FREE(tmp);
 	}
 
 	/* Search all sharenames first as this is easier than pulling
@@ -651,7 +653,7 @@ static WERROR set_printer_hnd_name(TALLOC_CTX *mem_ctx,
 		const char *printer = lp_const_servicename(snum);
 
 		/* no point going on if this is not a printer */
-		if (!(lp_snum_ok(snum) && lp_print_ok(snum))) {
+		if (!(lp_snum_ok(snum) && lp_printable(snum))) {
 			continue;
 		}
 
@@ -700,20 +702,16 @@ static WERROR set_printer_hnd_name(TALLOC_CTX *mem_ctx,
 		TALLOC_FREE(info2);
 	}
 
-	if ( !found ) {
-		if (cache_key != NULL) {
-			gencache_set(cache_key, printer_not_found,
-				     time(NULL)+300);
-			TALLOC_FREE(cache_key);
-		}
+	if (!found) {
+		gencache_set(cache_key, printer_not_found,
+			     time_mono(NULL) + 300);
+		TALLOC_FREE(cache_key);
 		DEBUGADD(4,("Printer not found\n"));
 		return WERR_INVALID_PRINTER_NAME;
 	}
 
-	if (cache_key != NULL) {
-		gencache_set(cache_key, sname, time(NULL)+300);
-		TALLOC_FREE(cache_key);
-	}
+	gencache_set(cache_key, sname, time_mono(NULL) + 300);
+	TALLOC_FREE(cache_key);
 
 	DEBUGADD(4,("set_printer_hnd_name: Printer found: %s -> %s\n", aprinter, sname));
 
@@ -843,14 +841,6 @@ static bool is_monitoring_event(struct printer_handle *p, uint16_t notify_type,
 
 #define SETUP_SPOOLSS_NOTIFY_DATA_DEVMODE(_data, _devmode) \
 	_data->data.devmode.devmode = _devmode;
-
-#define SETUP_SPOOLSS_NOTIFY_DATA_SECDESC(_data, _sd) \
-	_data->data.sd.sd = dup_sec_desc(mem_ctx, _sd); \
-	if (!_data->data.sd.sd) { \
-		_data->data.sd.sd_size = 0; \
-	} \
-	_data->data.sd.sd_size = \
-		ndr_size_security_descriptor(_data->data.sd.sd, 0);
 
 static void init_systemtime_buffer(TALLOC_CTX *mem_ctx,
 				   struct tm *t,
@@ -1546,7 +1536,7 @@ void do_drv_upgrade_printer(struct messaging_context *msg,
 	/* Iterate the printer list */
 
 	for (snum = 0; snum < n_services; snum++) {
-		if (!lp_snum_ok(snum) || !lp_print_ok(snum)) {
+		if (!lp_snum_ok(snum) || !lp_printable(snum)) {
 			continue;
 		}
 
@@ -1813,7 +1803,7 @@ WERROR _spoolss_OpenPrinterEx(struct pipes_struct *p,
 
 		if ( r->in.access_mask & SERVER_ACCESS_ADMINISTER )
 		{
-			if (!lp_ms_add_printer_wizard()) {
+			if (!lp_show_add_printer_wizard()) {
 				close_printer_handle(p, r->out.handle);
 				ZERO_STRUCTP(r->out.handle);
 				return WERR_ACCESS_DENIED;
@@ -1897,7 +1887,7 @@ WERROR _spoolss_OpenPrinterEx(struct pipes_struct *p,
 			rhost = raddr;
 		}
 
-		if (!allow_access(lp_hostsdeny(snum), lp_hostsallow(snum),
+		if (!allow_access(lp_hosts_deny(snum), lp_hosts_allow(snum),
 				  rhost, raddr)) {
 			DEBUG(3, ("access DENIED (hosts allow/deny) for printer open\n"));
 			ZERO_STRUCTP(r->out.handle);
@@ -1906,10 +1896,10 @@ WERROR _spoolss_OpenPrinterEx(struct pipes_struct *p,
 
 		if (!user_ok_token(uidtoname(p->session_info->unix_token->uid), NULL,
 				   p->session_info->security_token, snum) ||
-		    !print_access_check(p->session_info,
-					p->msg_ctx,
-					snum,
-					r->in.access_mask)) {
+		    !W_ERROR_IS_OK(print_access_check(p->session_info,
+						      p->msg_ctx,
+						      snum,
+						      r->in.access_mask))) {
 			DEBUG(3, ("access DENIED for printer open\n"));
 			close_printer_handle(p, r->out.handle);
 			ZERO_STRUCTP(r->out.handle);
@@ -2450,11 +2440,10 @@ WERROR _spoolss_GetPrinterData(struct pipes_struct *p,
  Connect to the client machine.
 **********************************************************/
 
-static bool spoolss_connect_to_client(struct rpc_pipe_client **pp_pipe,
-			struct sockaddr_storage *client_ss, const char *remote_machine)
+static bool spoolss_connect_to_client(struct rpc_pipe_client **pp_pipe, struct cli_state **pp_cli,
+				      struct sockaddr_storage *client_ss, const char *remote_machine)
 {
 	NTSTATUS ret;
-	struct cli_state *the_cli;
 	struct sockaddr_storage rm_addr;
 	char addr[INET6_ADDRSTRLEN];
 
@@ -2480,7 +2469,7 @@ static bool spoolss_connect_to_client(struct rpc_pipe_client **pp_pipe,
 	}
 
 	/* setup the connection */
-	ret = cli_full_connection( &the_cli, lp_netbios_name(), remote_machine,
+	ret = cli_full_connection( pp_cli, lp_netbios_name(), remote_machine,
 		&rm_addr, 0, "IPC$", "IPC",
 		"", /* username */
 		"", /* domain */
@@ -2493,9 +2482,9 @@ static bool spoolss_connect_to_client(struct rpc_pipe_client **pp_pipe,
 		return false;
 	}
 
-	if ( smbXcli_conn_protocol(the_cli->conn) != PROTOCOL_NT1 ) {
+	if ( smbXcli_conn_protocol((*pp_cli)->conn) != PROTOCOL_NT1 ) {
 		DEBUG(0,("spoolss_connect_to_client: machine %s didn't negotiate NT protocol.\n", remote_machine));
-		cli_shutdown(the_cli);
+		cli_shutdown(*pp_cli);
 		return false;
 	}
 
@@ -2504,11 +2493,11 @@ static bool spoolss_connect_to_client(struct rpc_pipe_client **pp_pipe,
 	 * Now start the NT Domain stuff :-).
 	 */
 
-	ret = cli_rpc_pipe_open_noauth(the_cli, &ndr_table_spoolss.syntax_id, pp_pipe);
+	ret = cli_rpc_pipe_open_noauth(*pp_cli, &ndr_table_spoolss, pp_pipe);
 	if (!NT_STATUS_IS_OK(ret)) {
 		DEBUG(2,("spoolss_connect_to_client: unable to open the spoolss pipe on machine %s. Error was : %s.\n",
 			remote_machine, nt_errstr(ret)));
-		cli_shutdown(the_cli);
+		cli_shutdown(*pp_cli);
 		return false;
 	}
 
@@ -2554,7 +2543,7 @@ static bool srv_spoolss_replyopenprinter(int snum, const char *printer,
 		}
 		chan->client_address = *client_ss;
 
-		if (!spoolss_connect_to_client(&chan->cli_pipe, client_ss, unix_printer)) {
+		if (!spoolss_connect_to_client(&chan->cli_pipe, &chan->cli, client_ss, unix_printer)) {
 			TALLOC_FREE(chan);
 			return false;
 		}
@@ -2952,7 +2941,14 @@ static void spoolss_notify_security_desc(struct messaging_context *msg_ctx,
 					 struct spoolss_PrinterInfo2 *pinfo2,
 					 TALLOC_CTX *mem_ctx)
 {
-	SETUP_SPOOLSS_NOTIFY_DATA_SECDESC(data, pinfo2->secdesc);
+	if (pinfo2->secdesc == NULL) {
+		data->data.sd.sd = NULL;
+	} else {
+		data->data.sd.sd = security_descriptor_copy(mem_ctx,
+							    pinfo2->secdesc);
+	}
+	data->data.sd.sd_size = ndr_size_security_descriptor(data->data.sd.sd,
+							     0);
 }
 
 /*******************************************************************
@@ -3553,7 +3549,7 @@ static WERROR printserver_notify_info(struct pipes_struct *p,
 		for (snum = 0; snum < n_services; snum++) {
 			if (!lp_browseable(snum) ||
 			    !lp_snum_ok(snum) ||
-			    !lp_print_ok(snum)) {
+			    !lp_printable(snum)) {
 				continue; /* skip */
 			}
 
@@ -4086,7 +4082,10 @@ static WERROR construct_printer_info2(TALLOC_CTX *mem_ctx,
 		/* don't use talloc_steal() here unless you do a deep steal of all
 		   the SEC_DESC members */
 
-		r->secdesc	= dup_sec_desc(mem_ctx, info2->secdesc);
+		r->secdesc = security_descriptor_copy(mem_ctx, info2->secdesc);
+		if (r->secdesc == NULL) {
+			return WERR_NOMEM;
+		}
 	}
 
 	return WERR_OK;
@@ -4109,8 +4108,10 @@ static WERROR construct_printer_info3(TALLOC_CTX *mem_ctx,
 		/* don't use talloc_steal() here unless you do a deep steal of all
 		   the SEC_DESC members */
 
-		r->secdesc = dup_sec_desc(mem_ctx, info2->secdesc);
-		W_ERROR_HAVE_NO_MEMORY(r->secdesc);
+		r->secdesc = security_descriptor_copy(mem_ctx, info2->secdesc);
+		if (r->secdesc == NULL) {
+			return WERR_NOMEM;
+		}
 	}
 
 	return WERR_OK;
@@ -4229,6 +4230,7 @@ static WERROR construct_printer_info7(TALLOC_CTX *mem_ctx,
 	if (is_printer_published(tmp_ctx, session_info, msg_ctx,
 				 servername, printer, NULL)) {
 		struct GUID guid;
+		struct GUID_txt_buf guid_txt;
 		werr = nt_printer_guid_get(tmp_ctx, session_info, msg_ctx,
 					   printer, &guid);
 		if (!W_ERROR_IS_OK(werr)) {
@@ -4252,7 +4254,8 @@ static WERROR construct_printer_info7(TALLOC_CTX *mem_ctx,
 					  printer));
 			}
 		}
-		r->guid = talloc_strdup_upper(mem_ctx, GUID_string2(mem_ctx, &guid));
+		r->guid = talloc_strdup_upper(mem_ctx,
+					     GUID_buf_string(&guid, &guid_txt));
 		r->action = DSPRINT_PUBLISH;
 	} else {
 		r->guid = talloc_strdup(mem_ctx, "");
@@ -6219,7 +6222,7 @@ static bool check_printer_ok(TALLOC_CTX *mem_ctx,
 
 static WERROR add_port_hook(TALLOC_CTX *ctx, struct security_token *token, const char *portname, const char *uri)
 {
-	char *cmd = lp_addport_cmd(talloc_tos());
+	char *cmd = lp_addport_command(talloc_tos());
 	char *command = NULL;
 	int ret;
 	bool is_print_op = false;
@@ -6280,7 +6283,7 @@ static bool add_printer_hook(TALLOC_CTX *ctx, struct security_token *token,
 			     const char *remote_machine,
 			     struct messaging_context *msg_ctx)
 {
-	char *cmd = lp_addprinter_cmd(talloc_tos());
+	char *cmd = lp_addprinter_command(talloc_tos());
 	char **qlines;
 	char *command = NULL;
 	int numlines;
@@ -6841,7 +6844,7 @@ static WERROR update_printer(struct pipes_struct *p,
 	/* Call addprinter hook */
 	/* Check changes to see if this is really needed */
 
-	if (*lp_addprinter_cmd(talloc_tos()) &&
+	if (*lp_addprinter_command(talloc_tos()) &&
 			(!strequal(printer->drivername, old_printer->drivername) ||
 			 !strequal(printer->comment, old_printer->comment) ||
 			 !strequal(printer->portname, old_printer->portname) ||
@@ -7547,7 +7550,7 @@ WERROR _spoolss_SetJob(struct pipes_struct *p,
 		errcode = print_job_resume(session_info, p->msg_ctx,
 					   snum, r->in.job_id);
 		break;
-	case 0:
+	case SPOOLSS_JOB_CONTROL_NOOP:
 		errcode = WERR_OK;
 		break;
 	default:
@@ -7954,7 +7957,7 @@ static WERROR fill_port_2(TALLOC_CTX *mem_ctx,
 
 static WERROR enumports_hook(TALLOC_CTX *ctx, int *count, char ***lines)
 {
-	char *cmd = lp_enumports_cmd(talloc_tos());
+	char *cmd = lp_enumports_command(talloc_tos());
 	char **qlines = NULL;
 	char *command = NULL;
 	int numlines;
@@ -8218,7 +8221,7 @@ static WERROR spoolss_addprinterex_level_2(struct pipes_struct *p,
 	/* FIXME!!!  smbd should check to see if the driver is installed before
 	   trying to add a printer like this  --jerry */
 
-	if (*lp_addprinter_cmd(talloc_tos()) ) {
+	if (*lp_addprinter_command(talloc_tos()) ) {
 		char *raddr;
 
 		raddr = tsocket_address_inet_addr_string(p->remote_address,
@@ -8244,10 +8247,10 @@ static WERROR spoolss_addprinterex_level_2(struct pipes_struct *p,
 	}
 
 	/* you must be a printer admin to add a new printer */
-	if (!print_access_check(p->session_info,
-				p->msg_ctx,
-				snum,
-				PRINTER_ACCESS_ADMINISTER)) {
+	if (!W_ERROR_IS_OK(print_access_check(p->session_info,
+					      p->msg_ctx,
+					      snum,
+					      PRINTER_ACCESS_ADMINISTER))) {
 		return WERR_ACCESS_DENIED;
 	}
 

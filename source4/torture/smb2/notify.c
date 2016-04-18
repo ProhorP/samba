@@ -483,6 +483,11 @@ static struct smb2_handle custom_smb2_create(struct smb2_tree *tree,
 	CHECK_STATUS(status, NT_STATUS_OK);
 	h1 = smb2->out.file.handle;
 done:
+	if (!ret) {
+		h1 = (struct smb2_handle) {
+			.data = { 0 , 0},
+		};
+	}
 	return h1;
 }
 
@@ -2091,56 +2096,6 @@ done:
 	return ret;
 }
 
-
-/*
-  create a secondary tree connect - used to test for a bug in Samba3 messaging
-  with change notify
-*/
-static struct smb2_tree *secondary_tcon(struct smb2_tree *tree,
-					struct torture_context *tctx)
-{
-	NTSTATUS status;
-	const char *share, *host;
-	struct smb2_tree *tree1;
-	union smb_tcon tcon;
-
-	share = torture_setting_string(tctx, "share", NULL);
-	host  = torture_setting_string(tctx, "host", NULL);
-
-	torture_comment(tctx,
-		"create a second tree context on the same session\n");
-	tree1 = smb2_tree_init(tree->session, tctx, false);
-	if (tree1 == NULL) {
-		torture_comment(tctx, "Out of memory\n");
-		return NULL;
-	}
-
-	ZERO_STRUCT(tcon.smb2);
-	tcon.generic.level = RAW_TCON_SMB2;
-	tcon.smb2.in.path = talloc_asprintf(tctx, "\\\\%s\\%s", host, share);
-	status = smb2_tree_connect(tree->session, &(tcon.smb2));
-	if (!NT_STATUS_IS_OK(status)) {
-		talloc_free(tree1);
-		torture_comment(tctx,"Failed to create secondary tree\n");
-		return NULL;
-	}
-
-	smb2cli_tcon_set_values(tree1->smbXcli,
-				tree1->session->smbXcli,
-				tcon.smb2.out.tid,
-				tcon.smb2.out.share_type,
-				tcon.smb2.out.flags,
-				tcon.smb2.out.capabilities,
-				tcon.smb2.out.access_mask);
-
-	torture_comment(tctx,"tid1=%d tid2=%d\n",
-			smb2cli_tcon_current_id(tree->smbXcli),
-			smb2cli_tcon_current_id(tree1->smbXcli));
-
-	return tree1;
-}
-
-
 /*
    very simple change notify test
 */
@@ -2225,7 +2180,15 @@ static bool torture_smb2_notify_tcon(struct torture_context *torture,
 	torture_comment(torture, "SIMPLE CHANGE NOTIFY OK\n");
 
 	torture_comment(torture, "TESTING WITH SECONDARY TCON\n");
-	tree1 = secondary_tcon(tree, torture);
+	if (!torture_smb2_tree_connect(torture, tree->session, tree, &tree1)) {
+		torture_warning(torture, "couldn't reconnect to share, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	torture_comment(torture, "tid1=%d tid2=%d\n",
+			smb2cli_tcon_current_id(tree->smbXcli),
+			smb2cli_tcon_current_id(tree1->smbXcli));
 
 	torture_comment(torture, "Testing notify mkdir\n");
 	req = smb2_notify_send(tree, &(notify.smb2));
@@ -2284,6 +2247,108 @@ done:
 	return ret;
 }
 
+static bool torture_smb2_notify_rmdir(struct torture_context *torture,
+				      struct smb2_tree *tree1,
+				      struct smb2_tree *tree2,
+				      bool initial_delete_on_close)
+{
+	bool ret = true;
+	NTSTATUS status;
+	union smb_notify notify = {};
+	union smb_setfileinfo sfinfo = {};
+	union smb_open io = {};
+	struct smb2_handle h = {};
+	struct smb2_request *req;
+
+	torture_comment(torture, "TESTING NOTIFY CANCEL FOR DELETED DIR\n");
+
+	smb2_deltree(tree1, BASEDIR);
+	smb2_util_rmdir(tree1, BASEDIR);
+
+	ZERO_STRUCT(io.smb2);
+	io.generic.level = RAW_OPEN_SMB2;
+	io.smb2.in.create_flags = 0;
+	io.smb2.in.desired_access = SEC_FILE_ALL;
+	io.smb2.in.create_options = NTCREATEX_OPTIONS_DIRECTORY;
+	io.smb2.in.file_attributes = FILE_ATTRIBUTE_NORMAL;
+	io.smb2.in.share_access =
+		NTCREATEX_SHARE_ACCESS_READ |
+		NTCREATEX_SHARE_ACCESS_WRITE |
+		NTCREATEX_SHARE_ACCESS_DELETE ;
+	io.smb2.in.alloc_size = 0;
+	io.smb2.in.create_disposition = NTCREATEX_DISP_CREATE;
+	io.smb2.in.impersonation_level = SMB2_IMPERSONATION_ANONYMOUS;
+	io.smb2.in.security_flags = 0;
+	io.smb2.in.fname = BASEDIR;
+
+	status = smb2_create(tree1, torture, &(io.smb2));
+	CHECK_STATUS(status, NT_STATUS_OK);
+	h = io.smb2.out.file.handle;
+
+	ZERO_STRUCT(notify.smb2);
+	notify.smb2.level = RAW_NOTIFY_SMB2;
+	notify.smb2.in.buffer_size = 1000;
+	notify.smb2.in.completion_filter = FILE_NOTIFY_CHANGE_NAME;
+	notify.smb2.in.file.handle = h;
+	notify.smb2.in.recursive = false;
+
+	io.smb2.in.desired_access |= SEC_STD_DELETE;
+	io.smb2.in.create_disposition = NTCREATEX_DISP_OPEN;
+	req = smb2_notify_send(tree1, &(notify.smb2));
+
+	if (initial_delete_on_close) {
+		status = smb2_util_rmdir(tree2, BASEDIR);
+		CHECK_STATUS(status, NT_STATUS_OK);
+	} else {
+		status = smb2_create(tree2, torture, &(io.smb2));
+		CHECK_STATUS(status, NT_STATUS_OK);
+
+		sfinfo.generic.level = RAW_SFILEINFO_DISPOSITION_INFORMATION;
+		sfinfo.generic.in.file.handle = io.smb2.out.file.handle;
+		sfinfo.disposition_info.in.delete_on_close = 1;
+		status = smb2_setinfo_file(tree2, &sfinfo);
+		CHECK_STATUS(status, NT_STATUS_OK);
+
+		smb2_util_close(tree2, io.smb2.out.file.handle);
+	}
+
+	status = smb2_notify_recv(req, torture, &(notify.smb2));
+	CHECK_STATUS(status, NT_STATUS_DELETE_PENDING);
+
+done:
+
+	smb2_util_close(tree1, h);
+	smb2_deltree(tree1, BASEDIR);
+
+	return ret;
+}
+
+static bool torture_smb2_notify_rmdir1(struct torture_context *torture,
+				       struct smb2_tree *tree)
+{
+	return torture_smb2_notify_rmdir(torture, tree, tree, false);
+}
+
+static bool torture_smb2_notify_rmdir2(struct torture_context *torture,
+				       struct smb2_tree *tree)
+{
+	return torture_smb2_notify_rmdir(torture, tree, tree, true);
+}
+
+static bool torture_smb2_notify_rmdir3(struct torture_context *torture,
+				       struct smb2_tree *tree1,
+				       struct smb2_tree *tree2)
+{
+	return torture_smb2_notify_rmdir(torture, tree1, tree2, false);
+}
+
+static bool torture_smb2_notify_rmdir4(struct torture_context *torture,
+				       struct smb2_tree *tree1,
+				       struct smb2_tree *tree2)
+{
+	return torture_smb2_notify_rmdir(torture, tree1, tree2, true);
+}
+
 /*
    basic testing of SMB2 change notify
 */
@@ -2309,6 +2374,14 @@ struct torture_suite *torture_smb2_notify_init(void)
 	torture_suite_add_1smb2_test(suite, "tcp", torture_smb2_notify_tcp_disconnect);
 	torture_suite_add_2smb2_test(suite, "rec", torture_smb2_notify_recursive);
 	torture_suite_add_1smb2_test(suite, "overflow", torture_smb2_notify_overflow);
+	torture_suite_add_1smb2_test(suite, "rmdir1",
+				     torture_smb2_notify_rmdir1);
+	torture_suite_add_1smb2_test(suite, "rmdir2",
+				     torture_smb2_notify_rmdir2);
+	torture_suite_add_2smb2_test(suite, "rmdir3",
+				     torture_smb2_notify_rmdir3);
+	torture_suite_add_2smb2_test(suite, "rmdir4",
+				     torture_smb2_notify_rmdir4);
 
 	suite->description = talloc_strdup(suite, "SMB2-NOTIFY tests");
 

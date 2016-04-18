@@ -50,34 +50,41 @@ static struct reg_private_data *rpd(struct smbconf_ctx *ctx)
 	return (struct reg_private_data *)(ctx->data);
 }
 
-/*
- * check whether a given value name is forbidden in registry (smbconf)
+/**
+ * Check whether a given parameter name is valid in the
+ * smbconf registry backend.
  */
-static bool smbconf_reg_valname_forbidden(const char *valname)
+bool smbconf_reg_parameter_is_valid(const char *param_name)
 {
 	/* hard code the list of forbidden names here for now */
-	const char *forbidden_valnames[] = {
+	const char *forbidden_names[] = {
+		"state directory",
 		"lock directory",
 		"lock dir",
 		"config backend",
 		"include",
-		"includes", /* this has a special meaning internally */
+		/*
+		 * "includes" has a special meaning internally.
+		 * It is currently not necessary to list it here since it is
+		 * not a valid parameter. But for clarity and safety, we keep
+		 * it for now.
+		 */
+		INCLUDES_VALNAME,
 		NULL
 	};
 	const char **forbidden = NULL;
 
-	for (forbidden = forbidden_valnames; *forbidden != NULL; forbidden++) {
-		if (strwicmp(valname, *forbidden) == 0) {
-			return true;
+	if (!lp_parameter_is_valid(param_name)) {
+		return false;
+	}
+
+	for (forbidden = forbidden_names; *forbidden != NULL; forbidden++) {
+		if (strwicmp(param_name, *forbidden) == 0) {
+			return false;
 		}
 	}
-	return false;
-}
 
-static bool smbconf_reg_valname_valid(const char *valname)
-{
-	return (!smbconf_reg_valname_forbidden(valname) &&
-		lp_parameter_is_valid(valname));
+	return true;
 }
 
 /**
@@ -86,7 +93,7 @@ static bool smbconf_reg_valname_valid(const char *valname)
 static sbcErr smbconf_reg_open_service_key(TALLOC_CTX *mem_ctx,
 					   struct smbconf_ctx *ctx,
 					   const char *servicename,
-					   uint32 desired_access,
+					   uint32_t desired_access,
 					   struct registry_key **key)
 {
 	WERROR werr;
@@ -174,24 +181,15 @@ static sbcErr smbconf_reg_set_value(struct registry_key *key,
 	const char *canon_valname;
 	const char *canon_valstr;
 
-	if (!lp_canonicalize_parameter_with_value(valname, valstr,
-						  &canon_valname,
-						  &canon_valstr))
-	{
-		if (canon_valname == NULL) {
-			DEBUG(5, ("invalid parameter '%s' given\n",
-				  valname));
-		} else {
-			DEBUG(5, ("invalid value '%s' given for "
-				  "parameter '%s'\n", valstr, valname));
-		}
+	if (!lp_parameter_is_valid(valname)) {
+		DEBUG(5, ("Invalid parameter '%s' given.\n", valname));
 		err = SBC_ERR_INVALID_PARAM;
 		goto done;
 	}
 
-	if (smbconf_reg_valname_forbidden(canon_valname)) {
+	if (!smbconf_reg_parameter_is_valid(valname)) {
 		DEBUG(5, ("Parameter '%s' not allowed in registry.\n",
-			  canon_valname));
+			  valname));
 		err = SBC_ERR_INVALID_PARAM;
 		goto done;
 	}
@@ -208,8 +206,22 @@ static sbcErr smbconf_reg_set_value(struct registry_key *key,
 	    lp_parameter_is_global(valname))
 	{
 		DEBUG(5, ("Global parameter '%s' not allowed in "
-			  "service definition ('%s').\n", canon_valname,
+			  "service definition ('%s').\n", valname,
 			  subkeyname));
+		err = SBC_ERR_INVALID_PARAM;
+		goto done;
+	}
+
+	if (!lp_canonicalize_parameter_with_value(valname, valstr,
+						  &canon_valname,
+						  &canon_valstr))
+	{
+		/*
+		 * We already know the parameter name is valid.
+		 * So the value must be invalid.
+		 */
+		DEBUG(5, ("invalid value '%s' given for parameter '%s'\n",
+			  valstr, valname));
 		err = SBC_ERR_INVALID_PARAM;
 		goto done;
 	}
@@ -326,7 +338,7 @@ static char *smbconf_format_registry_value(TALLOC_CTX *mem_ctx,
 		break;
 	}
 	case REG_MULTI_SZ: {
-		uint32 j;
+		uint32_t j;
 		const char **a = NULL;
 		if (!pull_reg_multi_sz(mem_ctx, &value->data, &a)) {
 			break;
@@ -456,7 +468,7 @@ static sbcErr smbconf_reg_get_values(TALLOC_CTX *mem_ctx,
 	{
 		char *valstring;
 
-		if (!smbconf_reg_valname_valid(valname)) {
+		if (!smbconf_reg_parameter_is_valid(valname)) {
 			continue;
 		}
 
@@ -516,29 +528,6 @@ static sbcErr smbconf_reg_get_values(TALLOC_CTX *mem_ctx,
 done:
 	talloc_free(tmp_ctx);
 	return err;
-}
-
-static bool smbconf_reg_key_has_values(struct registry_key *key)
-{
-	WERROR werr;
-	uint32_t num_subkeys;
-	uint32_t max_subkeylen;
-	uint32_t max_subkeysize;
-	uint32_t num_values;
-	uint32_t max_valnamelen;
-	uint32_t max_valbufsize;
-	uint32_t secdescsize;
-	NTTIME last_changed_time;
-
-	werr = reg_queryinfokey(key, &num_subkeys, &max_subkeylen,
-				&max_subkeysize, &num_values, &max_valnamelen,
-				&max_valbufsize, &secdescsize,
-				&last_changed_time);
-	if (!W_ERROR_IS_OK(werr)) {
-		return false;
-	}
-
-	return (num_values != 0);
 }
 
 /**
@@ -645,11 +634,10 @@ static int smbconf_reg_shutdown(struct smbconf_ctx *ctx)
 
 static bool smbconf_reg_requires_messaging(struct smbconf_ctx *ctx)
 {
-#ifdef CLUSTER_SUPPORT
 	if (lp_clustering() && lp_parm_bool(-1, "ctdb", "registry.tdb", true)) {
 		return true;
 	}
-#endif
+
 	return false;
 }
 
@@ -794,17 +782,6 @@ static sbcErr smbconf_reg_get_share_names(struct smbconf_ctx *ctx,
 	}
 
 	tmp_ctx = talloc_stackframe();
-
-	/* if there are values in the base key, return NULL as share name */
-
-	if (smbconf_reg_key_has_values(rpd(ctx)->base_key)) {
-		err = smbconf_add_string_to_array(tmp_ctx, &tmp_share_names,
-						   0, NULL);
-		if (!SBC_ERROR_IS_OK(err)) {
-			goto done;
-		}
-		added_count++;
-	}
 
 	/* make sure "global" is always listed first */
 	if (smbconf_share_exists(ctx, GLOBAL_NAME)) {
@@ -1008,7 +985,7 @@ static sbcErr smbconf_reg_get_parameter(struct smbconf_ctx *ctx,
 		goto done;
 	}
 
-	if (!smbconf_reg_valname_valid(param)) {
+	if (!smbconf_reg_parameter_is_valid(param)) {
 		err = SBC_ERR_INVALID_PARAM;
 		goto done;
 	}
@@ -1053,7 +1030,7 @@ static sbcErr smbconf_reg_delete_parameter(struct smbconf_ctx *ctx,
 		goto done;
 	}
 
-	if (!smbconf_reg_valname_valid(param)) {
+	if (!smbconf_reg_parameter_is_valid(param)) {
 		err = SBC_ERR_INVALID_PARAM;
 		goto done;
 	}

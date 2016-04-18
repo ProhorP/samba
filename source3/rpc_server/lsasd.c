@@ -116,7 +116,7 @@ static void lsasd_smb_conf_updated(struct messaging_context *msg,
 	ev_ctx = talloc_get_type_abort(private_data, struct tevent_context);
 
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	lsasd_reopen_logs(lsasd_child_id);
 	if (lsasd_child_id == 0) {
@@ -166,7 +166,7 @@ static void lsasd_sig_hup_handler(struct tevent_context *ev,
 {
 
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	lsasd_reopen_logs(lsasd_child_id);
 	pfh_daemon_config(DAEMON_NAME,
@@ -278,21 +278,21 @@ static bool lsasd_child_init(struct tevent_context *ev_ctx,
 
 	status = rpc_lsarpc_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsarpc rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register lsarpc rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_samr_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register samr rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register samr rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_netlogon_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register netlogon rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register netlogon rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
@@ -446,7 +446,7 @@ static void lsasd_handle_client(struct tevent_req *req)
 		  (int)(data->pf->pid)));
 
 	if (tsocket_address_is_inet(srv_addr, "ip")) {
-		DEBUG(3, ("Got a tcpip client connection from %s on inteface %s\n",
+		DEBUG(3, ("Got a tcpip client connection from %s on interface %s\n",
 			   tsocket_address_string(cli_addr, tmp_ctx),
 			   tsocket_address_string(srv_addr, tmp_ctx)));
 
@@ -604,7 +604,7 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	uint32_t i;
 	int fd = -1;
 	int rc;
-	bool ok = true;
+	bool ok = false;
 
 	tmp_ctx = talloc_stackframe();
 	if (tmp_ctx == NULL) {
@@ -613,7 +613,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	status = dcerpc_binding_vector_new(tmp_ctx, &v_orig);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
@@ -624,7 +623,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 					  listen_fd,
 					  listen_fd_size);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
@@ -634,7 +632,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 		if (rc == -1) {
 			DEBUG(0, ("Failed to listen on tcpip socket - %s\n",
 				  strerror(errno)));
-			ok = false;
 			goto done;
 		}
 	}
@@ -642,7 +639,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	/* LSARPC */
 	fd = create_named_pipe_socket("lsarpc");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -650,7 +646,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on lsarpc pipe - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -658,7 +653,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	fd = create_named_pipe_socket("lsass");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -666,7 +660,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on lsass pipe - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -674,7 +667,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	fd = create_dcerpc_ncalrpc_socket("lsarpc");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -682,7 +674,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on lsarpc ncalrpc - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -691,37 +682,32 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	v = dcerpc_binding_vector_dup(tmp_ctx, v_orig);
 	if (v == NULL) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_replace_iface(&ndr_table_lsarpc, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		return false;
+		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_np_default(&ndr_table_lsarpc, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_unix(&ndr_table_lsarpc, v, "lsarpc");
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = rpc_ep_register(ev_ctx, msg_ctx, &ndr_table_lsarpc, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	/* SAMR */
 	fd = create_named_pipe_socket("samr");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -729,7 +715,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on samr pipe - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -737,7 +722,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	fd = create_dcerpc_ncalrpc_socket("samr");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -745,7 +729,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on samr ncalrpc - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -754,37 +737,32 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	v = dcerpc_binding_vector_dup(tmp_ctx, v_orig);
 	if (v == NULL) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_replace_iface(&ndr_table_samr, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		return false;
+		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_np_default(&ndr_table_samr, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_unix(&ndr_table_lsarpc, v, "samr");
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = rpc_ep_register(ev_ctx, msg_ctx, &ndr_table_samr, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	/* NETLOGON */
 	fd = create_named_pipe_socket("netlogon");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -792,7 +770,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on samr pipe - %s\n",
 			  strerror(errno)));
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -800,7 +777,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	fd = create_dcerpc_ncalrpc_socket("netlogon");
 	if (fd < 0) {
-		ok = false;
 		goto done;
 	}
 
@@ -808,8 +784,6 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 	if (rc == -1) {
 		DEBUG(0, ("Failed to listen on netlogon ncalrpc - %s\n",
 			  strerror(errno)));
-		close(fd);
-		ok = false;
 		goto done;
 	}
 	listen_fd[*listen_fd_size] = fd;
@@ -818,33 +792,30 @@ static bool lsasd_create_sockets(struct tevent_context *ev_ctx,
 
 	v = dcerpc_binding_vector_dup(tmp_ctx, v_orig);
 	if (v == NULL) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_replace_iface(&ndr_table_netlogon, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		return false;
+		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_np_default(&ndr_table_netlogon, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = dcerpc_binding_vector_add_unix(&ndr_table_lsarpc, v, "netlogon");
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
 	status = rpc_ep_register(ev_ctx, msg_ctx, &ndr_table_netlogon, v);
 	if (!NT_STATUS_IS_OK(status)) {
-		ok = false;
 		goto done;
 	}
 
+	ok = true;
 done:
 	if (fd != -1) {
 		close(fd);
@@ -890,9 +861,7 @@ void start_lsasd(struct tevent_context *ev_ctx,
 		return;
 	}
 
-	status = reinit_after_fork(msg_ctx,
-				   ev_ctx,
-				   true);
+	status = smbd_reinit_after_fork(msg_ctx, ev_ctx, true);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
@@ -948,21 +917,21 @@ void start_lsasd(struct tevent_context *ev_ctx,
 
 	status = rpc_lsarpc_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsarpc rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register lsarpc rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_samr_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register samr rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register samr rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_netlogon_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register netlogon rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register netlogon rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

@@ -592,6 +592,20 @@ class LdbMsgTests(TestCase):
         err_rec = {"a1": ["a1-val1", "a1-val1"]}
         self.assertRaises(TypeError, ldb.Message.from_dict, l, err_rec, ldb.FLAG_MOD_REPLACE)
 
+    def test_copy_add_message_element(self):
+        m = ldb.Message()
+        m["1"] = ldb.MessageElement(["val 111"], ldb.FLAG_MOD_ADD, "1")
+        m["2"] = ldb.MessageElement(["val 222"], ldb.FLAG_MOD_ADD, "2")
+        mto = ldb.Message()
+        mto["1"] = m["1"]
+        mto["2"] = m["2"]
+        self.assertEqual(mto["1"], m["1"])
+        self.assertEqual(mto["2"], m["2"])
+        mto = ldb.Message()
+        mto.add(m["1"])
+        mto.add(m["2"])
+        self.assertEqual(mto["1"], m["1"])
+        self.assertEqual(mto["2"], m["2"])
 
 
 class MessageElementTests(TestCase):
@@ -760,6 +774,48 @@ class LdbResultTests(TestCase):
             if str(l.dn) == "OU=OU10,DC=SAMBA,DC=ORG":
                 found = True
         self.assertTrue(found)
+
+
+class BadTypeTests(TestCase):
+    def test_control(self):
+        l = ldb.Ldb()
+        self.assertRaises(TypeError, ldb.Control, '<bad type>', 'relax:1')
+        self.assertRaises(TypeError, ldb.Control, ldb, 1234)
+
+    def test_modify(self):
+        l = ldb.Ldb()
+        dn = ldb.Dn(l, 'a=b')
+        m = ldb.Message(dn)
+        self.assertRaises(TypeError, l.modify, '<bad type>')
+        self.assertRaises(TypeError, l.modify, m, '<bad type>')
+
+    def test_add(self):
+        l = ldb.Ldb()
+        dn = ldb.Dn(l, 'a=b')
+        m = ldb.Message(dn)
+        self.assertRaises(TypeError, l.add, '<bad type>')
+        self.assertRaises(TypeError, l.add, m, '<bad type>')
+
+    def test_delete(self):
+        l = ldb.Ldb()
+        dn = ldb.Dn(l, 'a=b')
+        self.assertRaises(TypeError, l.add, '<bad type>')
+        self.assertRaises(TypeError, l.add, dn, '<bad type>')
+
+    def test_rename(self):
+        l = ldb.Ldb()
+        dn = ldb.Dn(l, 'a=b')
+        self.assertRaises(TypeError, l.add, '<bad type>', dn)
+        self.assertRaises(TypeError, l.add, dn, '<bad type>')
+        self.assertRaises(TypeError, l.add, dn, dn, '<bad type>')
+
+    def test_search(self):
+        l = ldb.Ldb()
+        self.assertRaises(TypeError, l.search, base=1234)
+        self.assertRaises(TypeError, l.search, scope='<bad type>')
+        self.assertRaises(TypeError, l.search, expression=1234)
+        self.assertRaises(TypeError, l.search, attrs='<bad type>')
+        self.assertRaises(TypeError, l.search, controls='<bad type>')
 
 
 class VersionTests(TestCase):

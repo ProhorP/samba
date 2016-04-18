@@ -7,20 +7,17 @@ import os
 
 sys.path.insert(0, "bin/python")
 import samba
-samba.ensure_external_module("testtools", "testtools")
-samba.ensure_external_module("subunit", "subunit/python")
+
+from samba.tests.subunitrun import SubunitOptions, TestProgram
 
 import samba.getopt as options
 
 from samba.auth import system_session
-from ldb import SCOPE_BASE, LdbError
-from ldb import ERR_NO_SUCH_OBJECT, ERR_NOT_ALLOWED_ON_NON_LEAF
-from ldb import ERR_UNWILLING_TO_PERFORM
+from ldb import SCOPE_BASE, LdbError, Message, MessageElement, Dn, FLAG_MOD_ADD, FLAG_MOD_DELETE, FLAG_MOD_REPLACE
+from ldb import ERR_NO_SUCH_OBJECT, ERR_NOT_ALLOWED_ON_NON_LEAF, ERR_ENTRY_ALREADY_EXISTS, ERR_ATTRIBUTE_OR_VALUE_EXISTS
+from ldb import ERR_UNWILLING_TO_PERFORM, ERR_OPERATIONS_ERROR
 from samba.samdb import SamDB
 from samba.tests import delete_force
-
-from subunit.run import SubunitTestRunner
-import unittest
 
 parser = optparse.OptionParser("deletetest.py [options] <host|file>")
 sambaopts = options.SambaOptions(parser)
@@ -29,6 +26,8 @@ parser.add_option_group(options.VersionOptions(parser))
 # use command line creds if available
 credopts = options.CredentialsOptions(parser)
 parser.add_option_group(credopts)
+subunitopts = SubunitOptions(parser)
+parser.add_option_group(subunitopts)
 opts, args = parser.parse_args()
 
 if len(args) < 1:
@@ -40,22 +39,22 @@ host = args[0]
 lp = sambaopts.get_loadparm()
 creds = credopts.get_credentials(lp)
 
-class BasicDeleteTests(samba.tests.TestCase):
-
+class BaseDeleteTests(samba.tests.TestCase):
 
     def GUID_string(self, guid):
         return self.ldb.schema_format_value("objectGUID", guid)
 
     def setUp(self):
-        super(BasicDeleteTests, self).setUp()
-        self.ldb = ldb
-        self.base_dn = ldb.domain_dn()
-        self.configuration_dn = ldb.get_config_basedn().get_linearized()
+        super(BaseDeleteTests, self).setUp()
+        self.ldb = SamDB(host, credentials=creds, session_info=system_session(lp), lp=lp)
+
+        self.base_dn = self.ldb.domain_dn()
+        self.configuration_dn = self.ldb.get_config_basedn().get_linearized()
 
     def search_guid(self, guid):
         print "SEARCH by GUID %s" % self.GUID_string(guid)
 
-        res = ldb.search(base="<GUID=%s>" % self.GUID_string(guid),
+        res = self.ldb.search(base="<GUID=%s>" % self.GUID_string(guid),
                          scope=SCOPE_BASE, controls=["show_deleted:1"])
         self.assertEquals(len(res), 1)
         return res[0]
@@ -63,12 +62,18 @@ class BasicDeleteTests(samba.tests.TestCase):
     def search_dn(self,dn):
         print "SEARCH by DN %s" % dn
 
-        res = ldb.search(expression="(objectClass=*)",
+        res = self.ldb.search(expression="(objectClass=*)",
                          base=dn,
                          scope=SCOPE_BASE,
                          controls=["show_deleted:1"])
         self.assertEquals(len(res), 1)
         return res[0]
+
+
+class BasicDeleteTests(BaseDeleteTests):
+
+    def setUp(self):
+        super(BasicDeleteTests, self).setUp()
 
     def del_attr_values(self, delObj):
         print "Checking attributes for %s" % delObj["dn"]
@@ -119,38 +124,38 @@ class BasicDeleteTests(samba.tests.TestCase):
         delete_force(self.ldb, "cn=entry2,cn=ldaptestcontainer," + self.base_dn)
         delete_force(self.ldb, "cn=ldaptestcontainer," + self.base_dn)
 
-        ldb.add({
+        self.ldb.add({
             "dn": "cn=ldaptestcontainer," + self.base_dn,
             "objectclass": "container"})
-        ldb.add({
+        self.ldb.add({
             "dn": "cn=entry1,cn=ldaptestcontainer," + self.base_dn,
             "objectclass": "container"})
-        ldb.add({
+        self.ldb.add({
             "dn": "cn=entry2,cn=ldaptestcontainer," + self.base_dn,
             "objectclass": "container"})
 
         try:
-            ldb.delete("cn=ldaptestcontainer," + self.base_dn)
+            self.ldb.delete("cn=ldaptestcontainer," + self.base_dn)
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NOT_ALLOWED_ON_NON_LEAF)
 
-        ldb.delete("cn=ldaptestcontainer," + self.base_dn, ["tree_delete:1"])
+        self.ldb.delete("cn=ldaptestcontainer," + self.base_dn, ["tree_delete:1"])
 
         try:
-            res = ldb.search("cn=ldaptestcontainer," + self.base_dn,
+            res = self.ldb.search("cn=ldaptestcontainer," + self.base_dn,
                              scope=SCOPE_BASE, attrs=[])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NO_SUCH_OBJECT)
         try:
-            res = ldb.search("cn=entry1,cn=ldaptestcontainer," + self.base_dn,
+            res = self.ldb.search("cn=entry1,cn=ldaptestcontainer," + self.base_dn,
                              scope=SCOPE_BASE, attrs=[])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NO_SUCH_OBJECT)
         try:
-            res = ldb.search("cn=entry2,cn=ldaptestcontainer," + self.base_dn,
+            res = self.ldb.search("cn=entry2,cn=ldaptestcontainer," + self.base_dn,
                              scope=SCOPE_BASE, attrs=[])
             self.fail()
         except LdbError, (num, _):
@@ -162,29 +167,29 @@ class BasicDeleteTests(samba.tests.TestCase):
 
         # Performs some protected object delete testing
 
-        res = ldb.search(base="", expression="", scope=SCOPE_BASE,
+        res = self.ldb.search(base="", expression="", scope=SCOPE_BASE,
                          attrs=["dsServiceName", "dNSHostName"])
         self.assertEquals(len(res), 1)
 
         # Delete failing since DC's nTDSDSA object is protected
         try:
-            ldb.delete(res[0]["dsServiceName"][0])
+            self.ldb.delete(res[0]["dsServiceName"][0])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
 
-        res = ldb.search(self.base_dn, attrs=["rIDSetReferences"],
+        res = self.ldb.search(self.base_dn, attrs=["rIDSetReferences"],
                          expression="(&(objectClass=computer)(dNSHostName=" + res[0]["dNSHostName"][0] + "))")
         self.assertEquals(len(res), 1)
 
         # Deletes failing since DC's rIDSet object is protected
         try:
-            ldb.delete(res[0]["rIDSetReferences"][0])
+            self.ldb.delete(res[0]["rIDSetReferences"][0])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
         try:
-            ldb.delete(res[0]["rIDSetReferences"][0], ["tree_delete:1"])
+            self.ldb.delete(res[0]["rIDSetReferences"][0], ["tree_delete:1"])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
@@ -192,52 +197,52 @@ class BasicDeleteTests(samba.tests.TestCase):
         # Deletes failing since three main crossRef objects are protected
 
         try:
-            ldb.delete("cn=Enterprise Schema,cn=Partitions," + self.configuration_dn)
+            self.ldb.delete("cn=Enterprise Schema,cn=Partitions," + self.configuration_dn)
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
         try:
-            ldb.delete("cn=Enterprise Schema,cn=Partitions," + self.configuration_dn, ["tree_delete:1"])
+            self.ldb.delete("cn=Enterprise Schema,cn=Partitions," + self.configuration_dn, ["tree_delete:1"])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
 
         try:
-            ldb.delete("cn=Enterprise Configuration,cn=Partitions," + self.configuration_dn)
+            self.ldb.delete("cn=Enterprise Configuration,cn=Partitions," + self.configuration_dn)
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NOT_ALLOWED_ON_NON_LEAF)
         try:
-            ldb.delete("cn=Enterprise Configuration,cn=Partitions," + self.configuration_dn, ["tree_delete:1"])
+            self.ldb.delete("cn=Enterprise Configuration,cn=Partitions," + self.configuration_dn, ["tree_delete:1"])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NOT_ALLOWED_ON_NON_LEAF)
 
-        res = ldb.search("cn=Partitions," + self.configuration_dn, attrs=[],
+        res = self.ldb.search("cn=Partitions," + self.configuration_dn, attrs=[],
                          expression="(nCName=%s)" % self.base_dn)
         self.assertEquals(len(res), 1)
 
         try:
-            ldb.delete(res[0].dn)
+            self.ldb.delete(res[0].dn)
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NOT_ALLOWED_ON_NON_LEAF)
         try:
-            ldb.delete(res[0].dn, ["tree_delete:1"])
+            self.ldb.delete(res[0].dn, ["tree_delete:1"])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_NOT_ALLOWED_ON_NON_LEAF)
 
         # Delete failing since "SYSTEM_FLAG_DISALLOW_DELETE"
         try:
-            ldb.delete("CN=Users," + self.base_dn)
+            self.ldb.delete("CN=Users," + self.base_dn)
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
 
         # Tree-delete failing since "isCriticalSystemObject"
         try:
-            ldb.delete("CN=Computers," + self.base_dn, ["tree_delete:1"])
+            self.ldb.delete("CN=Computers," + self.base_dn, ["tree_delete:1"])
             self.fail()
         except LdbError, (num, _):
             self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
@@ -247,13 +252,21 @@ class BasicDeleteTests(samba.tests.TestCase):
 
         print self.base_dn
 
-        usr1="cn=testuser,cn=users," + self.base_dn
-        usr2="cn=testuser2,cn=users," + self.base_dn
-        grp1="cn=testdelgroup1,cn=users," + self.base_dn
-        sit1="cn=testsite1,cn=sites," + self.configuration_dn
-        ss1="cn=NTDS Site Settings,cn=testsite1,cn=sites," + self.configuration_dn
-        srv1="cn=Servers,cn=testsite1,cn=sites," + self.configuration_dn
-        srv2="cn=TESTSRV,cn=Servers,cn=testsite1,cn=sites," + self.configuration_dn
+        # user current time in ms to make unique objects
+        import time
+        marker = str(int(round(time.time()*1000)))
+        usr1_name = "u_" + marker
+        usr2_name = "u2_" + marker
+        grp_name = "g1_" + marker
+        site_name = "s1_" + marker
+
+        usr1 = "cn=%s,cn=users,%s" % (usr1_name, self.base_dn)
+        usr2 = "cn=%s,cn=users,%s" % (usr2_name, self.base_dn)
+        grp1 = "cn=%s,cn=users,%s" % (grp_name, self.base_dn)
+        sit1 = "cn=%s,cn=sites,%s" % (site_name, self.configuration_dn)
+        ss1 = "cn=NTDS Site Settings,cn=%s,cn=sites,%s" % (site_name, self.configuration_dn)
+        srv1 = "cn=Servers,cn=%s,cn=sites,%s" % (site_name, self.configuration_dn)
+        srv2 = "cn=TESTSRV,cn=Servers,cn=%s,cn=sites,%s" % (site_name, self.configuration_dn)
 
         delete_force(self.ldb, usr1)
         delete_force(self.ldb, usr2)
@@ -263,39 +276,39 @@ class BasicDeleteTests(samba.tests.TestCase):
         delete_force(self.ldb, srv1)
         delete_force(self.ldb, sit1)
 
-        ldb.add({
+        self.ldb.add({
             "dn": usr1,
             "objectclass": "user",
             "description": "test user description",
-            "samaccountname": "testuser"})
+            "samaccountname": usr1_name})
 
-        ldb.add({
+        self.ldb.add({
             "dn": usr2,
             "objectclass": "user",
             "description": "test user 2 description",
-            "samaccountname": "testuser2"})
+            "samaccountname": usr2_name})
 
-        ldb.add({
+        self.ldb.add({
             "dn": grp1,
             "objectclass": "group",
             "description": "test group",
-            "samaccountname": "testdelgroup1",
+            "samaccountname": grp_name,
             "member": [ usr1, usr2 ],
             "isDeleted": "FALSE" })
 
-        ldb.add({
+        self.ldb.add({
             "dn": sit1,
             "objectclass": "site" })
 
-        ldb.add({
+        self.ldb.add({
             "dn": ss1,
             "objectclass": ["applicationSiteSettings", "nTDSSiteSettings"] })
 
-        ldb.add({
+        self.ldb.add({
             "dn": srv1,
             "objectclass": "serversContainer" })
 
-        ldb.add({
+        self.ldb.add({
             "dn": srv2,
             "objectClass": "server" })
 
@@ -320,11 +333,11 @@ class BasicDeleteTests(samba.tests.TestCase):
         objLive7 = self.search_dn(srv2)
         guid7=objLive7["objectGUID"][0]
 
-        ldb.delete(usr1)
-        ldb.delete(usr2)
-        ldb.delete(grp1)
-        ldb.delete(srv1, ["tree_delete:1"])
-        ldb.delete(sit1, ["tree_delete:1"])
+        self.ldb.delete(usr1)
+        self.ldb.delete(usr2)
+        self.ldb.delete(grp1)
+        self.ldb.delete(srv1, ["tree_delete:1"])
+        self.ldb.delete(sit1, ["tree_delete:1"])
 
         objDeleted1 = self.search_guid(guid1)
         objDeleted2 = self.search_guid(guid2)
@@ -358,13 +371,13 @@ class BasicDeleteTests(samba.tests.TestCase):
         self.check_rdn(objLive6, objDeleted6, "cn")
         self.check_rdn(objLive7, objDeleted7, "cn")
 
-        self.delete_deleted(ldb, usr1)
-        self.delete_deleted(ldb, usr2)
-        self.delete_deleted(ldb, grp1)
-        self.delete_deleted(ldb, sit1)
-        self.delete_deleted(ldb, ss1)
-        self.delete_deleted(ldb, srv1)
-        self.delete_deleted(ldb, srv2)
+        self.delete_deleted(self.ldb, usr1)
+        self.delete_deleted(self.ldb, usr2)
+        self.delete_deleted(self.ldb, grp1)
+        self.delete_deleted(self.ldb, sit1)
+        self.delete_deleted(self.ldb, ss1)
+        self.delete_deleted(self.ldb, srv1)
+        self.delete_deleted(self.ldb, srv2)
 
         self.assertTrue("CN=Deleted Objects" in str(objDeleted1.dn))
         self.assertTrue("CN=Deleted Objects" in str(objDeleted2.dn))
@@ -374,17 +387,11 @@ class BasicDeleteTests(samba.tests.TestCase):
         self.assertFalse("CN=Deleted Objects" in str(objDeleted6.dn))
         self.assertFalse("CN=Deleted Objects" in str(objDeleted7.dn))
 
+
 if not "://" in host:
     if os.path.isfile(host):
         host = "tdb://%s" % host
     else:
         host = "ldap://%s" % host
 
-ldb = SamDB(host, credentials=creds, session_info=system_session(lp), lp=lp)
-
-runner = SubunitTestRunner()
-rc = 0
-if not runner.run(unittest.makeSuite(BasicDeleteTests)).wasSuccessful():
-    rc = 1
-
-sys.exit(rc)
+TestProgram(module=__name__, opts=subunitopts)

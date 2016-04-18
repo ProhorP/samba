@@ -1,6 +1,6 @@
 <samba:parameter name="server string"
                  context="G"
-                 basic="1" advanced="1" developer="1"
+                 type="string"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
         <para>This controls what string will show up in the printer comment box in print 

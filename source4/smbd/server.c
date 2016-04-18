@@ -360,6 +360,8 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 
 	poptFreeContext(pc);
 
+	talloc_enable_null_tracking();
+
 	setup_logging(binary_name, opt_interactive?DEBUG_STDOUT:DEBUG_FILE);
 	setup_signals();
 
@@ -368,7 +370,7 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 	umask(0);
 
 	DEBUG(0,("%s version %s started.\n", binary_name, SAMBA_VERSION_STRING));
-	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2013\n"));
+	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team 1992-2015\n"));
 
 	if (sizeof(uint16_t) < 2 || sizeof(uint32_t) < 4 || sizeof(uint64_t) < 8) {
 		DEBUG(0,("ERROR: Samba is not configured correctly for the word size on your machine\n"));
@@ -384,11 +386,11 @@ static int binary_smbd_main(const char *binary_name, int argc, const char *argv[
 
 	cleanup_tmp_files(cmdline_lp_ctx);
 
-	if (!directory_exist(lpcfg_lockdir(cmdline_lp_ctx))) {
-		mkdir(lpcfg_lockdir(cmdline_lp_ctx), 0755);
+	if (!directory_exist(lpcfg_lock_directory(cmdline_lp_ctx))) {
+		mkdir(lpcfg_lock_directory(cmdline_lp_ctx), 0755);
 	}
 
-	pidfile_create(lpcfg_piddir(cmdline_lp_ctx), binary_name);
+	pidfile_create(lpcfg_pid_directory(cmdline_lp_ctx), binary_name);
 
 	/* Set up a database to hold a random seed, in case we don't
 	 * have /dev/urandom */

@@ -49,6 +49,7 @@ static const struct {
 	{ ENOSPC,       NT_STATUS_DISK_FULL },
 	{ ENOMEM,       NT_STATUS_NO_MEMORY },
 	{ EISDIR,       NT_STATUS_FILE_IS_A_DIRECTORY},
+	{ EMSGSIZE,	NT_STATUS_PORT_MESSAGE_TOO_LONG },
 #ifdef EPIPE
 	{ EPIPE,        NT_STATUS_CONNECTION_DISCONNECTED},
 #endif
@@ -113,6 +114,9 @@ static const struct {
 #endif
 #ifdef ETXTBSY
 	{ ETXTBSY,      NT_STATUS_SHARING_VIOLATION },
+#endif
+#ifdef EOVERFLOW
+	{ EOVERFLOW,      NT_STATUS_ALLOTTED_SPACE_EXCEEDED },
 #endif
 };
 

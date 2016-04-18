@@ -19,7 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
-#include "librpc/gen_ndr/ndr_wbint_c.h"
+#include "librpc/gen_ndr/ndr_winbind_c.h"
 
 struct wb_fill_pwent_state {
 	struct tevent_context *ev;
@@ -70,9 +70,9 @@ static void wb_fill_pwent_sid2uid_done(struct tevent_req *subreq)
 	struct wb_fill_pwent_state *state = tevent_req_data(
 		req, struct wb_fill_pwent_state);
 	NTSTATUS status;
-	struct unixid xid;
+	struct unixid xids[1];
 
-	status = wb_sids2xids_recv(subreq, &xid);
+	status = wb_sids2xids_recv(subreq, xids, ARRAY_SIZE(xids));
 	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		return;
@@ -84,12 +84,12 @@ static void wb_fill_pwent_sid2uid_done(struct tevent_req *subreq)
 	 * by lookupsids). Here we need to filter for the type of object
 	 * actually requested, in this case uid.
 	 */
-	if (!(xid.type == ID_TYPE_UID || xid.type == ID_TYPE_BOTH)) {
+	if (!(xids[0].type == ID_TYPE_UID || xids[0].type == ID_TYPE_BOTH)) {
 		tevent_req_nterror(req, NT_STATUS_NONE_MAPPED);
 		return;
 	}
 
-	state->pw->pw_uid = (uid_t)xid.id;
+	state->pw->pw_uid = (uid_t)xids[0].id;
 
 	subreq = wb_getgrsid_send(state, state->ev, &state->info->group_sid, 0);
 	if (tevent_req_nomem(subreq, req)) {
@@ -162,7 +162,10 @@ static void wb_fill_pwent_getgrsid_done(struct tevent_req *subreq)
 	strlcpy(state->pw->pw_name,
 		output_username,
 		sizeof(state->pw->pw_name));
-	fstrcpy(state->pw->pw_gecos, state->info->full_name);
+	/* FIXME The full_name can be longer than 255 chars */
+	strlcpy(state->pw->pw_gecos,
+		state->info->full_name != NULL ? state->info->full_name : "",
+		sizeof(state->pw->pw_gecos));
 
 	/* Home directory and shell */
 	ok = fillup_pw_field(lp_template_homedir(),
@@ -214,32 +217,31 @@ static bool fillup_pw_field(const char *lp_template,
 			    const char *in,
 			    fstring out)
 {
-	char *templ;
+	const char *templ;
+	char *result;
 
 	if (out == NULL)
 		return False;
 
-	/* The substitution of %U and %D in the 'template
-	   homedir' is done by talloc_sub_specified() below.
-	   If we have an in string (which means the value has already
-	   been set in the nss_info backend), then use that.
-	   Otherwise use the template value passed in. */
+	templ = lp_template;
 
 	if ((in != NULL) && (in[0] != '\0') && (lp_security() == SEC_ADS)) {
-		templ = talloc_sub_specified(talloc_tos(), in,
-					     username, grpname, domname,
-					     uid, gid);
-	} else {
-		templ = talloc_sub_specified(talloc_tos(), lp_template,
-					     username, grpname, domname,
-					     uid, gid);
+		/*
+		 * The backend has already filled in the required value. Use
+		 * that instead of the template.
+		 */
+		templ = in;
 	}
 
-	if (!templ)
+	result = talloc_sub_specified(talloc_tos(), templ,
+				      username, grpname, domname,
+				      uid, gid);
+	if (result == NULL) {
 		return False;
+	}
 
-	strlcpy(out, templ, sizeof(fstring));
-	TALLOC_FREE(templ);
+	fstrcpy(out, result);
+	TALLOC_FREE(result);
 
 	return True;
 

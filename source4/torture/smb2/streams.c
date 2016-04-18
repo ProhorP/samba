@@ -603,6 +603,9 @@ static bool test_stream_delete(struct torture_context *tctx,
 		goto done;
 	}
 
+	ZERO_STRUCT(h);
+	ZERO_STRUCT(h1);
+
 	sname1 = talloc_asprintf(mem_ctx, "%s:%s", fname, "Stream One");
 
 	/* clean slate .. */
@@ -696,6 +699,7 @@ static bool test_stream_delete(struct torture_context *tctx,
 	CHECK_STATUS(status, NT_STATUS_DELETE_PENDING);
 
 	smb2_util_close(tree, h1);
+	ZERO_STRUCT(h1);
 
 	/*
 	 * After closing the stream the file is really gone.
@@ -707,7 +711,9 @@ static bool test_stream_delete(struct torture_context *tctx,
 	CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 
 done:
-	smb2_util_close(tree, h1);
+	if (!smb2_util_handle_empty(h1)) {
+		smb2_util_close(tree, h1);
+	}
 	smb2_util_unlink(tree, fname);
 	smb2_deltree(tree, DNAME);
 	talloc_free(mem_ctx);
@@ -730,7 +736,7 @@ static bool test_stream_names(struct torture_context *tctx,
 	const char *fname = DNAME "\\stream_names.txt";
 	const char *sname1, *sname1b, *sname1c, *sname1d;
 	const char *sname2, *snamew, *snamew2;
-	const char *snamer1, *snamer2;
+	const char *snamer1;
 	bool ret = true;
 	struct smb2_handle h, h1, h2, h3;
 	int i;
@@ -765,7 +771,6 @@ static bool test_stream_names(struct torture_context *tctx,
 				  "?Stream*");
 	snamer1 = talloc_asprintf(mem_ctx, "%s:%s:$DATA", fname,
 				  "BeforeRename");
-	snamer2 = talloc_asprintf(mem_ctx, "%s:%s:$DATA", fname, "AfterRename");
 
 	/* clean slate ...*/
 	smb2_util_unlink(tree, fname);
@@ -1123,8 +1128,6 @@ done:
 }
 
 #define CHECK_CALL_HANDLE(call, rightstatus) do { \
-	check_handle = true; \
-	call_name = #call; \
 	sfinfo.generic.level = RAW_SFILEINFO_ ## call; \
 	sfinfo.generic.in.file.handle = h1; \
 	status = smb2_setinfo_file(tree, &sfinfo); \
@@ -1160,8 +1163,6 @@ static bool test_stream_rename(struct torture_context *tctx,
 	union smb_setfileinfo sfinfo;
 	bool ret = true;
 	struct smb2_handle h, h1;
-	bool check_handle;
-	const char *call_name;
 
 	sname1 = talloc_asprintf(mem_ctx, "%s:%s", fname, "Stream One");
 	sname2 = talloc_asprintf(mem_ctx, "%s:%s:$DaTa", fname,

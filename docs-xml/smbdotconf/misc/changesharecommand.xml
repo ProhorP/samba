@@ -1,7 +1,6 @@
 <samba:parameter name="change share command"
                  context="G"
 				 type="string"
-                 advanced="1" developer="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
 	<para>
@@ -23,7 +22,7 @@ moreinfo="none">smb.conf</filename>.
 
 	<para>
 	When executed, <command moreinfo="none">smbd</command> will automatically invoke the
-	<parameter moreinfo="none">change share command</parameter> with five parameters.
+	<parameter moreinfo="none">change share command</parameter> with six parameters.
 	</para>
 
 	<itemizedlist>
@@ -56,6 +55,12 @@ moreinfo="none">smb.conf</filename>.
 			connections</parameter>
 			Number of maximum simultaneous connections to this
 			share.
+			</para>
+		</listitem>
+
+		<listitem>
+			<para><parameter moreinfo="none">CSC policy</parameter> - client side caching
+			policy in string form. Valid values are: manual, documents, programs, disable.
 			</para>
 		</listitem>
 	</itemizedlist>

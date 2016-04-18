@@ -57,7 +57,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 	*err_str = NULL;
 
 	result = cli_connect_nb(remote_machine, NULL, 0, 0x20, NULL,
-				SMB_SIGNING_DEFAULT, 0, &cli);
+				SMB_SIGNING_IPC_DEFAULT, 0, &cli);
 	if (!NT_STATUS_IS_OK(result)) {
 		if (asprintf(err_str, "Unable to connect to SMB server on "
 			 "machine %s. Error was : %s.\n",
@@ -67,8 +67,9 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		return result;
 	}
 
-	result = smbXcli_negprot(cli->conn, cli->timeout, PROTOCOL_CORE,
-				 PROTOCOL_NT1);
+	result = smbXcli_negprot(cli->conn, cli->timeout,
+				 lp_client_ipc_min_protocol(),
+				 lp_client_ipc_max_protocol());
 
 	if (!NT_STATUS_IS_OK(result)) {
 		if (asprintf(err_str, "machine %s rejected the negotiate "
@@ -122,18 +123,6 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 			cli_shutdown(cli);
 			return result;
 		}
-
-		result = cli_init_creds(cli, "", "", NULL);
-		if (!NT_STATUS_IS_OK(result)) {
-			cli_shutdown(cli);
-			return result;
-		}
-	} else {
-		result = cli_init_creds(cli, user, domain, old_passwd);
-		if (!NT_STATUS_IS_OK(result)) {
-			cli_shutdown(cli);
-			return result;
-		}
 	}
 
 	result = cli_tree_connect(cli, "IPC$", "IPC", "", 1);
@@ -153,6 +142,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		result = cli_rpc_pipe_open_generic_auth(cli,
 							&ndr_table_samr,
 							NCACN_NP,
+							CRED_DONT_USE_KERBEROS,
 							DCERPC_AUTH_TYPE_NTLMSSP,
 							DCERPC_AUTH_LEVEL_PRIVACY,
 							remote_machine,
@@ -169,7 +159,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		 * way.
 		 */
 		result = cli_rpc_pipe_open_noauth(
-			cli, &ndr_table_samr.syntax_id, &pipe_hnd);
+			cli, &ndr_table_samr, &pipe_hnd);
 	}
 
 	if (!NT_STATUS_IS_OK(result)) {
@@ -221,16 +211,10 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 	TALLOC_FREE(pipe_hnd);
 
 	/* Try anonymous NTLMSSP... */
-	result = cli_init_creds(cli, "", "", NULL);
-	if (!NT_STATUS_IS_OK(result)) {
-		cli_shutdown(cli);
-		return result;
-	}
-
 	result = NT_STATUS_UNSUCCESSFUL;
 
 	/* OK, this is ugly, but... try an anonymous pipe. */
-	result = cli_rpc_pipe_open_noauth(cli, &ndr_table_samr.syntax_id,
+	result = cli_rpc_pipe_open_noauth(cli, &ndr_table_samr,
 					  &pipe_hnd);
 
 	if ( NT_STATUS_IS_OK(result) &&
@@ -279,7 +263,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 			if (asprintf(err_str, "SAMR connection to machine %s "
 				 "failed. Error was %s, but LANMAN password "
 				 "changes are disabled\n",
-				nt_errstr(result), remote_machine) == -1) {
+				remote_machine, nt_errstr(result)) == -1) {
 				*err_str = NULL;
 			}
 			cli_shutdown(cli);

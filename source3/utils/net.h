@@ -90,6 +90,7 @@ struct net_context {
 	bool smb_encrypt;
 	struct libnetapi_ctx *netapi_ctx;
 	struct messaging_context *msg_ctx;
+	struct netlogon_creds_cli_context *netlogon_creds;
 
 	bool display_usage;
 	void *private_data;
@@ -132,7 +133,7 @@ typedef struct copy_clistate {
 	struct cli_state *cli_share_src;
 	struct cli_state *cli_share_dst;
 	char *cwd;
-	uint16 attribute;
+	uint16_t attribute;
 	struct net_context *c;
 }copy_clistate;
 
@@ -182,6 +183,7 @@ enum netdom_domain_t { ND_TYPE_NT4, ND_TYPE_AD };
 #define NET_FLAGS_SIGN				0x00000040	/* sign RPC connection */
 #define NET_FLAGS_SEAL				0x00000080	/* seal RPC connection */
 #define NET_FLAGS_TCP				0x00000100	/* use ncacn_ip_tcp */
+#define NET_FLAGS_EXPECT_FALLBACK		0x00000200	/* the caller will fallback */
 
 /* net share operation modes */
 #define NET_MODE_SHARE_MIGRATE 1

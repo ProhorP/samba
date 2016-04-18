@@ -86,6 +86,7 @@ _PUBLIC_ uint32_t interpret_addr(const char *str);
 _PUBLIC_ struct in_addr interpret_addr2(const char *str);
 
 _PUBLIC_ bool is_ipaddress_v4(const char *str);
+_PUBLIC_ bool is_ipv6_literal(const char *str);
 _PUBLIC_ bool is_ipaddress_v6(const char *str);
 
 bool is_address_any(const struct sockaddr *psa);
@@ -106,7 +107,6 @@ char *print_sockaddr(char *dest,
 			const struct sockaddr_storage *psa);
 char *print_canonical_sockaddr(TALLOC_CTX *ctx,
 			const struct sockaddr_storage *pss);
-const char *client_name(int fd);
 int get_socket_port(int fd);
 const char *client_socket_addr(int fd, char *addr, size_t addr_len);
 

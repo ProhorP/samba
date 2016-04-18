@@ -62,7 +62,7 @@ bool idmap_is_online(void)
 	return true;
 }
 
-NTSTATUS idmap_backends_unixid_to_sid(const char *domname, struct id_map *id)
+NTSTATUS idmap_backends_unixid_to_sid(struct id_map *id)
 {
 	return NT_STATUS_OK;
 }
@@ -86,7 +86,7 @@ static bool open_db(struct idmap_tdb_common_context *ctx)
 
 	ctx->db = db_open(ctx, db_path, 0, TDB_DEFAULT,
 			  O_RDWR | O_CREAT, 0600,
-			  DBWRAP_LOCK_ORDER_1);
+			  DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 
 	if(!ctx->db) {
 		DEBUG(0, ("Failed to open database: %s\n", strerror(errno)));

@@ -1077,7 +1077,8 @@ show 8.3 name of a file
 ****************************************************************************/
 static int cmd_altname(struct smbclient_context *ctx, const char **args)
 {
-	const char *altname;
+	const char *p;
+	char *altname;
 	char *name;
   
 	if (!args[1]) {
@@ -1087,11 +1088,12 @@ static int cmd_altname(struct smbclient_context *ctx, const char **args)
 
 	name = talloc_asprintf(ctx, "%s%s", ctx->remote_cur_dir, args[1]);
 
-	if (!NT_STATUS_IS_OK(smbcli_qpathinfo_alt_name(ctx->cli->tree, name, &altname))) {
+	if (!NT_STATUS_IS_OK(smbcli_qpathinfo_alt_name(ctx->cli->tree, name, &p))) {
 		d_printf("%s getting alt name for %s\n",
 			 smbcli_errstr(ctx->cli->tree),name);
 		return(false);
 	}
+	altname = discard_const_p(char, p);
 	d_printf("%s\n", altname);
 
 	SAFE_FREE(altname);
@@ -1618,6 +1620,7 @@ fsinfo_level_t fsinfo_levels[] = {
 	{"quota-information", RAW_QFS_QUOTA_INFORMATION},
 	{"fullsize-information", RAW_QFS_FULL_SIZE_INFORMATION},
 	{"objectid", RAW_QFS_OBJECTID_INFORMATION},
+	{"sector-size-info", RAW_QFS_SECTOR_SIZE_INFORMATION},
 	{NULL, RAW_QFS_GENERIC}
 };
 
@@ -1760,6 +1763,22 @@ static int cmd_fsinfo(struct smbclient_context *ctx, const char **args)
 			 (unsigned long long) fsinfo.objectid_information.out.unknown[3],
 			 (unsigned long long) fsinfo.objectid_information.out.unknown[4],
 			 (unsigned long long) fsinfo.objectid_information.out.unknown[5] );
+		break;
+	case RAW_QFS_SECTOR_SIZE_INFORMATION:
+		d_printf("\tlogical_bytes_per_sector:			%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.logical_bytes_per_sector);
+		d_printf("\tphys_bytes_per_sector_atomic:		%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.phys_bytes_per_sector_atomic);
+		d_printf("\tphys_bytes_per_sector_perf:			%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.phys_bytes_per_sector_perf);
+		d_printf("\tfs_effective_phys_bytes_per_sector_atomic:	%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.fs_effective_phys_bytes_per_sector_atomic);
+		d_printf("\tflags:					0x%x\n",
+			 (unsigned)fsinfo.sector_size_info.out.flags);
+		d_printf("\tbyte_off_sector_align:			%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.byte_off_sector_align);
+		d_printf("\tbyte_off_partition_align:			%u\n",
+			 (unsigned)fsinfo.sector_size_info.out.byte_off_partition_align);
 		break;
 	case RAW_QFS_GENERIC:
 		d_printf("\twrong level returned\n");
@@ -3081,16 +3100,17 @@ static void readline_callback(void)
 
 static int process_line(struct smbclient_context *ctx, const char *cline)
 {
-	const char **args;
+	char **args;
 	int i;
 
 	/* and get the first part of the command */
-	args = (const char **) str_list_make_shell(ctx, cline, NULL);
+	args = str_list_make_shell(ctx, cline, NULL);
 	if (!args || !args[0])
 		return 0;
 
 	if ((i = process_tok(args[0])) >= 0) {
-		i = commands[i].fn(ctx, args);
+		const char **a = discard_const_p(const char *, args);
+		i = commands[i].fn(ctx, a);
 	} else if (i == -2) {
 		d_printf("%s: command abbreviation ambiguous\n",args[0]);
 	} else {
@@ -3254,7 +3274,7 @@ static int do_message_op(const char *netbios_name, const char *desthost,
 /****************************************************************************
   main program
 ****************************************************************************/
- int main(int argc,char *argv[])
+ int main(int argc, const char *argv[])
 {
 	char *base_directory = NULL;
 	const char *dest_ip = NULL;
@@ -3302,7 +3322,7 @@ static int do_message_op(const char *netbios_name, const char *desthost,
 	ctx = talloc_zero(mem_ctx, struct smbclient_context);
 	ctx->io_bufsize = 64512;
 
-	pc = poptGetContext("smbclient", argc, (const char **) argv, long_options, 0);
+	pc = poptGetContext("smbclient", argc, argv, long_options, 0);
 	poptSetOtherOptionHelp(pc, "[OPTIONS] service <password>");
 
 	while ((opt = poptGetNextOpt(pc)) != -1) {

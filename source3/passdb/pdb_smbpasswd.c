@@ -39,7 +39,7 @@
 
 struct smb_passwd
 {
-        uint32 smb_userid;        /* this is actually the unix uid_t */
+        uint32_t smb_userid;      /* this is actually the unix uid_t */
         const char *smb_name;     /* username string */
 
         const unsigned char *smb_passwd;    /* Null if no password */
@@ -1019,7 +1019,7 @@ This is no longer supported.!\n", pwd->smb_name));
 
 #ifdef DEBUG_PASSWORD
 	DEBUG(100,("mod_smbfilepwd_entry: "));
-	dump_data(100, (uint8 *)ascii_p16, wr_len);
+	dump_data(100, (uint8_t *)ascii_p16, wr_len);
 #endif
 
 	if(wr_len > LINEBUF_SIZE) {
@@ -1206,9 +1206,9 @@ static bool build_smb_pass (struct smb_passwd *smb_pw, const struct samu *sampas
 
 		/* If the user specified a RID, make sure its able to be both stored and retreived */
 		if (rid == DOMAIN_RID_GUEST) {
-			struct passwd *passwd = Get_Pwnam_alloc(NULL, lp_guestaccount());
+			struct passwd *passwd = Get_Pwnam_alloc(NULL, lp_guest_account());
 			if (!passwd) {
-				DEBUG(0, ("Could not find guest account via Get_Pwnam_alloc()! (%s)\n", lp_guestaccount()));
+				DEBUG(0, ("Could not find guest account via Get_Pwnam_alloc()! (%s)\n", lp_guest_account()));
 				return False;
 			}
 			smb_pw->smb_userid=passwd->pw_uid;
@@ -1343,7 +1343,7 @@ static NTSTATUS smbpasswd_getsampwsid(struct pdb_methods *my_methods, struct sam
 
 	/* More special case 'guest account' hacks... */
 	if (rid == DOMAIN_RID_GUEST) {
-		const char *guest_account = lp_guestaccount();
+		const char *guest_account = lp_guest_account();
 		if (!(guest_account && *guest_account)) {
 			DEBUG(1, ("Guest account not specfied!\n"));
 			return nt_status;
@@ -1449,7 +1449,7 @@ static NTSTATUS smbpasswd_rename_sam_account (struct pdb_methods *my_methods,
 	TALLOC_CTX *ctx = talloc_tos();
 	NTSTATUS ret = NT_STATUS_UNSUCCESSFUL;
 
-	if (!*(lp_renameuser_script(talloc_tos())))
+	if (!*(lp_rename_user_script(talloc_tos())))
 		goto done;
 
 	if ( !(new_acct = samu_new( NULL )) ) {
@@ -1469,7 +1469,7 @@ static NTSTATUS smbpasswd_rename_sam_account (struct pdb_methods *my_methods,
 	interim_account = True;
 
 	/* rename the posix user */
-	rename_script = lp_renameuser_script(ctx);
+	rename_script = lp_rename_user_script(ctx);
 	if (!rename_script) {
 		ret = NT_STATUS_NO_MEMORY;
 		goto done;

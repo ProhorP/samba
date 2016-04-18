@@ -31,8 +31,9 @@ from ldb import SCOPE_SUBTREE, SCOPE_ONELEVEL, SCOPE_BASE
 import ldb
 from samba.provision import (provision_paths_from_lp,
                             getpolicypath, set_gpos_acl, create_gpo_struct,
-                            FILL_FULL, provision, ProvisioningError,
+                            provision, ProvisioningError,
                             setsysvolacl, secretsdb_self_join)
+from samba.provision.common import FILL_FULL
 from samba.dcerpc import xattr, drsblobs, security
 from samba.dcerpc.misc import SEC_CHAN_BDC
 from samba.ndr import ndr_unpack
@@ -225,7 +226,7 @@ def update_policyids(names, samdb):
         names.policyid_dc = None
 
 
-def newprovision(names, creds, session, smbconf, provdir, logger):
+def newprovision(names, session, smbconf, provdir, logger):
     """Create a new provision.
 
     This provision will be the reference for knowing what has changed in the
@@ -242,10 +243,10 @@ def newprovision(names, creds, session, smbconf, provdir, logger):
         shutil.rmtree(provdir)
     os.mkdir(provdir)
     logger.info("Provision stored in %s", provdir)
-    return provision(logger, session, creds, smbconf=smbconf,
+    return provision(logger, session, smbconf=smbconf,
             targetdir=provdir, samdb_fill=FILL_FULL, realm=names.realm,
             domain=names.domain, domainguid=names.domainguid,
-            domainsid=str(names.domainsid), ntdsguid=names.ntdsguid,
+            domainsid=names.domainsid, ntdsguid=names.ntdsguid,
             policyguid=names.policyid, policyguid_dc=names.policyid_dc,
             hostname=names.netbiosname.lower(), hostip=None, hostip6=None,
             invocationid=names.invocation, adminpass=names.adminpass,
@@ -635,6 +636,25 @@ def update_dns_account_password(samdb, secrets_ldb, names):
                                                 "msDS-KeyVersionNumber")
 
         secrets_ldb.modify(msg)
+
+def update_krbtgt_account_password(samdb, names):
+    """Update (change) the password of the krbtgt account
+
+    :param samdb: An LDB object related to the sam.ldb file of a given provision
+    :param names: List of key provision parameters"""
+
+    expression = "samAccountName=krbtgt"
+    res = samdb.search(expression=expression, attrs=[])
+    assert(len(res) == 1)
+
+    msg = ldb.Message(res[0].dn)
+    machinepass = samba.generate_random_password(128, 255)
+    mputf16 = machinepass.encode('utf-16-le')
+    msg["clearTextPassword"] = ldb.MessageElement(mputf16,
+                                                  ldb.FLAG_MOD_REPLACE,
+                                                  "clearTextPassword")
+
+    samdb.modify(msg)
 
 def search_constructed_attrs_stored(samdb, rootdn, attrs):
     """Search a given sam DB for calculated attributes that are

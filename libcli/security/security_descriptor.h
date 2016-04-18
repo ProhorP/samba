@@ -26,6 +26,11 @@
 struct security_descriptor *security_descriptor_initialise(TALLOC_CTX *mem_ctx);
 struct security_descriptor *security_descriptor_copy(TALLOC_CTX *mem_ctx, 
 						     const struct security_descriptor *osd);
+NTSTATUS security_descriptor_for_client(TALLOC_CTX *mem_ctx,
+					const struct security_descriptor *ssd,
+					uint32_t sec_info,
+					uint32_t access_granted,
+					struct security_descriptor **_csd);
 NTSTATUS security_descriptor_sacl_add(struct security_descriptor *sd,
 				      const struct security_ace *ace);
 NTSTATUS security_descriptor_dacl_add(struct security_descriptor *sd,
@@ -80,5 +85,7 @@ struct security_descriptor *create_security_descriptor(TALLOC_CTX *mem_ctx,
 						       struct dom_sid *default_owner, /* valid only for DS, NULL for the other RSs */
 						       struct dom_sid *default_group, /* valid only for DS, NULL for the other RSs */
 						       uint32_t (*generic_map)(uint32_t access_mask));
+
+bool security_descriptor_with_ms_nfs(const struct security_descriptor *psd);
 
 #endif /* __SECURITY_DESCRIPTOR_H__ */

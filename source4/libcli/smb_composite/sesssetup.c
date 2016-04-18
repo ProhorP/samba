@@ -184,7 +184,7 @@ static void request_handler(struct smbcli_request *req)
 			 * host/attacker might avoid mutal authentication
 			 * requirements */
 			
-			state->gensec_status = gensec_update(session->gensec, state, c->event_ctx,
+			state->gensec_status = gensec_update_ev(session->gensec, state, c->event_ctx,
 							 state->setup.spnego.out.secblob,
 							 &state->setup.spnego.in.secblob);
 			c->status = state->gensec_status;
@@ -196,7 +196,11 @@ static void request_handler(struct smbcli_request *req)
 			state->setup.spnego.in.secblob = data_blob(NULL, 0);
 		}
 
-		if (NT_STATUS_IS_OK(state->remote_status)) {
+		if (cli_credentials_is_anonymous(state->io->in.credentials)) {
+			/*
+			 * anonymous => no signing
+			 */
+		} else if (NT_STATUS_IS_OK(state->remote_status)) {
 			DATA_BLOB session_key;
 
 			if (state->setup.spnego.in.secblob.length) {
@@ -325,9 +329,21 @@ static NTSTATUS session_setup_nt1(struct composite_context *c,
 	
 
 	if (session->transport->negotiate.sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) {
+		if (!cli_credentials_is_anonymous(io->in.credentials) &&
+		    session->options.ntlmv2_auth &&
+		    session->transport->options.use_spnego)
+		{
+			/*
+			 * Don't send an NTLMv2_RESPONSE without NTLMSSP
+			 * if we want to use spnego
+			 */
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+
 		nt_status = cli_credentials_get_ntlm_response(io->in.credentials, state, 
 							      &flags, 
 							      session->transport->negotiate.secblob, 
+							      NULL, /* server_timestamp */
 							      names_blob,
 							      &state->setup.nt1.in.password1,
 							      &state->setup.nt1.in.password2,
@@ -347,17 +363,29 @@ static NTSTATUS session_setup_nt1(struct composite_context *c,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (NT_STATUS_IS_OK(nt_status)) {
-		smb1cli_conn_activate_signing(session->transport->conn,
-					      session_key,
-					      state->setup.nt1.in.password2);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		/*
+		 * plain text => no signing
+		 */
+		return (*req)->status;
+	}
 
-		nt_status = smb1cli_session_set_session_key(session->smbXcli,
-							    session_key);
-		data_blob_free(&session_key);
-		if (!NT_STATUS_IS_OK(nt_status)) {
-			return nt_status;
-		}
+	if (cli_credentials_is_anonymous(io->in.credentials)) {
+		/*
+		 * anonymous => no signing
+		 */
+		return (*req)->status;
+	}
+
+	smb1cli_conn_activate_signing(session->transport->conn,
+				      session_key,
+				      state->setup.nt1.in.password2);
+
+	nt_status = smb1cli_session_set_session_key(session->smbXcli,
+						    session_key);
+	data_blob_free(&session_key);
+	if (!NT_STATUS_IS_OK(nt_status)) {
+		return nt_status;
 	}
 
 	return (*req)->status;
@@ -376,24 +404,13 @@ static NTSTATUS session_setup_old(struct composite_context *c,
 	struct sesssetup_state *state = talloc_get_type(c->private_data,
 							struct sesssetup_state);
 	const char *password = cli_credentials_get_password(io->in.credentials);
-	const char *domain = cli_credentials_get_domain(io->in.credentials);
 
 	/*
 	 * domain controllers tend to reject the NTLM v2 blob
 	 * if the netbiosname is not valid (e.g. IP address or FQDN)
 	 * so just leave it away (as Windows client do)
 	 */
-	DATA_BLOB names_blob = NTLMv2_generate_names_blob(state, NULL, domain);
-
 	DATA_BLOB session_key;
-	int flags = 0;
-	if (session->options.lanman_auth) {
-		flags |= CLI_CRED_LANMAN_AUTH;
-	}
-
-	if (session->options.ntlmv2_auth) {
-		flags |= CLI_CRED_NTLMv2_AUTH;
-	}
 
 	state->setup.old.level      = RAW_SESSSETUP_OLD;
 	state->setup.old.in.bufsize = session->transport->options.max_xmit;
@@ -407,9 +424,21 @@ static NTSTATUS session_setup_old(struct composite_context *c,
 						 &state->setup.old.in.domain);
 	
 	if (session->transport->negotiate.sec_mode & NEGOTIATE_SECURITY_CHALLENGE_RESPONSE) {
+		DATA_BLOB names_blob = data_blob_null;
+		int flags = 0;
+
+		if (!cli_credentials_is_anonymous(io->in.credentials) &&
+		    !session->options.lanman_auth)
+		{
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+
+		flags |= CLI_CRED_LANMAN_AUTH;
+
 		nt_status = cli_credentials_get_ntlm_response(io->in.credentials, state, 
 							      &flags, 
 							      session->transport->negotiate.secblob, 
+							      NULL, /* server_timestamp */
 							      names_blob,
 							      &state->setup.old.in.password,
 							      NULL,
@@ -516,12 +545,12 @@ static NTSTATUS session_setup_spnego(struct composite_context *c,
 	}
 
 	if (strequal(chosen_oid, GENSEC_OID_SPNEGO)) {
-		status = gensec_update(session->gensec, state,
+		status = gensec_update_ev(session->gensec, state,
 				       c->event_ctx,
 				       session->transport->negotiate.secblob,
 				       &state->setup.spnego.in.secblob);
 	} else {
-		status = gensec_update(session->gensec, state,
+		status = gensec_update_ev(session->gensec, state,
 				       c->event_ctx,
 				       data_blob(NULL, 0),
 				       &state->setup.spnego.in.secblob);

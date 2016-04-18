@@ -63,7 +63,7 @@ class RegistryTestCase(TestCase):
 class PassdbTestCase(TestCaseInTempDir):
 
     def setUp(self):
-        super (PassdbTestCase, self).setUp()
+        super(PassdbTestCase, self).setUp()
         os.system("cp -r %s %s" % (DATADIR, self.tempdir))
         datadir = os.path.join(self.tempdir, "samba3")
 
@@ -72,6 +72,7 @@ class PassdbTestCase(TestCaseInTempDir):
         self.lp.set("private dir", datadir)
         self.lp.set("state directory", datadir)
         self.lp.set("lock directory", datadir)
+        self.lp.set("cache directory", datadir)
         passdb.set_secrets_dir(datadir)
         self.pdb = passdb.PDB("tdbsam")
 

@@ -42,7 +42,7 @@ extern PyTypeObject imessaging_Type;
 static bool server_id_from_py(PyObject *object, struct server_id *server_id)
 {
 	if (!PyTuple_Check(object)) {
-		if (!py_check_dcerpc_type(object, "server_id", "server_id")) {
+		if (!py_check_dcerpc_type(object, "samba.dcerpc.server_id", "server_id")) {
 
 			PyErr_SetString(PyExc_ValueError, "Expected tuple or server_id");
 			return false;
@@ -51,9 +51,19 @@ static bool server_id_from_py(PyObject *object, struct server_id *server_id)
 		return true;
 	}
 	if (PyTuple_Size(object) == 3) {
-		return PyArg_ParseTuple(object, "KII", &server_id->pid, &server_id->task_id, &server_id->vnn);
+		unsigned long long pid;
+		int task_id, vnn;
+
+		if (!PyArg_ParseTuple(object, "KII", &pid, &task_id, &vnn)) {
+			return false;
+		}
+		server_id->pid = pid;
+		server_id->task_id = task_id;
+		server_id->vnn = vnn;
+		return true;
 	} else {
-		int pid, task_id;
+		unsigned long long pid;
+		int task_id;
 		if (!PyArg_ParseTuple(object, "KI", &pid, &task_id))
 			return false;
 		*server_id = cluster_id(pid, task_id);
@@ -235,10 +245,12 @@ static PyObject *py_irpc_servers_byname(PyObject *self, PyObject *args, PyObject
 {
 	imessaging_Object *iface = (imessaging_Object *)self;
 	char *server_name;
+	unsigned i, num_ids;
 	struct server_id *ids;
 	PyObject *pylist;
-	int i;
 	TALLOC_CTX *mem_ctx = talloc_new(NULL);
+	NTSTATUS status;
+
 	if (!mem_ctx) {
 		PyErr_NoMemory();
 		return NULL;
@@ -249,25 +261,21 @@ static PyObject *py_irpc_servers_byname(PyObject *self, PyObject *args, PyObject
 		return NULL;
 	}
 
-	ids = irpc_servers_byname(iface->msg_ctx, mem_ctx, server_name);
-
-	if (ids == NULL) {
+	status = irpc_servers_byname(iface->msg_ctx, mem_ctx, server_name,
+				     &num_ids, &ids);
+	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(mem_ctx);
 		PyErr_SetString(PyExc_KeyError, "No such name");
 		return NULL;
 	}
 
-	for (i = 0; !server_id_is_disconnected(&ids[i]); i++) {
-		/* Do nothing */
-	}
-
-	pylist = PyList_New(i);
+	pylist = PyList_New(num_ids);
 	if (pylist == NULL) {
 		TALLOC_FREE(mem_ctx);
 		PyErr_NoMemory();
 		return NULL;
 	}
-	for (i = 0; !server_id_is_disconnected(&ids[i]); i++) {
+	for (i = 0; i < num_ids; i++) {
 		PyObject *py_server_id;
 		struct server_id *p_server_id = talloc(NULL, struct server_id);
 		if (!p_server_id) {

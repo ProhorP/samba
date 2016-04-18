@@ -65,6 +65,7 @@ NTSTATUS libnet_FindSite(TALLOC_CTX *ctx, struct libnet_context *lctx, struct li
 	if (ret != 0) {
 		r->out.error_string = NULL;
 		status = map_nt_error_from_unix_common(errno);
+		talloc_free(tmp_ctx);
 		return status;
 	}
 
@@ -77,7 +78,8 @@ NTSTATUS libnet_FindSite(TALLOC_CTX *ctx, struct libnet_context *lctx, struct li
 	}
 	status = cldap_netlogon(cldap, tmp_ctx, &search);
 	if (!NT_STATUS_IS_OK(status)
-	    || !search.out.netlogon.data.nt5_ex.client_site) {
+	    || search.out.netlogon.data.nt5_ex.client_site == NULL
+	    || search.out.netlogon.data.nt5_ex.client_site[0] == '\0') {
 		/*
 		  If cldap_netlogon() returns in error,
 		  default to using Default-First-Site-Name.
@@ -150,6 +152,7 @@ NTSTATUS libnet_JoinSite(struct libnet_context *ctx,
 	int rtn;
 
 	const char *server_dn_str;
+	const char *host;
 	struct nbt_name name;
 	const char *dest_addr = NULL;
 
@@ -166,7 +169,8 @@ NTSTATUS libnet_JoinSite(struct libnet_context *ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	make_nbt_name_client(&name, libnet_r->out.samr_binding->host);
+	host = dcerpc_binding_get_string_option(libnet_r->out.samr_binding, "host");
+	make_nbt_name_client(&name, host);
 	status = resolve_name_ex(lpcfg_resolve_context(ctx->lp_ctx),
 				 0, 0,
 				 &name, r, &dest_addr, ctx->event_ctx);

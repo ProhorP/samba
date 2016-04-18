@@ -16,8 +16,12 @@ shift 1
 samba_tool="$BINDIR/samba-tool"
 samba4bindir="$BINDIR"
 samba4srcdir="$SRCDIR/source4"
-samba4kinit="$samba4bindir/samba4kinit"
-CONFIG="--configfile=$PREFIX/dc/etc/smb.conf"
+samba4kinit=kinit
+if test -x $BINDIR/samba4kinit; then
+	samba4kinit=$BINDIR/samba4kinit
+fi
+
+CONFIG="--configfile=$PREFIX/etc/smb.conf"
 
 TESTUSER="ktpassUser"
 

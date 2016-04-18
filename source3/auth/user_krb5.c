@@ -151,7 +151,7 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 
 		if (lp_map_to_guest() == MAP_TO_GUEST_ON_BAD_UID) {
 			*mapped_to_guest = true;
-			fuser = talloc_strdup(mem_ctx, lp_guestaccount());
+			fuser = talloc_strdup(mem_ctx, lp_guest_account());
 			if (!fuser) {
 				return NT_STATUS_NO_MEMORY;
 			}
@@ -160,8 +160,8 @@ NTSTATUS get_user_from_kerberos_info(TALLOC_CTX *mem_ctx,
 
 		/* extra sanity check that the guest account is valid */
 		if (!pw) {
-			DEBUG(1, ("Username %s is invalid on this system\n",
-				  fuser));
+			DBG_NOTICE("Username %s is invalid on this system\n",
+				  fuser);
 			return NT_STATUS_LOGON_FAILURE;
 		}
 	}
@@ -223,9 +223,6 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 		 * SID consistency with ntlmssp session setup
 		 */
 		struct samu *sampass;
-		/* The stupid make_server_info_XX functions here
-		   don't take a talloc context. */
-		struct auth_serversupplied_info *tmp = NULL;
 
 		sampass = samu_new(talloc_tos());
 		if (sampass == NULL) {
@@ -235,14 +232,19 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 		if (pdb_getsampwnam(sampass, username)) {
 			DEBUG(10, ("found user %s in passdb, calling "
 				   "make_server_info_sam\n", username));
-			status = make_server_info_sam(&tmp, sampass);
+			status = make_server_info_sam(mem_ctx,
+						      sampass,
+						      &server_info);
 		} else {
 			/*
 			 * User not in passdb, make it up artificially
 			 */
 			DEBUG(10, ("didn't find user %s in passdb, calling "
 				   "make_server_info_pw\n", username));
-			status = make_server_info_pw(&tmp, username, pw);
+			status = make_server_info_pw(mem_ctx,
+						     username,
+						     pw,
+						     &server_info);
 		}
 
 		TALLOC_FREE(sampass);
@@ -252,9 +254,6 @@ NTSTATUS make_session_info_krb5(TALLOC_CTX *mem_ctx,
 				  nt_errstr(status)));
 			return status;
                 }
-
-		/* Steal tmp server info into the server_info pointer. */
-		server_info = talloc_move(mem_ctx, &tmp);
 
 		/* make_server_info_pw does not set the domain. Without this
 		 * we end up with the local netbios name in substitutions for

@@ -334,12 +334,13 @@ static NTSTATUS dsgetdcname_cache_fetch(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (!gencache_get_data_blob(key, &blob, NULL, NULL)) {
+	if (!gencache_get_data_blob(key, NULL, &blob, NULL, NULL)) {
 		return NT_STATUS_NOT_FOUND;
 	}
 
 	info = talloc_zero(mem_ctx, struct netr_DsRGetDCNameInfo);
 	if (!info) {
+		data_blob_free(&blob);
 		return NT_STATUS_NO_MEMORY;
 	}
 
@@ -546,39 +547,49 @@ static NTSTATUS discover_dc_dns(TALLOC_CTX *mem_ctx,
 	int numaddrs = 0;
 	struct ip_service_name *dclist = NULL;
 	int count = 0;
-	const char *dns_hosts_file;
 	char *guid_string;
 
-	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
 	if (flags & DS_PDC_REQUIRED) {
-		status = ads_dns_query_pdc(mem_ctx, dns_hosts_file,
-					   domain_name, &dcs, &numdcs);
+		status = ads_dns_query_pdc(mem_ctx,
+					   domain_name,
+					   &dcs,
+					   &numdcs);
 	} else if (flags & DS_GC_SERVER_REQUIRED) {
-		status = ads_dns_query_gcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_gcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	} else if (flags & DS_KDC_REQUIRED) {
-		status = ads_dns_query_kdcs(mem_ctx, dns_hosts_file,
-					    domain_name, site_name,
-					    &dcs, &numdcs);
+		status = ads_dns_query_kdcs(mem_ctx,
+					    domain_name,
+					    site_name,
+					    &dcs,
+					    &numdcs);
 	} else if (flags & DS_DIRECTORY_SERVICE_REQUIRED) {
-		status = ads_dns_query_dcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_dcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	} else if (domain_guid) {
 		guid_string = GUID_string(mem_ctx, domain_guid);
 		if (!guid_string) {
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		status = ads_dns_query_dcs_guid(mem_ctx, dns_hosts_file,
-						domain_name, guid_string,
-						&dcs, &numdcs);
+		status = ads_dns_query_dcs_guid(mem_ctx,
+						domain_name,
+						guid_string,
+						&dcs,
+						&numdcs);
 		TALLOC_FREE(guid_string);
 	} else {
-		status = ads_dns_query_dcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_dcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -875,8 +886,10 @@ static NTSTATUS process_dc_dns(TALLOC_CTX *mem_ctx,
 
 	for (i=0; i<num_dcs; i++) {
 
+		char addr[INET6_ADDRSTRLEN];
+		print_sockaddr(addr, sizeof(addr), &dclist[i].ss);
 
-		DEBUG(10,("LDAP ping to %s\n", dclist[i].hostname));
+		DEBUG(10,("LDAP ping to %s (%s)\n", dclist[i].hostname, addr));
 
 		if (ads_cldap_netlogon(mem_ctx, &dclist[i].ss,
 					domain_name,
@@ -1184,7 +1197,7 @@ NTSTATUS dsgetdcname(TALLOC_CTX *mem_ctx,
 	bool retry_query_with_null = false;
 
 	if ((site_name == NULL) || (site_name[0] == '\0')) {
-		ptr_to_free = sitename_fetch(domain_name);
+		ptr_to_free = sitename_fetch(mem_ctx, domain_name);
 		if (ptr_to_free != NULL) {
 			retry_query_with_null = true;
 		}
@@ -1201,7 +1214,7 @@ NTSTATUS dsgetdcname(TALLOC_CTX *mem_ctx,
 				flags,
 				info);
 
-	SAFE_FREE(ptr_to_free);
+	TALLOC_FREE(ptr_to_free);
 
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_DOMAIN_CONTROLLER_NOT_FOUND)) {
 		return status;

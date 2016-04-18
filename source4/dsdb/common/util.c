@@ -558,10 +558,51 @@ unsigned int samdb_result_hashes(TALLOC_CTX *mem_ctx, const struct ldb_message *
 	return count;
 }
 
-NTSTATUS samdb_result_passwords(TALLOC_CTX *mem_ctx, struct loadparm_context *lp_ctx, struct ldb_message *msg,
-				struct samr_Password **lm_pwd, struct samr_Password **nt_pwd) 
+NTSTATUS samdb_result_passwords_from_history(TALLOC_CTX *mem_ctx,
+					     struct loadparm_context *lp_ctx,
+					     struct ldb_message *msg,
+					     unsigned int idx,
+					     struct samr_Password **lm_pwd,
+					     struct samr_Password **nt_pwd)
 {
 	struct samr_Password *lmPwdHash, *ntPwdHash;
+
+	if (nt_pwd) {
+		unsigned int num_nt;
+		num_nt = samdb_result_hashes(mem_ctx, msg, "ntPwdHistory", &ntPwdHash);
+		if (num_nt <= idx) {
+			*nt_pwd = NULL;
+		} else {
+			*nt_pwd = &ntPwdHash[idx];
+		}
+	}
+	if (lm_pwd) {
+		/* Ensure that if we have turned off LM
+		 * authentication, that we never use the LM hash, even
+		 * if we store it */
+		if (lpcfg_lanman_auth(lp_ctx)) {
+			unsigned int num_lm;
+			num_lm = samdb_result_hashes(mem_ctx, msg, "lmPwdHistory", &lmPwdHash);
+			if (num_lm <= idx) {
+				*lm_pwd = NULL;
+			} else {
+				*lm_pwd = &lmPwdHash[idx];
+			}
+		} else {
+			*lm_pwd = NULL;
+		}
+	}
+	return NT_STATUS_OK;
+}
+
+NTSTATUS samdb_result_passwords_no_lockout(TALLOC_CTX *mem_ctx,
+					   struct loadparm_context *lp_ctx,
+					   struct ldb_message *msg,
+					   struct samr_Password **lm_pwd,
+					   struct samr_Password **nt_pwd)
+{
+	struct samr_Password *lmPwdHash, *ntPwdHash;
+
 	if (nt_pwd) {
 		unsigned int num_nt;
 		num_nt = samdb_result_hashes(mem_ctx, msg, "unicodePwd", &ntPwdHash);
@@ -592,6 +633,27 @@ NTSTATUS samdb_result_passwords(TALLOC_CTX *mem_ctx, struct loadparm_context *lp
 		}
 	}
 	return NT_STATUS_OK;
+}
+
+NTSTATUS samdb_result_passwords(TALLOC_CTX *mem_ctx,
+				struct loadparm_context *lp_ctx,
+				struct ldb_message *msg,
+				struct samr_Password **lm_pwd,
+				struct samr_Password **nt_pwd)
+{
+	uint16_t acct_flags;
+
+	acct_flags = samdb_result_acct_flags(msg,
+					     "msDS-User-Account-Control-Computed");
+	/* Quit if the account was locked out. */
+	if (acct_flags & ACB_AUTOLOCK) {
+		DEBUG(3,("samdb_result_passwords: Account for user %s was locked out.\n",
+			 ldb_dn_get_linearized(msg->dn)));
+		return NT_STATUS_ACCOUNT_LOCKED_OUT;
+	}
+
+	return samdb_result_passwords_no_lockout(mem_ctx, lp_ctx, msg,
+						 lm_pwd, nt_pwd);
 }
 
 /*
@@ -625,28 +687,24 @@ struct samr_LogonHours samdb_result_logon_hours(TALLOC_CTX *mem_ctx, struct ldb_
 /*
   pull a set of account_flags from a result set. 
 
-  This requires that the attributes: 
-   pwdLastSet
-   userAccountControl
-  be included in 'msg'
+  Naturally, this requires that userAccountControl and
+  (if not null) the attributes 'attr' be already
+  included in msg
 */
-uint32_t samdb_result_acct_flags(struct ldb_context *sam_ctx, TALLOC_CTX *mem_ctx, 
-				 struct ldb_message *msg, struct ldb_dn *domain_dn)
+uint32_t samdb_result_acct_flags(struct ldb_message *msg, const char *attr)
 {
 	uint32_t userAccountControl = ldb_msg_find_attr_as_uint(msg, "userAccountControl", 0);
+	uint32_t attr_flags = 0;
 	uint32_t acct_flags = ds_uf2acb(userAccountControl);
-	NTTIME must_change_time;
-	NTTIME now;
-
-	must_change_time = samdb_result_force_password_change(sam_ctx, mem_ctx, 
-							      domain_dn, msg);
-
-	/* Test account expire time */
-	unix_to_nt_time(&now, time(NULL));
-	/* check for expired password */
-	if (must_change_time < now) {
-		acct_flags |= ACB_PW_EXPIRED;
+	if (attr) {
+		attr_flags = ldb_msg_find_attr_as_uint(msg, attr, UF_ACCOUNTDISABLE);
+		if (attr_flags == UF_ACCOUNTDISABLE) {
+			DEBUG(0, ("Attribute %s not found, disabling account %s!\n", attr,
+				  ldb_dn_get_linearized(msg->dn)));
+		}
+		acct_flags |= ds_uf2acb(attr_flags);
 	}
+
 	return acct_flags;
 }
 
@@ -716,6 +774,7 @@ struct ldb_message_element *samdb_find_attribute(struct ldb_context *ldb,
 
 int samdb_find_or_add_attribute(struct ldb_context *ldb, struct ldb_message *msg, const char *name, const char *set_value)
 {
+	int ret;
 	struct ldb_message_element *el;
 
        	el = ldb_msg_find_element(msg, name);
@@ -723,7 +782,12 @@ int samdb_find_or_add_attribute(struct ldb_context *ldb, struct ldb_message *msg
 		return LDB_SUCCESS;
 	}
 
-	return ldb_msg_add_string(msg, name, set_value);
+	ret = ldb_msg_add_string(msg, name, set_value);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	msg->elements[msg->num_elements - 1].flags = LDB_FLAG_MOD_ADD;
+	return LDB_SUCCESS;
 }
 
 /*
@@ -2015,7 +2079,7 @@ int samdb_set_password_callback(struct ldb_request *req, struct ldb_reply *ares)
  * Results: NT_STATUS_OK, NT_STATUS_INVALID_PARAMETER, NT_STATUS_UNSUCCESSFUL,
  *   NT_STATUS_WRONG_PASSWORD, NT_STATUS_PASSWORD_RESTRICTION
  */
-NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
+static NTSTATUS samdb_set_password_internal(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 			    struct ldb_dn *user_dn, struct ldb_dn *domain_dn,
 			    const DATA_BLOB *new_password,
 			    const struct samr_Password *lmNewHash,
@@ -2023,7 +2087,8 @@ NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 			    const struct samr_Password *lmOldHash,
 			    const struct samr_Password *ntOldHash,
 			    enum samPwdChangeReason *reject_reason,
-			    struct samr_DomInfo1 **_dominfo)
+			    struct samr_DomInfo1 **_dominfo,
+			    bool permit_interdomain_trust)
 {
 	struct ldb_message *msg;
 	struct ldb_message_element *el;
@@ -2114,6 +2179,16 @@ NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 			return NT_STATUS_NO_MEMORY;
 		}
 	}
+	if (permit_interdomain_trust) {
+		ret = ldb_request_add_control(req,
+					      DSDB_CONTROL_PERMIT_INTERDOMAIN_TRUST_UAC_OID,
+					      false, NULL);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(req);
+			talloc_free(msg);
+			return NT_STATUS_NO_MEMORY;
+		}
+	}
 	ret = ldb_request_add_control(req,
 				      DSDB_CONTROL_PASSWORD_CHANGE_STATUS_OID,
 				      true, NULL);
@@ -2126,8 +2201,11 @@ NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 	ret = dsdb_autotransaction_request(ldb, req);
 
 	if (req->context != NULL) {
-		pwd_stat = talloc_steal(mem_ctx,
-					((struct ldb_control *)req->context)->data);
+		struct ldb_control *control = talloc_get_type_abort(req->context,
+								    struct ldb_control);
+		pwd_stat = talloc_get_type_abort(control->data,
+						 struct dsdb_control_password_change_status);
+		talloc_steal(mem_ctx, pwd_stat);
 	}
 
 	talloc_free(req);
@@ -2184,11 +2262,35 @@ NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 	} else if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		/* don't let the caller know if an account doesn't exist */
 		status = NT_STATUS_WRONG_PASSWORD;
+	} else if (ret == LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS) {
+		status = NT_STATUS_ACCESS_DENIED;
 	} else if (ret != LDB_SUCCESS) {
+		DEBUG(1, ("Failed to set password on %s: %s\n",
+			  ldb_dn_get_linearized(msg->dn),
+			  ldb_errstring(ldb)));
 		status = NT_STATUS_UNSUCCESSFUL;
 	}
 
 	return status;
+}
+
+NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
+			    struct ldb_dn *user_dn, struct ldb_dn *domain_dn,
+			    const DATA_BLOB *new_password,
+			    const struct samr_Password *lmNewHash,
+			    const struct samr_Password *ntNewHash,
+			    const struct samr_Password *lmOldHash,
+			    const struct samr_Password *ntOldHash,
+			    enum samPwdChangeReason *reject_reason,
+			    struct samr_DomInfo1 **_dominfo)
+{
+	return samdb_set_password_internal(ldb, mem_ctx,
+			    user_dn, domain_dn,
+			    new_password,
+			    lmNewHash, ntNewHash,
+			    lmOldHash, ntOldHash,
+			    reject_reason, _dominfo,
+			    false); /* reject trusts */
 }
 
 /*
@@ -2211,6 +2313,7 @@ NTSTATUS samdb_set_password(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
  */
 NTSTATUS samdb_set_password_sid(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 				const struct dom_sid *user_sid,
+				const uint32_t *new_version, /* optional for trusts */
 				const DATA_BLOB *new_password,
 				const struct samr_Password *lmNewHash,
 				const struct samr_Password *ntNewHash,
@@ -2219,48 +2322,381 @@ NTSTATUS samdb_set_password_sid(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 				enum samPwdChangeReason *reject_reason,
 				struct samr_DomInfo1 **_dominfo) 
 {
+	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS nt_status;
-	struct ldb_dn *user_dn;
+	const char * const user_attrs[] = {
+		"userAccountControl",
+		"sAMAccountName",
+		NULL
+	};
+	struct ldb_message *user_msg = NULL;
 	int ret;
+	uint32_t uac = 0;
 
 	ret = ldb_transaction_start(ldb);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(1, ("Failed to start transaction: %s\n", ldb_errstring(ldb)));
+		TALLOC_FREE(frame);
 		return NT_STATUS_TRANSACTION_ABORTED;
 	}
 
-	user_dn = samdb_search_dn(ldb, mem_ctx, NULL,
-				  "(&(objectSid=%s)(objectClass=user))", 
-				  ldap_encode_ndr_dom_sid(mem_ctx, user_sid));
-	if (!user_dn) {
+	ret = dsdb_search_one(ldb, frame, &user_msg, ldb_get_default_basedn(ldb),
+			      LDB_SCOPE_SUBTREE, user_attrs, 0,
+			      "(&(objectSid=%s)(objectClass=user))",
+			      ldap_encode_ndr_dom_sid(frame, user_sid));
+	if (ret != LDB_SUCCESS) {
 		ldb_transaction_cancel(ldb);
-		DEBUG(3, ("samdb_set_password_sid: SID %s not found in samdb, returning NO_SUCH_USER\n",
-			  dom_sid_string(mem_ctx, user_sid)));
+		DEBUG(3, ("samdb_set_password_sid: SID[%s] not found in samdb %s - %s, "
+			  "returning NO_SUCH_USER\n",
+			  dom_sid_string(frame, user_sid),
+			  ldb_strerror(ret), ldb_errstring(ldb)));
+		TALLOC_FREE(frame);
 		return NT_STATUS_NO_SUCH_USER;
 	}
 
-	nt_status = samdb_set_password(ldb, mem_ctx,
-				       user_dn, NULL,
-				       new_password,
-				       lmNewHash, ntNewHash,
-				       lmOldHash, ntOldHash,
-				       reject_reason, _dominfo);
+	uac = ldb_msg_find_attr_as_uint(user_msg, "userAccountControl", 0);
+	if (!(uac & UF_ACCOUNT_TYPE_MASK)) {
+		ldb_transaction_cancel(ldb);
+		DEBUG(1, ("samdb_set_password_sid: invalid "
+			  "userAccountControl[0x%08X] for SID[%s] DN[%s], "
+			  "returning NO_SUCH_USER\n",
+			  (unsigned)uac, dom_sid_string(frame, user_sid),
+			  ldb_dn_get_linearized(user_msg->dn)));
+		TALLOC_FREE(frame);
+		return NT_STATUS_NO_SUCH_USER;
+	}
+
+	if (uac & UF_INTERDOMAIN_TRUST_ACCOUNT) {
+		const char * const tdo_attrs[] = {
+			"trustAuthIncoming",
+			"trustDirection",
+			NULL
+		};
+		struct ldb_message *tdo_msg = NULL;
+		const char *account_name = NULL;
+		uint32_t trust_direction;
+		uint32_t i;
+		const struct ldb_val *old_val = NULL;
+		struct trustAuthInOutBlob old_blob = {};
+		uint32_t old_version = 0;
+		struct AuthenticationInformation *old_version_a = NULL;
+		uint32_t _new_version = 0;
+		struct trustAuthInOutBlob new_blob = {};
+		struct ldb_val new_val = {};
+		struct timeval tv = timeval_current();
+		NTTIME now = timeval_to_nttime(&tv);
+		enum ndr_err_code ndr_err;
+
+		if (new_password == NULL && ntNewHash == NULL) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: "
+				  "no new password provided "
+				  "sAMAccountName for SID[%s] DN[%s], "
+				  "returning INVALID_PARAMETER\n",
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+
+		if (new_password != NULL && ntNewHash != NULL) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: "
+				  "two new passwords provided "
+				  "sAMAccountName for SID[%s] DN[%s], "
+				  "returning INVALID_PARAMETER\n",
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_INVALID_PARAMETER;
+		}
+
+		if (new_password != NULL && (new_password->length % 2)) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(2, ("samdb_set_password_sid: "
+				  "invalid utf16 length (%zu) "
+				  "sAMAccountName for SID[%s] DN[%s], "
+				  "returning WRONG_PASSWORD\n",
+				  new_password->length,
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_WRONG_PASSWORD;
+		}
+
+		if (new_password != NULL && new_password->length >= 500) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(2, ("samdb_set_password_sid: "
+				  "utf16 password too long (%zu) "
+				  "sAMAccountName for SID[%s] DN[%s], "
+				  "returning WRONG_PASSWORD\n",
+				  new_password->length,
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_WRONG_PASSWORD;
+		}
+
+		account_name = ldb_msg_find_attr_as_string(user_msg,
+							"sAMAccountName", NULL);
+		if (account_name == NULL) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: missing "
+				  "sAMAccountName for SID[%s] DN[%s], "
+				  "returning NO_SUCH_USER\n",
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_SUCH_USER;
+		}
+
+		nt_status = dsdb_trust_search_tdo_by_type(ldb,
+							  SEC_CHAN_DOMAIN,
+							  account_name,
+							  tdo_attrs,
+							  frame, &tdo_msg);
+		if (!NT_STATUS_IS_OK(nt_status)) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: dsdb_trust_search_tdo "
+				  "failed(%s) for sAMAccountName[%s] SID[%s] DN[%s], "
+				  "returning INTERNAL_DB_CORRUPTION\n",
+				  nt_errstr(nt_status), account_name,
+				  dom_sid_string(frame, user_sid),
+				  ldb_dn_get_linearized(user_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_INTERNAL_DB_CORRUPTION;
+		}
+
+		trust_direction = ldb_msg_find_attr_as_int(tdo_msg,
+							   "trustDirection", 0);
+		if (!(trust_direction & LSA_TRUST_DIRECTION_INBOUND)) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: direction[0x%08X] is "
+				  "not inbound for sAMAccountName[%s] "
+				  "DN[%s] TDO[%s], "
+				  "returning INTERNAL_DB_CORRUPTION\n",
+				  (unsigned)trust_direction,
+				  account_name,
+				  ldb_dn_get_linearized(user_msg->dn),
+				  ldb_dn_get_linearized(tdo_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_INTERNAL_DB_CORRUPTION;
+		}
+
+		old_val = ldb_msg_find_ldb_val(tdo_msg, "trustAuthIncoming");
+		if (old_val != NULL) {
+			ndr_err = ndr_pull_struct_blob(old_val, frame, &old_blob,
+					(ndr_pull_flags_fn_t)ndr_pull_trustAuthInOutBlob);
+			if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+				ldb_transaction_cancel(ldb);
+				DEBUG(1, ("samdb_set_password_sid: "
+					  "failed(%s) to parse "
+					  "trustAuthOutgoing sAMAccountName[%s] "
+					  "DN[%s] TDO[%s], "
+					  "returning INTERNAL_DB_CORRUPTION\n",
+					  ndr_map_error2string(ndr_err),
+					  account_name,
+					  ldb_dn_get_linearized(user_msg->dn),
+					  ldb_dn_get_linearized(tdo_msg->dn)));
+
+				TALLOC_FREE(frame);
+				return NT_STATUS_INTERNAL_DB_CORRUPTION;
+			}
+		}
+
+		for (i = old_blob.current.count; i > 0; i--) {
+			struct AuthenticationInformation *a =
+				&old_blob.current.array[i - 1];
+
+			switch (a->AuthType) {
+			case TRUST_AUTH_TYPE_NONE:
+				if (i == old_blob.current.count) {
+					/*
+					 * remove TRUST_AUTH_TYPE_NONE at the
+					 * end
+					 */
+					old_blob.current.count--;
+				}
+				break;
+
+			case TRUST_AUTH_TYPE_VERSION:
+				old_version_a = a;
+				old_version = a->AuthInfo.version.version;
+				break;
+
+			case TRUST_AUTH_TYPE_CLEAR:
+				break;
+
+			case TRUST_AUTH_TYPE_NT4OWF:
+				break;
+			}
+		}
+
+		if (new_version == NULL) {
+			_new_version = 0;
+			new_version = &_new_version;
+		}
+
+		if (old_version_a != NULL && *new_version != (old_version + 1)) {
+			old_version_a->LastUpdateTime = now;
+			old_version_a->AuthType = TRUST_AUTH_TYPE_NONE;
+		}
+
+		new_blob.count = MAX(old_blob.current.count, 2);
+		new_blob.current.array = talloc_zero_array(frame,
+						struct AuthenticationInformation,
+						new_blob.count);
+		if (new_blob.current.array == NULL) {
+			ldb_transaction_cancel(ldb);
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_MEMORY;
+		}
+		new_blob.previous.array = talloc_zero_array(frame,
+						struct AuthenticationInformation,
+						new_blob.count);
+		if (new_blob.current.array == NULL) {
+			ldb_transaction_cancel(ldb);
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		for (i = 0; i < old_blob.current.count; i++) {
+			struct AuthenticationInformation *o =
+				&old_blob.current.array[i];
+			struct AuthenticationInformation *p =
+				&new_blob.previous.array[i];
+
+			*p = *o;
+			new_blob.previous.count++;
+		}
+		for (; i < new_blob.count; i++) {
+			struct AuthenticationInformation *pi =
+				&new_blob.previous.array[i];
+
+			if (i == 0) {
+				/*
+				 * new_blob.previous is still empty so
+				 * we'll do new_blob.previous = new_blob.current
+				 * below.
+				 */
+				break;
+			}
+
+			pi->LastUpdateTime = now;
+			pi->AuthType = TRUST_AUTH_TYPE_NONE;
+			new_blob.previous.count++;
+		}
+
+		for (i = 0; i < new_blob.count; i++) {
+			struct AuthenticationInformation *ci =
+				&new_blob.current.array[i];
+
+			ci->LastUpdateTime = now;
+			switch (i) {
+			case 0:
+				if (ntNewHash != NULL) {
+					ci->AuthType = TRUST_AUTH_TYPE_NT4OWF;
+					ci->AuthInfo.nt4owf.password = *ntNewHash;
+					break;
+				}
+
+				ci->AuthType = TRUST_AUTH_TYPE_CLEAR;
+				ci->AuthInfo.clear.size = new_password->length;
+				ci->AuthInfo.clear.password = new_password->data;
+				break;
+			case 1:
+				ci->AuthType = TRUST_AUTH_TYPE_VERSION;
+				ci->AuthInfo.version.version = *new_version;
+				break;
+			default:
+				ci->AuthType = TRUST_AUTH_TYPE_NONE;
+				break;
+			}
+
+			new_blob.current.count++;
+		}
+
+		if (new_blob.previous.count == 0) {
+			TALLOC_FREE(new_blob.previous.array);
+			new_blob.previous = new_blob.current;
+		}
+
+		ndr_err = ndr_push_struct_blob(&new_val, frame, &new_blob,
+				(ndr_push_flags_fn_t)ndr_push_trustAuthInOutBlob);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: "
+				  "failed(%s) to generate "
+				  "trustAuthOutgoing sAMAccountName[%s] "
+				  "DN[%s] TDO[%s], "
+				  "returning UNSUCCESSFUL\n",
+				  ndr_map_error2string(ndr_err),
+				  account_name,
+				  ldb_dn_get_linearized(user_msg->dn),
+				  ldb_dn_get_linearized(tdo_msg->dn)));
+			TALLOC_FREE(frame);
+			return NT_STATUS_UNSUCCESSFUL;
+		}
+
+		tdo_msg->num_elements = 0;
+		TALLOC_FREE(tdo_msg->elements);
+
+		ret = ldb_msg_add_empty(tdo_msg, "trustAuthIncoming",
+					LDB_FLAG_MOD_REPLACE, NULL);
+		if (ret != LDB_SUCCESS) {
+			ldb_transaction_cancel(ldb);
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_MEMORY;
+		}
+		ret = ldb_msg_add_value(tdo_msg, "trustAuthIncoming",
+					&new_val, NULL);
+		if (ret != LDB_SUCCESS) {
+			ldb_transaction_cancel(ldb);
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		ret = ldb_modify(ldb, tdo_msg);
+		if (ret != LDB_SUCCESS) {
+			nt_status = dsdb_ldb_err_to_ntstatus(ret);
+			ldb_transaction_cancel(ldb);
+			DEBUG(1, ("samdb_set_password_sid: "
+				  "failed to replace "
+				  "trustAuthOutgoing sAMAccountName[%s] "
+				  "DN[%s] TDO[%s], "
+				  "%s - %s\n",
+				  account_name,
+				  ldb_dn_get_linearized(user_msg->dn),
+				  ldb_dn_get_linearized(tdo_msg->dn),
+				  nt_errstr(nt_status), ldb_errstring(ldb)));
+			TALLOC_FREE(frame);
+			return nt_status;
+		}
+	}
+
+	nt_status = samdb_set_password_internal(ldb, mem_ctx,
+						user_msg->dn, NULL,
+						new_password,
+						lmNewHash, ntNewHash,
+						lmOldHash, ntOldHash,
+						reject_reason, _dominfo,
+						true); /* permit trusts */
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		ldb_transaction_cancel(ldb);
-		talloc_free(user_dn);
+		TALLOC_FREE(frame);
 		return nt_status;
 	}
 
 	ret = ldb_transaction_commit(ldb);
 	if (ret != LDB_SUCCESS) {
 		DEBUG(0,("Failed to commit transaction to change password on %s: %s\n",
-			 ldb_dn_get_linearized(user_dn),
+			 ldb_dn_get_linearized(user_msg->dn),
 			 ldb_errstring(ldb)));
-		talloc_free(user_dn);
+		TALLOC_FREE(frame);
 		return NT_STATUS_TRANSACTION_ABORTED;
 	}
 
-	talloc_free(user_dn);
+	TALLOC_FREE(frame);
 	return NT_STATUS_OK;
 }
 
@@ -3396,7 +3832,7 @@ int dsdb_find_nc_root(struct ldb_context *samdb, TALLOC_CTX *mem_ctx, struct ldb
 
 	ret = ldb_search(samdb, tmp_ctx, &root_res,
 			 ldb_dn_new(tmp_ctx, samdb, ""), LDB_SCOPE_BASE, root_attrs, NULL);
-	if (ret != LDB_SUCCESS) {
+	if (ret != LDB_SUCCESS || root_res->count == 0) {
 		DEBUG(1,("Searching for namingContexts in rootDSE failed: %s\n", ldb_errstring(samdb)));
 		talloc_free(tmp_ctx);
 		return ret;
@@ -4219,8 +4655,12 @@ int dsdb_validate_dsa_guid(struct ldb_context *ldb,
 
 	account_dn = ldb_msg_find_attr_as_dn(ldb, tmp_ctx, msg, "serverReference");
 	if (account_dn == NULL) {
-		DEBUG(1,(__location__ ": Failed to find account_dn for DSA with objectGUID %s, sid %s\n",
-			 GUID_string(tmp_ctx, dsa_guid), dom_sid_string(tmp_ctx, sid)));
+		DEBUG(1,(__location__ ": Failed to find account dn "
+			 "(serverReference) for %s, parent of DSA with "
+			 "objectGUID %s, sid %s\n",
+			 ldb_dn_get_linearized(msg->dn),
+			 GUID_string(tmp_ctx, dsa_guid),
+			 dom_sid_string(tmp_ctx, sid)));
 		talloc_free(tmp_ctx);
 		return ldb_operr(ldb);
 	}
@@ -4616,4 +5056,286 @@ _PUBLIC_ char *NS_GUID_string(TALLOC_CTX *mem_ctx, const struct GUID *guid)
 			       guid->node[0], guid->node[1],
 			       guid->node[2], guid->node[3],
 			       guid->node[4], guid->node[5]);
+}
+
+/*
+ * Return the effective badPwdCount
+ *
+ * This requires that the user_msg have (if present):
+ *  - badPasswordTime
+ *  - badPwdCount
+ *
+ * This also requires that the domain_msg have (if present):
+ *  - lockOutObservationWindow
+ */
+static int dsdb_effective_badPwdCount(struct ldb_message *user_msg,
+				      int64_t lockOutObservationWindow,
+				      NTTIME now)
+{
+	int64_t badPasswordTime;
+	badPasswordTime = ldb_msg_find_attr_as_int64(user_msg, "badPasswordTime", 0);
+
+	if (badPasswordTime - lockOutObservationWindow >= now) {
+		return ldb_msg_find_attr_as_int(user_msg, "badPwdCount", 0);
+	} else {
+		return 0;
+	}
+}
+
+/*
+ * Return the effective badPwdCount
+ *
+ * This requires that the user_msg have (if present):
+ *  - badPasswordTime
+ *  - badPwdCount
+ *
+ */
+int samdb_result_effective_badPwdCount(struct ldb_context *sam_ldb,
+				       TALLOC_CTX *mem_ctx,
+				       struct ldb_dn *domain_dn,
+				       struct ldb_message *user_msg)
+{
+	struct timeval tv_now = timeval_current();
+	NTTIME now = timeval_to_nttime(&tv_now);
+	int64_t lockOutObservationWindow = samdb_search_int64(sam_ldb, mem_ctx, 0, domain_dn,
+							      "lockOutObservationWindow", NULL);
+	return dsdb_effective_badPwdCount(user_msg, lockOutObservationWindow, now);
+}
+
+/*
+ * Prepare an update to the badPwdCount and associated attributes.
+ *
+ * This requires that the user_msg have (if present):
+ *  - objectSid
+ *  - badPasswordTime
+ *  - badPwdCount
+ *
+ * This also requires that the domain_msg have (if present):
+ *  - pwdProperties
+ *  - lockoutThreshold
+ *  - lockOutObservationWindow
+ */
+NTSTATUS dsdb_update_bad_pwd_count(TALLOC_CTX *mem_ctx,
+				   struct ldb_context *sam_ctx,
+				   struct ldb_message *user_msg,
+				   struct ldb_message *domain_msg,
+				   struct ldb_message **_mod_msg)
+{
+	int i, ret, badPwdCount;
+	int64_t lockoutThreshold, lockOutObservationWindow;
+	struct dom_sid *sid;
+	struct timeval tv_now = timeval_current();
+	NTTIME now = timeval_to_nttime(&tv_now);
+	NTSTATUS status;
+	uint32_t pwdProperties, rid = 0;
+	struct ldb_message *mod_msg;
+
+	sid = samdb_result_dom_sid(mem_ctx, user_msg, "objectSid");
+
+	pwdProperties = ldb_msg_find_attr_as_uint(domain_msg,
+						  "pwdProperties", -1);
+	if (sid && !(pwdProperties & DOMAIN_PASSWORD_LOCKOUT_ADMINS)) {
+		status = dom_sid_split_rid(NULL, sid, NULL, &rid);
+		if (!NT_STATUS_IS_OK(status)) {
+			/*
+			 * This can't happen anyway, but always try
+			 * and update the badPwdCount on failure
+			 */
+			rid = 0;
+		}
+	}
+	TALLOC_FREE(sid);
+
+	/*
+	 * Work out if we are doing password lockout on the domain.
+	 * Also, the built in administrator account is exempt:
+	 * http://msdn.microsoft.com/en-us/library/windows/desktop/aa375371%28v=vs.85%29.aspx
+	 */
+	lockoutThreshold = ldb_msg_find_attr_as_int(domain_msg,
+						    "lockoutThreshold", 0);
+	if (lockoutThreshold == 0 || (rid == DOMAIN_RID_ADMINISTRATOR)) {
+		DEBUG(5, ("Not updating badPwdCount on %s after wrong password\n",
+			  ldb_dn_get_linearized(user_msg->dn)));
+		return NT_STATUS_OK;
+	}
+
+	mod_msg = ldb_msg_new(mem_ctx);
+	if (mod_msg == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+	mod_msg->dn = ldb_dn_copy(mod_msg, user_msg->dn);
+	if (mod_msg->dn == NULL) {
+		TALLOC_FREE(mod_msg);
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	lockOutObservationWindow = ldb_msg_find_attr_as_int64(domain_msg,
+							      "lockOutObservationWindow", 0);
+
+	badPwdCount = dsdb_effective_badPwdCount(user_msg, lockOutObservationWindow, now);
+
+	badPwdCount++;
+
+	ret = samdb_msg_add_int(sam_ctx, mod_msg, mod_msg, "badPwdCount", badPwdCount);
+	if (ret != LDB_SUCCESS) {
+		TALLOC_FREE(mod_msg);
+		return NT_STATUS_NO_MEMORY;
+	}
+	ret = samdb_msg_add_int64(sam_ctx, mod_msg, mod_msg, "badPasswordTime", now);
+	if (ret != LDB_SUCCESS) {
+		TALLOC_FREE(mod_msg);
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	if (badPwdCount >= lockoutThreshold) {
+		ret = samdb_msg_add_int64(sam_ctx, mod_msg, mod_msg, "lockoutTime", now);
+		if (ret != LDB_SUCCESS) {
+			TALLOC_FREE(mod_msg);
+			return NT_STATUS_NO_MEMORY;
+		}
+		DEBUG(5, ("Locked out user %s after %d wrong passwords\n",
+			  ldb_dn_get_linearized(user_msg->dn), badPwdCount));
+	} else {
+		DEBUG(5, ("Updated badPwdCount on %s after %d wrong passwords\n",
+			  ldb_dn_get_linearized(user_msg->dn), badPwdCount));
+	}
+
+	/* mark all the message elements as LDB_FLAG_MOD_REPLACE */
+	for (i=0; i< mod_msg->num_elements; i++) {
+		mod_msg->elements[i].flags = LDB_FLAG_MOD_REPLACE;
+	}
+
+	*_mod_msg = mod_msg;
+	return NT_STATUS_OK;
+}
+
+/**
+ * Sets defaults for a User object
+ * List of default attributes set:
+ * 	accountExpires, badPasswordTime, badPwdCount,
+ * 	codePage, countryCode, lastLogoff, lastLogon
+ * 	logonCount, pwdLastSet
+ */
+int dsdb_user_obj_set_defaults(struct ldb_context *ldb, struct ldb_message *usr_obj)
+{
+	int i, ret;
+	const struct attribute_values {
+		const char *name;
+		const char *value;
+	} map[] = {
+		{
+			.name = "accountExpires",
+			.value = "9223372036854775807"
+		},
+		{
+			.name = "badPasswordTime",
+			.value = "0"
+		},
+		{
+			.name = "badPwdCount",
+			.value = "0"
+		},
+		{
+			.name = "codePage",
+			.value = "0"
+		},
+		{
+			.name = "countryCode",
+			.value = "0"
+		},
+		{
+			.name = "lastLogoff",
+			.value = "0"
+		},
+		{
+			.name = "lastLogon",
+			.value = "0"
+		},
+		{
+			.name = "logonCount",
+			.value = "0"
+		},
+		{
+			.name = "pwdLastSet",
+			.value = "0"
+		}
+	};
+
+	for (i = 0; i < ARRAY_SIZE(map); i++) {
+		ret = samdb_find_or_add_attribute(ldb, usr_obj,
+						  map[i].name, map[i].value);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+	}
+
+	return LDB_SUCCESS;
+}
+
+/**
+ * Sets 'sAMAccountType on user object based on userAccountControl
+ * @param ldb Current ldb_context
+ * @param usr_obj ldb_message representing User object
+ * @param user_account_control Value for userAccountControl flags
+ * @param account_type_p Optional pointer to account_type to return
+ * @return LDB_SUCCESS or LDB_ERR* code on failure
+ */
+int dsdb_user_obj_set_account_type(struct ldb_context *ldb, struct ldb_message *usr_obj,
+				   uint32_t user_account_control, uint32_t *account_type_p)
+{
+	int ret;
+	uint32_t account_type;
+	struct ldb_message_element *el;
+
+	account_type = ds_uf2atype(user_account_control);
+	if (account_type == 0) {
+		ldb_set_errstring(ldb, "dsdb: Unrecognized account type!");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+	ret = samdb_msg_add_uint(ldb, usr_obj, usr_obj,
+				 "sAMAccountType",
+				 account_type);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	el = ldb_msg_find_element(usr_obj, "sAMAccountType");
+	el->flags = LDB_FLAG_MOD_REPLACE;
+
+	if (account_type_p) {
+		*account_type_p = account_type;
+	}
+
+	return LDB_SUCCESS;
+}
+
+/**
+ * Determine and set primaryGroupID based on userAccountControl value
+ * @param ldb Current ldb_context
+ * @param usr_obj ldb_message representing User object
+ * @param user_account_control Value for userAccountControl flags
+ * @param group_rid_p Optional pointer to group RID to return
+ * @return LDB_SUCCESS or LDB_ERR* code on failure
+ */
+int dsdb_user_obj_set_primary_group_id(struct ldb_context *ldb, struct ldb_message *usr_obj,
+				       uint32_t user_account_control, uint32_t *group_rid_p)
+{
+	int ret;
+	uint32_t rid;
+	struct ldb_message_element *el;
+
+	rid = ds_uf2prim_group_rid(user_account_control);
+
+	ret = samdb_msg_add_uint(ldb, usr_obj, usr_obj,
+				 "primaryGroupID", rid);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	el = ldb_msg_find_element(usr_obj, "primaryGroupID");
+	el->flags = LDB_FLAG_MOD_REPLACE;
+
+	if (group_rid_p) {
+		*group_rid_p = rid;
+	}
+
+	return LDB_SUCCESS;
 }

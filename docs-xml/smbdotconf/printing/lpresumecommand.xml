@@ -1,7 +1,6 @@
 <samba:parameter name="lpresume command"
                  context="S"
 				 type="string"
-		 print="1"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
     <para>This parameter specifies the command to be 
@@ -34,5 +33,6 @@
     <para><command moreinfo="none">qstat -s -j%j -r</command></para>
 </description>
 
+<value type="default"><comment>determined by printing parameter</comment></value>
 <value type="example">/usr/bin/lpalt %p-%j -p2</value>
 </samba:parameter>

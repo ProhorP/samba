@@ -101,27 +101,27 @@ static int tdbsam_convert_one(struct db_record *rec, void *priv)
 	switch (state->from) {
 	case 0:
 		ret = init_samu_from_buffer(user, SAMU_BUFFER_V0,
-					    (uint8 *)value.dptr,
+					    (uint8_t *)value.dptr,
 					    value.dsize);
 		break;
 	case 1:
 		ret = init_samu_from_buffer(user, SAMU_BUFFER_V1,
-					    (uint8 *)value.dptr,
+					    (uint8_t *)value.dptr,
 					    value.dsize);
 		break;
 	case 2:
 		ret = init_samu_from_buffer(user, SAMU_BUFFER_V2,
-					    (uint8 *)value.dptr,
+					    (uint8_t *)value.dptr,
 					    value.dsize);
 		break;
 	case 3:
 		ret = init_samu_from_buffer(user, SAMU_BUFFER_V3,
-					    (uint8 *)value.dptr,
+					    (uint8_t *)value.dptr,
 					    value.dsize);
 		break;
 	case 4:
 		ret = init_samu_from_buffer(user, SAMU_BUFFER_V4,
-					    (uint8 *)value.dptr,
+					    (uint8_t *)value.dptr,
 					    value.dsize);
 		break;
 	default:
@@ -226,7 +226,7 @@ static bool tdbsam_convert_backup(const char *dbname, struct db_context **pp_db)
 
 	tmp_db = db_open(NULL, tmp_fname, 0,
 			 TDB_DEFAULT, O_CREAT|O_RDWR, 0600,
-			 DBWRAP_LOCK_ORDER_1);
+			 DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 	if (tmp_db == NULL) {
 		DEBUG(0, ("tdbsam_convert_backup: Failed to create backup TDB passwd "
 			  "[%s]\n", tmp_fname));
@@ -293,7 +293,7 @@ static bool tdbsam_convert_backup(const char *dbname, struct db_context **pp_db)
 
 	orig_db = db_open(NULL, dbname, 0,
 			  TDB_DEFAULT, O_CREAT|O_RDWR, 0600,
-			  DBWRAP_LOCK_ORDER_1);
+			  DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 	if (orig_db == NULL) {
 		DEBUG(0, ("tdbsam_convert_backup: Failed to re-open "
 			  "converted passdb TDB [%s]\n", dbname));
@@ -326,18 +326,24 @@ static bool tdbsam_convert_backup(const char *dbname, struct db_context **pp_db)
 static bool tdbsam_upgrade_next_rid(struct db_context *db)
 {
 	TDB_CONTEXT *tdb;
-	uint32 rid;
+	uint32_t rid;
 	bool ok = false;
 	NTSTATUS status;
+	char *db_path;
 
 	status = dbwrap_fetch_uint32_bystring(db, NEXT_RID_STRING, &rid);
 	if (NT_STATUS_IS_OK(status)) {
 		return true;
 	}
 
-	tdb = tdb_open_log(state_path("winbindd_idmap.tdb"), 0,
-			   TDB_DEFAULT, O_RDONLY, 0644);
+	db_path = state_path("winbindd_idmap.tdb");
+	if (db_path == NULL) {
+		return false;
+	}
 
+	tdb = tdb_open_log(db_path, 0,
+			   TDB_DEFAULT, O_RDONLY, 0644);
+	TALLOC_FREE(db_path);
 	if (tdb) {
 		ok = tdb_fetch_uint32(tdb, "RID_COUNTER", &rid);
 		if (!ok) {
@@ -356,7 +362,7 @@ static bool tdbsam_upgrade_next_rid(struct db_context *db)
 	return true;
 }
 
-static bool tdbsam_convert(struct db_context **pp_db, const char *name, int32 from)
+static bool tdbsam_convert(struct db_context **pp_db, const char *name, int32_t from)
 {
 	struct tdbsam_convert_state state;
 	struct db_context *db = NULL;
@@ -431,8 +437,8 @@ static bool tdbsam_convert(struct db_context **pp_db, const char *name, int32 fr
 
 static bool tdbsam_open( const char *name )
 {
-	int32	version;
-	int32	minor_version;
+	int32_t version;
+	int32_t minor_version;
 	NTSTATUS status;
 
 	/* check if we are already open */
@@ -444,7 +450,7 @@ static bool tdbsam_open( const char *name )
 	/* Try to open tdb passwd.  Create a new one if necessary */
 
 	db_sam = db_open(NULL, name, 0, TDB_DEFAULT, O_CREAT|O_RDWR, 0600,
-			 DBWRAP_LOCK_ORDER_1);
+			 DBWRAP_LOCK_ORDER_1, DBWRAP_FLAG_NONE);
 	if (db_sam == NULL) {
 		DEBUG(0, ("tdbsam_open: Failed to open/create TDB passwd "
 			  "[%s]\n", name));
@@ -578,7 +584,7 @@ static NTSTATUS tdbsam_getsampwnam (struct pdb_methods *my_methods,
 	}
 
 	/* set search key */
-	slprintf(keystr, sizeof(keystr)-1, "%s%s", USERPREFIX, name);
+	fstr_sprintf(keystr, "%s%s", USERPREFIX, name);
 
 	/* open the database */
 
@@ -593,6 +599,12 @@ static NTSTATUS tdbsam_getsampwnam (struct pdb_methods *my_methods,
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5,("pdb_getsampwnam (TDB): error fetching database.\n"));
 		DEBUGADD(5, (" Key: %s\n", keystr));
+		return NT_STATUS_NO_SUCH_USER;
+	}
+
+	if (data.dsize == 0) {
+		DEBUG(5, ("%s: Got 0-sized record for key %s\n", __func__,
+			  keystr));
 		return NT_STATUS_NO_SUCH_USER;
 	}
 
@@ -616,7 +628,7 @@ static NTSTATUS tdbsam_getsampwnam (struct pdb_methods *my_methods,
  **************************************************************************/
 
 static NTSTATUS tdbsam_getsampwrid (struct pdb_methods *my_methods,
-				    struct samu *user, uint32 rid)
+				    struct samu *user, uint32_t rid)
 {
 	NTSTATUS                nt_status = NT_STATUS_UNSUCCESSFUL;
 	TDB_DATA 		data;
@@ -630,7 +642,7 @@ static NTSTATUS tdbsam_getsampwrid (struct pdb_methods *my_methods,
 
 	/* set search key */
 
-	slprintf(keystr, sizeof(keystr)-1, "%s%.8x", RIDPREFIX, rid);
+	fstr_sprintf(keystr, "%s%.8x", RIDPREFIX, rid);
 
 	/* open the database */
 
@@ -656,7 +668,7 @@ static NTSTATUS tdbsam_getsampwrid (struct pdb_methods *my_methods,
 static NTSTATUS tdbsam_getsampwsid(struct pdb_methods *my_methods,
 				   struct samu * user, const struct dom_sid *sid)
 {
-	uint32 rid;
+	uint32_t rid;
 
 	if ( !sid_peek_check_rid(get_global_sam_sid(), sid, &rid) )
 		return NT_STATUS_UNSUCCESSFUL;
@@ -677,7 +689,7 @@ static bool tdb_delete_samacct_only( struct samu *sam_pass )
 
   	/* set the search key */
 
-	slprintf(keystr, sizeof(keystr)-1, "%s%s", USERPREFIX, name);
+	fstr_sprintf(keystr, "%s%s", USERPREFIX, name);
 
 	/* it's outaa here!  8^) */
 	if ( !tdbsam_open( tdbsam_filename ) ) {
@@ -705,7 +717,7 @@ static NTSTATUS tdbsam_delete_sam_account(struct pdb_methods *my_methods,
 {
 	NTSTATUS        nt_status = NT_STATUS_UNSUCCESSFUL;
 	fstring 	keystr;
-	uint32		rid;
+	uint32_t	rid;
 	fstring		name;
 
 	/* open the database */
@@ -723,7 +735,7 @@ static NTSTATUS tdbsam_delete_sam_account(struct pdb_methods *my_methods,
 
   	/* set the search key */
 
-	slprintf(keystr, sizeof(keystr)-1, "%s%s", USERPREFIX, name);
+	fstr_sprintf(keystr, "%s%s", USERPREFIX, name);
 
 	rid = pdb_get_user_rid(sam_pass);
 
@@ -743,7 +755,7 @@ static NTSTATUS tdbsam_delete_sam_account(struct pdb_methods *my_methods,
 
   	/* set the search key */
 
-	slprintf(keystr, sizeof(keystr)-1, "%s%.8x", RIDPREFIX, rid);
+	fstr_sprintf(keystr, "%s%.8x", RIDPREFIX, rid);
 
 	/* it's outaa here!  8^) */
 
@@ -777,7 +789,7 @@ static NTSTATUS tdbsam_delete_sam_account(struct pdb_methods *my_methods,
 static bool tdb_update_samacct_only( struct samu* newpwd, int flag )
 {
 	TDB_DATA 	data;
-	uint8		*buf = NULL;
+	uint8_t		*buf = NULL;
 	fstring 	keystr;
 	fstring		name;
 	bool		ret = false;
@@ -801,7 +813,7 @@ static bool tdb_update_samacct_only( struct samu* newpwd, int flag )
 		  pdb_get_user_rid(newpwd)));
 
   	/* setup the USER index key */
-	slprintf(keystr, sizeof(keystr)-1, "%s%s", USERPREFIX, name);
+	fstr_sprintf(keystr, "%s%s", USERPREFIX, name);
 
 	/* add the account */
 
@@ -840,8 +852,7 @@ static bool tdb_update_ridrec_only( struct samu* newpwd, int flag )
 	data = string_term_tdb_data(name);
 
 	/* setup the RID index key */
-	slprintf(keystr, sizeof(keystr)-1, "%s%.8x", RIDPREFIX,
-		 pdb_get_user_rid(newpwd));
+	fstr_sprintf(keystr, "%s%.8x", RIDPREFIX, pdb_get_user_rid(newpwd));
 
 	/* add the reference */
 	status = dbwrap_store_bystring(db_sam, keystr, data, flag);
@@ -921,7 +932,7 @@ static bool tdb_update_sam(struct pdb_methods *my_methods, struct samu* newpwd,
 
 		/* Delete old RID key */
 		DEBUG(10, ("tdb_update_sam: Deleting key for RID %u\n", oldrid));
-		slprintf(keystr, sizeof(keystr) - 1, "%s%.8x", RIDPREFIX, oldrid);
+		fstr_sprintf(keystr, "%s%.8x", RIDPREFIX, oldrid);
 		if (!NT_STATUS_IS_OK(dbwrap_delete_bystring(db_sam, keystr))) {
 			DEBUG(0, ("tdb_update_sam: Can't delete %s\n", keystr));
 			goto cancel;
@@ -1002,7 +1013,7 @@ static NTSTATUS tdbsam_rename_sam_account(struct pdb_methods *my_methods,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rename_script = lp_renameuser_script(new_acct);
+	rename_script = lp_rename_user_script(new_acct);
 	if (!rename_script) {
 		TALLOC_FREE(new_acct);
 		return NT_STATUS_NO_MEMORY;
@@ -1120,9 +1131,9 @@ static uint32_t tdbsam_capabilities(struct pdb_methods *methods)
 	return PDB_CAP_STORE_RIDS;
 }
 
-static bool tdbsam_new_rid(struct pdb_methods *methods, uint32 *prid)
+static bool tdbsam_new_rid(struct pdb_methods *methods, uint32_t *prid)
 {
-	uint32 rid;
+	uint32_t rid;
 	NTSTATUS status;
 
 	rid = BASE_RID;		/* Default if not set */
@@ -1161,7 +1172,7 @@ static int tdbsam_collect_rids(struct db_record *rec, void *private_data)
 	struct tdbsam_search_state *state = talloc_get_type_abort(
 		private_data, struct tdbsam_search_state);
 	size_t prefixlen = strlen(RIDPREFIX);
-	uint32 rid;
+	uint32_t rid;
 	TDB_DATA key;
 
 	key = dbwrap_record_get_key(rec);
@@ -1173,7 +1184,7 @@ static int tdbsam_collect_rids(struct db_record *rec, void *private_data)
 
 	rid = strtoul((char *)key.dptr+prefixlen, NULL, 16);
 
-	ADD_TO_LARGE_ARRAY(state, uint32, rid, &state->rids, &state->num_rids,
+	ADD_TO_LARGE_ARRAY(state, uint32_t, rid, &state->rids, &state->num_rids,
 			   &state->array_size);
 
 	return 0;
@@ -1250,7 +1261,7 @@ static bool tdbsam_search_next_entry(struct pdb_search *search,
 
 static bool tdbsam_search_users(struct pdb_methods *methods,
 				struct pdb_search *search,
-				uint32 acct_flags)
+				uint32_t acct_flags)
 {
 	struct tdbsam_search_state *state;
 

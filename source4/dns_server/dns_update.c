@@ -103,7 +103,7 @@ static WERROR check_one_prerequisite(struct dns_server *dns,
 			W_ERROR_NOT_OK_RETURN(werror);
 
 			for (i = 0; i < acount; i++) {
-				if (ans[i].wType == pr->rr_type) {
+				if (ans[i].wType == (enum dns_record_type) pr->rr_type) {
 					found = true;
 					break;
 				}
@@ -145,7 +145,7 @@ static WERROR check_one_prerequisite(struct dns_server *dns,
 			}
 
 			for (i = 0; i < acount; i++) {
-				if (ans[i].wType == pr->rr_type) {
+				if (ans[i].wType == (enum dns_record_type) pr->rr_type) {
 					found = true;
 					break;
 				}
@@ -299,9 +299,7 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 			     const struct dns_res_rec *rrec,
 			     struct dnsp_DnssrvRpcRecord *r)
 {
-	char *tmp;
-	char *txt_record_txt;
-	char *saveptr = NULL;
+	enum ndr_err_code ndr_err;
 
 	if (rrec->rr_type == DNS_QTYPE_ALL) {
 		return DNS_ERR(FORMAT_ERROR);
@@ -309,7 +307,7 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 
 	ZERO_STRUCTP(r);
 
-	r->wType = rrec->rr_type;
+	r->wType = (enum dns_record_type) rrec->rr_type;
 	r->dwTtlSeconds = rrec->ttl;
 	r->rank = DNS_RANK_ZONE;
 
@@ -354,28 +352,11 @@ static WERROR dns_rr_to_dnsp(TALLOC_CTX *mem_ctx,
 		W_ERROR_HAVE_NO_MEMORY(r->data.mx.nameTarget);
 		break;
 	case DNS_QTYPE_TXT:
-		r->data.txt.count = 0;
-		r->data.txt.str = talloc_array(mem_ctx, const char *,
-					       r->data.txt.count);
-		W_ERROR_HAVE_NO_MEMORY(r->data.txt.str);
-
-		txt_record_txt = talloc_strdup(r->data.txt.str,
-					       rrec->rdata.txt_record.txt);
-		W_ERROR_HAVE_NO_MEMORY(txt_record_txt);
-
-		tmp = strtok_r(txt_record_txt, "\"", &saveptr);
-		while (tmp) {
-			if (strcmp(tmp, " ") == 0) {
-				tmp = strtok_r(NULL, "\"", &saveptr);
-				continue;
-			}
-			r->data.txt.str = talloc_realloc(mem_ctx, r->data.txt.str, const char *,
-							r->data.txt.count+1);
-			r->data.txt.str[r->data.txt.count] = talloc_strdup(r->data.txt.str, tmp);
-			W_ERROR_HAVE_NO_MEMORY(r->data.txt.str[r->data.txt.count]);
-
-			r->data.txt.count++;
-			tmp = strtok_r(NULL, "\"", &saveptr);
+		ndr_err = ndr_dnsp_string_list_copy(mem_ctx,
+						    &rrec->rdata.txt_record.txt,
+						    &r->data.txt);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			return WERR_NOMEM;
 		}
 
 		break;
@@ -605,7 +586,7 @@ static WERROR handle_one_update(struct dns_server *dns,
 			}
 		}
 		for (i = first; i < rcount; i++) {
-			if (recs[i].wType == update->rr_type) {
+			if (recs[i].wType == (enum dns_record_type) update->rr_type) {
 				recs[i] = (struct dnsp_DnssrvRpcRecord) {
 					.wType = DNS_TYPE_TOMBSTONE,
 				};
@@ -732,7 +713,7 @@ failed:
 }
 
 static WERROR dns_update_allowed(struct dns_server *dns,
-				 struct dns_request_state *state,
+				 const struct dns_request_state *state,
 				 struct dns_server_tkey **tkey)
 {
 	if (lpcfg_allow_dns_updates(dns->task->lp_ctx) == DNS_UPDATE_ON) {
@@ -761,9 +742,9 @@ static WERROR dns_update_allowed(struct dns_server *dns,
 
 
 WERROR dns_server_process_update(struct dns_server *dns,
-				 struct dns_request_state *state,
+				 const struct dns_request_state *state,
 				 TALLOC_CTX *mem_ctx,
-				 struct dns_name_packet *in,
+				 const struct dns_name_packet *in,
 				 struct dns_res_rec **prereqs,    uint16_t *prereq_count,
 				 struct dns_res_rec **updates,    uint16_t *update_count,
 				 struct dns_res_rec **additional, uint16_t *arcount)

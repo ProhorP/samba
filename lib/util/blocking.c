@@ -21,15 +21,9 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "system/network.h"
+#include "replace.h"
 #include "system/filesys.h"
-#include "system/locale.h"
-#undef malloc
-#undef strcasecmp
-#undef strncasecmp
-#undef strdup
-#undef realloc
+#include "blocking.h"
 
 /**
  Set a fd into blocking/nonblocking mode. Uses POSIX O_NONBLOCK if available,

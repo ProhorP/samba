@@ -23,8 +23,8 @@
 
 /* dos -> nt status error map */
 static const struct {
-	uint8 dos_class;
-	uint32 dos_code;
+	uint8_t dos_class;
+	uint32_t dos_code;
 	NTSTATUS ntstatus;
 } dos_to_ntstatus_map[] = {
 	{ERRDOS,	ERRbadfunc,	NT_STATUS_NOT_IMPLEMENTED},
@@ -281,11 +281,11 @@ static const struct {
 /*****************************************************************************
 convert a dos eclas/ecode to a NT status32 code
  *****************************************************************************/
-NTSTATUS dos_to_ntstatus(uint8 eclass, uint32 ecode)
+NTSTATUS dos_to_ntstatus(uint8_t eclass, uint32_t ecode)
 {
 	int i;
 	if (eclass == 0) return NT_STATUS_OK;
-	for (i=0; NT_STATUS_V(dos_to_ntstatus_map[i].ntstatus); i++) {
+	for (i=0; i < ARRAY_SIZE(dos_to_ntstatus_map); i++) {
 		if (eclass == dos_to_ntstatus_map[i].dos_class &&
 		    ecode == dos_to_ntstatus_map[i].dos_code) {
 			return dos_to_ntstatus_map[i].ntstatus;

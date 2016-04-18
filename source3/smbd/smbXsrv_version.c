@@ -73,6 +73,10 @@ NTSTATUS smbXsrv_version_global_init(const struct server_id *server_id)
 	frame = talloc_stackframe();
 
 	global_path = lock_path("smbXsrv_version_global.tdb");
+	if (global_path == NULL) {
+		TALLOC_FREE(frame);
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	db_ctx = db_open(NULL, global_path,
 			 0, /* hash_size */
@@ -80,7 +84,8 @@ NTSTATUS smbXsrv_version_global_init(const struct server_id *server_id)
 			 TDB_CLEAR_IF_FIRST |
 			 TDB_INCOMPATIBLE_HASH,
 			 O_RDWR | O_CREAT, 0600,
-			 DBWRAP_LOCK_ORDER_1);
+			 DBWRAP_LOCK_ORDER_1,
+			 DBWRAP_FLAG_NONE);
 	if (db_ctx == NULL) {
 		status = map_nt_error_from_unix_common(errno);
 		DEBUG(0,("smbXsrv_version_global_init: "

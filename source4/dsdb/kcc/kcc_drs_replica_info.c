@@ -214,7 +214,7 @@ static WERROR kccdrs_replica_get_info_obj_metadata2(TALLOC_CTX *mem_ctx,
 		const struct dsdb_attribute *schema_attr;
 		uint32_t attr_version;
 		NTTIME attr_change_time;
-		uint32_t attr_originating_usn;
+		uint32_t attr_originating_usn = 0;
 
 		/*
 		  attr := attrsSeq[i]
@@ -629,8 +629,8 @@ static WERROR kccdrs_replica_get_info_neighbours(TALLOC_CTX *mem_ctx,
 			}
 
 			if (GUID_all_zero(&req_src_dsa_guid) ||
-			    GUID_compare(&req_src_dsa_guid, &reps_from->source_dsa_obj_guid) == 0)
-			{
+			    GUID_equal(&req_src_dsa_guid,
+				       &reps_from->source_dsa_obj_guid)) {
 
 				if (i >= base_index) {
 					struct drsuapi_DsReplicaNeighbour neigh;

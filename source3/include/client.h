@@ -32,8 +32,8 @@
  */
 
 struct print_job_info {
-	uint16 id;
-	uint16 priority;
+	uint16_t id;
+	uint16_t priority;
 	size_t size;
 	fstring user;
 	fstring name;
@@ -52,11 +52,6 @@ struct cli_state {
 	NTSTATUS raw_status; /* maybe via NT_STATUS_DOS() */
 	bool map_dos_errors;
 
-	/* The credentials used to open the cli_state connection. */
-	char *domain;
-	char *user_name;
-	char *password; /* Can be null to force use of zero NTLMSSP session key. */
-
 	/*
 	 * The following strings are the
 	 * ones returned by the server if
@@ -72,7 +67,6 @@ struct cli_state {
 	int timeout; /* in milliseconds. */
 	int initialised;
 	int win95;
-	bool is_guestlogin;
 	/* What the server offered. */
 	uint32_t server_posix_capabilities;
 	/* What the client requested. */
@@ -112,7 +106,7 @@ struct cli_state {
 
 struct file_info {
 	uint64_t size;
-	uint16 mode;
+	uint16_t mode;
 	uid_t uid;
 	gid_t gid;
 	/* these times are normally kept in GMT */

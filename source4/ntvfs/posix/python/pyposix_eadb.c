@@ -21,14 +21,14 @@
 #include <Python.h>
 #include "includes.h"
 #include "system/filesys.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "librpc/ndr/libndr.h"
 #include "ntvfs/posix/posix_eadb.h"
 #include "libcli/util/pyerrors.h"
 #include "param/pyparam.h"
 
-void initxattr_tdb(void);
+void initposix_eadb(void);
 
 static PyObject *py_is_xattr_supported(PyObject *self)
 {
@@ -50,9 +50,11 @@ static PyObject *py_wrap_setxattr(PyObject *self, PyObject *args)
 
 	blob.length = blobsize;
 	mem_ctx = talloc_new(NULL);
-	eadb = tdb_wrap_open(mem_ctx, tdbname, 50000,
-			     TDB_DEFAULT, O_RDWR|O_CREAT, 0600,
-			     py_default_loadparm_context(mem_ctx));
+	eadb = tdb_wrap_open(
+		mem_ctx, tdbname, 50000,
+		lpcfg_tdb_flags(py_default_loadparm_context(mem_ctx),
+				TDB_DEFAULT),
+		O_RDWR|O_CREAT, 0600);
 
 	if (eadb == NULL) {
 		PyErr_SetFromErrno(PyExc_IOError);
@@ -83,8 +85,11 @@ static PyObject *py_wrap_getxattr(PyObject *self, PyObject *args)
 		return NULL;
 
 	mem_ctx = talloc_new(NULL);
-	eadb = tdb_wrap_open(mem_ctx, tdbname, 50000,
-			     TDB_DEFAULT, O_RDWR|O_CREAT, 0600, py_default_loadparm_context(mem_ctx));
+	eadb = tdb_wrap_open(
+		mem_ctx, tdbname, 50000,
+		lpcfg_tdb_flags(py_default_loadparm_context(mem_ctx),
+				TDB_DEFAULT),
+		O_RDWR|O_CREAT, 0600);
 	if (eadb == NULL) {
 		PyErr_SetFromErrno(PyExc_IOError);
 		talloc_free(mem_ctx);

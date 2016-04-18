@@ -672,7 +672,7 @@ static NTSTATUS nss_ad_get_info( struct nss_domain_entry *e,
 				  const char **homedir,
 				  const char **shell,
 				  const char **gecos,
-				  uint32 *gid )
+				  uint32_t *gid )
 {
 	const char *attrs[] = {NULL, /* attr_homedir */
 			       NULL, /* attr_shell */
@@ -743,7 +743,7 @@ static NTSTATUS nss_ad_get_info( struct nss_domain_entry *e,
 
 	if (gid) {
 		if (!ads_pull_uint32(ctx->ads, msg_internal, ctx->ad_schema->posix_gidnumber_attr, gid))
-			*gid = (uint32)-1;
+			*gid = (uint32_t)-1;
 	}
 
 	nt_status = NT_STATUS_OK;
@@ -962,7 +962,7 @@ static struct nss_info_methods nss_sfu20_methods = {
  Initialize the plugins
  ***********************************************************************/
 
-NTSTATUS samba_init_module(void)
+NTSTATUS idmap_ad_init(void)
 {
 	static NTSTATUS status_idmap_ad = NT_STATUS_UNSUCCESSFUL;
 	static NTSTATUS status_nss_rfc2307 = NT_STATUS_UNSUCCESSFUL;

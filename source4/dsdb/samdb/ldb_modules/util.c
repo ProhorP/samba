@@ -742,7 +742,7 @@ int dsdb_check_optional_feature(struct ldb_module *module, struct GUID op_featur
 
 			search_guid = samdb_result_guid(res->msgs[0], "msDS-OptionalFeatureGUID");
 
-			if (GUID_compare(&search_guid, &op_feature_guid) == 0) {
+			if (GUID_equal(&search_guid, &op_feature_guid)) {
 				*feature_enabled = true;
 				break;
 			}
@@ -1192,6 +1192,9 @@ int dsdb_module_constrainted_update_int32(struct ldb_module *module,
 	int ret;
 
 	msg = ldb_msg_new(module);
+	if (msg == NULL) {
+		return ldb_module_oom(module);
+	}
 	msg->dn = dn;
 
 	ret = dsdb_msg_constrainted_update_int32(module,
@@ -1234,6 +1237,9 @@ int dsdb_module_constrainted_update_int64(struct ldb_module *module,
 	int ret;
 
 	msg = ldb_msg_new(module);
+	if (msg == NULL) {
+		return ldb_module_oom(module);
+	}
 	msg->dn = dn;
 
 	ret = dsdb_msg_constrainted_update_int64(module,
@@ -1418,4 +1424,97 @@ const struct dsdb_class *dsdb_get_structural_oc_from_msg(const struct dsdb_schem
 	}
 
 	return dsdb_get_last_structural_class(schema, oc_el);
+}
+
+/* Fix the DN so that the relative attribute names are in upper case so that the DN:
+   cn=Adminstrator,cn=users,dc=samba,dc=example,dc=com becomes
+   CN=Adminstrator,CN=users,DC=samba,DC=example,DC=com
+*/
+int dsdb_fix_dn_rdncase(struct ldb_context *ldb, struct ldb_dn *dn)
+{
+	int i, ret;
+	char *upper_rdn_attr;
+
+	for (i=0; i < ldb_dn_get_comp_num(dn); i++) {
+		/* We need the attribute name in upper case */
+		upper_rdn_attr = strupper_talloc(dn,
+						 ldb_dn_get_component_name(dn, i));
+		if (!upper_rdn_attr) {
+			return ldb_oom(ldb);
+		}
+		ret = ldb_dn_set_component(dn, i, upper_rdn_attr,
+					   *ldb_dn_get_component_val(dn, i));
+		talloc_free(upper_rdn_attr);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+	}
+	return LDB_SUCCESS;
+}
+
+/**
+ * Make most specific objectCategory for the objectClass of passed object
+ * NOTE: In this implementation we count that it is called on already
+ * verified objectClass attribute value. See objectclass.c thorough
+ * implementation for all the magic that involves
+ *
+ * @param ldb	ldb context
+ * @param schema cached schema for ldb. We may get it, but it is very time consuming.
+ * 			Hence leave the responsibility to the caller.
+ * @param obj	AD object to determint objectCategory for
+ * @param mem_ctx Memory context - usually it is obj actually
+ * @param pobjectcategory location to store found objectCategory
+ *
+ * @return LDB_SUCCESS or error including out of memory error
+ */
+int dsdb_make_object_category(struct ldb_context *ldb, const struct dsdb_schema *schema,
+			      struct ldb_message *obj,
+			      TALLOC_CTX *mem_ctx, const char **pobjectcategory)
+{
+	const struct dsdb_class			*objectclass;
+	struct ldb_message_element		*objectclass_element;
+	struct dsdb_extended_dn_store_format	*dn_format;
+
+	objectclass_element = ldb_msg_find_element(obj, "objectClass");
+	if (!objectclass_element) {
+		ldb_asprintf_errstring(ldb, "dsdb: Cannot add %s, no objectclass specified!",
+				       ldb_dn_get_linearized(obj->dn));
+		return LDB_ERR_OBJECT_CLASS_VIOLATION;
+	}
+	if (objectclass_element->num_values == 0) {
+		ldb_asprintf_errstring(ldb, "dsdb: Cannot add %s, at least one (structural) objectclass has to be specified!",
+				       ldb_dn_get_linearized(obj->dn));
+		return LDB_ERR_CONSTRAINT_VIOLATION;
+	}
+
+	/*
+	 * Get the new top-most structural object class and check for
+	 * unrelated structural classes
+	 */
+	objectclass = dsdb_get_last_structural_class(schema,
+						     objectclass_element);
+	if (objectclass == NULL) {
+		ldb_asprintf_errstring(ldb,
+				       "Failed to find a structural class for %s",
+				       ldb_dn_get_linearized(obj->dn));
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	dn_format = talloc_get_type(ldb_get_opaque(ldb, DSDB_EXTENDED_DN_STORE_FORMAT_OPAQUE_NAME),
+				    struct dsdb_extended_dn_store_format);
+	if (dn_format && dn_format->store_extended_dn_in_ldb == false) {
+		/* Strip off extended components */
+		struct ldb_dn *dn = ldb_dn_new(mem_ctx, ldb,
+					       objectclass->defaultObjectCategory);
+		*pobjectcategory = ldb_dn_alloc_linearized(mem_ctx, dn);
+		talloc_free(dn);
+	} else {
+		*pobjectcategory = talloc_strdup(mem_ctx, objectclass->defaultObjectCategory);
+	}
+
+	if (*pobjectcategory == NULL) {
+		return ldb_oom(ldb);
+	}
+
+	return LDB_SUCCESS;
 }

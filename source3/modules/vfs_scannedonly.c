@@ -228,10 +228,12 @@ static int connect_to_scanner(vfs_handle_struct * handle)
 	    large directory with lots of unscanned files. */
 		int sndsize;
 		socklen_t size = sizeof(int);
-		getsockopt(so->socket, SOL_SOCKET, SO_RCVBUF,
-			   (char *)&sndsize, &size);
-		DEBUG(SCANNEDONLY_DEBUG, ("current socket buffer size=%d\n",
-					  sndsize));
+		if (getsockopt(so->socket, SOL_SOCKET, SO_RCVBUF,
+			       (char *)&sndsize, &size) == 0) {
+			DEBUG(SCANNEDONLY_DEBUG,
+			      ("current socket buffer size=%d\n",
+			       sndsize));
+		}
 		sndsize = 262144;
 		if (setsockopt(so->socket, SOL_SOCKET, SO_RCVBUF,
 			       (char *)&sndsize,
@@ -508,7 +510,7 @@ static bool scannedonly_allow_access(vfs_handle_struct * handle,
 
 static DIR *scannedonly_opendir(vfs_handle_struct * handle,
 					   const char *fname,
-					   const char *mask, uint32 attr)
+					   const char *mask, uint32_t attr)
 {
 	DIR *DIRp;
 	struct scannedonly_DIR *sDIR;
@@ -533,7 +535,7 @@ static DIR *scannedonly_opendir(vfs_handle_struct * handle,
 
 static DIR *scannedonly_fdopendir(vfs_handle_struct * handle,
 					   files_struct *fsp,
-					   const char *mask, uint32 attr)
+					   const char *mask, uint32_t attr)
 {
 	DIR *DIRp;
 	struct scannedonly_DIR *sDIR;

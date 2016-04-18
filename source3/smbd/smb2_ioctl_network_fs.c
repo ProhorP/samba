@@ -25,7 +25,6 @@
 #include "../libcli/smb/smb_common.h"
 #include "../libcli/security/security.h"
 #include "../lib/util/tevent_ntstatus.h"
-#include "../lib/ccan/build_assert/build_assert.h"
 #include "include/ntioctl.h"
 #include "../librpc/ndr/libndr.h"
 #include "librpc/gen_ndr/ndr_ioctl.h"
@@ -92,32 +91,41 @@ struct fsctl_srv_copychunk_state {
 		COPYCHUNK_OUT_LIMITS,
 		COPYCHUNK_OUT_RSP,
 	} out_data;
+	bool aapl_copyfile;
 };
 static void fsctl_srv_copychunk_vfs_done(struct tevent_req *subreq);
 
-static NTSTATUS copychunk_check_handles(struct files_struct *src_fsp,
+static NTSTATUS copychunk_check_handles(uint32_t ctl_code,
+					struct files_struct *src_fsp,
 					struct files_struct *dst_fsp,
 					struct smb_request *smb1req)
 {
 	/*
 	 * [MS-SMB2] 3.3.5.15.6 Handling a Server-Side Data Copy Request
-	 * If Open.GrantedAccess of the destination file does not
-	 * include FILE_WRITE_DATA, then the request MUST be failed with
-	 * STATUS_ACCESS_DENIED. If Open.GrantedAccess of the
-	 * destination file does not include FILE_READ_DATA access and
-	 * the CtlCode is FSCTL_SRV_COPYCHUNK, then the request MUST be
-	 * failed with STATUS_ACCESS_DENIED.
+	 * The server MUST fail the request with STATUS_ACCESS_DENIED if any of
+	 * the following are true:
+	 * - The Open.GrantedAccess of the destination file does not include
+	 *   FILE_WRITE_DATA or FILE_APPEND_DATA.
 	 */
 	if (!CHECK_WRITE(dst_fsp)) {
 		DEBUG(5, ("copy chunk no write on dest handle (%s).\n",
 			smb_fname_str_dbg(dst_fsp->fsp_name) ));
 		return NT_STATUS_ACCESS_DENIED;
 	}
-	if (!CHECK_READ(dst_fsp, smb1req)) {
+	/*
+	 * - The Open.GrantedAccess of the destination file does not include
+	 *   FILE_READ_DATA, and the CtlCode is FSCTL_SRV_COPYCHUNK.
+	 */
+	if ((ctl_code == FSCTL_SRV_COPYCHUNK)
+	  && !CHECK_READ(dst_fsp, smb1req)) {
 		DEBUG(5, ("copy chunk no read on dest handle (%s).\n",
 			smb_fname_str_dbg(dst_fsp->fsp_name) ));
 		return NT_STATUS_ACCESS_DENIED;
 	}
+	/*
+	 * - The Open.GrantedAccess of the source file does not include
+	 *   FILE_READ_DATA access.
+	 */
 	if (!CHECK_READ(src_fsp, smb1req)) {
 		DEBUG(5, ("copy chunk no read on src handle (%s).\n",
 			smb_fname_str_dbg(src_fsp->fsp_name) ));
@@ -151,6 +159,7 @@ static NTSTATUS copychunk_check_handles(struct files_struct *src_fsp,
 
 static struct tevent_req *fsctl_srv_copychunk_send(TALLOC_CTX *mem_ctx,
 						   struct tevent_context *ev,
+						   uint32_t ctl_code,
 						   struct files_struct *dst_fsp,
 						   DATA_BLOB *in_input,
 						   size_t in_max_output,
@@ -164,6 +173,10 @@ static struct tevent_req *fsctl_srv_copychunk_send(TALLOC_CTX *mem_ctx,
 	int i;
 	struct srv_copychunk *chunk;
 	struct fsctl_srv_copychunk_state *state;
+
+	/* handler for both copy-chunk variants */
+	SMB_ASSERT((ctl_code == FSCTL_SRV_COPYCHUNK)
+		|| (ctl_code == FSCTL_SRV_COPYCHUNK_WRITE));
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct fsctl_srv_copychunk_state);
@@ -203,7 +216,8 @@ static struct tevent_req *fsctl_srv_copychunk_send(TALLOC_CTX *mem_ctx,
 
 	state->dst_fsp = dst_fsp;
 
-	state->status = copychunk_check_handles(state->src_fsp,
+	state->status = copychunk_check_handles(ctl_code,
+						state->src_fsp,
 						state->dst_fsp,
 						smb2req->smb1req);
 	if (!NT_STATUS_IS_OK(state->status)) {
@@ -212,14 +226,47 @@ static struct tevent_req *fsctl_srv_copychunk_send(TALLOC_CTX *mem_ctx,
 	}
 
 	state->status = copychunk_check_limits(&cc_copy);
-	if (tevent_req_nterror(req, state->status)) {
+	if (!NT_STATUS_IS_OK(state->status)) {
 		DEBUG(3, ("copy chunk req exceeds limits\n"));
 		state->out_data = COPYCHUNK_OUT_LIMITS;
+		tevent_req_nterror(req, state->status);
 		return tevent_req_post(req, ev);
 	}
 
 	/* any errors from here onwards should carry copychunk response data */
 	state->out_data = COPYCHUNK_OUT_RSP;
+
+	if (cc_copy.chunk_count == 0) {
+		struct tevent_req *vfs_subreq;
+		/*
+		 * Process as OS X copyfile request. This is currently
+		 * the only copychunk request with a chunk count of 0
+		 * we will process.
+		 */
+		if (!state->src_fsp->aapl_copyfile_supported) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+		if (!state->dst_fsp->aapl_copyfile_supported) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+		state->aapl_copyfile = true;
+		vfs_subreq = SMB_VFS_COPY_CHUNK_SEND(dst_fsp->conn,
+						     state, ev,
+						     state->src_fsp,
+						     0,
+						     state->dst_fsp,
+						     0,
+						     0);
+		if (tevent_req_nomem(vfs_subreq, req)) {
+			return tevent_req_post(req, ev);
+		}
+		tevent_req_set_callback(vfs_subreq,
+					fsctl_srv_copychunk_vfs_done, req);
+		state->dispatch_count++;
+		return req;
+	}
 
 	for (i = 0; i < cc_copy.chunk_count; i++) {
 		struct tevent_req *vfs_subreq;
@@ -313,7 +360,11 @@ static NTSTATUS fsctl_srv_copychunk_recv(struct tevent_req *req,
 		*pack_rsp = true;
 		break;
 	case COPYCHUNK_OUT_RSP:
-		cc_rsp->chunks_written = state->recv_count - state->bad_recv_count;
+		if (state->aapl_copyfile == true) {
+			cc_rsp->chunks_written = 0;
+		} else {
+			cc_rsp->chunks_written = state->recv_count - state->bad_recv_count;
+		}
 		cc_rsp->chunk_bytes_written = 0;
 		cc_rsp->total_bytes_written = state->total_written;
 		*pack_rsp = true;
@@ -380,14 +431,14 @@ static NTSTATUS fsctl_validate_neg_info(TALLOC_CTX *mem_ctx,
 	 * and free the Connection object.
 	 */
 	protocol = smbd_smb2_protocol_dialect_match(in_input->data + 0x18,
-						in_num_dialects,
-						&dialect);
+						    in_num_dialects,
+						    &dialect);
 	if (conn->protocol != protocol) {
 		*disconnect = true;
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	if (GUID_compare(&in_guid, &conn->smb2.client.guid) != 0) {
+	if (!GUID_equal(&in_guid, &conn->smb2.client.guid)) {
 		*disconnect = true;
 		return NT_STATUS_ACCESS_DENIED;
 	}
@@ -467,8 +518,18 @@ struct tevent_req *smb2_ioctl_network_fs(uint32_t ctl_code,
 	NTSTATUS status;
 
 	switch (ctl_code) {
+	/*
+	 * [MS-SMB2] 2.2.31
+	 * FSCTL_SRV_COPYCHUNK is issued when a handle has
+	 * FILE_READ_DATA and FILE_WRITE_DATA access to the file;
+	 * FSCTL_SRV_COPYCHUNK_WRITE is issued when a handle only has
+	 * FILE_WRITE_DATA access.
+	 */
+	case FSCTL_SRV_COPYCHUNK_WRITE:	/* FALL THROUGH */
 	case FSCTL_SRV_COPYCHUNK:
-		subreq = fsctl_srv_copychunk_send(state, ev, state->fsp,
+		subreq = fsctl_srv_copychunk_send(state, ev,
+						  ctl_code,
+						  state->fsp,
 						  &state->in_input,
 						  state->in_max_output,
 						  state->smb2req);
@@ -482,7 +543,7 @@ struct tevent_req *smb2_ioctl_network_fs(uint32_t ctl_code,
 		break;
 	case FSCTL_VALIDATE_NEGOTIATE_INFO:
 		status = fsctl_validate_neg_info(state, ev,
-						 state->smbreq->sconn->conn,
+						 state->smbreq->xconn,
 						 &state->in_input,
 						 state->in_max_output,
 						 &state->out_output,

@@ -1,6 +1,6 @@
 <samba:parameter name="getwd cache"
                  context="G"
-                 developer="1"
+                 type="boolean"
                  xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
 <description>
     <para>This is a tuning option. When this is enabled a 

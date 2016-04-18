@@ -27,6 +27,7 @@
 #include <ldb.h>
 #include "auth/credentials/credentials.h"
 #include "auth/gensec/gensec.h"
+#include "auth/gensec/gensec_internal.h" /* TODO: remove this */
 #include "auth/auth.h"
 #include "librpc/gen_ndr/ndr_netlogon.h"
 #include "auth/auth_sam.h"
@@ -299,10 +300,11 @@ static void manage_gensec_get_pw_request(enum stdio_helper_mode stdio_helper_mod
 static const char *get_password(struct cli_credentials *credentials) 
 {
 	char *password = NULL;
-	
+	void *cb = cli_credentials_callback_data_void(credentials);
+
 	/* Ask for a password */
-	mux_printf((unsigned int)(uintptr_t)credentials->priv_data, "PW\n");
-	credentials->priv_data = NULL;
+	mux_printf((unsigned int)(uintptr_t)cb, "PW\n");
+	cli_credentials_set_callback_data(credentials, NULL);
 
 	manage_squid_request(cmdline_lp_ctx, NUM_HELPER_MODES /* bogus */, manage_gensec_get_pw_request, (void **)&password);
 	return password;
@@ -505,8 +507,9 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 		if (state->set_password) {
 			cli_credentials_set_password(creds, state->set_password, CRED_SPECIFIED);
 		} else {
+			void *cb = (void*)(uintptr_t)mux_id;
+			cli_credentials_set_callback_data(creds, cb);
 			cli_credentials_set_password_callback(creds, get_password);
-			creds->priv_data = (void*)(uintptr_t)mux_id;
 		}
 		if (opt_workstation) {
 			cli_credentials_set_workstation(creds, opt_workstation, CRED_SPECIFIED);
@@ -632,7 +635,7 @@ static void manage_gensec_request(enum stdio_helper_mode stdio_helper_mode,
 		return;
 	}
 
-	nt_status = gensec_update(state->gensec_state, mem_ctx, ev, in, &out);
+	nt_status = gensec_update_ev(state->gensec_state, mem_ctx, ev, in, &out);
 	
 	/* don't leak 'bad password'/'no such user' info to the network client */
 	nt_status = nt_status_squash(nt_status);
@@ -793,8 +796,6 @@ static void manage_ntlm_server_1_request(enum stdio_helper_mode stdio_helper_mod
 				SAFE_FREE(error_string);
 			} else {
 				static char zeros[16];
-				char *hex_lm_key;
-				char *hex_user_session_key;
 
 				mux_printf(mux_id, "Authenticated: Yes\n");
 
@@ -802,22 +803,22 @@ static void manage_ntlm_server_1_request(enum stdio_helper_mode stdio_helper_mod
 				    && lm_key.length 
 				    && (memcmp(zeros, lm_key.data, 
 								lm_key.length) != 0)) {
-					hex_encode(lm_key.data,
-						   lm_key.length,
-						   &hex_lm_key);
+					char hex_lm_key[lm_key.length*2+1];
+					hex_encode_buf(hex_lm_key, lm_key.data,
+						       lm_key.length);
 					mux_printf(mux_id, "LANMAN-Session-Key: %s\n", hex_lm_key);
-					SAFE_FREE(hex_lm_key);
 				}
 
 				if (ntlm_server_1_user_session_key 
 				    && user_session_key.length 
 				    && (memcmp(zeros, user_session_key.data, 
 					       user_session_key.length) != 0)) {
-					hex_encode(user_session_key.data, 
-						   user_session_key.length, 
-						   &hex_user_session_key);
+					char hex_user_session_key[
+						user_session_key.length*2+1];
+					hex_encode_buf(hex_user_session_key,
+						       user_session_key.data,
+						       user_session_key.length);
 					mux_printf(mux_id, "User-Session-Key: %s\n", hex_user_session_key);
-					SAFE_FREE(hex_user_session_key);
 				}
 			}
 		}

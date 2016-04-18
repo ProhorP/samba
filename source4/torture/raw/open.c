@@ -112,7 +112,7 @@ static const char *rdwr_string(enum rdwr_mode m)
 	status = smb_raw_pathinfo(cli->tree, tctx, &finfo); \
 	CHECK_STATUS(status, NT_STATUS_OK); \
 	t2 = finfo.all_info.out.field; \
-	if (t != t2) { \
+	if (abs(t-t2) > 20000) { \
 		torture_result(tctx, TORTURE_FAIL, \
 		       "(%s) wrong time for field %s  %s - %s\n", \
 		       __location__, #field, \
@@ -1363,7 +1363,7 @@ static bool test_chained(struct torture_context *tctx, struct smbcli_state *cli)
 	NTSTATUS status;
 	int fnum = -1;
 	bool ret = true;
-	const char *buf = "test";
+	const char buf[] = "test";
 	char buf2[4];
 
 	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
@@ -1386,8 +1386,8 @@ static bool test_chained(struct torture_context *tctx, struct smbcli_state *cli)
 	io.openxreadx.in.timeout = 0;
 	
 	io.openxreadx.in.offset = 0;
-	io.openxreadx.in.mincnt = sizeof(buf);
-	io.openxreadx.in.maxcnt = sizeof(buf);
+	io.openxreadx.in.mincnt = sizeof(buf2);
+	io.openxreadx.in.maxcnt = sizeof(buf2);
 	io.openxreadx.in.remaining = 0;
 	io.openxreadx.out.data = (uint8_t *)buf2;
 
@@ -1420,7 +1420,7 @@ static bool test_no_leading_slash(struct torture_context *tctx, struct smbcli_st
 	NTSTATUS status;
 	int fnum = -1;
 	bool ret = true;
-	const char *buf = "test";
+	const char buf[] = "test";
 
 	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
 
@@ -1697,7 +1697,7 @@ static bool test_chained_ntcreatex_readx(struct torture_context *tctx, struct sm
 	NTSTATUS status;
 	int fnum = -1;
 	bool ret = true;
-	const char *buf = "test";
+	const char buf[] = "test";
 	char buf2[4];
 
 	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
@@ -1722,8 +1722,8 @@ static bool test_chained_ntcreatex_readx(struct torture_context *tctx, struct sm
 
 	/* readx parameters */
 	io.ntcreatexreadx.in.offset = 0;
-	io.ntcreatexreadx.in.mincnt = sizeof(buf);
-	io.ntcreatexreadx.in.maxcnt = sizeof(buf);
+	io.ntcreatexreadx.in.mincnt = sizeof(buf2);
+	io.ntcreatexreadx.in.maxcnt = sizeof(buf2);
 	io.ntcreatexreadx.in.remaining = 0;
 	io.ntcreatexreadx.out.data = (uint8_t *)buf2;
 
@@ -2034,6 +2034,192 @@ static bool test_ntcreatexdir(struct torture_context *tctx,
 	return true;
 }
 
+/*
+  test opening with truncate on an already open file
+  returns share violation and doesn't truncate the file.
+  Regression test for bug #10671.
+*/
+static bool test_open_for_truncate(struct torture_context *tctx, struct smbcli_state *cli)
+{
+	union smb_open io;
+	union smb_fileinfo finfo;
+	const char *fname = BASEDIR "\\torture_open_for_truncate.txt";
+	NTSTATUS status;
+	int fnum = -1;
+	ssize_t val = 0;
+	char c = '\0';
+	bool ret = true;
+
+	torture_assert(tctx, torture_setup_dir(cli, BASEDIR),
+		"Failed to setup up test directory: " BASEDIR);
+
+	torture_comment(tctx, "Testing open truncate disposition.\n");
+
+	/* reasonable default parameters */
+	ZERO_STRUCT(io);
+	io.generic.level = RAW_OPEN_NTCREATEX;
+	io.ntcreatex.in.flags = NTCREATEX_FLAGS_EXTENDED;
+	io.ntcreatex.in.root_fid.fnum = 0;
+	io.ntcreatex.in.alloc_size = 0;
+	io.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_NONE;
+	io.ntcreatex.in.open_disposition = NTCREATEX_DISP_CREATE;
+	io.ntcreatex.in.create_options = 0;
+	io.ntcreatex.in.impersonation = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.ntcreatex.in.security_flags = 0;
+	io.ntcreatex.in.fname = fname;
+
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	fnum = io.ntcreatex.out.file.fnum;
+
+	/* Write a byte at offset 1k-1. */
+	val =smbcli_write(cli->tree, fnum, 0, &c, 1023, 1);
+	torture_assert_int_equal(tctx, val, 1, "write failed\n");
+
+	/* Now try and open for read/write with truncate - should fail. */
+	io.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_WRITE|SEC_RIGHTS_FILE_READ;
+	io.ntcreatex.in.file_attr = 0;
+	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_READ |
+			NTCREATEX_SHARE_ACCESS_WRITE |
+			NTCREATEX_SHARE_ACCESS_DELETE;
+	io.ntcreatex.in.open_disposition = NTCREATEX_DISP_OVERWRITE;
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_SHARING_VIOLATION);
+
+	/* Ensure file size is still 1k */
+	finfo.generic.level = RAW_FILEINFO_GETATTRE;
+	finfo.generic.in.file.fnum = fnum;
+	status = smb_raw_fileinfo(cli->tree, tctx, &finfo);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_VAL(finfo.getattre.out.size, 1024);
+
+	smbcli_close(cli->tree, fnum);
+
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	fnum = io.ntcreatex.out.file.fnum;
+
+	/* Ensure truncate actually works */
+	finfo.generic.level = RAW_FILEINFO_GETATTRE;
+	finfo.generic.in.file.fnum = fnum;
+	status = smb_raw_fileinfo(cli->tree, tctx, &finfo);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	CHECK_VAL(finfo.getattre.out.size, 0);
+
+	smbcli_close(cli->tree, fnum);
+	smbcli_unlink(cli->tree, fname);
+
+done:
+	smbcli_close(cli->tree, fnum);
+	smbcli_deltree(cli->tree, BASEDIR);
+
+	return ret;
+}
+
+/**
+ * Test for file size to be 0 after create with FILE_SUPERSEDE
+ */
+static bool test_ntcreatex_supersede(struct torture_context *tctx, struct smbcli_state *cli)
+{
+	union smb_open io;
+	union smb_setfileinfo sfi;
+	union smb_fileinfo finfo;
+	const char *fname = BASEDIR "\\torture_ntcreatex_supersede.txt";
+	NTSTATUS status;
+	int fnum = -1;
+	bool ret = true;
+
+	torture_assert(tctx, torture_setup_dir(cli, BASEDIR), "Failed to setup up test directory: " BASEDIR);
+
+	/* reasonable default parameters */
+	io.generic.level = RAW_OPEN_NTCREATEX;
+	io.ntcreatex.in.flags = 0;
+	io.ntcreatex.in.root_fid.fnum = 0;
+	io.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_ALL;
+	io.ntcreatex.in.alloc_size = 0;
+	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_NONE;
+	io.ntcreatex.in.open_disposition = NTCREATEX_DISP_CREATE;
+	io.ntcreatex.in.create_options = 0;
+	io.ntcreatex.in.impersonation = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.ntcreatex.in.security_flags = 0;
+	io.ntcreatex.in.fname = fname;
+
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	fnum = io.ntcreatex.out.file.fnum;
+
+	CHECK_VAL(io.ntcreatex.out.oplock_level, 0);
+	CHECK_VAL(io.ntcreatex.out.create_action, NTCREATEX_ACTION_CREATED);
+	CHECK_NTTIME(io.ntcreatex.out.create_time, create_time);
+	CHECK_NTTIME(io.ntcreatex.out.access_time, access_time);
+	CHECK_NTTIME(io.ntcreatex.out.write_time, write_time);
+	CHECK_NTTIME(io.ntcreatex.out.change_time, change_time);
+	CHECK_ALL_INFO(io.ntcreatex.out.attrib, attrib);
+	CHECK_ALL_INFO(io.ntcreatex.out.alloc_size, alloc_size);
+	CHECK_ALL_INFO(io.ntcreatex.out.size, size);
+	CHECK_ALL_INFO(io.ntcreatex.out.is_directory, directory);
+	CHECK_VAL(io.ntcreatex.out.file_type, FILE_TYPE_DISK);
+
+	/* extend the file size */
+	ZERO_STRUCT(sfi);
+	sfi.generic.level = RAW_SFILEINFO_END_OF_FILE_INFO;
+	sfi.generic.in.file.fnum = fnum;
+	sfi.end_of_file_info.in.size = 512;
+	status = smb_raw_setfileinfo(cli->tree, &sfi);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	/* close the file and re-open with to verify new size */
+	smbcli_close(cli->tree, fnum);
+	io.ntcreatex.in.open_disposition = NTCREATEX_DISP_OPEN;
+	io.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_READ;
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	fnum = io.ntcreatex.out.file.fnum;
+
+	CHECK_VAL(io.ntcreatex.out.oplock_level, 0);
+	CHECK_VAL(io.ntcreatex.out.create_action, NTCREATEX_ACTION_EXISTED);
+	CHECK_NTTIME(io.ntcreatex.out.create_time, create_time);
+	CHECK_NTTIME(io.ntcreatex.out.access_time, access_time);
+	CHECK_NTTIME(io.ntcreatex.out.write_time, write_time);
+	CHECK_NTTIME(io.ntcreatex.out.change_time, change_time);
+	CHECK_ALL_INFO(io.ntcreatex.out.attrib, attrib);
+	CHECK_ALL_INFO(io.ntcreatex.out.alloc_size, alloc_size);
+	CHECK_VAL(io.ntcreatex.out.size, 512);
+	CHECK_ALL_INFO(io.ntcreatex.out.is_directory, directory);
+	CHECK_VAL(io.ntcreatex.out.file_type, FILE_TYPE_DISK);
+
+	/* close and re-open the file with SUPERSEDE flag */
+	smbcli_close(cli->tree, fnum);
+	io.ntcreatex.in.open_disposition = NTCREATEX_DISP_SUPERSEDE;
+	io.ntcreatex.in.access_mask = SEC_RIGHTS_FILE_READ;
+	io.ntcreatex.in.file_attr = FILE_ATTRIBUTE_NORMAL;
+	io.ntcreatex.in.share_access = NTCREATEX_SHARE_ACCESS_NONE;
+	io.ntcreatex.in.create_options = 0;
+
+	status = smb_raw_open(cli->tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	fnum = io.ntcreatex.out.file.fnum;
+
+	/* The file size in the superseded create response should be 0 */
+	CHECK_VAL(io.ntcreatex.out.size, 0);
+	CHECK_VAL(io.ntcreatex.out.oplock_level, 0);
+	CHECK_VAL(io.ntcreatex.out.create_action, FILE_WAS_SUPERSEDED);
+	CHECK_NTTIME(io.ntcreatex.out.create_time, create_time);
+	CHECK_NTTIME(io.ntcreatex.out.access_time, access_time);
+	CHECK_ALL_INFO(io.ntcreatex.out.attrib, attrib);
+	CHECK_ALL_INFO(io.ntcreatex.out.alloc_size, alloc_size);
+	CHECK_ALL_INFO(io.ntcreatex.out.is_directory, directory);
+	CHECK_VAL(io.ntcreatex.out.file_type, FILE_TYPE_DISK);
+done:
+	smbcli_close(cli->tree, fnum);
+	smbcli_deltree(cli->tree, BASEDIR);
+
+	return ret;
+}
+
 /* basic testing of all RAW_OPEN_* calls
 */
 struct torture_suite *torture_raw_open(TALLOC_CTX *mem_ctx)
@@ -2057,6 +2243,8 @@ struct torture_suite *torture_raw_open(TALLOC_CTX *mem_ctx)
 	torture_suite_add_1smb_test(suite, "open-for-delete", test_open_for_delete);
 	torture_suite_add_1smb_test(suite, "opendisp-dir", test_ntcreatex_opendisp_dir);
 	torture_suite_add_1smb_test(suite, "ntcreatedir", test_ntcreatexdir);
+	torture_suite_add_1smb_test(suite, "open-for-truncate", test_open_for_truncate);
+	torture_suite_add_1smb_test(suite, "ntcreatex_supersede", test_ntcreatex_supersede);
 
 	return suite;
 }

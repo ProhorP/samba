@@ -220,7 +220,6 @@ nomem:
 static bool cldap_socket_recv_dgram(struct cldap_socket *c,
 				    struct cldap_incoming *in)
 {
-	DATA_BLOB blob;
 	struct asn1_data *asn1;
 	void *p;
 	struct cldap_search_state *search;
@@ -230,16 +229,12 @@ static bool cldap_socket_recv_dgram(struct cldap_socket *c,
 		goto error;
 	}
 
-	blob = data_blob_const(in->buf, in->len);
-
 	asn1 = asn1_init(in);
 	if (!asn1) {
 		goto nomem;
 	}
 
-	if (!asn1_load(asn1, blob)) {
-		goto nomem;
-	}
+	asn1_load_nocopy(asn1, in->buf, in->len);
 
 	in->ldap_msg = talloc(in, struct ldap_message);
 	if (in->ldap_msg == NULL) {
@@ -267,8 +262,11 @@ static bool cldap_socket_recv_dgram(struct cldap_socket *c,
 
 	search = talloc_get_type_abort(p, struct cldap_search_state);
 	search->response.in = talloc_move(search, &in);
+
 	search->response.asn1 = asn1;
-	search->response.asn1->ofs = 0;
+
+	asn1_load_nocopy(search->response.asn1,
+			 search->response.in->buf, search->response.in->len);
 
 	DLIST_REMOVE(c->searches.list, search);
 
@@ -919,9 +917,7 @@ char *cldap_netlogon_create_filter(TALLOC_CTX *mem_ctx,
 	}
 	if (io->in.domain_sid) {
 		struct dom_sid *sid = dom_sid_parse_talloc(mem_ctx, io->in.domain_sid);
-		if (filter == NULL) {
-			return NULL;
-		}
+
 		filter = talloc_asprintf_append_buffer(filter, "(domainSid=%s)",
 						ldap_encode_ndr_dom_sid(mem_ctx, sid));
 		if (filter == NULL) {
@@ -930,11 +926,8 @@ char *cldap_netlogon_create_filter(TALLOC_CTX *mem_ctx,
 	}
 	if (io->in.domain_guid) {
 		struct GUID guid;
-		NTSTATUS status;
-		status = GUID_from_string(io->in.domain_guid, &guid);
-		if (filter == NULL) {
-			return NULL;
-		}
+		GUID_from_string(io->in.domain_guid, &guid);
+
 		filter = talloc_asprintf_append_buffer(filter, "(DomainGuid=%s)",
 						ldap_encode_ndr_GUID(mem_ctx, &guid));
 		if (filter == NULL) {
@@ -1025,7 +1018,7 @@ NTSTATUS cldap_netlogon_recv(struct tevent_req *req,
 {
 	struct cldap_netlogon_state *state = tevent_req_data(req,
 					     struct cldap_netlogon_state);
-	NTSTATUS status;
+	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	DATA_BLOB *data;
 
 	if (tevent_req_is_nterror(req, &status)) {
