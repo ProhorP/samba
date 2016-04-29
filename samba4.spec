@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.3.8
-Release: alt0.M70P.1
+Release: alt0.M70P.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -55,6 +55,7 @@ Source200: README.dc
 Source201: README.downgrade
 
 Patch: %name-%version-%release.patch
+Patch1: fix-CVE-2016-2110.patch
 
 Provides: samba4 = %version-%release
 Obsoletes: samba4 < %version-%release
@@ -497,6 +498,7 @@ and use CTDB instead.
 %prep
 %setup -q
 %patch -p1
+%patch1 -p1
 
 %build
 
@@ -1329,6 +1331,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Apr 29 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70P.2
+- Fix CVE-2016-2110/NTLMSSP regression (https://bugzilla.samba.org/show_bug.cgi?id=11849)
+
 * Wed Apr 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70P.1
 - New version
 - Security fixes:
