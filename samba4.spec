@@ -44,7 +44,7 @@
 
 Name:    samba-DC
 Version: 4.4.3
-Release: alt0.M70C.1
+Release: alt0.M70P.1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1221,16 +1221,22 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
-* Wed May 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.3-alt0.M70C.1
+* Wed May 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.3-alt0.M70P.1
 - Backport new version to p7 branch
 
 * Wed May 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.3-alt1
 - New version
 
-* Mon May 02 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt1.M70C.1
+* Mon May 02 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt1.M70P.1
+- Backport new version to p7 branch
+
+* Thu Apr 28 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt2
 - Fix CVE-2016-2110/NTLMSSP regression (https://bugzilla.samba.org/show_bug.cgi?id=11849)
 
-* Tue Apr 12 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt0.M70C.1
+* Wed Apr 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Tue Apr 12 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.2-alt1
 - New version
 - Security fixes:
   - CVE-2015-5370 (Multiple errors in DCE-RPC code)
@@ -1283,7 +1289,7 @@ TDB_NO_FSYNC=1 %make_build test
 * Sat Dec 19 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt0.M70P.2
 - Backport new version with security fixes from Sisyphus to p7 branch
 
-* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt0.M70C.1
+* Wed Dec 16 2015 Andrey Cherepanov <cas@altlinux.org> 4.3.3-alt1
 - New version (https://www.samba.org/samba/history/samba-4.3.3.html)
 - Security fixes:
   - CVE-2015-3223 (Denial of service in Samba Active Directory
