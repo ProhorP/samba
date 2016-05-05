@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.3.9
-Release: alt0.M70C.1
+Release: alt0.M70C.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1329,6 +1329,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu May 05 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.9-alt0.M70C.2
+- Drop obsoleted patch
+
 * Wed May 04 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.9-alt0.M70C.1
 - New version
 
