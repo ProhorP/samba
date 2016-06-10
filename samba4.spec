@@ -43,8 +43,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.3
-Release: alt3
+Version: 4.4.4
+Release: alt1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1227,6 +1227,9 @@ TDB_NO_FSYNC=1 %make_build test
 %files -n task-samba-dc
 
 %changelog
+* Fri Jun 10 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.4-alt1
+- Update to new version
+
 * Tue May 24 2016 Alexey Shabalin <shaba@altlinux.ru> 4.4.3-alt3
 - build with libsystemd without compat libs
 - add patches from fedora
