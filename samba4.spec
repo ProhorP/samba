@@ -72,7 +72,6 @@ Patch10: samba-grouppwd.patch
 
 # fedora patches
 Patch100:         samba-4.4.2-s3-winbind-make-sure-domain-member-can-talk-to-trust.patch
-Patch101:         samba-use-libsystemd.patch
 
 Conflicts: %rname
 Conflicts: %rname-dc
@@ -407,7 +406,6 @@ Microsoft Active Directory.
 %patch -p1
 %patch10 -p1
 %patch100 -p 1 -b .samba-4.4.2-s3-winbind-make-sure-domain-member-can-talk-to-trust.patch
-%patch101 -p1
 
 %build
 
