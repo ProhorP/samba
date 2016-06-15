@@ -69,7 +69,7 @@ bool fill_grent(TALLOC_CTX *mem_ctx, struct winbindd_gr *gr,
 	/* Group name and password */
 
 	strlcpy(gr->gr_name, full_group_name, sizeof(gr->gr_name));
-	strlcpy(gr->gr_passwd, "*", sizeof(gr->gr_passwd));
+	strlcpy(gr->gr_passwd, "x", sizeof(gr->gr_passwd));
 
 	return True;
 }
