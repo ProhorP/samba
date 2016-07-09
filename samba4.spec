@@ -43,7 +43,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.4
+Version: 4.4.5
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -394,12 +394,20 @@ Summary: Samba Active Directory Domain Controller
 Group: System/Servers
 BuildArch: noarch
 Provides: task-samba-ad-dc = %version-%release
+Provides: task-ad-dc = %version-%release
 Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client samba-DC-doc krb5-kinit
 Conflicts: samba python-module-samba samba-common samba-winbind-clients samba-winbind samba-client samba-doc
 
 %description -n task-samba-dc
 Samba server acts as a Domain Controller that is compatible with
 Microsoft Active Directory.
+
+%package util-private-headers
+Summary: libsamba_util private headers
+Group: Development/C
+
+%description util-private-headers
+libsamba_util private headers.
 
 %prep
 %setup -q -n %rname-%version
@@ -639,6 +647,14 @@ cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%rname/
 # Install pidl/lib/Parse/Pidl/Samba3/Template.pm
 cp -a pidl/lib/Parse/Pidl/Samba3/Template.pm %buildroot%_datadir/perl5/Parse/Pidl/Samba3/
 
+# Copy libsamba_util private headers
+mkdir -p %buildroot%_includedir/samba-4.0/private/lib/util/charset
+cp lib/util/*.h %buildroot%_includedir/samba-4.0/private/lib/util
+cp lib/util/charset/*.h %buildroot%_includedir/samba-4.0/private/lib/util/charset
+mkdir -p %buildroot%_includedir/samba-4.0/private/libcli/util
+cp libcli/util/*.h %buildroot%_includedir/samba-4.0/private/libcli/util
+subst 's,\.\./,,' %buildroot%_includedir/samba-4.0/private/lib/util/*.h
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -847,6 +863,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0
 
 %exclude %_includedir/samba-4.0/netapi.h
+%exclude %_includedir/samba-4.0/private
 #%exclude %_includedir/samba-4.0/torture.h
 %if_with libsmbclient
 %exclude %_includedir/samba-4.0/libsmbclient.h
@@ -1226,7 +1243,27 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files -n task-samba-dc
 
+%files util-private-headers
+%_includedir/samba-4.0/private
+
 %changelog
+* Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.5-alt0.M70P.1
+- Backport new version to p7 branch
+
+* Fri Jul 08 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.5-alt1
+- Update for security release with CVE-2016-2119
+
+* Thu Jun 30 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.4-alt3
+- Apply fixes for DRSUAPI limits of too strict for some workloads,
+  e.g. DRSUAPI replication with large objects.
+   https://bugzilla.samba.org/show_bug.cgi?id=11948
+ + Set DCERPC_NCACN_{REQUEST,RESPONSE}_DEFAULT_MAX_SIZE
+ + Allow a total reassembled response payload of 240 MBytes
+
+* Wed Jun 29 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.4-alt2
+- Package libsamba_util private headers to package
+  samba-DC-util-private-headers
+
 * Tue Jun 14 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.4-alt0.M70P.1
 - Backport new version to p7 branch
 
