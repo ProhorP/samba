@@ -32,7 +32,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.3.10
+Version: 4.3.11
 Release: alt0.M70P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1329,6 +1329,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.11-alt0.M70P.1
+- Update for security release with CVE-2016-2119
+
 * Wed Jun 15 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.10-alt0.M70P.1
 - New version
 
