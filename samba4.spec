@@ -32,8 +32,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.3.9
-Release: alt0.M70C.2
+Version: 4.3.11
+Release: alt0.M70C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1329,6 +1329,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.11-alt0.M70C.1
+- Update for security release with CVE-2016-2119
+
 * Thu May 05 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.9-alt0.M70C.2
 - Drop obsoleted patch
 
@@ -1338,7 +1341,7 @@ TDB_NO_FSYNC=1 %make_build test
 * Fri Apr 29 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70C.2
 - Fix CVE-2016-2110/NTLMSSP regression (https://bugzilla.samba.org/show_bug.cgi?id=11849)
 
-* Mon Apr 18 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70C.1
+* Wed Apr 13 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.8-alt0.M70P.1
 - New version
 - Security fixes:
   - CVE-2015-5370 (Multiple errors in DCE-RPC code)
