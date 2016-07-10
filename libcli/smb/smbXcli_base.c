@@ -5312,6 +5312,10 @@ bool smbXcli_session_is_guest(struct smbXcli_session *session)
 		return false;
 	}
 
+	if (session->conn->mandatory_signing) {
+		return false;
+	}
+
 	if (session->conn->protocol >= PROTOCOL_SMB2_02) {
 		if (session->smb2->session_flags & SMB2_SESSION_FLAG_IS_GUEST) {
 			return true;
@@ -5522,6 +5526,11 @@ uint16_t smb2cli_session_reset_channel_sequence(struct smbXcli_session *session,
 	return prev_cs;
 }
 
+uint16_t smb2cli_session_current_channel_sequence(struct smbXcli_session *session)
+{
+	return session->smb2->channel_sequence;
+}
+
 void smb2cli_session_start_replay(struct smbXcli_session *session)
 {
 	session->smb2->replay_active = true;
@@ -5566,7 +5575,7 @@ NTSTATUS smb2cli_session_set_session_key(struct smbXcli_session *session,
 					 const struct iovec *recv_iov)
 {
 	struct smbXcli_conn *conn = session->conn;
-	uint16_t no_sign_flags;
+	uint16_t no_sign_flags = 0;
 	uint8_t session_key[16];
 	bool check_signature = true;
 	uint32_t hdr_flags;
@@ -5591,7 +5600,18 @@ NTSTATUS smb2cli_session_set_session_key(struct smbXcli_session *session,
 		return NT_STATUS_INVALID_PARAMETER_MIX;
 	}
 
-	no_sign_flags = SMB2_SESSION_FLAG_IS_GUEST | SMB2_SESSION_FLAG_IS_NULL;
+	if (!conn->mandatory_signing) {
+		/*
+		 * only allow guest sessions without
+		 * mandatory signing.
+		 *
+		 * If we try an authentication with username != ""
+		 * and the server let us in without verifying the
+		 * password we don't have a negotiated session key
+		 * for signing.
+		 */
+		no_sign_flags = SMB2_SESSION_FLAG_IS_GUEST;
+	}
 
 	if (session->smb2->session_flags & no_sign_flags) {
 		session->smb2->should_sign = false;
