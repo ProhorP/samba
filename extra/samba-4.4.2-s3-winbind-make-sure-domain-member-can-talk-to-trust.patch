@@ -18,7 +18,7 @@ diff --git a/source3/winbindd/winbindd_cm.c b/source3/winbindd/winbindd_cm.c
 index 45e3fad..6f5a042 100644
 --- a/source3/winbindd/winbindd_cm.c
 +++ b/source3/winbindd/winbindd_cm.c
-@@ -2851,9 +2851,10 @@ retry:
+@@ -2851,7 +2851,8 @@ retry:
   anonymous:
  
  	/* Finally fall back to anonymous. */
@@ -26,9 +26,6 @@ index 45e3fad..6f5a042 100644
 +	if ((lp_winbind_sealed_pipes() || lp_require_strong_key()) &&
 +	    (IS_DC || domain->primary)) {
  		status = NT_STATUS_DOWNGRADE_DETECTED;
--		DEBUG(1, ("Unwilling to make SAMR connection to domain %s"
-+		DEBUG(1, ("Unwilling to make SAMR connection to domain %s "
- 			  "without connection level security, "
  			  "must set 'winbind sealed pipes = false' and "
  			  "'require strong key = false' to proceed: %s\n",
 @@ -3150,7 +3151,8 @@ retry:
