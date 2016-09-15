@@ -39,7 +39,7 @@
 
 Name: samba
 Version: 4.5.0
-Release: alt1
+Release: alt0.M80P.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1332,6 +1332,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Sep 15 2016 Andrey Cherepanov <cas@altlinux.org> 4.5.0-alt0.M80P.1
+- Backport to p8 branch
+
 * Fri Sep 09 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.0-alt1
 - Update to autumn release
 
