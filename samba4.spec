@@ -45,7 +45,7 @@
 
 Name:    samba-DC
 Version: 4.5.0
-Release: alt1
+Release: alt0.M80P.1
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1256,6 +1256,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Sep 15 2016 Andrey Cherepanov <cas@altlinux.org> 4.5.0-alt0.M80P.1
+- Backport to p8 branch
+
 * Thu Sep 08 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.0-alt1
 - Update to new autumn release
 
