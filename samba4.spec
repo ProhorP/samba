@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.5.0
+Version: 4.5.1
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1069,6 +1069,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libdfs-server-ad-samba4.so
 %_libdir/samba/libdnsserver-common-samba4.so
 %_libdir/samba/libdsdb-module-samba4.so
+%_libdir/samba/libdsdb-garbage-collect-tombstones-samba4.so
 %_libdir/samba/libntvfs-samba4.so
 %_libdir/samba/libposix-eadb-samba4.so
 %_libdir/samba/bind9/dlz_bind9_9.so
@@ -1332,6 +1333,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Sat Oct 29 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt1
+- Update with variety of fixes for autumn release
+
 * Fri Sep 09 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.0-alt1
 - Update to autumn release
 
