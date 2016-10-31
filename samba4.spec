@@ -1069,7 +1069,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libdfs-server-ad-samba4.so
 %_libdir/samba/libdnsserver-common-samba4.so
 %_libdir/samba/libdsdb-module-samba4.so
-%_libdir/samba/libdsdb-garbage-collect-tombstones-samba4.so
 %_libdir/samba/libntvfs-samba4.so
 %_libdir/samba/libposix-eadb-samba4.so
 %_libdir/samba/bind9/dlz_bind9_9.so
@@ -1149,6 +1148,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libauth-unix-token-samba4.so
 %_libdir/samba/libcluster-samba4.so
 %_libdir/samba/libdcerpc-samba4.so
+%_libdir/samba/libdsdb-garbage-collect-tombstones-samba4.so
 %_libdir/samba/libnon-posix-acls-samba4.so
 %_libdir/samba/libposix-eadb-samba4.so
 %_libdir/samba/libsamba-net-samba4.so
