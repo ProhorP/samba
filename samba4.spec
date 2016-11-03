@@ -1257,6 +1257,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Nov 03 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt0.M80P.1
+- Update with variety of fixes for autumn release for branch p8
+
 * Thu Sep 15 2016 Andrey Cherepanov <cas@altlinux.org> 4.5.0-alt0.M80P.1
 - Backport to p8 branch
 
