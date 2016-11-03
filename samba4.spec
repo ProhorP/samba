@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.5.0
+Version: 4.5.1
 Release: alt0.M80P.1
 
 Group:   System/Servers
@@ -1030,6 +1030,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libdnsserver-common-samba4.so
 %_samba_mod_libdir/libdfs-server-ad-samba4.so
 %_samba_mod_libdir/libdsdb-module-samba4.so
+%_samba_mod_libdir/libdsdb-garbage-collect-tombstones-samba4.so
 %_samba_mod_libdir/ldb
 %_samba_mod_libdir/gensec
 %_samba_mod_libdir/libdb-glue-samba4.so
