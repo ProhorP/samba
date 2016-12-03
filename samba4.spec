@@ -4,6 +4,7 @@
 
 %define rname samba
 %define _localstatedir /var
+%define libwbc_alternatives_version 0.13
 
 # internal libs
 %def_without talloc
@@ -17,7 +18,7 @@
 
 # build as separate package
 %def_without libsmbclient
-%def_without libwbclient
+%def_with libwbclient
 %def_without libnetapi
 %def_with docs
 
@@ -45,7 +46,7 @@
 
 Name:    samba-DC
 Version: 4.5.1
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -115,11 +116,11 @@ BuildRequires: libiniparser-devel
 BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
-%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.4 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.18 python-module-tevent}
-%{?_without_tdb:BuildRequires: libtdb-devel >= 1.2.11  python-module-tdb}
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.8 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.29 python-module-tevent}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.10  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.21 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.27 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %{?_with_systemd:BuildRequires: libsystemd-devel}
 %{?_enable_avahi:BuildRequires: libavahi-devel}
@@ -198,7 +199,8 @@ develop programs that link against the SMB client library in the Samba suite.
 %package -n libwbclient-DC
 Summary: The winbind client library
 Group: System/Libraries
-Conflicts: libwbclient
+Provides: libwbclient = %version-%release
+Conflicts: libwbclient-sssd
 
 %description -n libwbclient-DC
 The libwbclient package contains the winbind client library from the Samba suite.
@@ -287,6 +289,9 @@ Group: System/Servers
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
 Conflicts: %rname-winbind
+%if_with libwbclient
+Conflicts: libwbclient-sssd
+%endif
 
 %description winbind
 The %rname-winbind package provides the winbind NSS library, and some
@@ -561,6 +566,22 @@ mkdir -p %buildroot%_pkgconfigdir
 mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
+
+if [ ! -f %buildroot%_samba_libdir/libwbclient.so.%libwbc_alternatives_version ]
+then
+    echo "Expected libwbclient version not found, please check if version has changed."
+    exit -1
+fi
+ln -s ../..%_samba_libdir/libwbclient.so.%libwbc_alternatives_version %buildroot%_libdir/
+ln -s ../..%_samba_libdir/libwbclient.so.0 %buildroot%_libdir/
+ln -s ../..%_samba_libdir/libwbclient.so %buildroot%_libdir/
+
+# Add alternatives for libwbclient
+mkdir -p %buildroot%_altdir
+printf '%_libdir/libwbclient.so.%libwbc_alternatives_version\t%_samba_libdir/libwbclient.so.%libwbc_alternatives_version\t10\n' > %buildroot%_altdir/libwbclient-samba-dc
+printf '%_libdir/libwbclient.so.0\t%_samba_libdir/libwbclient.so.0\t10\n' >> %buildroot%_altdir/libwbclient-samba-dc
+
+printf '%_libdir/libwbclient.so\t%_samba_libdir/libwbclient.so\t10\n' > %buildroot%_altdir/libwbclient-devel-samba-dc
 mkdir -p %buildroot/lib/tmpfiles.d
 
 # Install other stuff
@@ -1100,13 +1121,17 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with libwbclient
 %files -n libwbclient-DC
+%ghost %_libdir/libwbclient.so.*
 %_samba_libdir/libwbclient.so.*
 %_samba_mod_libdir/libwinbind-client-samba4.so
+%_altdir/libwbclient-samba-dc
 
 %files -n libwbclient-DC-devel
 %_includedir/samba-4.0/wbclient.h
+%ghost %_libdir/libwbclient.so
 %_samba_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
+%_altdir/libwbclient-devel-samba-dc
 %endif
 
 %if_with libnetapi
@@ -1257,6 +1282,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Dec 03 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt2
+- Add conflict winbind with libwbclient-sssd due compatibility
+- Update build dependencies versions for external samba libraries
+- Build with separate libwbclient-DC
+
 * Fri Oct 28 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt1
 - Update with variety of fixes for autumn release
 
