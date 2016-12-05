@@ -1336,6 +1336,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Dec 06 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt1.M80P.2
+- Backport to p8 branch
+
 * Sat Dec 03 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt2
 - Add conflict winbind with libwbclient-sssd due compatibility
 - Update build dependencies versions for external samba libraries
