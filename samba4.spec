@@ -43,7 +43,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.5
+Version: 4.4.8
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -524,6 +524,7 @@ libsamba_util private headers.
 %if_with profiling_data
 	--with-profiling-data \
 %endif
+	--with-ntvfs-fileserver \
 	%{subst_enable avahi}
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
@@ -887,7 +888,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamdb.so
 %_samba_libdir/libsmbconf.so
 %_samba_libdir/libtevent-util.so
-%_samba_libdir/libtevent-unix-util.so
 %_samba_libdir/libsamba-passdb.so
 %_samba_libdir/libsmbldap.so
 
@@ -924,7 +924,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamdb.so.*
 %_samba_libdir/libsmbconf.so.*
 %_samba_libdir/libtevent-util.so.*
-%_samba_libdir/libtevent-unix-util.so.*
 %_samba_libdir/libsamba-passdb.so.*
 %_samba_libdir/libsmbldap.so.*
 %_samba_mod_libdir/auth
@@ -1235,7 +1234,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/ctdb-statistics.7*
 
 %files ctdb-tests
-%_libdir/samba-dc/ctdb-tests
+%_libexecdir/ctdb/tests
 %_bindir/ctdb_run_tests
 %_bindir/ctdb_run_cluster_tests
 %_datadir/ctdb-tests
@@ -1247,6 +1246,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.8-alt0.M70P.1
+- Update for release with security fixes:
+  - CVE-2016-2123 (ndr_pull_dnsp_name contains an integer wrap problem)
+  - CVE-2016-2125 (client code always requests a forwardable ticket)
+  - CVE-2016-2126 (crash winbindd using a legitimate Kerberos ticket)
+
 * Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.5-alt0.M70P.1
 - Backport new version to p7 branch
 
