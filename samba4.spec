@@ -32,7 +32,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.3.11
+Version: 4.3.13
 Release: alt0.M70C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1145,6 +1145,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libcluster-samba4.so
 %_libdir/samba/libdcerpc-samba4.so
 %_libdir/samba/libnon-posix-acls-samba4.so
+%_libdir/samba/libposix-eadb-samba4.so
 %_libdir/samba/libsamba-net-samba4.so
 %_libdir/samba/libsamba-python-samba4.so
 %_libdir/samba/libshares-samba4.so
@@ -1329,6 +1330,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.3.13-alt0.M70C.1
+- Update for release with security fixes:
+  - CVE-2016-2123 (ndr_pull_dnsp_name contains an integer wrap problem)
+  - CVE-2016-2125 (client code always requests a forwardable ticket)
+  - CVE-2016-2126 (crash winbindd using a legitimate Kerberos ticket)
+
 * Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.3.11-alt0.M70C.1
 - Update for security release with CVE-2016-2119
 
