@@ -45,8 +45,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.5.1
-Release: alt2
+Version: 4.5.2
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -69,7 +69,7 @@ Source20: samba.init
 Source200: README.dc
 Source201: README.downgrade
 
-Patch: %rname-%version-%release.patch
+Patch: %rname-%version-alt.patch
 Patch10: samba-grouppwd.patch
 
 # fedora patches
@@ -88,6 +88,8 @@ Requires: %name-winbind-clients = %version-%release
 %if_with libwbclient
 Requires: libwbclient-DC = %version-%release
 %endif
+
+BuildRequires(pre):rpm-build-ubt
 
 BuildRequires: /proc
 BuildRequires: libe2fs-devel
@@ -1273,7 +1275,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libexecdir/ctdb/tests
 %_bindir/ctdb_run_tests
 %_bindir/ctdb_run_cluster_tests
-%_datadir/ctdb-tests
+%_datadir/ctdb/tests
 %endif
 
 %files -n task-samba-dc
@@ -1282,6 +1284,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.2-alt1%ubt
+- Udpate to first winter release
+
 * Sat Dec 03 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt2
 - Add conflict winbind with libwbclient-sssd due compatibility
 - Update build dependencies versions for external samba libraries
