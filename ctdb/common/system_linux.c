@@ -93,7 +93,7 @@ int ctdb_sys_send_arp(const ctdb_sock_addr *addr, const char *iface)
 
 	switch (addr->ip.sin_family) {
 	case AF_INET:
-		s = socket(AF_PACKET, SOCK_RAW, ETHERTYPE_ARP);
+		s = socket(AF_PACKET, SOCK_RAW, 0);
 		if (s == -1){
 			DEBUG(DEBUG_CRIT,(__location__ " failed to open raw socket\n"));
 			return -1;
@@ -108,7 +108,7 @@ int ctdb_sys_send_arp(const ctdb_sock_addr *addr, const char *iface)
 		}
 
 		/* get the mac address */
-		strncpy(if_hwaddr.ifr_name, iface, sizeof(if_hwaddr.ifr_name)-1);
+		strlcpy(if_hwaddr.ifr_name, iface, sizeof(if_hwaddr.ifr_name));
 		ret = ioctl(s, SIOCGIFHWADDR, &if_hwaddr);
 		if ( ret < 0 ) {
 			close(s);
@@ -187,14 +187,14 @@ int ctdb_sys_send_arp(const ctdb_sock_addr *addr, const char *iface)
 		close(s);
 		break;
 	case AF_INET6:
-		s = socket(AF_PACKET, SOCK_RAW, ETHERTYPE_ARP);
+		s = socket(AF_PACKET, SOCK_RAW, 0);
 		if (s == -1){
 			DEBUG(DEBUG_CRIT,(__location__ " failed to open raw socket\n"));
 			return -1;
 		}
 
 		DEBUG(DEBUG_DEBUG, (__location__ " Created SOCKET FD:%d for sending arp\n", s));
-		strncpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name));
+		strlcpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name));
 		if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
 			DEBUG(DEBUG_CRIT,(__location__ " interface '%s' not found\n", iface));
 			close(s);
@@ -202,7 +202,7 @@ int ctdb_sys_send_arp(const ctdb_sock_addr *addr, const char *iface)
 		}
 
 		/* get the mac address */
-		strncpy(if_hwaddr.ifr_name, iface, sizeof(if_hwaddr.ifr_name)-1);
+		strlcpy(if_hwaddr.ifr_name, iface, sizeof(if_hwaddr.ifr_name));
 		ret = ioctl(s, SIOCGIFHWADDR, &if_hwaddr);
 		if ( ret < 0 ) {
 			close(s);
@@ -447,7 +447,7 @@ int ctdb_sys_open_capture_socket(const char *iface, void **private_data)
 	int s;
 
 	/* Open a socket to capture all traffic */
-	s = socket(AF_PACKET, SOCK_RAW, ETH_P_ALL);
+	s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
 	if (s == -1) {
 		DEBUG(DEBUG_CRIT,(__location__ " failed to open raw socket\n"));
 		return -1;
@@ -575,7 +575,7 @@ bool ctdb_sys_check_iface_exists(const char *iface)
 		return true;
 	}
 
-	strncpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name)-1);
+	strlcpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name));
 	if (ioctl(s, SIOCGIFINDEX, &ifr) < 0 && errno == ENODEV) {
 		DEBUG(DEBUG_CRIT,(__location__ " interface '%s' not found\n", iface));
 		close(s);

@@ -229,6 +229,8 @@ long TellDir(struct smb_Dir *dirp);
 bool SearchDir(struct smb_Dir *dirp, const char *name, long *poffset);
 NTSTATUS can_delete_directory(struct connection_struct *conn,
 				const char *dirname);
+bool have_file_open_below(connection_struct *conn,
+			const struct smb_filename *name);
 
 /* The following definitions come from smbd/dmapi.c  */
 
@@ -255,6 +257,9 @@ int dos_attributes_to_stat_dos_flags(uint32_t dosmode);
 uint32_t dos_mode(connection_struct *conn, struct smb_filename *smb_fname);
 int file_set_dosmode(connection_struct *conn, struct smb_filename *smb_fname,
 		     uint32_t dosmode, const char *parent_dir, bool newfile);
+bool get_ea_dos_attribute(connection_struct *conn,
+			  struct smb_filename *smb_fname,
+			  uint32_t *pattr);
 NTSTATUS file_set_sparse(connection_struct *conn,
 			 struct files_struct *fsp,
 			 bool sparse);
@@ -676,6 +681,7 @@ bool update_num_read_oplocks(files_struct *fsp, struct share_mode_lock *lck);
 
 void break_kernel_oplock(struct messaging_context *msg_ctx, files_struct *fsp);
 NTSTATUS set_file_oplock(files_struct *fsp);
+bool remove_oplock_under_lock(files_struct *fsp, struct share_mode_lock *lck);
 bool remove_oplock(files_struct *fsp);
 bool downgrade_oplock(files_struct *fsp);
 bool fsp_lease_update(struct share_mode_lock *lck,
@@ -757,10 +763,6 @@ bool set_unix_posix_acl(connection_struct *conn, files_struct *fsp, const char *
 NTSTATUS get_nt_acl_no_snum( TALLOC_CTX *ctx, const char *fname,
 			     uint32_t security_info_wanted,
 			     struct security_descriptor **sd);
-NTSTATUS make_default_filesystem_acl(TALLOC_CTX *ctx,
-					const char *name,
-					SMB_STRUCT_STAT *psbuf,
-					struct security_descriptor **ppdesc);
 int posix_sys_acl_blob_get_file(vfs_handle_struct *handle,
 				const char *path_p,
 				TALLOC_CTX *mem_ctx,
@@ -893,6 +895,7 @@ ssize_t sendfile_short_send(struct smbXsrv_connection *xconn,
 			    size_t smb_maxcnt);
 void reply_readbraw(struct smb_request *req);
 void reply_lockread(struct smb_request *req);
+int setup_readX_header(char *outbuf, size_t smb_maxcnt);
 void reply_read(struct smb_request *req);
 void reply_read_and_X(struct smb_request *req);
 void error_to_writebrawerr(struct smb_request *req);

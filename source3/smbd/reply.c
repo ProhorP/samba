@@ -2676,7 +2676,17 @@ static NTSTATUS can_rename(connection_struct *conn, files_struct *fsp,
 		/* If no pathnames are open below this
 		   directory, allow the rename. */
 
-		if (file_find_subpath(fsp)) {
+		if (lp_strict_rename(SNUM(conn))) {
+			/*
+			 * Strict rename, check open file db.
+			 */
+			if (have_file_open_below(fsp->conn, fsp->fsp_name)) {
+				return NT_STATUS_ACCESS_DENIED;
+			}
+		} else if (file_find_subpath(fsp)) {
+			/*
+			 * No strict rename, just look in local process.
+			 */
 			return NT_STATUS_ACCESS_DENIED;
 		}
 		return NT_STATUS_OK;
@@ -3757,8 +3767,7 @@ strict_unlock:
  Setup readX header.
 ****************************************************************************/
 
-static int setup_readX_header(struct smb_request *req, char *outbuf,
-			      size_t smb_maxcnt)
+int setup_readX_header(char *outbuf, size_t smb_maxcnt)
 {
 	int outsize;
 
@@ -3777,7 +3786,6 @@ static int setup_readX_header(struct smb_request *req, char *outbuf,
 	      + 2		/* the buflen field */
 	      + 1);		/* padding byte */
 	SSVAL(outbuf,smb_vwv7,(smb_maxcnt >> 16));
-	SSVAL(outbuf,smb_vwv11,smb_maxcnt);
 	SCVAL(smb_buf(outbuf), 0, 0); /* padding byte */
 	/* Reset the outgoing length, set_message truncates at 0x1FFFF. */
 	_smb_setlen_large(outbuf,
@@ -3845,7 +3853,7 @@ static void send_file_readX(connection_struct *conn, struct smb_request *req,
 		header = data_blob_const(headerbuf, sizeof(headerbuf));
 
 		construct_reply_common_req(req, (char *)headerbuf);
-		setup_readX_header(req, (char *)headerbuf, smb_maxcnt);
+		setup_readX_header((char *)headerbuf, smb_maxcnt);
 
 		nread = SMB_VFS_SENDFILE(xconn->transport.sock, fsp, &header,
 					 startpos, smb_maxcnt);
@@ -3946,7 +3954,7 @@ normal_read:
 		}
 
 		construct_reply_common_req(req, (char *)headerbuf);
-		setup_readX_header(req, (char *)headerbuf, smb_maxcnt);
+		setup_readX_header((char *)headerbuf, smb_maxcnt);
 
 		/* Send out the header. */
 		ret = write_data(xconn->transport.sock, (char *)headerbuf,
@@ -3996,7 +4004,7 @@ nosendfile_read:
 		return;
 	}
 
-	setup_readX_header(req, (char *)req->outbuf, nread);
+	setup_readX_header((char *)req->outbuf, nread);
 
 	DEBUG(3, ("send_file_readX %s max=%d nread=%d\n",
 		  fsp_fnum_dbg(fsp), (int)smb_maxcnt, (int)nread));

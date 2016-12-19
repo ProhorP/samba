@@ -460,6 +460,9 @@ sub setup_admember_rfc2307($$$$)
 	server signing = on
         workgroup = $dcvars->{DOMAIN}
         realm = $dcvars->{REALM}
+        idmap config * : backend = autorid
+        idmap config * : range = 1000000-1999999
+        idmap config * : rangesize = 100000
         idmap config $dcvars->{DOMAIN} : backend = rfc2307
         idmap config $dcvars->{DOMAIN} : range = 2000000-2999999
         idmap config $dcvars->{DOMAIN} : ldap_server = ad
@@ -550,6 +553,13 @@ sub setup_simpleserver($$)
         vfs objects = aio_fork
         read only = no
         vfs_aio_fork:erratic_testing_mode=yes
+
+[dosmode]
+	path = $prefix_abs/share
+	vfs objects =
+	store dos attributes = yes
+	hide files = /hidefile/
+	hide dot files = yes
 ";
 
 	my $vars = $self->provision($path,
@@ -1564,6 +1574,15 @@ sub provision($$$$$$$$)
 	vfs objects = shadow_copy2
 	shadow:mountpoint = $shadow_mntdir
 	wide links = yes
+
+[acl_xattr_ign_sysacl_posix]
+	copy = tmp
+	acl_xattr:ignore system acls = yes
+	acl_xattr:default acl style = posix
+[acl_xattr_ign_sysacl_windows]
+	copy = tmp
+	acl_xattr:ignore system acls = yes
+	acl_xattr:default acl style = windows
 	";
 	close(CONF);
 

@@ -192,7 +192,7 @@ def run_cmd(cmd, dir=".", show=None, output=False, checkfail=True):
 class builder(object):
     '''handle build of one directory'''
 
-    def __init__(self, name, sequence):
+    def __init__(self, name, sequence, cp=True):
         self.name = name
         self.dir = builddirs[name]
 
@@ -215,7 +215,10 @@ class builder(object):
         cleanup_list.append(self.prefix)
         os.makedirs(self.sdir)
         run_cmd("rm -rf %s" % self.sdir)
-        run_cmd("git clone --recursive --shared %s %s" % (test_master, self.sdir), dir=test_master, show=True)
+        if cp:
+            run_cmd("cp --recursive --link --archive %s %s" % (test_master, self.sdir), dir=test_master, show=True)
+        else:
+            run_cmd("git clone --recursive --shared %s %s" % (test_master, self.sdir), dir=test_master, show=True)
         self.start_next()
 
     def start_next(self):
@@ -254,7 +257,7 @@ class buildlist(object):
             os.environ['AUTOBUILD_RANDOM_SLEEP_OVERRIDE'] = '1'
 
         for n in tasknames:
-            b = builder(n, tasks[n])
+            b = builder(n, tasks[n], cp=n is not "pidl")
             self.tlist.append(b)
         if options.retry:
             rebase_remote = "rebaseon"
@@ -278,7 +281,7 @@ class buildlist(object):
                            ),
                            "test/plain" ) ]
 
-            self.retry = builder('retry', retry_task)
+            self.retry = builder('retry', retry_task, cp=False)
             self.need_retry = False
 
     def kill_kids(self):
@@ -515,7 +518,7 @@ def send_email(subject, text, log_tar):
     s.quit()
 
 def email_failure(status, failed_task, failed_stage, failed_tag, errstr,
-                  elapsed_time, log_base=None):
+                  elapsed_time, log_base=None, add_log_tail=True):
     '''send an email to options.email about the failure'''
     elapsed_minutes = elapsed_time / 60.0
     user = os.getenv("USER")
@@ -553,9 +556,26 @@ The top commit for the tree that was built was:
 
 ''' % (log_base, failed_tag, log_base, failed_tag, log_base, top_commit_msg)
 
+    if add_log_tail:
+        f = open("%s/%s.stdout" % (gitroot, failed_tag), 'r')
+        lines = f.readlines()
+        log_tail = "".join(lines[-50:])
+        num_lines = len(lines)
+        if num_lines < 50:
+            # Also include stderr (compile failures) if < 50 lines of stdout
+            f = open("%s/%s.stderr" % (gitroot, failed_tag), 'r')
+            log_tail += "".join(f.readlines()[-(50-num_lines):])
+
+        text += '''
+The last 50 lines of log messages:
+
+%s
+    ''' % log_tail
+        f.close()
+
     logs = os.path.join(gitroot, 'logs.tar.gz')
-    send_email('autobuild failure on %s for task %s during %s'
-               % (platform.node(), failed_task, failed_stage),
+    send_email('autobuild[%s] failure on %s for task %s during %s'
+               % (options.branch, platform.node(), failed_task, failed_stage),
                text, logs)
 
 def email_success(elapsed_time, log_base=None):
@@ -586,7 +606,7 @@ The top commit for the tree that was built was:
 ''' % top_commit_msg
 
     logs = os.path.join(gitroot, 'logs.tar.gz')
-    send_email('autobuild sucess on %s ' % platform.node(),
+    send_email('autobuild[%s] success on %s' % (options.branch, platform.node()),
                text, logs)
 
 
@@ -680,6 +700,24 @@ blist.tarlogs("logs.tar.gz")
 if options.email is not None:
     email_failure(status, failed_task, failed_stage, failed_tag, errstr,
                   elapsed_time, log_base=options.log_base)
+else:
+    elapsed_minutes = elapsed_time / 60.0
+    print '''
+
+####################################################################
+
+AUTOBUILD FAILURE
+
+Your autobuild[%s] on %s failed after %.1f minutes
+when trying to test %s with the following error:
+
+   %s
+
+the autobuild has been abandoned. Please fix the error and resubmit.
+
+####################################################################
+
+''' % (options.branch, platform.node(), elapsed_minutes, failed_task, errstr)
 
 cleanup()
 print(errstr)
