@@ -1145,6 +1145,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libcluster-samba4.so
 %_libdir/samba/libdcerpc-samba4.so
 %_libdir/samba/libnon-posix-acls-samba4.so
+%_libdir/samba/libposix-eadb-samba4.so
 %_libdir/samba/libsamba-net-samba4.so
 %_libdir/samba/libsamba-python-samba4.so
 %_libdir/samba/libshares-samba4.so
