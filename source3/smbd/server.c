@@ -389,7 +389,7 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive)
 		return true;
 	}
 
-	status = reinit_after_fork(msg, ev, true);
+	status = smbd_reinit_after_fork(msg, ev, true);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(1, ("%s: reinit_after_fork failed: %s\n",
 			  __func__, nt_errstr(status)));
@@ -1295,7 +1295,6 @@ extern void build_options(bool screen);
 	 * Initialize the event context. The event context needs to be
 	 * initialized before the messaging context, cause the messaging
 	 * context holds an event context.
-	 * FIXME: This should be s3_tevent_context_init()
 	 */
 	ev_ctx = server_event_context();
 	if (ev_ctx == NULL) {
