@@ -44,7 +44,7 @@
 
 Name:    samba-DC
 Version: 4.4.8
-Release: alt0.M70P.1
+Release: alt1.M70P.2
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1246,6 +1246,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Dec 29 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.8-alt1.M70P.2
+- Backport client fixes for kerberos credential cache at winbind:
+ + Do not delete an existing valid credential cache for KEYRING type
+ + Set FQDN to lower at fill_mem_keytab_from_system_keytab()
+
 * Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.8-alt0.M70P.1
 - Update for release with security fixes:
   - CVE-2016-2123 (ndr_pull_dnsp_name contains an integer wrap problem)
