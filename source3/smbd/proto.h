@@ -325,6 +325,7 @@ int fsp_stat(files_struct *fsp);
 
 /* The following definitions come from smbd/filename.c  */
 
+uint32_t filename_create_ucf_flags(struct smb_request *req, uint32_t create_disposition);
 NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		      connection_struct *conn,
 		      const char *orig_path,
@@ -613,6 +614,9 @@ void reply_nttranss(struct smb_request *req);
 NTSTATUS smbd_check_access_rights(struct connection_struct *conn,
 				const struct smb_filename *smb_fname,
 				bool use_privs,
+				uint32_t access_mask);
+NTSTATUS check_parent_access(struct connection_struct *conn,
+				struct smb_filename *smb_fname,
 				uint32_t access_mask);
 NTSTATUS fd_open(struct connection_struct *conn, files_struct *fsp,
 		 int flags, mode_t mode);
