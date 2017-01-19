@@ -33,7 +33,7 @@
 
 Name: samba
 Version: 4.3.13
-Release: alt0.M70C.1
+Release: alt0.M70C.2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1330,6 +1330,10 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Jan 19 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.3.13-alt0.M70C.2
+- Do not delete an existing valid credential cache for KEYRING type
+- Set FQDN to lower at fill_mem_keytab_from_system_keytab()
+
 * Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.3.13-alt0.M70C.1
 - Update for release with security fixes:
   - CVE-2016-2123 (ndr_pull_dnsp_name contains an integer wrap problem)
