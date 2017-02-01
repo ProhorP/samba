@@ -38,8 +38,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.5.3
-Release: alt3%ubt
+Version: 4.5.5
+Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1338,6 +1338,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Wed Feb 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.5-alt1%ubt
+- Update to winter release
+
 * Sun Jan 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.3-alt3%ubt
 - Fix winbind problem with access user to keytab
 
