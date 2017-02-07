@@ -76,6 +76,24 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 
 /* The following definitions come from libads/authdata.c  */
 
+NTSTATUS kerberos_kinit(TALLOC_CTX *mem_ctx,
+			const char *name,
+			const char *pass,
+			time_t time_offset,
+			time_t *expire_time,
+			time_t *renew_till_time,
+			const char *cache_name,
+			bool request_pac,
+			bool add_netbios_addr,
+			time_t renewable_time);
+
+NTSTATUS kerberos_pac_logon(TALLOC_CTX *mem_ctx,
+			    time_t time_offset,
+			    const char *cache_name,
+			    const char *impersonate_princ_s,
+			    const char *local_service,
+			    struct PAC_DATA_CTR **_pac_data_ctr);
+
 NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
 			     const char *name,
 			     const char *pass,
