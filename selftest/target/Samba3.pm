@@ -547,6 +547,7 @@ sub setup_simpleserver($$)
 	lanman auth = yes
 	vfs objects = xattr_tdb streams_depot
 	change notify = no
+	smb encrypt = off
 
 [vfs_aio_fork]
 	path = $prefix_abs/share
@@ -560,6 +561,11 @@ sub setup_simpleserver($$)
 	store dos attributes = yes
 	hide files = /hidefile/
 	hide dot files = yes
+
+[enc_desired]
+	path = $prefix_abs/share
+	vfs objects =
+	smb encrypt = desired
 ";
 
 	my $vars = $self->provision($path,
@@ -742,6 +748,8 @@ sub setup_ktest($$$)
 	security = ads
         username map = $prefix/lib/username.map
         server signing = required
+	server min protocol = SMB3_00
+	client max protocol = SMB3
 ";
 
 	my $ret = $self->provision($prefix,
@@ -1414,6 +1422,7 @@ sub provision($$$$$$$$)
 	winbind enum users = yes
 	winbind enum groups = yes
 	winbind separator = /
+	include system krb5 conf = no
 
 #	min receivefile size = 4000
 

@@ -53,7 +53,7 @@ tests = ["FDPASS", "LOCK1", "LOCK2", "LOCK3", "LOCK4", "LOCK5", "LOCK6", "LOCK7"
         "CHAIN3",
         "GETADDRINFO", "UID-REGRESSION-TEST", "SHORTNAME-TEST",
         "CASE-INSENSITIVE-CREATE", "SMB2-BASIC", "NTTRANS-FSCTL", "SMB2-NEGPROT",
-        "SMB2-SESSION-REAUTH", "SMB2-SESSION-RECONNECT",
+        "SMB2-SESSION-REAUTH", "SMB2-SESSION-RECONNECT", "SMB2-FTRUNCATE",
         "CLEANUP1",
         "CLEANUP2",
         "CLEANUP4",
@@ -113,6 +113,7 @@ local_tests = [
     "LOCAL-MESSAGING-FDPASS2",
     "LOCAL-MESSAGING-FDPASS2a",
     "LOCAL-MESSAGING-FDPASS2b",
+    "LOCAL-CANONICALIZE-PATH",
     "LOCAL-hex_encode_buf",
     "LOCAL-sprintf_append",
     "LOCAL-remove_duplicate_addrs2"]
@@ -264,7 +265,7 @@ plantestsuite("samba3.async_req", "nt4_dc",
 
 #smbtorture4 tests
 
-base = ["base.attr", "base.charset", "base.chkpath", "base.defer_open", "base.delaywrite", "base.delete",
+base = ["base.attr", "base.charset", "base.chkpath", "base.createx_access", "base.defer_open", "base.delaywrite", "base.delete",
         "base.deny1", "base.deny2", "base.deny3", "base.denydos", "base.dir1", "base.dir2",
         "base.disconnect", "base.fdpass", "base.lock",
         "base.mangle", "base.negnowait", "base.ntdeny1",
@@ -319,6 +320,8 @@ tests= base + raw + smb2 + rpc + unix + local + rap + nbt + libsmbclient + idmap
 
 for t in tests:
     if t == "base.delaywrite":
+        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD -k yes --maximum-runtime=900')
+    if t == "base.createx_access":
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD -k yes --maximum-runtime=900')
     elif t == "rap.sam":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=doscharset=ISO-8859-1')
@@ -431,8 +434,12 @@ for s in signseal_options:
 
     # We should try more combinations in future, but this is all
     # the pre-calculated credentials cache supports at the moment
+    #
+    # As the ktest env requires SMB3_00 we need to use "smb2" until
+    # dcerpc client code in smbtorture support autonegotiation
+    # of any smb dialect.
     e = ""
-    a = ""
+    a = "smb2"
     binding_string = "ncacn_np:$SERVER[%s%s%s]" % (a, s, e)
     options = binding_string + " -k yes --krb5-ccache=$PREFIX/ktest/krb5_ccache-2"
     plansmbtorture4testsuite(test, "ktest", options, 'krb5 with old ccache ncacn_np with [%s%s%s] ' % (a, s, e))
@@ -471,6 +478,11 @@ plantestsuite("samba3.blackbox.rpcclient.pw-nt-hash", "simpleserver",
               [os.path.join(samba3srcdir, "script/tests/test_rpcclient_pw_nt_hash.sh"),
                "$USERNAME", "$PASSWORD", "$SERVER",
                os.path.join(bindir(), "rpcclient")])
+
+plantestsuite("samba3.blackbox.smbclient.encryption_off", "simpleserver",
+              [os.path.join(samba3srcdir, "script/tests/test_smbclient_encryption_off.sh"),
+               "$USERNAME", "$PASSWORD", "$SERVER",
+               smbclient3])
 
 options_list = ["", "-e"]
 for options in options_list:
