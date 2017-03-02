@@ -43,7 +43,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.9
+Version: 4.4.10
 Release: alt0.M70P.1
 
 Group:   System/Servers
@@ -1246,6 +1246,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Mar 03 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.10-alt0.M70P.1
+- Update to latest release major enhancement of Domain join broken under certain
+  circumstances after winbindd changed the trust password (bug Samba#12262)
+
 * Thu Jan 19 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.9-alt0.M70P.1
 - Update to latest release
 
