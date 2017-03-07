@@ -39,6 +39,30 @@ static void cli_credentials_invalidate_client_gss_creds(
 					struct cli_credentials *cred,
 					enum credentials_obtained obtained);
 
+/* Free a memory ccache */
+static int free_mccache(struct ccache_container *ccc)
+{
+	if (ccc->ccache != NULL) {
+		krb5_cc_destroy(ccc->smb_krb5_context->krb5_context,
+				ccc->ccache);
+		ccc->ccache = NULL;
+	}
+
+	return 0;
+}
+
+/* Free a disk-based ccache */
+static int free_dccache(struct ccache_container *ccc)
+{
+	if (ccc->ccache != NULL) {
+		krb5_cc_close(ccc->smb_krb5_context->krb5_context,
+			      ccc->ccache);
+		ccc->ccache = NULL;
+	}
+
+	return 0;
+}
+
 _PUBLIC_ int cli_credentials_get_krb5_context(struct cli_credentials *cred, 
 				     struct loadparm_context *lp_ctx,
 				     struct smb_krb5_context **smb_krb5_context) 
@@ -118,21 +142,6 @@ static int cli_credentials_set_from_ccache(struct cli_credentials *cred,
 
 	/* set the ccache_obtained here, as it just got set to UNINITIALISED by the calls above */
 	cred->ccache_obtained = obtained;
-
-	return 0;
-}
-
-/* Free a memory ccache */
-static int free_mccache(struct ccache_container *ccc)
-{
-	krb5_cc_destroy(ccc->smb_krb5_context->krb5_context, ccc->ccache);
-
-	return 0;
-}
-
-/* Free a disk-based ccache */
-static int free_dccache(struct ccache_container *ccc) {
-	krb5_cc_close(ccc->smb_krb5_context->krb5_context, ccc->ccache);
 
 	return 0;
 }
@@ -520,6 +529,7 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 	struct ccache_container *ccache;
 #ifdef HAVE_GSS_KRB5_CRED_NO_CI_FLAGS_X
 	gss_buffer_desc empty_buffer = GSS_C_EMPTY_BUFFER;
+	gss_OID oid = discard_const(GSS_KRB5_CRED_NO_CI_FLAGS_X);
 #endif
 	krb5_enctype *etypes = NULL;
 
@@ -571,7 +581,11 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 
 	maj_stat = gss_krb5_import_cred(&min_stat, ccache->ccache, NULL, NULL, 
 					&gcc->creds);
-	if ((maj_stat == GSS_S_FAILURE) && (min_stat == (OM_uint32)KRB5_CC_END || min_stat == (OM_uint32) KRB5_CC_NOTFOUND)) {
+	if ((maj_stat == GSS_S_FAILURE) &&
+	    (min_stat == (OM_uint32)KRB5_CC_END ||
+	     min_stat == (OM_uint32)KRB5_CC_NOTFOUND ||
+	     min_stat == (OM_uint32)KRB5_FCC_NOFILE))
+	{
 		/* This CCACHE is no good.  Ensure we don't use it again */
 		cli_credentials_unconditionally_invalidate_ccache(cred);
 
@@ -611,7 +625,7 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 	 * and used for the AS-REQ, so it wasn't possible to disable the usage
 	 * of AES keys.
 	 */
-	min_stat = get_kerberos_allowed_etypes(ccache->smb_krb5_context->krb5_context,
+	min_stat = smb_krb5_get_allowed_etypes(ccache->smb_krb5_context->krb5_context,
 					       &etypes);
 	if (min_stat == 0) {
 		OM_uint32 num_ktypes;
@@ -645,7 +659,7 @@ _PUBLIC_ int cli_credentials_get_client_gss_creds(struct cli_credentials *cred,
 	 * http://krbdev.mit.edu/rt/Ticket/Display.html?id=6938
 	 */
 	maj_stat = gss_set_cred_option(&min_stat, &gcc->creds,
-				       GSS_KRB5_CRED_NO_CI_FLAGS_X,
+				       oid,
 				       &empty_buffer);
 	if (maj_stat) {
 		talloc_free(gcc);

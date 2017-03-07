@@ -370,6 +370,9 @@ sub setup_admember($$$$)
 {
 	my ($self, $prefix, $dcvars) = @_;
 
+	my $prefix_abs = abs_path($prefix);
+	my @dirs = ();
+
 	# If we didn't build with ADS, pretend this env was never available
 	if (not $self->have_ads()) {
 	        return "UNKNOWN";
@@ -377,11 +380,30 @@ sub setup_admember($$$$)
 
 	print "PROVISIONING S3 AD MEMBER...";
 
+	mkdir($prefix_abs, 0777);
+
+	my $share_dir="$prefix_abs/share";
+	push(@dirs, $share_dir);
+
+	my $substitution_path = "$share_dir/D_SAMBADOMAIN";
+	push(@dirs, $substitution_path);
+
+	$substitution_path = "$share_dir/D_SAMBADOMAIN/U_alice";
+	push(@dirs, $substitution_path);
+
+	$substitution_path = "$share_dir/D_SAMBADOMAIN/U_alice/G_domain users";
+	push(@dirs, $substitution_path);
+
 	my $member_options = "
 	security = ads
         workgroup = $dcvars->{DOMAIN}
         realm = $dcvars->{REALM}
         netbios aliases = foo bar
+
+[subDUG]
+	path = $share_dir/D_%D/U_%U/G_%G
+	writeable = yes
+
 ";
 
 	my $ret = $self->provision($prefix,
@@ -393,12 +415,13 @@ sub setup_admember($$$$)
 
 	$ret or return undef;
 
+	mkdir($_, 0777) foreach(@dirs);
+
 	close(USERMAP);
 	$ret->{DOMAIN} = $dcvars->{DOMAIN};
 	$ret->{REALM} = $dcvars->{REALM};
 
 	my $ctx;
-	my $prefix_abs = abs_path($prefix);
 	$ctx = {};
 	$ctx->{krb5_conf} = "$prefix_abs/lib/krb5.conf";
 	$ctx->{domain} = $dcvars->{DOMAIN};
@@ -406,6 +429,7 @@ sub setup_admember($$$$)
 	$ctx->{dnsname} = lc($dcvars->{REALM});
 	$ctx->{kdc_ipv4} = $dcvars->{SERVER_IP};
 	$ctx->{kdc_ipv6} = $dcvars->{SERVER_IPV6};
+	$ctx->{krb5_ccname} = "$prefix_abs/krb5cc_%{uid}";
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
@@ -497,6 +521,7 @@ sub setup_admember_rfc2307($$$$)
 	$ctx->{dnsname} = lc($dcvars->{REALM});
 	$ctx->{kdc_ipv4} = $dcvars->{SERVER_IP};
 	$ctx->{kdc_ipv6} = $dcvars->{SERVER_IPV6};
+	$ctx->{krb5_ccname} = "$prefix_abs/krb5cc_%{uid}";
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
@@ -554,6 +579,7 @@ sub setup_simpleserver($$)
 	ntlm auth = yes
 	vfs objects = xattr_tdb streams_depot time_audit full_audit
 	change notify = no
+	smb encrypt = off
 
 	full_audit:syslog = no
 	full_audit:success = none
@@ -571,6 +597,11 @@ sub setup_simpleserver($$)
 	store dos attributes = yes
 	hide files = /hidefile/
 	hide dot files = yes
+
+[enc_desired]
+	path = $prefix_abs/share
+	vfs objects =
+	smb encrypt = desired
 ";
 
 	my $vars = $self->provision($path,
@@ -672,6 +703,15 @@ sub setup_fileserver($$)
 	path = $share_dir
 	comment = ignore system acls
 	acl_xattr:ignore system acls = yes
+[inherit_owner]
+	path = $share_dir
+	comment = inherit owner
+	inherit owner = yes
+[inherit_owner_u]
+	path = $share_dir
+	comment = inherit only unix owner
+	inherit owner = unix only
+	acl_xattr:ignore system acls = yes
 ";
 
 	my $vars = $self->provision($path,
@@ -757,6 +797,8 @@ sub setup_ktest($$$)
 	security = ads
         username map = $prefix/lib/username.map
         server signing = required
+	server min protocol = SMB3_00
+	client max protocol = SMB3
 ";
 
 	my $ret = $self->provision($prefix,
@@ -775,6 +817,7 @@ sub setup_ktest($$$)
 	$ctx->{dnsname} = lc($ctx->{realm});
 	$ctx->{kdc_ipv4} = "0.0.0.0";
 	$ctx->{kdc_ipv6} = "::";
+	$ctx->{krb5_ccname} = "$prefix_abs/krb5cc_%{uid}";
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
@@ -911,6 +954,7 @@ sub check_or_start($$$$$) {
 		SocketWrapper::set_default_iface($env_vars->{SOCKET_WRAPPER_DEFAULT_IFACE});
 
 		$ENV{KRB5_CONFIG} = $env_vars->{KRB5_CONFIG};
+		$ENV{KRB5CCNAME} = "$env_vars->{KRB5_CCACHE}.nmbd";
 		$ENV{SELFTEST_WINBINDD_SOCKET_DIR} = $env_vars->{SELFTEST_WINBINDD_SOCKET_DIR};
 		$ENV{NMBD_SOCKET_DIR} = $env_vars->{NMBD_SOCKET_DIR};
 
@@ -970,6 +1014,7 @@ sub check_or_start($$$$$) {
 		SocketWrapper::set_default_iface($env_vars->{SOCKET_WRAPPER_DEFAULT_IFACE});
 
 		$ENV{KRB5_CONFIG} = $env_vars->{KRB5_CONFIG};
+		$ENV{KRB5CCNAME} = "$env_vars->{KRB5_CCACHE}.winbindd";
 		$ENV{SELFTEST_WINBINDD_SOCKET_DIR} = $env_vars->{SELFTEST_WINBINDD_SOCKET_DIR};
 		$ENV{NMBD_SOCKET_DIR} = $env_vars->{NMBD_SOCKET_DIR};
 
@@ -1034,6 +1079,7 @@ sub check_or_start($$$$$) {
 		SocketWrapper::set_default_iface($env_vars->{SOCKET_WRAPPER_DEFAULT_IFACE});
 
 		$ENV{KRB5_CONFIG} = $env_vars->{KRB5_CONFIG};
+		$ENV{KRB5CCNAME} = "$env_vars->{KRB5_CCACHE}.smbd";
 		$ENV{SELFTEST_WINBINDD_SOCKET_DIR} = $env_vars->{SELFTEST_WINBINDD_SOCKET_DIR};
 		$ENV{NMBD_SOCKET_DIR} = $env_vars->{NMBD_SOCKET_DIR};
 
@@ -1610,10 +1656,34 @@ sub provision($$$$$$$$)
 	path = $shrdir
 	vfs objects = catia fruit streams_xattr acl_xattr
 	ea support = yes
-	fruit:ressource = file
+	fruit:resource = file
 	fruit:metadata = netatalk
 	fruit:locking = netatalk
 	fruit:encoding = native
+
+[vfs_fruit_metadata_stream]
+	path = $shrdir
+	vfs objects = fruit streams_xattr acl_xattr
+	ea support = yes
+	fruit:resource = file
+	fruit:metadata = stream
+
+[vfs_fruit_stream_depot]
+	path = $shrdir
+	vfs objects = fruit streams_depot acl_xattr
+	ea support = yes
+	fruit:resource = stream
+	fruit:metadata = stream
+
+[vfs_wo_fruit]
+	path = $shrdir
+	vfs objects = streams_xattr acl_xattr
+	ea support = yes
+
+[vfs_wo_fruit_stream_depot]
+	path = $shrdir
+	vfs objects = streams_depot acl_xattr
+	ea support = yes
 
 [badname-tmp]
 	path = $badnames_shrdir
@@ -1944,6 +2014,10 @@ force_user:x:$gid_force_user:
 	# value.
 	#
 	$ret{KRB5_CONFIG} = abs_path($prefix) . "/no_krb5.conf";
+
+	# Define KRB5CCNAME for each environment we set up
+	$ret{KRB5_CCACHE} = abs_path($prefix) . "/krb5ccache";
+	$ENV{KRB5CCNAME} = $ret{KRB5_CCACHE};
 
 	return \%ret;
 }

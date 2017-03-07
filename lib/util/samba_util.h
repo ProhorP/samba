@@ -46,7 +46,6 @@ extern const char *panic_action;
 
 #include "lib/util/time.h"
 #include "lib/util/data_blob.h"
-#include "lib/util/xfile.h"
 #include "lib/util/byteorder.h"
 #include "lib/util/talloc_stack.h"
 
@@ -66,8 +65,6 @@ extern const char *panic_action;
 /**
  * Write backtrace to debug log
  */
-_PUBLIC_ void call_backtrace(void);
-
 _PUBLIC_ void dump_core_setup(const char *progname, const char *logfile);
 
 /**
@@ -103,9 +100,39 @@ _PUBLIC_ uint32_t generate_random(void);
 _PUBLIC_ bool check_password_quality(const char *s);
 
 /**
- * Generate a random text password.
+ * Generate a random text password (based on printable ascii characters).
+ * This function is designed to provide a password that
+ * meats the complexity requirements of UF_NORMAL_ACCOUNT objects
+ * and they should be human readable and writeable on any keyboard layout.
+ *
+ * Characters used are:
+ * ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+_-#.,@$%&!?:;<=>()[]~
  */
 _PUBLIC_ char *generate_random_password(TALLOC_CTX *mem_ctx, size_t min, size_t max);
+
+/**
+ * Generate a random machine password
+ *
+ * min and max are the number of utf16 characters used
+ * to generate on utf8 compatible password.
+ *
+ * Note: if 'unix charset' is not 'utf8' (the default)
+ * then each utf16 character is only filled with
+ * values from 0x01 to 0x7f (ascii values without 0x00).
+ * This is important as the password neets to be
+ * a valid value as utf8 string and at the same time
+ * a valid value in the 'unix charset'.
+ *
+ * If 'unix charset' is 'utf8' (the default) then
+ * each utf16 character is a random value from 0x0000
+ * 0xFFFF (exluding the surrogate ranges from 0xD800-0xDFFF)
+ * while the translation from CH_UTF16MUNGED
+ * to CH_UTF8 replaces invalid values (see utf16_munged_pull()).
+ *
+ * Note: these passwords may not pass the complexity requirements
+ * for UF_NORMAL_ACCOUNT objects (except krbtgt accounts).
+ */
+_PUBLIC_ char *generate_random_machine_password(TALLOC_CTX *mem_ctx, size_t min, size_t max);
 
 /**
  Use the random number generator to generate a random string.
@@ -335,16 +362,11 @@ const char **str_list_make_v3_const(TALLOC_CTX *mem_ctx,
 
 
 /**
-read a line from a file with possible \ continuation chars. 
-Blanks at the start or end of a line are stripped.
-The string will be allocated if s2 is NULL
-**/
-_PUBLIC_ char *fgets_slash(char *s2,int maxlen,XFILE *f);
-
-/**
  * Read one line (data until next newline or eof) and allocate it 
  */
 _PUBLIC_ char *afdgets(int fd, TALLOC_CTX *mem_ctx, size_t hint);
+
+char *fgets_slash(TALLOC_CTX *mem_ctx, char *s2, int maxlen, FILE *f);
 
 /**
 load a file into memory from a fd.

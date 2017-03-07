@@ -221,7 +221,7 @@ static NTSTATUS gensec_gssapi_server_start(struct gensec_security *gensec_securi
 		ret = cli_credentials_get_server_gss_creds(machine_account, 
 							   gensec_security->settings->lp_ctx, &gcc);
 		if (ret) {
-			DEBUG(1, ("Aquiring acceptor credentials failed: %s\n", 
+			DEBUG(1, ("Acquiring acceptor credentials failed: %s\n",
 				  error_message(ret)));
 			return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
 		}
@@ -339,7 +339,7 @@ static NTSTATUS gensec_gssapi_client_start(struct gensec_security *gensec_securi
 	} else {
 		gensec_gssapi_state->target_principal = talloc_asprintf(gensec_gssapi_state, "%s/%s@%s",
 					    gensec_get_target_service(gensec_security), 
-					    hostname, lpcfg_realm(gensec_security->settings->lp_ctx));
+					    hostname, cli_credentials_get_realm(creds));
 
 		name_type = GSS_C_NT_USER_NAME;
 	}
@@ -1311,16 +1311,18 @@ static NTSTATUS gensec_gssapi_session_info(struct gensec_security *gensec_securi
 		const char *error_string;
 
 		DEBUG(10, ("gensec_gssapi: delegated credentials supplied by client\n"));
-		session_info->credentials = cli_credentials_init(session_info);
-		if (!session_info->credentials) {
+
+		/*
+		 * Create anonymous credentials for now.
+		 *
+		 * We will update them with the provided client gss creds.
+		 */
+		session_info->credentials = cli_credentials_init_anon(session_info);
+		if (session_info->credentials == NULL) {
 			talloc_free(tmp_ctx);
 			return NT_STATUS_NO_MEMORY;
 		}
 
-		cli_credentials_set_conf(session_info->credentials, gensec_security->settings->lp_ctx);
-		/* Just so we don't segfault trying to get at a username */
-		cli_credentials_set_anonymous(session_info->credentials);
-		
 		ret = cli_credentials_set_client_gss_creds(session_info->credentials, 
 							   gensec_security->settings->lp_ctx,
 							   gensec_gssapi_state->delegated_cred_handle,
@@ -1358,7 +1360,7 @@ static size_t gensec_gssapi_sig_size(struct gensec_security *gensec_security, si
 
 	sig_size = gssapi_get_sig_size(gensec_gssapi_state->gssapi_context,
 				       gensec_gssapi_state->gss_oid,
-				       gensec_gssapi_state->gss_want_flags,
+				       gensec_gssapi_state->gss_got_flags,
 				       data_size);
 
 	gensec_gssapi_state->sig_size = sig_size;

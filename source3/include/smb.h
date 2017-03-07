@@ -30,7 +30,7 @@
 #include "libds/common/roles.h"
 
 /* logged when starting the various Samba daemons */
-#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2016"
+#define COPYRIGHT_STARTUP_MESSAGE	"Copyright Andrew Tridgell and the Samba Team 1992-2017"
 
 #define SAFETY_MARGIN 1024
 #define LARGE_WRITEX_HDR_SIZE 65
@@ -120,7 +120,6 @@
 
 #include "librpc/gen_ndr/security.h"
 
-struct idle_event;
 struct share_mode_entry;
 struct uuid;
 struct named_mutex;
@@ -732,12 +731,6 @@ struct node_status_extra {
 };
 
 #define SAFE_NETBIOS_CHARS ". -_"
-
-/* The maximum length of a trust account password.
-   Used when we randomly create it, 15 char passwords
-   exceed NT4's max password length */
-
-#define DEFAULT_TRUST_ACCOUNT_PASSWORD_LENGTH 14
 
 #define PORT_NONE	0
 #ifndef LDAP_PORT

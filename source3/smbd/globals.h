@@ -854,6 +854,8 @@ struct user_struct {
 	struct smbXsrv_session *session;
 };
 
+struct pthreadpool_tevent;
+
 struct smbd_server_connection {
 	const struct tsocket_address *local_address;
 	const struct tsocket_address *remote_address;
@@ -919,11 +921,7 @@ struct smbd_server_connection {
 		} locks;
 	} smb2;
 
-	/*
-	 * Link into libasys for asynchronous operations
-	 */
-	struct asys_context *asys_ctx;
-	struct tevent_fd *asys_fde;
+	struct pthreadpool_tevent *pool;
 
 	struct smbXsrv_client *client;
 };

@@ -28,6 +28,8 @@ builddirs = {
     "samba-ctdb" : ".",
     "samba-libs"  : ".",
     "samba-static"  : ".",
+    "samba-test-only"  : ".",
+    "samba-systemkrb5"  : ".",
     "ldb"     : "lib/ldb",
     "tdb"     : "lib/tdb",
     "talloc"  : "lib/talloc",
@@ -39,7 +41,10 @@ builddirs = {
     "retry"   : "."
     }
 
-defaulttasks = [ "ctdb", "samba", "samba-xc", "samba-o3", "samba-ctdb", "samba-libs", "samba-static", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
+defaulttasks = [ "ctdb", "samba", "samba-xc", "samba-o3", "samba-ctdb", "samba-libs", "samba-static", "samba-systemkrb5", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
+
+if os.environ.get("AUTOBUILD_SKIP_SAMBA_O3", "0") == "1":
+    defaulttasks.remove("samba-o3")
 
 if os.environ.get("AUTOBUILD_SKIP_SAMBA_O3", "0") == "1":
     defaulttasks.remove("samba-o3")
@@ -75,6 +80,10 @@ tasks = {
                 ("check-clean-tree", "script/clean-source-tree.sh", "text/plain"),
                 ("clean", "make clean", "text/plain") ],
 
+    "samba-test-only" : [ ("configure", "./configure.developer --with-selftest-prefix=./bin/ab  --abi-check-disable" + samba_configure_params, "text/plain"),
+                          ("make", "make -j", "text/plain"),
+                          ("test", "make test FAIL_IMMEDIATELY=1 TESTS=${TESTS}", "text/plain") ],
+
     # Test cross-compile infrastructure
     "samba-xc" : [ ("configure-native", "./configure.developer --with-selftest-prefix=./bin/ab" + samba_configure_params, "text/plain"),
                    ("configure-cross-execute", "./configure.developer -b ./bin-xe --cross-compile --cross-execute=script/identity_cc.sh" \
@@ -85,7 +94,7 @@ tasks = {
 
     # test build with -O3 -- catches extra warnings and bugs
     "samba-o3" : [ ("random-sleep", "../script/random-sleep.sh 60 600", "text/plain"),
-                   ("configure", "ADDITIONAL_CFLAGS='-O3' ./configure.developer --with-selftest-prefix=./bin/ab" + samba_configure_params, "text/plain"),
+                   ("configure", "ADDITIONAL_CFLAGS='-O3' ./configure.developer --with-selftest-prefix=./bin/ab --abi-check-disable" + samba_configure_params, "text/plain"),
                    ("make", "make -j", "text/plain"),
                    ("test", "make quicktest FAIL_IMMEDIATELY=1 TESTS='\(ad_dc\)'", "text/plain"),
                    ("install", "make install", "text/plain"),
@@ -156,6 +165,20 @@ tasks = {
                       ("nonshared-distclean", "make distclean", "text/plain"),
                       ("nonshared-configure", "./configure.developer " + samba_configure_params + " --bundled-libraries=talloc,tdb,pytdb,ldb,pyldb,tevent,pytevent --with-static-modules=ALL --nonshared-binary=smbtorture,smbd/smbd", "text/plain"),
                       ("nonshared-make", "make -j", "text/plain")],
+
+    "samba-systemkrb5" : [
+                      ("random-sleep", "script/random-sleep.sh 60 600", "text/plain"),
+                      ("configure", "./configure.developer " + samba_configure_params + " --with-system-mitkrb5 --without-ad-dc", "text/plain"),
+                      ("make", "make -j", "text/plain"),
+                      # we currently cannot run a full make test, a limited list of tests could be run
+                      # via "make test TESTS=sometests"
+                      # ("test", "make test FAIL_IMMEDIATELY=1", "text/plain"),
+                      ("install", "make install", "text/plain"),
+                      ("check-clean-tree", "script/clean-source-tree.sh", "text/plain"),
+                      ("clean", "make clean", "text/plain")
+                      ],
+
+
 
     "ldb" : [
               ("random-sleep", "../../script/random-sleep.sh 60 600", "text/plain"),
@@ -256,11 +279,7 @@ class builder(object):
         self.stderr = open(self.stderr_path, 'w')
         self.stdin  = open("/dev/null", 'r')
         self.sdir = "%s/%s" % (testbase, self.tag)
-        self.prefix = "%s/prefix/%s" % (testbase, self.tag)
-        run_cmd("rm -rf %s" % self.sdir)
-        cleanup_list.append(self.sdir)
-        cleanup_list.append(self.prefix)
-        os.makedirs(self.sdir)
+        self.prefix = "%s/%s" % (test_prefix, self.tag)
         run_cmd("rm -rf %s" % self.sdir)
         if cp:
             run_cmd("cp --recursive --link --archive %s %s" % (test_master, self.sdir), dir=test_master, show=True)
@@ -278,6 +297,7 @@ class builder(object):
         self.cmd = self.cmd.replace("${PREFIX}", "--prefix=%s" % self.prefix)
         self.cmd = self.cmd.replace("${EXTRA_PYTHON}", "%s" % extra_python)
         self.cmd = self.cmd.replace("${PREFIX_DIR}", "%s" % self.prefix)
+        self.cmd = self.cmd.replace("${TESTS}", options.restrict_tests)
 #        if self.output_mime_type == "text/x-subunit":
 #            self.cmd += " | %s --immediate" % (os.path.join(os.path.dirname(__file__), "selftest/format-subunit"))
         print '%s: [%s] Running %s' % (self.name, self.stage, self.cmd)
@@ -292,13 +312,16 @@ class builder(object):
 class buildlist(object):
     '''handle build of multiple directories'''
 
-    def __init__(self, tasklist, tasknames, rebase_url, rebase_branch="master"):
+    def __init__(self, tasknames, rebase_url, rebase_branch="master"):
         global tasks
         self.tlist = []
         self.tail_proc = None
         self.retry = None
         if tasknames == []:
-            tasknames = defaulttasks
+            if options.restrict_tests:
+                tasknames = ["samba-test-only"]
+            else:
+                tasknames = defaulttasks
         else:
             # If we are only running one test,
             # do not sleep randomly to wait for it to start
@@ -555,6 +578,8 @@ parser.add_option("", "--log-base", help="location where the logs can be found (
                   default=gitroot, type='str')
 parser.add_option("", "--attach-logs", help="Attach logs to mails sent on success/failure?",
                   default=False, action="store_true")
+parser.add_option("", "--restrict-tests", help="run as make test with this TESTS= regex",
+                  default='')
 
 def send_email(subject, text, log_tar):
     outer = MIMEMultipart()
@@ -598,6 +623,10 @@ A summary of the autobuild process is here:
 
   %s/autobuild.log
 ''' % (platform.node(), elapsed_minutes, failed_task, errstr, log_base)
+
+    if options.restrict_tests:
+        text += """
+The build was restricted to tests matching %s\n""" % options.restrict_tests
 
     if failed_task != 'rebase':
         text += '''
@@ -650,6 +679,10 @@ Your autobuild on %s has succeeded after %.1f minutes.
 
 ''' % (platform.node(), elapsed_time / 60.)
 
+    if options.restrict_tests:
+        text += """
+The build was restricted to tests matching %s\n""" % options.restrict_tests
+
     if options.keeplogs:
         text += '''
 
@@ -678,6 +711,9 @@ if options.retry:
 
 testbase = "%s/b%u" % (options.testbase, os.getpid())
 test_master = "%s/master" % testbase
+test_prefix = "%s/prefix" % testbase
+test_tmpdir = "%s/tmp" % testbase
+os.environ['TMPDIR'] = test_tmpdir
 
 # get the top commit message, for emails
 top_commit_msg = run_cmd("git log -1", dir=gitroot, output=True)
@@ -700,7 +736,9 @@ start_time = time.time()
 while True:
     try:
         run_cmd("rm -rf %s" % test_master)
-        cleanup_list.append(test_master)
+        run_cmd("rm -rf %s" % test_prefix)
+        run_cmd("rm -rf %s" % test_tmpdir)
+        os.makedirs(test_tmpdir)
         run_cmd("git clone --recursive --shared %s %s" % (gitroot, test_master), show=True, dir=gitroot)
     except Exception:
         cleanup()
@@ -718,7 +756,7 @@ while True:
                           'rebase on %s failed' % options.branch,
                           elapsed_time, log_base=options.log_base)
             sys.exit(1)
-        blist = buildlist(tasks, args, options.rebase, rebase_branch=options.branch)
+        blist = buildlist(args, options.rebase, rebase_branch=options.branch)
         if options.tail:
             blist.start_tail()
         (status, failed_task, failed_stage, failed_tag, errstr) = blist.run()
