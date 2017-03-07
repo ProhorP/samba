@@ -197,15 +197,15 @@ NTSTATUS kerberos_pac_logon(TALLOC_CTX *mem_ctx,
 	ZERO_STRUCT(ap_rep);
 	ZERO_STRUCT(sesskey1);
 
-	ret = cli_krb5_get_ticket(mem_ctx,
-				  local_service,
-				  time_offset,
-				  &tkt,
-				  &sesskey1,
-				  0,
-				  cache_name,
-				  NULL,
-				  impersonate_princ_s);
+	ret = ads_krb5_cli_get_ticket(mem_ctx,
+				      local_service,
+				      time_offset,
+				      &tkt,
+				      &sesskey1,
+				      0,
+				      cache_name,
+				      NULL,
+				      impersonate_princ_s);
 	if (ret) {
 		DEBUG(1,("failed to get ticket for %s: %s\n",
 			local_service, error_message(ret)));

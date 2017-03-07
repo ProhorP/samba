@@ -19,6 +19,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
+#include "lib/util_unixsids.h"
 #include "librpc/gen_ndr/ndr_winbind_c.h"
 #include "../libcli/security/security.h"
 #include "passdb/machine_sid.h"
@@ -271,8 +272,7 @@ static bool wb_lookupsids_bulk(const struct dom_sid *sid)
 		return true;
 	}
 
-	if ((lp_server_role() == ROLE_DOMAIN_PDC) ||
-	    (lp_server_role() == ROLE_DOMAIN_BDC)) {
+	if (IS_DC) {
 		/*
 		 * Bulk lookups to trusted DCs
 		 */

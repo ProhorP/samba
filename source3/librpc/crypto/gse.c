@@ -195,6 +195,7 @@ static NTSTATUS gse_init_client(TALLOC_CTX *mem_ctx,
 				const char *ccache_name,
 				const char *server,
 				const char *service,
+				const char *realm,
 				const char *username,
 				const char *password,
 				uint32_t add_gss_c_flags,
@@ -205,6 +206,7 @@ static NTSTATUS gse_init_client(TALLOC_CTX *mem_ctx,
 	gss_buffer_desc name_buffer = GSS_C_EMPTY_BUFFER;
 #ifdef HAVE_GSS_KRB5_CRED_NO_CI_FLAGS_X
 	gss_buffer_desc empty_buffer = GSS_C_EMPTY_BUFFER;
+	gss_OID oid = discard_const(GSS_KRB5_CRED_NO_CI_FLAGS_X);
 #endif
 	NTSTATUS status;
 
@@ -226,8 +228,11 @@ static NTSTATUS gse_init_client(TALLOC_CTX *mem_ctx,
 	   realm in particular), possibly falling back to
 	   GSS_C_NT_HOSTBASED_SERVICE
 	*/
-	name_buffer.value = kerberos_get_principal_from_service_hostname(
-					gse_ctx, service, server, lp_realm());
+	name_buffer.value =
+		smb_krb5_get_principal_from_service_hostname(gse_ctx,
+							     service,
+							     server,
+							     realm);
 	if (!name_buffer.value) {
 		status = NT_STATUS_NO_MEMORY;
 		goto err_out;
@@ -282,7 +287,7 @@ static NTSTATUS gse_init_client(TALLOC_CTX *mem_ctx,
 	 * http://krbdev.mit.edu/rt/Ticket/Display.html?id=6938
 	 */
 	gss_maj = gss_set_cred_option(&gss_min, &gse_ctx->creds,
-				      GSS_KRB5_CRED_NO_CI_FLAGS_X,
+				      oid,
 				      &empty_buffer);
 	if (gss_maj) {
 		DEBUG(0, ("gss_set_cred_option(GSS_KRB5_CRED_NO_CI_FLAGS_X), "
@@ -340,9 +345,48 @@ static NTSTATUS gse_get_client_auth_token(TALLOC_CTX *mem_ctx,
 		/* we will need a third leg */
 		status = NT_STATUS_MORE_PROCESSING_REQUIRED;
 		break;
+	case GSS_S_CONTEXT_EXPIRED:
+		/* Make SPNEGO ignore us, we can't go any further here */
+		DBG_NOTICE("Context expired\n");
+		status = NT_STATUS_INVALID_PARAMETER;
+		goto done;
+	case GSS_S_FAILURE:
+		switch (gss_min) {
+		case (OM_uint32)KRB5KDC_ERR_S_PRINCIPAL_UNKNOWN:
+			DBG_NOTICE("Server principal not found\n");
+			/* Make SPNEGO ignore us, we can't go any further here */
+			status = NT_STATUS_INVALID_PARAMETER;
+			goto done;
+		case (OM_uint32)KRB5KRB_AP_ERR_TKT_EXPIRED:
+			DBG_NOTICE("Ticket expired\n");
+			/* Make SPNEGO ignore us, we can't go any further here */
+			status = NT_STATUS_INVALID_PARAMETER;
+			goto done;
+		case (OM_uint32)KRB5KRB_AP_ERR_TKT_NYV:
+			DBG_NOTICE("Clockskew\n");
+			/* Make SPNEGO ignore us, we can't go any further here */
+			status = NT_STATUS_TIME_DIFFERENCE_AT_DC;
+			goto done;
+		case (OM_uint32)KRB5_KDC_UNREACH:
+			DBG_NOTICE("KDC unreachable\n");
+			/* Make SPNEGO ignore us, we can't go any further here */
+			status = NT_STATUS_NO_LOGON_SERVERS;
+			goto done;
+		case (OM_uint32)KRB5KRB_AP_ERR_MSG_TYPE:
+			/* Garbage input, possibly from the auto-mech detection */
+			status = NT_STATUS_INVALID_PARAMETER;
+			goto done;
+		default:
+			DBG_ERR("gss_init_sec_context failed with [%s](%u)\n",
+				gse_errstr(talloc_tos(), gss_maj, gss_min),
+				gss_min);
+			status = NT_STATUS_LOGON_FAILURE;
+			goto done;
+		}
+		break;
 	default:
-		DEBUG(0, ("gss_init_sec_context failed with [%s]\n",
-			  gse_errstr(talloc_tos(), gss_maj, gss_min)));
+		DBG_ERR("gss_init_sec_context failed with [%s]\n",
+			gse_errstr(talloc_tos(), gss_maj, gss_min));
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto done;
 	}
@@ -411,7 +455,7 @@ static NTSTATUS gse_init_server(TALLOC_CTX *mem_ctx,
 		const char *ktname;
 		gss_OID_set_desc mech_set;
 
-		ret = smb_krb5_keytab_name(gse_ctx, gse_ctx->k5ctx,
+		ret = smb_krb5_kt_get_name(gse_ctx, gse_ctx->k5ctx,
 				   gse_ctx->keytab, &ktname);
 		if (ret) {
 			status = NT_STATUS_INTERNAL_ERROR;
@@ -593,6 +637,7 @@ static NTSTATUS gensec_gse_client_start(struct gensec_security *gensec_security)
 	const char *service = gensec_get_target_service(gensec_security);
 	const char *username = cli_credentials_get_username(creds);
 	const char *password = cli_credentials_get_password(creds);
+	const char *realm = cli_credentials_get_realm(creds);
 
 	if (!hostname) {
 		DEBUG(1, ("Could not determine hostname for target computer, cannot use kerberos\n"));
@@ -621,7 +666,7 @@ static NTSTATUS gensec_gse_client_start(struct gensec_security *gensec_security)
 	}
 
 	nt_status = gse_init_client(gensec_security, do_sign, do_seal, NULL,
-				    hostname, service,
+				    hostname, service, realm,
 				    username, password, want_flags,
 				    &gse_ctx);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -1121,7 +1166,7 @@ static size_t gensec_gse_sig_size(struct gensec_security *gensec_security,
 
 	gse_ctx->sig_size = gssapi_get_sig_size(gse_ctx->gssapi_context,
 					        &gse_ctx->gss_mech,
-					        gse_ctx->gss_want_flags,
+					        gse_ctx->gss_got_flags,
 					        data_size);
 	return gse_ctx->sig_size;
 }

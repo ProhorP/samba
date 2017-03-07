@@ -29,6 +29,7 @@
 #include "libads/cldap.h"
 #include "secrets.h"
 #include "../lib/tsocket/tsocket.h"
+#include "lib/util/asn1.h"
 
 #ifdef HAVE_KRB5
 
@@ -98,6 +99,53 @@ kerb_prompter(krb5_context ctx, void *data,
 	return 0;
 }
 
+static bool unwrap_edata_ntstatus(TALLOC_CTX *mem_ctx,
+				  DATA_BLOB *edata,
+				  DATA_BLOB *edata_out)
+{
+	DATA_BLOB edata_contents;
+	ASN1_DATA *data;
+	int edata_type;
+
+	if (!edata->length) {
+		return false;
+	}
+
+	data = asn1_init(mem_ctx);
+	if (data == NULL) {
+		return false;
+	}
+
+	if (!asn1_load(data, *edata)) goto err;
+	if (!asn1_start_tag(data, ASN1_SEQUENCE(0))) goto err;
+	if (!asn1_start_tag(data, ASN1_CONTEXT(1))) goto err;
+	if (!asn1_read_Integer(data, &edata_type)) goto err;
+
+	if (edata_type != KRB5_PADATA_PW_SALT) {
+		DEBUG(0,("edata is not of required type %d but of type %d\n",
+			KRB5_PADATA_PW_SALT, edata_type));
+		goto err;
+	}
+
+	if (!asn1_start_tag(data, ASN1_CONTEXT(2))) goto err;
+	if (!asn1_read_OctetString(data, talloc_tos(), &edata_contents)) goto err;
+	if (!asn1_end_tag(data)) goto err;
+	if (!asn1_end_tag(data)) goto err;
+	if (!asn1_end_tag(data)) goto err;
+	asn1_free(data);
+
+	*edata_out = data_blob_talloc(mem_ctx, edata_contents.data, edata_contents.length);
+
+	data_blob_free(&edata_contents);
+
+	return true;
+
+  err:
+
+	asn1_free(data);
+	return false;
+}
+
  static bool smb_krb5_get_ntstatus_from_krb5_error(krb5_error *error,
 						   NTSTATUS *nt_status)
 {
@@ -150,42 +198,55 @@ kerb_prompter(krb5_context ctx, void *data,
 	return True;
 }
 
- static bool smb_krb5_get_ntstatus_from_krb5_error_init_creds_opt(krb5_context ctx, 
- 								  krb5_get_init_creds_opt *opt, 
-								  NTSTATUS *nt_status)
+static bool smb_krb5_get_ntstatus_from_init_creds(krb5_context ctx,
+						  krb5_principal client,
+						  krb5_get_init_creds_opt *opt,
+						  NTSTATUS *nt_status)
 {
-	bool ret = False;
+	krb5_init_creds_context icc;
+	krb5_error_code code;
+#ifdef HAVE_E_DATA_POINTER_IN_KRB5_ERROR
+	/* HEIMDAL */
+	krb5_error error;
+#else
 	krb5_error *error = NULL;
+#endif
+	bool ok;
 
-#ifdef HAVE_KRB5_GET_INIT_CREDS_OPT_GET_ERROR
-	ret = krb5_get_init_creds_opt_get_error(ctx, opt, &error);
-	if (ret) {
-		DEBUG(1,("krb5_get_init_creds_opt_get_error gave: %s\n", 
-			error_message(ret)));
-		return False;
+	code = krb5_init_creds_init(ctx,
+				    client,
+				    NULL,
+				    NULL,
+				    0,
+				    opt,
+				    &icc);
+	if (code != 0) {
+		DBG_WARNING("krb5_init_creds_init failed with: %s\n",
+			    error_message(code));
+		return false;
 	}
-#endif /* HAVE_KRB5_GET_INIT_CREDS_OPT_GET_ERROR */
 
-	if (!error) {
-		DEBUG(1,("no krb5_error\n"));
-		return False;
+	code = krb5_init_creds_get_error(ctx,
+					 icc,
+					 &error);
+	if (code != 0) {
+		DBG_WARNING("krb5_init_creds_get_error failed with: %s\n",
+			    error_message(code));
+		return false;
 	}
+	krb5_init_creds_free(ctx, icc);
 
 #ifdef HAVE_E_DATA_POINTER_IN_KRB5_ERROR
-	if (!error->e_data) {
-#else
-	if (error->e_data.data == NULL) {
-#endif /* HAVE_E_DATA_POINTER_IN_KRB5_ERROR */
-		DEBUG(1,("no edata in krb5_error\n")); 
-		krb5_free_error(ctx, error);
-		return False;
-	}
+	ok = smb_krb5_get_ntstatus_from_krb5_error(&error, nt_status);
 
-	ret = smb_krb5_get_ntstatus_from_krb5_error(error, nt_status);
+	krb5_free_error_contents(ctx, &error);
+#else
+	ok = smb_krb5_get_ntstatus_from_krb5_error(error, nt_status);
 
 	krb5_free_error(ctx, error);
+#endif
 
-	return ret;
+	return ok;
 }
 
 /*
@@ -208,6 +269,7 @@ int kerberos_kinit_password_ext(const char *principal,
 	krb5_error_code code = 0;
 	krb5_ccache cc = NULL;
 	krb5_principal me = NULL;
+	krb5_principal canon_princ = NULL;
 	krb5_creds my_creds;
 	krb5_get_init_creds_opt *opt = NULL;
 	smb_krb5_addresses *addr = NULL;
@@ -235,12 +297,17 @@ int kerberos_kinit_password_ext(const char *principal,
 		goto out;
 	}
 
-	if ((code = smb_krb5_get_init_creds_opt_alloc(ctx, &opt))) {
+	if ((code = krb5_get_init_creds_opt_alloc(ctx, &opt))) {
 		goto out;
 	}
 
 	krb5_get_init_creds_opt_set_renew_life(opt, renewable_time);
 	krb5_get_init_creds_opt_set_forwardable(opt, True);
+
+	/* Turn on canonicalization for lower case realm support */
+#ifndef SAMBA4_USES_HEIMDAL /* MIT */
+	krb5_get_init_creds_opt_set_canonicalize(opt, true);
+#endif /* MIT */
 #if 0
 	/* insane testing */
 	krb5_get_init_creds_opt_set_tkt_life(opt, 60);
@@ -267,7 +334,12 @@ int kerberos_kinit_password_ext(const char *principal,
 		goto out;
 	}
 
-	if ((code = krb5_cc_initialize(ctx, cc, me))) {
+	canon_princ = me;
+#ifndef SAMBA4_USES_HEIMDAL /* MIT */
+	canon_princ = my_creds.client;
+#endif /* MIT */
+
+	if ((code = krb5_cc_initialize(ctx, cc, canon_princ))) {
 		goto out;
 	}
 
@@ -296,9 +368,17 @@ int kerberos_kinit_password_ext(const char *principal,
 		/* try to get ntstatus code out of krb5_error when we have it
 		 * inside the krb5_get_init_creds_opt - gd */
 
-		if (opt && smb_krb5_get_ntstatus_from_krb5_error_init_creds_opt(ctx, opt, &status)) {
-			*ntstatus = status;
-			goto cleanup;
+		if (opt != NULL) {
+			bool ok;
+
+			ok = smb_krb5_get_ntstatus_from_init_creds(ctx,
+								   me,
+								   opt,
+								   &status);
+			if (ok) {
+				*ntstatus = status;
+				goto cleanup;
+			}
 		}
 
 		/* fall back to self-made-mapping */
@@ -313,8 +393,8 @@ int kerberos_kinit_password_ext(const char *principal,
 	if (addr) {
 		smb_krb5_free_addresses(ctx, addr);
 	}
- 	if (opt) {
-		smb_krb5_get_init_creds_opt_free(ctx, opt);
+	if (opt) {
+		krb5_get_init_creds_opt_free(ctx, opt);
 	}
 	if (cc) {
 		krb5_cc_close(ctx, cc);
@@ -813,6 +893,76 @@ out:
  run as root or will fail (which is a good thing :-).
 ************************************************************************/
 
+#if !defined(SAMBA4_USES_HEIMDAL) /* MIT version */
+static char *get_enctypes(TALLOC_CTX *mem_ctx)
+{
+	char *aes_enctypes = NULL;
+	const char *legacy_enctypes = "";
+	char *enctypes = NULL;
+
+	aes_enctypes = talloc_strdup(mem_ctx, "");
+	if (aes_enctypes == NULL) {
+		goto done;
+	}
+
+	if (lp_kerberos_encryption_types() == KERBEROS_ETYPES_ALL ||
+	    lp_kerberos_encryption_types() == KERBEROS_ETYPES_STRONG) {
+#ifdef HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96
+		aes_enctypes = talloc_asprintf_append(
+		    aes_enctypes, "%s", "aes256-cts-hmac-sha1-96 ");
+		if (aes_enctypes == NULL) {
+			goto done;
+		}
+#endif
+#ifdef HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96
+		aes_enctypes = talloc_asprintf_append(
+		    aes_enctypes, "%s", "aes128-cts-hmac-sha1-96");
+		if (aes_enctypes == NULL) {
+			goto done;
+		}
+#endif
+	}
+
+	if (lp_kerberos_encryption_types() == KERBEROS_ETYPES_ALL ||
+	    lp_kerberos_encryption_types() == KERBEROS_ETYPES_LEGACY) {
+		legacy_enctypes = "RC4-HMAC DES-CBC-CRC DES-CBC-MD5";
+	}
+
+	enctypes =
+	    talloc_asprintf(mem_ctx, "\tdefault_tgs_enctypes = %s %s\n"
+				     "\tdefault_tkt_enctypes = %s %s\n"
+				     "\tpreferred_enctypes = %s %s\n",
+			    aes_enctypes, legacy_enctypes, aes_enctypes,
+			    legacy_enctypes, aes_enctypes, legacy_enctypes);
+done:
+	TALLOC_FREE(aes_enctypes);
+	return enctypes;
+}
+#else /* Heimdal version */
+static char *get_enctypes(TALLOC_CTX *mem_ctx)
+{
+	const char *aes_enctypes = "";
+	const char *legacy_enctypes = "";
+	char *enctypes = NULL;
+
+	if (lp_kerberos_encryption_types() == KERBEROS_ETYPES_ALL ||
+	    lp_kerberos_encryption_types() == KERBEROS_ETYPES_STRONG) {
+		aes_enctypes =
+		    "aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96";
+	}
+
+	if (lp_kerberos_encryption_types() == KERBEROS_ETYPES_ALL ||
+	    lp_kerberos_encryption_types() == KERBEROS_ETYPES_LEGACY) {
+		legacy_enctypes = "arcfour-hmac-md5 des-cbc-crc des-cbc-md5";
+	}
+
+	enctypes = talloc_asprintf(mem_ctx, "\tdefault_etypes = %s %s\n",
+				   aes_enctypes, legacy_enctypes);
+
+	return enctypes;
+}
+#endif
+
 bool create_local_private_krb5_conf_for_domain(const char *realm,
 						const char *domain,
 						const char *sitename,
@@ -828,7 +978,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	int fd;
 	char *realm_upper = NULL;
 	bool result = false;
-	char *aes_enctypes = NULL;
+	char *enctypes = NULL;
 	const char *include_system_krb5 = "";
 	mode_t mask;
 
@@ -880,23 +1030,10 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 		goto done;
 	}
 
-	aes_enctypes = talloc_strdup(fname, "");
-	if (aes_enctypes == NULL) {
+	enctypes = get_enctypes(fname);
+	if (enctypes == NULL) {
 		goto done;
 	}
-
-#ifdef HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96
-	aes_enctypes = talloc_asprintf_append(aes_enctypes, "%s", "aes256-cts-hmac-sha1-96 ");
-	if (aes_enctypes == NULL) {
-		goto done;
-	}
-#endif
-#ifdef HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96
-	aes_enctypes = talloc_asprintf_append(aes_enctypes, "%s", "aes128-cts-hmac-sha1-96");
-	if (aes_enctypes == NULL) {
-		goto done;
-	}
-#endif
 
 #if !defined(SAMBA4_USES_HEIMDAL)
 	if (lp_include_system_krb5_conf()) {
@@ -904,18 +1041,19 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	}
 #endif
 
-	file_contents = talloc_asprintf(fname,
-					"[libdefaults]\n\tdefault_realm = %s\n"
-					"\tdefault_tgs_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
-					"\tdefault_tkt_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
-					"\tpreferred_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
-					"\tdns_lookup_realm = false\n\n"
-					"[realms]\n\t%s = {\n"
-					"%s\t}\n"
-					"%s\n",
-					realm_upper, aes_enctypes, aes_enctypes, aes_enctypes,
-					realm_upper, kdc_ip_string,
-					include_system_krb5);
+	file_contents =
+	    talloc_asprintf(fname,
+			    "[libdefaults]\n\tdefault_realm = %s\n"
+			    "%s"
+			    "\tdns_lookup_realm = false\n\n"
+			    "[realms]\n\t%s = {\n"
+			    "%s\t}\n"
+			    "%s\n",
+			    realm_upper,
+			    enctypes,
+			    realm_upper,
+			    kdc_ip_string,
+			    include_system_krb5);
 
 	if (!file_contents) {
 		goto done;

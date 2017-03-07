@@ -12,7 +12,7 @@
 
 #include "pam_winbind.h"
 
-enum pam_winbind_request_type 
+enum pam_winbind_request_type
 {
 	PAM_WINBIND_AUTHENTICATE,
 	PAM_WINBIND_SETCRED,
@@ -490,12 +490,12 @@ config_from_pam:
 		else if (!strcasecmp(*v, "unknown_ok"))
 			ctrl |= WINBIND_UNKNOWN_OK_ARG;
 		else if ((type == PAM_WINBIND_AUTHENTICATE
-			  || type == PAM_WINBIND_SETCRED) 
+			  || type == PAM_WINBIND_SETCRED)
 			 && !strncasecmp(*v, "require_membership_of",
 					 strlen("require_membership_of")))
 			ctrl |= WINBIND_REQUIRED_MEMBERSHIP;
-		else if ((type == PAM_WINBIND_AUTHENTICATE 
-			  || type == PAM_WINBIND_SETCRED) 
+		else if ((type == PAM_WINBIND_AUTHENTICATE
+			  || type == PAM_WINBIND_SETCRED)
 			 && !strncasecmp(*v, "require-membership-of",
 					 strlen("require-membership-of")))
 			ctrl |= WINBIND_REQUIRED_MEMBERSHIP;
@@ -667,7 +667,7 @@ static const char *_get_ntstatus_error_string(const char *nt_status_string)
 
 static int converse(const pam_handle_t *pamh,
 		    int nargs,
-		    struct pam_message **message,
+		    const struct pam_message **message,
 		    struct pam_response **response)
 {
 	int retval;
@@ -690,7 +690,8 @@ static int _make_remark(struct pwb_context *ctx,
 {
 	int retval = PAM_SUCCESS;
 
-	struct pam_message *pmsg[1], msg[1];
+	const struct pam_message *pmsg[1];
+	struct pam_message msg[1];
 	struct pam_response *resp;
 
 	if (ctx->flags & WINBIND_SILENT) {
@@ -843,7 +844,8 @@ static int wbc_auth_error_to_pam_error(struct pwb_context *ctx,
 #if defined(HAVE_PAM_RADIO_TYPE)
 static bool _pam_winbind_change_pwd(struct pwb_context *ctx)
 {
-	struct pam_message msg, *pmsg;
+	struct pam_message msg;
+	const struct pam_message *pmsg;
 	struct pam_response *resp = NULL;
 	int ret;
 	bool retval = false;
@@ -2194,7 +2196,8 @@ static int _winbind_read_password(struct pwb_context *ctx,
 	 */
 
 	{
-		struct pam_message msg[3], *pmsg[3];
+		struct pam_message msg[3];
+		const struct pam_message *pmsg[3];
 		struct pam_response *resp;
 		int i, replies;
 
@@ -2476,10 +2479,14 @@ static char* winbind_upn_to_username(struct pwb_context *ctx,
 	if (!name) {
 		return NULL;
 	}
-	if ((p = strchr(name, '@')) != NULL) {
-		*p = 0;
-		domain = p + 1;
+
+	p = strchr(name, '@');
+	if (p == NULL) {
+		TALLOC_FREE(name);
+		return NULL;
 	}
+	*p = '\0';
+	domain = p + 1;
 
 	/* Convert the UPN to a SID */
 
@@ -2502,7 +2509,7 @@ static char* winbind_upn_to_username(struct pwb_context *ctx,
 }
 
 static int _pam_delete_cred(pam_handle_t *pamh, int flags,
-			    int argc, enum pam_winbind_request_type type, 
+			    int argc, enum pam_winbind_request_type type,
 			    const char **argv)
 {
 	int retval = PAM_SUCCESS;

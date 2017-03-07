@@ -22,6 +22,7 @@
 
 #include "includes.h"
 #include "winbindd.h"
+#include "lib/util_unixsids.h"
 #include "secrets.h"
 #include "../libcli/security/security.h"
 #include "../libcli/auth/pam_errors.h"
@@ -30,15 +31,13 @@
 #include "source4/lib/messaging/messaging.h"
 #include "librpc/gen_ndr/ndr_lsa.h"
 #include "auth/credentials/credentials.h"
+#include "libsmb/samlogon_cache.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
 static struct winbindd_domain *
-add_trusted_domain_from_tdc(const struct winbindd_tdc_domain *tdc,
-			    struct winbindd_methods *methods);
-
-extern struct winbindd_methods cache_methods;
+add_trusted_domain_from_tdc(const struct winbindd_tdc_domain *tdc);
 
 /**
  * @file winbindd_util.c
@@ -125,7 +124,7 @@ static bool is_in_internal_domain(const struct dom_sid *sid)
 
 static struct winbindd_domain *
 add_trusted_domain(const char *domain_name, const char *alt_name,
-		   struct winbindd_methods *methods, const struct dom_sid *sid)
+		   const struct dom_sid *sid)
 {
 	struct winbindd_tdc_domain tdc;
 
@@ -137,15 +136,14 @@ add_trusted_domain(const char *domain_name, const char *alt_name,
 		sid_copy(&tdc.sid, sid);
 	}
 
-	return add_trusted_domain_from_tdc(&tdc, methods);
+	return add_trusted_domain_from_tdc(&tdc);
 }
 
 /* Add a trusted domain out of a trusted domain cache
    entry
 */
 static struct winbindd_domain *
-add_trusted_domain_from_tdc(const struct winbindd_tdc_domain *tdc,
-			    struct winbindd_methods *methods)
+add_trusted_domain_from_tdc(const struct winbindd_tdc_domain *tdc)
 {
 	struct winbindd_domain *domain;
 	const char *alternative_name = NULL;
@@ -238,7 +236,6 @@ add_trusted_domain_from_tdc(const struct winbindd_tdc_domain *tdc,
 		}
 	}
 
-	domain->methods = methods;
 	domain->backend = NULL;
 	domain->internal = is_internal_domain(sid);
 	domain->sequence_number = DOM_SEQUENCE_NONE;
@@ -345,6 +342,20 @@ static void trustdom_list_done(struct tevent_req *req)
 	char *p;
 	struct winbindd_tdc_domain trust_params = {0};
 	ptrdiff_t extra_len;
+	bool within_forest = false;
+
+	/*
+	 * Only when we enumerate our primary domain
+	 * or our forest root domain, we should keep
+	 * the NETR_TRUST_FLAG_IN_FOREST flag, in
+	 * all other cases we need to clear it as the domain
+	 * is not part of our forest.
+	 */
+	if (state->domain->primary) {
+		within_forest = true;
+	} else if (domain_is_forest_root(state->domain)) {
+		within_forest = true;
+	}
 
 	res = wb_domain_request_recv(req, state, &response, &err);
 	if ((res == -1) || (response->result != WINBINDD_OK)) {
@@ -430,14 +441,21 @@ static void trustdom_list_done(struct tevent_req *req)
 
 		trust_params.trust_attribs = (uint32_t)strtoul(q, NULL, 10);
 
+		if (!within_forest) {
+			trust_params.trust_flags &= ~NETR_TRUST_FLAG_IN_FOREST;
+		}
+
+		if (!state->domain->primary) {
+			trust_params.trust_flags &= ~NETR_TRUST_FLAG_PRIMARY;
+		}
+
 		/*
 		 * We always call add_trusted_domain() cause on an existing
 		 * domain structure, it will update the SID if necessary.
 		 * This is important because we need the SID for sibling
 		 * domains.
 		 */
-		(void)add_trusted_domain_from_tdc(&trust_params,
-						  &cache_methods);
+		(void)add_trusted_domain_from_tdc(&trust_params);
 
 		p = q + strlen(q) + 1;
 	}
@@ -506,8 +524,7 @@ static void rescan_forest_root_trusts( void )
 		d = find_domain_from_name_noinit( dom_list[i].domain_name );
 
 		if ( !d ) {
-			d = add_trusted_domain_from_tdc(&dom_list[i],
-							&cache_methods);
+			d = add_trusted_domain_from_tdc(&dom_list[i]);
 		}
 
 		if (d == NULL) {
@@ -573,8 +590,7 @@ static void rescan_forest_trusts( void )
 			   about it */
 
 			if ( !d ) {
-				d = add_trusted_domain_from_tdc(&dom_list[i],
-								&cache_methods);
+				d = add_trusted_domain_from_tdc(&dom_list[i]);
 			}
 
 			if (d == NULL) {
@@ -701,7 +717,6 @@ static void wb_imsg_new_trusted_domain(struct imessaging_context *msg,
 
 	d = add_trusted_domain(info.netbios_name.string,
 			       info.domain_name.string,
-			       &cache_methods,
 			       info.sid);
 	if (d == NULL) {
 		TALLOC_FREE(frame);
@@ -787,8 +802,7 @@ bool init_domain_list(void)
 
 	/* BUILTIN domain */
 
-	(void)add_trusted_domain("BUILTIN", NULL, &cache_methods,
-				    &global_sid_Builtin);
+	(void)add_trusted_domain("BUILTIN", NULL, &global_sid_Builtin);
 
 	/* Local SAM */
 
@@ -808,7 +822,6 @@ bool init_domain_list(void)
 		}
 		domain = add_trusted_domain(pdb_domain_info->name,
 					pdb_domain_info->dns_domain,
-					&cache_methods,
 					&pdb_domain_info->sid);
 		TALLOC_FREE(pdb_domain_info);
 		if (domain == NULL) {
@@ -858,7 +871,7 @@ bool init_domain_list(void)
 
 	} else {
 		(void)add_trusted_domain(get_global_sam_name(), NULL,
-					 &cache_methods, get_global_sam_sid());
+					 get_global_sam_sid());
 	}
 	/* Add ourselves as the first entry. */
 
@@ -871,8 +884,8 @@ bool init_domain_list(void)
 			return False;
 		}
 
-		domain = add_trusted_domain( lp_workgroup(), lp_realm(),
-					     &cache_methods, &our_sid);
+		domain = add_trusted_domain(lp_workgroup(), lp_realm(),
+					    &our_sid);
 		if (domain) {
 			/* Even in the parent winbindd we'll need to
 			   talk to the DC, so try and see if we can
@@ -1001,18 +1014,6 @@ struct winbindd_domain *find_root_domain(void)
 	}
 
 	return find_domain_from_name( ours->forest_name );
-}
-
-struct winbindd_domain *find_builtin_domain(void)
-{
-	struct winbindd_domain *domain;
-
-	domain = find_domain_from_sid(&global_sid_Builtin);
-	if (domain == NULL) {
-		smb_panic("Could not find BUILTIN domain");
-	}
-
-	return domain;
 }
 
 /* Find the appropriate domain to lookup a name or SID */
@@ -1285,8 +1286,7 @@ int winbindd_num_clients(void)
 	return _num_clients;
 }
 
-NTSTATUS lookup_usergroups_cached(struct winbindd_domain *domain,
-				  TALLOC_CTX *mem_ctx,
+NTSTATUS lookup_usergroups_cached(TALLOC_CTX *mem_ctx,
 				  const struct dom_sid *user_sid,
 				  uint32_t *p_num_groups, struct dom_sid **user_sids)
 {
@@ -1303,11 +1303,6 @@ NTSTATUS lookup_usergroups_cached(struct winbindd_domain *domain,
 
 	if (info3 == NULL) {
 		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
-	}
-
-	if (info3->base.groups.count == 0) {
-		TALLOC_FREE(info3);
-		return NT_STATUS_UNSUCCESSFUL;
 	}
 
 	/*
@@ -1662,7 +1657,7 @@ bool parse_sidlist(TALLOC_CTX *mem_ctx, const char *sidstr,
 			DEBUG(1, ("Could not parse sid %s\n", p));
 			return false;
 		}
-		if ((q == NULL) || (q[0] != '\n')) {
+		if (q[0] != '\n') {
 			DEBUG(1, ("Got invalid sidstr: %s\n", p));
 			return false;
 		}
