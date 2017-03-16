@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.5.5
+Version: 4.5.6
 Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1338,6 +1338,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Mar 16 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.6-alt1%ubt
+- Update to spring stable release
+
 * Wed Feb 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.5-alt1%ubt
 - Update to winter release
 
