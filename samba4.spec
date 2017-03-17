@@ -19,7 +19,7 @@
 %def_with libwbclient
 %def_with libnetapi
 %def_without pam_smbpass
-%def_without docs
+%def_without doc
 
 %def_with mitkrb5
 %def_without dc
@@ -107,7 +107,7 @@ BuildRequires: setproctitle-devel
 BuildRequires: libiniparser-devel
 BuildRequires: libkrb5-devel libssl-devel libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
-BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl
+%{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.8 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.29 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.10  python-module-tdb}
@@ -463,17 +463,17 @@ projects to store temporary data. If an application is already using TDB for
 temporary data it is very easy to convert that application to be cluster aware
 and use CTDB instead.
 
-#%package doc
-#Summary: Documentation for the Samba suite
-#Group: Documentation
-#Requires: %name-common = %version-%release
-#BuildArch: noarch
-#Provides: samba4-doc = %version-%release
-#Obsoletes: samba4-doc < %version-%release
+%if_with doc
+%package doc
+Summary: Documentation for the Samba suite
+Group: Documentation
+Requires: %name-common = %version-%release
+BuildArch: noarch
 
-#%description doc
-#The samba-doc package includes all the non-manpage documentation for the
-#Samba suite.
+%description doc
+The samba-doc package includes all the non-manpage documentation for the
+Samba suite.
+%endif
 
 %prep
 %setup -q
@@ -691,7 +691,7 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
 # Install documentation
-%if_with docs
+%if_with doc
 mkdir -p %buildroot%_defaultdocdir/%name/
 cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%name/
 %endif
@@ -756,11 +756,13 @@ TDB_NO_FSYNC=1 %make_build test
 %attr(1777,root,root) %dir /var/spool/samba
 %_sysconfdir/openldap/schema/samba.schema
 %_sysconfdir/pam.d/samba
+%if_with doc
 %_man1dir/smbstatus.1*
 %_man8dir/eventlogadm.8*
 %_man8dir/smbd.8*
 %_man8dir/nmbd.8*
 %_man8dir/vfs_*.8*
+%endif #doc
 
 %if_with libcephfs
 %exclude %_libdir/samba/vfs/ceph.so
@@ -796,6 +798,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbtree
 %_libexecdir/samba/smbspool_krb5_wrapper
 %{cups_serverbin}/backend/smb
+%if_with doc
 %_man1dir/dbwrap_tool.1*
 %_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
@@ -819,28 +822,33 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/smbspool_krb5_wrapper.8*
 #_man8dir/smbta-util.8*
 %_man8dir/cifsdd.8*
+%endif #doc
 
 %if_with ntdb
 %_bindir/ntdbbackup
 %_bindir/ntdbdump
 %_bindir/ntdbrestore
 %_bindir/ntdbtool
+%if_with doc
 %_man3dir/ntdb.3*
 %_man8dir/ntdbbackup.8*
 %_man8dir/ntdbdump.8*
 %_man8dir/ntdbrestore.8*
 %_man8dir/ntdbtool.8*
-%endif
+%endif #doc
+%endif #ntdb
 %if_with tdb
 %_bindir/tdbbackup
 %_bindir/tdbdump
 %_bindir/tdbrestore
 %_bindir/tdbtool
+%if_with doc
 %_man8dir/tdbbackup.8*
 %_man8dir/tdbdump.8*
 %_man8dir/tdbrestore.8*
 %_man8dir/tdbtool.8*
-%endif
+%endif #doc
+%endif #tdb
 
 %if_with ldb
 %_bindir/ldbadd
@@ -849,6 +857,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/ldbmodify
 %_bindir/ldbrename
 %_bindir/ldbsearch
+%if_with doc
 %_man1dir/ldbadd.1*
 %_man1dir/ldbdel.1*
 %_man1dir/ldbedit.1*
@@ -856,7 +865,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_man1dir/ldbrename.1*
 %_man1dir/ldbsearch.1*
 %_libdir/samba/libldb-cmdline.so
-%endif
+%endif #doc
+%endif #ldb
 
 %files client-libs
 %_libdir/libdcerpc-binding.so.*
@@ -957,14 +967,18 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_without libsmbclient
 %_libdir/samba/libsmbclient.so.*
+%if_with doc
 %_mandir/man7/libsmbclient.7*
+%endif #doc
 %endif # ! with_libsmbclient
 
 %if_with talloc
 %_libdir/samba/libtalloc.so.*
 %_libdir/samba/libpytalloc-util.so.*
+%if_with doc
 %_man3dir/talloc.3.*
-%endif
+%endif #doc
+%endif #talloc
 
 %if_with tevent
 %_libdir/samba/libtevent.so.*
@@ -976,8 +990,10 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with ldb
 %_libdir/samba/libldb.so.*
+%if_with doc
 %_man3dir/ldb.3.*
-%endif
+%endif #doc
+%endif #ldb
 
 %files common
 %_tmpfilesdir/%name.conf
@@ -1010,6 +1026,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/smbcontrol
 %_bindir/smbpasswd
 %_bindir/testparm
+%if_with doc
 %_man1dir/profiles.1*
 %_man1dir/smbcontrol.1*
 %_man1dir/testparm.1*
@@ -1020,6 +1037,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/net.8*
 %_man8dir/pdbedit.8*
 %_man8dir/smbpasswd.8*
+%endif #doc
 
 %files dc
 %if_with dc
@@ -1038,8 +1056,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/gensec/krb5.so
 %dir /var/lib/samba/sysvol
 %_datadir/samba/setup
+%if_with doc
 %_man8dir/samba.8*
 %_man8dir/samba-tool.8*
+%endif #doc
 %else
 %doc %_defaultdocdir/%name/README.dc
 %exclude %_man8dir/samba.8*
@@ -1133,14 +1153,18 @@ TDB_NO_FSYNC=1 %make_build test
 %if_with libcephfs
 %files vfs-cephfs
 %_libdir/samba/vfs/ceph.so
+%if_with doc
 %_man8dir/vfs_ceph.8*
-%endif
+%endif #doc
+%endif #vfs-cephfs
 
 %if_enabled glusterfs
 %files vfs-glusterfs
 %_libdir/samba/vfs/glusterfs.so
+%if_with doc
 %_man8dir/vfs_glusterfs.8*
-%endif
+%endif #doc
+%endif #vfs-glusterfs
 
 %files libs
 %_libdir/libdcerpc-samr.so.*
@@ -1184,8 +1208,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/libsmbclient.h
 %_libdir/libsmbclient.so
 %_pkgconfigdir/smbclient.pc
+%if_with doc
 %_man7dir/libsmbclient.7*
-%endif
+%endif #doc
+%endif #libsmbclient-devel
 
 %if_with libwbclient
 %files -n libwbclient
@@ -1209,15 +1235,19 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files pidl
 %attr(755,root,root) %_bindir/pidl
+%if_with doc
 %_man1dir/pidl.1.*
 %_man3dir/Parse::Pidl::*
+%endif
 %perl_vendor_privlib/*
 
 %files -n python-module-%name
 %python_sitelibdir/*
 
+%if_with doc
 #%files doc
 #%doc docs-xml/output/htmldocs
+%endif
 
 %files test
 %_bindir/gentest
@@ -1225,12 +1255,14 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/masktest
 %_bindir/ndrdump
 %_bindir/smbtorture
+%if_with doc
 %_man1dir/gentest.1*
 %_man1dir/locktest.1*
 %_man1dir/masktest.1*
 %_man1dir/ndrdump.1*
 %_man1dir/smbtorture.1*
 %_man1dir/vfstest.1*
+%endif #doc
 
 %if_with testsuite
 # files to ignore in testsuite mode
@@ -1255,8 +1287,10 @@ TDB_NO_FSYNC=1 %make_build test
 %attr(755,root,root) %_initrddir/winbind
 %_sysconfdir/NetworkManager/dispatcher.d/30-winbind
 
+%if_with doc
 %_man8dir/winbindd.8*
 %_man8dir/idmap_*.8*
+%endif #endif
 
 %files winbind-clients
 %_bindir/ntlm_auth
@@ -1267,14 +1301,18 @@ TDB_NO_FSYNC=1 %make_build test
 /%_lib/libnss_wins.so.*
 /%_lib/security/pam_winbind.so
 %config(noreplace) %_sysconfdir/security/pam_winbind.conf
+%if_with doc
 %_man1dir/ntlm_auth.1.*
 %_man1dir/wbinfo.1*
 %_man5dir/pam_winbind.conf.5*
 %_man8dir/pam_winbind.8*
+%endif #doc
 
 %files winbind-krb5-locator
 %_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+%if_with doc
 %_man7dir/winbind_krb5_locator.7*
+%endif #doc
 %endif
 
 %if_with clustering_support
@@ -1317,6 +1355,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libexecdir/ctdb/ctdb_recovery_helper
 %_libexecdir/ctdb/smnotify
 
+%if_with doc
 %_man1dir/ctdb.1*
 %_man1dir/ctdbd.1*
 %_man1dir/onnode.1*
@@ -1328,6 +1367,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/ctdb.7*
 %_man7dir/ctdb-tunables.7*
 %_man7dir/ctdb-statistics.7*
+%endif #doc
 
 %files -n ctdb-tests
 %_libexecdir/ctdb/tests
