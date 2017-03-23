@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.6.0
+Version: 4.6.1
 Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1387,6 +1387,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.1-alt1%ubt
+- Update to spring security release
+- Fixed build --without docs (closes: 33118)
+- Security fixes:
+  + CVE-2017-2619 Symlink race allows access outside share definition
+
 * Tue Mar 07 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.0-alt1%ubt
 - Udpate to first spring release
 
