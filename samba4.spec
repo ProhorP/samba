@@ -45,7 +45,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.5.5
+Version: 4.5.7
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -764,16 +764,18 @@ TDB_NO_FSYNC=1 %make_build test
 %exclude %_man8dir/samba-tool.8*
 %endif #doc
 %endif #dc
-%if_with doc
 %if_with libcephfs
 %exclude %_samba_mod_libdir/vfs/ceph.so
+%if_with doc
 %exclude %_man8dir/vfs_ceph.8*
+%endif #doc
 %endif
 %if_enabled glusterfs
 %exclude %_samba_mod_libdir/vfs/glusterfs.so
+%if_with doc
 %exclude %_man8dir/vfs_glusterfs.8*
-%endif
 %endif #doc
+%endif
 
 %files client
 %_bindir/cifsdd
@@ -1137,8 +1139,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/libsmbclient.h
 %_samba_libdir/libsmbclient.so
 %_pkgconfigdir/smbclient.pc
+%if_with doc
 %_man7dir/libsmbclient.7*
-%endif
+%endif #doc
+%endif #libsmbclient-DC-devel
 
 %if_with libwbclient
 %files -n libwbclient-DC
@@ -1315,6 +1319,15 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.7-alt1%ubt
+- Update to spring security release
+- Fixed build --without docs (closes: 33118)
+- Security fixes:
+  + CVE-2017-2619 Symlink race allows access outside share definition
+
+* Thu Mar 16 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.6-alt1%ubt
+- Update to spring stable release
+
 * Wed Feb 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.5-alt1%ubt
 - Update to winter release
 - Fix PAM winbind problem with access user to keytab
