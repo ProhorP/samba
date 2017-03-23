@@ -19,7 +19,7 @@
 %def_with libwbclient
 %def_with libnetapi
 %def_without pam_smbpass
-%def_without doc
+%def_with doc
 
 %def_with mitkrb5
 %def_without dc
@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.5.6
+Version: 4.5.7
 Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -692,8 +692,8 @@ rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testt
 
 # Install documentation
 %if_with doc
-mkdir -p %buildroot%_defaultdocdir/%name/
-cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%name/
+#mkdir -p %buildroot%_defaultdocdir/%name/
+#cp -a docs-xml/output/htmldocs %buildroot%_defaultdocdir/%name/
 %endif
 
 # Cleanup man pages
@@ -766,12 +766,16 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with libcephfs
 %exclude %_libdir/samba/vfs/ceph.so
+%if_with doc
 %exclude %_man8dir/vfs_ceph.8*
-%endif
+%endif #doc
+%endif # ! libcephfs
 %if_enabled glusterfs
 %exclude %_libdir/samba/vfs/glusterfs.so
+%if_with doc
 %exclude %_man8dir/vfs_glusterfs.8*
-%endif
+%endif #doc
+%endif # ! glusterfs
 
 %files client
 %_bindir/cifsdd
@@ -1062,8 +1066,10 @@ TDB_NO_FSYNC=1 %make_build test
 %endif #doc
 %else
 %doc %_defaultdocdir/%name/README.dc
+%if_with doc
 %exclude %_man8dir/samba.8*
 %exclude %_man8dir/samba-tool.8*
+%endif #doc
 %exclude %_libdir/samba/ldb/ildap.so
 %exclude %_libdir/samba/ldb/ldbsamba_extensions.so
 %endif
@@ -1378,6 +1384,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.7-alt1%ubt
+- Update to spring security release
+- Fixed build --without docs (closes: 33118)
+- Security fixes:
+  + CVE-2017-2619 Symlink race allows access outside share definition
+
 * Thu Mar 16 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.6-alt1%ubt
 - Update to spring stable release
 
