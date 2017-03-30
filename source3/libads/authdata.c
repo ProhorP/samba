@@ -105,82 +105,29 @@ done:
 
 /*
  * Given the username/password, do a kinit, store the ticket in
- * cache_name if specified.
+ * cache_name if specified, and return the PAC_LOGON_INFO (the
+ * structure containing the important user information such as
+ * groups).
  */
-NTSTATUS kerberos_kinit(TALLOC_CTX *mem_ctx,
-			const char *name,
-			const char *pass,
-			time_t time_offset,
-			time_t *expire_time,
-			time_t *renew_till_time,
-			const char *cache_name,
-			bool request_pac,
-			bool add_netbios_addr,
-			time_t renewable_time)
-{
-	krb5_error_code ret;
-	NTSTATUS status = NT_STATUS_INVALID_PARAMETER;
-	const char *auth_princ = NULL;
-
-	if (!name || !pass || !cache_name) {
-		return NT_STATUS_INVALID_PARAMETER;
-	}
-
-	if (!strchr_m(name, '@')) {
-		auth_princ = talloc_asprintf(mem_ctx, "%s@%s", name,
-			lp_realm());
-	} else {
-		auth_princ = name;
-	}
-	NT_STATUS_HAVE_NO_MEMORY(auth_princ);
-
-	ret = kerberos_kinit_password_ext(auth_princ,
-					  pass,
-					  time_offset,
-					  expire_time,
-					  renew_till_time,
-					  cache_name,
-					  request_pac,
-					  add_netbios_addr,
-					  renewable_time,
-					  &status);
-	if (ret) {
-		DEBUG(1,("kinit failed for '%s' with: %s (%d)\n",
-			auth_princ, error_message(ret), ret));
-		/* status already set */
-		goto failed;
-	}
-
-	DEBUG(10,("got TGT for %s in %s\n", auth_princ, cache_name));
-	if (expire_time) {
-		DEBUGADD(10,("\tvalid until: %s (%d)\n",
-			http_timestring(talloc_tos(), *expire_time),
-			(int)*expire_time));
-	}
-	if (renew_till_time) {
-		DEBUGADD(10,("\trenewable till: %s (%d)\n",
-			http_timestring(talloc_tos(), *renew_till_time),
-			(int)*renew_till_time));
-	}
-
-failed:
-	return status;
-}
-
-/*
- * Return the PAC_LOGON_INFO (the structure containing the important user
- * information such as groups).
- */
-NTSTATUS kerberos_pac_logon(TALLOC_CTX *mem_ctx,
-			    time_t time_offset,
-			    const char *cache_name,
-			    const char *impersonate_princ_s,
-			    const char *local_service,
-			    struct PAC_DATA_CTR **_pac_data_ctr)
+NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
+			     const char *name,
+			     const char *pass,
+			     time_t time_offset,
+			     time_t *expire_time,
+			     time_t *renew_till_time,
+			     const char *cache_name,
+			     bool request_pac,
+			     bool add_netbios_addr,
+			     time_t renewable_time,
+			     const char *impersonate_princ_s,
+			     const char *local_service,
+			     struct PAC_DATA_CTR **_pac_data_ctr)
 {
 	krb5_error_code ret;
 	NTSTATUS status = NT_STATUS_INVALID_PARAMETER;
 	DATA_BLOB tkt, tkt_wrapped, ap_rep, sesskey1;
+	const char *auth_princ = NULL;
+	const char *cc = "MEMORY:kerberos_return_pac";
 	struct auth_session_info *session_info;
 	struct gensec_security *gensec_server_context;
 	const struct gensec_security_ops **backends;
@@ -197,13 +144,66 @@ NTSTATUS kerberos_pac_logon(TALLOC_CTX *mem_ctx,
 	ZERO_STRUCT(ap_rep);
 	ZERO_STRUCT(sesskey1);
 
+	if (!name || !pass) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	if (cache_name) {
+		cc = cache_name;
+	}
+
+	if (!strchr_m(name, '@')) {
+		auth_princ = talloc_asprintf(mem_ctx, "%s@%s", name,
+			lp_realm());
+	} else {
+		auth_princ = name;
+	}
+	NT_STATUS_HAVE_NO_MEMORY(auth_princ);
+
+	ret = kerberos_kinit_password_ext(auth_princ,
+					  pass,
+					  time_offset,
+					  expire_time,
+					  renew_till_time,
+					  cc,
+					  request_pac,
+					  add_netbios_addr,
+					  renewable_time,
+					  &status);
+	if (ret) {
+		DEBUG(1,("kinit failed for '%s' with: %s (%d)\n",
+			auth_princ, error_message(ret), ret));
+		/* status already set */
+		goto out;
+	}
+
+	DEBUG(10,("got TGT for %s in %s\n", auth_princ, cc));
+	if (expire_time) {
+		DEBUGADD(10,("\tvalid until: %s (%d)\n",
+			http_timestring(talloc_tos(), *expire_time),
+			(int)*expire_time));
+	}
+	if (renew_till_time) {
+		DEBUGADD(10,("\trenewable till: %s (%d)\n",
+			http_timestring(talloc_tos(), *renew_till_time),
+			(int)*renew_till_time));
+	}
+
+	/* we cannot continue with krb5 when UF_DONT_REQUIRE_PREAUTH is set,
+	 * in that case fallback to NTLM - gd */
+
+	if (expire_time && renew_till_time &&
+	    (*expire_time == 0) && (*renew_till_time == 0)) {
+		return NT_STATUS_INVALID_LOGON_TYPE;
+	}
+
 	ret = ads_krb5_cli_get_ticket(mem_ctx,
 				      local_service,
 				      time_offset,
 				      &tkt,
 				      &sesskey1,
 				      0,
-				      cache_name,
+				      cc,
 				      NULL,
 				      impersonate_princ_s);
 	if (ret) {
@@ -303,81 +303,13 @@ NTSTATUS kerberos_pac_logon(TALLOC_CTX *mem_ctx,
 
 out:
 	talloc_free(tmp_ctx);
+	if (cc != cache_name) {
+		ads_kdestroy(cc);
+	}
 
 	data_blob_free(&tkt);
 	data_blob_free(&ap_rep);
 	data_blob_free(&sesskey1);
-
-	return status;
-}
-
-/*
- * Given the username/password, do a kinit, store the ticket in
- * cache_name if specified, and return the PAC_LOGON_INFO (the
- * structure containing the important user information such as
- * groups).
- */
-NTSTATUS kerberos_return_pac(TALLOC_CTX *mem_ctx,
-			     const char *name,
-			     const char *pass,
-			     time_t time_offset,
-			     time_t *expire_time,
-			     time_t *renew_till_time,
-			     const char *cache_name,
-			     bool request_pac,
-			     bool add_netbios_addr,
-			     time_t renewable_time,
-			     const char *impersonate_princ_s,
-			     const char *local_service,
-			     struct PAC_DATA_CTR **_pac_data_ctr)
-{
-	NTSTATUS status = NT_STATUS_INVALID_PARAMETER;
-	const char *cc = "MEMORY:kerberos_return_pac";
-
-	if (cache_name) {
-		cc = cache_name;
-	}
-
-	status = kerberos_kinit(mem_ctx,
-				name,
-				pass,
-				time_offset,
-				expire_time,
-				renew_till_time,
-				cc,
-				request_pac,
-				add_netbios_addr,
-				renewable_time);
-
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("kerberos_kinit() failed: %s\n", nt_errstr(status)));
-		goto out;
-	}
-
-	/* we cannot continue with krb5 when UF_DONT_REQUIRE_PREAUTH is set,
-	 * in that case fallback to NTLM - gd */
-
-	if (expire_time && renew_till_time &&
-	    (*expire_time == 0) && (*renew_till_time == 0)) {
-		return NT_STATUS_INVALID_LOGON_TYPE;
-	}
-
-	status = kerberos_pac_logon(mem_ctx,
-				    time_offset,
-				    cc,
-				    impersonate_princ_s,
-				    local_service,
-				    _pac_data_ctr);
-
-	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(1, ("kerberos_pac_logon() failed: %s\n", nt_errstr(status)));
-		goto out;
-	}
-
-out:
-	if (cc != cache_name) {
-		ads_kdestroy(cc);
-	}
 
 	return status;
 }
