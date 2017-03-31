@@ -661,41 +661,24 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 		DEBUG(10,("winbindd_raw_kerberos_login: uid is %d\n", uid));
 	}
 
-	result = kerberos_kinit(mem_ctx,
-				principal_s,
-				pass,
-				time_offset,
-				&ticket_lifetime,
-				&renewal_until,
-				cc,
-				true,
-				true,
-				WINBINDD_PAM_AUTH_KRB5_RENEW_TIME);
-
+	result = kerberos_return_pac(mem_ctx,
+				     principal_s,
+				     pass,
+				     time_offset,
+				     &ticket_lifetime,
+				     &renewal_until,
+				     cc,
+				     true,
+				     true,
+				     WINBINDD_PAM_AUTH_KRB5_RENEW_TIME,
+				     NULL,
+				     local_service,
+				     &pac_data_ctr);
 	if (user_ccache_file != NULL) {
 		gain_root_privilege();
 	}
 
 	/************************ RETURNED TO ROOT **********************/
-
-
-	if (!NT_STATUS_IS_OK(result)) {
-		goto failed;
-	}
-
-	/* we cannot continue with krb5 when UF_DONT_REQUIRE_PREAUTH is set,
-	 * in that case fallback to NTLM - gd */
-
-	if (ticket_lifetime == 0 && renewal_until == 0) {
-		return NT_STATUS_INVALID_LOGON_TYPE;
-	}
-
-	result = kerberos_pac_logon(mem_ctx,
-				    time_offset,
-				    cc,
-				    NULL,
-				    local_service,
-				    &pac_data_ctr);
 
 	if (!NT_STATUS_IS_OK(result)) {
 		goto failed;
