@@ -114,7 +114,11 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.27 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
+%if %ubt_id <= "M70P"
+%{?_with_systemd:BuildRequires: systemd-devel}
+%else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
+%endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
