@@ -1246,8 +1246,10 @@ TDB_NO_FSYNC=1 %make_build test
 %files pidl
 %attr(755,root,root) %_bindir/pidl
 %if_with doc
+%if %ubt_id > "M70P"
 %_man1dir/pidl.1.*
 %_man3dir/Parse::Pidl::*
+%endif
 %endif
 %perl_vendor_privlib/*
 
