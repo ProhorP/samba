@@ -46,7 +46,7 @@
 
 Name:    samba-DC
 Version: 4.6.2
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1328,6 +1328,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Apr 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt2%ubt
+- Fix problem with failed to create kerberos keytab during join to domain
+
 * Fri Mar 31 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt1%ubt
 - Update with regression fix of spring security release
 - Revert winbind problem fixes with access user to keytab due troubles in 4.6.x
