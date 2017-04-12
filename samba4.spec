@@ -45,7 +45,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.5.7
+Version: 4.5.8
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -1325,6 +1325,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Apr 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.8-alt1%ubt
+- Update with regression fix of spring security release
+
 * Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.7-alt1%ubt
 - Update to spring security release
 - Fixed build --without docs (closes: 33118)
