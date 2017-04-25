@@ -135,6 +135,7 @@ struct fruit_config_data {
 	bool copyfile_enabled;
 	bool veto_appledouble;
 	bool posix_rename;
+	bool aapl_zero_file_id;
 
 	/*
 	 * Additional options, all enabled by default,
@@ -1591,6 +1592,9 @@ static int init_fruit_config(vfs_handle_struct *handle)
 	config->posix_rename = lp_parm_bool(
 		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME, "posix_rename", true);
 
+	config->aapl_zero_file_id =
+	    lp_parm_bool(-1, FRUIT_PARAM_TYPE_NAME, "zero_file_id", true);
+
 	config->readdir_attr_rsize = lp_parm_bool(
 		SNUM(handle->conn), "readdir_attr", "aapl_rsize", true);
 
@@ -2236,6 +2240,9 @@ static NTSTATUS check_aapl(vfs_handle_struct *handle,
 				      blob);
 	if (NT_STATUS_IS_OK(status)) {
 		global_fruit_config.nego_aapl = true;
+		if (config->aapl_zero_file_id) {
+			aapl_force_zero_file_id(handle->conn->sconn);
+		}
 	}
 
 	return status;
@@ -2962,6 +2969,20 @@ static int fruit_open_rsrc(vfs_handle_struct *handle,
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
 				struct fruit_config_data, return -1);
+
+	if (((flags & O_ACCMODE) == O_RDONLY)
+	    && (flags & O_CREAT)
+	    && !VALID_STAT(fsp->fsp_name->st))
+	{
+		/*
+		 * This means the stream doesn't exist. macOS SMB server fails
+		 * this with NT_STATUS_OBJECT_NAME_NOT_FOUND, so must we. Cf bug
+		 * 12565 and the test for this combination in
+		 * test_rfork_create().
+		 */
+		errno = ENOENT;
+		return -1;
+	}
 
 	switch (config->rsrc) {
 	case FRUIT_RSRC_STREAM:
