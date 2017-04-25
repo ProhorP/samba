@@ -36,6 +36,26 @@ def plansmbtorture4testsuite(name, env, options, description=''):
     selftesthelpers.plansmbtorture4testsuite(
         name, env, options, target='samba3', modname=modname)
 
+# find config.h
+try:
+    config_h = os.environ["CONFIG_H"]
+except KeyError:
+    samba4bindir = bindir()
+    config_h = os.path.join(samba4bindir, "default/include/config.h")
+
+# check available features
+config_hash = dict()
+f = open(config_h, 'r')
+try:
+    lines = f.readlines()
+    config_hash = dict((x[0], ' '.join(x[1:]))
+            for x in map(lambda line: line.strip().split(' ')[1:],
+                         filter(lambda line: (line[0:7] == '#define') and (len(line.split(' ')) > 2), lines)))
+finally:
+    f.close()
+
+have_libarchive = ("HAVE_LIBARCHIVE" in config_hash)
+have_linux_kernel_oplocks = ("HAVE_KERNEL_OPLOCKS_LINUX" in config_hash)
 
 plantestsuite("samba3.blackbox.success", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_success.sh")])
 plantestsuite("samba3.blackbox.failure", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_failure.sh")])
@@ -203,24 +223,11 @@ for env in ["fileserver"]:
     plantestsuite("samba3.blackbox.inherit_owner.default(%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'tmp', '0', '0', '-m', 'NT1'])
     plantestsuite("samba3.blackbox.inherit_owner.full (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'inherit_owner', '1', '1', '-m', 'NT1'])
     plantestsuite("samba3.blackbox.inherit_owner.unix (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'inherit_owner_u', '0', '1', '-m', 'NT1'])
+    plantestsuite("samba3.blackbox.large_acl (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_large_acl.sh"), '$SERVER', '$USERNAME', '$PASSWORD', smbclient3, smbcacls])
 
     #
     # tar command tests
     #
-
-    # find config.h
-    try:
-        config_h = os.environ["CONFIG_H"]
-    except KeyError:
-        samba4bindir = bindir()
-        config_h = os.path.join(samba4bindir, "default/include/config.h")
-
-    # see if libarchive is supported
-    f = open(config_h, 'r')
-    try:
-        have_libarchive = ("HAVE_LIBARCHIVE 1" in f.read())
-    finally:
-        f.close()
 
     # tar command enabled only if built with libarchive
     if have_libarchive:
@@ -319,7 +326,7 @@ rpc = ["rpc.authcontext", "rpc.samba3.bind", "rpc.samba3.srvsvc", "rpc.samba3.sh
 
 local = ["local.nss"]
 
-idmap = ["idmap.rfc2307", "idmap.alloc"]
+idmap = ["idmap.rfc2307", "idmap.alloc", "idmap.rid"]
 
 rap = ["rap.basic", "rap.rpc", "rap.printing", "rap.sam"]
 
@@ -329,7 +336,7 @@ nbt = ["nbt.dgram" ]
 
 libsmbclient = ["libsmbclient"]
 
-vfs = ["vfs.fruit", "vfs.acl_xattr", "vfs.fruit_netatalk"]
+vfs = ["vfs.fruit", "vfs.acl_xattr", "vfs.fruit_netatalk", "vfs.fruit_file_id"]
 
 tests= base + raw + smb2 + rpc + unix + local + rap + nbt + libsmbclient + idmap + vfs
 
@@ -389,6 +396,8 @@ for t in tests:
         plantestsuite(t, "ad_member_rfc2307", [os.path.join(samba3srcdir, "../nsswitch/tests/test_idmap_rfc2307.sh"), '$DOMAIN', 'Administrator', '2000000', 'Guest', '2000001', '"Domain Users"', '2000002', 'DnsAdmins', '2000003', 'ou=idmap,dc=samba,dc=example,dc=com', '$DC_SERVER', '$DC_USERNAME', '$DC_PASSWORD'])
     elif t == "idmap.alloc":
         plantestsuite(t, "ad_member_rfc2307", [os.path.join(samba3srcdir, "../nsswitch/tests/test_idmap_nss.sh"), '$DOMAIN'])
+    elif t == "idmap.rid":
+        plantestsuite(t, "ad_member_idmap_rid", [os.path.join(samba3srcdir, "../nsswitch/tests/test_idmap_rid.sh"), '$DOMAIN', '2000000'])
     elif t == "raw.acls":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/nfs4acl_simple -U$USERNAME%$PASSWORD', description='nfs4acl_xattr-simple')
@@ -417,6 +426,8 @@ for t in tests:
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit_stream_depot --option=torture:share2=vfs_wo_fruit_stream_depot -U$USERNAME%$PASSWORD', 'streams_depot')
     elif t == "vfs.fruit_netatalk":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD --option=torture:localdir=$SELFTEST_PREFIX/nt4_dc/share')
+    elif t == "vfs.fruit_file_id":
+        plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD')
     elif t == "rpc.schannel_anon_setpw":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$%', description="anonymous password set")
         plansmbtorture4testsuite(t, "nt4_dc_schannel", '//$SERVER_IP/tmp -U$%', description="anonymous password set (schannel enforced server-side)")
@@ -431,6 +442,9 @@ for t in tests:
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD --signing=required')
     elif t == "smb2.dosmode":
         plansmbtorture4testsuite(t, "simpleserver", '//$SERVER/dosmode -U$USERNAME%$PASSWORD')
+    elif t == "smb2.kernel-oplocks":
+        if have_linux_kernel_oplocks:
+            plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER/kernel_oplocks -U$USERNAME%$PASSWORD')
     elif t == "vfs.acl_xattr":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
     else:

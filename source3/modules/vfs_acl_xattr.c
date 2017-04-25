@@ -37,17 +37,45 @@
  Pull a security descriptor into a DATA_BLOB from a xattr.
 *******************************************************************/
 
+static ssize_t getxattr_do(vfs_handle_struct *handle,
+			   files_struct *fsp,
+			   const struct smb_filename *smb_fname,
+			   const char *xattr_name,
+			   uint8_t *val,
+			   size_t size)
+{
+	ssize_t sizeret;
+	int saved_errno = 0;
+
+	become_root();
+	if (fsp && fsp->fh->fd != -1) {
+		sizeret = SMB_VFS_FGETXATTR(fsp, xattr_name, val, size);
+	} else {
+		sizeret = SMB_VFS_GETXATTR(handle->conn, smb_fname->base_name,
+					   XATTR_NTACL_NAME, val, size);
+	}
+	if (sizeret == -1) {
+		saved_errno = errno;
+	}
+	unbecome_root();
+
+	if (saved_errno != 0) {
+		errno = saved_errno;
+	}
+
+	return sizeret;
+}
+
 static NTSTATUS get_acl_blob(TALLOC_CTX *ctx,
 			vfs_handle_struct *handle,
 			files_struct *fsp,
 			const struct smb_filename *smb_fname,
 			DATA_BLOB *pblob)
 {
-	size_t size = 1024;
+	size_t size = 4096;
 	uint8_t *val = NULL;
 	uint8_t *tmp;
 	ssize_t sizeret;
-	int saved_errno = 0;
 
 	ZERO_STRUCTP(pblob);
 
@@ -60,35 +88,41 @@ static NTSTATUS get_acl_blob(TALLOC_CTX *ctx,
 	}
 	val = tmp;
 
-	become_root();
-	if (fsp && fsp->fh->fd != -1) {
-		sizeret = SMB_VFS_FGETXATTR(fsp, XATTR_NTACL_NAME, val, size);
-	} else {
-		sizeret = SMB_VFS_GETXATTR(handle->conn, smb_fname->base_name,
-					XATTR_NTACL_NAME, val, size);
-	}
-	if (sizeret == -1) {
-		saved_errno = errno;
-	}
-	unbecome_root();
+	sizeret =
+	    getxattr_do(handle, fsp, smb_fname, XATTR_NTACL_NAME, val, size);
 
-	/* Max ACL size is 65536 bytes. */
-	if (sizeret == -1) {
-		errno = saved_errno;
-		if ((errno == ERANGE) && (size != 65536)) {
-			/* Too small, try again. */
-			size = 65536;
-			goto again;
-		}
-
-		/* Real error - exit here. */
-		TALLOC_FREE(val);
-		return map_nt_error_from_unix(errno);
+	if (sizeret >= 0) {
+		pblob->data = val;
+		pblob->length = sizeret;
+		return NT_STATUS_OK;
 	}
 
-	pblob->data = val;
-	pblob->length = sizeret;
-	return NT_STATUS_OK;
+	if (errno != ERANGE) {
+		goto err;
+	}
+
+	/* Too small, try again. */
+	sizeret =
+	    getxattr_do(handle, fsp, smb_fname, XATTR_NTACL_NAME, NULL, 0);
+	if (sizeret < 0) {
+		goto err;
+	}
+
+	if (size < sizeret) {
+		size = sizeret;
+	}
+
+	if (size > 65536) {
+		/* Max ACL size is 65536 bytes. */
+		errno = ERANGE;
+		goto err;
+	}
+
+	goto again;
+  err:
+	/* Real error - exit here. */
+	TALLOC_FREE(val);
+	return map_nt_error_from_unix(errno);
 }
 
 /*******************************************************************
