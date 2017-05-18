@@ -149,29 +149,8 @@ static void downgrade_file_oplock(files_struct *fsp)
 	TALLOC_FREE(fsp->oplock_timeout);
 }
 
-uint32_t map_oplock_to_lease_type(uint16_t op_type)
-{
-	uint32_t ret;
-
-	switch(op_type) {
-	case BATCH_OPLOCK:
-	case BATCH_OPLOCK|EXCLUSIVE_OPLOCK:
-		ret = SMB2_LEASE_READ|SMB2_LEASE_WRITE|SMB2_LEASE_HANDLE;
-		break;
-	case EXCLUSIVE_OPLOCK:
-		ret = SMB2_LEASE_READ|SMB2_LEASE_WRITE;
-		break;
-	case LEVEL_II_OPLOCK:
-		ret = SMB2_LEASE_READ;
-		break;
-	default:
-		ret = SMB2_LEASE_NONE;
-		break;
-	}
-	return ret;
-}
-
-uint32_t get_lease_type(struct share_mode_data *d, struct share_mode_entry *e)
+uint32_t get_lease_type(const struct share_mode_data *d,
+			const struct share_mode_entry *e)
 {
 	if (e->op_type == LEASE_OPLOCK) {
 		return d->leases[e->lease_idx].current_state;
@@ -186,13 +165,18 @@ bool update_num_read_oplocks(files_struct *fsp, struct share_mode_lock *lck)
 	uint32_t num_read_oplocks = 0;
 	uint32_t i;
 
-	if (EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
+	if (fsp_lease_type_is_exclusive(fsp)) {
 		/*
-		 * If we're the only one, we don't need a brlock entry
+		 * If we're fully exclusive, we don't need a brlock entry
 		 */
 		remove_stale_share_mode_entries(d);
-		SMB_ASSERT(d->num_share_modes == 1);
-		SMB_ASSERT(EXCLUSIVE_OPLOCK_TYPE(d->share_modes[0].op_type));
+
+		for (i=0; i<d->num_share_modes; i++) {
+			struct share_mode_entry *e = &d->share_modes[i];
+			uint32_t e_lease_type = get_lease_type(d, e);
+
+			SMB_ASSERT(lease_type_is_exclusive(e_lease_type));
+		}
 		return true;
 	}
 
@@ -1064,7 +1048,7 @@ static void contend_level2_oplocks_begin_default(files_struct *fsp,
 	 * the shared memory area whilst doing this.
 	 */
 
-	if (EXCLUSIVE_OPLOCK_TYPE(fsp->oplock_type)) {
+	if (fsp_lease_type_is_exclusive(fsp)) {
 		/*
 		 * There can't be any level2 oplocks, we're alone.
 		 */

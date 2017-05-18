@@ -22,14 +22,12 @@
 ^samba3.raw.samba3hide.samba3hide\((nt4_dc|ad_dc)\) # This test fails against an smbd environment with NT ACLs enabled
 ^samba3.raw.samba3closeerr.samba3closeerr\(nt4_dc\) # This test fails against an smbd environment with NT ACLs enabled
 ^samba3.raw.acls nfs4acl_xattr-simple.INHERITFLAGS\(nt4_dc\) # This (and the follow nfs4acl_xattr tests fail because our NFSv4 backend isn't a complete mapping yet.
-^samba3.raw.acls nfs4acl_xattr-simple.sd\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-simple.create_file\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-simple.create_dir\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-simple.nulldacl\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-simple.generic\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-simple.inheritance\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-special.INHERITFLAGS\(nt4_dc\)
-^samba3.raw.acls nfs4acl_xattr-special.sd\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-special.create_file\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-special.create_dir\(nt4_dc\)
 ^samba3.raw.acls nfs4acl_xattr-special.nulldacl\(nt4_dc\)
@@ -217,10 +215,6 @@
 #
 ^samba4.winbind.struct.domain_info\(s4member:local\)
 ^samba4.winbind.struct.getdcname\(s4member:local\)
-^samba.blackbox.wbinfo\(s4member:local\).wbinfo -r against s4member\(s4member:local\)
-^samba.blackbox.wbinfo\(s4member:local\).wbinfo --user-sids against s4member\(s4member:local\)
-^samba.wbinfo_simple.\(s4member:local\).--user-groups
-^samba.nss.test using winbind\(s4member:local\)
 #
 # These fail since ad_dc_ntvfs assigns the local user's uid to SAMBADOMAIN/Administrator
 # hence we have a duplicate UID in nsswitch.

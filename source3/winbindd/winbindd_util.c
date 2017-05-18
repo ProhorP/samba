@@ -802,6 +802,7 @@ static bool migrate_secrets_tdb_to_ldb(struct winbindd_domain *domain)
 bool init_domain_list(void)
 {
 	int role = lp_server_role();
+	struct pdb_domain_info *pdb_domain_info = NULL;
 	NTSTATUS status;
 
 	/* Free existing list */
@@ -814,15 +815,24 @@ bool init_domain_list(void)
 
 	/* Local SAM */
 
+	/*
+	 * In case the passdb backend is passdb_dsdb the domain SID comes from
+	 * dsdb, not from secrets.tdb. As we use the domain SID in various
+	 * places, we must ensure the domain SID is migrated from dsdb to
+	 * secrets.tdb before get_global_sam_sid() is called the first time.
+	 *
+	 * The migration is done as part of the passdb_dsdb initialisation,
+	 * calling pdb_get_domain_info() triggers it.
+	 */
+	pdb_domain_info = pdb_get_domain_info(talloc_tos());
+
 	if ( role == ROLE_ACTIVE_DIRECTORY_DC ) {
 		struct winbindd_domain *domain;
 		enum netr_SchannelType sec_chan_type;
 		const char *account_name;
 		struct samr_Password current_nt_hash;
-		struct pdb_domain_info *pdb_domain_info;
 		bool ok;
 
-		pdb_domain_info = pdb_get_domain_info(talloc_tos());
 		if (pdb_domain_info == NULL) {
 			DEBUG(0, ("Failed to fetch our own, local AD "
 				"domain info from sam.ldb\n"));
@@ -1041,12 +1051,19 @@ struct winbindd_domain *find_builtin_domain(void)
 
 struct winbindd_domain *find_lookup_domain_from_sid(const struct dom_sid *sid)
 {
-	/* SIDs in the S-1-22-{1,2} domain should be handled by our passdb */
+	DBG_DEBUG("SID [%s]\n", sid_string_dbg(sid));
+
+	/*
+	 * SIDs in the S-1-22-{1,2} domain and well-known SIDs should be handled
+	 * by our passdb.
+	 */
 
 	if ( sid_check_is_in_unix_groups(sid) ||
 	     sid_check_is_unix_groups(sid) ||
 	     sid_check_is_in_unix_users(sid) ||
-	     sid_check_is_unix_users(sid) )
+	     sid_check_is_unix_users(sid) ||
+	     sid_check_is_wellknown_domain(sid, NULL) ||
+	     sid_check_is_in_wellknown_domain(sid) )
 	{
 		return find_domain_from_sid(get_global_sam_sid());
 	}
@@ -1054,8 +1071,6 @@ struct winbindd_domain *find_lookup_domain_from_sid(const struct dom_sid *sid)
 	/* A DC can't ask the local smbd for remote SIDs, here winbindd is the
 	 * one to contact the external DC's. On member servers the internal
 	 * domains are different: These are part of the local SAM. */
-
-	DEBUG(10, ("find_lookup_domain_from_sid(%s)\n", sid_string_dbg(sid)));
 
 	if (IS_DC || is_internal_domain(sid) || is_in_internal_domain(sid)) {
 		DEBUG(10, ("calling find_domain_from_sid\n"));
