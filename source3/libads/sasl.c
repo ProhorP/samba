@@ -26,6 +26,7 @@
 #include "smb_krb5.h"
 #include "system/gssapi.h"
 #include "lib/param/loadparm.h"
+#include "krb5_env.h"
 
 #ifdef HAVE_LDAP
 
@@ -696,12 +697,13 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 	struct berval *scred=NULL;
 	int rc, i;
 	ADS_STATUS status;
-	DATA_BLOB blob;
+	DATA_BLOB blob = data_blob_null;
 	char *given_principal = NULL;
 	char *OIDs[ASN1_MAX_OIDS];
 #ifdef HAVE_KRB5
 	bool got_kerberos_mechanism = False;
 #endif
+	const char *mech = NULL;
 
 	rc = ldap_sasl_bind_s(ads->ldap.ld, NULL, "GSS-SPNEGO", NULL, NULL, NULL, &scred);
 
@@ -748,17 +750,24 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 	if (!(ads->auth.flags & ADS_AUTH_DISABLE_KERBEROS) &&
 	    got_kerberos_mechanism) 
 	{
-		status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
-						     CRED_MUST_USE_KERBEROS,
-						     p.service, p.hostname,
-						     blob);
-		if (ADS_ERR_OK(status)) {
-			ads_free_service_principal(&p);
-			goto done;
-		}
+		mech = "KRB5";
 
-		DEBUG(10,("ads_sasl_spnego_gensec_bind(KRB5) failed with: %s, "
-			  "calling kinit\n", ads_errstr(status)));
+		if (ads->auth.password == NULL ||
+		    ads->auth.password[0] == '\0')
+		{
+
+			status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
+							     CRED_MUST_USE_KERBEROS,
+							     p.service, p.hostname,
+							     blob);
+			if (ADS_ERR_OK(status)) {
+				ads_free_service_principal(&p);
+				goto done;
+			}
+
+			DEBUG(10,("ads_sasl_spnego_gensec_bind(KRB5) failed with: %s, "
+				  "calling kinit\n", ads_errstr(status)));
+		}
 
 		status = ADS_ERROR_KRB5(ads_kinit_password(ads)); 
 
@@ -769,7 +778,11 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 							blob);
 			if (!ADS_ERR_OK(status)) {
 				DEBUG(0,("kinit succeeded but "
-					"ads_sasl_spnego_gensec_bind(KRB5) failed: %s\n",
+					"ads_sasl_spnego_gensec_bind(KRB5) failed: "
+					"for %s/%s user[%s] realm[%s]: %s\n",
+					p.service, p.hostname,
+					ads->auth.user_name,
+					ads->auth.realm,
 					ads_errstr(status)));
 			}
 		}
@@ -779,19 +792,38 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 		    !(ads->auth.flags & ADS_AUTH_ALLOW_NTLMSSP)) {
 			goto done;
 		}
+
+		DEBUG(1,("ads_sasl_spnego_gensec_bind(KRB5) failed for %s/%s "
+			 "with user[%s] realm[%s]: %s, fallback to NTLMSSP\n",
+			 p.service, p.hostname,
+			 ads->auth.user_name,
+			 ads->auth.realm,
+			 ads_errstr(status)));
 	}
 #endif
 
 	/* lets do NTLMSSP ... this has the big advantage that we don't need
 	   to sync clocks, and we don't rely on special versions of the krb5 
 	   library for HMAC_MD4 encryption */
+	mech = "NTLMSSP";
 	status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
 					     CRED_DONT_USE_KERBEROS,
 					     p.service, p.hostname,
 					     data_blob_null);
 done:
+	if (!ADS_ERR_OK(status)) {
+		DEBUG(1,("ads_sasl_spnego_gensec_bind(%s) failed for %s/%s "
+			 "with user[%s] realm=[%s]: %s\n", mech,
+			  p.service, p.hostname,
+			  ads->auth.user_name,
+			  ads->auth.realm,
+			  ads_errstr(status)));
+	}
 	ads_free_service_principal(&p);
 	TALLOC_FREE(frame);
+	if (blob.data != NULL) {
+		data_blob_free(&blob);
+	}
 	return status;
 }
 
@@ -1018,14 +1050,17 @@ static ADS_STATUS ads_sasl_gssapi_bind(ADS_STRUCT *ads)
 		return status;
 	}
 
-	status = ads_sasl_gssapi_do_bind(ads, p.name);
-	if (ADS_ERR_OK(status)) {
-		ads_free_service_principal(&p);
-		return status;
-	}
+	if (ads->auth.password == NULL ||
+	    ads->auth.password[0] == '\0') {
+		status = ads_sasl_gssapi_do_bind(ads, p.name);
+		if (ADS_ERR_OK(status)) {
+			ads_free_service_principal(&p);
+			return status;
+		}
 
-	DEBUG(10,("ads_sasl_gssapi_do_bind failed with: %s, "
-		  "calling kinit\n", ads_errstr(status)));
+		DEBUG(10,("ads_sasl_gssapi_do_bind failed with: %s, "
+			  "calling kinit\n", ads_errstr(status)));
+	}
 
 	status = ADS_ERROR_KRB5(ads_kinit_password(ads));
 

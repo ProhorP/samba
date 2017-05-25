@@ -44,6 +44,13 @@ struct deferred_open_record {
         bool delayed_for_oplocks;
 	bool async_open;
         struct file_id id;
+
+	/*
+	 * Timer for async opens, needed because they don't use a watch on
+	 * a locking.tdb record. This is currently only used for real async
+	 * opens and just terminates smbd if the async open times out.
+	 */
+	struct tevent_timer *te;
 };
 
 /****************************************************************************
@@ -235,7 +242,7 @@ NTSTATUS smbd_check_access_rights(struct connection_struct *conn,
 	return NT_STATUS_OK;
 }
 
-static NTSTATUS check_parent_access(struct connection_struct *conn,
+NTSTATUS check_parent_access(struct connection_struct *conn,
 				struct smb_filename *smb_fname,
 				uint32_t access_mask)
 {
@@ -345,6 +352,268 @@ static NTSTATUS check_base_file_access(struct connection_struct *conn,
 }
 
 /****************************************************************************
+ Handle differing symlink errno's
+****************************************************************************/
+
+static int link_errno_convert(int err)
+{
+#if defined(ENOTSUP) && defined(OSF1)
+	/* handle special Tru64 errno */
+	if (err == ENOTSUP) {
+		err = ELOOP;
+	}
+#endif /* ENOTSUP */
+#ifdef EFTYPE
+	/* fix broken NetBSD errno */
+	if (err == EFTYPE) {
+		err = ELOOP;
+	}
+#endif /* EFTYPE */
+	/* fix broken FreeBSD errno */
+	if (err == EMLINK) {
+		err = ELOOP;
+	}
+	return err;
+}
+
+static int non_widelink_open(struct connection_struct *conn,
+			const char *conn_rootdir,
+			files_struct *fsp,
+			struct smb_filename *smb_fname,
+			int flags,
+			mode_t mode,
+			unsigned int link_depth);
+
+/****************************************************************************
+ Follow a symlink in userspace.
+****************************************************************************/
+
+static int process_symlink_open(struct connection_struct *conn,
+			const char *conn_rootdir,
+			files_struct *fsp,
+			struct smb_filename *smb_fname,
+			int flags,
+			mode_t mode,
+			unsigned int link_depth)
+{
+	int fd = -1;
+	char *link_target = NULL;
+	int link_len = -1;
+	char *oldwd = NULL;
+	size_t rootdir_len = 0;
+	char *resolved_name = NULL;
+	bool matched = false;
+	int saved_errno = 0;
+
+	/*
+	 * Ensure we don't get stuck in a symlink loop.
+	 */
+	link_depth++;
+	if (link_depth >= 20) {
+		errno = ELOOP;
+		goto out;
+	}
+
+	/* Allocate space for the link target. */
+	link_target = talloc_array(talloc_tos(), char, PATH_MAX);
+	if (link_target == NULL) {
+		errno = ENOMEM;
+		goto out;
+	}
+
+	/* Read the link target. */
+	link_len = SMB_VFS_READLINK(conn,
+				smb_fname->base_name,
+				link_target,
+				PATH_MAX - 1);
+	if (link_len == -1) {
+		goto out;
+	}
+
+	/* Ensure it's at least null terminated. */
+	link_target[link_len] = '\0';
+
+	/* Convert to an absolute path. */
+	resolved_name = SMB_VFS_REALPATH(conn, link_target);
+	if (resolved_name == NULL) {
+		goto out;
+	}
+
+	/*
+	 * We know conn_rootdir starts with '/' and
+	 * does not end in '/'. FIXME ! Should we
+	 * smb_assert this ?
+	 */
+	rootdir_len = strlen(conn_rootdir);
+
+	matched = (strncmp(conn_rootdir, resolved_name, rootdir_len) == 0);
+	if (!matched) {
+		errno = EACCES;
+		goto out;
+	}
+
+	/*
+	 * Turn into a path relative to the share root.
+	 */
+	if (resolved_name[rootdir_len] == '\0') {
+		/* Link to the root of the share. */
+		smb_fname->base_name = talloc_strdup(talloc_tos(), ".");
+		if (smb_fname->base_name == NULL) {
+			errno = ENOMEM;
+			goto out;
+		}
+	} else if (resolved_name[rootdir_len] == '/') {
+		smb_fname->base_name = &resolved_name[rootdir_len+1];
+	} else {
+		errno = EACCES;
+		goto out;
+	}
+
+	oldwd = vfs_GetWd(talloc_tos(), conn);
+	if (oldwd == NULL) {
+		goto out;
+	}
+
+	/* Ensure we operate from the root of the share. */
+	if (vfs_ChDir(conn, conn_rootdir) == -1) {
+		goto out;
+	}
+
+	/* And do it all again.. */
+	fd = non_widelink_open(conn,
+				conn_rootdir,
+				fsp,
+				smb_fname,
+				flags,
+				mode,
+				link_depth);
+	if (fd == -1) {
+		saved_errno = errno;
+	}
+
+  out:
+
+	SAFE_FREE(resolved_name);
+	TALLOC_FREE(link_target);
+	if (oldwd != NULL) {
+		int ret = vfs_ChDir(conn, oldwd);
+		if (ret == -1) {
+			smb_panic("unable to get back to old directory\n");
+		}
+		TALLOC_FREE(oldwd);
+	}
+	if (saved_errno != 0) {
+		errno = saved_errno;
+	}
+	return fd;
+}
+
+/****************************************************************************
+ Non-widelink open.
+****************************************************************************/
+
+static int non_widelink_open(struct connection_struct *conn,
+			const char *conn_rootdir,
+			files_struct *fsp,
+			struct smb_filename *smb_fname,
+			int flags,
+			mode_t mode,
+			unsigned int link_depth)
+{
+	NTSTATUS status;
+	int fd = -1;
+	struct smb_filename *smb_fname_rel = NULL;
+	int saved_errno = 0;
+	char *oldwd = NULL;
+	char *parent_dir = NULL;
+	const char *final_component = NULL;
+
+	if (!parent_dirname(talloc_tos(),
+			smb_fname->base_name,
+			&parent_dir,
+			&final_component)) {
+		goto out;
+	}
+
+	oldwd = vfs_GetWd(talloc_tos(), conn);
+	if (oldwd == NULL) {
+		goto out;
+	}
+
+	/* Pin parent directory in place. */
+	if (vfs_ChDir(conn, parent_dir) == -1) {
+		goto out;
+	}
+
+	/* Ensure the relative path is below the share. */
+	status = check_reduced_name(conn, parent_dir, final_component);
+	if (!NT_STATUS_IS_OK(status)) {
+		saved_errno = map_errno_from_nt_status(status);
+		goto out;
+	}
+
+	smb_fname_rel = synthetic_smb_fname(talloc_tos(),
+				final_component,
+				smb_fname->stream_name,
+				&smb_fname->st);
+
+	flags |= O_NOFOLLOW;
+
+	{
+		struct smb_filename *tmp_name = fsp->fsp_name;
+		fsp->fsp_name = smb_fname_rel;
+		fd = SMB_VFS_OPEN(conn, smb_fname_rel, fsp, flags, mode);
+		fsp->fsp_name = tmp_name;
+	}
+
+	if (fd == -1) {
+		saved_errno = link_errno_convert(errno);
+		if (saved_errno == ELOOP) {
+			if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
+				/* Never follow symlinks on posix open. */
+				goto out;
+			}
+			if (!lp_follow_symlinks(SNUM(conn))) {
+				/* Explicitly no symlinks. */
+				goto out;
+			}
+			/*
+			 * We have a symlink. Follow in userspace
+			 * to ensure it's under the share definition.
+			 */
+			fd = process_symlink_open(conn,
+					conn_rootdir,
+					fsp,
+					smb_fname_rel,
+					flags,
+					mode,
+					link_depth);
+			if (fd == -1) {
+				saved_errno =
+					link_errno_convert(errno);
+			}
+		}
+	}
+
+  out:
+
+	TALLOC_FREE(parent_dir);
+	TALLOC_FREE(smb_fname_rel);
+
+	if (oldwd != NULL) {
+		int ret = vfs_ChDir(conn, oldwd);
+		if (ret == -1) {
+			smb_panic("unable to get back to old directory\n");
+		}
+		TALLOC_FREE(oldwd);
+	}
+	if (saved_errno != 0) {
+		errno = saved_errno;
+	}
+	return fd;
+}
+
+/****************************************************************************
  fd support routines - attempt to do a dos_open.
 ****************************************************************************/
 
@@ -356,8 +625,7 @@ NTSTATUS fd_open(struct connection_struct *conn,
 	struct smb_filename *smb_fname = fsp->fsp_name;
 	NTSTATUS status = NT_STATUS_OK;
 
-#ifdef O_NOFOLLOW
-	/* 
+	/*
 	 * Never follow symlinks on a POSIX client. The
 	 * client should be doing this.
 	 */
@@ -365,29 +633,31 @@ NTSTATUS fd_open(struct connection_struct *conn,
 	if ((fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) || !lp_follow_symlinks(SNUM(conn))) {
 		flags |= O_NOFOLLOW;
 	}
-#endif
 
-	fsp->fh->fd = SMB_VFS_OPEN(conn, smb_fname, fsp, flags, mode);
+	/* Ensure path is below share definition. */
+	if (!lp_widelinks(SNUM(conn))) {
+		const char *conn_rootdir = SMB_VFS_CONNECTPATH(conn,
+						smb_fname->base_name);
+		if (conn_rootdir == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		/*
+		 * Only follow symlinks within a share
+		 * definition.
+		 */
+		fsp->fh->fd = non_widelink_open(conn,
+					conn_rootdir,
+					fsp,
+					smb_fname,
+					flags,
+					mode,
+					0);
+	} else {
+		fsp->fh->fd = SMB_VFS_OPEN(conn, smb_fname, fsp, flags, mode);
+	}
+
 	if (fsp->fh->fd == -1) {
-		int posix_errno = errno;
-#ifdef O_NOFOLLOW
-#if defined(ENOTSUP) && defined(OSF1)
-		/* handle special Tru64 errno */
-		if (errno == ENOTSUP) {
-			posix_errno = ELOOP;
-		}
-#endif /* ENOTSUP */
-#ifdef EFTYPE
-		/* fix broken NetBSD errno */
-		if (errno == EFTYPE) {
-			posix_errno = ELOOP;
-		}
-#endif /* EFTYPE */
-		/* fix broken FreeBSD errno */
-		if (errno == EMLINK) {
-			posix_errno = ELOOP;
-		}
-#endif /* O_NOFOLLOW */
+		int posix_errno = link_errno_convert(errno);
 		status = map_nt_error_from_unix(posix_errno);
 		if (errno == EMFILE) {
 			static time_t last_warned = 0L;
@@ -621,7 +891,9 @@ static NTSTATUS fd_open_atomic(struct connection_struct *conn,
 			bool *file_created)
 {
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
+	NTSTATUS retry_status;
 	bool file_existed = VALID_STAT(fsp->fsp_name->st);
+	int curr_flags;
 
 	*file_created = false;
 
@@ -653,59 +925,65 @@ static NTSTATUS fd_open_atomic(struct connection_struct *conn,
 	 * we can never call O_CREAT without O_EXCL. So if
 	 * we think the file existed, try without O_CREAT|O_EXCL.
 	 * If we think the file didn't exist, try with
-	 * O_CREAT|O_EXCL. Keep bouncing between these two
-	 * requests until either the file is created, or
-	 * opened. Either way, we keep going until we get
-	 * a returnable result (error, or open/create).
+	 * O_CREAT|O_EXCL.
+	 *
+	 * The big problem here is dangling symlinks. Opening
+	 * without O_NOFOLLOW means both bad symlink
+	 * and missing path return -1, ENOENT from open(). As POSIX
+	 * is pathname based it's not possible to tell
+	 * the difference between these two cases in a
+	 * non-racy way, so change to try only two attempts before
+	 * giving up.
+	 *
+	 * We don't have this problem for the O_NOFOLLOW
+	 * case as it just returns NT_STATUS_OBJECT_PATH_NOT_FOUND
+	 * mapped from the ELOOP POSIX error.
 	 */
 
-	while(1) {
-		int curr_flags = flags;
+	curr_flags = flags;
 
-		if (file_existed) {
-			/* Just try open, do not create. */
-			curr_flags &= ~(O_CREAT);
-			status = fd_open(conn, fsp, curr_flags, mode);
-			if (NT_STATUS_EQUAL(status,
-					NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
-				/*
-				 * Someone deleted it in the meantime.
-				 * Retry with O_EXCL.
-				 */
-				file_existed = false;
-				DEBUG(10,("fd_open_atomic: file %s existed. "
-					"Retry.\n",
-					smb_fname_str_dbg(fsp->fsp_name)));
-					continue;
-			}
-		} else {
-			/* Try create exclusively, fail if it exists. */
-			curr_flags |= O_EXCL;
-			status = fd_open(conn, fsp, curr_flags, mode);
-			if (NT_STATUS_EQUAL(status,
-					NT_STATUS_OBJECT_NAME_COLLISION)) {
-				/*
-				 * Someone created it in the meantime.
-				 * Retry without O_CREAT.
-				 */
-				file_existed = true;
-				DEBUG(10,("fd_open_atomic: file %s "
-					"did not exist. Retry.\n",
-					smb_fname_str_dbg(fsp->fsp_name)));
-				continue;
-			}
-			if (NT_STATUS_IS_OK(status)) {
-				/*
-				 * Here we've opened with O_CREAT|O_EXCL
-				 * and got success. We *know* we created
-				 * this file.
-				 */
-				*file_created = true;
-			}
-		}
-		/* Create is done, or failed. */
-		break;
+	if (file_existed) {
+		curr_flags &= ~(O_CREAT);
+		retry_status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+	} else {
+		curr_flags |= O_EXCL;
+		retry_status = NT_STATUS_OBJECT_NAME_COLLISION;
 	}
+
+	status = fd_open(conn, fsp, curr_flags, mode);
+	if (NT_STATUS_IS_OK(status)) {
+		if (!file_existed) {
+			*file_created = true;
+		}
+		return NT_STATUS_OK;
+	}
+	if (!NT_STATUS_EQUAL(status, retry_status)) {
+		return status;
+	}
+
+	curr_flags = flags;
+
+	/*
+	 * Keep file_existed up to date for clarity.
+	 */
+	if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
+		file_existed = false;
+		curr_flags |= O_EXCL;
+		DBG_DEBUG("file %s did not exist. Retry.\n",
+			smb_fname_str_dbg(fsp->fsp_name));
+	} else {
+		file_existed = true;
+		curr_flags &= ~(O_CREAT);
+		DBG_DEBUG("file %s existed. Retry.\n",
+			smb_fname_str_dbg(fsp->fsp_name));
+	}
+
+	status = fd_open(conn, fsp, curr_flags, mode);
+
+	if (NT_STATUS_IS_OK(status) && (!file_existed)) {
+		*file_created = true;
+	}
+
 	return status;
 }
 
@@ -881,6 +1159,25 @@ static NTSTATUS open_file(files_struct *fsp,
 				 "(flags=%d)\n", smb_fname_str_dbg(smb_fname),
 				 nt_errstr(status),local_flags,flags));
 			return status;
+		}
+
+		if (local_flags & O_NONBLOCK) {
+			/*
+			 * GPFS can return ETIMEDOUT for pread on
+			 * nonblocking file descriptors when files
+			 * migrated to tape need to be recalled. I
+			 * could imagine this happens elsehwere
+			 * too. With blocking file descriptors this
+			 * does not happen.
+			 */
+			ret = set_blocking(fsp->fh->fd, true);
+			if (ret == -1) {
+				status = map_nt_error_from_unix(errno);
+				DBG_WARNING("Could not set fd to blocking: "
+					    "%s\n", strerror(errno));
+				fd_close(fsp);
+				return status;
+			}
 		}
 
 		ret = SMB_VFS_FSTAT(fsp, &smb_fname->st);
@@ -1498,6 +1795,23 @@ static bool delay_for_oplock(files_struct *fsp,
 	return delay;
 }
 
+/**
+ * Return lease or oplock state from a share mode
+ **/
+static uint32_t get_lease_type_from_share_mode(const struct share_mode_data *d)
+{
+	uint32_t e_lease_type = 0;
+	uint32_t i;
+
+	for (i=0; i < d->num_share_modes; i++) {
+		struct share_mode_entry *e = &d->share_modes[i];
+
+		e_lease_type |= get_lease_type(d, e);
+	}
+
+	return e_lease_type;
+}
+
 static bool file_has_brlocks(files_struct *fsp)
 {
 	struct byte_range_lock *br_lck;
@@ -1886,71 +2200,112 @@ static bool request_timed_out(struct timeval request_time,
 	return (timeval_compare(&end_time, &now) < 0);
 }
 
+static struct deferred_open_record *deferred_open_record_create(
+	bool delayed_for_oplocks,
+	bool async_open,
+	struct file_id id)
+{
+	struct deferred_open_record *record = NULL;
+
+	record = talloc(NULL, struct deferred_open_record);
+	if (record == NULL) {
+		return NULL;
+	}
+
+	*record = (struct deferred_open_record) {
+		.delayed_for_oplocks = delayed_for_oplocks,
+		.async_open = async_open,
+		.id = id,
+	};
+
+	return record;
+}
+
 struct defer_open_state {
 	struct smbXsrv_connection *xconn;
 	uint64_t mid;
+	struct file_id file_id;
+	struct timeval request_time;
+	struct timeval timeout;
+	bool kernel_oplock;
+	uint32_t lease_type;
 };
 
 static void defer_open_done(struct tevent_req *req);
 
-/****************************************************************************
- Handle the 1 second delay in returning a SHARING_VIOLATION error.
-****************************************************************************/
-
+/**
+ * Defer an open and watch a locking.tdb record
+ *
+ * This defers an open that gets rescheduled once the locking.tdb record watch
+ * is triggered by a change to the record.
+ *
+ * It is used to defer opens that triggered an oplock break and for the SMB1
+ * sharing violation delay.
+ **/
 static void defer_open(struct share_mode_lock *lck,
 		       struct timeval request_time,
 		       struct timeval timeout,
 		       struct smb_request *req,
-		       struct deferred_open_record *state)
+		       bool delayed_for_oplocks,
+		       bool kernel_oplock,
+		       struct file_id id)
 {
-	struct deferred_open_record *open_rec;
+	struct deferred_open_record *open_rec = NULL;
+	struct timeval abs_timeout;
+	struct defer_open_state *watch_state;
+	struct tevent_req *watch_req;
+	bool ok;
 
-	DEBUG(10,("defer_open_sharing_error: time [%u.%06u] adding deferred "
-		  "open entry for mid %llu\n",
-		  (unsigned int)request_time.tv_sec,
-		  (unsigned int)request_time.tv_usec,
-		  (unsigned long long)req->mid));
+	abs_timeout = timeval_sum(&request_time, &timeout);
 
-	open_rec = talloc(NULL, struct deferred_open_record);
+	DBG_DEBUG("request time [%s] timeout [%s] mid [%" PRIu64 "] "
+		  "delayed_for_oplocks [%s] kernel_oplock [%s] file_id [%s]\n",
+		  timeval_string(talloc_tos(), &request_time, false),
+		  timeval_string(talloc_tos(), &abs_timeout, false),
+		  req->mid,
+		  delayed_for_oplocks ? "yes" : "no",
+		  kernel_oplock ? "yes" : "no",
+		  file_id_string_tos(&id));
+
+	open_rec = deferred_open_record_create(delayed_for_oplocks,
+					       false,
+					       id);
 	if (open_rec == NULL) {
 		TALLOC_FREE(lck);
 		exit_server("talloc failed");
 	}
 
-	*open_rec = *state;
+	watch_state = talloc(open_rec, struct defer_open_state);
+	if (watch_state == NULL) {
+		exit_server("talloc failed");
+	}
+	watch_state->xconn = req->xconn;
+	watch_state->mid = req->mid;
+	watch_state->file_id = lck->data->id;
+	watch_state->request_time = request_time;
+	watch_state->timeout = timeout;
+	watch_state->kernel_oplock = kernel_oplock;
+	watch_state->lease_type = get_lease_type_from_share_mode(lck->data);
 
-	if (lck) {
-		struct defer_open_state *watch_state;
-		struct tevent_req *watch_req;
-		bool ret;
+	DBG_DEBUG("defering mid %" PRIu64 "\n", req->mid);
 
-		watch_state = talloc(open_rec, struct defer_open_state);
-		if (watch_state == NULL) {
-			exit_server("talloc failed");
-		}
-		watch_state->xconn = req->xconn;
-		watch_state->mid = req->mid;
+	watch_req = dbwrap_record_watch_send(
+		watch_state, req->sconn->ev_ctx, lck->data->record,
+		req->sconn->msg_ctx);
+	if (watch_req == NULL) {
+		exit_server("Could not watch share mode record");
+	}
+	tevent_req_set_callback(watch_req, defer_open_done,
+				watch_state);
 
-		DEBUG(10, ("defering mid %llu\n",
-			   (unsigned long long)req->mid));
-
-		watch_req = dbwrap_record_watch_send(
-			watch_state, req->sconn->ev_ctx, lck->data->record,
-			req->sconn->msg_ctx);
-		if (watch_req == NULL) {
-			exit_server("Could not watch share mode record");
-		}
-		tevent_req_set_callback(watch_req, defer_open_done,
-					watch_state);
-
-		ret = tevent_req_set_endtime(
-			watch_req, req->sconn->ev_ctx,
-			timeval_sum(&request_time, &timeout));
-		SMB_ASSERT(ret);
+	ok = tevent_req_set_endtime(watch_req, req->sconn->ev_ctx, abs_timeout);
+	if (!ok) {
+		exit_server("tevent_req_set_endtime failed");
 	}
 
-	if (!push_deferred_open_message_smb(req, request_time, timeout,
-					    state->id, open_rec)) {
+	ok = push_deferred_open_message_smb(req, request_time, timeout,
+					    open_rec->id, open_rec);
+	if (!ok) {
 		TALLOC_FREE(lck);
 		exit_server("push_deferred_open_message_smb failed");
 	}
@@ -1960,8 +2315,12 @@ static void defer_open_done(struct tevent_req *req)
 {
 	struct defer_open_state *state = tevent_req_callback_data(
 		req, struct defer_open_state);
+	struct tevent_req *watch_req = NULL;
+	struct share_mode_lock *lck = NULL;
+	bool schedule_req = true;
+	struct timeval timeout;
 	NTSTATUS status;
-	bool ret;
+	bool ok;
 
 	status = dbwrap_record_watch_recv(req, talloc_tos(), NULL);
 	TALLOC_FREE(req);
@@ -1972,15 +2331,107 @@ static void defer_open_done(struct tevent_req *req)
 		 * Even if it failed, retry anyway. TODO: We need a way to
 		 * tell a re-scheduled open about that error.
 		 */
+		if (NT_STATUS_EQUAL(status, NT_STATUS_IO_TIMEOUT) &&
+		    state->kernel_oplock)
+		{
+			/*
+			 * If we reschedule but the kernel oplock is still hold
+			 * we would block in the second open as that will be a
+			 * blocking open attempt.
+			 */
+			exit_server("Kernel oplock holder didn't "
+				    "respond to break message");
+		}
 	}
 
-	DEBUG(10, ("scheduling mid %llu\n", (unsigned long long)state->mid));
+	if (state->kernel_oplock) {
+		lck = get_existing_share_mode_lock(talloc_tos(), state->file_id);
+		if (lck != NULL) {
+			uint32_t lease_type;
 
-	ret = schedule_deferred_open_message_smb(state->xconn, state->mid);
-	SMB_ASSERT(ret);
-	TALLOC_FREE(state);
+			lease_type = get_lease_type_from_share_mode(lck->data);
+
+			if ((lease_type != 0) &&
+			    (lease_type == state->lease_type))
+			{
+				DBG_DEBUG("Unchanged lease: %" PRIu32 "\n",
+					  lease_type);
+				schedule_req = false;
+			}
+		}
+	}
+
+	if (schedule_req) {
+		DBG_DEBUG("scheduling mid %" PRIu64 "\n", state->mid);
+
+		ok = schedule_deferred_open_message_smb(state->xconn,
+							state->mid);
+		if (!ok) {
+			exit_server("schedule_deferred_open_message_smb failed");
+		}
+		TALLOC_FREE(lck);
+		TALLOC_FREE(state);
+		return;
+	}
+
+	DBG_DEBUG("Keep waiting for oplock release for [%s/%s%s] "
+		  "mid: %" PRIu64 "\n",
+		  lck->data->servicepath,
+		  lck->data->base_name,
+		  lck->data->stream_name ? lck->data->stream_name : "",
+		  state->mid);
+
+	watch_req = dbwrap_record_watch_send(
+		state, state->xconn->ev_ctx, lck->data->record,
+		state->xconn->msg_ctx);
+	if (watch_req == NULL) {
+		exit_server("Could not watch share mode record");
+	}
+	tevent_req_set_callback(watch_req, defer_open_done, state);
+
+	timeout = timeval_sum(&state->request_time, &state->timeout);
+	ok = tevent_req_set_endtime(watch_req, state->xconn->ev_ctx, timeout);
+	if (!ok) {
+		exit_server("tevent_req_set_endtime failed");
+	}
+
+	TALLOC_FREE(lck);
 }
 
+/**
+ * Reschedule an open for immediate execution
+ **/
+static void retry_open(struct timeval request_time,
+		       struct smb_request *req,
+		       struct file_id id)
+{
+	struct deferred_open_record *open_rec = NULL;
+	bool ok;
+
+	DBG_DEBUG("request time [%s] mid [%" PRIu64 "] file_id [%s]\n",
+		  timeval_string(talloc_tos(), &request_time, false),
+		  req->mid,
+		  file_id_string_tos(&id));
+
+	open_rec = deferred_open_record_create(false, false, id);
+	if (open_rec == NULL) {
+		exit_server("talloc failed");
+	}
+
+	ok = push_deferred_open_message_smb(req,
+					    request_time,
+					    timeval_set(0, 0),
+					    id,
+					    open_rec);
+	if (!ok) {
+		exit_server("push_deferred_open_message_smb failed");
+	}
+
+	ok = schedule_deferred_open_message_smb(req->xconn, req->mid);
+	if (!ok) {
+		exit_server("schedule_deferred_open_message_smb failed");
+	}
+}
 
 /****************************************************************************
  On overwrite open ensure that the attributes match.
@@ -2095,10 +2546,9 @@ static NTSTATUS fcb_or_dos_open(struct smb_request *req,
 static void schedule_defer_open(struct share_mode_lock *lck,
 				struct file_id id,
 				struct timeval request_time,
-				struct smb_request *req)
+				struct smb_request *req,
+				bool kernel_oplock)
 {
-	struct deferred_open_record state;
-
 	/* This is a relative time, added to the absolute
 	   request_time value to get the absolute timeout time.
 	   Note that if this is the second or greater time we enter
@@ -2117,38 +2567,54 @@ static void schedule_defer_open(struct share_mode_lock *lck,
 
 	timeout = timeval_set(OPLOCK_BREAK_TIMEOUT*2, 0);
 
-	/* Nothing actually uses state.delayed_for_oplocks
-	   but it's handy to differentiate in debug messages
-	   between a 30 second delay due to oplock break, and
-	   a 1 second delay for share mode conflicts. */
-
-	state.delayed_for_oplocks = True;
-	state.async_open = false;
-	state.id = id;
-
-	if (!request_timed_out(request_time, timeout)) {
-		defer_open(lck, request_time, timeout, req, &state);
+	if (request_timed_out(request_time, timeout)) {
+		return;
 	}
+
+	defer_open(lck, request_time, timeout, req, true, kernel_oplock, id);
 }
 
 /****************************************************************************
  Reschedule an open call that went asynchronous.
 ****************************************************************************/
 
+static void schedule_async_open_timer(struct tevent_context *ev,
+				      struct tevent_timer *te,
+				      struct timeval current_time,
+				      void *private_data)
+{
+	exit_server("async open timeout");
+}
+
 static void schedule_async_open(struct timeval request_time,
 				struct smb_request *req)
 {
-	struct deferred_open_record state;
-	struct timeval timeout;
+	struct deferred_open_record *open_rec = NULL;
+	struct timeval timeout = timeval_set(20, 0);
+	bool ok;
 
-	timeout = timeval_set(20, 0);
+	if (request_timed_out(request_time, timeout)) {
+		return;
+	}
 
-	ZERO_STRUCT(state);
-	state.delayed_for_oplocks = false;
-	state.async_open = true;
+	open_rec = deferred_open_record_create(false, true, (struct file_id){0});
+	if (open_rec == NULL) {
+		exit_server("deferred_open_record_create failed");
+	}
 
-	if (!request_timed_out(request_time, timeout)) {
-		defer_open(NULL, request_time, timeout, req, &state);
+	ok = push_deferred_open_message_smb(req, request_time, timeout,
+					    (struct file_id){0}, open_rec);
+	if (!ok) {
+		exit_server("push_deferred_open_message_smb failed");
+	}
+
+	open_rec->te = tevent_add_timer(req->sconn->ev_ctx,
+					req,
+					timeval_current_ofs(20, 0),
+					schedule_async_open_timer,
+					open_rec);
+	if (open_rec->te == NULL) {
+		exit_server("tevent_add_timer failed");
 	}
 }
 
@@ -2235,6 +2701,12 @@ NTSTATUS smbd_calculate_access_mask(connection_struct *conn,
 	NTSTATUS status;
 	uint32_t orig_access_mask = access_mask;
 	uint32_t rejected_share_access;
+
+	if (access_mask & SEC_MASK_INVALID) {
+		DBG_DEBUG("access_mask [%8x] contains invalid bits\n",
+			  access_mask);
+		return NT_STATUS_ACCESS_DENIED;
+	}
 
 	/*
 	 * Convert GENERIC bits to specific bits.
@@ -2517,7 +2989,19 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 	if (!posix_open) {
 		new_dos_attributes &= SAMBA_ATTRIBUTES_MASK;
 		if (file_existed) {
-			existing_dos_attributes = dos_mode(conn, smb_fname);
+			/*
+			 * Only use strored DOS attributes for checks
+			 * against requested attributes (below via
+			 * open_match_attributes()), cf bug #11992
+			 * for details. -slow
+			 */
+			bool ok;
+			uint32_t attr = 0;
+
+			ok = get_ea_dos_attribute(conn, smb_fname, &attr);
+			if (ok) {
+				existing_dos_attributes = attr;
+			}
 		}
 	}
 
@@ -2733,10 +3217,16 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 			     open_access_mask, &new_file_created);
 
 	if (NT_STATUS_EQUAL(fsp_open, NT_STATUS_NETWORK_BUSY)) {
-		struct deferred_open_record state;
+		bool delay;
 
 		/*
-		 * EWOULDBLOCK/EAGAIN maps to NETWORK_BUSY.
+		 * This handles the kernel oplock case:
+		 *
+		 * the file has an active kernel oplock and the open() returned
+		 * EWOULDBLOCK/EAGAIN which maps to NETWORK_BUSY.
+		 *
+		 * "Samba locking.tdb oplocks" are handled below after acquiring
+		 * the sharemode lock with get_share_mode_lock().
 		 */
 		if (file_existed && S_ISFIFO(fsp->fsp_name->st.st_ex_mode)) {
 			DEBUG(10, ("FIFO busy\n"));
@@ -2753,11 +3243,7 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 
 		lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 		if (lck == NULL) {
-			state.delayed_for_oplocks = false;
-			state.async_open = false;
-			state.id = fsp->file_id;
-			defer_open(NULL, request_time, timeval_set(0, 0),
-				   req, &state);
+			retry_open(request_time, req, fsp->file_id);
 			DEBUG(10, ("No share mode lock found after "
 				   "EWOULDBLOCK, retrying sync\n"));
 			return NT_STATUS_SHARING_VIOLATION;
@@ -2767,10 +3253,12 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 			smb_panic("validate_oplock_types failed");
 		}
 
-		if (delay_for_oplock(fsp, 0, lease, lck, false,
-				     create_disposition, first_open_attempt)) {
+		delay = delay_for_oplock(fsp, 0, lease, lck, false,
+					 create_disposition,
+					 first_open_attempt);
+		if (delay) {
 			schedule_defer_open(lck, fsp->file_id, request_time,
-					    req);
+					    req, true);
 			TALLOC_FREE(lck);
 			DEBUG(10, ("Sent oplock break request to kernel "
 				   "oplock holder\n"));
@@ -2781,10 +3269,8 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 		 * No oplock from Samba around. Immediately retry with
 		 * a blocking open.
 		 */
-		state.delayed_for_oplocks = false;
-		state.async_open = false;
-		state.id = fsp->file_id;
-		defer_open(lck, request_time, timeval_set(0, 0), req, &state);
+		retry_open(request_time, req, fsp->file_id);
+
 		TALLOC_FREE(lck);
 		DEBUG(10, ("No Samba oplock around after EWOULDBLOCK. "
 			   "Retrying sync\n"));
@@ -2889,15 +3375,27 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 		file_existed = true;
 	}
 
-	if ((req != NULL) &&
-	    delay_for_oplock(
-		    fsp, oplock_request, lease, lck,
-		    NT_STATUS_EQUAL(status, NT_STATUS_SHARING_VIOLATION),
-		    create_disposition, first_open_attempt)) {
-		schedule_defer_open(lck, fsp->file_id, request_time, req);
-		TALLOC_FREE(lck);
-		fd_close(fsp);
-		return NT_STATUS_SHARING_VIOLATION;
+	if (req != NULL) {
+		/*
+		 * Handle oplocks, deferring the request if delay_for_oplock()
+		 * triggered a break message and we have to wait for the break
+		 * response.
+		 */
+		bool delay;
+		bool sharing_violation = NT_STATUS_EQUAL(
+			status, NT_STATUS_SHARING_VIOLATION);
+
+		delay = delay_for_oplock(fsp, oplock_request, lease, lck,
+					 sharing_violation,
+					 create_disposition,
+					 first_open_attempt);
+		if (delay) {
+			schedule_defer_open(lck, fsp->file_id,
+					    request_time, req, false);
+			TALLOC_FREE(lck);
+			fd_close(fsp);
+			return NT_STATUS_SHARING_VIOLATION;
+		}
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -2977,7 +3475,6 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 		    !conn->sconn->using_smb2 &&
 		    lp_defer_sharing_violations()) {
 			struct timeval timeout;
-			struct deferred_open_record state;
 			int timeout_usecs;
 
 			/* this is a hack to speed up torture tests
@@ -2996,20 +3493,9 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 
 			timeout = timeval_set(0, timeout_usecs);
 
-			/* Nothing actually uses state.delayed_for_oplocks
-			   but it's handy to differentiate in debug messages
-			   between a 30 second delay due to oplock break, and
-			   a 1 second delay for share mode conflicts. */
-
-			state.delayed_for_oplocks = False;
-			state.async_open = false;
-			state.id = id;
-
-			if ((req != NULL)
-			    && !request_timed_out(request_time,
-						  timeout)) {
-				defer_open(lck, request_time, timeout,
-					   req, &state);
+			if (!request_timed_out(request_time, timeout)) {
+				defer_open(lck, request_time, timeout, req,
+					   false, false, id);
 			}
 		}
 
@@ -3859,6 +4345,7 @@ NTSTATUS open_streams_for_delete(connection_struct *conn,
 	unsigned int num_streams = 0;
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS status;
+	bool saved_posix_pathnames;
 
 	status = vfs_streaminfo(conn, NULL, fname, talloc_tos(),
 				&num_streams, &stream_info);
@@ -3890,6 +4377,13 @@ NTSTATUS open_streams_for_delete(connection_struct *conn,
 		status = NT_STATUS_NO_MEMORY;
 		goto fail;
 	}
+
+	/*
+	 * Any stream names *must* be treated as Windows
+	 * pathnames, even if we're using UNIX extensions.
+	 */
+
+	saved_posix_pathnames = lp_set_posix_pathnames(false);
 
 	for (i=0; i<num_streams; i++) {
 		struct smb_filename *smb_fname;
@@ -3958,6 +4452,8 @@ NTSTATUS open_streams_for_delete(connection_struct *conn,
 	}
 
  fail:
+
+	(void)lp_set_posix_pathnames(saved_posix_pathnames);
 	TALLOC_FREE(frame);
 	return status;
 }

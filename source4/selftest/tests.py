@@ -300,8 +300,9 @@ for t in nbt_tests:
 # Tests against the NTVFS POSIX backend
 ntvfsargs = ["--option=torture:sharedelay=100000", "--option=torture:oplocktimeout=3", "--option=torture:writetimeupdatedelay=500000"]
 
-# smb2.change_notify_disabled must only run against env fileserver-notify-disabled
-smb2 = filter(lambda x: "smb2.change_notify_disabled" not in x, smbtorture4_testsuites("smb2."))
+# Filter smb2 tests that should not run against ad_dc_ntvfs
+smb2_s3only = ["smb2.change_notify_disabled", "smb2.dosmode", "smb2.kernel-oplocks"]
+smb2 = [x for x in smbtorture4_testsuites("smb2.") if x not in smb2_s3only]
 
 #The QFILEINFO-IPC test needs to be on ipc$
 raw = filter(lambda x: "raw.qfileinfo.ipc" not in x, smbtorture4_testsuites("raw."))
@@ -357,6 +358,8 @@ for f in sorted(os.listdir(os.path.join(samba4srcdir, "../pidl/tests"))):
 
 # DNS tests
 plantestsuite_loadlist("samba.tests.dns", "fl2003dc:local", [python, os.path.join(srcdir(), "python/samba/tests/dns.py"), '$SERVER', '$SERVER_IP', '--machine-pass', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '$LOADLIST', '$LISTOPT'])
+
+plantestsuite_loadlist("samba.tests.dns_tkey", "fl2008r2dc", [python, os.path.join(srcdir(), "python/samba/tests/dns_tkey.py"), '$SERVER', '$SERVER_IP', '--machine-pass', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '$LOADLIST', '$LISTOPT'])
 
 for t in smbtorture4_testsuites("dns_internal."):
     plansmbtorture4testsuite(t, "ad_dc_ntvfs:local", '//$SERVER/whavever')
@@ -507,6 +510,13 @@ for env in ["nt4_dc", "nt4_member", "ad_dc", "ad_dc_ntvfs", "ad_member", "s4memb
 
     plantestsuite("samba.ntlm_auth.(%s:local)" % env, "%s:local" % env, [os.path.join(samba3srcdir, "script/tests/test_ntlm_auth_s3.sh"), valgrindify(python), samba3srcdir, ntlm_auth3,  '$DOMAIN', '$DC_USERNAME', '$DC_PASSWORD', configuration])
 
+for env in ["s4member_dflt_domain", "s4member"]:
+    for cmd in ["id", "getent"]:
+        users = ["$DC_USERNAME", "$DC_USERNAME@$REALM"]
+        if env == "s4member":
+            users = ["$DOMAIN/$DC_USERNAME", "$DC_USERNAME@$REALM"]
+        for usr in users:
+            plantestsuite("samba4.winbind.dom_name_parse.cmd", env, "%s/dom_parse.sh %s %s" % (bbdir,cmd,usr))
 
 nsstest4 = binpath("nsstest")
 for env in ["ad_dc:local", "ad_dc_ntvfs:local", "s4member:local", "nt4_dc:local", "ad_member:local", "nt4_member:local"]:

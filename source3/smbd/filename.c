@@ -30,6 +30,29 @@
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
 
+uint32_t filename_create_ucf_flags(struct smb_request *req, uint32_t create_disposition)
+{
+	uint32_t ucf_flags = 0;
+
+	if (req != NULL && req->posix_pathnames) {
+		ucf_flags |= UCF_POSIX_PATHNAMES;
+	}
+
+	switch (create_disposition) {
+	case FILE_OPEN:
+	case FILE_OVERWRITE:
+		break;
+	case FILE_SUPERSEDE:
+	case FILE_CREATE:
+	case FILE_OPEN_IF:
+	case FILE_OVERWRITE_IF:
+		ucf_flags |= UCF_PREP_CREATEFILE;
+		break;
+	}
+
+	return ucf_flags;
+}
+
 static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 				  connection_struct *conn,
 				  struct smb_filename *smb_fname);
@@ -197,6 +220,148 @@ static NTSTATUS check_parent_exists(TALLOC_CTX *ctx,
 	return NT_STATUS_OK;
 }
 
+/*
+ * Re-order a known good @GMT-token path.
+ */
+
+static NTSTATUS rearrange_snapshot_path(struct smb_filename *smb_fname,
+				char *startp,
+				char *endp)
+{
+	size_t endlen = 0;
+	size_t gmt_len = endp - startp;
+	char gmt_store[gmt_len + 1];
+	char *parent = NULL;
+	const char *last_component = NULL;
+	char *newstr;
+	bool ret;
+
+	DBG_DEBUG("|%s| -> ", smb_fname->base_name);
+
+	/* Save off the @GMT-token. */
+	memcpy(gmt_store, startp, gmt_len);
+	gmt_store[gmt_len] = '\0';
+
+	if (*endp == '/') {
+		/* Remove any trailing '/' */
+		endp++;
+	}
+
+	if (*endp == '\0') {
+		/*
+		 * @GMT-token was at end of path.
+		 * Remove any preceeding '/'
+		 */
+		if (startp > smb_fname->base_name && startp[-1] == '/') {
+			startp--;
+		}
+	}
+
+	/* Remove @GMT-token from the path. */
+	endlen = strlen(endp);
+	memmove(startp, endp, endlen + 1);
+
+	/* Split the remaining path into components. */
+	ret = parent_dirname(smb_fname,
+				smb_fname->base_name,
+				&parent,
+				&last_component);
+	if (ret == false) {
+		/* Must terminate debug with \n */
+		DBG_DEBUG("NT_STATUS_NO_MEMORY\n");
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	if (ISDOT(parent)) {
+		if (last_component[0] == '\0') {
+			newstr = talloc_strdup(smb_fname,
+					gmt_store);
+		} else {
+			newstr = talloc_asprintf(smb_fname,
+					"%s/%s",
+					gmt_store,
+					last_component);
+		}
+	} else {
+		newstr = talloc_asprintf(smb_fname,
+					"%s/%s/%s",
+					gmt_store,
+					parent,
+					last_component);
+	}
+
+	TALLOC_FREE(parent);
+	TALLOC_FREE(smb_fname->base_name);
+	smb_fname->base_name = newstr;
+
+	DBG_DEBUG("|%s|\n", newstr);
+
+	return NT_STATUS_OK;
+}
+
+/*
+ * Canonicalize any incoming pathname potentially containining
+ * a @GMT-token into a path that looks like:
+ *
+ * @GMT-YYYY-MM-DD-HH-MM-SS/path/name/components/last_component
+ *
+ * Leaves single path @GMT-token -component alone:
+ *
+ * @GMT-YYYY-MM-DD-HH-MM-SS -> @GMT-YYYY-MM-DD-HH-MM-SS
+ *
+ * Eventually when struct smb_filename is updated and the VFS
+ * ABI is changed this will remove the @GMT-YYYY-MM-DD-HH-MM-SS
+ * and store in the struct smb_filename as a struct timeval field
+ * instead.
+ */
+
+static NTSTATUS canonicalize_snapshot_path(struct smb_filename *smb_fname)
+{
+	char *startp = strchr_m(smb_fname->base_name, '@');
+	char *endp = NULL;
+	struct tm tm;
+
+	if (startp == NULL) {
+		/* No @ */
+		return NT_STATUS_OK;
+	}
+
+	startp = strstr_m(startp, "@GMT-");
+	if (startp == NULL) {
+		/* No @ */
+		return NT_STATUS_OK;
+	}
+
+	if ((startp > smb_fname->base_name) && (startp[-1] != '/')) {
+		/* the GMT-token does not start a path-component */
+		return NT_STATUS_OK;
+	}
+
+	endp = strptime(startp, GMT_FORMAT, &tm);
+	if (endp == NULL) {
+		/* Not a valid timestring. */
+		return NT_STATUS_OK;
+	}
+
+	if ( endp[0] == '\0') {
+		return rearrange_snapshot_path(smb_fname,
+					startp,
+					endp);
+	}
+
+	if (endp[0] != '/') {
+		/*
+		 * It is not a complete path component, i.e. the path
+		 * component continues after the gmt-token.
+		 */
+		return NT_STATUS_OK;
+	}
+
+	return rearrange_snapshot_path(smb_fname,
+				startp,
+				endp);
+}
+
 /****************************************************************************
 This routine is called to convert names from the dos namespace to unix
 namespace. It needs to handle any case conversions, mangling, format changes,
@@ -329,6 +494,14 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		DEBUG(0, ("talloc_strdup failed\n"));
 		status = NT_STATUS_NO_MEMORY;
 		goto err;
+	}
+
+	/* Canonicalize any @GMT- paths. */
+	if (posix_pathnames == false) {
+		status = canonicalize_snapshot_path(smb_fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			goto err;
+		}
 	}
 
 	/*
@@ -1067,7 +1240,7 @@ NTSTATUS check_name(connection_struct *conn, const char *name)
 	}
 
 	if (!lp_widelinks(SNUM(conn)) || !lp_follow_symlinks(SNUM(conn))) {
-		status = check_reduced_name(conn,name);
+		status = check_reduced_name(conn, NULL, name);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(5,("check_name: name %s failed with %s\n",name,
 						nt_errstr(status)));

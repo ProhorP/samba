@@ -71,14 +71,107 @@
 </refsect1>
 
 <refsect1>
+	<title>GLOBAL OPTIONS</title>
+
+	<para>The following options must be set in the global smb.conf section
+	and won't take effect when set per share.</para>
+
+	<variablelist>
+
+	  <varlistentry>
+	    <term>fruit:aapl = yes | no</term>
+	    <listitem>
+	      <para>A <emphasis>global</emphasis> option whether to enable Apple's SMB2+
+	      extension codenamed AAPL. Default
+	      <emphasis>yes</emphasis>. This extension enhances
+	      several deficiencies when connecting from Macs:</para>
+
+	      <itemizedlist>
+		<listitem><para>directory enumeration is enriched with
+		Mac relevant filesystem metadata (UNIX mode,
+		FinderInfo, resource fork size and effective
+		permission), as a result the Mac client doesn't need
+		to fetch this metadata individuallly per directory
+		entry resulting in an often tremendous performance
+		increase.</para></listitem>
+
+		<listitem><para>The ability to query and modify the
+		UNIX mode of directory entries.</para></listitem>
+	      </itemizedlist>
+
+	      <para>There's a set of per share options that come into play when
+	      <emphasis>fruit:aapl</emphasis> is enabled. These opions, listed
+	      below, can be used to disable the computation of specific Mac
+	      metadata in the directory enumeration context, all are enabled by
+	      default:</para>
+
+	      <itemizedlist>
+		<listitem><para>readdir_attr:aapl_rsize = yes | no</para></listitem>
+		<listitem><para>readdir_attr:aapl_finder_info = yes | no</para></listitem>
+		<listitem><para>readdir_attr:aapl_max_access = yes | no</para></listitem>
+	      </itemizedlist>
+
+	      <para>See below for a description of these options.</para>
+
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>fruit:nfs_aces = yes | no</term>
+	    <listitem>
+	      <para>A <emphasis>global</emphasis> option whether support for
+	      querying and modifying the UNIX mode of directory entries via NFS
+	      ACEs is enabled, default <emphasis>yes</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>fruit:copyfile = yes | no</term>
+	    <listitem>
+	      <para>A <emphasis>global</emphasis> option whether to enable OS X
+	      specific copychunk ioctl that requests a copy of a whole file
+	      along with all attached metadata.</para>
+	      <para>WARNING: the copyfile request is blocking the
+	      client while the server does the copy.</para>.
+	      <para>The default is <emphasis>no</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	</variablelist>
+</refsect1>
+
+<refsect1>
 	<title>OPTIONS</title>
+
+	<para>The following options can be set either in the global smb.conf section
+	or per share.</para>
 
 	<variablelist>
 
 	  <varlistentry>
 	    <term>fruit:resource = [ file | xattr | stream ]</term>
 	    <listitem>
-	      <para>Controls where the OS X resource fork is stored:</para>
+	      <para>Controls where the OS X resource fork is stored.</para>
+
+	      <para><emphasis>Important: </emphasis>Due to a
+	      misspelling in the option parser in all Samba versions
+	      4.5 and earlier, this options must be given as
+	      <emphasis>fruit:ressource</emphasis>, ie with two
+	      <emphasis>s</emphasis>.</para>
+
+	      <para>Users who set this opion to any non-default
+	      setting were still using the default setting of
+	      <emphasis>file</emphasis> and are advised to adjust
+	      their smb.conf to reflect the effective setting and set
+	      <emphasis>fruit:ressource=file</emphasis> in their
+	      smb.conf. Removing the option line altogether works as
+	      well.</para>
+
+	      <para>Samba 4.6 will accept both the correct and the
+	      wrong spelling, from Samba 4.7 onwards only the correct
+	      spelling will be accepted.</para>
+
+	      <para>Settings:</para>
 
 	      <itemizedlist>
 		<listitem><para><command>file (default)</command> - use a ._
@@ -91,9 +184,12 @@
 		down to Solaris and derived platforms and
 		ZFS</para></listitem>
 
-		<listitem><para><command>stream</command> - pass the
-		stream on to the next module in the VFS
-		stack</para></listitem>
+		<listitem><para><command>stream (experimental)</command> - pass
+		the stream on to the next module in the VFS stack.
+		<emphasis>Warning: </emphasis> this option should not be used
+		with the <emphasis>streams_xattr</emphasis> module due to the
+		extended attributes size limitations of most
+		filesytems.</para></listitem>
 	      </itemizedlist>
 
 	    </listitem>
@@ -154,56 +250,16 @@
 	  </varlistentry>
 
 	  <varlistentry>
-	    <term>fruit:aapl = yes | no</term>
-	    <listitem>
-	      <para>A global option whether to enable Apple's SMB2+
-	      extension codenamed AAPL. Default
-	      <emphasis>yes</emphasis>. This extension enhances
-	      several deficiencies when connecting from Macs:</para>
-
-	      <itemizedlist>
-		<listitem><para>directory enumeration is enriched with
-		Mac relevant filesystem metadata (UNIX mode,
-		FinderInfo, resource fork size and effective
-		permission), as a result the Mac client doesn't need
-		to fetch this metadata individuallly per directory
-		entry resulting in an often tremendous performance
-		increase.</para></listitem>
-
-		<listitem><para>The ability to query and modify the
-		UNIX mode of directory entries.</para></listitem>
-	      </itemizedlist>
-
-	      <para>There's a set of per share options that can be
-	      used to disable the computation of specific Mac metadata
-	      in the directory enumeration context, all are enabled by
-	      default:</para>
-
-	      <itemizedlist>
-		<listitem><para>readdir_attr:aapl_rsize = true | false</para></listitem>
-		<listitem><para>readdir_attr:aapl_finder_info = true | false</para></listitem>
-		<listitem><para>readdir_attr:aapl_max_access = true | false</para></listitem>
-	      </itemizedlist>
-
-	    </listitem>
-	  </varlistentry>
-
-	  <varlistentry>
-	    <term>fruit:nfs_aces = yes | no</term>
-	    <listitem>
-	      <para>Whether support for querying and modifying the
-	      UNIX mode of directory entries via NFS ACEs is enabled,
-	      default <emphasis>yes</emphasis>.</para>
-	    </listitem>
-	  </varlistentry>
-
-	  <varlistentry>
 	    <term>fruit:veto_appledouble = yes | no</term>
 	    <listitem>
-	      <para>Whether ._ AppleDouble files are vetoed which
-	      prevents the client from seing and accessing internal
-	      AppleDouble files created by vfs_fruit itself for the
-	      purpose of storing a Mac resource fork.</para>
+	      <para><emphasis>Note:</emphasis> this option only applies when
+	      <parameter>fruit:resource</parameter> is set to
+	      <parameter>file</parameter> (the default).</para>
+
+	      <para>When <parameter>fruit:resource</parameter> is set to
+	      <parameter>file</parameter>, vfs_fruit may create ._ AppleDouble
+	      files. This options controls whether these ._ AppleDouble files
+	      are vetoed which prevents the client from accessing them.</para>
 	      <para>Vetoing ._ files may break some applications, eg
 	      extracting Mac ZIP archives from Mac clients failes,
 	      because they contain ._ files. Setting this option to
@@ -215,24 +271,38 @@
 	  </varlistentry>
 
 	  <varlistentry>
-	    <term>fruit:copyfile = yes | no</term>
-	    <listitem>
-	      <para>Whether to enable OS X specific copychunk ioctl
-	      that requests a copy of a whole file along with all
-	      attached metadata.</para>
-	      <para>WARNING: the copyfile request is blocking the
-	      client while the server does the copy.</para>.
-	      <para>The default is <emphasis>no</emphasis>.</para>
-	    </listitem>
-	  </varlistentry>
-
-	  <varlistentry>
 	    <term>fruit:posix_rename = yes | no</term>
 	    <listitem>
 	      <para>Whether to enable POSIX directory rename behaviour
 	      for OS X clients. Without this, directories can't be
 	      renamed if any client has any file inside it
 	      (recursive!) open.</para>
+	      <para>The default is <emphasis>yes</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>readdir_attr:aapl_rsize = yes | no</term>
+	    <listitem>
+	      <para>Return resource fork size in SMB2 FIND responses.</para>
+	      <para>The default is <emphasis>yes</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>readdir_attr:aapl_finder_info = yes | no</term>
+	    <listitem>
+	      <para>Return FinderInfo in SMB2 FIND responses.</para>
+	      <para>The default is <emphasis>yes</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>readdir_attr:aapl_max_access = yes | no</term>
+	    <listitem>
+	      <para>Return the user's effective maximum permissions in SMB2 FIND
+	      responses. This is an expensive computation, setting this to off
+	      pretends the use has maximum effective permissions.</para>
 	      <para>The default is <emphasis>yes</emphasis>.</para>
 	    </listitem>
 	  </varlistentry>

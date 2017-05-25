@@ -704,13 +704,13 @@ static WERROR set_printer_hnd_name(TALLOC_CTX *mem_ctx,
 
 	if (!found) {
 		gencache_set(cache_key, printer_not_found,
-			     time_mono(NULL) + 300);
+			     time(NULL) + 300);
 		TALLOC_FREE(cache_key);
 		DEBUGADD(4,("Printer not found\n"));
 		return WERR_INVALID_PRINTER_NAME;
 	}
 
-	gencache_set(cache_key, sname, time_mono(NULL) + 300);
+	gencache_set(cache_key, sname, time(NULL) + 300);
 	TALLOC_FREE(cache_key);
 
 	DEBUGADD(4,("set_printer_hnd_name: Printer found: %s -> %s\n", aprinter, sname));
@@ -8438,6 +8438,7 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 {
 	WERROR err = WERR_OK;
 	const char *driver_name = NULL;
+	const char *driver_directory = NULL;
 	uint32_t version;
 	const char *fn;
 
@@ -8461,7 +8462,8 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 		return WERR_INVALID_PARAM;
 	}
 
-	if (r->in.flags != APD_COPY_NEW_FILES) {
+	if (!(r->in.flags & APD_COPY_ALL_FILES) &&
+	    !(r->in.flags & APD_COPY_NEW_FILES)) {
 		return WERR_ACCESS_DENIED;
 	}
 
@@ -8476,12 +8478,19 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 	}
 
 	DEBUG(5,("Cleaning driver's information\n"));
-	err = clean_up_driver_struct(p->mem_ctx, p->session_info, r->in.info_ctr);
-	if (!W_ERROR_IS_OK(err))
+	err = clean_up_driver_struct(p->mem_ctx,
+				     p->session_info,
+				     r->in.info_ctr,
+				     r->in.flags,
+				     &driver_directory);
+	if (!W_ERROR_IS_OK(err)) {
 		goto done;
+	}
 
 	DEBUG(5,("Moving driver to final destination\n"));
-	err = move_driver_to_download_area(p->session_info, r->in.info_ctr);
+	err = move_driver_to_download_area(p->session_info,
+					   r->in.info_ctr,
+					   driver_directory);
 	if (!W_ERROR_IS_OK(err)) {
 		goto done;
 	}

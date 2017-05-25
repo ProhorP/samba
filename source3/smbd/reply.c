@@ -1573,9 +1573,20 @@ void reply_dskattr(struct smb_request *req)
 	connection_struct *conn = req->conn;
 	uint64_t ret;
 	uint64_t dfree,dsize,bsize;
+	struct smb_filename smb_fname;
 	START_PROFILE(SMBdskattr);
 
-	ret = get_dfree_info(conn, ".", &bsize, &dfree, &dsize);
+	ZERO_STRUCT(smb_fname);
+	smb_fname.base_name = discard_const_p(char, ".");
+
+	if (SMB_VFS_STAT(conn, &smb_fname) != 0) {
+		reply_nterror(req, map_nt_error_from_unix(errno));
+		DBG_WARNING("stat of . failed (%s)\n", strerror(errno));
+		END_PROFILE(SMBdskattr);
+		return;
+	}
+
+	ret = get_dfree_info(conn, &smb_fname, &bsize, &dfree, &dsize);
 	if (ret == (uint64_t)-1) {
 		reply_nterror(req, map_nt_error_from_unix(errno));
 		END_PROFILE(SMBdskattr);
@@ -2086,8 +2097,7 @@ void reply_open(struct smb_request *req)
 	uint32_t create_options = 0;
 	uint32_t private_flags = 0;
 	NTSTATUS status;
-	uint32_t ucf_flags = UCF_PREP_CREATEFILE |
-			(req->posix_pathnames ? UCF_POSIX_PATHNAMES : 0);
+	uint32_t ucf_flags;
 	TALLOC_CTX *ctx = talloc_tos();
 
 	START_PROFILE(SMBopen);
@@ -2115,6 +2125,8 @@ void reply_open(struct smb_request *req)
 		reply_force_doserror(req, ERRDOS, ERRbadaccess);
 		goto out;
 	}
+
+	ucf_flags = filename_create_ucf_flags(req, create_disposition);
 
 	status = filename_convert(ctx,
 				conn,
@@ -2240,8 +2252,7 @@ void reply_open_and_X(struct smb_request *req)
 	uint32_t create_disposition;
 	uint32_t create_options = 0;
 	uint32_t private_flags = 0;
-	uint32_t ucf_flags = UCF_PREP_CREATEFILE |
-			(req->posix_pathnames ? UCF_POSIX_PATHNAMES : 0);
+	uint32_t ucf_flags;
 	TALLOC_CTX *ctx = talloc_tos();
 
 	START_PROFILE(SMBopenX);
@@ -2287,6 +2298,8 @@ void reply_open_and_X(struct smb_request *req)
 		reply_force_doserror(req, ERRDOS, ERRbadaccess);
 		goto out;
 	}
+
+	ucf_flags = filename_create_ucf_flags(req, create_disposition);
 
 	status = filename_convert(ctx,
 				conn,
@@ -2500,8 +2513,7 @@ void reply_mknew(struct smb_request *req)
 	uint32_t share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
 	uint32_t create_disposition;
 	uint32_t create_options = 0;
-	uint32_t ucf_flags = UCF_PREP_CREATEFILE |
-			(req->posix_pathnames ? UCF_POSIX_PATHNAMES : 0);
+	uint32_t ucf_flags;
 	TALLOC_CTX *ctx = talloc_tos();
 
 	START_PROFILE(SMBcreate);
@@ -2515,6 +2527,14 @@ void reply_mknew(struct smb_request *req)
 	fattr = SVAL(req->vwv+0, 0);
 	oplock_request = CORE_OPLOCK_REQUEST(req->inbuf);
 
+	if (req->cmd == SMBmknew) {
+		/* We should fail if file exists. */
+		create_disposition = FILE_CREATE;
+	} else {
+		/* Create if file doesn't exist, truncate if it does. */
+		create_disposition = FILE_OVERWRITE_IF;
+	}
+
 	/* mtime. */
 	ft.mtime = convert_time_t_to_timespec(srv_make_unix_date3(req->vwv+1));
 
@@ -2525,6 +2545,7 @@ void reply_mknew(struct smb_request *req)
 		goto out;
 	}
 
+	ucf_flags = filename_create_ucf_flags(req, create_disposition);
 	status = filename_convert(ctx,
 				conn,
 				req->flags2 & FLAGS2_DFS_PATHNAMES,
@@ -2547,14 +2568,6 @@ void reply_mknew(struct smb_request *req)
 		DEBUG(0,("Attempt to create file (%s) with volid set - "
 			 "please report this\n",
 			 smb_fname_str_dbg(smb_fname)));
-	}
-
-	if(req->cmd == SMBmknew) {
-		/* We should fail if file exists. */
-		create_disposition = FILE_CREATE;
-	} else {
-		/* Create if file doesn't exist, truncate if it does. */
-		create_disposition = FILE_OVERWRITE_IF;
 	}
 
 	status = SMB_VFS_CREATE_FILE(
@@ -2633,8 +2646,7 @@ void reply_ctemp(struct smb_request *req)
 	char *s;
 	NTSTATUS status;
 	int i;
-	uint32_t ucf_flags = UCF_PREP_CREATEFILE |
-			(req->posix_pathnames ? UCF_POSIX_PATHNAMES : 0);
+	uint32_t ucf_flags;
 	TALLOC_CTX *ctx = talloc_tos();
 
 	START_PROFILE(SMBctemp);
@@ -2671,6 +2683,7 @@ void reply_ctemp(struct smb_request *req)
 			goto out;
 		}
 
+		ucf_flags = filename_create_ucf_flags(req, FILE_CREATE);
 		status = filename_convert(ctx, conn,
 				req->flags2 & FLAGS2_DFS_PATHNAMES,
 				fname,
@@ -3896,8 +3909,7 @@ strict_unlock:
  Setup readX header.
 ****************************************************************************/
 
-static int setup_readX_header(struct smb_request *req, char *outbuf,
-			      size_t smb_maxcnt)
+int setup_readX_header(char *outbuf, size_t smb_maxcnt)
 {
 	int outsize;
 
@@ -3916,7 +3928,6 @@ static int setup_readX_header(struct smb_request *req, char *outbuf,
 	      + 2		/* the buflen field */
 	      + 1);		/* padding byte */
 	SSVAL(outbuf,smb_vwv7,(smb_maxcnt >> 16));
-	SSVAL(outbuf,smb_vwv11,smb_maxcnt);
 	SCVAL(smb_buf(outbuf), 0, 0); /* padding byte */
 	/* Reset the outgoing length, set_message truncates at 0x1FFFF. */
 	_smb_setlen_large(outbuf,
@@ -3984,7 +3995,7 @@ static void send_file_readX(connection_struct *conn, struct smb_request *req,
 		header = data_blob_const(headerbuf, sizeof(headerbuf));
 
 		construct_reply_common_req(req, (char *)headerbuf);
-		setup_readX_header(req, (char *)headerbuf, smb_maxcnt);
+		setup_readX_header((char *)headerbuf, smb_maxcnt);
 
 		nread = SMB_VFS_SENDFILE(xconn->transport.sock, fsp, &header,
 					 startpos, smb_maxcnt);
@@ -4085,7 +4096,7 @@ normal_read:
 		}
 
 		construct_reply_common_req(req, (char *)headerbuf);
-		setup_readX_header(req, (char *)headerbuf, smb_maxcnt);
+		setup_readX_header((char *)headerbuf, smb_maxcnt);
 
 		/* Send out the header. */
 		ret = write_data(xconn->transport.sock, (char *)headerbuf,
@@ -4135,7 +4146,7 @@ nosendfile_read:
 		return;
 	}
 
-	setup_readX_header(req, (char *)req->outbuf, nread);
+	setup_readX_header((char *)req->outbuf, nread);
 
 	DEBUG(3, ("send_file_readX %s max=%d nread=%d\n",
 		  fsp_fnum_dbg(fsp), (int)smb_maxcnt, (int)nread));
@@ -6098,8 +6109,7 @@ void reply_mkdir(struct smb_request *req)
 	struct smb_filename *smb_dname = NULL;
 	char *directory = NULL;
 	NTSTATUS status;
-	uint32_t ucf_flags = UCF_PREP_CREATEFILE |
-			(req->posix_pathnames ? UCF_POSIX_PATHNAMES : 0);
+	uint32_t ucf_flags;
 	TALLOC_CTX *ctx = talloc_tos();
 
 	START_PROFILE(SMBmkdir);
@@ -6111,6 +6121,7 @@ void reply_mkdir(struct smb_request *req)
 		goto out;
 	}
 
+	ucf_flags = filename_create_ucf_flags(req, FILE_CREATE);
 	status = filename_convert(ctx, conn,
 				 req->flags2 & FLAGS2_DFS_PATHNAMES,
 				 directory,
@@ -6578,6 +6589,7 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 	struct smb_filename *smb_fname_dst = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 	struct share_mode_lock *lck = NULL;
+	uint32_t access_mask = SEC_DIR_ADD_FILE;
 	bool dst_exists, old_is_stream, new_is_stream;
 
 	status = check_name(conn, smb_fname_dst_in->base_name);
@@ -6758,6 +6770,23 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 
 	if (rename_path_prefix_equal(fsp->fsp_name, smb_fname_dst)) {
 		status = NT_STATUS_ACCESS_DENIED;
+		goto out;
+	}
+
+	/* Do we have rights to move into the destination ? */
+	if (S_ISDIR(fsp->fsp_name->st.st_ex_mode)) {
+		/* We're moving a directory. */
+		access_mask = SEC_DIR_ADD_SUBDIR;
+	}
+	status = check_parent_access(conn,
+				smb_fname_dst,
+				access_mask);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_INFO("check_parent_access on "
+			"dst %s returned %s\n",
+			smb_fname_str_dbg(smb_fname_dst),
+			nt_errstr(status));
+		goto out;
 	}
 
 	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);

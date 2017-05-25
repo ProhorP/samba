@@ -882,6 +882,9 @@ void update_trustdom_cache( void );
 struct netlogon_creds_cli_context;
 struct messaging_context;
 struct dcerpc_binding_handle;
+char *trust_pw_new_value(TALLOC_CTX *mem_ctx,
+			 enum netr_SchannelType sec_channel_type,
+			 int security);
 NTSTATUS trust_pw_change(struct netlogon_creds_cli_context *context,
 			 struct messaging_context *msg_ctx,
 			 struct dcerpc_binding_handle *b,
@@ -1020,7 +1023,7 @@ bool lp_use_sendfile(int snum, struct smb_signing_state *signing_state);
 void set_use_sendfile(int snum, bool val);
 void lp_set_mangling_method(const char *new_method);
 bool lp_posix_pathnames(void);
-void lp_set_posix_pathnames(void);
+bool lp_set_posix_pathnames(bool newval);
 enum brl_flavour lp_posix_cifsu_locktype(files_struct *fsp);
 void lp_set_posix_default_cifsx_readwrite_locktype(enum brl_flavour val);
 int lp_min_receive_file_size(void);

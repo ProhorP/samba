@@ -41,7 +41,6 @@
 #include "api/glfs.h"
 #include "lib/util/dlinklist.h"
 #include "lib/util/tevent_unix.h"
-#include "lib/tevent/tevent_internal.h"
 #include "smbd/globals.h"
 #include "lib/util/sys_rw.h"
 
@@ -223,8 +222,7 @@ static int vfs_gluster_connect(struct vfs_handle_struct *handle,
 	if (ret < 0) {
 		DEBUG(0, ("%s: Failed to set xlator option:"
 			  " snapdir-entry-path\n", volume));
-		glfs_fini(fs);
-		return -1;
+		goto done;
 	}
 
 	ret = glfs_set_logging(fs, logfile, loglevel);
@@ -1022,7 +1020,20 @@ static int vfs_gluster_fallocate(struct vfs_handle_struct *handle,
 static char *vfs_gluster_realpath(struct vfs_handle_struct *handle,
 				  const char *path)
 {
-	return glfs_realpath(handle->data, path, 0);
+	char *result = NULL;
+	char *resolved_path = SMB_MALLOC_ARRAY(char, PATH_MAX+1);
+
+	if (resolved_path == NULL) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	result = glfs_realpath(handle->data, path, resolved_path);
+	if (result == NULL) {
+		SAFE_FREE(resolved_path);
+	}
+
+	return result;
 }
 
 static bool vfs_gluster_lock(struct vfs_handle_struct *handle,
