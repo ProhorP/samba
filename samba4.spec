@@ -22,6 +22,7 @@
 %def_with docs
 
 %def_with dc
+%def_without ntvfs
 %def_with clustering_support
 %def_without testsuite
 
@@ -43,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.5
+Version: 4.4.14
 Release: alt0.M70C.1
 
 Group:   System/Servers
@@ -524,6 +525,9 @@ libsamba_util private headers.
 %if_with profiling_data
 	--with-profiling-data \
 %endif
+%if_with ntvfs
+       --with-ntvfs-fileserver \
+%endif
 	%{subst_enable avahi}
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
@@ -887,7 +891,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamdb.so
 %_samba_libdir/libsmbconf.so
 %_samba_libdir/libtevent-util.so
-%_samba_libdir/libtevent-unix-util.so
 %_samba_libdir/libsamba-passdb.so
 %_samba_libdir/libsmbldap.so
 
@@ -924,7 +927,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamdb.so.*
 %_samba_libdir/libsmbconf.so.*
 %_samba_libdir/libtevent-util.so.*
-%_samba_libdir/libtevent-unix-util.so.*
 %_samba_libdir/libsamba-passdb.so.*
 %_samba_libdir/libsmbldap.so.*
 %_samba_mod_libdir/auth
@@ -1019,6 +1021,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/bind9/dlz_bind9.so
 %_samba_mod_libdir/bind9/dlz_bind9_9.so
 %_samba_mod_libdir/bind9/dlz_bind9_10.so
+%_samba_mod_libdir/bind9/dlz_bind9_11.so
 %_samba_mod_libdir/libheimntlm-samba4.so.1
 %_samba_mod_libdir/libheimntlm-samba4.so.1.0.1
 %_samba_mod_libdir/libkdc-samba4.so.2
@@ -1046,7 +1049,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/process_model
 %_samba_mod_libdir/service
 %_samba_libdir/libdcerpc-server.so.*
+%if_with ntvfs
 %_samba_mod_libdir/libntvfs-samba4.so
+%endif
 %_samba_mod_libdir/libposix-eadb-samba4.so
 %else
 %doc README.dc-libs
@@ -1115,8 +1120,8 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files pidl
 %attr(755,root,root) %_bindir/pidl
-#_man1dir/pidl.1.*
-#_man3dir/Parse::Pidl::*
+%_man1dir/pidl.1.*
+%_man3dir/Parse::Pidl::*
 %perl_vendor_privlib/*
 
 %files -n python-module-%name
@@ -1235,10 +1240,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_man7dir/ctdb-statistics.7*
 
 %files ctdb-tests
-%_libdir/samba-dc/ctdb-tests
+%_libexecdir/ctdb/tests
 %_bindir/ctdb_run_tests
 %_bindir/ctdb_run_cluster_tests
-%_datadir/ctdb-tests
+%_datadir/ctdb/tests
 %endif
 
 %files -n task-samba-dc
@@ -1247,6 +1252,16 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu May 25 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.14-alt0.M70C.1
+- Update with latest security fixes:
+  + CVE-2016-2123 Fix DNS vuln ZDI-CAN-3995
+  + CVE-2016-2125 Unconditional privilege delegation to Kerberos servers in
+    trusted realms
+  + CVE-2016-2126 Flaws in Kerberos PAC validation can trigger privilege
+    elevation
+  + CVE-2017-2619 Symlink race allows access outside share definition
+  + CVE-2017-7494 Remote code execution from a writable share
+
 * Sat Jul 09 2016 Andrey Cherepanov <cas@altlinux.org> 4.4.5-alt0.M70C.1
 - [backport] Update for security release with CVE-2016-2119
 
