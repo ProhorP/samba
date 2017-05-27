@@ -193,8 +193,8 @@ static NTSTATUS smbd_smb2_tree_connect(struct smbd_smb2_request *req,
 	connection_struct *compat_conn = NULL;
 	struct user_struct *compat_vuser = req->session->compat;
 	NTSTATUS status;
-	bool encryption_desired = req->session->encryption_desired;
-	bool encryption_required = req->session->global->encryption_required;
+	bool encryption_desired = req->session->global->encryption_flags & SMBXSRV_ENCRYPTION_DESIRED;
+	bool encryption_required = req->session->global->encryption_flags & SMBXSRV_ENCRYPTION_REQUIRED;
 	bool guest_session = false;
 	bool require_signed_tcon = false;
 
@@ -268,7 +268,8 @@ static NTSTATUS smbd_smb2_tree_connect(struct smbd_smb2_request *req,
 	}
 
 	if ((lp_smb_encrypt(snum) >= SMB_SIGNING_DESIRED) &&
-	    (conn->smb2.client.capabilities & SMB2_CAP_ENCRYPTION)) {
+	    (conn->smb2.server.cipher != 0))
+	{
 		encryption_desired = true;
 	}
 
@@ -298,8 +299,12 @@ static NTSTATUS smbd_smb2_tree_connect(struct smbd_smb2_request *req,
 		return status;
 	}
 
-	tcon->encryption_desired = encryption_desired;
-	tcon->global->encryption_required = encryption_required;
+	if (encryption_desired) {
+		tcon->global->encryption_flags |= SMBXSRV_ENCRYPTION_DESIRED;
+	}
+	if (encryption_required) {
+		tcon->global->encryption_flags |= SMBXSRV_ENCRYPTION_REQUIRED;
+	}
 
 	compat_conn = make_connection_smb2(req,
 					tcon, snum,

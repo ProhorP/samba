@@ -82,6 +82,10 @@ def parse_flags(line, uselib, env):
 		# RPATH later, and hence can potentially lead to linking
 		# in too old versions of our internal libs.
 		#
+		elif x == '-Wl,-rpath' or x == '-Wl,-R':
+			app('RPATH_' + uselib, lst.pop(0).lstrip('-Wl,'))
+		elif x.startswith('-Wl,-R,'):
+			app('RPATH_' + uselib, x[7:])
 		elif x.startswith('-Wl,-R'):
 			app('RPATH_' + uselib, x[6:])
 		elif x.startswith('-Wl,-rpath,'):
@@ -102,7 +106,9 @@ def ret_msg(self, f, kw):
 @conf
 def validate_cfg(self, kw):
 	if not 'path' in kw:
-		kw['path'] = 'pkg-config --errors-to-stdout --print-errors'
+		if not self.env.PKGCONFIG:
+			self.find_program('pkg-config', var='PKGCONFIG')
+		kw['path'] = self.env.PKGCONFIG
 
 	# pkg-config version
 	if 'atleast_pkgconfig_version' in kw:

@@ -26,8 +26,10 @@
 #define __LIBNDR_H__
 
 #include <talloc.h>
-#include <sys/time.h>
-#include "../lib/util/samba_util.h" /* for discard_const */
+#include "../lib/util/memory.h" /* for discard_const */
+#include "../lib/util/byteorder.h"
+#include "../lib/util/data_blob.h"
+#include "../lib/util/time.h"
 #include "../lib/util/charset/charset.h"
 
 /*
@@ -122,6 +124,9 @@ struct ndr_print {
 #define LIBNDR_FLAG_STR_UTF8		(1<<12)
 #define LIBNDR_FLAG_STR_RAW8		(1<<13)
 #define LIBNDR_STRING_FLAGS		(0x7FFC)
+
+/* Disable string token compression  */
+#define LIBNDR_FLAG_NO_COMPRESSION	(1<<15)
 
 /*
  * don't debug NDR_ERR_BUFSIZE failures,

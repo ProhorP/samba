@@ -216,6 +216,8 @@ verify_samba_stable() {
 
 	git tag -v "${oldtagname}" >${verify_out} 2>&1 || {
 		echo "failed to verify old tag[${oldtagname}]"
+		echo ""
+		cat "${verify_out}"
 		return 1
 	}
 
@@ -411,7 +413,9 @@ check_nopatch() {
 	echo "Verifying tagname: ${tagname}"
 
 	git tag -v "${tagname}" >${verify_out} 2>&1 || {
-		echo "failed to verify old tag[${oldtagname}]"
+		echo "failed to verify tag[${tagname}]"
+		echo ""
+		cat "${verify_out}"
 		return 1
 	}
 	grep -q "${GPG_KEYID}" "${verify_out}" || {
@@ -460,7 +464,9 @@ check_samba_stable() {
 	echo "Verifying tagname: ${tagname}"
 
 	git tag -v "${tagname}" >${verify_out} 2>&1 || {
-		echo "failed to verify old tag[${oldtagname}]"
+		echo "failed to verify tag[${tagname}]"
+		echo ""
+		cat "${verify_out}"
 		return 1
 	}
 	grep -q "${GPG_KEYID}" "${verify_out}" || {
@@ -704,6 +710,40 @@ announcement_samba_rc() {
 		echo "<!-- END: ${bodyfile} -->"
 	} > announce.${tagname}.body.html
 
+	local webrepo="${TMPDIR}/webrepo"
+
+	mkdir "${webrepo}" || {
+		return 1
+	}
+	git -C "${webrepo}" init || {
+		return 1
+	}
+
+	mkdir -p "$(dirname ${webrepo}/${headlinefile})" || {
+		return 1
+	}
+	cp -a "announce.${tagname}.headline.html" "${webrepo}/${headlinefile}" || {
+		return 1
+	}
+
+	mkdir -p "$(dirname ${webrepo}/${bodyfile})" || {
+		return 1
+	}
+	cp -a "announce.${tagname}.body.html" "${webrepo}/${bodyfile}" || {
+		return 1
+	}
+
+	git -C "${webrepo}" add "${headlinefile}" "${bodyfile}" || {
+		return 1
+	}
+	git -C "${webrepo}" commit --signoff --message "NEWS[${version}]: Samba ${version} Available for Download" || {
+		return 1
+	}
+	CLEANUP_FILES="${CLEANUP_FILES} announce.${tagname}.patch.txt"
+	git -C "${webrepo}" format-patch --stdout -1 HEAD > announce.${tagname}.patch.txt || {
+		return 1
+	}
+
 	CLEANUP_FILES="${CLEANUP_FILES} announce.${tagname}.todo.txt"
 	{
 		ls -lart announce.${tagname}.*
@@ -790,7 +830,8 @@ announcement_samba_stable() {
 			top=$(cat ${TMPDIR}/WHATSNEW.txt | wc -l)
 		}
 		local skip=$(cat ${TMPDIR}/WHATSNEW.txt | grep -n '^[^ ]' | head -1 | cut -d ':' -f1)
-		local bottom=$(expr ${top} - \( ${skip} - 1 \))
+		local headlimit=$(expr ${top} - 1 )
+		local taillimit=$(expr ${headlimit} - \( ${skip} - 1 \))
 
 		cat "announce.${tagname}.quotation.txt"
 		echo ""
@@ -798,7 +839,7 @@ announcement_samba_stable() {
 		echo "Release Announcements"
 		echo "---------------------"
 		echo ""
-		head -${top} ${TMPDIR}/WHATSNEW.txt | tail -${bottom}
+		head -${headlimit} ${TMPDIR}/WHATSNEW.txt | tail -${taillimit}
 		echo ""
 		echo "================"
 		echo "Download Details"

@@ -66,6 +66,9 @@ void srv_set_signing(struct smbXsrv_connection *conn,
 
 /* The following definitions come from smbd/aio.c  */
 
+int get_outstanding_aio_calls(void);
+void increment_outstanding_aio_calls(void);
+void decrement_outstanding_aio_calls(void);
 struct aio_extra;
 bool aio_write_through_requested(struct aio_extra *aio_ex);
 NTSTATUS schedule_aio_read_and_X(connection_struct *conn,
@@ -168,14 +171,10 @@ bool connections_snum_used(struct smbd_server_connection *unused, int snum);
 
 /* The following definitions come from smbd/dfree.c  */
 
-void disk_norm(uint64_t *bsize,uint64_t *dfree,uint64_t *dsize);
-uint64_t sys_disk_free(connection_struct *conn, const char *path,
-                              uint64_t *bsize,uint64_t *dfree,uint64_t *dsize);
-uint64_t get_dfree_info(connection_struct *conn,
-			const char *path,
-			uint64_t *bsize,
-			uint64_t *dfree,
-			uint64_t *dsize);
+uint64_t sys_disk_free(connection_struct *conn, struct smb_filename *fname,
+		       uint64_t *bsize, uint64_t *dfree, uint64_t *dsize);
+uint64_t get_dfree_info(connection_struct *conn, struct smb_filename *fname,
+			uint64_t *bsize, uint64_t *dfree, uint64_t *dsize);
 
 /* The following definitions come from smbd/dir.c  */
 
@@ -326,6 +325,7 @@ int fsp_stat(files_struct *fsp);
 
 /* The following definitions come from smbd/filename.c  */
 
+uint32_t filename_create_ucf_flags(struct smb_request *req, uint32_t create_disposition);
 NTSTATUS unix_convert(TALLOC_CTX *ctx,
 		      connection_struct *conn,
 		      const char *orig_path,
@@ -615,6 +615,9 @@ NTSTATUS smbd_check_access_rights(struct connection_struct *conn,
 				const struct smb_filename *smb_fname,
 				bool use_privs,
 				uint32_t access_mask);
+NTSTATUS check_parent_access(struct connection_struct *conn,
+				struct smb_filename *smb_fname,
+				uint32_t access_mask);
 NTSTATUS fd_open(struct connection_struct *conn, files_struct *fsp,
 		 int flags, mode_t mode);
 NTSTATUS fd_close(files_struct *fsp);
@@ -676,7 +679,8 @@ NTSTATUS get_relative_fid_filename(connection_struct *conn,
 /* The following definitions come from smbd/oplock.c  */
 
 uint32_t map_oplock_to_lease_type(uint16_t op_type);
-uint32_t get_lease_type(struct share_mode_data *d, struct share_mode_entry *e);
+uint32_t get_lease_type(const struct share_mode_data *d,
+			const struct share_mode_entry *e);
 bool update_num_read_oplocks(files_struct *fsp, struct share_mode_lock *lck);
 
 void break_kernel_oplock(struct messaging_context *msg_ctx, files_struct *fsp);
@@ -827,8 +831,8 @@ bool fork_echo_handler(struct smbXsrv_connection *xconn);
 
 /* The following definitions come from smbd/quotas.c  */
 
-bool disk_quotas(const char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize);
-bool disk_quotas_vxfs(const char *name, char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize);
+bool disk_quotas(connection_struct *conn, struct smb_filename *fname,
+		 uint64_t *bsize, uint64_t *dfree, uint64_t *dsize);
 
 /* The following definitions come from smbd/reply.c  */
 
@@ -844,7 +848,24 @@ size_t srvstr_get_path_wcard(TALLOC_CTX *ctx,
 			int flags,
 			NTSTATUS *err,
 			bool *contains_wcard);
+size_t srvstr_get_path_wcard_posix(TALLOC_CTX *ctx,
+			const char *inbuf,
+			uint16_t smb_flags2,
+			char **pp_dest,
+			const char *src,
+			size_t src_len,
+			int flags,
+			NTSTATUS *err,
+			bool *contains_wcard);
 size_t srvstr_get_path(TALLOC_CTX *ctx,
+			const char *inbuf,
+			uint16_t smb_flags2,
+			char **pp_dest,
+			const char *src,
+			size_t src_len,
+			int flags,
+			NTSTATUS *err);
+size_t srvstr_get_path_posix(TALLOC_CTX *ctx,
 			const char *inbuf,
 			uint16_t smb_flags2,
 			char **pp_dest,
@@ -1079,6 +1100,8 @@ int sys_statvfs(const char *path, vfs_statvfs_struct *statbuf);
 
 /* The following definitions come from smbd/trans2.c  */
 
+NTSTATUS check_access_fsp(const struct files_struct *fsp,
+			  uint32_t access_mask);
 NTSTATUS check_access(connection_struct *conn,
 				files_struct *fsp,
 				const struct smb_filename *smb_fname,
@@ -1176,7 +1199,9 @@ const char *vfs_readdirname(connection_struct *conn, void *p,
 			    SMB_STRUCT_STAT *sbuf, char **talloced);
 int vfs_ChDir(connection_struct *conn, const char *path);
 char *vfs_GetWd(TALLOC_CTX *ctx, connection_struct *conn);
-NTSTATUS check_reduced_name(connection_struct *conn, const char *fname);
+NTSTATUS check_reduced_name(connection_struct *conn,
+			const char *cwd_name,
+			const char *fname);
 NTSTATUS check_reduced_name_with_privilege(connection_struct *conn,
 			const char *fname,
 			struct smb_request *smbreq);

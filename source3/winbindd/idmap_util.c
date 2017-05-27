@@ -32,7 +32,7 @@
 /*****************************************************************
  Returns the SID mapped to the given UID.
  If mapping is not possible returns an error.
-*****************************************************************/  
+*****************************************************************/
 
 NTSTATUS idmap_uid_to_sid(struct dom_sid *sid, uid_t uid)
 {
@@ -95,7 +95,7 @@ backend:
 /*****************************************************************
  Returns SID mapped to the given GID.
  If mapping is not possible returns an error.
-*****************************************************************/  
+*****************************************************************/
 
 NTSTATUS idmap_gid_to_sid(struct dom_sid *sid, gid_t gid)
 {
@@ -160,11 +160,6 @@ backend:
  */
 bool idmap_unix_id_is_in_range(uint32_t id, struct idmap_domain *dom)
 {
-	if (id == 0) {
-		/* 0 is not an allowed unix id for id mapping */
-		return false;
-	}
-
 	if ((dom->low_id && (id < dom->low_id)) ||
 	    (dom->high_id && (id > dom->high_id)))
 	{

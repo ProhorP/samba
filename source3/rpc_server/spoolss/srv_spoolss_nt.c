@@ -7015,6 +7015,89 @@ WERROR _spoolss_SetPrinter(struct pipes_struct *p,
 		case 3:
 			return update_printer_sec(r->in.handle, p,
 						  r->in.secdesc_ctr);
+		case 4: {
+			struct spoolss_PrinterInfo2 *old_printer;
+			struct spoolss_SetPrinterInfo2 *set_old_printer;
+			struct spoolss_SetPrinterInfoCtr *info_ctr;
+			struct dcerpc_binding_handle *b;
+			int snum;
+			TALLOC_CTX *tmp_ctx;
+
+			tmp_ctx = talloc_new(p->mem_ctx);
+			if (tmp_ctx == NULL) {
+				return WERR_NOMEM;
+			}
+
+			if (!get_printer_snum(p, r->in.handle, &snum, NULL)) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_BADFID;
+			}
+
+			result = winreg_printer_binding_handle(tmp_ctx,
+							       get_session_info_system(),
+							       p->msg_ctx,
+							       &b);
+			if (!W_ERROR_IS_OK(result)) {
+				TALLOC_FREE(tmp_ctx);
+				return result;
+			}
+
+			result = winreg_get_printer(tmp_ctx, b,
+						    lp_const_servicename(snum),
+						    &old_printer);
+			if (!W_ERROR_IS_OK(result)) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_BADFID;
+			}
+
+			old_printer->servername = talloc_strdup(tmp_ctx, r->in.info_ctr->info.info4->servername);
+			if (old_printer->servername == NULL) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_NOMEM;
+			}
+
+			old_printer->printername = talloc_strdup(tmp_ctx, r->in.info_ctr->info.info4->printername);
+			if (old_printer->printername == NULL) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_NOMEM;
+			}
+
+			old_printer->attributes = r->in.info_ctr->info.info4->attributes;
+
+			set_old_printer = talloc_zero(tmp_ctx, struct spoolss_SetPrinterInfo2);
+			if (set_old_printer == NULL) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_NOMEM;
+			}
+
+			spoolss_printerinfo2_to_setprinterinfo2(old_printer, set_old_printer);
+
+			info_ctr = talloc_zero(tmp_ctx, struct spoolss_SetPrinterInfoCtr);
+			if (info_ctr == NULL) {
+				TALLOC_FREE(tmp_ctx);
+				return WERR_NOMEM;
+			}
+
+			info_ctr->level = 2;
+			info_ctr->info.info2 = set_old_printer;
+
+			result = update_printer(p, r->in.handle,
+						info_ctr,
+						r->in.devmode_ctr->devmode);
+
+			if (!W_ERROR_IS_OK(result)) {
+				TALLOC_FREE(tmp_ctx);
+				return result;
+			}
+
+			if (r->in.secdesc_ctr->sd) {
+				result = update_printer_sec(r->in.handle, p,
+							    r->in.secdesc_ctr);
+			}
+
+			TALLOC_FREE(tmp_ctx);
+			return result;
+		}
 		case 7:
 			return publish_or_unpublish_printer(p, r->in.handle,
 							    r->in.info_ctr->info.info7);
@@ -8355,6 +8438,7 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 {
 	WERROR err = WERR_OK;
 	const char *driver_name = NULL;
+	const char *driver_directory = NULL;
 	uint32_t version;
 	const char *fn;
 
@@ -8378,7 +8462,8 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 		return WERR_INVALID_PARAM;
 	}
 
-	if (r->in.flags != APD_COPY_NEW_FILES) {
+	if (!(r->in.flags & APD_COPY_ALL_FILES) &&
+	    !(r->in.flags & APD_COPY_NEW_FILES)) {
 		return WERR_ACCESS_DENIED;
 	}
 
@@ -8393,12 +8478,19 @@ WERROR _spoolss_AddPrinterDriverEx(struct pipes_struct *p,
 	}
 
 	DEBUG(5,("Cleaning driver's information\n"));
-	err = clean_up_driver_struct(p->mem_ctx, p->session_info, r->in.info_ctr);
-	if (!W_ERROR_IS_OK(err))
+	err = clean_up_driver_struct(p->mem_ctx,
+				     p->session_info,
+				     r->in.info_ctr,
+				     r->in.flags,
+				     &driver_directory);
+	if (!W_ERROR_IS_OK(err)) {
 		goto done;
+	}
 
 	DEBUG(5,("Moving driver to final destination\n"));
-	err = move_driver_to_download_area(p->session_info, r->in.info_ctr);
+	err = move_driver_to_download_area(p->session_info,
+					   r->in.info_ctr,
+					   driver_directory);
 	if (!W_ERROR_IS_OK(err)) {
 		goto done;
 	}

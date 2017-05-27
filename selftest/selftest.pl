@@ -416,7 +416,15 @@ my $testenv_default = "none";
 # must terminate in this time, and testenv will only stay alive this
 # long
 
-my $server_maxtime = 10800;
+my $server_maxtime;
+if ($opt_testenv) {
+    # 1 year should be enough :-)
+    $server_maxtime = 365 * 24 * 60 * 60;
+} else {
+    # make test should run under 4 hours
+    $server_maxtime = 4 * 60 * 60;
+}
+
 if (defined($ENV{SMBD_MAXTIME}) and $ENV{SMBD_MAXTIME} ne "") {
     $server_maxtime = $ENV{SMBD_MAXTIME};
 }
@@ -587,6 +595,7 @@ sub write_clientconf($$$)
 	tls cafile = ${cacert}
 	tls crlfile = ${cacrl_pem}
 	tls verify peer = no_check
+	include system krb5 conf = no
 ";
 	close(CF);
 }

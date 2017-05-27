@@ -36,6 +36,26 @@ def plansmbtorture4testsuite(name, env, options, description=''):
     selftesthelpers.plansmbtorture4testsuite(
         name, env, options, target='samba3', modname=modname)
 
+# find config.h
+try:
+    config_h = os.environ["CONFIG_H"]
+except KeyError:
+    samba4bindir = bindir()
+    config_h = os.path.join(samba4bindir, "default/include/config.h")
+
+# check available features
+config_hash = dict()
+f = open(config_h, 'r')
+try:
+    lines = f.readlines()
+    config_hash = dict((x[0], ' '.join(x[1:]))
+            for x in map(lambda line: line.strip().split(' ')[1:],
+                         filter(lambda line: (line[0:7] == '#define') and (len(line.split(' ')) > 2), lines)))
+finally:
+    f.close()
+
+have_libarchive = ("HAVE_LIBARCHIVE" in config_hash)
+have_linux_kernel_oplocks = ("HAVE_KERNEL_OPLOCKS_LINUX" in config_hash)
 
 plantestsuite("samba3.blackbox.success", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_success.sh")])
 plantestsuite("samba3.blackbox.failure", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_failure.sh")])
@@ -53,7 +73,7 @@ tests = ["FDPASS", "LOCK1", "LOCK2", "LOCK3", "LOCK4", "LOCK5", "LOCK6", "LOCK7"
         "CHAIN3",
         "GETADDRINFO", "UID-REGRESSION-TEST", "SHORTNAME-TEST",
         "CASE-INSENSITIVE-CREATE", "SMB2-BASIC", "NTTRANS-FSCTL", "SMB2-NEGPROT",
-        "SMB2-SESSION-REAUTH", "SMB2-SESSION-RECONNECT",
+        "SMB2-SESSION-REAUTH", "SMB2-SESSION-RECONNECT", "SMB2-FTRUNCATE",
         "CLEANUP1",
         "CLEANUP2",
         "CLEANUP4",
@@ -113,6 +133,7 @@ local_tests = [
     "LOCAL-MESSAGING-FDPASS2",
     "LOCAL-MESSAGING-FDPASS2a",
     "LOCAL-MESSAGING-FDPASS2b",
+    "LOCAL-CANONICALIZE-PATH",
     "LOCAL-hex_encode_buf",
     "LOCAL-sprintf_append",
     "LOCAL-remove_duplicate_addrs2"]
@@ -182,24 +203,16 @@ for env in ["nt4_dc"]:
 for env in ["fileserver"]:
     plantestsuite("samba3.blackbox.preserve_case (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_preserve_case.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
     plantestsuite("samba3.blackbox.dfree_command (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_dfree_command.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
+    plantestsuite("samba3.blackbox.dfree_quota (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_dfree_quota.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH', smbclient3, smbcquotas, smbcacls])
+    plantestsuite("samba3.blackbox.valid_users (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_valid_users.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
+    plantestsuite("samba3.blackbox.offline (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_offline.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH/offline', smbclient3])
     plantestsuite("samba3.blackbox.shadow_copy2 (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_shadow_copy.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH/shadow', smbclient3])
+    plantestsuite("samba3.blackbox.smbclient.forceuser_validusers (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_forceuser_validusers.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH', smbclient3])
+    plantestsuite("samba3.blackbox.smbget (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smbget.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', 'smbget_user', '$PASSWORD', '$LOCAL_PATH/smbget', smbget])
 
     #
     # tar command tests
     #
-
-    # find config.h
-    try:
-        config_h = os.environ["CONFIG_H"]
-    except KeyError:
-        config_h = os.path.join(samba4bindir, "default/include/config.h")
-
-    # see if libarchive is supported
-    f = open(config_h, 'r')
-    try:
-        have_libarchive = ("HAVE_LIBARCHIVE 1" in f.read())
-    finally:
-        f.close()
 
     # tar command enabled only if built with libarchive
     if have_libarchive:
@@ -259,7 +272,7 @@ plantestsuite("samba3.async_req", "nt4_dc",
 
 #smbtorture4 tests
 
-base = ["base.attr", "base.charset", "base.chkpath", "base.defer_open", "base.delaywrite", "base.delete",
+base = ["base.attr", "base.charset", "base.chkpath", "base.createx_access", "base.defer_open", "base.delaywrite", "base.delete",
         "base.deny1", "base.deny2", "base.deny3", "base.denydos", "base.dir1", "base.dir2",
         "base.disconnect", "base.fdpass", "base.lock",
         "base.mangle", "base.negnowait", "base.ntdeny1",
@@ -314,6 +327,8 @@ tests= base + raw + smb2 + rpc + unix + local + rap + nbt + libsmbclient + idmap
 
 for t in tests:
     if t == "base.delaywrite":
+        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD -k yes --maximum-runtime=900')
+    if t == "base.createx_access":
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD -k yes --maximum-runtime=900')
     elif t == "rap.sam":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=doscharset=ISO-8859-1')
@@ -404,6 +419,9 @@ for t in tests:
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD --signing=required')
     elif t == "smb2.dosmode":
         plansmbtorture4testsuite(t, "simpleserver", '//$SERVER/dosmode -U$USERNAME%$PASSWORD')
+    elif t == "smb2.kernel-oplocks":
+        if have_linux_kernel_oplocks:
+            plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER/kernel_oplocks -U$USERNAME%$PASSWORD')
     elif t == "vfs.acl_xattr":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
     else:
@@ -426,8 +444,12 @@ for s in signseal_options:
 
     # We should try more combinations in future, but this is all
     # the pre-calculated credentials cache supports at the moment
+    #
+    # As the ktest env requires SMB3_00 we need to use "smb2" until
+    # dcerpc client code in smbtorture support autonegotiation
+    # of any smb dialect.
     e = ""
-    a = ""
+    a = "smb2"
     binding_string = "ncacn_np:$SERVER[%s%s%s]" % (a, s, e)
     options = binding_string + " -k yes --krb5-ccache=$PREFIX/ktest/krb5_ccache-2"
     plansmbtorture4testsuite(test, "ktest", options, 'krb5 with old ccache ncacn_np with [%s%s%s] ' % (a, s, e))
@@ -466,6 +488,11 @@ plantestsuite("samba3.blackbox.rpcclient.pw-nt-hash", "simpleserver",
               [os.path.join(samba3srcdir, "script/tests/test_rpcclient_pw_nt_hash.sh"),
                "$USERNAME", "$PASSWORD", "$SERVER",
                os.path.join(bindir(), "rpcclient")])
+
+plantestsuite("samba3.blackbox.smbclient.encryption_off", "simpleserver",
+              [os.path.join(samba3srcdir, "script/tests/test_smbclient_encryption_off.sh"),
+               "$USERNAME", "$PASSWORD", "$SERVER",
+               smbclient3])
 
 options_list = ["", "-e"]
 for options in options_list:

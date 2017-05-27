@@ -89,7 +89,10 @@ sub check_or_start($$$)
         my ($self, $env_vars, $process_model) = @_;
 	my $STDIN_READER;
 
-	return 0 if $self->check_env($env_vars);
+	my $env_ok = $self->check_env($env_vars);
+	if ($env_ok) {
+	    return $env_vars->{SAMBA_PID};
+	}
 
 	# use a pipe for stdin in the child processes. This allows
 	# those processes to monitor the pipe for EOF to ensure they
@@ -132,6 +135,7 @@ sub check_or_start($$$)
 		}
 
 		$ENV{UID_WRAPPER} = "1";
+		$ENV{UID_WRAPPER_ROOT} = "1";
 
 		$ENV{MAKE_TEST_BINARY} = Samba::bindir_path($self, "samba");
 		my @preargs = ();
@@ -149,9 +153,14 @@ sub check_or_start($$$)
 		exec(@preargs, Samba::bindir_path($self, "samba"), "-M", $process_model, "-i", "--maximum-runtime=$self->{server_maxtime}", $env_vars->{CONFIGURATION}, @optargs) or die("Unable to start samba: $!");
 	}
 	$env_vars->{SAMBA_PID} = $pid;
-	print "DONE\n";
+	print "DONE ($pid)\n";
 
 	close($STDIN_READER);
+
+	if ($self->wait_for_start($env_vars) != 0) {
+	    warn("Samba $pid failed to start up");
+	    return undef;
+	}
 
 	return $pid;
 }
@@ -159,7 +168,13 @@ sub check_or_start($$$)
 sub wait_for_start($$)
 {
 	my ($self, $testenv_vars) = @_;
-	my $ret;
+	my $ret = 0;
+
+	if (not $self->check_env($testenv_vars)) {
+	    warn("unable to confirm Samba $testenv_vars->{SAMBA_PID} is running");
+	    return -1;
+	}
+
 	# give time for nbt server to register its names
 	print "delaying for nbt name registration\n";
 	sleep 2;
@@ -199,7 +214,7 @@ sub wait_for_start($$)
 	    while (system("$ldbsearch -H ldap://$testenv_vars->{SERVER} -U$testenv_vars->{USERNAME}%$testenv_vars->{PASSWORD} -s base -b \"$rid_set_dn\" rIDAllocationPool > /dev/null") != 0) {
 		$count++;
 		if ($count > 40) {
-		    $ret = 1;
+		    $ret = -1;
 		    last;
 		}
 		sleep(1);
@@ -921,10 +936,10 @@ $extra_smbconf_shares
 	return $self->provision_raw_step2($ctx, $ret);
 }
 
-sub provision_s4member($$$)
+sub provision_s4member($$$$$)
 {
-	my ($self, $prefix, $dcvars) = @_;
-	print "PROVISIONING MEMBER...";
+	my ($self, $prefix, $dcvars, $hostname, $more_conf) = @_;
+	print "PROVISIONING MEMBER...\n";
 	my $extra_smb_conf = "
         passdb backend = samba_dsdb
 winbindd:use external pipes = true
@@ -939,9 +954,12 @@ rpc_server:spoolss = embedded
 rpc_daemon:spoolssd = embedded
 rpc_server:tcpip = no
 ";
+	if ($more_conf) {
+		$extra_smb_conf = $extra_smb_conf . $more_conf . "\n";
+	}
 	my $ret = $self->provision($prefix,
 				   "member server",
-				   "s4member",
+				   $hostname,
 				   "SAMBADOMAIN",
 				   "samba.example.com",
 				   "2008",
@@ -1818,11 +1836,19 @@ sub check_env($$)
 	my ($self, $envvars) = @_;
 	my $samba_pid = $envvars->{SAMBA_PID};
 
-	return 1 if $samba_pid == -1;
+	if (not defined($samba_pid)) {
+	    return 0;
+	} elsif ($samba_pid > 0) {
+	    my $childpid = Samba::cleanup_child($samba_pid, "samba");
 
-	my $childpid = Samba::cleanup_child($samba_pid, "samba");
+	    if ($childpid == 0) {
+		return 1;
+	    }
+	    return 0;
+	} else {
+	    return 1;
+	}
 
-	return ($childpid == 0);
 }
 
 sub setup_env($$$)
@@ -1870,6 +1896,11 @@ sub setup_env($$$)
 			$self->setup_ad_dc_ntvfs("$path/ad_dc_ntvfs");
 		}
 		return $self->setup_subdom_dc("$path/subdom_dc", $self->{vars}->{ad_dc_ntvfs});
+	} elsif ($envname eq "s4member_dflt_domain") {
+		if (not defined($self->{vars}->{ad_dc_ntvfs})) {
+			$self->setup_ad_dc_ntvfs("$path/ad_dc_ntvfs");
+		}
+		return $self->setup_s4member_dflt_domain("$path/s4member_dflt_domain", $self->{vars}->{ad_dc_ntvfs});
 	} elsif ($envname eq "s4member") {
 		if (not defined($self->{vars}->{ad_dc_ntvfs})) {
 			$self->setup_ad_dc_ntvfs("$path/ad_dc_ntvfs");
@@ -1908,14 +1939,32 @@ sub setup_s4member($$$)
 {
 	my ($self, $path, $dc_vars) = @_;
 
-	my $env = $self->provision_s4member($path, $dc_vars);
+	my $env = $self->provision_s4member($path, $dc_vars, "s4member");
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{s4member} = $env;
+	}
+
+	return $env;
+}
+
+sub setup_s4member_dflt_domain($$$)
+{
+	my ($self, $path, $dc_vars) = @_;
+
+	my $env = $self->provision_s4member($path, $dc_vars, "s4member_dflt",
+					    "winbind use default domain = yes");
+
+	if (defined $env) {
+	        if (not defined($self->check_or_start($env, "standard"))) {
+		        return undef;
+		}
+
+		$self->{vars}->{s4member_dflt_domain} = $env;
 	}
 
 	return $env;
@@ -1928,9 +1977,9 @@ sub setup_rpc_proxy($$$)
 	my $env = $self->provision_rpc_proxy($path, $dc_vars);
 
 	if (defined $env) {
-	        $self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{rpc_proxy} = $env;
 	}
@@ -1943,9 +1992,10 @@ sub setup_ad_dc_ntvfs($$)
 
 	my $env = $self->provision_ad_dc_ntvfs($path);
 	if (defined $env) {
-		$self->check_or_start($env, "standard");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "standard"))) {
+		    warn("Failed to start ad_dc_ntvfs");
+		        return undef;
+		}
 
 		$self->{vars}->{ad_dc_ntvfs} = $env;
 	}
@@ -1958,9 +2008,9 @@ sub setup_chgdcpass($$)
 
 	my $env = $self->provision_chgdcpass($path);
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{chgdcpass} = $env;
 	}
@@ -1973,9 +2023,9 @@ sub setup_fl2000dc($$)
 
 	my $env = $self->provision_fl2000dc($path);
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{fl2000dc} = $env;
 	}
@@ -1990,9 +2040,9 @@ sub setup_fl2003dc($$$)
 	my $env = $self->provision_fl2003dc($path);
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$env = $self->setup_trust($env, $dc_vars, "external", "--no-aes-keys");
 
@@ -2008,9 +2058,9 @@ sub setup_fl2008r2dc($$$)
 	my $env = $self->provision_fl2008r2dc($path);
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		my $upn_array = ["$env->{REALM}.upn"];
 		my $spn_array = ["$env->{REALM}.spn"];
@@ -2032,9 +2082,9 @@ sub setup_vampire_dc($$$)
 	my $env = $self->provision_vampire_dc($path, $dc_vars);
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{vampire_dc} = $env;
 
@@ -2095,9 +2145,9 @@ sub setup_promoted_dc($$$)
 	my $env = $self->provision_promoted_dc($path, $dc_vars);
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{promoted_dc} = $env;
 
@@ -2159,9 +2209,9 @@ sub setup_subdom_dc($$$)
 	my $env = $self->provision_subdom_dc($path, $dc_vars);
 
 	if (defined $env) {
-		$self->check_or_start($env, "single");
-
-		$self->wait_for_start($env);
+	        if (not defined($self->check_or_start($env, "single"))) {
+		        return undef;
+		}
 
 		$self->{vars}->{subdom_dc} = $env;
 
@@ -2215,9 +2265,9 @@ sub setup_rodc($$$)
 		return undef;
 	}
 
-	$self->check_or_start($env, "single");
-
-	$self->wait_for_start($env);
+	if (not defined($self->check_or_start($env, "single"))) {
+	    return undef;
+	}
 
 	# force source and replicated DC to update repsTo/repsFrom
 	# for vampired partitions
@@ -2288,9 +2338,9 @@ sub setup_ad_dc($$)
 		$env->{NSS_WRAPPER_MODULE_FN_PREFIX} = undef;
 	}
 
-	$self->check_or_start($env, "single");
-	
-	$self->wait_for_start($env);
+	if (not defined($self->check_or_start($env, "single"))) {
+	    return undef;
+	}
 
 	my $upn_array = ["$env->{REALM}.upn"];
 	my $spn_array = ["$env->{REALM}.spn"];

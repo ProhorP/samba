@@ -26,6 +26,7 @@ builddirs = {
     "samba-xc" : ".",
     "samba-ctdb" : ".",
     "samba-libs"  : ".",
+    "samba-static"  : ".",
     "ldb"     : "lib/ldb",
     "tdb"     : "lib/tdb",
     "talloc"  : "lib/talloc",
@@ -37,9 +38,16 @@ builddirs = {
     "retry"   : "."
     }
 
-defaulttasks = [ "ctdb", "samba", "samba-xc", "samba-ctdb", "samba-libs", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
+defaulttasks = [ "ctdb", "samba", "samba-xc", "samba-ctdb", "samba-libs", "samba-static", "ldb", "tdb", "talloc", "replace", "tevent", "pidl" ]
 
 samba_configure_params = " --picky-developer ${PREFIX} --with-profiling-data"
+
+samba_libs_envvars =  "PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH"
+samba_libs_envvars += " PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig"
+samba_libs_envvars += " ADDITIONAL_CFLAGS='-Wmissing-prototypes'"
+samba_libs_configure_base = samba_libs_envvars + " ./configure --abi-check --enable-debug --picky-developer -C ${PREFIX}"
+samba_libs_configure_libs = samba_libs_configure_base + " --bundled-libraries=NONE"
+samba_libs_configure_samba = samba_libs_configure_base + " --bundled-libraries=!talloc,!pytalloc-util,!tdb,!pytdb,!ldb,!pyldb,!pyldb-util,!tevent,!pytevent"
 
 tasks = {
     "ctdb" : [ ("random-sleep", "../script/random-sleep.sh 60 600", "text/plain"),
@@ -89,26 +97,48 @@ tasks = {
 
     "samba-libs" : [
                       ("random-sleep", "script/random-sleep.sh 60 600", "text/plain"),
-                      ("talloc-configure", "cd lib/talloc && PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig ./configure --bundled-libraries=NONE --abi-check --enable-debug -C ${PREFIX}", "text/plain"),
+                      ("talloc-configure", "cd lib/talloc && " + samba_libs_configure_libs, "text/plain"),
                       ("talloc-make", "cd lib/talloc && make", "text/plain"),
                       ("talloc-install", "cd lib/talloc && make install", "text/plain"),
 
-                      ("tdb-configure", "cd lib/tdb && PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig ./configure --bundled-libraries=NONE --abi-check --enable-debug -C ${PREFIX}", "text/plain"),
+                      ("tdb-configure", "cd lib/tdb && " + samba_libs_configure_libs, "text/plain"),
                       ("tdb-make", "cd lib/tdb && make", "text/plain"),
                       ("tdb-install", "cd lib/tdb && make install", "text/plain"),
 
-                      ("tevent-configure", "cd lib/tevent && PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig ./configure --bundled-libraries=NONE --abi-check --enable-debug -C ${PREFIX}", "text/plain"),
+                      ("tevent-configure", "cd lib/tevent && " + samba_libs_configure_libs, "text/plain"),
                       ("tevent-make", "cd lib/tevent && make", "text/plain"),
                       ("tevent-install", "cd lib/tevent && make install", "text/plain"),
 
-                      ("ldb-configure", "cd lib/ldb && PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig ./configure --bundled-libraries=NONE --abi-check --enable-debug -C ${PREFIX}", "text/plain"),
+                      ("ldb-configure", "cd lib/ldb && " + samba_libs_configure_libs, "text/plain"),
                       ("ldb-make", "cd lib/ldb && make", "text/plain"),
                       ("ldb-install", "cd lib/ldb && make install", "text/plain"),
 
-                      ("configure", "PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${PREFIX_DIR}/lib/pkgconfig ./configure --bundled-libraries=!talloc,!tdb,!pytdb,!ldb,!pyldb,!tevent,!pytevent --minimum-library-version=ldb:1.1.21,pyldb-util:1.1.21 --abi-check --enable-debug -C ${PREFIX}", "text/plain"),
-                      ("make", "make", "text/plain"),
-                      ("install", "make install", "text/plain"),
-                      ("dist", "make dist", "text/plain")],
+                      ("nondevel-configure", "./configure ${PREFIX}", "text/plain"),
+                      ("nondevel-make", "make -j", "text/plain"),
+                      ("nondevel-check", "./bin/smbd -b | grep WITH_NTVFS_FILESERVER && exit 1; exit 0", "text/plain"),
+                      ("nondevel-install", "make install", "text/plain"),
+                      ("nondevel-dist", "make dist", "text/plain"),
+
+                      # retry with all modules shared
+                      ("allshared-distclean", "make distclean", "text/plain"),
+                      ("allshared-configure", samba_libs_configure_samba + " --with-shared-modules=ALL", "text/plain"),
+                      ("allshared-make", "make -j", "text/plain")],
+
+    "samba-static" : [
+                      ("random-sleep", "script/random-sleep.sh 60 600", "text/plain"),
+                      # build with all modules static
+                      ("allstatic-configure", "./configure.developer " + samba_configure_params + " --with-static-modules=ALL", "text/plain"),
+                      ("allstatic-make", "make -j", "text/plain"),
+
+                      # retry without any required modules
+                      ("none-distclean", "make distclean", "text/plain"),
+                      ("none-configure", "./configure.developer " + samba_configure_params + " --with-static-modules=!FORCED,!DEFAULT --with-shared-modules=!FORCED,!DEFAULT", "text/plain"),
+                      ("none-make", "make -j", "text/plain"),
+
+                      # retry with nonshared smbd and smbtorture
+                      ("nonshared-distclean", "make distclean", "text/plain"),
+                      ("nonshared-configure", "./configure.developer " + samba_configure_params + " --bundled-libraries=talloc,tdb,pytdb,ldb,pyldb,tevent,pytevent --with-static-modules=ALL --nonshared-binary=smbtorture,smbd/smbd", "text/plain"),
+                      ("nonshared-make", "make -j", "text/plain")],
 
     "ldb" : [
               ("random-sleep", "../../script/random-sleep.sh 60 600", "text/plain"),
@@ -338,6 +368,16 @@ class buildlist(object):
         self.kill_kids()
         return (0, None, None, None, "All OK")
 
+    def write_system_info(self):
+        filename = 'system-info.txt'
+        f = open(filename, 'w')
+        for cmd in ['uname -a', 'free', 'cat /proc/cpuinfo']:
+            print >>f, '### %s' % cmd
+            print >>f, run_cmd(cmd, output=True, checkfail=False)
+            print >>f
+        f.close()
+        return filename
+
     def tarlogs(self, fname):
         tar = tarfile.open(fname, "w:gz")
         for b in self.tlist:
@@ -345,6 +385,8 @@ class buildlist(object):
             tar.add(b.stderr_path, arcname="%s.stderr" % b.tag)
         if os.path.exists("autobuild.log"):
             tar.add("autobuild.log")
+        sys_info = self.write_system_info()
+        tar.add(sys_info)
         tar.close()
 
     def remove_logs(self):

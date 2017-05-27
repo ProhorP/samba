@@ -61,6 +61,8 @@ extern const char *panic_action;
 
 #include "fault.h"
 
+#include "lib/util/util.h"
+
 /**
  * Write backtrace to debug log
  */
@@ -101,9 +103,39 @@ _PUBLIC_ uint32_t generate_random(void);
 _PUBLIC_ bool check_password_quality(const char *s);
 
 /**
- * Generate a random text password.
+ * Generate a random text password (based on printable ascii characters).
+ * This function is designed to provide a password that
+ * meats the complexity requirements of UF_NORMAL_ACCOUNT objects
+ * and they should be human readable and writeable on any keyboard layout.
+ *
+ * Characters used are:
+ * ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+_-#.,@$%&!?:;<=>()[]~
  */
 _PUBLIC_ char *generate_random_password(TALLOC_CTX *mem_ctx, size_t min, size_t max);
+
+/**
+ * Generate a random machine password
+ *
+ * min and max are the number of utf16 characters used
+ * to generate on utf8 compatible password.
+ *
+ * Note: if 'unix charset' is not 'utf8' (the default)
+ * then each utf16 character is only filled with
+ * values from 0x01 to 0x7f (ascii values without 0x00).
+ * This is important as the password neets to be
+ * a valid value as utf8 string and at the same time
+ * a valid value in the 'unix charset'.
+ *
+ * If 'unix charset' is 'utf8' (the default) then
+ * each utf16 character is a random value from 0x0000
+ * 0xFFFF (exluding the surrogate ranges from 0xD800-0xDFFF)
+ * while the translation from CH_UTF16MUNGED
+ * to CH_UTF8 replaces invalid values (see utf16_munged_pull()).
+ *
+ * Note: these passwords may not pass the complexity requirements
+ * for UF_NORMAL_ACCOUNT objects (except krbtgt accounts).
+ */
+_PUBLIC_ char *generate_random_machine_password(TALLOC_CTX *mem_ctx, size_t min, size_t max);
 
 /**
  Use the random number generator to generate a random string.
@@ -583,35 +615,6 @@ _PUBLIC_ bool process_exists_by_pid(pid_t pid);
 _PUBLIC_ bool fcntl_lock(int fd, int op, off_t offset, off_t count, int type);
 
 /**
- * Write dump of binary data to a callback
- */
-void dump_data_cb(const uint8_t *buf, int len,
-		  bool omit_zero_bytes,
-		  void (*cb)(const char *buf, void *private_data),
-		  void *private_data);
-
-/**
- * Write dump of binary data to a FILE
- */
-void dump_data_file(const uint8_t *buf, int len, bool omit_zero_bytes,
-		    FILE *f);
-
-/**
- * Write dump of binary data to the log file.
- *
- * The data is only written if the log level is at least level.
- */
-_PUBLIC_ void dump_data(int level, const uint8_t *buf,int len);
-
-/**
- * Write dump of binary data to the log file.
- *
- * The data is only written if the log level is at least level for
- * debug class dbgc_class.
- */
-_PUBLIC_ void dump_data_dbgc(int dbgc_class, int level, const uint8_t *buf, int len);
-
-/**
  * Write dump of binary data to the log file.
  *
  * The data is only written if the log level is at least level.
@@ -847,6 +850,7 @@ struct server_id;
 
 struct server_id_buf { char buf[48]; }; /* probably a bit too large ... */
 char *server_id_str_buf(struct server_id id, struct server_id_buf *dst);
+size_t server_id_str_buf_unique(struct server_id id, char *buf, size_t buflen);
 
 bool server_id_same_process(const struct server_id *p1,
 			    const struct server_id *p2);

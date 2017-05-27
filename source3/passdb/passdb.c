@@ -36,24 +36,6 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_PASSDB
 
-/******************************************************************
- Get the default domain/netbios name to be used when
- testing authentication.
-
- LEGACY: this function provides the legacy domain mapping used with
-	 the lp_map_untrusted_to_domain() parameter
-******************************************************************/
-
-const char *my_sam_name(void)
-{
-       /* Standalone servers can only use the local netbios name */
-       if ( lp_server_role() == ROLE_STANDALONE )
-               return lp_netbios_name();
-
-       /* Default to the DOMAIN name when not specified */
-       return lp_workgroup();
-}
-
 /**********************************************************************
 ***********************************************************************/
 
@@ -2639,6 +2621,19 @@ NTSTATUS pdb_get_trust_credentials(const char *netbios_domain,
 			status = NT_STATUS_NO_MEMORY;
 			goto fail;
 		}
+
+		/*
+		 * It's not possible to use NTLMSSP with a domain trust account.
+		 */
+		cli_credentials_set_kerberos_state(creds, CRED_MUST_USE_KERBEROS);
+	} else {
+		/*
+		 * We can't use kerberos against an NT4 domain.
+		 *
+		 * We should have a mode that also disallows NTLMSSP here,
+		 * as only NETLOGON SCHANNEL is possible.
+		 */
+		cli_credentials_set_kerberos_state(creds, CRED_DONT_USE_KERBEROS);
 	}
 
 	ok = cli_credentials_set_username(creds, account_name, CRED_SPECIFIED);
@@ -2653,6 +2648,10 @@ NTSTATUS pdb_get_trust_credentials(const char *netbios_domain,
 			status = NT_STATUS_NO_MEMORY;
 			goto fail;
 		}
+		/*
+		 * We currently can't do kerberos just with an NTHASH.
+		 */
+		cli_credentials_set_kerberos_state(creds, CRED_DONT_USE_KERBEROS);
 		goto done;
 	}
 

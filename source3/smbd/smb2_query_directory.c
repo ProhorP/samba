@@ -24,6 +24,7 @@
 #include "../libcli/smb/smb_common.h"
 #include "trans2.h"
 #include "../lib/util/tevent_ntstatus.h"
+#include "system/filesys.h"
 
 static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 					      struct tevent_context *ev,
@@ -225,7 +226,7 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	uint32_t dirtype = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_DIRECTORY;
 	bool dont_descend = false;
 	bool ask_sharemode = true;
-	bool wcard_has_wild;
+	bool wcard_has_wild = false;
 	struct tm tm;
 	char *p;
 
@@ -322,10 +323,28 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	}
 
 	if (in_flags & SMB2_CONTINUE_FLAG_REOPEN) {
+		int flags;
+
 		dptr_CloseDir(fsp);
+
+		/*
+		 * dptr_CloseDir() will close and invalidate the fsp's file
+		 * descriptor, we have to reopen it.
+		 */
+
+		flags = O_RDONLY;
+#ifdef O_DIRECTORY
+		flags |= O_DIRECTORY;
+#endif
+		status = fd_open(conn, fsp, flags, 0);
+		if (tevent_req_nterror(req, status)) {
+			return tevent_req_post(req, ev);
+		}
 	}
 
-	wcard_has_wild = ms_has_wild(in_file_name);
+	if (!smbreq->posix_pathnames) {
+		wcard_has_wild = ms_has_wild(in_file_name);
+	}
 
 	/* Ensure we've canonicalized any search path if not a wildcard. */
 	if (!wcard_has_wild) {
@@ -333,6 +352,10 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 		const char *fullpath;
 		char tmpbuf[PATH_MAX];
 		char *to_free = NULL;
+		uint32_t ucf_flags = UCF_SAVE_LCOMP |
+				     UCF_ALWAYS_ALLOW_WCARD_LCOMP |
+				     (smbreq->posix_pathnames ?
+					UCF_POSIX_PATHNAMES : 0);
 
 		if (ISDOT(fsp->fsp_name->base_name)) {
 			fullpath = in_file_name;
@@ -353,7 +376,7 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 				conn,
 				false, /* Not a DFS path. */
 				fullpath,
-				UCF_SAVE_LCOMP | UCF_ALWAYS_ALLOW_WCARD_LCOMP,
+				ucf_flags,
 				&wcard_has_wild,
 				&smb_fname);
 

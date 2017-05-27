@@ -86,6 +86,11 @@ bool lookup_cached_name(const char *domain_name,
 			const char *name,
 			struct dom_sid *sid,
 			enum lsa_SidType *type);
+void cache_name2sid_trusted(struct winbindd_domain *domain,
+			const char *domain_name,
+			const char *name,
+			enum lsa_SidType type,
+			const struct dom_sid *sid);
 void cache_name2sid(struct winbindd_domain *domain, 
 		    const char *domain_name, const char *name,
 		    enum lsa_SidType type, const struct dom_sid *sid);
@@ -330,6 +335,7 @@ void init_idmap_child(void);
 struct winbindd_child *idmap_child(void);
 struct idmap_domain *idmap_find_domain_with_sid(const char *domname,
 						const struct dom_sid *sid);
+bool domain_has_idmap_config(const char *domname);
 
 /* The following definitions come from winbindd/winbindd_locator.c  */
 

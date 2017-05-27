@@ -140,7 +140,7 @@ static NTSTATUS spoolss__op_dispatch(struct dcesrv_call_state *dce_call, TALLOC_
 	rp->opnum = opnum;
 	rp->r = talloc_reference(rp, r);
 
-	DLIST_ADD_END(received_packets, rp, struct received_packet *);
+	DLIST_ADD_END(received_packets, rp);
 
 	switch (opnum) {
 	case 58: {
@@ -391,12 +391,12 @@ static bool test_SetPrinter(struct torture_context *tctx,
 	info2.drivername	= info.info2.drivername;
 	info2.comment		= talloc_asprintf(tctx, "torture_comment %d\n", (int)time(NULL));
 	info2.location		= info.info2.location;
-	info2.devmode_ptr	= NULL;
+	info2.devmode_ptr	= 0;
 	info2.sepfile		= info.info2.sepfile;
 	info2.printprocessor	= info.info2.printprocessor;
 	info2.datatype		= info.info2.datatype;
 	info2.parameters	= info.info2.parameters;
-	info2.secdesc_ptr	= NULL;
+	info2.secdesc_ptr	= 0;
 	info2.attributes	= info.info2.attributes;
 	info2.priority		= info.info2.priority;
 	info2.defaultpriority	= info.info2.defaultpriority;

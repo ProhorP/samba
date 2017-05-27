@@ -182,7 +182,8 @@ NTSTATUS delete_all_streams(connection_struct *conn, const char *fname)
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("vfs_streaminfo failed: %s\n",
 			   nt_errstr(status)));
-		goto fail;
+		TALLOC_FREE(frame);
+		return status;
 	}
 
 	DEBUG(10, ("delete_all_streams found %d streams\n",
@@ -256,7 +257,6 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 	const struct security_token *del_nt_token = NULL;
 	bool got_tokens = false;
 	bool normal_close;
-	int ret_flock;
 
 	/* Ensure any pending write time updates are done. */
 	if (fsp->update_write_time_event) {
@@ -485,12 +485,16 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 		pop_sec_ctx();
 	}
 
-	/* remove filesystem sharemodes */
-	ret_flock = SMB_VFS_KERNEL_FLOCK(fsp, 0, 0);
-	if (ret_flock == -1) {
-		DEBUG(2, ("close_remove_share_mode: removing kernel flock for "
-					"%s failed: %s\n", fsp_str_dbg(fsp),
-					strerror(errno)));
+	if (fsp->kernel_share_modes_taken) {
+		int ret_flock;
+
+		/* remove filesystem sharemodes */
+		ret_flock = SMB_VFS_KERNEL_FLOCK(fsp, 0, 0);
+		if (ret_flock == -1) {
+			DEBUG(2, ("close_remove_share_mode: removing kernel "
+				  "flock for %s failed: %s\n",
+				  fsp_str_dbg(fsp), strerror(errno)));
+		}
 	}
 
 	if (!del_share_mode(lck, fsp)) {

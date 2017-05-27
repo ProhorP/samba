@@ -17,8 +17,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "../lib/util/asn1.h"
+#include "replace.h"
+#include "system/locale.h"
+#include "lib/util/asn1.h"
+#include "lib/util/debug.h"
+#include "lib/util/samba_util.h"
 
 struct nesting {
 	off_t start;
@@ -281,7 +284,7 @@ bool ber_write_OID_String(TALLOC_CTX *mem_ctx, DATA_BLOB *blob, const char *OID)
 	if (newp[0] != '.') return false;
 	p = newp + 1;
 
-	/*the ber representation can't use more space then the string one */
+	/*the ber representation can't use more space than the string one */
 	*blob = data_blob_talloc(mem_ctx, NULL, strlen(OID));
 	if (!blob->data) return false;
 
@@ -540,7 +543,8 @@ bool asn1_peek_tag(struct asn1_data *data, uint8_t tag)
 /*
  * just get the needed size the tag would consume
  */
-bool asn1_peek_tag_needed_size(struct asn1_data *data, uint8_t tag, size_t *size)
+static bool asn1_peek_tag_needed_size(struct asn1_data *data, uint8_t tag,
+				      size_t *size)
 {
 	off_t start_ofs = data->ofs;
 	uint8_t b;

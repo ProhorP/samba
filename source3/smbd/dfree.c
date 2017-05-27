@@ -25,7 +25,7 @@
  Normalise for DOS usage.
 ****************************************************************************/
 
-void disk_norm(uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
+static void disk_norm(uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	/* check if the disk is beyond the max disk size */
 	uint64_t maxdisksize = lp_max_disk_size();
@@ -49,7 +49,7 @@ void disk_norm(uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
  Return number of 1K blocks available on a path and total number.
 ****************************************************************************/
 
-uint64_t sys_disk_free(connection_struct *conn, const char *path,
+uint64_t sys_disk_free(connection_struct *conn, struct smb_filename *fname,
 		       uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	uint64_t dfree_retval;
@@ -58,6 +58,7 @@ uint64_t sys_disk_free(connection_struct *conn, const char *path,
 	uint64_t dsize_q = 0;
 	const char *dfree_command;
 	static bool dfree_broken = false;
+	const char *path = fname->base_name;
 
 	(*dfree) = (*dsize) = 0;
 	(*bsize) = 512;
@@ -116,13 +117,14 @@ uint64_t sys_disk_free(connection_struct *conn, const char *path,
 			   syscmd, strerror(errno) ));
 	}
 
-	if (sys_fsusage(path, dfree, dsize) != 0) {
-		DEBUG (0, ("disk_free: sys_fsusage() failed. Error was : %s\n",
-			strerror(errno) ));
+	if (SMB_VFS_DISK_FREE(conn, path, bsize, dfree, dsize) ==
+	    (uint64_t)-1) {
+		DBG_ERR("VFS disk_free failed. Error was : %s\n",
+			strerror(errno));
 		return (uint64_t)-1;
 	}
 
-	if (disk_quotas(path, &bsize_q, &dfree_q, &dsize_q)) {
+	if (disk_quotas(conn, fname, &bsize_q, &dfree_q, &dsize_q)) {
 		uint64_t min_bsize = MIN(*bsize, bsize_q);
 
 		(*dfree) = (*dfree) * (*bsize) / min_bsize;
@@ -166,18 +168,15 @@ dfree_done:
  Potentially returned cached dfree info.
 ****************************************************************************/
 
-uint64_t get_dfree_info(connection_struct *conn,
-			const char *path,
-			uint64_t *bsize,
-			uint64_t *dfree,
-			uint64_t *dsize)
+uint64_t get_dfree_info(connection_struct *conn, struct smb_filename *fname,
+			uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	int dfree_cache_time = lp_dfree_cache_time(SNUM(conn));
 	struct dfree_cached_info *dfc = conn->dfree_info;
 	uint64_t dfree_ret;
 
 	if (!dfree_cache_time) {
-		return SMB_VFS_DISK_FREE(conn, path, bsize, dfree, dsize);
+		return sys_disk_free(conn, fname, bsize, dfree, dsize);
 	}
 
 	if (dfc && (conn->lastused - dfc->last_dfree_time < dfree_cache_time)) {
@@ -188,7 +187,7 @@ uint64_t get_dfree_info(connection_struct *conn,
 		return dfc->dfree_ret;
 	}
 
-	dfree_ret = SMB_VFS_DISK_FREE(conn, path, bsize, dfree, dsize);
+	dfree_ret = sys_disk_free(conn, fname, bsize, dfree, dsize);
 
 	if (dfree_ret == (uint64_t)-1) {
 		/* Don't cache bad data. */

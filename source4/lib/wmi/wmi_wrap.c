@@ -39,13 +39,7 @@
 
 /* attribute recognised by some compilers to avoid 'unused' warnings */
 #ifndef SWIGUNUSED
-# if defined(__GNUC__)
-#   if !(defined(__cplusplus)) || (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4))
-#     define SWIGUNUSED __attribute__ ((__unused__)) 
-#   else
-#     define SWIGUNUSED
-#   endif
-# elif defined(__ICC)
+# ifdef HAVE___ATTRIBUTE__
 #   define SWIGUNUSED __attribute__ ((__unused__)) 
 # else
 #   define SWIGUNUSED 
@@ -239,7 +233,7 @@
    swig errors code.
 
    Finally, if the SWIG_CASTRANK_MODE is enabled, the result code
-   allows to return the 'cast rank', for example, if you have this
+   allows one to return the 'cast rank', for example, if you have this
 
        int food(double)
        int fooi(int);

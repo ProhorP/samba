@@ -169,6 +169,7 @@ static DATA_BLOB opt_nt_response;
 static int request_lm_key;
 static int request_user_session_key;
 static int use_cached_creds;
+static int offline_logon;
 
 static const char *require_membership_of;
 static const char *require_membership_of_sid;
@@ -290,7 +291,7 @@ static char winbind_separator(void)
 
 	if (winbindd_request_response(NULL, WINBINDD_INFO, NULL, &response) !=
 	    NSS_STATUS_SUCCESS) {
-		d_printf("could not obtain winbind separator!\n");
+		d_fprintf(stderr, "could not obtain winbind separator!\n");
 		return *lp_winbind_separator();
 	}
 
@@ -298,7 +299,7 @@ static char winbind_separator(void)
 	got_sep = True;
 
 	if (!sep) {
-		d_printf("winbind separator was NULL!\n");
+		d_fprintf(stderr, "winbind separator was NULL!\n");
 		return *lp_winbind_separator();
 	}
 
@@ -482,13 +483,17 @@ static bool check_plaintext_auth(const char *user, const char *pass,
 			sizeof(request.data.auth.require_membership_of_sid));
 	}
 
+	if (offline_logon) {
+		request.flags |= WBFLAG_PAM_CACHED_LOGIN;
+	}
+
 	result = winbindd_request_response(NULL, WINBINDD_PAM_AUTH, &request, &response);
 
 	/* Display response */
 
 	if (stdout_diagnostics) {
 		if ((result != NSS_STATUS_SUCCESS) && (response.data.auth.nt_status == 0)) {
-			d_printf("Reading winbind reply failed! (0x01)\n");
+			d_fprintf(stderr, "Reading winbind reply failed! (0x01)\n");
 		}
 
 		d_printf("%s: %s (0x%x)\n",
@@ -1654,7 +1659,7 @@ static void manage_ntlm_server_1_request(enum stdio_helper_mode stdio_helper_mod
 			uchar lm_key[8];
 			uchar user_session_key[16];
 			uint32_t flags = 0;
-
+			NTSTATUS nt_status;
 			if (full_username && !username) {
 				fstring fstr_user;
 				fstring fstr_domain;
@@ -1669,29 +1674,67 @@ static void manage_ntlm_server_1_request(enum stdio_helper_mode stdio_helper_mod
 				domain = smb_xstrdup(fstr_domain);
 			}
 
-			if (!domain) {
-				domain = smb_xstrdup(get_winbind_domain());
+			if (opt_password) {
+				DATA_BLOB nt_session_key, lm_session_key;
+				struct samr_Password lm_pw, nt_pw;
+				TALLOC_CTX *mem_ctx = talloc_new(NULL);
+				ZERO_STRUCT(user_session_key);
+				ZERO_STRUCT(lm_key);
+
+				nt_lm_owf_gen (opt_password, nt_pw.hash, lm_pw.hash);
+				nt_status = ntlm_password_check(mem_ctx,
+								true, true, 0,
+								&challenge,
+								&lm_response,
+								&nt_response,
+								username,
+								username,
+								domain,
+								&lm_pw, &nt_pw,
+								&nt_session_key,
+								&lm_session_key);
+				error_string = smb_xstrdup(get_friendly_nt_error_msg(nt_status));
+				if (ntlm_server_1_user_session_key) {
+					if (nt_session_key.length == sizeof(user_session_key)) {
+						memcpy(user_session_key,
+						       nt_session_key.data,
+						       sizeof(user_session_key));
+					}
+				}
+				if (ntlm_server_1_lm_session_key) {
+					if (lm_session_key.length == sizeof(lm_key)) {
+						memcpy(lm_key,
+						       lm_session_key.data,
+						       sizeof(lm_key));
+					}
+				}
+				TALLOC_FREE(mem_ctx);
+
+			} else {
+				if (!domain) {
+					domain = smb_xstrdup(get_winbind_domain());
+				}
+
+				if (ntlm_server_1_lm_session_key)
+					flags |= WBFLAG_PAM_LMKEY;
+
+				if (ntlm_server_1_user_session_key)
+					flags |= WBFLAG_PAM_USER_SESSION_KEY;
+
+				nt_status = contact_winbind_auth_crap(username,
+								      domain,
+								      lp_netbios_name(),
+								      &challenge,
+								      &lm_response,
+								      &nt_response,
+								      flags, 0,
+								      lm_key,
+								      user_session_key,
+								      &error_string,
+								      NULL);
 			}
 
-			if (ntlm_server_1_lm_session_key) 
-				flags |= WBFLAG_PAM_LMKEY;
-
-			if (ntlm_server_1_user_session_key) 
-				flags |= WBFLAG_PAM_USER_SESSION_KEY;
-
-			if (!NT_STATUS_IS_OK(
-				    contact_winbind_auth_crap(username, 
-							      domain, 
-							      lp_netbios_name(),
-							      &challenge, 
-							      &lm_response, 
-							      &nt_response, 
-							      flags, 0,
-							      lm_key, 
-							      user_session_key,
-							      &error_string,
-							      NULL))) {
-
+			if (!NT_STATUS_IS_OK(nt_status)) {
 				x_fprintf(x_stdout, "Authenticated: No\n");
 				x_fprintf(x_stdout, "Authentication-Error: %s\n.\n", error_string);
 			} else {
@@ -2197,7 +2240,8 @@ enum {
 	OPT_USE_CACHED_CREDS,
 	OPT_PAM_WINBIND_CONF,
 	OPT_TARGET_SERVICE,
-	OPT_TARGET_HOSTNAME
+	OPT_TARGET_HOSTNAME,
+	OPT_OFFLINE_LOGON
 };
 
  int main(int argc, const char **argv)
@@ -2234,6 +2278,9 @@ enum {
 		{ "request-lm-key", 0, POPT_ARG_NONE, &request_lm_key, OPT_LM_KEY, "Retrieve LM session key"},
 		{ "request-nt-key", 0, POPT_ARG_NONE, &request_user_session_key, OPT_USER_SESSION_KEY, "Retrieve User (NT) session key"},
 		{ "use-cached-creds", 0, POPT_ARG_NONE, &use_cached_creds, OPT_USE_CACHED_CREDS, "Use cached credentials if no password is given"},
+		{ "offline-logon", 0, POPT_ARG_NONE, &offline_logon,
+		  OPT_OFFLINE_LOGON,
+		  "Use cached passwords when DC is offline"},
 		{ "diagnostics", 0, POPT_ARG_NONE, &diagnostics,
 		  OPT_DIAGNOSTICS,
 		  "Perform diagnostics on the authentication chain"},

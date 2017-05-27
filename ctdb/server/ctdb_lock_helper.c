@@ -17,10 +17,15 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "tdb.h"
+#include "replace.h"
 #include "system/filesys.h"
+#include "system/network.h"
+
+#include <talloc.h>
+
 #include "ctdb_private.h"
+
+#include "common/system.h"
 
 static char *progname = NULL;
 
@@ -123,6 +128,8 @@ int main(int argc, char *argv[])
 	char result = 0;
 	int ppid;
 	const char *lock_type;
+
+	reset_scheduler();
 
 	progname = argv[0];
 

@@ -1344,7 +1344,7 @@ char *ads_parent_dn(const char *dn)
 {
 	ADS_STATUS status;
 	char *expr;
-	const char *attrs[] = {"*", "nTSecurityDescriptor", NULL};
+	const char *attrs[] = {"*", "msDS-SupportedEncryptionTypes", "nTSecurityDescriptor", NULL};
 
 	*res = NULL;
 
@@ -1494,6 +1494,17 @@ static ADS_STATUS ads_mod_ber(TALLOC_CTX *ctx, ADS_MODLIST *mods,
 }
 #endif
 
+static void ads_print_error(int ret, LDAP *ld)
+{
+	if (ret != 0) {
+		char *ld_error = NULL;
+		ldap_get_option(ld, LDAP_OPT_ERROR_STRING, &ld_error);
+		DEBUG(10,("AD LDAP failure %d (%s):\n%s\n", ret,
+			ldap_err2string(ret), ld_error));
+		SAFE_FREE(ld_error);
+	}
+}
+
 /**
  * Perform an ldap modify
  * @param ads connection to ads server
@@ -1529,6 +1540,7 @@ ADS_STATUS ads_gen_mod(ADS_STRUCT *ads, const char *mod_dn, ADS_MODLIST mods)
 	mods[i] = NULL;
 	ret = ldap_modify_ext_s(ads->ldap.ld, utf8_dn,
 				(LDAPMod **) mods, controls, NULL);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -1557,6 +1569,7 @@ ADS_STATUS ads_gen_add(ADS_STRUCT *ads, const char *new_dn, ADS_MODLIST mods)
 	mods[i] = NULL;
 
 	ret = ldap_add_s(ads->ldap.ld, utf8_dn, (LDAPMod**)mods);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -1578,6 +1591,7 @@ ADS_STATUS ads_del_dn(ADS_STRUCT *ads, char *del_dn)
 	}
 
 	ret = ldap_delete_s(ads->ldap.ld, utf8_dn);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -2063,8 +2077,10 @@ ADS_STATUS ads_add_service_principal_name(ADS_STRUCT *ads, const char *machine_n
  * @return 0 upon success, or non-zero otherwise
 **/
 
-ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads, const char *machine_name, 
-                                   const char *org_unit)
+ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads,
+				   const char *machine_name,
+				   const char *org_unit,
+				   uint32_t etype_list)
 {
 	ADS_STATUS ret;
 	char *samAccountName, *controlstr;
@@ -2120,15 +2136,7 @@ ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads, const char *machine_name,
 	ads_mod_str(ctx, &mods, "userAccountControl", controlstr);
 
 	if (func_level >= DS_DOMAIN_FUNCTION_2008) {
-		uint32_t etype_list = ENC_CRC32 | ENC_RSA_MD5 | ENC_RC4_HMAC_MD5;
 		const char *etype_list_str;
-
-#ifdef HAVE_ENCTYPE_AES128_CTS_HMAC_SHA1_96
-		etype_list |= ENC_HMAC_SHA1_96_AES128;
-#endif
-#ifdef HAVE_ENCTYPE_AES256_CTS_HMAC_SHA1_96
-		etype_list |= ENC_HMAC_SHA1_96_AES256;
-#endif
 
 		etype_list_str = talloc_asprintf(ctx, "%d", (int)etype_list);
 		if (etype_list_str == NULL) {
@@ -2260,7 +2268,8 @@ static void dump_sid(ADS_STRUCT *ads, const char *field, struct berval **values)
 	for (i=0; values[i]; i++) {
 		struct dom_sid sid;
 		fstring tmp;
-		if (!sid_parse(values[i]->bv_val, values[i]->bv_len, &sid)) {
+		if (!sid_parse((const uint8_t *)values[i]->bv_val,
+			       values[i]->bv_len, &sid)) {
 			return;
 		}
 		printf("%s: %s\n", field, sid_to_fstring(tmp, &sid));
@@ -2790,7 +2799,8 @@ int ads_count_replies(ADS_STRUCT *ads, void *res)
 
 	count = 0;
 	for (i=0; values[i]; i++) {
-		ret = sid_parse(values[i]->bv_val, values[i]->bv_len, &(*sids)[count]);
+		ret = sid_parse((const uint8_t *)values[i]->bv_val,
+				values[i]->bv_len, &(*sids)[count]);
 		if (ret) {
 			DEBUG(10, ("pulling SID: %s\n",
 				   sid_string_dbg(&(*sids)[count])));
@@ -3355,7 +3365,7 @@ ADS_STATUS ads_get_sid_from_extended_dn(TALLOC_CTX *mem_ctx,
 			return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
 		}
 
-		if (!sid_parse(buf, buf_len, sid)) {
+		if (!sid_parse((const uint8_t *)buf, buf_len, sid)) {
 			DEBUG(10,("failed to parse sid\n"));
 			return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
 		}
@@ -3929,10 +3939,16 @@ ADS_STATUS ads_check_ou_dn(TALLOC_CTX *mem_ctx,
 	const char *name;
 	char *ou_string;
 
-	exploded_dn = ldap_explode_dn(*account_ou, 0);
-	if (exploded_dn) {
-		ldap_value_free(exploded_dn);
-		return ADS_SUCCESS;
+	if (account_ou == NULL) {
+		return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
+	}
+
+	if (*account_ou != NULL) {
+		exploded_dn = ldap_explode_dn(*account_ou, 0);
+		if (exploded_dn) {
+			ldap_value_free(exploded_dn);
+			return ADS_SUCCESS;
+		}
 	}
 
 	ou_string = ads_ou_string(ads, *account_ou);

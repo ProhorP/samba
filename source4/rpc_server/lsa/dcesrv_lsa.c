@@ -33,6 +33,7 @@
 #include "libcli/security/session.h"
 #include "libcli/lsarpc/util_lsarpc.h"
 #include "lib/messaging/irpc.h"
+#include "libds/common/roles.h"
 
 #define DCESRV_INTERFACE_LSARPC_BIND(call, iface) \
        dcesrv_interface_lsarpc_bind(call, iface)

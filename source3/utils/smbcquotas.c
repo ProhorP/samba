@@ -236,7 +236,7 @@ static const char *quota_str_static(uint64_t val, bool special, bool _numeric)
 {
 	const char *result;
 
-	if (!_numeric&&special&&(val == SMB_NTQUOTAS_NO_LIMIT)) {
+	if (!_numeric && special && val == 0) {
 		return "NO LIMIT";
 	}
 	result = talloc_asprintf(talloc_tos(), "%"PRIu64, val);
@@ -568,6 +568,7 @@ int main(int argc, char *argv[])
 	static bool test_args = False;
 	struct cli_state *cli;
 	bool fix_user = False;
+	bool ok;
 	SMB_NTQUOTA_STRUCT qt;
 	TALLOC_CTX *frame = talloc_stackframe();
 	poptContext pc;
@@ -600,9 +601,6 @@ FSQFLAGS:QUOTA_ENABLED/DENY_DISK/LOG_SOFTLIMIT/LOG_HARD_LIMIT", "SETSTRING" },
 	setlinebuf(stdout);
 
 	fault_setup();
-
-	lp_load_global(get_dyn_CONFIGFILE());
-	load_interfaces();
 
 	smbcquotas_auth_info = user_auth_info_init(frame);
 	if (smbcquotas_auth_info == NULL) {
@@ -693,6 +691,17 @@ FSQFLAGS:QUOTA_ENABLED/DENY_DISK/LOG_SOFTLIMIT/LOG_HARD_LIMIT", "SETSTRING" },
 
 	poptFreeContext(pc);
 	popt_burn_cmdline_password(argc, argv);
+
+	ok = lp_load_global(get_dyn_CONFIGFILE());
+	if (!ok) {
+		DBG_ERR("ERROR: Loading config file %s - "
+			"run testparm to debug it\n",
+			get_dyn_CONFIGFILE());
+		exit(EXIT_PARSE_ERROR);
+	}
+
+	/* We must load interfaces after we load the smb.conf */
+	load_interfaces();
 
 	string_replace(path, '/', '\\');
 

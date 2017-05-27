@@ -585,6 +585,11 @@ struct tevent_req *cldap_search_send(TALLOC_CTX *mem_ctx,
 
 	talloc_set_destructor(state, cldap_search_state_destructor);
 
+	if (state->caller.cldap == NULL) {
+		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		goto post;
+	}
+
 	if (io->in.dest_address) {
 		if (cldap->connected) {
 			tevent_req_nterror(req, NT_STATUS_PIPE_CONNECTED);
@@ -675,7 +680,7 @@ struct tevent_req *cldap_search_send(TALLOC_CTX *mem_ctx,
 	}
 	tevent_req_set_callback(subreq, cldap_search_state_queue_done, req);
 
-	DLIST_ADD_END(cldap->searches.list, state, struct cldap_search_state *);
+	DLIST_ADD_END(cldap->searches.list, state);
 
 	return req;
 

@@ -119,6 +119,8 @@ static ADS_STATUS ads_cached_connection_connect(ADS_STRUCT **adsp,
 	ads->auth.renewable = renewable;
 	ads->auth.password = password;
 
+	ads->auth.flags |= ADS_AUTH_ALLOW_NTLMSSP;
+
 	ads->auth.realm = SMB_STRDUP(auth_realm);
 	if (!strupper_m(ads->auth.realm)) {
 		ads_destroy(&ads);
@@ -646,7 +648,7 @@ static NTSTATUS query_user(struct winbindd_domain *domain,
 		TALLOC_FREE(user);
 
 		if (info->full_name == NULL) {
-			/* this might fail so we dont check the return code */
+			/* this might fail so we don't check the return code */
 			wcache_query_user_fullname(domain,
 						   mem_ctx,
 						   sid,
@@ -1694,6 +1696,14 @@ static NTSTATUS trusted_domains(struct winbindd_domain *domain,
 					domain->domain_trust_attribs;
 			}
 			TALLOC_FREE(parent);
+
+			/*
+			 * We need to pass the modified properties
+			 * to the caller.
+			 */
+			trust->trust_flags = d.domain_flags;
+			trust->trust_type = d.domain_type;
+			trust->trust_attributes = d.domain_trust_attribs;
 
 			wcache_tdc_add_domain( &d );
 			ret_count++;

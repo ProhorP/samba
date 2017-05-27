@@ -29,7 +29,7 @@
 #include "messages.h"
 #include "libcli/security/security.h"
 #include "../libcli/smb/smb2_create_ctx.h"
-#include "lib/sys_rw.h"
+#include "lib/util/sys_rw.h"
 #include "lib/util/tevent_ntstatus.h"
 
 /*
@@ -94,6 +94,11 @@
 
 static int vfs_fruit_debug_level = DBGC_VFS;
 
+static struct global_fruit_config {
+	bool nego_aapl;	/* client negotiated AAPL */
+
+} global_fruit_config;
+
 #undef DBGC_CLASS
 #define DBGC_CLASS vfs_fruit_debug_level
 
@@ -126,7 +131,6 @@ struct fruit_config_data {
 	enum fruit_locking locking;
 	enum fruit_encoding encoding;
 	bool use_aapl;		/* config from smb.conf */
-	bool nego_aapl;		/* client negotiated AAPL */
 	bool use_copyfile;
 	bool readdir_attr_enabled;
 	bool unix_info_enabled;
@@ -1343,9 +1347,12 @@ static int init_fruit_config(vfs_handle_struct *handle)
 	}
 	config->encoding = (enum fruit_encoding)enumval;
 
-	config->veto_appledouble = lp_parm_bool(
-		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
-		"veto_appledouble", true);
+	if (config->rsrc == FRUIT_RSRC_ADFILE) {
+		config->veto_appledouble = lp_parm_bool(SNUM(handle->conn),
+							FRUIT_PARAM_TYPE_NAME,
+							"veto_appledouble",
+							true);
+	}
 
 	config->use_aapl = lp_parm_bool(
 		-1, FRUIT_PARAM_TYPE_NAME, "aapl", true);
@@ -1844,7 +1851,7 @@ static NTSTATUS check_aapl(vfs_handle_struct *handle,
 	}
 
 	if (aapl->data.length != 24) {
-		DEBUG(1, ("unexpected AAPL ctxt legnth: %ju\n",
+		DEBUG(1, ("unexpected AAPL ctxt length: %ju\n",
 			  (uintmax_t)aapl->data.length));
 		return NT_STATUS_INVALID_PARAMETER;
 	}
@@ -1932,7 +1939,7 @@ static NTSTATUS check_aapl(vfs_handle_struct *handle,
 				      SMB2_CREATE_TAG_AAPL,
 				      blob);
 	if (NT_STATUS_IS_OK(status)) {
-		config->nego_aapl = true;
+		global_fruit_config.nego_aapl = true;
 	}
 
 	return status;
@@ -3398,7 +3405,7 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 
 	status = check_aapl(handle, req, in_context_blobs, out_context_blobs);
 	if (!NT_STATUS_IS_OK(status)) {
-		return status;
+		goto fail;
 	}
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
@@ -3419,7 +3426,7 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 
 	fsp = *result;
 
-	if (config->nego_aapl) {
+	if (global_fruit_config.nego_aapl) {
 		if (config->copyfile_enabled) {
 			/*
 			 * Set a flag in the fsp. Gets used in
@@ -3496,7 +3503,7 @@ static NTSTATUS fruit_readdir_attr(struct vfs_handle_struct *handle,
 				struct fruit_config_data,
 				return NT_STATUS_UNSUCCESSFUL);
 
-	if (!config->use_aapl) {
+	if (!global_fruit_config.nego_aapl) {
 		return SMB_VFS_NEXT_READDIR_ATTR(handle, fname, mem_ctx, pattr_data);
 	}
 

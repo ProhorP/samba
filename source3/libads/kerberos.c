@@ -47,33 +47,44 @@ kerb_prompter(krb5_context ctx, void *data,
 	       krb5_prompt prompts[])
 {
 	if (num_prompts == 0) return 0;
-#if HAVE_KRB5_PROMPT_TYPE
-
-	/*
-	 * only heimdal has a prompt type and we need to deal with it here to
-	 * avoid loops.
-	 *
-	 * removing the prompter completely is not an option as at least these
-	 * versions would crash: heimdal-1.0.2 and heimdal-1.1. Later heimdal
-	 * version have looping detection and return with a proper error code.
-	 */
-
-	if ((num_prompts == 2) &&
-	    (prompts[0].type == KRB5_PROMPT_TYPE_NEW_PASSWORD) &&
-	    (prompts[1].type == KRB5_PROMPT_TYPE_NEW_PASSWORD_AGAIN)) {
+	if (num_prompts == 2) {
 		/*
-		 * We don't want to change passwords here. We're
-		 * called from heimal when the KDC returns
-		 * KRB5KDC_ERR_KEY_EXPIRED, but at this point we don't
-		 * have the chance to ask the user for a new
-		 * password. If we return 0 (i.e. success), we will be
-		 * spinning in the endless for-loop in
-		 * change_password() in
-		 * source4/heimdal/lib/krb5/init_creds_pw.c:526ff
+		 * only heimdal has a prompt type and we need to deal with it here to
+		 * avoid loops.
+		 *
+		 * removing the prompter completely is not an option as at least these
+		 * versions would crash: heimdal-1.0.2 and heimdal-1.1. Later heimdal
+		 * version have looping detection and return with a proper error code.
 		 */
-		return KRB5KDC_ERR_KEY_EXPIRED;
+
+#if HAVE_KRB5_PROMPT_TYPE /* Heimdal */
+		 if (prompts[0].type == KRB5_PROMPT_TYPE_NEW_PASSWORD &&
+		     prompts[1].type == KRB5_PROMPT_TYPE_NEW_PASSWORD_AGAIN) {
+			/*
+			 * We don't want to change passwords here. We're
+			 * called from heimal when the KDC returns
+			 * KRB5KDC_ERR_KEY_EXPIRED, but at this point we don't
+			 * have the chance to ask the user for a new
+			 * password. If we return 0 (i.e. success), we will be
+			 * spinning in the endless for-loop in
+			 * change_password() in
+			 * source4/heimdal/lib/krb5/init_creds_pw.c:526ff
+			 */
+			return KRB5KDC_ERR_KEY_EXPIRED;
+		}
+#elif defined(HAVE_KRB5_GET_PROMPT_TYPES) /* MIT */
+		krb5_prompt_type *prompt_types = NULL;
+
+		prompt_types = krb5_get_prompt_types(ctx);
+		if (prompt_types != NULL) {
+			if (prompt_types[0] == KRB5_PROMPT_TYPE_NEW_PASSWORD &&
+			    prompt_types[1] == KRB5_PROMPT_TYPE_NEW_PASSWORD_AGAIN) {
+				return KRB5KDC_ERR_KEY_EXP;
+			}
+		}
+#endif
 	}
-#endif /* HAVE_KRB5_PROMPT_TYPE */
+
 	memset(prompts[0].reply->data, '\0', prompts[0].reply->length);
 	if (prompts[0].reply->length > 0) {
 		if (data) {
@@ -833,6 +844,7 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	char *realm_upper = NULL;
 	bool result = false;
 	char *aes_enctypes = NULL;
+	const char *include_system_krb5 = "";
 	mode_t mask;
 
 	if (!lp_create_krb5_conf()) {
@@ -901,6 +913,12 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 	}
 #endif
 
+#if !defined(SAMBA4_USES_HEIMDAL)
+	if (lp_include_system_krb5_conf()) {
+		include_system_krb5 = "include /etc/krb5.conf";
+	}
+#endif
+
 	file_contents = talloc_asprintf(fname,
 					"[libdefaults]\n\tdefault_realm = %s\n"
 					"\tdefault_tgs_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
@@ -908,9 +926,11 @@ bool create_local_private_krb5_conf_for_domain(const char *realm,
 					"\tpreferred_enctypes = %s RC4-HMAC DES-CBC-CRC DES-CBC-MD5\n"
 					"\tdns_lookup_realm = false\n\n"
 					"[realms]\n\t%s = {\n"
-					"%s\t}\n",
+					"%s\t}\n"
+					"%s\n",
 					realm_upper, aes_enctypes, aes_enctypes, aes_enctypes,
-					realm_upper, kdc_ip_string);
+					realm_upper, kdc_ip_string,
+					include_system_krb5);
 
 	if (!file_contents) {
 		goto done;

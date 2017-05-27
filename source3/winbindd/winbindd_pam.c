@@ -771,9 +771,8 @@ failed:
 	 * Do not delete an existing valid credential cache, if the user
 	 * e.g. enters a wrong password
 	 */
-	if ((strequal(krb5_cc_type, "FILE") || strequal(krb5_cc_type, "WRFILE") || strequal(krb5_cc_type, "KEYRING"))
+	if ((strequal(krb5_cc_type, "FILE") || strequal(krb5_cc_type, "WRFILE"))
 	    && user_ccache_file != NULL) {
-		DEBUG(10,("winbindd_raw_kerberos_login: do not delete an existing valid credential cache\n"));
 		return result;
 	}
 
@@ -1381,8 +1380,8 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 		}
 		netr_attempts = 0;
 		if (domain->conn.netlogon_creds == NULL) {
-			DEBUG(3, ("No security credentials available for "
-				  "domain [%s]\n", domainname));
+			DBG_NOTICE("No security credentials available for "
+				  "domain [%s]\n", domainname);
 			result = NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
 		} else if (interactive && username != NULL && password != NULL) {
 			result = rpccli_netlogon_password_logon(domain->conn.netlogon_creds,
@@ -1432,8 +1431,9 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 		   rpc changetrustpw' */
 
 		if ( NT_STATUS_EQUAL(result, NT_STATUS_ACCESS_DENIED) ) {
-			DEBUG(3,("winbind_samlogon_retry_loop: sam_logon returned "
-				 "ACCESS_DENIED.  Maybe the trust account "
+			DEBUG(1,("winbind_samlogon_retry_loop: sam_logon returned "
+				 "ACCESS_DENIED.  Maybe the DC has Restrict "
+				 "NTLM set or the trust account "
 				"password was changed and we didn't know it. "
 				 "Killing connections to domain %s\n",
 				domainname));
@@ -1841,7 +1841,7 @@ process_result:
 						      cached_info3->base.full_name.string);
 			} else {
 
-				/* this might fail so we dont check the return code */
+				/* this might fail so we don't check the return code */
 				wcache_query_user_fullname(domain,
 						info3,
 						&user_sid,
@@ -2002,7 +2002,7 @@ process_result:
 						      cached_info3->base.full_name.string);
 			} else {
 
-				/* this might fail so we dont check the return code */
+				/* this might fail so we don't check the return code */
 				wcache_query_user_fullname(domain,
 						*info3,
 						&user_sid,
@@ -2559,7 +2559,15 @@ NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
 	}
 
 	if (logon_info) {
-		/* Signature verification succeeded, trust the PAC */
+		/*
+		 * Signature verification succeeded, we can
+		 * trust the PAC and prime the netsamlogon
+		 * and name2sid caches. DO NOT DO THIS
+		 * in the signature verification failed
+		 * code path.
+		 */
+		struct winbindd_domain *domain = NULL;
+
 		result = create_info3_from_pac_logon_info(state->mem_ctx,
 							logon_info,
 							&info3_copy);
@@ -2567,6 +2575,31 @@ NTSTATUS winbindd_pam_auth_pac_send(struct winbindd_cli_state *state,
 			return result;
 		}
 		netsamlogon_cache_store(NULL, info3_copy);
+
+		/*
+		 * We're in the parent here, so find the child
+		 * pointer from the PAC domain name.
+		 */
+		domain = find_domain_from_name_noinit(
+				info3_copy->base.logon_domain.string);
+		if (domain && domain->primary ) {
+			struct dom_sid user_sid;
+
+			sid_compose(&user_sid,
+				info3_copy->base.domain_sid,
+				info3_copy->base.rid);
+
+			cache_name2sid_trusted(domain,
+				info3_copy->base.logon_domain.string,
+				info3_copy->base.account_name.string,
+				SID_NAME_USER,
+				&user_sid);
+
+			DBG_INFO("PAC for user %s\%s SID %s primed cache\n",
+				info3_copy->base.logon_domain.string,
+				info3_copy->base.account_name.string,
+				sid_string_dbg(&user_sid));
+		}
 
 	} else {
 		/* Try without signature verification */

@@ -765,6 +765,11 @@ static int pam_winbind_request_log(struct pwb_context *ctx,
 			return PAM_IGNORE;
 		}
 		return retval;
+	case PAM_AUTHTOK_ERR:
+		/* Authentication token manipulation error */
+		_pam_log(ctx, LOG_WARNING, "user `%s' authentication token change failed "
+			"(pwd complexity/history/min_age not met?)", user);
+		return retval;
 	case PAM_SUCCESS:
 		/* Otherwise, the authentication looked good */
 		if (strcmp(fn, "wbcLogonUser") == 0) {
@@ -1262,7 +1267,7 @@ static void _pam_setup_krb5_env(struct pwb_context *ctx,
 	}
 
 	ret = pam_putenv(ctx->pamh, var);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log(ctx, LOG_ERR,
 			 "failed to set KRB5CCNAME to %s: %s",
 			 var, pam_strerror(ctx->pamh, ret));
@@ -1328,7 +1333,7 @@ static void _pam_set_data_string(struct pwb_context *ctx,
 
 	ret = pam_set_data(ctx->pamh, data_name, talloc_strdup(NULL, value),
 			   _pam_winbind_cleanup_func);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log_debug(ctx, LOG_DEBUG,
 			       "Could not set data %s: %s\n",
 			       data_name, pam_strerror(ctx->pamh, ret));
@@ -1656,7 +1661,7 @@ static int _pam_mkhomedir(struct pwb_context *ctx)
 		}
 
 		ret = _pam_create_homedir(ctx, create_dir, mode);
-		if (ret) {
+		if (ret != PAM_SUCCESS) {
 			return ret;
 		}
 	}
@@ -2369,7 +2374,7 @@ static const char *get_member_from_config(struct pwb_context *ctx)
 	const char *ret = NULL;
 	ret = get_conf_item_string(ctx, "require_membership_of",
 				   WINBIND_REQUIRED_MEMBERSHIP);
-	if (ret) {
+	if (ret != NULL) {
 		return ret;
 	}
 	return get_conf_item_string(ctx, "require-membership-of",
@@ -2488,7 +2493,7 @@ static int _pam_delete_cred(pam_handle_t *pamh, int flags,
 	ZERO_STRUCT(logoff);
 
 	retval = _pam_winbind_init_context(pamh, flags, argc, argv, type, &ctx);
-	if (retval) {
+	if (retval != PAM_SUCCESS) {
 		return retval;
 	}
 
@@ -2503,7 +2508,7 @@ static int _pam_delete_cred(pam_handle_t *pamh, int flags,
 		struct passwd *pwd = NULL;
 
 		retval = pam_get_user(pamh, &user, _("Username: "));
-		if (retval) {
+		if (retval != PAM_SUCCESS) {
 			_pam_log(ctx, LOG_ERR,
 				 "could not identify user");
 			goto out;
@@ -2624,7 +2629,7 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
 	retval = _pam_winbind_init_context(pamh, flags, argc, argv,
 					   PAM_WINBIND_AUTHENTICATE, &ctx);
-	if (retval) {
+	if (retval != PAM_SUCCESS) {
 		return retval;
 	}
 
@@ -2776,7 +2781,7 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_SETCRED, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2830,7 +2835,7 @@ int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_ACCT_MGMT, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2926,7 +2931,7 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_OPEN_SESSION, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2953,7 +2958,7 @@ int pam_sm_close_session(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_CLOSE_SESSION, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -3039,7 +3044,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_CHAUTHTOK, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -3054,7 +3059,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 	 * First get the name of a user
 	 */
 	ret = pam_get_user(pamh, &user, _("Username: "));
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log(ctx, LOG_ERR,
 			 "password - could not identify user");
 		goto out;
@@ -3215,7 +3220,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 
 		ret = winbind_chauthtok_request(ctx, user, pass_old,
 						pass_new, pwdlastset_update);
-		if (ret) {
+		if (ret != PAM_SUCCESS) {
 			pass_old = pass_new = NULL;
 			goto out;
 		}

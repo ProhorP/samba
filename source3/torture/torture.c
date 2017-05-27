@@ -41,7 +41,7 @@
 #include "util_tdb.h"
 #include "../libcli/smb/read_smb.h"
 #include "../libcli/smb/smbXcli_base.h"
-#include "lib/sys_rw_data.h"
+#include "lib/util/sys_rw_data.h"
 
 extern char *optarg;
 extern int optind;
@@ -3264,8 +3264,7 @@ static bool run_trans2test(int dummy)
 		printf("ERROR: qfilename failed (%s)\n", nt_errstr(status));
 		correct = False;
 	}
-
-	if (strcmp(pname, fname)) {
+	else if (strcmp(pname, fname)) {
 		printf("qfilename gave different name? [%s] [%s]\n",
 		       fname, pname);
 		correct = False;
@@ -9043,7 +9042,7 @@ static bool run_local_sid_to_string(int dummy) {
 
 static bool run_local_binary_to_sid(int dummy) {
 	struct dom_sid *sid = talloc(NULL, struct dom_sid);
-	static const char good_binary_sid[] = {
+	static const uint8_t good_binary_sid[] = {
 		0x1, /* revision number */
 		15, /* num auths */
 		0x1, 0x1, 0x1, 0x1, 0x1, 0x1, /* id_auth */
@@ -9064,7 +9063,7 @@ static bool run_local_binary_to_sid(int dummy) {
 		0x1, 0x1, 0x1, 0x1, /* auth[14] */
 	};
 
-	static const char long_binary_sid[] = {
+	static const uint8_t long_binary_sid[] = {
 		0x1, /* revision number */
 		15, /* num auths */
 		0x1, 0x1, 0x1, 0x1, 0x1, 0x1, /* id_auth */
@@ -9088,7 +9087,7 @@ static bool run_local_binary_to_sid(int dummy) {
 		0x1, 0x1, 0x1, 0x1, /* auth[17] */
 	};
 
-	static const char long_binary_sid2[] = {
+	static const uint8_t long_binary_sid2[] = {
 		0x1, /* revision number */
 		32, /* num auths */
 		0x1, 0x1, 0x1, 0x1, 0x1, 0x1, /* id_auth */
@@ -9879,6 +9878,49 @@ static bool run_local_tdb_writer(int dummy)
 	return true;
 }
 
+static bool run_local_canonicalize_path(int dummy)
+{
+	const char *src[] = {
+			"/foo/..",
+			"/..",
+			"/foo/bar/../baz",
+			"/foo/././",
+			"/../foo",
+			".././././",
+			".././././../../../boo",
+			"./..",
+			NULL
+			};
+	const char *dst[] = {
+			"/",
+			"/",
+			"/foo/baz",
+			"/foo",
+			"/foo",
+			"/",
+			"/boo",
+			"/",
+			NULL
+			};
+	unsigned int i;
+
+	for (i = 0; src[i] != NULL; i++) {
+		char *d = canonicalize_absolute_path(talloc_tos(), src[i]);
+		if (d == NULL) {
+			perror("talloc fail\n");
+			return false;
+		}
+		if (strcmp(d, dst[i]) != 0) {
+			d_fprintf(stderr,
+				"canonicalize missmatch %s -> %s != %s",
+				src[i], d, dst[i]);
+			return false;
+		}
+		talloc_free(d);
+	}
+	return true;
+}
+
 static double create_procs(bool (*fn)(int), bool *result)
 {
 	int i, status;
@@ -10071,6 +10113,7 @@ static struct {
 	{ "SMB2-TCON-DEPENDENCE", run_smb2_tcon_dependence },
 	{ "SMB2-MULTI-CHANNEL", run_smb2_multi_channel },
 	{ "SMB2-SESSION-REAUTH", run_smb2_session_reauth },
+	{ "SMB2-FTRUNCATE", run_smb2_ftruncate },
 	{ "CLEANUP1", run_cleanup1 },
 	{ "CLEANUP2", run_cleanup2 },
 	{ "CLEANUP3", run_cleanup3 },
@@ -10108,6 +10151,7 @@ static struct {
 	{ "local-tdb-writer", run_local_tdb_writer, 0 },
 	{ "LOCAL-DBWRAP-CTDB", run_local_dbwrap_ctdb, 0 },
 	{ "LOCAL-BENCH-PTHREADPOOL", run_bench_pthreadpool, 0 },
+	{ "LOCAL-CANONICALIZE-PATH", run_local_canonicalize_path, 0 },
 	{ "qpathinfo-bufsize", run_qpathinfo_bufsize, 0 },
 	{NULL, NULL, 0}};
 

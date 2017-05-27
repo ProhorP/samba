@@ -593,8 +593,8 @@ int vfs_allocate_file_space(files_struct *fsp, uint64_t len)
 
 	len -= fsp->fsp_name->st.st_ex_size;
 	len /= 1024; /* Len is now number of 1k blocks needed. */
-	space_avail = get_dfree_info(conn, fsp->fsp_name->base_name,
-				     &bsize, &dfree, &dsize);
+	space_avail =
+	    get_dfree_info(conn, fsp->fsp_name, &bsize, &dfree, &dsize);
 	if (space_avail == (uint64_t)-1) {
 		return -1;
 	}
@@ -1149,11 +1149,20 @@ NTSTATUS check_reduced_name_with_privilege(connection_struct *conn,
 /*******************************************************************
  Reduce a file name, removing .. elements and checking that
  it is below dir in the heirachy. This uses realpath.
+
+ If cwd_name == NULL then fname is a client given path relative
+ to the root path of the share.
+
+ If cwd_name != NULL then fname is a client given path relative
+ to cwd_name. cwd_name is relative to the root path of the share.
 ********************************************************************/
 
-NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
+NTSTATUS check_reduced_name(connection_struct *conn,
+				const char *cwd_name,
+				const char *fname)
 {
 	char *resolved_name = NULL;
+	char *new_fname = NULL;
 	bool allow_symlinks = true;
 	bool allow_widelinks = false;
 
@@ -1277,8 +1286,11 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 			/* fname can't have changed in resolved_path. */
 			const char *p = &resolved_name[rootdir_len];
 
-			/* *p can be '\0' if fname was "." */
-			if (*p == '\0' && ISDOT(fname)) {
+			/*
+			 * UNIX filesystem semantics, names consisting
+			 * only of "." or ".." CANNOT be symlinks.
+			 */
+			if (ISDOT(fname) || ISDOTDOT(fname)) {
 				goto out;
 			}
 
@@ -1292,11 +1304,32 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 			}
 
 			p++;
+
+			/*
+			 * If cwd_name is present and not ".",
+			 * then fname is relative to that, not
+			 * the root of the share. Make sure the
+			 * path we check is the one the client
+			 * sent (cwd_name+fname).
+			 */
+			if (cwd_name != NULL && !ISDOT(cwd_name)) {
+				new_fname = talloc_asprintf(talloc_tos(),
+							"%s/%s",
+							cwd_name,
+							fname);
+				if (new_fname == NULL) {
+					SAFE_FREE(resolved_name);
+					return NT_STATUS_NO_MEMORY;
+				}
+				fname = new_fname;
+			}
+
 			if (strcmp(fname, p)!=0) {
 				DEBUG(2, ("check_reduced_name: Bad access "
 					"attempt: %s is a symlink to %s\n",
 					  fname, p));
 				SAFE_FREE(resolved_name);
+				TALLOC_FREE(new_fname);
 				return NT_STATUS_ACCESS_DENIED;
 			}
 		}
@@ -1306,6 +1339,7 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 
 	DBG_INFO("%s reduced to %s\n", fname, resolved_name);
 	SAFE_FREE(resolved_name);
+	TALLOC_FREE(new_fname);
 	return NT_STATUS_OK;
 }
 
@@ -1404,12 +1438,12 @@ uint64_t smb_vfs_call_disk_free(struct vfs_handle_struct *handle,
 	return handle->fns->disk_free_fn(handle, path, bsize, dfree, dsize);
 }
 
-int smb_vfs_call_get_quota(struct vfs_handle_struct *handle,
+int smb_vfs_call_get_quota(struct vfs_handle_struct *handle, const char *path,
 			   enum SMB_QUOTA_TYPE qtype, unid_t id,
 			   SMB_DISK_QUOTA *qt)
 {
 	VFS_FIND(get_quota);
-	return handle->fns->get_quota_fn(handle, qtype, id, qt);
+	return handle->fns->get_quota_fn(handle, path, qtype, id, qt);
 }
 
 int smb_vfs_call_set_quota(struct vfs_handle_struct *handle,
