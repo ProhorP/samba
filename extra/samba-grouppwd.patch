@@ -1,0 +1,19 @@
+From ef1751dbba0d855444fca0a7c33b3f7a2c38533d Mon Sep 17 00:00:00 2001
+From: Alexey Shabalin <shaba@altlinux.org>
+Date: Thu, 27 Dec 2012 13:20:28 +0400
+Subject: apply samba-3.2.0pre1-grouppwd.patch
+
+
+diff --git a/source3/winbindd/winbindd_group.c b/source3/winbindd/winbindd_group.c
+index ae461bf..212aaec 100644
+--- a/source3/winbindd/winbindd_group.c
++++ b/source3/winbindd/winbindd_group.c
+@@ -69,7 +69,7 @@ bool fill_grent(TALLOC_CTX *mem_ctx, struct winbindd_gr *gr,
+ 	/* Group name and password */
+ 
+ 	strlcpy(gr->gr_name, full_group_name, sizeof(gr->gr_name));
+-	strlcpy(gr->gr_passwd, "x", sizeof(gr->gr_passwd));
++	strlcpy(gr->gr_passwd, "*", sizeof(gr->gr_passwd));
+ 
+ 	return True;
+ }
