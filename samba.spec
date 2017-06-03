@@ -3,7 +3,7 @@
 Summary: Server and Client software to interoperate with Windows machines
 Name: samba
 Version: 3.5.14
-Release: alt1.M60P.1
+Release: alt1.M60P.1.M60C.1
 License: GPLv3+ and LGPLv3+
 Group: System/Servers
 Url: http://www.samba.org/
@@ -657,6 +657,10 @@ true
 %_pixmapsdir/samba/logo-small.png
 
 %changelog
+* Sat Jun 03 2017 Gleb F-Malinovskiy <glebfm@altlinux.org> 3.5.14-alt1.M60P.1.M60C.1
+- smbd: applied upstream patch for remote code execution from a writable
+  share (fixes CVE-2017-7494).
+
 * Wed Apr 11 2012 Vitaly Kuznetsov <vitty@altlinux.ru> 3.5.14-alt1.M60P.1
 - 3.5.14 (CVE-2012-1182)
 
