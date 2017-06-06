@@ -46,8 +46,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.6.4
-Release: alt2%ubt
+Version: 4.6.5
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1360,6 +1360,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Jun 06 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt1%ubt
+- Udpate to first summer release
+
 * Mon Jun 05 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.4-alt2%ubt
 - Add libldb-modules-DC package with domain controller ldb modules for ldb-tools
 - Add samba-DC-common-libs with libraries for common modules
