@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.6.5
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -168,7 +168,6 @@ packages of Samba.
 %package libs
 Summary: Samba libraries
 Group: System/Libraries
-Conflicts: %rname-libs
 Conflicts: %rname-dc-libs
 
 %if_with libnetapi
@@ -259,7 +258,8 @@ Samba netapi development files
 %package -n python-module-%name
 Summary: Samba Python libraries
 Group: Networking/Other
-Requires: %name-libs = %version-%release
+Requires: %name-common-libs = %version-%release
+Conflicts: python-module-%rname
 
 %add_python_req_skip Tdb
 
@@ -1360,6 +1360,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Jun 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt2%ubt
+- Remove conflict samba-DC-libs with samba-libs
+- Adjust python module requirement to samba-DC-common-libs
+- Add conflict python-module-samba-DC with python-module-samba
+
 * Tue Jun 06 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt1%ubt
 - Udpate to first summer release
 
