@@ -44,7 +44,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.4.14
+Version: 4.4.15
 Release: alt0.M70C.1
 
 Group:   System/Servers
@@ -1252,6 +1252,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.15-alt0.M70C.1
+- Update to summer security release
+- Security fixes:
+  + CVE-2017-11103 Orpheus' Lyre KDC-REP service name validation
+
 * Thu May 25 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.14-alt0.M70C.1
 - Update with latest security fixes:
   + CVE-2016-2123 Fix DNS vuln ZDI-CAN-3995
