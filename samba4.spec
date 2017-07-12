@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.4.14
+Version: 4.4.15
 Release: alt0.M70C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1327,6 +1327,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.15-alt0.M70C.1
+- Update to summer security release
+- Security fixes:
+  + CVE-2017-11103 Orpheus' Lyre KDC-REP service name validation
+  (Samba binaries built against MIT Kerberos are not vulnerable.)
+
 * Sun May 28 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.4.14-alt0.M70C.1
 - Upgrade to supported version 4.4.x
 - Update with latest security fixes:
