@@ -45,7 +45,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.5.10
+Version: 4.5.12
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -1325,6 +1325,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.12-alt1%ubt
+- Update to summer security release
+- Security fixes:
+  + CVE-2017-11103 Orpheus' Lyre KDC-REP service name validation
+
 * Wed May 24 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.10-alt1%ubt
 - Update to second spring security release
 - Fix longtime initialization bug in ldb proxy
