@@ -1,0 +1,13 @@
+object 6e6361ee4fd28098638850e3eda3d4ac2c3396f4
+type commit
+tag samba-4.5.12
+tagger Stefan Metzmacher <metze@samba.org> 1499851488 +0200
+
+samba: tag release samba-4.5.12
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1
+
+iD8DBQBZZergbzORW2Vot+oRApt3AJ9KO1/VAZbExPNbyos8Ri7Hm7SRbwCfeftN
+RLw3Vs7cH4TA3MnOrdJr9gk=
+=yp/F
+-----END PGP SIGNATURE-----
