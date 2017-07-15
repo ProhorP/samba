@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.6.6
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1358,6 +1358,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Jul 15 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt2%ubt
+- Rebuild with universal build tag (aka ubt macros) for p7 and c7
+
 * Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt1%ubt
 - Update to summer security release
 - Security fixes:
