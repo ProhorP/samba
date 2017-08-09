@@ -46,8 +46,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.6.6
-Release: alt2%ubt
+Version: 4.6.7
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1358,6 +1358,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Aug 09 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt1%ubt
+- Update to second summer release
+
 * Sat Jul 15 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt2%ubt
 - Rebuild with universal build tag (aka ubt macros) for p7 and c7
 
