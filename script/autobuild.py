@@ -48,9 +48,6 @@ defaulttasks = [ "ctdb", "samba", "samba-xc", "samba-o3", "samba-ctdb", "samba-l
 if os.environ.get("AUTOBUILD_SKIP_SAMBA_O3", "0") == "1":
     defaulttasks.remove("samba-o3")
 
-if os.environ.get("AUTOBUILD_SKIP_SAMBA_O3", "0") == "1":
-    defaulttasks.remove("samba-o3")
-
 samba_configure_params = " --picky-developer ${PREFIX} ${EXTRA_PYTHON} --with-profiling-data"
 
 samba_libs_envvars =  "PYTHONPATH=${PYTHON_PREFIX}/site-packages:$PYTHONPATH"
