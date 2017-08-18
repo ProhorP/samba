@@ -1917,7 +1917,5 @@ struct torture_suite *ndr_spoolss_suite(TALLOC_CTX *ctx)
 	torture_suite_add_ndr_pull_fn_test(suite, spoolss_SetPrinter, setprinter_level_3_xpsp3_req_data, NDR_IN, setprinter_level_3_xpsp3_req_check);
 	torture_suite_add_ndr_pull_fn_test(suite, winspool_AsyncSetPrinter, setprinter_level_3_xpsp3_req_data, NDR_IN, NULL);
 
-	torture_suite_add_ndr_pull_fn_test(suite, spoolss_SetPrinter, setprinter_level_3_xpsp3_req_data, NDR_IN, setprinter_level_3_xpsp3_req_check);
-
 	return suite;
 }
