@@ -4,7 +4,7 @@
 
 %define rname samba
 %define _localstatedir /var
-%define libwbc_alternatives_version 0.13
+%define libwbc_alternatives_version 0.14
 
 # internal libs
 %def_without talloc
@@ -46,8 +46,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.6.7
-Release: alt2%ubt
+Version: 4.7.0
+Release: alt0.rc4%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -119,11 +119,11 @@ BuildRequires: libiniparser-devel
 BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
-%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.9 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.31 python-module-tevent}
-%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.12  python-module-tdb}
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.33 python-module-tevent}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.14  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.29 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.1 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %if %ubt_id <= "M70P"
 %{?_with_systemd:BuildRequires: systemd-devel}
@@ -683,6 +683,9 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 # remove tests form python modules
 rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
+# remove cmocka library
+rm -f %buildroot%_samba_libdir/libcmocka-samba4.so
+
 # move pkgconfig to standart path:
 [ "%_libdir" != "%_samba_libdir" ] && mv %buildroot{%_samba_libdir/pkgconfig,%_libdir}
 
@@ -1009,13 +1012,13 @@ TDB_NO_FSYNC=1 %make_build test
 # libraries needed by the public libraries
 %_samba_mod_libdir/libCHARSET3-samba4.so
 %_samba_mod_libdir/libMESSAGING-samba4.so
+%_samba_mod_libdir/libMESSAGING-SEND-samba4.so
 %_samba_mod_libdir/libLIBWBCLIENT-OLD-samba4.so
 %_samba_mod_libdir/libaddns-samba4.so
 %_samba_mod_libdir/libads-samba4.so
 %_samba_mod_libdir/libasn1util-samba4.so
 %_samba_mod_libdir/libauth-samba4.so
 %_samba_mod_libdir/libauth4-samba4.so
-%_samba_mod_libdir/libauth-sam-reply-samba4.so
 %_samba_mod_libdir/libauth-unix-token-samba4.so
 %_samba_mod_libdir/libauthkrb5-samba4.so
 %_samba_mod_libdir/libcli-ldap-common-samba4.so
@@ -1027,6 +1030,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libcliauth-samba4.so
 %_samba_mod_libdir/libcluster-samba4.so
 %_samba_mod_libdir/libcmdline-credentials-samba4.so
+%_samba_mod_libdir/libcommon-auth-samba4.so
 %_samba_mod_libdir/libdbwrap-samba4.so
 %_samba_mod_libdir/libdcerpc-samba-samba4.so
 %_samba_mod_libdir/libdcerpc-samba4.so
@@ -1358,6 +1362,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Aug 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc4%ubt
+- Update to the fourth release candidate of Samba 4.7
+- Revert removed lpcfg_register_defaults_hook()
+
 * Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2%ubt
 - Clean code from old merged chunks
 
