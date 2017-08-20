@@ -134,7 +134,6 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 					const char *server,
 					const char *share,
 					const struct user_auth_info *auth_info,
-					bool show_sessetup,
 					bool force_encrypt,
 					int max_protocol,
 					int port,
@@ -259,15 +258,6 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 		return status;
 	}
 
-	if ( show_sessetup ) {
-		if (*c->server_domain) {
-			DEBUG(0,("Domain=[%s] OS=[%s] Server=[%s]\n",
-				c->server_domain,c->server_os,c->server_type));
-		} else if (*c->server_os || *c->server_type) {
-			DEBUG(0,("OS=[%s] Server=[%s]\n",
-				 c->server_os,c->server_type));
-		}
-	}
 	DEBUG(4,(" session setup ok\n"));
 
 	/* here's the fun part....to support 'msdfs proxy' shares
@@ -281,7 +271,7 @@ static NTSTATUS do_connect(TALLOC_CTX *ctx,
 				force_encrypt, creds)) {
 		cli_shutdown(c);
 		return do_connect(ctx, newserver,
-				newshare, auth_info, false,
+				newshare, auth_info,
 				force_encrypt, max_protocol,
 				port, name_type, pcli);
 	}
@@ -336,7 +326,6 @@ static NTSTATUS cli_cm_connect(TALLOC_CTX *ctx,
 			       const char *server,
 			       const char *share,
 			       const struct user_auth_info *auth_info,
-			       bool show_hdr,
 			       bool force_encrypt,
 			       int max_protocol,
 			       int port,
@@ -348,7 +337,7 @@ static NTSTATUS cli_cm_connect(TALLOC_CTX *ctx,
 
 	status = do_connect(ctx, server, share,
 				auth_info,
-				show_hdr, force_encrypt, max_protocol,
+				force_encrypt, max_protocol,
 				port, name_type, &cli);
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -424,7 +413,6 @@ NTSTATUS cli_cm_open(TALLOC_CTX *ctx,
 				const char *server,
 				const char *share,
 				const struct user_auth_info *auth_info,
-				bool show_hdr,
 				bool force_encrypt,
 				int max_protocol,
 				int port,
@@ -454,7 +442,6 @@ NTSTATUS cli_cm_open(TALLOC_CTX *ctx,
 				server,
 				share,
 				auth_info,
-				show_hdr,
 				force_encrypt,
 				max_protocol,
 				port,
@@ -919,6 +906,13 @@ NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
 		root_tcon = rootcli->smb1.tcon;
 	}
 
+	/*
+	 * Avoid more than one leading directory separator
+	 */
+	while (IS_DIRECTORY_SEP(path[0]) && IS_DIRECTORY_SEP(path[1])) {
+		path++;
+	}
+
 	if (!smbXcli_tcon_is_dfs_share(root_tcon)) {
 		*targetcli = rootcli;
 		*pp_targetpath = talloc_strdup(ctx, path);
@@ -979,7 +973,6 @@ NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
 			     smbXcli_conn_remote_name(rootcli->conn),
 			     "IPC$",
 			     dfs_auth_info,
-			     false,
 			     smb1cli_conn_encryption_on(rootcli->conn),
 			     smbXcli_conn_protocol(rootcli->conn),
 			     0,
@@ -1037,7 +1030,6 @@ NTSTATUS cli_resolve_path(TALLOC_CTX *ctx,
 				dfs_refs[count].server,
 				dfs_refs[count].share,
 				dfs_auth_info,
-				false,
 				smb1cli_conn_encryption_on(rootcli->conn),
 				smbXcli_conn_protocol(rootcli->conn),
 				0,

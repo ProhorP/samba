@@ -933,8 +933,9 @@ again:
 */
 int ctdb_record_store(struct ctdb_record_handle *h, TDB_DATA data)
 {
-	if (h->ctdb_db->persistent) {
-		DEBUG(DEBUG_ERR, (__location__ " ctdb_record_store prohibited for persistent dbs\n"));
+	if (! ctdb_db_volatile(h->ctdb_db)) {
+		DEBUG(DEBUG_ERR,
+		      ("ctdb_record_store prohibited for non-volatile dbs\n"));
 		return -1;
 	}
 
@@ -2079,21 +2080,51 @@ int ctdb_statistics_reset(struct ctdb_context *ctdb, uint32_t destnode)
 }
 
 /*
+ * Get db open flags
+ */
+int ctdb_ctrl_db_open_flags(struct ctdb_context *ctdb, uint32_t db_id,
+			    int *tdb_flags)
+{
+	TDB_DATA indata, outdata;
+	int ret;
+	int32_t res;
+
+	indata.dptr = (uint8_t *)&db_id;
+	indata.dsize = sizeof(db_id);
+
+	ret = ctdb_control(ctdb, CTDB_CURRENT_NODE, 0,
+			   CTDB_CONTROL_DB_OPEN_FLAGS, 0, indata,
+			   ctdb, &outdata, &res, NULL, NULL);
+	if (ret != 0 || res != 0) {
+		D_ERR("ctdb control for db open flags failed\n");
+		return  -1;
+	}
+
+	if (outdata.dsize != sizeof(int32_t)) {
+		D_ERR(__location__ " expected %zi bytes, received %zi bytes\n",
+		      sizeof(int32_t), outdata.dsize);
+		talloc_free(outdata.dptr);
+		return -1;
+	}
+
+	*tdb_flags = *(int32_t *)outdata.dptr;
+	talloc_free(outdata.dptr);
+	return 0;
+}
+
+/*
   attach to a specific database - client call
 */
 struct ctdb_db_context *ctdb_attach(struct ctdb_context *ctdb,
 				    struct timeval timeout,
 				    const char *name,
-				    bool persistent,
-				    uint32_t tdb_flags)
+				    bool persistent)
 {
 	struct ctdb_db_context *ctdb_db;
 	TDB_DATA data;
 	int ret;
 	int32_t res;
-#ifdef TDB_MUTEX_LOCKING
-	uint32_t mutex_enabled = 0;
-#endif
+	int tdb_flags;
 
 	ctdb_db = ctdb_db_handle(ctdb, name);
 	if (ctdb_db) {
@@ -2110,32 +2141,8 @@ struct ctdb_db_context *ctdb_attach(struct ctdb_context *ctdb,
 	data.dptr = discard_const(name);
 	data.dsize = strlen(name)+1;
 
-	/* CTDB has switched to using jenkins hash for volatile databases.
-	 * Even if tdb_flags do not explicitly mention TDB_INCOMPATIBLE_HASH,
-	 * always set it.
-	 */
-	if (!persistent) {
-		tdb_flags |= TDB_INCOMPATIBLE_HASH;
-	}
-
-#ifdef TDB_MUTEX_LOCKING
-	if (!persistent) {
-		ret = ctdb_ctrl_get_tunable(ctdb, timeval_current_ofs(3,0),
-					    CTDB_CURRENT_NODE,
-					    "TDBMutexEnabled",
-					    &mutex_enabled);
-		if (ret != 0) {
-			DEBUG(DEBUG_WARNING, ("Assuming no mutex support.\n"));
-		}
-
-		if (mutex_enabled == 1) {
-			tdb_flags |= (TDB_MUTEX_LOCKING | TDB_CLEAR_IF_FIRST);
-		}
-	}
-#endif
-
 	/* tell ctdb daemon to attach */
-	ret = ctdb_control(ctdb, CTDB_CURRENT_NODE, tdb_flags, 
+	ret = ctdb_control(ctdb, CTDB_CURRENT_NODE, 0,
 			   persistent?CTDB_CONTROL_DB_ATTACH_PERSISTENT:CTDB_CONTROL_DB_ATTACH,
 			   0, data, ctdb_db, &data, &res, NULL, NULL);
 	if (ret != 0 || res != 0 || data.dsize != sizeof(uint32_t)) {
@@ -2143,7 +2150,7 @@ struct ctdb_db_context *ctdb_attach(struct ctdb_context *ctdb,
 		talloc_free(ctdb_db);
 		return NULL;
 	}
-	
+
 	ctdb_db->db_id = *(uint32_t *)data.dptr;
 	talloc_free(data.dptr);
 
@@ -2154,20 +2161,12 @@ struct ctdb_db_context *ctdb_attach(struct ctdb_context *ctdb,
 		return NULL;
 	}
 
-	if (persistent) {
-		tdb_flags = TDB_DEFAULT;
-	} else {
-		tdb_flags = TDB_NOSYNC;
-#ifdef TDB_MUTEX_LOCKING
-		if (mutex_enabled) {
-			tdb_flags |= (TDB_MUTEX_LOCKING | TDB_CLEAR_IF_FIRST);
-		}
-#endif
+	ret = ctdb_ctrl_db_open_flags(ctdb, ctdb_db->db_id, &tdb_flags);
+	if (ret != 0) {
+		D_ERR("Failed to get tdb_flags for database '%s'\n", name);
+		talloc_free(ctdb_db);
+		return NULL;
 	}
-	if (ctdb->valgrinding) {
-		tdb_flags |= TDB_NOMMAP;
-	}
-	tdb_flags |= TDB_DISALLOW_NESTING;
 
 	ctdb_db->ltdb = tdb_wrap_open(ctdb_db, ctdb_db->db_path, 0, tdb_flags,
 				      O_RDWR, 0);
@@ -2177,7 +2176,9 @@ struct ctdb_db_context *ctdb_attach(struct ctdb_context *ctdb,
 		return NULL;
 	}
 
-	ctdb_db->persistent = persistent;
+	if (persistent) {
+		ctdb_db->db_flags = CTDB_DB_FLAGS_PERSISTENT;
+	}
 
 	DLIST_ADD(ctdb->db_list, ctdb_db);
 
@@ -3924,7 +3925,7 @@ struct ctdb_transaction_handle *ctdb_transaction_start(struct ctdb_db_context *c
 	}
 
 	h->g_lock_db = ctdb_attach(h->ctdb_db->ctdb, timeval_current_ofs(3,0),
-				   "g_lock.tdb", false, 0);
+				   "g_lock.tdb", false);
 	if (!h->g_lock_db) {
 		DEBUG(DEBUG_ERR, (__location__ " unable to attach to g_lock.tdb\n"));
 		talloc_free(h);
@@ -4050,7 +4051,7 @@ static int ctdb_fetch_db_seqnum(struct ctdb_db_context *ctdb_db, uint64_t *seqnu
 	}
 
 	if (data.dsize != sizeof(*seqnum)) {
-		DEBUG(DEBUG_ERR, (__location__ " Invalid data recived len=%zi\n",
+		DEBUG(DEBUG_ERR, (__location__ " Invalid data received len=%zi\n",
 				  data.dsize));
 		talloc_free(data.dptr);
 		return -1;

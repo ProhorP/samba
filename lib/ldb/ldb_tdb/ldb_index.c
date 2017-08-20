@@ -54,6 +54,10 @@ int ltdb_index_transaction_start(struct ldb_module *module)
 {
 	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module), struct ltdb_private);
 	ltdb->idxptr = talloc_zero(ltdb, struct ltdb_idxptr);
+	if (ltdb->idxptr == NULL) {
+		return ldb_oom(ldb_module_get_ctx(module));
+	}
+
 	return LDB_SUCCESS;
 }
 
@@ -445,12 +449,34 @@ static struct ldb_dn *ltdb_index_key(struct ldb_context *ldb,
 /*
   see if a attribute value is in the list of indexed attributes
 */
-static bool ltdb_is_indexed(const struct ldb_message *index_list, const char *attr)
+static bool ltdb_is_indexed(struct ldb_module *module,
+			    struct ltdb_private *ltdb,
+			    const char *attr)
 {
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
 	unsigned int i;
 	struct ldb_message_element *el;
 
-	el = ldb_msg_find_element(index_list, LTDB_IDXATTR);
+	if (ldb->schema.index_handler_override) {
+		const struct ldb_schema_attribute *a
+			= ldb_schema_attribute_by_name(ldb, attr);
+
+		if (a == NULL) {
+			return false;
+		}
+
+		if (a->flags & LDB_ATTR_FLAG_INDEXED) {
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	if (!ltdb->cache->attribute_indexes) {
+		return false;
+	}
+
+	el = ldb_msg_find_element(ltdb->cache->indexlist, LTDB_IDXATTR);
 	if (el == NULL) {
 		return false;
 	}
@@ -481,8 +507,8 @@ static bool ltdb_is_indexed(const struct ldb_message *index_list, const char *at
   equality search only)
  */
 static int ltdb_index_dn_simple(struct ldb_module *module,
+				struct ltdb_private *ltdb,
 				const struct ldb_parse_tree *tree,
-				const struct ldb_message *index_list,
 				struct dn_list *list)
 {
 	struct ldb_context *ldb;
@@ -496,7 +522,7 @@ static int ltdb_index_dn_simple(struct ldb_module *module,
 
 	/* if the attribute isn't in the list of indexed attributes then
 	   this node needs a full search */
-	if (!ltdb_is_indexed(index_list, tree->u.equality.attr)) {
+	if (!ltdb_is_indexed(module, ltdb, tree->u.equality.attr)) {
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
@@ -517,12 +543,10 @@ static bool list_union(struct ldb_context *, struct dn_list *, const struct dn_l
   return a list of dn's that might match a leaf indexed search
  */
 static int ltdb_index_dn_leaf(struct ldb_module *module,
+			      struct ltdb_private *ltdb,
 			      const struct ldb_parse_tree *tree,
-			      const struct ldb_message *index_list,
 			      struct dn_list *list)
 {
-	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module),
-						    struct ltdb_private);
 	if (ltdb->disallow_dn_filter &&
 	    (ldb_attr_cmp(tree->u.equality.attr, "dn") == 0)) {
 		/* in AD mode we do not support "(dn=...)" search filters */
@@ -540,7 +564,7 @@ static int ltdb_index_dn_leaf(struct ldb_module *module,
 		list->count = 1;
 		return LDB_SUCCESS;
 	}
-	return ltdb_index_dn_simple(module, tree, index_list, list);
+	return ltdb_index_dn_simple(module, ltdb, tree, list);
 }
 
 
@@ -653,8 +677,8 @@ static bool list_union(struct ldb_context *ldb,
 }
 
 static int ltdb_index_dn(struct ldb_module *module,
+			 struct ltdb_private *ltdb,
 			 const struct ldb_parse_tree *tree,
-			 const struct ldb_message *index_list,
 			 struct dn_list *list);
 
 
@@ -662,8 +686,8 @@ static int ltdb_index_dn(struct ldb_module *module,
   process an OR list (a union)
  */
 static int ltdb_index_dn_or(struct ldb_module *module,
+			    struct ltdb_private *ltdb,
 			    const struct ldb_parse_tree *tree,
-			    const struct ldb_message *index_list,
 			    struct dn_list *list)
 {
 	struct ldb_context *ldb;
@@ -683,7 +707,8 @@ static int ltdb_index_dn_or(struct ldb_module *module,
 			return LDB_ERR_OPERATIONS_ERROR;
 		}
 
-		ret = ltdb_index_dn(module, tree->u.list.elements[i], index_list, list2);
+		ret = ltdb_index_dn(module, ltdb,
+				    tree->u.list.elements[i], list2);
 
 		if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 			/* X || 0 == X */
@@ -715,8 +740,8 @@ static int ltdb_index_dn_or(struct ldb_module *module,
   NOT an index results
  */
 static int ltdb_index_dn_not(struct ldb_module *module,
+			     struct ltdb_private *ltdb,
 			     const struct ldb_parse_tree *tree,
-			     const struct ldb_message *index_list,
 			     struct dn_list *list)
 {
 	/* the only way to do an indexed not would be if we could
@@ -746,8 +771,8 @@ static bool ltdb_index_unique(struct ldb_context *ldb,
   process an AND expression (intersection)
  */
 static int ltdb_index_dn_and(struct ldb_module *module,
+			     struct ltdb_private *ltdb,
 			     const struct ldb_parse_tree *tree,
-			     const struct ldb_message *index_list,
 			     struct dn_list *list)
 {
 	struct ldb_context *ldb;
@@ -771,7 +796,7 @@ static int ltdb_index_dn_and(struct ldb_module *module,
 			continue;
 		}
 
-		ret = ltdb_index_dn(module, subtree, index_list, list);
+		ret = ltdb_index_dn(module, ltdb, subtree, list);
 		if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 			/* 0 && X == 0 */
 			return LDB_ERR_NO_SUCH_OBJECT;
@@ -798,7 +823,7 @@ static int ltdb_index_dn_and(struct ldb_module *module,
 			return ldb_module_oom(module);
 		}
 
-		ret = ltdb_index_dn(module, subtree, index_list, list2);
+		ret = ltdb_index_dn(module, ltdb, subtree, list2);
 
 		if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 			/* X && 0 == 0 */
@@ -884,27 +909,27 @@ static int ltdb_index_dn_one(struct ldb_module *module,
   an error. return LDB_ERR_NO_SUCH_OBJECT for no matches, or LDB_SUCCESS for matches
  */
 static int ltdb_index_dn(struct ldb_module *module,
+			 struct ltdb_private *ltdb,
 			 const struct ldb_parse_tree *tree,
-			 const struct ldb_message *index_list,
 			 struct dn_list *list)
 {
 	int ret = LDB_ERR_OPERATIONS_ERROR;
 
 	switch (tree->operation) {
 	case LDB_OP_AND:
-		ret = ltdb_index_dn_and(module, tree, index_list, list);
+		ret = ltdb_index_dn_and(module, ltdb, tree, list);
 		break;
 
 	case LDB_OP_OR:
-		ret = ltdb_index_dn_or(module, tree, index_list, list);
+		ret = ltdb_index_dn_or(module, ltdb, tree, list);
 		break;
 
 	case LDB_OP_NOT:
-		ret = ltdb_index_dn_not(module, tree, index_list, list);
+		ret = ltdb_index_dn_not(module, ltdb, tree, list);
 		break;
 
 	case LDB_OP_EQUALITY:
-		ret = ltdb_index_dn_leaf(module, tree, index_list, list);
+		ret = ltdb_index_dn_leaf(module, ltdb, tree, list);
 		break;
 
 	case LDB_OP_SUBSTRING:
@@ -1087,7 +1112,7 @@ int ltdb_search_indexed(struct ltdb_context *ac, uint32_t *match_count)
 			talloc_free(dn_list);
 			return LDB_ERR_OPERATIONS_ERROR;
 		}
-		ret = ltdb_index_dn(ac->module, ac->tree, ltdb->cache->indexlist, dn_list);
+		ret = ltdb_index_dn(ac->module, ltdb, ac->tree, dn_list);
 		if (ret != LDB_SUCCESS) {
 			talloc_free(dn_list);
 			return ret;
@@ -1154,9 +1179,22 @@ static int ltdb_index_add1(struct ldb_module *module, const char *dn,
 
 	if (list->count > 0 &&
 	    a->flags & LDB_ATTR_FLAG_UNIQUE_INDEX) {
-		talloc_free(list);
+		/*
+		 * We do not want to print info about a possibly
+		 * confidential DN that the conflict was with in the
+		 * user-visible error string
+		 */
+		ldb_debug(ldb, LDB_DEBUG_WARNING,
+			  __location__ ": unique index violation on %s in %s, "
+			  "conficts with %*.*s in %s",
+			  el->name, dn,
+			  (int)list->dn[0].length,
+			  (int)list->dn[0].length,
+			  list->dn[0].data,
+			  ldb_dn_get_linearized(dn_key));
 		ldb_asprintf_errstring(ldb, __location__ ": unique index violation on %s in %s",
 				       el->name, dn);
+		talloc_free(list);
 		return LDB_ERR_ENTRY_ALREADY_EXISTS;
 	}
 
@@ -1221,14 +1259,14 @@ static int ltdb_index_add_all(struct ldb_module *module, const char *dn,
 		return LDB_SUCCESS;
 	}
 
-	if (ltdb->cache->indexlist->num_elements == 0) {
+	if (!ltdb->cache->attribute_indexes) {
 		/* no indexed fields */
 		return LDB_SUCCESS;
 	}
 
 	for (i = 0; i < num_el; i++) {
 		int ret;
-		if (!ltdb_is_indexed(ltdb->cache->indexlist, elements[i].name)) {
+		if (!ltdb_is_indexed(module, ltdb, elements[i].name)) {
 			continue;
 		}
 		ret = ltdb_index_add_el(module, dn, &elements[i], is_new);
@@ -1306,7 +1344,7 @@ int ltdb_index_add_element(struct ldb_module *module, struct ldb_dn *dn,
 	if (ldb_dn_is_special(dn)) {
 		return LDB_SUCCESS;
 	}
-	if (!ltdb_is_indexed(ltdb->cache->indexlist, el->name)) {
+	if (!ltdb_is_indexed(module, ltdb, el->name)) {
 		return LDB_SUCCESS;
 	}
 	return ltdb_index_add_el(module, ldb_dn_get_linearized(dn), el, true);
@@ -1439,7 +1477,7 @@ int ltdb_index_del_element(struct ldb_module *module, struct ldb_dn *dn,
 		return LDB_SUCCESS;
 	}
 
-	if (!ltdb_is_indexed(ltdb->cache->indexlist, el->name)) {
+	if (!ltdb_is_indexed(module, ltdb, el->name)) {
 		return LDB_SUCCESS;
 	}
 	for (i = 0; i < el->num_values; i++) {
@@ -1630,6 +1668,18 @@ int ltdb_reindex(struct ldb_module *module)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
+	/*
+	 * Ensure we read (and so remove) the entries from the real
+	 * DB, no values stored so far are any use as we want to do a
+	 * re-index
+	 */
+	ltdb_index_transaction_cancel(module);
+
+	ret = ltdb_index_transaction_start(module);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
 	/* first traverse the database deleting any @INDEX records by
 	 * putting NULL entries in the in-memory tdb
 	 */
@@ -1639,7 +1689,7 @@ int ltdb_reindex(struct ldb_module *module)
 	}
 
 	/* if we don't have indexes we have nothing todo */
-	if (ltdb->cache->indexlist->num_elements == 0) {
+	if (!ltdb->cache->attribute_indexes) {
 		return LDB_SUCCESS;
 	}
 

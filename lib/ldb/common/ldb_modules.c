@@ -641,6 +641,52 @@ int ldb_next_end_trans(struct ldb_module *module)
 	return ret;
 }
 
+int ldb_next_read_lock(struct ldb_module *module)
+{
+	int ret;
+	FIND_OP(module, read_lock);
+	ret = module->ops->read_lock(module);
+	if (ret == LDB_SUCCESS) {
+		return ret;
+	}
+	if (!ldb_errstring(module->ldb)) {
+		/* Set a default error string, to place the blame somewhere */
+		ldb_asprintf_errstring(module->ldb,
+				       "read_lock error in module %s: %s (%d)",
+				       module->ops->name, ldb_strerror(ret),
+				       ret);
+	}
+	if ((module && module->ldb->flags & LDB_FLG_ENABLE_TRACING)) {
+		ldb_debug(module->ldb, LDB_DEBUG_TRACE,
+			  "ldb_next_read_lock error: %s",
+			  ldb_errstring(module->ldb));
+	}
+	return ret;
+}
+
+int ldb_next_read_unlock(struct ldb_module *module)
+{
+	int ret;
+	FIND_OP(module, read_unlock);
+	ret = module->ops->read_unlock(module);
+	if (ret == LDB_SUCCESS) {
+		return ret;
+	}
+	if (!ldb_errstring(module->ldb)) {
+		/* Set a default error string, to place the blame somewhere */
+		ldb_asprintf_errstring(module->ldb,
+				       "read_unlock error in module %s: %s (%d)",
+				       module->ops->name, ldb_strerror(ret),
+				       ret);
+	}
+	if ((module && module->ldb->flags & LDB_FLG_ENABLE_TRACING)) {
+		ldb_debug(module->ldb, LDB_DEBUG_TRACE,
+			  "ldb_next_read_unlock error: %s",
+			  ldb_errstring(module->ldb));
+	}
+	return ret;
+}
+
 int ldb_next_prepare_commit(struct ldb_module *module)
 {
 	int ret;
@@ -682,26 +728,6 @@ int ldb_next_del_trans(struct ldb_module *module)
 			  ldb_errstring(module->ldb));				
 	}
 	return ret;
-}
-
-struct ldb_handle *ldb_handle_new(TALLOC_CTX *mem_ctx, struct ldb_context *ldb)
-{
-	struct ldb_handle *h;
-
-	h = talloc_zero(mem_ctx, struct ldb_handle);
-	if (h == NULL) {
-		ldb_set_errstring(ldb, "Out of Memory");
-		return NULL;
-	}
-
-	h->status = LDB_SUCCESS;
-	h->state = LDB_ASYNC_INIT;
-	h->ldb = ldb;
-	h->flags = 0;
-	h->location = NULL;
-	h->parent = NULL;
-
-	return h;
 }
 
 /* calls the request callback to send an entry
