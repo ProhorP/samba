@@ -266,7 +266,7 @@ static NTSTATUS drepl_replica_sync(struct irpc_message *msg,
 	} else {
 		cb_data = talloc_zero(msg, struct drepl_replica_sync_cb_data);
 		if (!cb_data) {
-			REPLICA_SYNC_FAIL("Not enought memory",
+			REPLICA_SYNC_FAIL("Not enough memory",
 					  WERR_DS_DRA_INTERNAL_ERROR);
 		}
 
@@ -514,7 +514,7 @@ static void dreplsrv_task_init(struct task_server *task)
 /*
   register ourselves as a available server
 */
-NTSTATUS server_service_drepl_init(void)
+NTSTATUS server_service_drepl_init(TALLOC_CTX *ctx)
 {
-	return register_server_service("drepl", dreplsrv_task_init);
+	return register_server_service(ctx, "drepl", dreplsrv_task_init);
 }
