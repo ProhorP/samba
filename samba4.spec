@@ -3,7 +3,7 @@
 %add_debuginfo_skiplist /%_lib
 
 %define _localstatedir /var
-%define libwbc_alternatives_version 0.13
+%define libwbc_alternatives_version 0.14
 
 # internal libs
 %def_without talloc
@@ -38,8 +38,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.6.7
-Release: alt2%ubt
+Version: 4.7.0
+Release: alt0.rc4%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -108,10 +108,10 @@ BuildRequires: libiniparser-devel
 BuildRequires: libkrb5-devel libssl-devel libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
-%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.9 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.31 python-module-tevent}
-%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.12  python-module-tdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.1.29 python-module-pyldb-devel}
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.33 python-module-tevent}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.14  python-module-tdb}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.1 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %if %ubt_id <= "M70P"
@@ -698,6 +698,9 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 # remove tests form python modules
 rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
 
+# remove cmocka library
+rm -f %buildroot%_libdir/samba/libcmocka-samba4.so
+
 # Install documentation
 %if_with doc
 #mkdir -p %buildroot%_defaultdocdir/%name/
@@ -902,7 +905,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libaddns-samba4.so
 %_libdir/samba/libads-samba4.so
 %_libdir/samba/libasn1util-samba4.so
-%_libdir/samba/libauth-sam-reply-samba4.so
 %_libdir/samba/libauth-samba4.so
 %_libdir/samba/libauthkrb5-samba4.so
 %_libdir/samba/libcli-cldap-samba4.so
@@ -913,6 +915,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libcli-spoolss-samba4.so
 %_libdir/samba/libcliauth-samba4.so
 %_libdir/samba/libcmdline-credentials-samba4.so
+%_libdir/samba/libcommon-auth-samba4.so
 %_libdir/samba/libdbwrap-samba4.so
 %_libdir/samba/libdcerpc-samba-samba4.so
 %_libdir/samba/libevents-samba4.so
@@ -1187,6 +1190,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 # libraries needed by the public libraries
 %_libdir/samba/libMESSAGING-samba4.so
+%_libdir/samba/libMESSAGING-SEND-samba4.so
 %_libdir/samba/libLIBWBCLIENT-OLD-samba4.so
 %_libdir/samba/libauth4-samba4.so
 %_libdir/samba/libauth-unix-token-samba4.so
@@ -1395,6 +1399,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Sun Aug 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc4%ubt
+- Update to the fourth release candidate of Samba 4.7
+
 * Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2%ubt
 - Clean code from old merged chunks
 - Enable parallel build
