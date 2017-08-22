@@ -211,16 +211,6 @@ queried through the 'net tdb locking' command. In clustered Samba this
 can be useful to determine the file or directory triggering
 corresponding "hot" record warnings in ctdb.
 
-Removal of lpcfg_register_defaults_hook()
------------------------------------------
-
-The undocumented and unsupported function lpcfg_register_defaults_hook()
-that was used by external projects to call into Samba and modify
-smb.conf default parameter settings has been removed. If your project
-was using this call please raise the issue on
-samba-technical@lists.samba.org in order to design a supported
-way of obtaining the same functionality.
-
 Change of loadable module interface
 -----------------------------------
 
