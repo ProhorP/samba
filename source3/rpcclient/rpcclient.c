@@ -766,7 +766,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 				default_transport,
 				rpcclient_netlogon_domain,
 				&cmd_entry->rpc_pipe,
-				talloc_autofree_context(),
+				rpcclient_msg_ctx,
 				&rpcclient_netlogon_creds);
 			break;
 		default:
@@ -805,7 +805,7 @@ static NTSTATUS do_cmd(struct cli_state *cli,
 			ntresult = rpccli_create_netlogon_creds_with_creds(creds,
 							dc_name,
 							rpcclient_msg_ctx,
-							talloc_autofree_context(),
+							rpcclient_msg_ctx,
 							&rpcclient_netlogon_creds);
 			if (!NT_STATUS_IS_OK(ntresult)) {
 				DEBUG(0, ("Could not initialise credentials for %s.\n",
@@ -948,6 +948,7 @@ out_free:
 	const char *binding_string = NULL;
 	const char *host;
 	int signing_state = SMB_SIGNING_IPC_DEFAULT;
+	struct tevent_context *ev_ctx = NULL;
 
 	/* make sure the vars that get altered (4th field) are in
 	   a fixed location or certain compilers complain */
@@ -1013,8 +1014,15 @@ out_free:
 	poptFreeContext(pc);
 	popt_burn_cmdline_password(argc, argv);
 
-	nt_status = messaging_init_client(talloc_autofree_context(),
-					  samba_tevent_context_init(talloc_autofree_context()),
+	ev_ctx = samba_tevent_context_init(frame);
+	if (ev_ctx == NULL) {
+		fprintf(stderr, "Could not init event context\n");
+		result = 1;
+		goto done;
+	}
+
+	nt_status = messaging_init_client(ev_ctx,
+					  ev_ctx,
 					  &rpcclient_msg_ctx);
 	if (geteuid() != 0 &&
 			NT_STATUS_EQUAL(nt_status, NT_STATUS_ACCESS_DENIED)) {
@@ -1246,6 +1254,9 @@ done:
 		cli_shutdown(cli);
 	}
 	popt_free_cmdline_auth_info();
+	netlogon_creds_cli_close_global_db();
+	TALLOC_FREE(rpcclient_msg_ctx);
+	TALLOC_FREE(ev_ctx);
 	TALLOC_FREE(frame);
 	return result;
 }

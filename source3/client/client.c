@@ -5829,7 +5829,13 @@ static int do_host_query(const char *query_host)
 		}
 	}
 
+	if (lp_client_min_protocol() > PROTOCOL_NT1) {
+		d_printf("SMB1 disabled -- no workgroup available\n");
+		goto out;
+	}
+
 	if (lp_disable_netbios()) {
+		d_printf("NetBIOS over TCP disabled -- no workgroup available\n");
 		goto out;
 	}
 
@@ -5844,19 +5850,17 @@ static int do_host_query(const char *query_host)
 		 */
 
 		cli_shutdown(cli);
+		d_printf("Reconnecting with SMB1 for workgroup listing.\n");
 		status = cli_cm_open(talloc_tos(), NULL,
 				     have_ip ? dest_ss_str : query_host,
 				     "IPC$", popt_get_cmdline_auth_info(),
 				     smb_encrypt, max_proto,
 				     NBT_SMB_PORT, name_type, &cli);
 		if (!NT_STATUS_IS_OK(status)) {
-			cli = NULL;
+			d_printf("Failed to connect with SMB1 "
+				 "-- no workgroup available\n");
+			return 0;
 		}
-	}
-
-	if (cli == NULL) {
-		d_printf("NetBIOS over TCP disabled -- no workgroup available\n");
-		return 0;
 	}
 
 	cli_set_timeout(cli, io_timeout*1000);

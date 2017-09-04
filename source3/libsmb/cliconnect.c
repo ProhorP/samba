@@ -349,7 +349,7 @@ NTSTATUS cli_session_creds_prepare_krb5(struct cli_state *cli,
 				0 /* no time correction for now */,
 				NULL);
 	if (ret != 0) {
-		int dbglvl = DBGLVL_WARNING;
+		int dbglvl = DBGLVL_NOTICE;
 
 		if (krb5_state == CRED_MUST_USE_KERBEROS) {
 			dbglvl = DBGLVL_ERR;
@@ -3745,6 +3745,8 @@ struct cli_state *get_ipc_connect(char *server,
 	if (get_cmdline_auth_info_use_kerberos(user_info)) {
 		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
 	}
+
+	flags |= CLI_FULL_CONNECTION_FORCE_SMB1;
 
 	nt_status = cli_full_connection(&cli, NULL, server, server_ss, 0, "IPC$", "IPC", 
 					get_cmdline_auth_info_username(user_info),

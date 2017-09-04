@@ -1,7 +1,7 @@
 Release Announcements
 =====================
 
-This is the fourth release candidate of Samba 4.7.  This is *not*
+This is the fifth release candidate of Samba 4.7.  This is *not*
 intended for production environments and is designed for testing
 purposes only.  Please report any defects via the Samba bug reporting
 system at https://bugzilla.samba.org/.
@@ -12,13 +12,13 @@ Samba 4.7 will be the next version of the Samba suite.
 UPGRADING
 =========
 
-smbclient changes
------------------
+'smbclient' changes
+------------------
 
-smbclient no longer prints a 'Domain=[...] OS=[Windows 6.1] Server=[...]'
-banner when connecting to the first server. With SMB2 and Kerberos
-there's no way to print this information reliable. Now we avoid it at all
-consistently. In interactive session the following banner is now presented
+'smbclient' no longer prints a 'Domain=[...] OS=[Windows 6.1] Server=[...]'
+banner when connecting to the first server. With SMB2 and Kerberos,
+there's no way to print this information reliably. Now we avoid it at all
+consistently. In interactive sessions the following banner is now presented
 to the user: 'Try "help" do get a list of possible commands.'.
 
 The default for "client max protocol" has changed to "SMB3_11",
@@ -26,22 +26,23 @@ which means that smbclient (and related commands) will work against
 servers without SMB1 support.
 
 It's possible to use the '-m/--max-protocol' option to overwrite
-the "client max protocol" option temporary.
+the "client max protocol" option temporarily.
 
 Note that the '-e/--encrypt' option also works with most SMB3 servers
 (e.g. Windows >= 2012 and Samba >= 4.0.0), so the SMB1 unix extensions
 are not required for encryption.
 
-The change to SMB3_11 as default also  means smbclient no longer
+The change to SMB3_11 as default also means smbclient no longer
 negotiates SMB1 unix extensions by default, when talking to a Samba server with
-"unix extensions = yes".  As a result some commands are not available, e.g.
-posix_encrypt, posix_open, posix_mkdir, posix_rmdir, posix_unlink, posix_whoami,
-getfacl and symlink. Using "-mNT1" reenabled them, if the server supports SMB1.
+"unix extensions = yes".  As a result, some commands are not available, e.g.
+'posix_encrypt', 'posix_open', 'posix_mkdir', 'posix_rmdir', 'posix_unlink',
+'posix_whoami', 'getfacl' and 'symlink'. Using "-mNT1" reenables them, if the
+server supports SMB1.
 
 Note the default ("CORE") for "client min protocol" hasn't changed,
 so it's still possible to connect to SMB1-only servers by default.
 
-smbclient learned a new command "deltree" that is able to do
+'smbclient' learned a new command "deltree" that is able to do
 a recursive deletion of a directory tree.
 
 
@@ -102,19 +103,22 @@ KDB (Kerberos Database) driver to access the Samba AD database.  When
 provisioning an AD DC using 'samba-tool' it will take care of creating a correct
 kdc.conf file for the MIT KDC.
 
+For further details, see:
+https://wiki.samba.org/index.php/Running_a_Samba_AD_DC_with_MIT_Kerberos_KDC
+
 Dynamic RPC port range
 ----------------------
 
 The dynamic port range for RPC services has been changed from the old default
-value 1024-1300 to 49152-65535. This port range is not only used by a
-Samba AD DC but also applies to all other server roles including NT4-style
+value "1024-1300" to "49152-65535". This port range is not only used by a
+Samba AD DC, but also applies to all other server roles including NT4-style
 domain controllers. The new value has been defined by Microsoft in Windows
 Server 2008 and newer versions. To make it easier for Administrators to control
 those port ranges we use the same default and make it configurable with the
-option: 'rpc server dynamic port range'.
+option: "rpc server dynamic port range".
 
-The 'rpc server port' option sets the first available port from the new
-'rpc server dynamic port range' option. The option 'rpc server port' only
+The "rpc server port" option sets the first available port from the new
+"rpc server dynamic port range" option. The option "rpc server port" only
 applies to Samba provisioned as an AD DC.
 
 Authentication and Authorization audit support
@@ -135,11 +139,14 @@ authentication, SMB and RPC authorization is covered, however password
 changes are not at this stage, and this support is not currently
 backed by a testsuite.
 
+For further details, see:
+https://wiki.samba.org/index.php/Setting_up_Audit_Logging
+
 Multi-process LDAP Server
 -------------------------
 
 The LDAP server in the AD DC now honours the process model used for
-the rest of the samba process, rather than being forced into a single
+the rest of the 'samba' process, rather than being forced into a single
 process.  This aids in Samba's ability to scale to larger numbers of AD
 clients and the AD DC's overall resiliency, but will mean that there is a
 fork()ed child for every LDAP client, which may be more resource
@@ -325,6 +332,46 @@ KNOWN ISSUES
 ============
 
 https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.7#Release_blocking_bugs
+
+
+CHANGES SINCE 4.7.0rc4
+======================
+
+o  Andrew Bartlett <abartlet@samba.org>
+   * BUG 12929: smb.conf: Explain that "ntlm auth" is a per-passdb setting.
+   * BUG 12953: s4/lib/tls: Use SHA256 to sign the TLS certificates.
+
+o  Jeremy Allison <jra@samba.org>
+   * BUG 12932: Get rid of talloc_autofree_context().
+
+o  Amitay Isaacs <amitay@gmail.com>
+   * BUG 12978: After restarting CTDB, it attaches replicated databases with
+     wrong flags.
+
+o  Stefan Metzmacher <metze@samba.org>
+   * BUG 12863: s3:smbclient: Don't try any workgroup listing with
+     "client min protocol = SMB2".
+   * BUG 12876: s3:libsmb: Don't call cli_NetServerEnum() on SMB2/3 connections
+     in SMBC_opendir_ctx().
+   * BUG 12881: s3:libsmb: Let do_connect() debug the negotiation result
+     similar to "session request ok".
+   * BUG 12919: s4:http/gensec: add missing tevent_req_done() to
+     gensec_http_ntlm_update_done().
+   * BUG 12968: Fix 'smbclient tarmode' with SMB2/3.
+   * BUG 12973: 'smbd': Don't use a lot of CPU on startup of a connection.
+
+o  Christof Schmitt <cs@samba.org>
+   * BUG 12983: vfs_default: Fix passing of errno from async calls.
+
+o  Andreas Schneider <asn@samba.org>
+   * BUG 12629: s3:utils: Do not report an invalid range for AD DC role.
+   * BUG 12704: s3:libsmb: Let get_ipc_connect() use
+     CLI_FULL_CONNECTION_FORCE_SMB1.
+   * BUG 12930: Fix build issues with GCC 7.1.
+   * BUG 12950: s3:script: Untaint user supplied data in modprinter.pl.
+   * BUG 12956: s3:libads: Fix changing passwords with Kerberos.
+   * BUG 12975: Fix changing the password with 'smbpasswd' as a local user on
+     a domain member.
 
 
 CHANGES SINCE 4.7.0rc3
