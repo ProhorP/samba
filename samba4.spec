@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.7.0
-Release: alt0.rc4%ubt
+Release: alt0.rc5%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1362,6 +1362,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Sep 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc5%ubt
+- Update to the fifth release candidate of Samba 4.7
+
 * Sun Aug 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc4%ubt
 - Update to the fourth release candidate of Samba 4.7
 - Revert removed lpcfg_register_defaults_hook()
