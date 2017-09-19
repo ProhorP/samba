@@ -83,7 +83,9 @@ static int ltdb_dn_list_find_val(const struct dn_list *list, const struct ldb_va
 {
 	unsigned int i;
 	for (i=0; i<list->count; i++) {
-		if (dn_list_cmp(&list->dn[i], v) == 0) return i;
+		if (dn_list_cmp(&list->dn[i], v) == 0) {
+			return i;
+		}
 	}
 	return -1;
 }
@@ -1147,8 +1149,7 @@ int ltdb_search_indexed(struct ltdb_context *ac, uint32_t *match_count)
  * @return                  An ldb error code
  */
 static int ltdb_index_add1(struct ldb_module *module, const char *dn,
-			   struct ldb_message_element *el, int v_idx,
-			   bool is_new)
+			   struct ldb_message_element *el, int v_idx)
 {
 	struct ldb_context *ldb;
 	struct ldb_dn *dn_key;
@@ -1198,16 +1199,6 @@ static int ltdb_index_add1(struct ldb_module *module, const char *dn,
 		return LDB_ERR_ENTRY_ALREADY_EXISTS;
 	}
 
-	/* If we are doing an ADD, then this can not already be in the index,
-	   as it was not already in the database, and this has already been
-	   checked because the store succeeded */
-	if (! is_new) {
-		if (ltdb_dn_list_find_str(list, dn) != -1) {
-			talloc_free(list);
-			return LDB_SUCCESS;
-		}
-	}
-
 	/* overallocate the list a bit, to reduce the number of
 	 * realloc trigered copies */
 	alloc_len = ((list->count+1)+7) & ~7;
@@ -1216,7 +1207,13 @@ static int ltdb_index_add1(struct ldb_module *module, const char *dn,
 		talloc_free(list);
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
-	list->dn[list->count].data = (uint8_t *)talloc_strdup(list->dn, dn);
+
+	list->dn[list->count].data
+		= (uint8_t *)talloc_strdup(list->dn, dn);
+	if (list->dn[list->count].data == NULL) {
+		talloc_free(list);
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
 	list->dn[list->count].length = strlen(dn);
 	list->count++;
 
@@ -1231,11 +1228,11 @@ static int ltdb_index_add1(struct ldb_module *module, const char *dn,
   add index entries for one elements in a message
  */
 static int ltdb_index_add_el(struct ldb_module *module, const char *dn,
-			     struct ldb_message_element *el, bool is_new)
+			     struct ldb_message_element *el)
 {
 	unsigned int i;
 	for (i = 0; i < el->num_values; i++) {
-		int ret = ltdb_index_add1(module, dn, el, i, is_new);
+		int ret = ltdb_index_add1(module, dn, el, i);
 		if (ret != LDB_SUCCESS) {
 			return ret;
 		}
@@ -1249,8 +1246,7 @@ static int ltdb_index_add_el(struct ldb_module *module, const char *dn,
  */
 static int ltdb_index_add_all(struct ldb_module *module, const char *dn,
 			      struct ldb_message_element *elements,
-			      unsigned int num_el,
-			      bool is_new)
+			      unsigned int num_el)
 {
 	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module), struct ltdb_private);
 	unsigned int i;
@@ -1269,7 +1265,7 @@ static int ltdb_index_add_all(struct ldb_module *module, const char *dn,
 		if (!ltdb_is_indexed(module, ltdb, elements[i].name)) {
 			continue;
 		}
-		ret = ltdb_index_add_el(module, dn, &elements[i], is_new);
+		ret = ltdb_index_add_el(module, dn, &elements[i]);
 		if (ret != LDB_SUCCESS) {
 			struct ldb_context *ldb = ldb_module_get_ctx(module);
 			ldb_asprintf_errstring(ldb,
@@ -1286,9 +1282,11 @@ static int ltdb_index_add_all(struct ldb_module *module, const char *dn,
 /*
   insert a one level index for a message
 */
-static int ltdb_index_onelevel(struct ldb_module *module, const struct ldb_message *msg, int add)
-{
-	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module), struct ltdb_private);
+static int ltdb_index_onelevel(struct ldb_module *module,
+			       const struct ldb_message *msg, int add)
+{	
+	struct ltdb_private *ltdb = talloc_get_type(ldb_module_get_private(module),
+						    struct ltdb_private);
 	struct ldb_message_element el;
 	struct ldb_val val;
 	struct ldb_dn *pdn;
@@ -1323,7 +1321,7 @@ static int ltdb_index_onelevel(struct ldb_module *module, const struct ldb_messa
 	el.num_values = 1;
 
 	if (add) {
-		ret = ltdb_index_add1(module, dn, &el, 0, add);
+		ret = ltdb_index_add1(module, dn, &el, 0);
 	} else { /* delete */
 		ret = ltdb_index_del_value(module, msg->dn, &el, 0);
 	}
@@ -1347,7 +1345,7 @@ int ltdb_index_add_element(struct ldb_module *module, struct ldb_dn *dn,
 	if (!ltdb_is_indexed(module, ltdb, el->name)) {
 		return LDB_SUCCESS;
 	}
-	return ltdb_index_add_el(module, ldb_dn_get_linearized(dn), el, true);
+	return ltdb_index_add_el(module, ldb_dn_get_linearized(dn), el);
 }
 
 /*
@@ -1367,8 +1365,7 @@ int ltdb_index_add_new(struct ldb_module *module, const struct ldb_message *msg)
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
-	ret = ltdb_index_add_all(module, dn, msg->elements, msg->num_elements,
-				 true);
+	ret = ltdb_index_add_all(module, dn, msg->elements, msg->num_elements);
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
@@ -1571,7 +1568,7 @@ struct ltdb_reindex_context {
 /*
   traversal function that adds @INDEX records during a re index
 */
-static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *state)
+static int re_key(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *state)
 {
 	struct ldb_context *ldb;
 	struct ltdb_reindex_context *ctx = (struct ltdb_reindex_context *)state;
@@ -1582,17 +1579,22 @@ static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *
 		.data = data.dptr,
 		.length = data.dsize,
 	};
-	const char *dn = NULL;
 	int ret;
 	TDB_DATA key2;
-
+	bool is_record;
+	
 	ldb = ldb_module_get_ctx(module);
 
-	if (strncmp((char *)key.dptr, "DN=@", 4) == 0 ||
-	    strncmp((char *)key.dptr, "DN=", 3) != 0) {
+	if (key.dsize > 4 &&
+	    memcmp(key.dptr, "DN=@", 4) == 0) {
 		return 0;
 	}
 
+	is_record = ltdb_key_is_record(key);
+	if (is_record == false) {
+		return 0;
+	}
+	
 	msg = ldb_msg_new(module);
 	if (msg == NULL) {
 		return -1;
@@ -1606,10 +1608,21 @@ static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *
 	if (ret != 0) {
 		ldb_debug(ldb, LDB_DEBUG_ERROR, "Invalid data for index %s\n",
 						ldb_dn_get_linearized(msg->dn));
+		ctx->error = ret;
 		talloc_free(msg);
 		return -1;
 	}
 
+	if (msg->dn == NULL) {
+		ldb_debug(ldb, LDB_DEBUG_ERROR,
+			  "Refusing to re-index as GUID "
+			  "key %*.*s with no DN\n",
+			  (int)key.dsize, (int)key.dsize,
+			  (char *)key.dptr);
+		talloc_free(msg);
+		return -1;
+	}
+	
 	/* check if the DN key has changed, perhaps due to the
 	   case insensitivity of an element changing */
 	key2 = ltdb_key(module, msg->dn);
@@ -1620,14 +1633,98 @@ static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *
 		talloc_free(msg);
 		return 0;
 	}
-	if (strcmp((char *)key2.dptr, (char *)key.dptr) != 0) {
-		tdb_delete(tdb, key);
-		tdb_store(tdb, key2, data, 0);
+	if (key.dsize != key2.dsize ||
+	    (memcmp(key.dptr, key2.dptr, key.dsize) != 0)) {
+		int tdb_ret;
+		tdb_ret = tdb_delete(tdb, key);
+		if (tdb_ret != 0) {
+			ldb_debug(ldb, LDB_DEBUG_ERROR,
+				  "Failed to delete %*.*s "
+				  "for rekey as %*.*s: %s",
+				  (int)key.dsize, (int)key.dsize,
+				  (const char *)key.dptr,
+				  (int)key2.dsize, (int)key2.dsize,
+				  (const char *)key.dptr,
+				  tdb_errorstr(tdb));
+			ctx->error = ltdb_err_map(tdb_error(tdb));
+			return -1;
+		}
+		tdb_ret = tdb_store(tdb, key2, data, 0);
+		if (tdb_ret != 0) {
+			ldb_debug(ldb, LDB_DEBUG_ERROR,
+				  "Failed to rekey %*.*s as %*.*s: %s",
+				  (int)key.dsize, (int)key.dsize,
+				  (const char *)key.dptr,
+				  (int)key2.dsize, (int)key2.dsize,
+				  (const char *)key.dptr,
+				  tdb_errorstr(tdb));
+			ctx->error = ltdb_err_map(tdb_error(tdb));
+			return -1;
+		}
 	}
 	talloc_free(key2.dptr);
 
+	talloc_free(msg);
+
+	return 0;
+}
+
+/*
+  traversal function that adds @INDEX records during a re index
+*/
+static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *state)
+{
+	struct ldb_context *ldb;
+	struct ltdb_reindex_context *ctx = (struct ltdb_reindex_context *)state;
+	struct ldb_module *module = ctx->module;
+	struct ldb_message *msg;
+	const char *dn = NULL;
+	unsigned int nb_elements_in_db;
+	const struct ldb_val val = {
+		.data = data.dptr,
+		.length = data.dsize,
+	};
+	int ret;
+	bool is_record;
+	
+	ldb = ldb_module_get_ctx(module);
+
+	if (key.dsize > 4 &&
+	    memcmp(key.dptr, "DN=@", 4) == 0) {
+		return 0;
+	}
+
+	is_record = ltdb_key_is_record(key);
+	if (is_record == false) {
+		return 0;
+	}
+	
+	msg = ldb_msg_new(module);
+	if (msg == NULL) {
+		return -1;
+	}
+
+	ret = ldb_unpack_data_only_attr_list_flags(ldb, &val,
+						   msg,
+						   NULL, 0,
+						   LDB_UNPACK_DATA_FLAG_NO_DATA_ALLOC,
+						   &nb_elements_in_db);
+	if (ret != 0) {
+		ldb_debug(ldb, LDB_DEBUG_ERROR, "Invalid data for index %s\n",
+						ldb_dn_get_linearized(msg->dn));
+		ctx->error = ret;
+		talloc_free(msg);
+		return -1;
+	}
+
 	if (msg->dn == NULL) {
-		dn = (char *)key.dptr + 3;
+		ldb_debug(ldb, LDB_DEBUG_ERROR,
+			  "Refusing to re-index as GUID "
+			  "key %*.*s with no DN\n",
+			  (int)key.dsize, (int)key.dsize,
+			  (char *)key.dptr);
+		talloc_free(msg);
+		return -1;
 	} else {
 		dn = ldb_dn_get_linearized(msg->dn);
 	}
@@ -1641,8 +1738,7 @@ static int re_index(struct tdb_context *tdb, TDB_DATA key, TDB_DATA data, void *
 		return -1;
 	}
 
-	ret = ltdb_index_add_all(module, dn, msg->elements, msg->num_elements,
-				 false);
+	ret = ltdb_index_add_all(module, dn, msg->elements, msg->num_elements);
 
 	if (ret != LDB_SUCCESS) {
 		ctx->error = ret;
@@ -1685,6 +1781,9 @@ int ltdb_reindex(struct ldb_module *module)
 	 */
 	ret = tdb_traverse(ltdb->tdb, delete_index, module);
 	if (ret < 0) {
+		struct ldb_context *ldb = ldb_module_get_ctx(module);
+		ldb_asprintf_errstring(ldb, "index deletion traverse failed: %s",
+				       ldb_errstring(ldb));
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 
@@ -1697,10 +1796,28 @@ int ltdb_reindex(struct ldb_module *module)
 	ctx.error = 0;
 
 	/* now traverse adding any indexes for normal LDB records */
+	ret = tdb_traverse(ltdb->tdb, re_key, &ctx);
+	if (ret < 0) {
+		struct ldb_context *ldb = ldb_module_get_ctx(module);
+		ldb_asprintf_errstring(ldb, "key correction traverse failed: %s",
+				       ldb_errstring(ldb));
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
+	if (ctx.error != LDB_SUCCESS) {
+		struct ldb_context *ldb = ldb_module_get_ctx(module);
+		ldb_asprintf_errstring(ldb, "reindexing failed: %s", ldb_errstring(ldb));
+		return ctx.error;
+	}
+
+	ctx.error = 0;
+
+	/* now traverse adding any indexes for normal LDB records */
 	ret = tdb_traverse(ltdb->tdb, re_index, &ctx);
 	if (ret < 0) {
 		struct ldb_context *ldb = ldb_module_get_ctx(module);
-		ldb_asprintf_errstring(ldb, "reindexing traverse failed: %s", ldb_errstring(ldb));
+		ldb_asprintf_errstring(ldb, "reindexing traverse failed: %s",
+				       ldb_errstring(ldb));
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 

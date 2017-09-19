@@ -42,6 +42,9 @@
 #include "lib/dbwrap/dbwrap_rbt.h"
 #include "librpc/gen_ndr/ndr_misc.h"
 
+#undef DBGC_CLASS
+#define DBGC_CLASS            DBGC_DRS_REPL
+
 /* state of a partially completed getncchanges call */
 struct drsuapi_getncchanges_state {
 	struct db_context *anc_cache;
@@ -2250,7 +2253,7 @@ allowed:
 			return WERR_NOT_ENOUGH_MEMORY;
 		}
 
-		ret = dsdb_find_guid_by_dn(b_state->sam_ctx_system,
+		ret = dsdb_find_guid_by_dn(b_state->sam_ctx,
 					   getnc_state->ncRoot_dn,
 					   &getnc_state->ncRoot_guid);
 		if (ret != LDB_SUCCESS) {
