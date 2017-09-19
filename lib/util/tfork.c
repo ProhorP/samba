@@ -670,7 +670,7 @@ static pid_t tfork_start_waiter_and_worker(struct tfork_state *state,
 		}
 		_exit(errno);
 	}
-	if (nread != 0) {
+	if (nread != 1) {
 		_exit(255);
 	}
 
@@ -795,9 +795,14 @@ pid_t tfork_child_pid(const struct tfork *t)
 	return t->worker_pid;
 }
 
-int tfork_event_fd(const struct tfork *t)
+int tfork_event_fd(struct tfork *t)
 {
-	return t->event_fd;
+	int fd = t->event_fd;
+
+	assert(t->event_fd != -1);
+	t->event_fd = -1;
+
+	return fd;
 }
 
 int tfork_status(struct tfork **_t, bool wait)
@@ -838,7 +843,18 @@ int tfork_status(struct tfork **_t, bool wait)
 
 	/*
 	 * This triggers process exit in the waiter.
+	 * We write to the fd as well as closing it, as any tforked sibling
+	 * processes will also have the writable end of this socket open.
+	 *
 	 */
+	{
+		size_t nwritten;
+		nwritten = sys_write(t->status_fd, &(char){0}, sizeof(char));
+		if (nwritten != sizeof(char)) {
+			close(t->status_fd);
+			return -1;
+		}
+	}
 	close(t->status_fd);
 
 	do {
@@ -846,7 +862,10 @@ int tfork_status(struct tfork **_t, bool wait)
 	} while ((pid == -1) && (errno == EINTR));
 	assert(pid == t->waiter_pid);
 
-	close(t->event_fd);
+	if (t->event_fd != -1) {
+		close(t->event_fd);
+		t->event_fd = -1;
+	}
 
 	free(t);
 	t = NULL;

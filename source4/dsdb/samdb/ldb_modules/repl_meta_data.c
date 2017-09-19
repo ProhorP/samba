@@ -51,6 +51,9 @@
 #include "dsdb/samdb/ldb_modules/util.h"
 #include "lib/util/tsort.h"
 
+#undef DBGC_CLASS
+#define DBGC_CLASS            DBGC_DRS_REPL
+
 /*
  * It's 29/12/9999 at 23:59:59 UTC as specified in MS-ADTS 7.1.1.4.2
  * Deleted Objects Container
@@ -4977,16 +4980,22 @@ static int replmd_replicated_apply_add(struct replmd_replicated_request *ar)
 		}
 	}
 
-	if (DEBUGLVL(4)) {
+	if (DEBUGLVL(8)) {
 		struct GUID_txt_buf guid_txt;
 
-		char *s = ldb_ldif_message_string(ldb, ar, LDB_CHANGETYPE_ADD, msg);
-		DEBUG(4, ("DRS replication add message of %s:\n%s\n",
+		char *s = ldb_ldif_message_redacted_string(ldb, ar,
+							   LDB_CHANGETYPE_ADD,
+							   msg);
+		DEBUG(8, ("DRS replication add message of %s:\n%s\n",
 			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid, &guid_txt),
 			  s));
 		talloc_free(s);
+	} else if (DEBUGLVL(4)) {
+		struct GUID_txt_buf guid_txt;
+		DEBUG(4, ("DRS replication add DN of %s is %s\n",
+			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid, &guid_txt),
+			  ldb_dn_get_linearized(msg->dn)));
 	}
-
 	remote_isDeleted = ldb_msg_find_attr_as_bool(msg,
 						     "isDeleted", false);
 
@@ -5549,11 +5558,12 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 		}
 	}
 
-	if (DEBUGLVL(5)) {
+	if (DEBUGLVL(8)) {
 		struct GUID_txt_buf guid_txt;
 
-		char *s = ldb_ldif_message_string(ldb, ar, LDB_CHANGETYPE_MODIFY, msg);
-		DEBUG(5, ("Initial DRS replication modify message of %s is:\n%s\n"
+		char *s = ldb_ldif_message_redacted_string(ldb, ar,
+							   LDB_CHANGETYPE_MODIFY, msg);
+		DEBUG(8, ("Initial DRS replication modify message of %s is:\n%s\n"
 			  "%s\n"
 			  "%s\n",
 			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid, &guid_txt),
@@ -5567,8 +5577,15 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 						  "incoming replPropertyMetaData",
 						  rmd)));
 		talloc_free(s);
-	}
+	} else if (DEBUGLVL(4)) {
+		struct GUID_txt_buf guid_txt;
 
+		DEBUG(4, ("Initial DRS replication modify DN of %s is: %s\n",
+			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid,
+					  &guid_txt),
+			  ldb_dn_get_linearized(msg->dn)));
+	}
+		
 	local_isDeleted = ldb_msg_find_attr_as_bool(ar->search_msg,
 						    "isDeleted", false);
 	remote_isDeleted = ldb_msg_find_attr_as_bool(msg,
@@ -5825,14 +5842,24 @@ static int replmd_replicated_apply_merge(struct replmd_replicated_request *ar)
 		}
 	}
 
-	if (DEBUGLVL(4)) {
+	if (DEBUGLVL(8)) {
 		struct GUID_txt_buf guid_txt;
 
-		char *s = ldb_ldif_message_string(ldb, ar, LDB_CHANGETYPE_MODIFY, msg);
-		DEBUG(4, ("Final DRS replication modify message of %s:\n%s\n",
-			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid, &guid_txt),
+		char *s = ldb_ldif_message_redacted_string(ldb, ar,
+							   LDB_CHANGETYPE_MODIFY,
+							   msg);
+		DEBUG(8, ("Final DRS replication modify message of %s:\n%s\n",
+			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid,
+					  &guid_txt),
 			  s));
 		talloc_free(s);
+	} else if (DEBUGLVL(4)) {
+		struct GUID_txt_buf guid_txt;
+
+		DEBUG(4, ("Final DRS replication modify DN of %s is %s\n",
+			  GUID_buf_string(&ar->objs->objects[ar->index_current].object_guid,
+					  &guid_txt),
+			  ldb_dn_get_linearized(msg->dn)));
 	}
 
 	ret = ldb_build_mod_req(&change_req,
@@ -6428,7 +6455,9 @@ static int replmd_replicated_uptodate_modify(struct replmd_replicated_request *a
 	nrf_el->flags = LDB_FLAG_MOD_REPLACE;
 
 	if (CHECK_DEBUGLVL(4)) {
-		char *s = ldb_ldif_message_string(ldb, ar, LDB_CHANGETYPE_MODIFY, msg);
+		char *s = ldb_ldif_message_redacted_string(ldb, ar,
+							   LDB_CHANGETYPE_MODIFY,
+							   msg);
 		DEBUG(4, ("DRS replication uptodate modify message:\n%s\n", s));
 		talloc_free(s);
 	}
@@ -7046,7 +7075,10 @@ linked_attributes[0]:
 	if (ret != LDB_SUCCESS) {
 		ldb_debug(ldb, LDB_DEBUG_WARNING, "Failed to apply linked attribute change '%s'\n%s\n",
 			  ldb_errstring(ldb),
-			  ldb_ldif_message_string(ldb, tmp_ctx, LDB_CHANGETYPE_MODIFY, msg));
+			  ldb_ldif_message_redacted_string(ldb,
+							   tmp_ctx,
+							   LDB_CHANGETYPE_MODIFY,
+							   msg));
 		talloc_free(tmp_ctx);
 		return ret;
 	}

@@ -1,7 +1,7 @@
 Release Announcements
 =====================
 
-This is the fifth release candidate of Samba 4.7.  This is *not*
+This is the sixth release candidate of Samba 4.7.  This is *not*
 intended for production environments and is designed for testing
 purposes only.  Please report any defects via the Samba bug reporting
 system at https://bugzilla.samba.org/.
@@ -22,7 +22,7 @@ consistently. In interactive sessions the following banner is now presented
 to the user: 'Try "help" do get a list of possible commands.'.
 
 The default for "client max protocol" has changed to "SMB3_11",
-which means that smbclient (and related commands) will work against
+which means that 'smbclient' (and related commands) will work against
 servers without SMB1 support.
 
 It's possible to use the '-m/--max-protocol' option to overwrite
@@ -32,7 +32,7 @@ Note that the '-e/--encrypt' option also works with most SMB3 servers
 (e.g. Windows >= 2012 and Samba >= 4.0.0), so the SMB1 unix extensions
 are not required for encryption.
 
-The change to SMB3_11 as default also means smbclient no longer
+The change to SMB3_11 as default also means 'smbclient' no longer
 negotiates SMB1 unix extensions by default, when talking to a Samba server with
 "unix extensions = yes".  As a result, some commands are not available, e.g.
 'posix_encrypt', 'posix_open', 'posix_mkdir', 'posix_rmdir', 'posix_unlink',
@@ -42,7 +42,7 @@ server supports SMB1.
 Note the default ("CORE") for "client min protocol" hasn't changed,
 so it's still possible to connect to SMB1-only servers by default.
 
-'smbclient' learned a new command "deltree" that is able to do
+'smbclient' learned a new command 'deltree' that is able to do
 a recursive deletion of a directory tree.
 
 
@@ -53,7 +53,7 @@ Whole DB read locks: Improved LDAP and replication consistency
 --------------------------------------------------------------
 
 Prior to Samba 4.7 and ldb 1.2.0, the LDB database layer used by Samba
-erronously did not take whole-DB read locks to protect search
+erroneously did not take whole-DB read locks to protect search
 and DRS replication operations.
 
 While each object returned remained subject to a record-level lock (so
@@ -150,7 +150,8 @@ the rest of the 'samba' process, rather than being forced into a single
 process.  This aids in Samba's ability to scale to larger numbers of AD
 clients and the AD DC's overall resiliency, but will mean that there is a
 fork()ed child for every LDAP client, which may be more resource
-intensive in some situations.
+intensive in some situations.  If you run Samba in a
+resource-constrained VM, consider allocating more RAM and swap space.
 
 Improved Read-Only Domain Controller (RODC) Support
 ---------------------------------------------------
@@ -171,6 +172,14 @@ for a password change can only be used via NTLM on the RODC (and not Kerberos).
 The reliability of RODCs locating a writable partner still requires some
 improvements and so the 'password server' configuration option is generally
 recommended on the RODC.
+
+Samba 4.7 is the first Samba release to be secure as an RODC or when
+hosting an RODC.  If you have been using earlier Samba versions to
+host or be an RODC, please upgrade.
+
+In particular see https://bugzilla.samba.org/show_bug.cgi?id=12977 for
+details on the security implications for password disclosure to an
+RODC using earlier versions.
 
 Additional password hashes stored in supplementalCredentials
 ------------------------------------------------------------
@@ -237,6 +246,15 @@ the talloc_autofree_context() (which is inherently thread-unsafe)
 and still be valgrind-clean on exit. Modules that don't need to
 free long-lived data on exit should use the NULL talloc context.
 
+SHA256 LDAPS Certificates
+-------------------------
+
+The self-signed certificate generated for use on LDAPS will now be
+generated with a SHA256 self-signature, not a SHA1 self-signature.
+
+Replacing this certificate with a certificate signed by a trusted
+CA is still highly recommended.
+
 CTDB changes
 ------------
 
@@ -281,6 +299,25 @@ CTDB changes
   uses. The data in replicated databases is valid for the lifetime of
   CTDB and cleared on first attach.
 
+Using x86_64 Accelerated AES Crypto Instructions
+------------------------------------------------
+
+Samba on x86_64 can now be configured to use the Intel accelerated AES
+instruction set, which has the potential to make SMB3 signing and
+encryption much faster on client and server. To enable this, configure
+Samba using the new option --accel-aes=intelaesni.
+
+This is a temporary solution that is being included to allow users
+to enjoy the benefits of Intel accelerated AES on the x86_64 platform,
+but the longer-term solution will be to move Samba to a fully supported
+external crypto library.
+
+The third_party/aesni-intel code will be removed from Samba as soon as
+external crypto library performance reaches parity.
+
+The default is to build without setting --accel-aes, which uses the
+existing Samba software AES implementation.
+
 Parameter changes
 -----------------
 
@@ -295,7 +332,6 @@ the previous behaviour.  Two new values have been provided,
 'mschapv2-and-ntlmv2-only' (allowing MSCHAPv2 while denying NTLMv1)
 and 'disabled', totally disabling NTLM authentication and password
 changes.
-
 
 smb.conf changes
 ================
@@ -321,7 +357,58 @@ smb.conf changes
 KNOWN ISSUES
 ============
 
-https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.7#Release_blocking_bugs
+https://wiki.samba.org/inFdex.php/Release_Planning_for_Samba_4.7#Release_blocking_bugs
+
+
+CHANGES SINCE 4.7.0rc5
+======================
+
+o  Jeremy Allison <jra@samba.org>
+   * BUG 13003: s3: vfs: catia: compression get/set must act only on base file, and
+     must cope with fsp==NULL.
+   * BUG 13008: lib: crypto: Make smbd use the Intel AES instruction set for signing
+     and encryption.
+
+o  Andrew Bartlett <abartlet@samba.org>
+   * BUG 12946: s4-drsuapi: Avoid segfault when replicating as a non-admin with
+     GUID_DRS_GET_CHANGES.
+   * BUG 13015: Allow re-index of newer databases with binary GUID TDB keys
+     (this officially removes support for re-index of the original pack format 0,
+     rather than simply segfaulting).
+   * BUG 13017: Add ldb_ldif_message_redacted_string() to allow debug of redacted
+     log messages, avoiding showing secret values.
+   * BUG 13023: ldb: version 1.2.2.
+   * BUG 13025: schema: Rework dsdb_schema_set_indices_and_attributes() db
+     operations.
+
+o  Alexander Bokovoy <ab@samba.org>
+   * BUG 13030: Install dcerpc/__init__.py for all Python environments.
+
+o  Ralph Boehme <slow@samba.org>
+   * BUG 13024: s3/smbd: Sticky write time offset miscalculation causes broken
+     timestamps
+   * BUG 13037: lib/util: Only close the event_fd in tfork if the caller didn't
+     call tfork_event_fd().
+
+o  Volker Lendecke <vl@samba.org>
+   * BUG 13006: messaging: Avoid a socket leak after fork.
+
+o  Stefan Metzmacher <metze@samba.org>
+   * BUG 13018: charset: Fix str[n]casecmp_m() by comparing lower case values.
+
+o  Gary Lockyer <gary@catalyst.net.nz>
+   * BUG 13037: util_runcmd: Free the fde in event handler.
+
+o  Amitay Isaacs <amitay@gmail.com>
+   * BUG 13012: ctdb-daemon: Fix implementation of process_exists control.
+   * BUG 13021: GET_DB_SEQNUM control can cause ctdb to deadlock when databases
+     are frozen.
+   * BUG 13029: ctdb-daemon: Free up record data if a call request is deferred.
+   * BUG 13036: ctdb-client: Initialize ctdb_ltdb_header completely for empty
+     record.
+
+o  Christof Schmitt <cs@samba.org>
+   * BUG 13032: vfs_streams_xattr: Fix segfault when running with log level 10.
 
 
 CHANGES SINCE 4.7.0rc4
