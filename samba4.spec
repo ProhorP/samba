@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.7.0
-Release: alt0.rc5%ubt
+Release: alt0.rc6%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -121,9 +121,9 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.33 python-module-tevent}
-%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.14  python-module-tdb}
+%{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.1 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.2 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %if %ubt_id <= "M70P"
 %{?_with_systemd:BuildRequires: systemd-devel}
@@ -1362,6 +1362,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Sep 19 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc6%ubt
+- Update to the sixth release candidate of Samba 4.7
+
 * Tue Sep 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc5%ubt
 - Update to the fifth release candidate of Samba 4.7
 
