@@ -39,7 +39,7 @@
 
 Name: samba
 Version: 4.7.0
-Release: alt0.rc6%ubt
+Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1401,14 +1401,18 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
-* Tue Sep 19 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc6%ubt
-- Update to the sixth release candidate of Samba 4.7
+* Thu Sep 21 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt1%ubt
+- Update to new autumn release of Samba 4.7
 
-* Mon Sep 04 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc5%ubt
-- Update to the fifth release candidate of Samba 4.7
-`
-* Sun Aug 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc4%ubt
-- Update to the fourth release candidate of Samba 4.7
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.8-alt1%ubt
+- Update for autumn security release:
+  + CVE-2017-12150 (SMB1/2/3 connections may not require signing where they
+   should)
+  + CVE-2017-12151 (SMB3 connections don't keep encryption across DFS redirects)
+  + CVE-2017-12163 (Server memory information leak over SMB1)
+
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt3%ubt
+- Avoid build trouble with ubt macros id on branch c8
 
 * Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2%ubt
 - Clean code from old merged chunks
