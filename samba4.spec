@@ -114,11 +114,13 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.2.2 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-%if %ubt_id <= "M70P"
-%{?_with_systemd:BuildRequires: systemd-devel}
-%else
+# Avoid trouble with rpm-macros-ubt-0.2-alt1.M80C.2.noarch.rpm
+# where %__ubt_branch_id equal N.M80C in /usr/lib/rpm/macros.d/ubt
+#if %ubt_id <= "M70P"
+#{?_with_systemd:BuildRequires: systemd-devel}
+#else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
-%endif
+#endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
