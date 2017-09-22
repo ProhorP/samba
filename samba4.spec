@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.7.0
-Release: alt0.rc6%ubt
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1364,15 +1364,19 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
-* Tue Sep 19 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc6%ubt
-- Update to the sixth release candidate of Samba 4.7
+* Fri Sep 22 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt1%ubt
+- Update to new autumn release of Samba 4.7
+- Revert removed lpcfg_register_defaults_hook() for openchange
 
-* Tue Sep 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc5%ubt
-- Update to the fifth release candidate of Samba 4.7
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.8-alt1%ubt
+- Update for autumn security release:
+  + CVE-2017-12150 (SMB1/2/3 connections may not require signing where they
+   should)
+  + CVE-2017-12151 (SMB3 connections don't keep encryption across DFS redirects)
+  + CVE-2017-12163 (Server memory information leak over SMB1)
 
-* Sun Aug 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt0.rc4%ubt
-- Update to the fourth release candidate of Samba 4.7
-- Revert removed lpcfg_register_defaults_hook()
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt3%ubt
+- Avoid build trouble with ubt macros id on branch c8
 
 * Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2%ubt
 - Clean code from old merged chunks
