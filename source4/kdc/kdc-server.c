@@ -150,7 +150,7 @@ static void kdc_udp_call_loop(struct tevent_req *subreq)
 		uint16_t port;
 
 		if (!sock->kdc_socket->kdc->am_rodc) {
-			DEBUG(0,("kdc_udp_call_loop: proxying requested when not RODC"));
+			DEBUG(0,("kdc_udp_call_loop: proxying requested when not RODC\n"));
 			talloc_free(call);
 			goto done;
 		}
