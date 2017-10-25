@@ -1519,20 +1519,20 @@ NTSTATUS cli_smb2_qpathinfo_streams(struct cli_state *cli,
 }
 
 /***************************************************************
- Wrapper that allows SMB2 to set pathname attributes.
+ Wrapper that allows SMB2 to set SMB_FILE_BASIC_INFORMATION on
+ a pathname.
  Synchronous only.
 ***************************************************************/
 
-NTSTATUS cli_smb2_setatr(struct cli_state *cli,
+NTSTATUS cli_smb2_setpathinfo(struct cli_state *cli,
 			const char *name,
-			uint16_t attr,
-			time_t mtime)
+			uint8_t in_info_type,
+			uint8_t in_file_info_class,
+			const DATA_BLOB *p_in_data)
 {
 	NTSTATUS status;
 	uint16_t fnum = 0xffff;
 	struct smb2_hnd *ph = NULL;
-	uint8_t inbuf_store[40];
-	DATA_BLOB inbuf = data_blob_null;
 	TALLOC_CTX *frame = talloc_stackframe();
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
@@ -1564,29 +1564,13 @@ NTSTATUS cli_smb2_setatr(struct cli_state *cli,
 		goto fail;
 	}
 
-	/* setinfo on the handle with info_type SMB2_SETINFO_FILE (1),
-	   level 4 (SMB_FILE_BASIC_INFORMATION - 1000). */
-
-	inbuf.data = inbuf_store;
-	inbuf.length = sizeof(inbuf_store);
-	data_blob_clear(&inbuf);
-
-	SSVAL(inbuf.data, 32, attr);
-	if (mtime != 0) {
-		put_long_date((char *)inbuf.data + 16,mtime);
-	}
-	/* Set all the other times to -1. */
-	SBVAL(inbuf.data, 0, 0xFFFFFFFFFFFFFFFFLL);
-	SBVAL(inbuf.data, 8, 0xFFFFFFFFFFFFFFFFLL);
-	SBVAL(inbuf.data, 24, 0xFFFFFFFFFFFFFFFFLL);
-
 	status = smb2cli_set_info(cli->conn,
 				cli->timeout,
 				cli->smb2.session,
 				cli->smb2.tcon,
-				1, /* in_info_type */
-				SMB_FILE_BASIC_INFORMATION - 1000, /* in_file_info_class */
-				&inbuf, /* in_input_buffer */
+				in_info_type,
+				in_file_info_class,
+				p_in_data, /* in_input_buffer */
 				0, /* in_additional_info */
 				ph->fid_persistent,
 				ph->fid_volatile);
@@ -1601,6 +1585,68 @@ NTSTATUS cli_smb2_setatr(struct cli_state *cli,
 	TALLOC_FREE(frame);
 	return status;
 }
+
+
+/***************************************************************
+ Wrapper that allows SMB2 to set pathname attributes.
+ Synchronous only.
+***************************************************************/
+
+NTSTATUS cli_smb2_setatr(struct cli_state *cli,
+			const char *name,
+			uint16_t attr,
+			time_t mtime)
+{
+	uint8_t inbuf_store[40];
+	DATA_BLOB inbuf = data_blob_null;
+
+	/* setinfo on the handle with info_type SMB2_SETINFO_FILE (1),
+	   level 4 (SMB_FILE_BASIC_INFORMATION - 1000). */
+
+	inbuf.data = inbuf_store;
+	inbuf.length = sizeof(inbuf_store);
+	data_blob_clear(&inbuf);
+
+	/*
+	 * SMB1 uses attr == 0 to clear all attributes
+	 * on a file (end up with FILE_ATTRIBUTE_NORMAL),
+	 * and attr == FILE_ATTRIBUTE_NORMAL to mean ignore
+	 * request attribute change.
+	 *
+	 * SMB2 uses exactly the reverse. Unfortunately as the
+	 * cli_setatr() ABI is exposed inside libsmbclient,
+	 * we must make the SMB2 cli_smb2_setatr() call
+	 * export the same ABI as the SMB1 cli_setatr()
+	 * which calls it. This means reversing the sense
+	 * of the requested attr argument if it's zero
+	 * or FILE_ATTRIBUTE_NORMAL.
+	 *
+	 * See BUG: https://bugzilla.samba.org/show_bug.cgi?id=12899
+	 */
+
+	if (attr == 0) {
+		attr = FILE_ATTRIBUTE_NORMAL;
+	} else if (attr == FILE_ATTRIBUTE_NORMAL) {
+		attr = 0;
+	}
+
+	SSVAL(inbuf.data, 32, attr);
+	if (mtime != 0) {
+		put_long_date((char *)inbuf.data + 16,mtime);
+	}
+	/* Set all the other times to -1. */
+	SBVAL(inbuf.data, 0, 0xFFFFFFFFFFFFFFFFLL);
+	SBVAL(inbuf.data, 8, 0xFFFFFFFFFFFFFFFFLL);
+	SBVAL(inbuf.data, 24, 0xFFFFFFFFFFFFFFFFLL);
+
+	return cli_smb2_setpathinfo(cli,
+				name,
+				1, /* in_info_type */
+				/* in_file_info_class */
+				SMB_FILE_BASIC_INFORMATION - 1000,
+				&inbuf);
+}
+
 
 /***************************************************************
  Wrapper that allows SMB2 to set file handle times.

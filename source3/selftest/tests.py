@@ -56,6 +56,7 @@ finally:
 
 have_libarchive = ("HAVE_LIBARCHIVE" in config_hash)
 have_linux_kernel_oplocks = ("HAVE_KERNEL_OPLOCKS_LINUX" in config_hash)
+have_inotify = ("HAVE_INOTIFY" in config_hash)
 
 plantestsuite("samba3.blackbox.success", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_success.sh")])
 plantestsuite("samba3.blackbox.failure", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/test_failure.sh")])
@@ -221,10 +222,11 @@ for env in ["fileserver"]:
     plantestsuite("samba3.blackbox.netshareenum (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_shareenum.sh"), '$SERVER', '$USERNAME', '$PASSWORD', rpcclient])
     plantestsuite("samba3.blackbox.acl_xattr (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_acl_xattr.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls])
     plantestsuite("samba3.blackbox.smb2.not_casesensitive (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_smb2_not_casesensitive.sh"), '//$SERVER/tmp', '$SERVER_IP', '$USERNAME', '$PASSWORD', '$LOCAL_PATH', smbclient3])
-    plantestsuite("samba3.blackbox.inherit_owner.default(%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'tmp', '0', '0', '-m', 'NT1'])
-    plantestsuite("samba3.blackbox.inherit_owner.full (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'inherit_owner', '1', '1', '-m', 'NT1'])
-    plantestsuite("samba3.blackbox.inherit_owner.unix (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, 'inherit_owner_u', '0', '1', '-m', 'NT1'])
+    plantestsuite("samba3.blackbox.inherit_owner.default(%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, net, 'tmp', '0', '0', '-m', 'NT1'])
+    plantestsuite("samba3.blackbox.inherit_owner.full (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, net, 'inherit_owner', '1', '1', '-m', 'NT1'])
+    plantestsuite("samba3.blackbox.inherit_owner.unix (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_inherit_owner.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, net, 'inherit_owner_u', '0', '1', '-m', 'NT1'])
     plantestsuite("samba3.blackbox.large_acl (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_large_acl.sh"), '$SERVER', '$USERNAME', '$PASSWORD', smbclient3, smbcacls])
+    plantestsuite("samba3.blackbox.give_owner (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_give_owner.sh"), '$SERVER', '$SERVER_IP', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3, smbcacls, net, 'tmp'])
 
     #
     # tar command tests
@@ -456,6 +458,9 @@ for t in tests:
     elif t == "smb2.kernel-oplocks":
         if have_linux_kernel_oplocks:
             plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER/kernel_oplocks -U$USERNAME%$PASSWORD')
+    elif t == "smb2.notify-inotify":
+        if have_inotify:
+            plansmbtorture4testsuite(t, "fileserver", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
     elif t == "vfs.acl_xattr":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
     else:
