@@ -1569,10 +1569,10 @@ tgs_build_reply(krb5_context context,
 	if(t->enc_part.kvno){
 	    second_kvno = *t->enc_part.kvno;
 	    kvno_ptr = &second_kvno;
-	    kdc_log(context, config, 0,
+	    kdc_log(context, config, 6,
 		    "tgs_build_reply: second_kvno = %d", second_kvno);
 	}
-	kdc_log(context, config, 0,
+	kdc_log(context, config, 6,
 		"tgs_build_reply: _kdc_db_fetch() with HDB_F_GET_KRBTGT");
 	ret = _kdc_db_fetch(context, config, p,
 			    HDB_F_GET_KRBTGT, kvno_ptr,
@@ -1627,7 +1627,7 @@ tgs_build_reply(krb5_context context,
      */
 
 server_lookup:
-    kdc_log(context, config, 0,
+    kdc_log(context, config, 6,
 	"tgs_build_reply: _kdc_db_fetch() with HDB_F_GET_SERVER");
     ret = _kdc_db_fetch(context, config, sp, HDB_F_GET_SERVER | flags,
 			NULL, NULL, &server);
