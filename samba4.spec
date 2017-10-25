@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.7.0
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1364,6 +1364,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Oct 25 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.0-alt2%ubt
+- Fix KDC not works in configuration with trusted domain (samba bug #13078)
+
 * Fri Sep 22 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt1%ubt
 - Update to new autumn release of Samba 4.7
 - Revert removed lpcfg_register_defaults_hook() for openchange
