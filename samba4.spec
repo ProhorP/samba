@@ -46,7 +46,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.7.2
+Version: 4.7.3
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -120,18 +120,12 @@ BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.33 python-module-tevent}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.34 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.2.2 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-# Avoid trouble with rpm-macros-ubt-0.2-alt1.M80C.2.noarch.rpm
-# where %__ubt_branch_id equal N.M80C in /usr/lib/rpm/macros.d/ub
-#if %ubt_id <= "M70P"
-#{?_with_systemd:BuildRequires: systemd-devel}
-#else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
-#endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
@@ -1364,6 +1358,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.3-alt1%ubt
+- Update for second autumn security release of Samba 4.7
+
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt1%ubt
+- Second autumn security release (Fixes: CVE-2017-14746, CVE-2017-15275)
+
 * Fri Nov 17 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.2-alt1%ubt
 - Update to third autumn release of Samba 4.7
 
