@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.7.2
+Version: 4.7.3
 Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -109,7 +109,7 @@ BuildRequires: libkrb5-devel libssl-devel libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.33 python-module-tevent}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.34 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.2.2 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
@@ -1401,6 +1401,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.3-alt1%ubt
+- Update to second autumn security release of Samba 4.7
+
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt1%ubt
+- Second autumn security release (Fixes: CVE-2017-14746, CVE-2017-15275)
+
 * Fri Nov 17 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.2-alt1%ubt
 - Update to third autumn release of Samba 4.7
 
