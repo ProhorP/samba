@@ -38,7 +38,7 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.7.3
+Version: 4.7.4
 Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -56,6 +56,7 @@ Source9: smb.conf.default
 Source10: nmb.init
 Source11: pam_winbind.conf
 Source12: ctdb.init
+Source13: samba.limits
 
 Source200: README.dc
 Source201: README.downgrade
@@ -111,7 +112,7 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.34 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.2 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.3 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 # Avoid trouble with rpm-macros-ubt-0.2-alt1.M80C.2.noarch.rpm
@@ -717,6 +718,10 @@ rm -f %buildroot%_libdir/samba/libcmocka-samba4.so
 # Install pidl/lib/Parse/Pidl/Samba3/Template.pm
 cp -a pidl/lib/Parse/Pidl/Samba3/Template.pm %buildroot%_datadir/perl5/Parse/Pidl/Samba3/
 
+# Install limits
+mkdir -p %buildroot%_sysconfdir/security/limits.d/
+install -m644 %SOURCE13 %buildroot%_sysconfdir/security/limits.d/90-samba.conf
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -1014,6 +1019,7 @@ TDB_NO_FSYNC=1 %make_build test
 %files common
 %_tmpfilesdir/%name.conf
 %config(noreplace) %_sysconfdir/logrotate.d/samba
+%config(noreplace) %_sysconfdir/security/limits.d/90-samba.conf
 %attr(0700,root,root) %dir /var/log/samba
 %attr(0700,root,root) %dir /var/log/samba/old
 %dir /var/run/samba
@@ -1401,6 +1407,15 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Jan 05 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.4-alt1%ubt
+- Update to first winter release of Samba 4.7
+
+* Thu Dec 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt1%ubt
+- Update to first winter release with common bugfixes (closes: 33210)
+
+* Wed Nov 29 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt2%ubt
+- Backport from Heimdal upstream include/includedir directives for krb5.conf
+
 * Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.3-alt1%ubt
 - Update to second autumn security release of Samba 4.7
 
