@@ -1583,6 +1583,8 @@ main() {
         conf.env['CPPPATH_CEPHFS'] = Options.options.libcephfs_dir + '/include'
         conf.env['LIBPATH_CEPHFS'] = Options.options.libcephfs_dir + '/lib'
         conf.env['LIBPATH_CEPH-COMMON'] = Options.options.libcephfs_dir + '/lib/ceph'
+    else:
+        conf.env['LIBPATH_CEPH-COMMON'] = Options.options.LIBDIR + '/ceph'
 
     if Options.options.libcephfs_common_dir:
         conf.env['LIBPATH_CEPH-COMMON'] = Options.options.libcephfs_common_dir
