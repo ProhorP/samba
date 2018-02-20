@@ -4065,26 +4065,35 @@ static ssize_t fruit_pwrite_meta_stream(vfs_handle_struct *handle,
 					size_t n, off_t offset)
 {
 	AfpInfo *ai = NULL;
-	int ret;
+	size_t nwritten;
+	bool ok;
 
 	ai = afpinfo_unpack(talloc_tos(), data);
 	if (ai == NULL) {
 		return -1;
 	}
 
-	if (ai_empty_finderinfo(ai)) {
-		ret = SMB_VFS_NEXT_UNLINK(handle, fsp->fsp_name);
-		if (ret != 0 && errno != ENOENT && errno != ENOATTR) {
-			DBG_ERR("Can't delete metadata for %s: %s\n",
-				fsp_str_dbg(fsp), strerror(errno));
-			TALLOC_FREE(ai);
-			return -1;
-		}
+	nwritten = SMB_VFS_NEXT_PWRITE(handle, fsp, data, n, offset);
+	if (nwritten != n) {
+		return -1;
+	}
 
+	if (!ai_empty_finderinfo(ai)) {
 		return n;
 	}
 
-	return SMB_VFS_NEXT_PWRITE(handle, fsp, data, n, offset);
+	ok = set_delete_on_close(
+			fsp,
+			true,
+			handle->conn->session_info->security_token,
+			handle->conn->session_info->unix_token);
+	if (!ok) {
+		DBG_ERR("set_delete_on_close on [%s] failed\n",
+			fsp_str_dbg(fsp));
+		return -1;
+	}
+
+	return n;
 }
 
 static ssize_t fruit_pwrite_meta_netatalk(vfs_handle_struct *handle,
@@ -4095,24 +4104,11 @@ static ssize_t fruit_pwrite_meta_netatalk(vfs_handle_struct *handle,
 	AfpInfo *ai = NULL;
 	char *p = NULL;
 	int ret;
+	bool ok;
 
 	ai = afpinfo_unpack(talloc_tos(), data);
 	if (ai == NULL) {
 		return -1;
-	}
-
-	if (ai_empty_finderinfo(ai)) {
-		ret = SMB_VFS_REMOVEXATTR(handle->conn,
-					  fsp->fsp_name->base_name,
-					  AFPINFO_EA_NETATALK);
-
-		if (ret != 0 && errno != ENOENT && errno != ENOATTR) {
-			DBG_ERR("Can't delete metadata for %s: %s\n",
-				fsp_str_dbg(fsp), strerror(errno));
-			return -1;
-		}
-
-		return n;
 	}
 
 	ad = ad_fget(talloc_tos(), handle, fsp, ADOUBLE_META);
@@ -4139,6 +4135,22 @@ static ssize_t fruit_pwrite_meta_netatalk(vfs_handle_struct *handle,
 	}
 
 	TALLOC_FREE(ad);
+
+	if (!ai_empty_finderinfo(ai)) {
+		return n;
+	}
+
+	ok = set_delete_on_close(
+		fsp,
+		true,
+		handle->conn->session_info->security_token,
+		handle->conn->session_info->unix_token);
+	if (!ok) {
+		DBG_ERR("set_delete_on_close on [%s] failed\n",
+			fsp_str_dbg(fsp));
+		return -1;
+	}
+
 	return n;
 }
 
@@ -4717,37 +4729,16 @@ static int fruit_fstat(vfs_handle_struct *handle, files_struct *fsp,
 	return rc;
 }
 
-static NTSTATUS fruit_streaminfo_meta_stream(
+static NTSTATUS delete_invalid_meta_stream(
 	vfs_handle_struct *handle,
-	struct files_struct *fsp,
 	const struct smb_filename *smb_fname,
 	TALLOC_CTX *mem_ctx,
 	unsigned int *pnum_streams,
 	struct stream_struct **pstreams)
 {
-	struct stream_struct *stream = *pstreams;
-	unsigned int num_streams = *pnum_streams;
 	struct smb_filename *sname = NULL;
-	int i;
 	int ret;
 	bool ok;
-
-	for (i = 0; i < num_streams; i++) {
-		if (strequal_m(stream[i].name, AFPINFO_STREAM)) {
-			break;
-		}
-	}
-
-	if (i == num_streams) {
-		return NT_STATUS_OK;
-	}
-
-	if (stream[i].size == AFP_INFO_SIZE) {
-		return NT_STATUS_OK;
-	}
-
-	DBG_ERR("Removing invalid AFPINFO_STREAM size [%zd] from [%s]\n",
-		stream[i].size, smb_fname_str_dbg(smb_fname));
 
 	ok = del_fruit_stream(mem_ctx, pnum_streams, pstreams, AFPINFO_STREAM);
 	if (!ok) {
@@ -4770,6 +4761,109 @@ static NTSTATUS fruit_streaminfo_meta_stream(
 	}
 
 	return NT_STATUS_OK;
+}
+
+static NTSTATUS fruit_streaminfo_meta_stream(
+	vfs_handle_struct *handle,
+	struct files_struct *fsp,
+	const struct smb_filename *smb_fname,
+	TALLOC_CTX *mem_ctx,
+	unsigned int *pnum_streams,
+	struct stream_struct **pstreams)
+{
+	struct stream_struct *stream = *pstreams;
+	unsigned int num_streams = *pnum_streams;
+	struct smb_filename *sname = NULL;
+	char *full_name = NULL;
+	uint32_t name_hash;
+	struct share_mode_lock *lck = NULL;
+	struct file_id id = {0};
+	bool delete_on_close_set;
+	int i;
+	int ret;
+	NTSTATUS status;
+	bool ok;
+
+	for (i = 0; i < num_streams; i++) {
+		if (strequal_m(stream[i].name, AFPINFO_STREAM)) {
+			break;
+		}
+	}
+
+	if (i == num_streams) {
+		return NT_STATUS_OK;
+	}
+
+	if (stream[i].size != AFP_INFO_SIZE) {
+		DBG_ERR("Removing invalid AFPINFO_STREAM size [%jd] from [%s]\n",
+			(intmax_t)stream[i].size, smb_fname_str_dbg(smb_fname));
+
+		return delete_invalid_meta_stream(handle, smb_fname, mem_ctx,
+						  pnum_streams, pstreams);
+	}
+
+	/*
+	 * Now check if there's a delete-on-close pending on the stream. If so,
+	 * hide the stream. This behaviour was verified against a macOS 10.12
+	 * SMB server.
+	 */
+
+	sname = synthetic_smb_fname(talloc_tos(),
+				    smb_fname->base_name,
+				    AFPINFO_STREAM_NAME,
+				    NULL, 0);
+	if (sname == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	ret = SMB_VFS_NEXT_STAT(handle, sname);
+	if (ret != 0) {
+		status = map_nt_error_from_unix(errno);
+		goto out;
+	}
+
+	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sname->st);
+
+	lck = get_existing_share_mode_lock(talloc_tos(), id);
+	if (lck == NULL) {
+		status = NT_STATUS_OK;
+		goto out;
+	}
+
+	full_name = talloc_asprintf(talloc_tos(),
+				    "%s%s",
+				    sname->base_name,
+				    AFPINFO_STREAM);
+	if (full_name == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	status = file_name_hash(handle->conn, full_name, &name_hash);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto out;
+	}
+
+	delete_on_close_set = is_delete_on_close_set(lck, name_hash);
+	if (delete_on_close_set) {
+		ok = del_fruit_stream(mem_ctx,
+				      pnum_streams,
+				      pstreams,
+				      AFPINFO_STREAM);
+		if (!ok) {
+			status = NT_STATUS_INTERNAL_ERROR;
+			goto out;
+		}
+	}
+
+	status  = NT_STATUS_OK;
+
+out:
+	TALLOC_FREE(sname);
+	TALLOC_FREE(lck);
+	TALLOC_FREE(full_name);
+	return status;
 }
 
 static NTSTATUS fruit_streaminfo_meta_netatalk(
