@@ -536,6 +536,7 @@ libsamba_util private headers.
 	--with-relro \
 	--without-fam \
 	--private-libraries=%_samba4_private_libraries \
+	--with-libcephfs-common=%_libdir/ceph \
 %if_with mitkrb5
 	--with-system-mitkrb5 \
 %endif
