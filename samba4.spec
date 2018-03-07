@@ -43,11 +43,13 @@
 %def_with systemd
 %def_enable avahi
 %def_enable glusterfs
+%ifnarch mipsel
 %def_with libcephfs
+%endif
 
 Name:    samba-DC
 Version: 4.6.12
-Release: alt2%ubt
+Release: alt2.0.mips1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1366,6 +1368,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Mar 07 2018 Gleb F-Malinovskiy <glebfm@altlinux.org> 4.6.12-alt2.0.mips1%ubt
+- mipsel: built without ceph support.
+
 * Tue Jan 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt2%ubt
 - Fix trouble with joined machine account moving when it already exists.
   Move it only if the admin specified an explicit OU (Samba bug #12696)
