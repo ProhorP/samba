@@ -47,7 +47,7 @@
 
 Name:    samba-DC
 Version: 4.6.13
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1367,6 +1367,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Mar 12 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.13-alt2%ubt
+- Update to spring security release
+- Security fixes:
+  + CVE-2018-1050 Protect against null pointer derefs
+  + CVE-2018-1057 Test for password change with empty delete
+
 * Tue Feb 20 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.13-alt1%ubt
 - Update to second winter release with common bugfixes
 
