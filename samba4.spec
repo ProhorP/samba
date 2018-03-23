@@ -1,3 +1,7 @@
+%define if_branch_le() %if "%(rpmvercmp '%ubt_id' '%1')" <= "0"
+%define if_branch_eq() %if "%(rpmvercmp '%ubt_id' '%1')" == "0"
+%define if_branch_ge() %if "%(rpmvercmp '%ubt_id' '%1')" >= "0"
+
 %set_verify_elf_method unresolved=relaxed
 %add_findprov_skiplist /%_lib/*
 %add_debuginfo_skiplist /%_lib
@@ -46,8 +50,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.7.4
-Release: alt2%ubt
+Version: 4.7.6
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -126,7 +130,11 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.2.3 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
+%if_branch_le M70P
+%{?_with_systemd:BuildRequires: systemd-devel}
+%else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
+%endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
@@ -1365,7 +1373,23 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
-* Tue Jan 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.4-alt2%ubt
+* Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1%ubt
+- Update to latest winter release of Samba 4.7
+
+* Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt.1
+- Rebuild security release (Fixes: CVE-2018-1050, CVE-2018-1057) with old
+  ceph version without libceph-common for c7/c8
+
+* Mon Mar 12 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt
+- Update to spring security release
+- Security fixes:
+  + CVE-2018-1050 Codenomicon crashes in spoolss server code
+  + CVE-2018-1057 Unprivileged user can change any user (and admin) password
+
+* Tue Feb 20 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.13-alt1%ubt
+- Update to second winter release with common bugfixes
+
+* Tue Jan 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt2%ubt
 - Fix trouble with joined machine account moving when it already exists.
   Move it only if the admin specified an explicit OU (Samba bug #12696)
 
