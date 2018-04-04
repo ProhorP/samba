@@ -38,12 +38,17 @@
 
 %def_with systemd
 %def_enable avahi
+%ifarch %e2k
+%def_disable glusterfs
+%def_without libcephfs
+%else
 %def_enable glusterfs
 %def_with libcephfs
+%endif
 
 Name: samba
 Version: 4.7.6
-Release: alt1%ubt
+Release: alt2%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1410,6 +1415,10 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Wed Apr 04 2018 Evgeny Sinelikov <sin@altlinux.org> 4.7.6-alt2%ubt
+- Rebuild for e2k with missing SYS_setgroups32
+- Disable glusterfs and cephfs for e2k
+
 * Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1%ubt
 - Update to latest winter release of Samba 4.7
 
