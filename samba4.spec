@@ -46,12 +46,17 @@
 
 %def_with systemd
 %def_enable avahi
+%ifarch %e2k
+%def_disable glusterfs
+%def_without libcephfs
+%else
 %def_enable glusterfs
 %def_with libcephfs
+%endif
 
 Name:    samba-DC
 Version: 4.7.6
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -434,7 +439,7 @@ Group: System/Servers
 BuildArch: noarch
 Provides: task-samba-ad-dc = %version-%release
 Provides: task-ad-dc = %version-%release
-Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client samba-DC-doc krb5-kinit
+Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client %{?_with_doc:samba-DC-doc} krb5-kinit
 Conflicts: samba python-module-samba samba-common samba-winbind-clients samba-winbind samba-client samba-doc
 
 %description -n task-samba-dc
@@ -1373,6 +1378,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Apr 05 2018 Evgeny Sinelikov <sin@altlinux.org> 4.7.6-alt2%ubt
+- Fix doc knob: task-samba-dc should conditionally R: samba-DC-doc
+- Rebuild for e2k with missing SYS_setgroups32
+- Disable glusterfs and cephfs for e2k
+
 * Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1%ubt
 - Update to latest winter release of Samba 4.7
 
