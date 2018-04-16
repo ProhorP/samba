@@ -50,8 +50,8 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.6.14
-Release: alt1%ubt.1
+Version: 4.6.15
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1369,6 +1369,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Apr 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.15-alt1%ubt
+- Update to second spring release
+
 * Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt.1
 - Rebuild security release (Fixes: CVE-2018-1050, CVE-2018-1057) with old
   ceph version without libceph-common for c7/c8
