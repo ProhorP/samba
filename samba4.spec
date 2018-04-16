@@ -42,8 +42,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.6.14
-Release: alt1%ubt.1
+Version: 4.6.15
+Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1406,6 +1406,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Apr 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.15-alt1%ubt
+- Update to second spring release
+
 * Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt.1
 - Rebuild security release (Fixes: CVE-2018-1050, CVE-2018-1057) with old
   ceph version without libceph-common for c7/c8
