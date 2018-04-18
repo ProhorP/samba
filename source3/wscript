@@ -1586,6 +1586,9 @@ main() {
     if Options.options.libcephfs_dir:
         conf.env['CPPPATH_CEPHFS'] = Options.options.libcephfs_dir + '/include'
         conf.env['LIBPATH_CEPHFS'] = Options.options.libcephfs_dir + '/lib'
+        conf.env['LIBPATH_CEPH-COMMON'] = Options.options.libcephfs_dir + '/lib/ceph'
+    else:
+        conf.env['LIBPATH_CEPH-COMMON'] = Options.options.LIBDIR + '/ceph'
 
     if Options.options.libcephfs_common_dir:
         conf.env['LIBPATH_CEPH-COMMON'] = Options.options.libcephfs_common_dir
@@ -1596,7 +1599,8 @@ main() {
         conf.CHECK_LIB('ceph-common', shlib=True)
         if Options.options.with_acl_support:
             conf.DEFINE('HAVE_CEPH', '1')
-            if conf.CHECK_FUNCS_IN('ceph_statx', 'cephfs', headers='cephfs/libcephfs.h'):
+            if conf.CHECK_FUNCS_IN('ceph_statx', 'cephfs ceph-common',
+                                   headers='cephfs/libcephfs.h'):
                 conf.DEFINE('HAVE_CEPH_STATX', '1')
         else:
             Logs.warn("ceph support disabled due to --without-acl-support")
