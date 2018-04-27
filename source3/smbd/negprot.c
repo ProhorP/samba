@@ -295,7 +295,6 @@ static void reply_nt1(struct smb_request *req, uint16_t choice)
 	   supports it and we can do encrypted passwords */
 
 	if (xconn->smb1.negprot.encrypted_passwords &&
-	    lp_use_spnego() &&
 	    (req->flags2 & FLAGS2_EXTENDED_SECURITY)) {
 		negotiate_spnego = True;
 		capabilities |= CAP_EXTENDED_SECURITY;
@@ -707,14 +706,6 @@ void reply_negprot(struct smb_request *req)
 
 	/* possibly reload - change of architecture */
 	reload_services(sconn, conn_snum_used, true);
-
-	/* moved from the netbios session setup code since we don't have that 
-	   when the client connects to port 445.  Of course there is a small
-	   window where we are listening to messages   -- jerry */
-
-	serverid_register(messaging_server_id(sconn->msg_ctx),
-			  FLAG_MSG_GENERAL|FLAG_MSG_SMBD
-			  |FLAG_MSG_PRINT_GENERAL);
 
 	/*
 	 * Anything higher than PROTOCOL_SMB2_10 still
