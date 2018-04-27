@@ -50,7 +50,7 @@
 %def_with libcephfs
 
 Name:    samba-DC
-Version: 4.7.7
+Version: 4.8.1
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -124,11 +124,11 @@ BuildRequires: libiniparser-devel
 BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
-%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.10 libpytalloc-devel}
-%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.34 python-module-tevent}
+%{?_without_talloc:BuildRequires: libtalloc-devel >= 2.1.11 libpytalloc-devel}
+%{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.36 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.2.3 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.3.2 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %if_branch_le M70P
 %{?_with_systemd:BuildRequires: systemd-devel}
@@ -1373,6 +1373,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Apr 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.1-alt1%ubt
+- Update to latest release of Samba 4.8
+
 * Thu Apr 19 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt1%ubt
 - Update to first spring release of Samba 4.7
 
