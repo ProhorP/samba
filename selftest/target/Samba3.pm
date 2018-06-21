@@ -2007,6 +2007,12 @@ sub provision($$$$$$$$$)
 	vfs objects = acl_xattr fake_acls xattr_tdb fake_dfq
 	admin users = $unix_name
 	include = $dfqconffile
+[dfq_cache]
+	path = $shrdir/dfree
+	vfs objects = acl_xattr fake_acls xattr_tdb fake_dfq
+	admin users = $unix_name
+	include = $dfqconffile
+	dfree cache time = 60
 [dfq_owner]
 	path = $shrdir/dfree
 	vfs objects = acl_xattr fake_acls xattr_tdb fake_dfq
@@ -2038,6 +2044,10 @@ sub provision($$$$$$$$$)
 [kernel_oplocks]
 	copy = tmp
 	kernel oplocks = yes
+	vfs objects = streams_xattr xattr_tdb
+
+[streams_xattr]
+	copy = tmp
 	vfs objects = streams_xattr xattr_tdb
 
 [compound_find]
