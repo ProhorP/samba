@@ -10034,7 +10034,7 @@ static bool run_local_gencache(int dummy)
 	blob = data_blob_string_const_null("bar");
 	tm = time(NULL) + 60;
 
-	if (!gencache_set_data_blob("foo", &blob, tm)) {
+	if (!gencache_set_data_blob("foo", blob, tm)) {
 		d_printf("%s: gencache_set_data_blob() failed\n", __location__);
 		return False;
 	}
@@ -10073,7 +10073,7 @@ static bool run_local_gencache(int dummy)
 	blob.data = (uint8_t *)&v;
 	blob.length = sizeof(v);
 
-	if (!gencache_set_data_blob("blob", &blob, tm)) {
+	if (!gencache_set_data_blob("blob", blob, tm)) {
 		d_printf("%s: gencache_set_data_blob() failed\n",
 			 __location__);
 		return false;
@@ -11650,6 +11650,7 @@ static struct {
 	{ "SMB2-MULTI-CHANNEL", run_smb2_multi_channel },
 	{ "SMB2-SESSION-REAUTH", run_smb2_session_reauth },
 	{ "SMB2-FTRUNCATE", run_smb2_ftruncate },
+	{ "SMB2-DIR-FSYNC", run_smb2_dir_fsync },
 	{ "CLEANUP1", run_cleanup1 },
 	{ "CLEANUP2", run_cleanup2 },
 	{ "CLEANUP3", run_cleanup3 },
