@@ -1227,6 +1227,7 @@ static void machine_password_change_handler(struct tevent_context *ctx,
 	struct winbindd_child *child =
 		(struct winbindd_child *)private_data;
 	struct rpc_pipe_client *netlogon_pipe = NULL;
+	struct netlogon_creds_cli_context *netlogon_creds_ctx = NULL;
 	NTSTATUS result;
 	struct timeval next_change;
 
@@ -1255,7 +1256,9 @@ static void machine_password_change_handler(struct tevent_context *ctx,
 		return;
 	}
 
-	result = cm_connect_netlogon(child->domain, &netlogon_pipe);
+	result = cm_connect_netlogon_secure(child->domain,
+					    &netlogon_pipe,
+					    &netlogon_creds_ctx);
 	if (!NT_STATUS_IS_OK(result)) {
 		DEBUG(10,("machine_password_change_handler: "
 			"failed to connect netlogon pipe: %s\n",
@@ -1263,7 +1266,7 @@ static void machine_password_change_handler(struct tevent_context *ctx,
 		return;
 	}
 
-	result = trust_pw_change(child->domain->conn.netlogon_creds,
+	result = trust_pw_change(netlogon_creds_ctx,
 				 msg_ctx,
 				 netlogon_pipe->binding_handle,
 				 child->domain->name,
@@ -1661,6 +1664,12 @@ static bool fork_domain_child(struct winbindd_child *child)
 		DEBUG(1, ("winbindd_reinit_after_fork failed: %s\n",
 			  nt_errstr(status)));
 		_exit(0);
+	}
+
+	if (child_domain != NULL) {
+		setproctitle("domain child [%s]", child_domain->name);
+	} else if (child == idmap_child()) {
+		setproctitle("idmap child");
 	}
 
 	/* Handle online/offline messages. */

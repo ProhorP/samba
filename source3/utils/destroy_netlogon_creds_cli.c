@@ -98,6 +98,7 @@ int main(int argc, const char *argv[])
 		SEC_CHAN_WKSTA,
 		argv[3],
 		argv[2],
+		"",
 		mem_ctx,
 		&ctx);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -119,7 +120,7 @@ int main(int argc, const char *argv[])
 
 	creds->session_key[0]++;
 
-	status = netlogon_creds_cli_store(ctx, &creds);
+	status = netlogon_creds_cli_store(ctx, creds);
 	if (!NT_STATUS_IS_OK(status)) {
 		fprintf(stderr,
 			"netlogon_creds_cli_store failed: %s\n",

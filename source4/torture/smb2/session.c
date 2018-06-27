@@ -616,7 +616,7 @@ bool test_session_reauth5(struct torture_context *tctx, struct smb2_tree *tree)
 {
 	NTSTATUS status;
 	TALLOC_CTX *mem_ctx = talloc_new(tctx);
-	char dname[256];
+	char dname[128];
 	char fname[256];
 	char fname2[256];
 	struct smb2_handle _dh1;
@@ -1149,7 +1149,7 @@ static bool test_session_expire1(struct torture_context *tctx)
 						   credentials,
 						   0 /* previous_session_id */);
 		torture_assert_ntstatus_ok_goto(tctx, status, ret, done,
-					"smb2_session_seutup_spnego failed");
+					"smb2_session_setup_spnego failed");
 	}
 
 	ZERO_STRUCT(qfinfo.access_information.out);
@@ -1387,7 +1387,7 @@ static bool test_session_expire2(struct torture_context *tctx)
 		ZERO_STRUCT(lack);
 		lack.in.lease.lease_version = 1;
 		lack.in.lease.lease_key.data[0] = 1;
-		lack.in.lease.lease_key.data[0] = 2;
+		lack.in.lease.lease_key.data[1] = 2;
 		status = smb2_lease_break_ack(tree, &lack);
 		torture_assert_ntstatus_equal_goto(tctx, status,
 					NT_STATUS_NETWORK_SESSION_EXPIRED,

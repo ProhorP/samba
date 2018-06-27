@@ -1914,22 +1914,22 @@ static void test_ldb_modify_during_search(void **state, bool add_index,
 
 static void test_ldb_modify_during_indexed_search(void **state)
 {
-	return test_ldb_modify_during_search(state, true, false);
+	test_ldb_modify_during_search(state, true, false);
 }
 
 static void test_ldb_modify_during_unindexed_search(void **state)
 {
-	return test_ldb_modify_during_search(state, false, false);
+	test_ldb_modify_during_search(state, false, false);
 }
 
 static void test_ldb_rename_during_indexed_search(void **state)
 {
-	return test_ldb_modify_during_search(state, true, true);
+	test_ldb_modify_during_search(state, true, true);
 }
 
 static void test_ldb_rename_during_unindexed_search(void **state)
 {
-	return test_ldb_modify_during_search(state, false, true);
+	test_ldb_modify_during_search(state, false, true);
 }
 
 /*
@@ -2382,6 +2382,269 @@ static void test_ldb_modify_before_ldb_wait(void **state)
 
 	/* We got the result */
 	assert_int_equal(res2->count, 1);
+}
+
+/*
+ * This test is also complex.
+ * The purpose is to test if a modify can occur during an ldb_search()
+ * This would be a failure if if in process
+ * (1) and (2):
+ *  - (1) ltdb_search() starts and calls back for one entry
+ *  - (2) one of the entries to be matched is modified
+ *  - (1) the indexed search tries to return the modified entry, but
+ *        it is no longer found, either:
+ *          - despite it still matching (dn changed)
+ *          - it no longer matching (attrs changed)
+ *
+ * We also try un-indexed to show that the behaviour differs on this
+ * point, which it should not (an index should only impact search
+ * speed).
+ */
+
+/*
+ * This purpose of this callback is to trigger a write in the callback
+ * so as to change in in-memory index code while looping over the
+ * index result.
+ */
+
+static int test_ldb_callback_modify_during_search_callback1(struct ldb_request *req,
+						   struct ldb_reply *ares)
+{
+	int ret;
+	struct modify_during_search_test_ctx *ctx = req->context;
+	struct ldb_dn *dn = NULL, *new_dn = NULL;
+	TALLOC_CTX *tmp_ctx = talloc_new(ctx->test_ctx);
+	struct ldb_message *msg = NULL;
+
+	assert_non_null(tmp_ctx);
+
+	switch (ares->type) {
+	case LDB_REPLY_ENTRY:
+	{
+		const struct ldb_val *cn_val
+			= ldb_dn_get_component_val(ares->message->dn, 0);
+		const char *cn = (char *)cn_val->data;
+		ctx->res_count++;
+		if (strcmp(cn, "test_search_cn") == 0) {
+			ctx->got_cn = true;
+		} else if (strcmp(cn, "test_search_2_cn") == 0) {
+			ctx->got_2_cn = true;
+		}
+		if (ctx->res_count == 2) {
+			return LDB_SUCCESS;
+		}
+		break;
+	}
+	case LDB_REPLY_REFERRAL:
+		return LDB_SUCCESS;
+
+	case LDB_REPLY_DONE:
+		return ldb_request_done(req, LDB_SUCCESS);
+	}
+
+	if (ctx->rename) {
+		if (ctx->got_2_cn) {
+			/* Modify this one */
+			dn = ldb_dn_new_fmt(tmp_ctx,
+					    ctx->test_ctx->ldb,
+					    "cn=test_search_2_cn,%s",
+					    ldb_dn_get_linearized(ctx->basedn));
+		} else {
+			dn = ldb_dn_new_fmt(tmp_ctx,
+					    ctx->test_ctx->ldb,
+					    "cn=test_search_cn,%s",
+					    ldb_dn_get_linearized(ctx->basedn));
+		}
+		assert_non_null(dn);
+
+		new_dn = ldb_dn_new_fmt(tmp_ctx,
+					ctx->test_ctx->ldb,
+					"cn=test_search_cn_renamed,"
+					"dc=not_search_test_entry");
+		assert_non_null(new_dn);
+
+		ret = ldb_rename(ctx->test_ctx->ldb, dn, new_dn);
+		assert_int_equal(ret, 0);
+
+	} else {
+		if (ctx->got_2_cn) {
+			/* Delete this one */
+			dn = ldb_dn_new_fmt(tmp_ctx,
+					    ctx->test_ctx->ldb,
+					    "cn=test_search_2_cn,%s",
+					    ldb_dn_get_linearized(ctx->basedn));
+		} else {
+			dn = ldb_dn_new_fmt(tmp_ctx,
+					    ctx->test_ctx->ldb,
+					    "cn=test_search_cn,%s",
+					    ldb_dn_get_linearized(ctx->basedn));
+		}
+		assert_non_null(dn);
+
+		ret = ldb_delete(ctx->test_ctx->ldb, dn);
+		assert_int_equal(ret, 0);
+	}
+
+	/*
+	 * Now fill in the position we just removed from the
+	 * index to ensure we fail the test (otherwise we just read
+	 * past the end of the array and find the value we wanted to
+	 * skip)
+	 */
+	msg = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg);
+
+	/* We deliberatly use ou= not cn= here */
+	msg->dn = ldb_dn_new_fmt(msg,
+				 ctx->test_ctx->ldb,
+				 "ou=test_search_cn_extra,%s",
+				 ldb_dn_get_linearized(ctx->basedn));
+
+	ret = ldb_msg_add_string(msg,
+				 "objectUUID",
+				 "0123456789abcde3");
+
+	ret = ldb_add(ctx->test_ctx->ldb,
+		      msg);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	TALLOC_FREE(tmp_ctx);
+	return LDB_SUCCESS;
+}
+
+static void test_ldb_callback_modify_during_search(void **state, bool add_index,
+					  bool rename)
+{
+	struct search_test_ctx *search_test_ctx = talloc_get_type_abort(*state,
+			struct search_test_ctx);
+	struct modify_during_search_test_ctx
+		ctx =
+		{ .res_count = 0,
+		  .test_ctx = search_test_ctx->ldb_test_ctx,
+		  .rename = rename
+		};
+
+	int ret;
+	struct ldb_request *req;
+
+	ret = ldb_transaction_start(search_test_ctx->ldb_test_ctx->ldb);
+	assert_int_equal(ret, 0);
+
+	if (add_index) {
+		struct ldb_message *msg;
+		struct ldb_dn *indexlist = ldb_dn_new(search_test_ctx,
+						      search_test_ctx->ldb_test_ctx->ldb,
+						      "@INDEXLIST");
+		assert_non_null(indexlist);
+
+		msg = ldb_msg_new(search_test_ctx);
+		assert_non_null(msg);
+
+		msg->dn = indexlist;
+
+		ret = ldb_msg_add_string(msg, "@IDXONE", "1");
+		assert_int_equal(ret, LDB_SUCCESS);
+		ret = ldb_msg_add_string(msg, "@IDXATTR", "cn");
+		assert_int_equal(ret, LDB_SUCCESS);
+		ret = ldb_add(search_test_ctx->ldb_test_ctx->ldb,
+			      msg);
+		if (ret == LDB_ERR_ENTRY_ALREADY_EXISTS) {
+			msg->elements[0].flags = LDB_FLAG_MOD_ADD;
+			msg->elements[1].flags = LDB_FLAG_MOD_ADD;
+			ret = ldb_modify(search_test_ctx->ldb_test_ctx->ldb,
+					 msg);
+		}
+		assert_int_equal(ret, LDB_SUCCESS);
+
+		/*
+		 * Now bring the IDXONE index into memory by modifying
+		 * it.  This exposes an issue in ldb_tdb
+		 */
+		msg = ldb_msg_new(search_test_ctx);
+		assert_non_null(msg);
+
+		msg->dn = ldb_dn_new_fmt(search_test_ctx,
+					 search_test_ctx->ldb_test_ctx->ldb,
+					 "cn=test_search_cn_extra,%s",
+					 search_test_ctx->base_dn);
+
+		ret = ldb_msg_add_string(msg,
+					 "objectUUID",
+					 "0123456789abcde2");
+
+		ret = ldb_add(search_test_ctx->ldb_test_ctx->ldb,
+			      msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+
+		ret = ldb_delete(search_test_ctx->ldb_test_ctx->ldb,
+				 msg->dn);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	tevent_loop_allow_nesting(search_test_ctx->ldb_test_ctx->ev);
+
+	ctx.basedn
+		= ldb_dn_new_fmt(search_test_ctx,
+				 search_test_ctx->ldb_test_ctx->ldb,
+				 "%s",
+				 search_test_ctx->base_dn);
+	assert_non_null(ctx.basedn);
+
+
+	/*
+	 * This search must be over multiple items, and should include
+	 * the new name after a rename, to show that it would match
+	 * both before and after that modify
+	 *
+	 * This needs to be a search that isn't matched by an index so
+	 * that we just use the one-level index.
+	 */
+	ret = ldb_build_search_req(&req,
+				   search_test_ctx->ldb_test_ctx->ldb,
+				   search_test_ctx,
+				   ctx.basedn,
+				   LDB_SCOPE_ONELEVEL,
+				   "(cn=*)",
+				   NULL,
+				   NULL,
+				   &ctx,
+				   test_ldb_callback_modify_during_search_callback1,
+				   NULL);
+	assert_int_equal(ret, 0);
+
+	ret = ldb_request(search_test_ctx->ldb_test_ctx->ldb, req);
+
+	if (ret == LDB_SUCCESS) {
+		ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+	}
+	assert_int_equal(ret, 0);
+
+	ret = ldb_transaction_commit(search_test_ctx->ldb_test_ctx->ldb);
+	assert_int_equal(ret, 0);
+
+	assert_int_equal(ctx.res_count, 2);
+	assert_int_equal(ctx.got_cn, true);
+	assert_int_equal(ctx.got_2_cn, true);
+}
+
+static void test_ldb_callback_delete_during_indexed_search(void **state)
+{
+	test_ldb_callback_modify_during_search(state, true, false);
+}
+
+static void test_ldb_callback_delete_during_unindexed_search(void **state)
+{
+	test_ldb_callback_modify_during_search(state, false, false);
+}
+
+static void test_ldb_callback_rename_during_indexed_search(void **state)
+{
+	test_ldb_callback_modify_during_search(state, true, true);
+}
+
+static void test_ldb_callback_rename_during_unindexed_search(void **state)
+{
+	test_ldb_callback_modify_during_search(state, false, true);
 }
 
 static int ldb_case_test_setup(void **state)
@@ -2861,6 +3124,747 @@ static void test_ldb_rename_dn_case_change(void **state)
 	/* FIXME - test the values didn't change */
 }
 
+static int ldb_read_only_setup(void **state)
+{
+	struct ldbtest_ctx *test_ctx;
+
+	ldbtest_setup((void **) &test_ctx);
+
+	*state = test_ctx;
+	return 0;
+}
+
+static int ldb_read_only_teardown(void **state)
+{
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	ldbtest_teardown((void **) &test_ctx);
+	return 0;
+}
+
+static void test_read_only(void **state)
+{
+	struct ldb_context *ro_ldb = NULL;
+	struct ldb_context *rw_ldb = NULL;
+	int ret;
+	TALLOC_CTX *tmp_ctx = NULL;
+
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	/*
+	 * Close the ldb context freeing it this will ensure it exists on
+	 * disk and can be opened in read only mode
+	 */
+	TALLOC_FREE(test_ctx->ldb);
+
+	/*
+	 * Open the database in read only and read write mode,
+	 * ensure it's opend in read only mode first
+	 */
+	ro_ldb = ldb_init(test_ctx, test_ctx->ev);
+	ret = ldb_connect(ro_ldb, test_ctx->dbpath, LDB_FLG_RDONLY, NULL);
+	assert_int_equal(ret, 0);
+
+	rw_ldb = ldb_init(test_ctx, test_ctx->ev);
+	ret = ldb_connect(rw_ldb, test_ctx->dbpath, 0, NULL);
+	assert_int_equal(ret, 0);
+
+
+	/*
+	 * Set up a context for the temporary variables
+	 */
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	/*
+	 * Ensure that we can search the read write database
+	 */
+	{
+		struct ldb_result *result = NULL;
+		struct ldb_dn *dn = ldb_dn_new_fmt(tmp_ctx, rw_ldb,
+						       "dc=test");
+		assert_non_null(dn);
+
+		ret = ldb_search(rw_ldb, tmp_ctx, &result, dn,
+				 LDB_SCOPE_BASE, NULL, NULL);
+		assert_int_equal(ret, LDB_SUCCESS);
+		TALLOC_FREE(result);
+		TALLOC_FREE(dn);
+	}
+
+	/*
+	 * Ensure that we can search the read only database
+	 */
+	{
+		struct ldb_result *result = NULL;
+		struct ldb_dn *dn = ldb_dn_new_fmt(tmp_ctx, ro_ldb,
+						       "dc=test");
+		assert_non_null(dn);
+
+		ret = ldb_search(ro_ldb, tmp_ctx, &result, dn,
+				 LDB_SCOPE_BASE, NULL, NULL);
+		assert_int_equal(ret, LDB_SUCCESS);
+		TALLOC_FREE(result);
+		TALLOC_FREE(dn);
+	}
+	/*
+	 * Ensure that a write to the read only database fails
+	 */
+	{
+		struct ldb_message *msg = NULL;
+		msg = ldb_msg_new(tmp_ctx);
+		assert_non_null(msg);
+
+		msg->dn = ldb_dn_new_fmt(msg, ro_ldb, "dc=test");
+		assert_non_null(msg->dn);
+
+		ret = ldb_msg_add_string(msg, "cn", "test_cn_val");
+		assert_int_equal(ret, 0);
+
+		ret = ldb_add(ro_ldb, msg);
+		assert_int_equal(ret, LDB_ERR_UNWILLING_TO_PERFORM);
+		TALLOC_FREE(msg);
+	}
+
+	/*
+	 * Ensure that a write to the read write database succeeds
+	 */
+	{
+		struct ldb_message *msg = NULL;
+		msg = ldb_msg_new(tmp_ctx);
+		assert_non_null(msg);
+
+		msg->dn = ldb_dn_new_fmt(msg, ro_ldb, "dc=test");
+		assert_non_null(msg->dn);
+
+		ret = ldb_msg_add_string(msg, "cn", "test_cn_val");
+		assert_int_equal(ret, 0);
+
+		ret = ldb_add(rw_ldb, msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+		TALLOC_FREE(msg);
+	}
+
+	/*
+	 * Ensure that a delete from a read only database fails
+	 */
+	{
+		struct ldb_dn *dn = ldb_dn_new_fmt(tmp_ctx, ro_ldb, "dc=test");
+		assert_non_null(dn);
+
+		ret = ldb_delete(ro_ldb, dn);
+		assert_int_equal(ret, LDB_ERR_UNWILLING_TO_PERFORM);
+		TALLOC_FREE(dn);
+	}
+
+
+	/*
+	 * Ensure that a delete from a read write succeeds
+	 */
+	{
+		struct ldb_dn *dn = ldb_dn_new_fmt(tmp_ctx, rw_ldb, "dc=test");
+		assert_non_null(dn);
+
+		ret = ldb_delete(rw_ldb, dn);
+		assert_int_equal(ret, LDB_SUCCESS);
+		TALLOC_FREE(dn);
+	}
+	TALLOC_FREE(tmp_ctx);
+}
+
+static bool unique_values = false;
+
+static int unique_index_test_module_add(
+	struct ldb_module *module,
+	struct ldb_request *req)
+{
+	if (unique_values) {
+		struct ldb_message *msg = discard_const(req->op.add.message);
+		struct ldb_message_element *el = NULL;
+		el = ldb_msg_find_element(msg, "cn");
+		if (el != NULL) {
+			el->flags |= LDB_FLAG_INTERNAL_FORCE_UNIQUE_INDEX;
+		}
+	}
+
+	return ldb_next_request(module, req);
+}
+
+static int unique_index_test_module_init(struct ldb_module *module)
+{
+	return ldb_next_init(module);
+}
+
+static const struct ldb_module_ops ldb_unique_index_test_module_ops = {
+	.name		= "unique_index_test",
+	.init_context	= unique_index_test_module_init,
+	.add		= unique_index_test_module_add,
+};
+
+static int ldb_unique_index_test_setup(void **state)
+{
+	int ret;
+	struct ldb_ldif *ldif;
+	struct ldbtest_ctx *ldb_test_ctx;
+	const char *attrs_ldif =  \
+		"dn: @ATTRIBUTES\n"
+		"cn: UNIQUE_INDEX\n"
+		"\n";
+	const char *index_ldif =  \
+		"dn: @INDEXLIST\n"
+		"@IDXATTR: cn\n"
+		"\n";
+	const char *options[] = {"modules:unique_index_test"};
+
+
+	ret = ldb_register_module(&ldb_unique_index_test_module_ops);
+	assert_true(ret == LDB_SUCCESS || ret == LDB_ERR_ENTRY_ALREADY_EXISTS);
+	ldbtest_noconn_setup((void **) &ldb_test_ctx);
+
+
+	ret = ldb_connect(ldb_test_ctx->ldb, ldb_test_ctx->dbpath, 0, options);
+	assert_int_equal(ret, 0);
+
+	while ((ldif = ldb_ldif_read_string(ldb_test_ctx->ldb, &attrs_ldif))) {
+		ret = ldb_add(ldb_test_ctx->ldb, ldif->msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	while ((ldif = ldb_ldif_read_string(ldb_test_ctx->ldb, &index_ldif))) {
+		ret = ldb_add(ldb_test_ctx->ldb, ldif->msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+        unique_values = true;
+
+	*state = ldb_test_ctx;
+	return 0;
+}
+
+static int ldb_unique_index_test_teardown(void **state)
+{
+	int ret;
+	struct ldbtest_ctx *ldb_test_ctx = talloc_get_type_abort(*state,
+			struct ldbtest_ctx);
+	struct ldb_dn *del_dn;
+
+	del_dn = ldb_dn_new_fmt(ldb_test_ctx,
+				ldb_test_ctx->ldb,
+				"@INDEXLIST");
+	assert_non_null(del_dn);
+
+	ret = ldb_delete(ldb_test_ctx->ldb, del_dn);
+	if (ret != LDB_ERR_NO_SUCH_OBJECT) {
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	assert_dn_doesnt_exist(ldb_test_ctx,
+			       "@INDEXLIST");
+
+	TALLOC_FREE(del_dn);
+
+	del_dn = ldb_dn_new_fmt(ldb_test_ctx,
+				ldb_test_ctx->ldb,
+				"@ATTRIBUTES");
+	assert_non_null(del_dn);
+
+	ret = ldb_delete(ldb_test_ctx->ldb, del_dn);
+	if (ret != LDB_ERR_NO_SUCH_OBJECT) {
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	assert_dn_doesnt_exist(ldb_test_ctx,
+			       "@ATTRIBUTES");
+
+	ldbtest_teardown((void **) &ldb_test_ctx);
+	return 0;
+}
+
+
+static void test_ldb_add_unique_value_to_unique_index(void **state)
+{
+	int ret;
+	struct ldb_message *msg;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg);
+
+	msg->dn = ldb_dn_new_fmt(msg, test_ctx->ldb, "dc=test");
+	assert_non_null(msg->dn);
+
+	ret = ldb_msg_add_string(msg, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	talloc_free(tmp_ctx);
+}
+
+static int ldb_non_unique_index_test_setup(void **state)
+{
+	int ret;
+	struct ldb_ldif *ldif;
+	struct ldbtest_ctx *ldb_test_ctx;
+	const char *index_ldif =  \
+		"dn: @INDEXLIST\n"
+		"@IDXATTR: cn\n"
+		"\n";
+	const char *options[] = {"modules:unique_index_test"};
+
+
+	ret = ldb_register_module(&ldb_unique_index_test_module_ops);
+	assert_true(ret == LDB_SUCCESS || ret == LDB_ERR_ENTRY_ALREADY_EXISTS);
+	ldbtest_noconn_setup((void **) &ldb_test_ctx);
+
+
+	ret = ldb_connect(ldb_test_ctx->ldb, ldb_test_ctx->dbpath, 0, options);
+	assert_int_equal(ret, 0);
+
+	while ((ldif = ldb_ldif_read_string(ldb_test_ctx->ldb, &index_ldif))) {
+		ret = ldb_add(ldb_test_ctx->ldb, ldif->msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+        unique_values = true;
+
+	*state = ldb_test_ctx;
+	return 0;
+}
+
+static int ldb_non_unique_index_test_teardown(void **state)
+{
+	int ret;
+	struct ldbtest_ctx *ldb_test_ctx = talloc_get_type_abort(*state,
+			struct ldbtest_ctx);
+	struct ldb_dn *del_dn;
+
+	del_dn = ldb_dn_new_fmt(ldb_test_ctx,
+				ldb_test_ctx->ldb,
+				"@INDEXLIST");
+	assert_non_null(del_dn);
+
+	ret = ldb_delete(ldb_test_ctx->ldb, del_dn);
+	if (ret != LDB_ERR_NO_SUCH_OBJECT) {
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	assert_dn_doesnt_exist(ldb_test_ctx,
+			       "@INDEXLIST");
+
+	TALLOC_FREE(del_dn);
+
+	ldbtest_teardown((void **) &ldb_test_ctx);
+	return 0;
+}
+
+static void test_ldb_add_duplicate_value_to_unique_index(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test02");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_CONSTRAINT_VIOLATION);
+	talloc_free(tmp_ctx);
+}
+
+static void test_ldb_add_to_index_duplicates_allowed(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+
+        unique_values = false;
+
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test02");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_SUCCESS);
+	talloc_free(tmp_ctx);
+}
+
+static void test_ldb_add_to_index_unique_values_required(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+
+        unique_values = true;
+
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test02");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_CONSTRAINT_VIOLATION);
+	talloc_free(tmp_ctx);
+}
+
+static void ldb_debug_string(void *context, enum ldb_debug_level level,
+			     const char *fmt, va_list ap)
+{
+
+	if (level <= LDB_DEBUG_WARNING) {
+		*((char **)context) = talloc_vasprintf(NULL, fmt, ap);
+	}
+}
+
+static void test_ldb_unique_index_duplicate_logging(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+	char *debug_string = NULL;
+	char *p = NULL;
+
+	ldb_set_debug(test_ctx->ldb, ldb_debug_string, &debug_string);
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test02");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_CONSTRAINT_VIOLATION);
+
+	assert_non_null(debug_string);
+	p = strstr(
+		debug_string,
+		"unique index violation on cn "
+		"in dc=test02, conficts with dc=test01 in "
+		"@INDEX:CN:test_unique_index");
+	assert_non_null(p);
+	TALLOC_FREE(debug_string);
+	talloc_free(tmp_ctx);
+}
+
+static void test_ldb_duplicate_dn_logging(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+	char *debug_string = NULL;
+
+	ldb_set_debug(test_ctx->ldb, ldb_debug_string, &debug_string);
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index01");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index02");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_ENTRY_ALREADY_EXISTS);
+
+	assert_null(debug_string);
+	talloc_free(tmp_ctx);
+}
+
+static int ldb_guid_index_test_setup(void **state)
+{
+	int ret;
+	struct ldb_ldif *ldif;
+	struct ldbtest_ctx *ldb_test_ctx;
+	const char *attrs_ldif =  \
+		"dn: @ATTRIBUTES\n"
+		"cn: UNIQUE_INDEX\n"
+		"\n";
+	const char *index_ldif =  \
+		"dn: @INDEXLIST\n"
+		"@IDXATTR: cn\n"
+		"@IDXGUID: objectUUID\n"
+		"@IDX_DN_GUID: GUID\n"
+		"\n";
+
+	ldbtest_noconn_setup((void **) &ldb_test_ctx);
+
+
+	ret = ldb_connect(ldb_test_ctx->ldb, ldb_test_ctx->dbpath, 0, NULL);
+	assert_int_equal(ret, 0);
+
+	while ((ldif = ldb_ldif_read_string(ldb_test_ctx->ldb, &attrs_ldif))) {
+		ret = ldb_add(ldb_test_ctx->ldb, ldif->msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	while ((ldif = ldb_ldif_read_string(ldb_test_ctx->ldb, &index_ldif))) {
+		ret = ldb_add(ldb_test_ctx->ldb, ldif->msg);
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	*state = ldb_test_ctx;
+	return 0;
+}
+
+static int ldb_guid_index_test_teardown(void **state)
+{
+	int ret;
+	struct ldbtest_ctx *ldb_test_ctx = talloc_get_type_abort(*state,
+			struct ldbtest_ctx);
+	struct ldb_dn *del_dn;
+
+	del_dn = ldb_dn_new_fmt(ldb_test_ctx,
+				ldb_test_ctx->ldb,
+				"@INDEXLIST");
+	assert_non_null(del_dn);
+
+	ret = ldb_delete(ldb_test_ctx->ldb, del_dn);
+	if (ret != LDB_ERR_NO_SUCH_OBJECT) {
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	assert_dn_doesnt_exist(ldb_test_ctx,
+			       "@INDEXLIST");
+
+	TALLOC_FREE(del_dn);
+
+	del_dn = ldb_dn_new_fmt(ldb_test_ctx,
+				ldb_test_ctx->ldb,
+				"@ATTRIBUTES");
+	assert_non_null(del_dn);
+
+	ret = ldb_delete(ldb_test_ctx->ldb, del_dn);
+	if (ret != LDB_ERR_NO_SUCH_OBJECT) {
+		assert_int_equal(ret, LDB_SUCCESS);
+	}
+
+	assert_dn_doesnt_exist(ldb_test_ctx,
+			       "@ATTRIBUTES");
+
+	ldbtest_teardown((void **) &ldb_test_ctx);
+	return 0;
+}
+
+
+static void test_ldb_unique_index_duplicate_with_guid(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+	char *debug_string = NULL;
+	char *p = NULL;
+
+	ldb_set_debug(test_ctx->ldb, ldb_debug_string, &debug_string);
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_msg_add_string(msg01, "objectUUID", "0123456789abcdef");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test02");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_msg_add_string(msg02, "objectUUID", "0123456789abcde0");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_CONSTRAINT_VIOLATION);
+
+	assert_non_null(debug_string);
+	p = strstr(
+		debug_string,
+		"unique index violation on cn in dc=test02, conficts with "
+		"objectUUID 0123456789abcdef in @INDEX:CN:test_unique_index");
+	assert_non_null(p);
+	TALLOC_FREE(debug_string);
+	talloc_free(tmp_ctx);
+}
+
+static void test_ldb_guid_index_duplicate_dn_logging(void **state)
+{
+	int ret;
+	struct ldb_message *msg01;
+	struct ldb_message *msg02;
+	struct ldbtest_ctx *test_ctx = talloc_get_type_abort(*state,
+							struct ldbtest_ctx);
+	TALLOC_CTX *tmp_ctx;
+	char *debug_string = NULL;
+
+	ldb_set_debug(test_ctx->ldb, ldb_debug_string, &debug_string);
+	tmp_ctx = talloc_new(test_ctx);
+	assert_non_null(tmp_ctx);
+
+	msg01 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg01);
+
+	msg01->dn = ldb_dn_new_fmt(msg01, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg01->dn);
+
+	ret = ldb_msg_add_string(msg01, "cn", "test_unique_index01");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_msg_add_string(msg01, "objectUUID", "0123456789abcdef");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg01);
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	msg02 = ldb_msg_new(tmp_ctx);
+	assert_non_null(msg02);
+
+	msg02->dn = ldb_dn_new_fmt(msg02, test_ctx->ldb, "dc=test01");
+	assert_non_null(msg02->dn);
+
+	ret = ldb_msg_add_string(msg02, "cn", "test_unique_index02");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_msg_add_string(msg02, "objectUUID", "0123456789abcde1");
+	assert_int_equal(ret, LDB_SUCCESS);
+
+	ret = ldb_add(test_ctx->ldb, msg02);
+	assert_int_equal(ret, LDB_ERR_ENTRY_ALREADY_EXISTS);
+
+	assert_null(debug_string);
+	talloc_free(tmp_ctx);
+}
+
+
 int main(int argc, const char **argv)
 {
 	const struct CMUnitTest tests[] = {
@@ -2951,6 +3955,18 @@ int main(int argc, const char **argv)
 		cmocka_unit_test_setup_teardown(test_ldb_rename_during_indexed_search,
 						ldb_search_test_setup,
 						ldb_search_test_teardown),
+		cmocka_unit_test_setup_teardown(test_ldb_callback_rename_during_unindexed_search,
+						ldb_search_test_setup,
+						ldb_search_test_teardown),
+		cmocka_unit_test_setup_teardown(test_ldb_callback_rename_during_indexed_search,
+						ldb_search_test_setup,
+						ldb_search_test_teardown),
+		cmocka_unit_test_setup_teardown(test_ldb_callback_delete_during_unindexed_search,
+						ldb_search_test_setup,
+						ldb_search_test_teardown),
+		cmocka_unit_test_setup_teardown(test_ldb_callback_delete_during_indexed_search,
+						ldb_search_test_setup,
+						ldb_search_test_teardown),
 		cmocka_unit_test_setup_teardown(test_ldb_modify_during_whole_search,
 						ldb_search_test_setup,
 						ldb_search_test_teardown),
@@ -2981,6 +3997,41 @@ int main(int argc, const char **argv)
 		cmocka_unit_test_setup_teardown(test_ldb_rename_dn_case_change,
 						ldb_rename_test_setup,
 						ldb_rename_test_teardown),
+		cmocka_unit_test_setup_teardown(test_read_only,
+						ldb_read_only_setup,
+						ldb_read_only_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_add_unique_value_to_unique_index,
+			ldb_unique_index_test_setup,
+			ldb_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_add_duplicate_value_to_unique_index,
+			ldb_unique_index_test_setup,
+			ldb_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_add_to_index_duplicates_allowed,
+			ldb_non_unique_index_test_setup,
+			ldb_non_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_add_to_index_unique_values_required,
+			ldb_non_unique_index_test_setup,
+			ldb_non_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_unique_index_duplicate_logging,
+			ldb_unique_index_test_setup,
+			ldb_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_duplicate_dn_logging,
+			ldb_unique_index_test_setup,
+			ldb_unique_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_guid_index_duplicate_dn_logging,
+			ldb_guid_index_test_setup,
+			ldb_guid_index_test_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_ldb_unique_index_duplicate_with_guid,
+			ldb_guid_index_test_setup,
+			ldb_guid_index_test_teardown),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

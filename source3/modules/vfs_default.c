@@ -554,12 +554,6 @@ static int vfswrap_closedir(vfs_handle_struct *handle, DIR *dirp)
 	return result;
 }
 
-static void vfswrap_init_search_op(vfs_handle_struct *handle,
-				   DIR *dirp)
-{
-	/* Default behavior is a NOOP */
-}
-
 /* File operations */
 
 static int vfswrap_open(vfs_handle_struct *handle,
@@ -3055,7 +3049,6 @@ static struct vfs_fn_pointers vfs_default_fns = {
 	.mkdir_fn = vfswrap_mkdir,
 	.rmdir_fn = vfswrap_rmdir,
 	.closedir_fn = vfswrap_closedir,
-	.init_search_op_fn = vfswrap_init_search_op,
 
 	/* File operations */
 
@@ -3162,7 +3155,7 @@ static struct vfs_fn_pointers vfs_default_fns = {
 	.durable_reconnect_fn = vfswrap_durable_reconnect,
 };
 
-NTSTATUS vfs_default_init(TALLOC_CTX *);
+static_decl_vfs;
 NTSTATUS vfs_default_init(TALLOC_CTX *ctx)
 {
 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
