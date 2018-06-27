@@ -196,6 +196,10 @@ class dc_join(object):
         # Do not normally register 127. addresses but allow override for selftest
         ctx.force_all_ips = False
 
+        if server is None:
+            # only domain naming master can create application directory partitions
+            ctx.reconnect_to_naming_master()
+
     def del_noerror(ctx, dn, recursive=False):
         if recursive:
             try:
@@ -328,6 +332,19 @@ class dc_join(object):
             raise Exception("Account %s is not a domain member or a bare NT4 BDC, use 'samba-tool domain join' instead'" % ctx.samname)
 
         ctx.promote_from_dn = res[0].dn
+
+
+    def reconnect_to_naming_master(ctx):
+        ctx.naming_master = ctx.get_naming_master()
+        if ctx.naming_master != ctx.server:
+            ctx.logger.info("Reconnecting to naming master %s" % ctx.naming_master)
+            ctx.server = ctx.naming_master
+            ctx.samdb = SamDB(url="ldap://%s" % ctx.server,
+                    session_info=system_session(),
+                    credentials=ctx.creds, lp=ctx.lp)
+            res = ctx.samdb.search(base="", scope=ldb.SCOPE_BASE, attrs=['dnsHostName'], controls=[])
+            ctx.server = res[0]["dnsHostName"]
+            ctx.logger.info("DNS name of new naming master is %s" % ctx.server)
 
 
     def find_dc(ctx, domain):
@@ -1514,17 +1531,7 @@ def join_subdomain(logger=None, server=None, creds=None, lp=None, site=None,
     ctx.parent_partition_dn = ctx.get_parent_partition_dn()
     ctx.dnsdomain = dnsdomain
     ctx.partition_dn = "CN=%s,CN=Partitions,%s" % (ctx.domain_name, ctx.config_dn)
-    ctx.naming_master = ctx.get_naming_master()
-    if ctx.naming_master != ctx.server:
-        logger.info("Reconnecting to naming master %s" % ctx.naming_master)
-        ctx.server = ctx.naming_master
-        ctx.samdb = SamDB(url="ldap://%s" % ctx.server,
-                          session_info=system_session(),
-                          credentials=ctx.creds, lp=ctx.lp)
-        res = ctx.samdb.search(base="", scope=ldb.SCOPE_BASE, attrs=['dnsHostName'],
-                               controls=[])
-        ctx.server = res[0]["dnsHostName"]
-        logger.info("DNS name of new naming master is %s" % ctx.server)
+    ctx.reconnect_to_naming_master()
 
     ctx.base_dn = samba.dn_from_dns_name(dnsdomain)
     ctx.forestsid = ctx.domsid
