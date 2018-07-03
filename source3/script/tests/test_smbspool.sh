@@ -22,6 +22,7 @@ incdir=`dirname $0`/../../../testprogs/blackbox
 samba_bindir="$BINDIR"
 samba_vlp="$samba_bindir/vlp"
 samba_smbspool="$samba_bindir/smbspool"
+samba_smbtorture3="$samba_bindir/smbtorture3"
 samba_smbspool_krb5="$samba_bindir/smbspool_krb5_wrapper"
 
 test_smbspool_noargs()
@@ -119,6 +120,64 @@ test_vlp_verify()
 	fi
 }
 
+test_delete_on_close()
+{
+	tdbfile="$PREFIX_ABS/$TARGET_ENV/lockdir/vlp.tdb"
+	if [ ! -w $tdbfile ]; then
+		echo "vlp tdbfile $tdbfile doesn't exist or is not writeable!"
+		return 1
+	fi
+
+	cmd='$samba_vlp tdbfile=$tdbfile lpq print1 2>&1'
+	eval echo "$cmd"
+	out=$(eval $cmd)
+	ret=$?
+	if [ $ret != 0 ]; then
+		echo "failed to lpq jobs on print1 with $samba_vlp"
+		echo "$out"
+		return 1
+	fi
+
+	num_jobs=$(echo "$out" | wc -l)
+	#
+	# Now run the test DELETE-PRINT from smbtorture3
+	#
+	cmd='$samba_smbtorture3 //$SERVER_IP/print1 -U$USERNAME%$PASSWORD DELETE-PRINT 2>&1'
+	eval echo "$cmd"
+	out_t=$(eval $cmd)
+	ret=$?
+	if [ $ret != 0 ]; then
+		echo "failed to run DELETE-PRINT on print1"
+		echo "$out_t"
+		return 1
+	fi
+
+	cmd='$samba_vlp tdbfile=$tdbfile lpq print1 2>&1'
+	eval echo "$cmd"
+	out1=$(eval $cmd)
+	ret=$?
+	if [ $ret != 0 ]; then
+		echo "(2) failed to lpq jobs on print1 with $samba_vlp"
+		echo "$out1"
+		return 1
+	fi
+	num_jobs1=$(echo "$out1" | wc -l)
+
+	#
+	# Number of jobs should not change. Job
+	# should not have made it to backend.
+	#
+	if [ "$num_jobs1" -ne "$num_jobs" ]; then
+		echo "delete-on-close fail $num_jobs1 -ne $num_jobs"
+		echo "$out"
+		echo "$out_t"
+		echo "$out1"
+		return 1
+	fi
+
+	return 0
+}
+
 testit "smbspool no args" \
 	test_smbspool_noargs $samba_smbspool || \
 	failed=$(expr $failed + 1)
@@ -139,6 +198,36 @@ testit "vlp verify example.ps" \
 	test_vlp_verify \
 	|| failed=$(expr $failed + 1)
 
+testit "smbspool print example.ps via stdin" \
+	$samba_smbspool smb://$USERNAME:$PASSWORD@$SERVER_IP/print1 200 $USERNAME "Testprint" 1 "options" < $SRCDIR/testdata/printing/example.ps || \
+	failed=$(expr $failed + 1)
+
+testit "vlp verify example.ps" \
+	test_vlp_verify \
+	|| failed=$(expr $failed + 1)
+
+DEVICE_URI="smb://$USERNAME:$PASSWORD@$SERVER_IP/print1"
+export DEVICE_URI
+testit "smbspool print DEVICE_URI example.ps" \
+	$samba_smbspool 200 $USERNAME "Testprint" 1 "options" $SRCDIR/testdata/printing/example.ps || \
+	failed=$(expr $failed + 1)
+unset DEVICE_URI
+
+testit "vlp verify example.ps" \
+	test_vlp_verify \
+	|| failed=$(expr $failed + 1)
+
+DEVICE_URI="smb://$USERNAME:$PASSWORD@$SERVER_IP/print1"
+export DEVICE_URI
+testit "smbspool print DEVICE_URI example.ps via stdin" \
+	$samba_smbspool 200 $USERNAME "Testprint" 1 "options" < $SRCDIR/testdata/printing/example.ps || \
+	failed=$(expr $failed + 1)
+unset DEVICE_URI
+
+testit "vlp verify example.ps" \
+	test_vlp_verify \
+	|| failed=$(expr $failed + 1)
+
 AUTH_INFO_REQUIRED="username,password"
 export AUTH_INFO_REQUIRED
 testit "smbspool_krb5(username,password) print example.ps" \
@@ -149,5 +238,9 @@ testit "vlp verify example.ps" \
 	test_vlp_verify || \
 	failed=$(expr $failed + 1)
 unset AUTH_INFO_REQUIRED
+
+testit "delete on close" \
+	test_delete_on_close \
+	|| failed=$(expr $failed + 1)
 
 exit $failed

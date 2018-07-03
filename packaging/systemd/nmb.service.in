@@ -9,7 +9,7 @@ Type=notify
 NotifyAccess=all
 PIDFile=@PIDDIR@/nmbd.pid
 EnvironmentFile=-@SYSCONFDIR@/sysconfig/samba
-ExecStart=@SBINDIR@/nmbd --foreground --no-process-group $NMBDOPTIONS
+ExecStart=@SBINDIR@/nmbd --no-process-group $NMBDOPTIONS
 ExecReload=/bin/kill -HUP $MAINPID
 LimitCORE=infinity
 @systemd_nmb_extra@
