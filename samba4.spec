@@ -46,11 +46,22 @@
 
 %def_with systemd
 %def_enable avahi
+
+%ifarch e2k e2kv4
+%def_disable glusterfs
+%def_without libcephfs
+%else
+%ifarch mipsel
+%def_enable glusterfs
+%def_without libcephfs
+%else
 %def_enable glusterfs
 %def_with libcephfs
+%endif
+%endif
 
 Name:    samba-DC
-Version: 4.8.1
+Version: 4.8.3
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -71,15 +82,13 @@ Source11: pam_winbind.conf
 Source12: ctdb.init
 Source13: samba.limits
 Source20: samba.init
+Source21: smbusers
 
 Source200: README.dc
 Source201: README.downgrade
 
 Patch: %rname-%version-alt.patch
 Patch10: samba-grouppwd.patch
-
-# fedora patches
-Patch100:         samba-4.4.2-s3-winbind-make-sure-domain-member-can-talk-to-trust.patch
 
 Conflicts: %rname
 Conflicts: %rname-dc
@@ -128,7 +137,7 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_tevent:BuildRequires: libtevent-devel >= 0.9.36 python-module-tevent}
 %{?_without_tdb:BuildRequires: libtdb-devel >= 1.3.15  python-module-tdb}
 %{?_without_ntdb:BuildRequires: libntdb-devel >= 0.9  python-module-ntdb}
-%{?_without_ldb:BuildRequires: libldb-devel >= 1.3.2 python-module-pyldb-devel}
+%{?_without_ldb:BuildRequires: libldb-devel >= 1.3.4 python-module-pyldb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
 %if_branch_le M70P
 %{?_with_systemd:BuildRequires: systemd-devel}
@@ -146,6 +155,7 @@ Samba is the standard Windows interoperability suite of programs for Linux and U
 Summary: Samba client programs
 Group: Networking/Other
 Requires: %name-common = %version-%release
+Requires: %name-common-tools = %version-%release
 Requires: %name-libs = %version-%release
 %if_with libsmbclient
 Requires: libsmbclient-DC = %version-%release
@@ -199,6 +209,15 @@ Group: System/Libraries
 %description common-libs
 The %rname-common-libs package contains the common libraries needed by modules that
 link against the SMB, RPC and other protocols provided by the Samba suite.
+
+%package common-tools
+Summary: Tools for Samba servers and clients
+Group: System/Servers
+Requires: %name-libs = %version-%release
+
+%description common-tools
+The %rname-common-tools package contains tools for Samba servers and
+SMB/CIFS clients.
 
 %package -n libsmbclient-DC
 Summary: The SMB client library
@@ -434,7 +453,7 @@ Group: System/Servers
 BuildArch: noarch
 Provides: task-samba-ad-dc = %version-%release
 Provides: task-ad-dc = %version-%release
-Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client samba-DC-doc krb5-kinit
+Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client %{?_with_doc:samba-DC-doc} krb5-kinit
 Conflicts: samba python-module-samba samba-common samba-winbind-clients samba-winbind samba-client samba-doc
 
 %description -n task-samba-dc
@@ -452,7 +471,6 @@ libsamba_util private headers.
 %setup -q -n %rname-%version
 %patch -p1
 %patch10 -p1
-%patch100 -p 1 -b .samba-4.4.2-s3-winbind-make-sure-domain-member-can-talk-to-trust.patch
 
 %build
 
@@ -518,10 +536,11 @@ libsamba_util private headers.
 %define _samba_libdir  %_libdir
 %define _samba_mod_libdir  %_libdir/samba
 %endif
+%define _samba_piddir /var/run
 
 %configure \
 	--enable-fhs \
-	--with-piddir=/var/run \
+	--with-piddir=%_samba_piddir \
 	--with-sockets-dir=/var/run/samba \
 	--libdir=%_samba_libdir \
 	--with-modulesdir=%_samba_mod_libdir \
@@ -628,9 +647,10 @@ mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 
-
-install -m644 packaging/systemd/samba.sysconfig %buildroot%_sysconfdir/sysconfig/samba
-install -m644 packaging/RHEL/setup/smbusers %buildroot%_sysconfdir/samba/smbusers
+cp packaging/systemd/samba.sysconfig packaging/systemd/samba.sysconfig.alt
+echo "KRB5CCNAME=FILE:/run/samba/krb5cc_samba" >>packaging/systemd/samba.sysconfig.alt
+install -m644 packaging/systemd/samba.sysconfig.alt %buildroot%_sysconfdir/sysconfig/samba
+install -m644 %SOURCE21 %buildroot%_sysconfdir/samba/smbusers
 
 install -m755 %SOURCE10 %buildroot%_initrddir/nmb
 install -m755 %SOURCE5 %buildroot%_initrddir/smb
@@ -643,8 +663,9 @@ install -m755 %SOURCE20 %buildroot%_initrddir/samba
 cp %SOURCE200 %SOURCE201 .
 
 for i in nmb smb winbind samba; do
-    cat packaging/systemd/$i.service | sed -e 's@\[Service\]@[Service]\nEnvironment=KRB5CCNAME=FILE:/run/samba/krb5cc_samba@g' >tmp$i.service
-    install -m 0644 tmp$i.service %buildroot%_unitdir/$i.service
+    cat packaging/systemd/$i.service.in | sed -e 's|@PIDDIR@|%_samba_piddir|g' -e 's|@SYSCONFDIR@|%_sysconfdir|g' -e 's|@SBINDIR@|%_sbindir|g' \
+        -e '/@systemd_smb_extra@/d' -e '/@systemd_nmb_extra@/d' -e '/@systemd_winbind_extra@/d' -e '/@systemd_samba_extra@/d'  >packaging/systemd/$i.service
+    install -m 0644 packaging/systemd/$i.service %buildroot%_unitdir/$i.service
 done
 subst 's,Type=notify,Type=forking,' %buildroot%_unitdir/*.service
 %if_with clustering_support
@@ -721,6 +742,11 @@ subst 's,\.\./,,' %buildroot%_includedir/samba-4.0/private/lib/util/*.h
 mkdir -p %buildroot%_sysconfdir/security/limits.d/
 install -m644 %SOURCE13 %buildroot%_sysconfdir/security/limits.d/90-samba.conf
 
+# Install traffic tools
+install -m755 script/traffic_learner %buildroot%_bindir/traffic_learner
+install -m755 script/traffic_replay %buildroot%_bindir/traffic_replay
+#install -m755 script/traffic_summary.pl %buildroot%_bindir/traffic_summary (perl-XML-Twig requires)
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -788,6 +814,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_sbindir/samba
 %_sbindir/samba_kcc
 %_sbindir/samba_dnsupdate
+%_sbindir/samba_gpoupdate
 %_sbindir/samba_spnupdate
 %_sbindir/samba_upgradedns
 %dir /var/lib/samba/sysvol
@@ -795,26 +822,30 @@ TDB_NO_FSYNC=1 %make_build test
 %if_with doc
 %_man8dir/samba.8*
 %_man8dir/samba-tool.8*
+%_man8dir/samba_gpoupdate.8*
 %endif #doc
 %else
 %doc README.dc
 %if_with doc
 %exclude %_man8dir/samba.8*
 %exclude %_man8dir/samba-tool.8*
+%exclude %_man8dir/samba_gpoupdate.8*
 %endif #doc
-%endif
+%endif #dc
+
 %if_with libcephfs
 %exclude %_samba_mod_libdir/vfs/ceph.so
 %if_with doc
 %exclude %_man8dir/vfs_ceph.8*
 %endif #doc
-%endif
+%endif #libcephfs
+
 %if_enabled glusterfs
 %exclude %_samba_mod_libdir/vfs/glusterfs.so
 %if_with doc
 %exclude %_man8dir/vfs_glusterfs.8*
 %endif #doc
-%endif
+%endif #glusterfs
 
 %files client
 %_bindir/cifsdd
@@ -861,6 +892,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_man5dir/smbgetrc.5*
 %exclude %_man1dir/smbtar.1*
 %_man1dir/smbtree.1*
+%_man5dir/smbpasswd.5*
 %_man8dir/smbpasswd.8*
 %_man8dir/smbspool.8*
 %_man8dir/smbspool_krb5_wrapper.8*
@@ -912,14 +944,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libldb-cmdline.so
 %endif
 
-%files common -f net.lang
+%files common
 %_tmpfilesdir/%rname.conf
-%_bindir/mvxattr
-%_bindir/net
-%_bindir/pdbedit
-%_bindir/profiles
-%_bindir/smbcontrol
-%_bindir/testparm
 %config(noreplace) %_sysconfdir/logrotate.d/samba
 %config(noreplace) %_sysconfdir/security/limits.d/90-samba.conf
 %attr(0700,root,root) %dir /var/log/samba
@@ -933,17 +959,26 @@ TDB_NO_FSYNC=1 %make_build test
 %config(noreplace) %_sysconfdir/samba/lmhosts
 %config(noreplace) %_sysconfdir/sysconfig/samba
 %if_with doc
+%_man5dir/lmhosts.5*
+%_man5dir/smb.conf.5*
+%_man7dir/samba.7*
+%endif #doc
+
+%files common-tools -f net.lang
+%_bindir/mvxattr
+%_bindir/net
+%_bindir/pdbedit
+%_bindir/profiles
+%_bindir/smbcontrol
+%_bindir/testparm
+%if_with doc
 %_man1dir/mvxattr.1*
 %_man1dir/profiles.1*
 %_man1dir/smbcontrol.1*
 %_man1dir/testparm.1*
-%_man5dir/lmhosts.5*
-%_man5dir/smb.conf.5*
-%_man5dir/smbpasswd.5*
-%_man7dir/samba.7*
 %_man8dir/net.8*
 %_man8dir/pdbedit.8*
-%endif
+%endif #doc
 
 # common libraries
 %_samba_mod_libdir/libpopt-samba3-samba4.so
@@ -1049,8 +1084,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libflag-mapping-samba4.so
 %_samba_mod_libdir/libgenrand-samba4.so
 %_samba_mod_libdir/libgensec-samba4.so
-%_samba_mod_libdir/libgpo-samba4.so
 %_samba_mod_libdir/libgse-samba4.so
+%_samba_mod_libdir/libgpext-samba4.so
 %_samba_mod_libdir/libhttp-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
 %_samba_mod_libdir/libiov-buf-samba4.so
@@ -1243,6 +1278,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/masktest
 %_bindir/ndrdump
 %_bindir/smbtorture
+%_bindir/traffic_learner
+%_bindir/traffic_replay
 #%_samba_libdir/libtorture.so.*
 %if_with dc
 %_samba_mod_libdir/libdlz-bind9-for-torture-samba4.so
@@ -1256,6 +1293,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_man1dir/ndrdump.1*
 %_man1dir/smbtorture.1*
 %_man1dir/vfstest.1*
+%_man7dir/traffic_learner.7*
+%_man7dir/traffic_replay.7*
 %endif
 
 %if_with testsuite
@@ -1373,6 +1412,20 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Jul 04 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt1%ubt
+- Update to new summer release of Samba 4.8
+
+* Thu Jun 21 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt1%ubt
+- Update to first summer release of Samba 4.7
+- Fix doc knob: task-samba-dc should conditionally R: samba-DC-doc
+- Rebuild for e2k with missing SYS_setgroups32
+- Disable glusterfs and cephfs for e2k
+- Disable cephfs support for mipsel
+
+* Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt2%ubt
+- Split samba-DC-common to separate samba-DC-common-tools
+- Fix build against new python Sisyphus release with libnsl2
+
 * Fri Apr 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.1-alt1%ubt
 - Update to latest release of Samba 4.8
 
