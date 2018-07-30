@@ -38,12 +38,9 @@
 
 %if_with dc
 %def_with ldb_modules
-# Samba Active Directory Domain Controller implementation is not available with MIT Kereberos
-%def_without mitkrb5
-%else
-%def_with mitkrb5
 %endif
 
+%def_with mitkrb5
 %def_with systemd
 %def_enable avahi
 
@@ -62,7 +59,7 @@
 
 Name:    samba-DC
 Version: 4.8.3
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -125,6 +122,10 @@ BuildRequires: libarchive-devel >= 3.1.2
 %if_with mitkrb5
 BuildRequires: libssl-devel
 BuildRequires: libkrb5-devel
+%if_with dc
+BuildRequires: krb5-kdc
+Requires: krb5-kdc
+%endif
 %endif
 BuildRequires: glibc-devel glibc-kernheaders
 # https://bugzilla.samba.org/show_bug.cgi?id=9863
@@ -376,6 +377,20 @@ Conflicts: %rname-winbind-krb5-locator
 %description winbind-krb5-locator
 The winbind krb5 locator is a plugin for the system kerberos library to allow
 the local kerberos library to use the same KDC as samba and winbind use
+
+%package winbind-krb5-localauth
+Summary: Samba winbind krb5 plugin for mapping user accounts
+Group: System/Servers
+%if_with libwbclient
+Requires: libwbclient-DC = %version-%release
+Requires: %name-winbind = %version-%release
+%else
+Requires: %name-libs = %version-%release
+%endif
+
+%description winbind-krb5-localauth
+The winbind krb5 localauth is a plugin that permits the MIT Kerberos libraries
+that Kerberos principals can be validated against local user accounts.
 
 %package winbind-devel
 Summary: Developer tools for the winbind library
@@ -697,6 +712,9 @@ ln -sf ..%_samba_libdir/libnss_wins.so    %buildroot/%_lib/libnss_wins.so.2
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
 mv %buildroot%_samba_libdir/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
+%if_with mitkrb5
+mv %buildroot%_samba_libdir/winbind-krb5-localauth.so %buildroot%_libdir/krb5/plugins/libkrb5/
+%endif
 %endif
 
 #cups backend
@@ -1144,11 +1162,13 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/bind9/dlz_bind9_9.so
 %_samba_mod_libdir/bind9/dlz_bind9_10.so
 %_samba_mod_libdir/bind9/dlz_bind9_11.so
+%if_without mitkrb5
 %_samba_mod_libdir/libheimntlm-samba4.so.1
 %_samba_mod_libdir/libheimntlm-samba4.so.1.0.1
 %_samba_mod_libdir/libkdc-samba4.so.2
 %_samba_mod_libdir/libkdc-samba4.so.2.0.0
 %_samba_mod_libdir/libpac-samba4.so
+%endif #!mitkrb5
 %_samba_mod_libdir/libdnsserver-common-samba4.so
 %_samba_mod_libdir/libdfs-server-ad-samba4.so
 %_samba_mod_libdir/libdsdb-module-samba4.so
@@ -1158,6 +1178,7 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 %_samba_mod_libdir/gensec
 %_samba_mod_libdir/libdb-glue-samba4.so
+%if_without mitkrb5
 %_samba_mod_libdir/libHDB-SAMBA4-samba4.so
 %_samba_mod_libdir/libasn1-samba4.so.*
 %_samba_mod_libdir/libcom_err-samba4.so.*
@@ -1169,6 +1190,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libkrb5-samba4.so.*
 %_samba_mod_libdir/libroken-samba4.so.*
 %_samba_mod_libdir/libwind-samba4.so.*
+%else
+%_samba_mod_libdir/libpac-samba4.so
+%_samba_libdir/krb5/plugins/kdb/samba.so
+%endif #!mitkrb5
 %_samba_mod_libdir/libprocess-model-samba4.so
 %_samba_mod_libdir/libservice-samba4.so
 %_samba_mod_libdir/process_model
@@ -1343,6 +1368,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif #doc
 %endif
 
+%if_with mitkrb5
+%files winbind-krb5-localauth
+%_libdir/krb5/plugins/libkrb5/winbind-krb5-localauth.so
+%endif
+
 %if_with clustering_support
 %files ctdb
 #doc ctdb/README
@@ -1412,6 +1442,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Jul 07 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt2%ubt
+- Rebuild Samba DC with MIT Kerberos
+- Fix join.py with automatically connect to domain naming master
+
 * Wed Jul 04 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt1%ubt
 - Update to new summer release of Samba 4.8
 
