@@ -62,7 +62,7 @@
 
 Name:    samba-DC
 Version: 4.7.8
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1398,6 +1398,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Jul 30 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt2%ubt
+- Fix join.py with automatically connect to domain naming master
+
 * Thu Jun 21 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt1%ubt
 - Update to first summer release of Samba 4.7
 - Fix doc knob: task-samba-dc should conditionally R: samba-DC-doc
