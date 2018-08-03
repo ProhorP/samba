@@ -1405,12 +1405,15 @@ TDB_NO_FSYNC=1 %make_build test
 - Disable glusterfs and cephfs for e2k
 - Disable cephfs support for mipsel
 
-* Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt2%ubt
+* Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.15-alt2%ubt
 - Split samba-DC-common to separate samba-DC-common-tools
 - Fix build against new python Sisyphus release with libnsl2
 
 * Thu Apr 19 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt1%ubt
 - Update to first spring release of Samba 4.7
+
+* Tue Apr 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.15-alt1%ubt
+- Update to second spring release
 
 * Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1%ubt
 - Update to latest winter release of Samba 4.7
