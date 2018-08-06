@@ -27,6 +27,7 @@
 __docformat__ = "restructuredText"
 
 from base64 import b64encode
+import codecs
 import errno
 import os
 import stat
@@ -1219,9 +1220,21 @@ def create_gpo_struct(policy_path):
         f.write("[General]\r\nVersion=0")
     finally:
         f.close()
-    p = os.path.join(policy_path, "MACHINE")
+    p = os.path.join(policy_path, "MACHINE",
+                     "Microsoft", "Windows NT", "SecEdit")
     if not os.path.exists(p):
         os.makedirs(p, 0775)
+
+    GptTmplStub = u'[Unicode]\r\n'\
+                  u'Unicode=yes\r\n'\
+                  u'[Version]\r\n'\
+                  u'signature="$CHICAGO$"\r\n'\
+                  u'Revision=1\r\n'
+    with codecs.open(os.path.join(p, "GptTmpl.inf"),
+                     encoding='utf-16-le', mode='w') as f:
+        f.write(u'\ufffe') # python skips BOM, insert it manually
+        f.write(GptTmplStub)
+
     p = os.path.join(policy_path, "USER")
     if not os.path.exists(p):
         os.makedirs(p, 0775)
