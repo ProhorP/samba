@@ -61,8 +61,8 @@
 %endif
 
 Name:    samba-DC
-Version: 4.7.8
-Release: alt2%ubt
+Version: 4.7.9
+Release: alt1%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1398,6 +1398,15 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Aug 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.9-alt1%ubt
+- Update to summer security release
+- Security fixes:
+  + CVE-2018-1139 Weak authentication protocol allowed
+  + CVE-2018-10858 Insufficient input validation on client directory
+    listing in libsmbclient
+  + CVE-2018-10918 Denial of Service Attack on AD DC DRSUAPI server
+  + CVE-2018-10919 Confidential attribute disclosure from the AD LDAP server
+
 * Mon Jul 30 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt2%ubt
 - Fix join.py with automatically connect to domain naming master
 
