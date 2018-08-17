@@ -42,8 +42,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.6.15
-Release: alt2%ubt
+Version: 4.6.16
+Release: alt1%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1406,6 +1406,13 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Aug 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.16-alt1%ubt
+- Update to summer security release
+- Security fixes:
+  + CVE-2018-10858 Insufficient input validation on client directory
+    listing in libsmbclient
+  + CVE-2018-10919 Confidential attribute disclosure from the AD LDAP server
+
 * Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.15-alt2%ubt
 - Avoid client libraries requires to samba-common
 - Fix build against new python Sisyphus release with libnsl2
