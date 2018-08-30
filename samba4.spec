@@ -3,6 +3,7 @@
 %add_debuginfo_skiplist /%_lib
 
 %define rname samba
+%define dcname samba-DC
 %define _localstatedir /var
 %define libwbc_alternatives_version 0.14
 
@@ -16,9 +17,9 @@
 %def_with profiling_data
 
 # build as separate package
-%def_without libsmbclient
+%def_with libsmbclient
 %def_with libwbclient
-%def_without libnetapi
+%def_with libnetapi
 %def_with doc
 %def_with python3
 
@@ -53,12 +54,12 @@
 %endif
 %endif
 
-Name:    samba-DC
+Name:    samba
 Version: 4.9.4
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
-Summary: Samba Active Directory Domain Controller
+Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
 Url:     http://www.samba.org/
 
@@ -83,8 +84,10 @@ Source201: README.downgrade
 Patch: %rname-%version-alt.patch
 Patch10: samba-grouppwd.patch
 
-Conflicts: %rname
-Conflicts: %rname-dc
+Provides: samba4 = %version-%release
+Obsoletes: samba4 < %version-%release
+Provides: samba-swat = %version-%release
+Obsoletes: samba-swat < %version-%release
 
 # Need for samba_upgradedns
 Requires: tdb-utils
@@ -94,7 +97,7 @@ Requires: %name-libs = %version-%release
 Requires: %name-winbind-clients = %version-%release
 %endif
 %if_with libwbclient
-Requires: libwbclient-DC = %version-%release
+Requires: libwbclient = %version-%release
 %endif
 
 BuildRequires: /proc
@@ -124,7 +127,6 @@ BuildRequires: libssl-devel
 BuildRequires: libkrb5-devel
 %if_with dc
 BuildRequires: krb5-kdc
-Requires: krb5-kdc
 %endif
 %endif
 BuildRequires: glibc-devel glibc-kernheaders
@@ -174,6 +176,23 @@ BuildRequires: python3-module-pyldb-devel
 %description
 Samba is the standard Windows interoperability suite of programs for Linux and Unix.
 
+%package dc
+Summary: Samba Active Directory Domain Controller
+Group: Networking/Other
+Obsoletes: %dcname < %version-%release
+Provides: %dcname = %version-%release
+Requires: %name = %version-%release
+Requires: %name-dc-libs = %version-%release
+Requires: %name-dc-client = %version-%release
+%if_with mitkrb5
+%if_with dc
+Requires: krb5-kdc
+%endif
+%endif
+
+%description dc
+Samba as Active Directory Domain Services (AD DS) also called a domain controller.
+
 %package client
 Summary: Samba client programs
 Group: Networking/Other
@@ -181,23 +200,36 @@ Requires: %name-common = %version-%release
 Requires: %name-common-tools = %version-%release
 Requires: %name-libs = %version-%release
 %if_with libsmbclient
-Requires: libsmbclient-DC = %version-%release
+Requires: libsmbclient = %version-%release
 %endif
-Conflicts: %rname-client
 
 %description client
 The %rname-client package provides some SMB/CIFS clients to complement
 the built-in SMB/CIFS filesystem in Linux. These clients allow access
 of SMB/CIFS shares and printing to SMB/CIFS printers.
 
+%package dc-client
+Summary: Samba Active Directory client programs
+Group: Networking/Other
+Requires: %name-client = %version-%release
+Provides: %dcname-client = %version-%release
+Obsoletes: %dcname-client <= 4.9.4-alt2
+
+%description dc-client
+The %rname-client package provides Active Directory Domain Services clients.
+
 %package common
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
 Requires: %name-libs = %version-%release
 %if_with libnetapi
-Requires: libnetapi-DC = %version-%release
+Requires: libnetapi = %version-%release
 %endif
-Conflicts: %rname-common
+Provides: samba-utils = %version-%release
+Provides: %dcname-common = %version-%release
+Obsoletes: %dcname-common <= 4.9.4-alt2
+Provides: samba-client-cups = %version-%release
+Obsoletes: samba-client-cups < %version-%release
 
 %description common
 %rname-common provides files necessary for both the server and client
@@ -206,28 +238,44 @@ packages of Samba.
 %package libs
 Summary: Samba libraries
 Group: System/Libraries
-Conflicts: %rname-dc-libs
+Requires: %name-common-libs = %version-%release
 
 %if_with libnetapi
-Requires: libnetapi-DC = %version-%release
+Requires: libnetapi = %version-%release
 %endif
 %if_with libwbclient
-Requires: libwbclient-DC = %version-%release
+Requires: libwbclient = %version-%release
 %endif
 %if_with libsmbclient
-Requires: libsmbclient-DC = %version-%release
-%endif
-%if_with ldb_modules
-Requires: libldb-modules-DC = %version-%release
+Requires: libsmbclient = %version-%release
 %endif
 
 %description libs
 The %rname-libs package contains the libraries needed by programs that
 link against the SMB, RPC and other protocols provided by the Samba suite.
 
+%package dc-libs
+Summary: Samba libraries
+Group: System/Libraries
+Requires: %name-libs = %version-%release
+Provides: %dcname-libs = %version-%release
+Obsoletes: %dcname-libs <= 4.9.4-alt2
+
+%if_with ldb_modules
+Requires: libldb-modules-dc = %version-%release
+%endif
+
+%description dc-libs
+The %rname-libs package contains the libraries needed by programs that
+link against the SMB, RPC and other protocols provided by the Samba suite.
+
 %package common-libs
 Summary: Samba common libraries
 Group: System/Libraries
+Provides: %dcname-common-libs = %version-%release
+Obsoletes: %dcname-common-libs <= 4.9.4-alt2
+Provides: %rname-client-libs = %version-%release
+Obsoletes: %rname-client-libs <= 4.9.4-alt2
 
 %description common-libs
 The %rname-common-libs package contains the common libraries needed by modules that
@@ -237,77 +285,88 @@ link against the SMB, RPC and other protocols provided by the Samba suite.
 Summary: Tools for Samba servers and clients
 Group: System/Servers
 Requires: %name-libs = %version-%release
-Conflicts: %rname-common-tools
+Provides: %dcname-common-tools = %version-%release
+Obsoletes: %dcname-common-tools <= 4.9.4-alt2
 
 %description common-tools
 The %rname-common-tools package contains tools for Samba servers and
 SMB/CIFS clients.
 
-%package -n libsmbclient-DC
+%package -n libsmbclient
 Summary: The SMB client library
 Group: System/Libraries
-Conflicts: libsmbclient
+Provides: libsmbclient-DC = %version-%release
+Obsoletes: libsmbclient-DC <= 4.9.4-alt2
 
-%description -n libsmbclient-DC
+%description -n libsmbclient
 The libsmbclient contains the SMB client library from the Samba suite.
 
-%package -n libldb-modules-DC
+%package -n libldb-modules-dc
 Summary: The LDB domain controller modules
 Group: System/Libraries
+Provides: libldb-modules-DC = %version-%release
+Obsoletes: libldb-modules-DC <= 4.9.4-alt2
 
-%description -n libldb-modules-DC
+%description -n libldb-modules-dc
 The libldb-modules-DC contains the ldb library modules from the Samba domain controller.
 
-%package -n libsmbclient-DC-devel
+%package -n libsmbclient-devel
 Summary: Developer tools for the SMB client library
 Group: Development/C
-Requires: libsmbclient-DC = %version-%release
-Conflicts: libsmbclient-devel
+Requires: libsmbclient = %version-%release
+Provides: libsmbclient-DC-devel = %version-%release
+Obsoletes: libsmbclient-DC-devel <= 4.9.4-alt2
 
-%description -n libsmbclient-DC-devel
+%description -n libsmbclient-devel
 The libsmbclient-devel package contains the header files and libraries needed to
 develop programs that link against the SMB client library in the Samba suite.
 
-%package -n libwbclient-DC
+%package -n libwbclient
 Summary: The winbind client library
 Group: System/Libraries
-Provides: libwbclient = %version-%release
 Conflicts: libwbclient-sssd
+Provides: libwbclient-DC = %version-%release
+Obsoletes: libwbclient-DC <= 4.9.4-alt2
 
-%description -n libwbclient-DC
+%description -n libwbclient
 The libwbclient package contains the winbind client library from the Samba suite.
 
-%package -n libwbclient-DC-devel
+%package -n libwbclient-devel
 Summary: Developer tools for the winbind library
 Group: Development/C
-Requires: libwbclient-DC = %version-%release
-Conflicts: libwbclient-devel
+Requires: libwbclient = %version-%release
+Provides: libwbclient-DC-devel = %version-%release
+Obsoletes: libwbclient-DC-devel <= 4.9.4-alt2
 
-%description -n libwbclient-DC-devel
+%description -n libwbclient-devel
 The libwbclient-devel package provides developer tools for the wbclient library.
 
-%package -n libnetapi-DC
+%package -n libnetapi
 Summary: Samba netapi library
 Group: System/Libraries
-Conflicts: libnetapi
+Provides: libnetapi-DC = %version-%release
+Obsoletes: libnetapi-DC <= 4.9.4-alt2
 
-%description -n libnetapi-DC
+%description -n libnetapi
 Samba netapi library
 
-%package -n libnetapi-DC-devel
+%package -n libnetapi-devel
 Summary: Samba netapi development files
 Group: Development/Other
-Requires: libnetapi-DC = %version-%release
+Requires: libnetapi = %version-%release
 Conflicts: libnetapi-devel
+Provides: libnetapi-DC-devel = %version-%release
+Obsoletes: libnetapi-DC-devel <= 4.9.4-alt2
 
-%description -n libnetapi-DC-devel
+%description -n libnetapi-devel
 Samba netapi development files
 
 %package -n python-module-%name
 Summary: Samba Python libraries
 Group: Networking/Other
-Requires: %name-common-libs = %version-%release
-Conflicts: python-module-%rname
+Requires: %name-libs = %version-%release
+Provides: python-module-%dcname = %version-%release
+Obsoletes: python-module-%dcname <= 4.9.4-alt2
 
 %add_python_req_skip Tdb
 
@@ -319,7 +378,9 @@ that use SMB, RPC and other Samba provided protocols in Python programs.
 %package -n python3-module-%name
 Summary: Samba Python3 libraries
 Group: Networking/Other
-Requires: %name-common-libs = %version-%release
+Requires: %name-libs = %version-%release
+Provides: python3-module-%dcname = %version-%release
+Obsoletes: python3-module-%dcname <= 4.9.4-alt2
 
 # these modules currently don't support Python3 and aren't packaged
 %add_python3_req_skip dsdb
@@ -348,7 +409,8 @@ The python3-module-%name package contains the Python3 libraries development file
 Summary: Developer tools for Samba libraries
 Group: Development/C
 Requires: %name-libs = %version-%release
-Conflicts: %rname-devel
+Provides: %dcname-devel = %version-%release
+Obsoletes: %dcname-devel <= 4.9.4-alt2
 
 %description devel
 The %rname-devel package contains the header files for the libraries
@@ -360,7 +422,8 @@ Summary: Perl IDL compiler
 Group: Development/Tools
 BuildArch: noarch
 # Requires: perl(:MODULE_COMPAT_%(eval "`perl -V:version`"; echo $version))
-Conflicts: %rname-pidl
+Provides: %dcname-pidl = %version-%release
+Obsoletes: %dcname-pidl <= 4.9.4-alt2
 
 %description pidl
 The %rname-pidl package contains the Perl IDL compiler used by Samba
@@ -376,12 +439,13 @@ Requires: %name-libs = %version-%release
 Requires: %name-winbind = %version-%release
 %endif
 %if_with libsmbclient
-Requires: libsmbclient-DC = %version-%release
+Requires: libsmbclient = %version-%release
 %endif
-Conflicts: %rname-test
+Provides: %dcname-test = %version-%release
+Obsoletes: %dcname-test <= 4.9.4-alt2
 
 %description test
-samba4-test provides testing tools for both the server and client
+%rname-test provides testing tools for both the server and client
 packages of Samba.
 
 %if_with winbind
@@ -390,12 +454,13 @@ Summary: Samba winbind
 Group: System/Servers
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
-Conflicts: %rname-winbind
+Provides: %dcname-winbind = %version-%release
+Obsoletes: %dcname-winbind <= 4.9.4-alt2
 %if_with libwbclient
 # There are working configurations exists where samba-winbind could be
 # using with sssd. Also it could be already installed from installation DVD.
 ## Conflicts: libwbclient-sssd
-Requires: libwbclient-DC
+Requires: libwbclient
 %endif
 
 %description winbind
@@ -407,8 +472,10 @@ domains and to use Windows user and group accounts on Linux.
 Summary: Samba winbind clients
 Group: System/Servers
 Requires: %name-winbind = %version-%release
+Provides: %dcname-winbind-clients = %version-%release
+Obsoletes: %dcname-winbind-clients <= 4.9.4-alt2
 %if_with libwbclient
-Requires: libwbclient-DC = %version-%release
+Requires: libwbclient = %version-%release
 %endif
 
 %description winbind-clients
@@ -419,12 +486,13 @@ module necessary to communicate to the Winbind Daemon
 Summary: Samba winbind krb5 locator
 Group: System/Servers
 %if_with libwbclient
-Requires: libwbclient-DC = %version-%release
+Requires: libwbclient = %version-%release
 Requires: %name-winbind = %version-%release
 %else
 Requires: %name-libs = %version-%release
 %endif
-Conflicts: %rname-winbind-krb5-locator
+Provides: %dcname-winbind-krb5-locator = %version-%release
+Obsoletes: %dcname-winbind-krb5-locator <= 4.9.4-alt2
 
 %description winbind-krb5-locator
 The winbind krb5 locator is a plugin for the system kerberos library to allow
@@ -434,11 +502,13 @@ the local kerberos library to use the same KDC as samba and winbind use
 Summary: Samba winbind krb5 plugin for mapping user accounts
 Group: System/Servers
 %if_with libwbclient
-Requires: libwbclient-DC = %version-%release
+Requires: libwbclient = %version-%release
 Requires: %name-winbind = %version-%release
 %else
 Requires: %name-libs = %version-%release
 %endif
+Provides: %dcname-winbind-krb5-localauth = %version-%release
+Obsoletes: %dcname-winbind-krb5-localauth <= 4.9.4-alt2
 
 %description winbind-krb5-localauth
 The winbind krb5 localauth is a plugin that permits the MIT Kerberos libraries
@@ -448,7 +518,8 @@ that Kerberos principals can be validated against local user accounts.
 Summary: Developer tools for the winbind library
 Group: Development/C
 Requires: %name-winbind = %version-%release
-Conflicts: %rname-winbind-devel
+Provides: %dcname-winbind-devel = %version-%release
+Obsoletes: %dcname-winbind-devel <= 4.9.4-alt2
 
 %description winbind-devel
 The samba-winbind package provides developer tools for the wbclient library.
@@ -492,6 +563,8 @@ Conflicts: ctdb-tests
 Conflicts: ctdb-devel
 Provides:  %name-ctdb-devel = %version-%release
 Obsoletes: %name-ctdb-devel < %version-%release
+Provides: %dcname-ctdb-tests = %version-%release
+Obsoletes: %dcname-ctdb-tests <= 4.9.4-alt2
 
 %description ctdb-tests
 Test suite for CTDB.
@@ -507,7 +580,8 @@ Summary: Documentation for the Samba suite
 Group: Documentation
 Requires: %name-common = %version-%release
 BuildArch: noarch
-Conflicts: %rname-doc
+Provides: %dcname-doc = %version-%release
+Obsoletes: %dcname-doc <= 4.9.4-alt2
 
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
@@ -520,8 +594,7 @@ Group: System/Servers
 BuildArch: noarch
 Provides: task-samba-ad-dc = %version-%release
 Provides: task-ad-dc = %version-%release
-Requires: samba-DC python-module-samba-DC samba-DC-common samba-DC-winbind-clients samba-DC-winbind samba-DC-client %{?_with_doc:samba-DC-doc} krb5-kinit
-Conflicts: samba python-module-samba samba-common samba-winbind-clients samba-winbind samba-client samba-doc
+Requires: samba-dc python-module-samba samba-common samba-winbind-clients samba-winbind samba-client %{?_with_doc:samba-doc} krb5-kinit
 
 %description -n task-samba-dc
 Samba server acts as a Domain Controller that is compatible with
@@ -530,6 +603,8 @@ Microsoft Active Directory.
 %package util-private-headers
 Summary: libsamba_util private headers
 Group: Development/C
+Provides: %dcname-util-private-headers = %version-%release
+Obsoletes: %dcname-util-private-headers <= 4.9.4-alt2
 
 %description util-private-headers
 libsamba_util private headers.
@@ -591,13 +666,9 @@ libsamba_util private headers.
 %add_optflags -I/usr/include/krb5
 %endif
 #LDFLAGS="-Wl,-z,relro,-z,now" \
-%if_with dc
-%define _samba_libdir  %_libdir/samba-dc
-%define _samba_mod_libdir  %_libdir/samba-dc
-%else
 %define _samba_libdir  %_libdir
 %define _samba_mod_libdir  %_libdir/samba
-%endif
+%define _wbclient_libdir %_samba_mod_libdir/wbclient
 %define _samba_piddir /var/run
 
 %configure \
@@ -689,21 +760,26 @@ mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 
-if [ ! -f %buildroot%_samba_libdir/libwbclient.so.%libwbc_alternatives_version ]
+
+# Move libwbclient.so* into private directory, it cannot be just libdir/samba
+# because samba uses rpath with this directory.
+install -d -m 0755 %buildroot%_wbclient_libdir
+mv %buildroot%_libdir/libwbclient.so* %buildroot%_wbclient_libdir
+if [ ! -f %buildroot%_wbclient_libdir/libwbclient.so.%libwbc_alternatives_version ]
 then
     echo "Expected libwbclient version not found, please check if version has changed."
     exit -1
 fi
-ln -s ../..%_samba_libdir/libwbclient.so.%libwbc_alternatives_version %buildroot%_libdir/
-ln -s ../..%_samba_libdir/libwbclient.so.0 %buildroot%_libdir/
-ln -s ../..%_samba_libdir/libwbclient.so %buildroot%_libdir/
+ln -s ../..%_wbclient_libdir/libwbclient.so.%libwbc_alternatives_version %buildroot%_libdir/
+ln -s ../..%_wbclient_libdir/libwbclient.so.0 %buildroot%_libdir/
+ln -s ../..%_wbclient_libdir/libwbclient.so %buildroot%_libdir/
 
 # Add alternatives for libwbclient
 mkdir -p %buildroot%_altdir
-printf '%_libdir/libwbclient.so.%libwbc_alternatives_version\t%_samba_libdir/libwbclient.so.%libwbc_alternatives_version\t10\n' > %buildroot%_altdir/libwbclient-samba-dc
-printf '%_libdir/libwbclient.so.0\t%_samba_libdir/libwbclient.so.0\t10\n' >> %buildroot%_altdir/libwbclient-samba-dc
+printf '%_libdir/libwbclient.so.%libwbc_alternatives_version\t%_wbclient_libdir/libwbclient.so.%libwbc_alternatives_version\t10\n' > %buildroot%_altdir/libwbclient-samba
+printf '%_libdir/libwbclient.so.0\t%_wbclient_libdir/libwbclient.so.0\t10\n' >> %buildroot%_altdir/libwbclient-samba
 
-printf '%_libdir/libwbclient.so\t%_samba_libdir/libwbclient.so\t10\n' > %buildroot%_altdir/libwbclient-devel-samba-dc
+printf '%_libdir/libwbclient.so\t%_wbclient_libdir/libwbclient.so\t10\n' > %buildroot%_altdir/libwbclient-devel-samba
 mkdir -p %buildroot/lib/tmpfiles.d
 
 # Install other stuff
@@ -764,9 +840,9 @@ ln -sf ..%_samba_libdir/libnss_winbind.so %buildroot/%_lib/libnss_winbind.so.2
 ln -sf ..%_samba_libdir/libnss_wins.so    %buildroot/%_lib/libnss_wins.so.2
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
-mv %buildroot%_samba_libdir/krb5/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
+mv %buildroot%_samba_mod_libdir/krb5/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
 %if_with mitkrb5
-mv %buildroot%_samba_libdir/krb5/winbind_krb5_localauth.so %buildroot%_libdir/krb5/plugins/libkrb5/
+mv %buildroot%_samba_mod_libdir/krb5/winbind_krb5_localauth.so %buildroot%_libdir/krb5/plugins/libkrb5/
 %endif
 %endif
 
@@ -783,11 +859,10 @@ rm -rf %buildroot%python_sitelibdir/samba/{tests,subunit,external/subunit,extern
 rm -f %buildroot%python_sitelibdir/samba/third_party/iso8601/test_*.py
 %if_with python3
 rm -rf %buildroot%python3_sitelibdir/samba/{tests,subunit,external/subunit,external/testtool}
-rm -f %buildroot%python3_sitelibdir/samba/third_party/iso8601/test_*.py
 %endif
 
 # remove cmocka library
-rm -f %buildroot%_samba_libdir/libcmocka-samba4.so
+rm -f %buildroot%_samba_mod_libdir/libcmocka-samba4.so
 
 # move pkgconfig to standart path:
 [ "%_libdir" != "%_samba_libdir" ] && mv %buildroot{%_samba_libdir/pkgconfig,%_libdir}
@@ -832,19 +907,19 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %post
-%if_with dc
-%post_service samba
-%else
 %post_service smb
 %post_service nmb
-%endif
 
 %preun
-%if_with dc
-%preun_service samba
-%else
 %preun_service smb
 %preun_service nmb
+
+%if_with dc
+%post dc
+%post_service samba
+
+%preun dc
+%preun_service samba
 %endif
 
 %if_with winbind
@@ -883,32 +958,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_man8dir/vfs_*.8*
 %endif
 
-%if_with dc
-%attr(755,root,root) %_initdir/samba
-%_unitdir/samba.service
-%_bindir/samba-tool
-%_sbindir/samba
-%_sbindir/samba_kcc
-%_sbindir/samba_dnsupdate
-%_sbindir/samba_spnupdate
-%_sbindir/samba_upgradedns
-%_sbindir/samba-gpupdate
-%dir /var/lib/samba/sysvol
-%_datadir/samba/setup
-%if_with doc
-%_man8dir/samba.8*
-%_man8dir/samba-tool.8*
-%_man8dir/samba-gpupdate.8*
-%endif #doc
-%else
-%doc README.dc
-%if_with doc
-%exclude %_man8dir/samba.8*
-%exclude %_man8dir/samba-tool.8*
-%exclude %_man8dir/samba_gpoupdate.8*
-%endif #doc
-%endif #dc
-
 %if_with libcephfs
 %exclude %_samba_mod_libdir/vfs/ceph.so
 %if_with doc
@@ -922,6 +971,30 @@ TDB_NO_FSYNC=1 %make_build test
 %exclude %_man8dir/vfs_glusterfs.8*
 %endif #doc
 %endif #glusterfs
+
+%if_with dc
+%files dc
+%attr(755,root,root) %_initdir/samba
+%_unitdir/samba.service
+%_sbindir/samba
+%_sbindir/samba_kcc
+%_sbindir/samba_dnsupdate
+%_sbindir/samba_spnupdate
+%_sbindir/samba_upgradedns
+%_sbindir/samba-gpupdate
+%dir /var/lib/samba/sysvol
+%_datadir/samba/setup
+%if_with doc
+%_man8dir/samba.8*
+%_man8dir/samba-gpupdate.8*
+%endif #doc
+
+%files dc-client
+%_bindir/samba-tool
+%if_with doc
+%_man8dir/samba-tool.8*
+%endif #doc
+%endif #dc
 
 %files client
 %_bindir/cifsdd
@@ -1097,8 +1170,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_pkgconfigdir/dcerpc_server.pc
 %endif
 
-%files libs
-
 %files common-libs
 %_samba_libdir/libdcerpc-binding.so.*
 %_samba_libdir/libdcerpc-samr.so.*
@@ -1117,6 +1188,8 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libtevent-util.so.*
 %_samba_libdir/libsamba-passdb.so.*
 %_samba_libdir/libsmbldap.so.*
+
+%files libs
 %_samba_mod_libdir/auth
 %_samba_mod_libdir/vfs
 
@@ -1209,7 +1282,36 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libctdb-event-client-samba4.so
 %endif
 
+
+%if_with ldb
+%_samba_mod_libdir/libldb.so.*
+%_samba_mod_libdir/libpyldb-util.so.*
+%endif
+%if_with talloc
+%_samba_mod_libdir/libtalloc.so.*
+%_samba_mod_libdir/libpytalloc-util.so.*
+%endif
+%if_with tevent
+%_samba_mod_libdir/libtevent.so.*
+%endif
+%if_with tdb
+%_samba_mod_libdir/libtdb.so.*
+%endif
+%if_without libsmbclient
+%_samba_mod_libdir/libsmbclient.so.*
+%endif
+%if_without libwbclient
+%_samba_mod_libdir/libreplace-samba4.so
+%_samba_mod_libdir/libwbclient.so.*
+%_samba_mod_libdir/libwinbind-client-samba4.so
+%endif
+%if_without libnetapi
+%_samba_mod_libdir/libnetapi.so.*
+%endif
+
+
 %if_with dc
+%files dc-libs
 %_samba_mod_libdir/bind9/dlz_bind9.so
 %_samba_mod_libdir/bind9/dlz_bind9_9.so
 %_samba_mod_libdir/bind9/dlz_bind9_10.so
@@ -1260,42 +1362,16 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libdnsserver-common-samba4.so
 %endif
 
-%if_with ldb
-%_samba_mod_libdir/libldb.so.*
-%_samba_mod_libdir/libpyldb-util.so.*
-%endif
-%if_with talloc
-%_samba_mod_libdir/libtalloc.so.*
-%_samba_mod_libdir/libpytalloc-util.so.*
-%endif
-%if_with tevent
-%_samba_mod_libdir/libtevent.so.*
-%endif
-%if_with tdb
-%_samba_mod_libdir/libtdb.so.*
-%endif
-%if_without libsmbclient
-%_samba_mod_libdir/libsmbclient.so.*
-%endif
-%if_without libwbclient
-%_samba_mod_libdir/libreplace-samba4.so
-%_samba_mod_libdir/libwbclient.so.*
-%_samba_mod_libdir/libwinbind-client-samba4.so
-%endif
-%if_without libnetapi
-%_samba_mod_libdir/libnetapi.so.*
-%endif
-
 %if_with ldb_modules
-%files -n libldb-modules-DC
+%files -n libldb-modules-dc
 %_samba_mod_libdir/ldb
 %endif
 
 %if_with libsmbclient
-%files -n libsmbclient-DC
+%files -n libsmbclient
 %_samba_libdir/libsmbclient.so.*
 
-%files -n libsmbclient-DC-devel
+%files -n libsmbclient-devel
 %_includedir/samba-4.0/libsmbclient.h
 %_samba_libdir/libsmbclient.so
 %_pkgconfigdir/smbclient.pc
@@ -1305,26 +1381,26 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %if_with libwbclient
-%files -n libwbclient-DC
+%files -n libwbclient
 %ghost %_libdir/libwbclient.so.*
-%_samba_libdir/libwbclient.so.*
+%_wbclient_libdir/libwbclient.so.*
 %_samba_mod_libdir/libwinbind-client-samba4.so
 %_samba_mod_libdir/libreplace-samba4.so
-%_altdir/libwbclient-samba-dc
+%_altdir/libwbclient-samba
 
-%files -n libwbclient-DC-devel
+%files -n libwbclient-devel
 %_includedir/samba-4.0/wbclient.h
 %ghost %_libdir/libwbclient.so
-%_samba_libdir/libwbclient.so
+%_wbclient_libdir/libwbclient.so
 %_pkgconfigdir/wbclient.pc
-%_altdir/libwbclient-devel-samba-dc
+%_altdir/libwbclient-devel-samba
 %endif
 
 %if_with libnetapi
-%files -n libnetapi-DC
+%files -n libnetapi
 %_samba_libdir/libnetapi.so.*
 
-%files -n libnetapi-DC-devel
+%files -n libnetapi-devel
 %_samba_libdir/libnetapi.so
 %_includedir/samba-4.0/netapi.h
 %_pkgconfigdir/netapi.pc
@@ -1344,11 +1420,12 @@ TDB_NO_FSYNC=1 %make_build test
 %if_with python3
 %files -n python3-module-%name
 %python3_sitelibdir/samba/
-%_samba_mod_libdir/libsamba*.cpython-*.so.*
+%_libdir/libsamba*.cpython-*.so.*
+%_samba_mod_libdir/libsamba*.cpython-*.so
 
 %files -n python3-module-%name-devel
 %_pkgconfigdir/samba*.cpython-*.pc
-%_samba_mod_libdir/libsamba*.cpython-*.so
+%_libdir/libsamba*.cpython-*.so
 %endif
 
 %if_with doc
@@ -1509,6 +1586,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Jan 28 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.4-alt3
+- Merge samba and samba-DC packages into single package
+- Rename samba-DC to samba-dc for compatibilty
+
 * Tue Jan 02 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.4-alt2
 - Merge and rebuild for e2k
 - Change group access for private directory due effective mask with acl
