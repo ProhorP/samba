@@ -63,7 +63,7 @@
 
 Name:    samba-DC
 Version: 4.7.10
-Release: alt1%ubt
+Release: alt2%ubt
 
 Group:   System/Servers
 Summary: Samba Active Directory Domain Controller
@@ -1522,6 +1522,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Sep 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt2%ubt
+- Fix automatically connect to domain naming master improvement
+
 * Tue Aug 28 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt1%ubt
 - Update to latest summer release
 - Build with subpackage for Python3
