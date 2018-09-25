@@ -55,7 +55,7 @@
 
 Name: samba
 Version: 4.7.10
-Release: alt1%ubt
+Release: alt2%ubt
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1546,6 +1546,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt2%ubt
+- Revert the effective default for "client max protocol" to the NT1 protocol
+
 * Tue Aug 28 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt1%ubt
 - Update to latest summer release
 - Build with subpackage for Python3
