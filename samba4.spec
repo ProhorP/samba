@@ -59,7 +59,7 @@
 %endif
 
 Name:    samba-DC
-Version: 4.9.0
+Version: 4.9.1
 Release: alt1%ubt
 
 Group:   System/Servers
@@ -1532,6 +1532,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.1-alt1%ubt
+- Update to second release of Samba 4.9
+
 * Tue Sep 18 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.0-alt1%ubt
 - Update to first release of Samba 4.9
 
