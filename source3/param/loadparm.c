@@ -4558,7 +4558,7 @@ int lp_client_max_protocol(void)
 {
 	int client_max_protocol = lp__client_max_protocol();
 	if (client_max_protocol == PROTOCOL_DEFAULT) {
-		return PROTOCOL_LATEST;
+		return PROTOCOL_NT1;
 	}
 	return client_max_protocol;
 }
