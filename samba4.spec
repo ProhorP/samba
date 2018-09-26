@@ -1,7 +1,3 @@
-%define if_branch_le() %if "%(rpmvercmp '%ubt_id' '%1')" <= "0"
-%define if_branch_eq() %if "%(rpmvercmp '%ubt_id' '%1')" == "0"
-%define if_branch_ge() %if "%(rpmvercmp '%ubt_id' '%1')" >= "0"
-
 %set_verify_elf_method unresolved=relaxed
 %add_findprov_skiplist /%_lib/*
 %add_debuginfo_skiplist /%_lib
@@ -55,7 +51,7 @@
 
 Name: samba
 Version: 4.7.10
-Release: alt2%ubt
+Release: alt3
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -101,8 +97,6 @@ Requires: %name-common-tools = %version-%release
 %if_with libwbclient
 Requires: libwbclient = %version-%release
 %endif
-
-BuildRequires(pre):rpm-build-ubt
 
 BuildRequires: libe2fs-devel
 BuildRequires: libxfs-devel
@@ -163,11 +157,7 @@ BuildRequires: python3-module-pyldb-devel
 
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-%if_branch_le M70P
-%{?_with_systemd:BuildRequires: systemd-devel}
-%else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
-%endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
@@ -1546,6 +1536,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Sep 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt3
+- Rebuild next release without ubt macros due binary package identity changes
+
 * Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt2%ubt
 - Revert the effective default for "client max protocol" to the NT1 protocol
 
