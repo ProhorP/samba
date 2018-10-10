@@ -1,0 +1,12 @@
+object 03a6d361c2868904151b7067cccc61f54b8d47d9
+type commit
+tag samba-4.8.6
+tagger Karolin Seeger <kseeger@samba.org> 1539072344 +0200
+
+samba: tag release samba-4.8.6
+-----BEGIN PGP SIGNATURE-----
+
+iEYEABECAAYFAlu8YVkACgkQbzORW2Vot+qE5ACeM44m9pbS9r+47VJ1NaOf34IZ
+Mp0An0AhRtWA9aMEe0QN8NJBSLeHbFxC
+=+PfL
+-----END PGP SIGNATURE-----
