@@ -50,8 +50,8 @@
 %endif
 
 Name: samba
-Version: 4.7.10
-Release: alt3
+Version: 4.7.11
+Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1536,6 +1536,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Mon Oct 29 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.11-alt1
+- Update to first autumn release
+
 * Thu Sep 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt3
 - Rebuild next release without ubt macros due binary package identity changes
 
