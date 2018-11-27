@@ -50,7 +50,7 @@
 %endif
 
 Name: samba
-Version: 4.7.11
+Version: 4.7.12
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -772,9 +772,11 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 %_fixperms %buildroot%perl_vendor_privlib
 
 # remove tests form python modules
-rm -rf %buildroot%python_sitelibdir/samba/{tests,external/subunit,external/testtool}
+rm -rf %buildroot%python_sitelibdir/samba/{tests,subunit,external/subunit,external/testtool}
+rm -f %buildroot%python_sitelibdir/samba/third_party/iso8601/test_*.py
 %if_with python3
-rm -rf %buildroot%python3_sitelibdir/samba/{tests,external/subunit,external/testtool}
+rm -rf %buildroot%python3_sitelibdir/samba/{tests,subunit,external/subunit,external/testtool}
+rm -f %buildroot%python3_sitelibdir/samba/third_party/iso8601/test_*.py
 # remove python files with bad syntax because samba hasn't full Python3 support
 filenames=$(echo "
 dbchecker.py
@@ -1536,6 +1538,15 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Nov 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.12-alt1
+- Update to autumn security release
+- Clean test module of third_party/iso8601 and subunit modules
+- Security fixes:
+  + CVE-2018-14629 Unprivileged adding of CNAME record causing loop in AD Internal DNS server
+  + CVE-2018-16841 Double-free in Samba AD DC KDC with PKINIT
+  + CVE-2018-16851 NULL pointer de-reference in Samba AD DC LDAP server
+  + CVE-2018-16853 Samba AD DC S4U2Self crash in experimental MIT Kerberos configuration (unsupported)
+
 * Mon Oct 29 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.11-alt1
 - Update to first autumn release
 
