@@ -51,7 +51,7 @@
 
 Name: samba
 Version: 4.7.12
-Release: alt1
+Release: alt2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1152,7 +1152,7 @@ TDB_NO_FSYNC=1 %make_build test
 %dir /var/run/winbindd
 %dir /var/lib/samba
 %attr(755,root,root) %dir %_localstatedir/cache/samba
-%attr(700,root,root) %dir /var/lib/samba/private
+%attr(710,root,root) %dir /var/lib/samba/private
 %attr(755,root,root) %dir %_sysconfdir/samba
 %config(noreplace) %_sysconfdir/samba/smb.conf
 %config(noreplace) %_sysconfdir/samba/lmhosts
@@ -1538,6 +1538,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Jan 03 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.7.12-alt2
+- Change group access for private directory due effective mask with acl
+
 * Tue Nov 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.12-alt1
 - Update to autumn security release
 - Clean test module of third_party/iso8601 and subunit modules
