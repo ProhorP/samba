@@ -34,6 +34,9 @@
 #include <sys/types.h>
 #include <errno.h>
 
+#if defined(HAVE_UNISTD_H)
+#include <unistd.h>
+#endif
 #ifdef HAVE_SYS_PRIV_H
 #include <sys/priv.h>
 #endif
@@ -61,10 +64,7 @@ int samba_setgroups(size_t setlen, const gid_t *gidset);
 #define USE_LINUX_THREAD_CREDENTIALS 1
 #endif
 
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
-#if defined(HAVE_UNISTD_H)
-#include <unistd.h>
-#endif
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(HAVE_SYSCALL_H)
 #include <syscall.h>
 #endif
@@ -94,7 +94,7 @@ int samba_setgroups(size_t setlen, const gid_t *gidset);
 /* All the setXX[ug]id functions and setgroups Samba uses. */
 int samba_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setresuid32, ruid, euid, suid);
 #else
@@ -110,7 +110,7 @@ int samba_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 
 int samba_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setresgid32, rgid, egid, sgid);
 #else
@@ -126,7 +126,7 @@ int samba_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 
 int samba_setreuid(uid_t ruid, uid_t euid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setreuid32, ruid, euid);
 #else
@@ -142,7 +142,7 @@ int samba_setreuid(uid_t ruid, uid_t euid)
 
 int samba_setregid(gid_t rgid, gid_t egid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setregid32, rgid, egid);
 #else
@@ -158,7 +158,7 @@ int samba_setregid(gid_t rgid, gid_t egid)
 
 int samba_seteuid(uid_t euid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	/* seteuid is not a separate system call. */
 	return syscall(SYS_setresuid32, -1, euid, -1);
@@ -176,7 +176,7 @@ int samba_seteuid(uid_t euid)
 
 int samba_setegid(gid_t egid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	/* setegid is not a separate system call. */
 	return syscall(SYS_setresgid32, -1, egid, -1);
@@ -194,7 +194,7 @@ int samba_setegid(gid_t egid)
 
 int samba_setuid(uid_t uid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setuid32, uid);
 #else
@@ -210,7 +210,7 @@ int samba_setuid(uid_t uid)
 
 int samba_setgid(gid_t gid)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setgid32, gid);
 #else
@@ -229,7 +229,7 @@ int samba_setuidx(int flags, uid_t uid)
 #if defined(HAVE_SETUIDX)
 	return setuidx(flags, uid);
 #else
-	/* USE_LINUX_THREAD_CREDENTIALS doesn't have this. */
+	/* HAVE_LINUX_THREAD_CREDENTIALS doesn't have this. */
 	errno = ENOSYS;
 	return -1;
 #endif
@@ -240,7 +240,7 @@ int samba_setgidx(int flags, gid_t gid)
 #if defined(HAVE_SETGIDX)
 	return setgidx(flags, gid);
 #else
-	/* USE_LINUX_THREAD_CREDENTIALS doesn't have this. */
+	/* HAVE_LINUX_THREAD_CREDENTIALS doesn't have this. */
 	errno = ENOSYS;
 	return -1;
 #endif
@@ -248,7 +248,7 @@ int samba_setgidx(int flags, gid_t gid)
 
 int samba_setgroups(size_t setlen, const gid_t *gidset)
 {
-#if defined(USE_LINUX_THREAD_CREDENTIALS)
+#if defined(HAVE_LINUX_THREAD_CREDENTIALS)
 #if defined(USE_LINUX_32BIT_SYSCALLS)
 	return syscall(SYS_setgroups32, setlen, gidset);
 #else

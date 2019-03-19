@@ -2610,6 +2610,8 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 	lp_ctx->sDefault->force_directory_mode = 0000;
 	lp_ctx->sDefault->aio_read_size = 1;
 	lp_ctx->sDefault->aio_write_size = 1;
+	lp_ctx->sDefault->smbd_search_ask_sharemode = true;
+	lp_ctx->sDefault->smbd_getinfo_ask_sharemode = true;
 
 	DEBUG(3, ("Initialising global parameters\n"));
 
@@ -2790,7 +2792,6 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 	lpcfg_do_global_parameter(lp_ctx, "tls certfile", "tls/cert.pem");
 	lpcfg_do_global_parameter(lp_ctx, "tls cafile", "tls/ca.pem");
 	lpcfg_do_global_parameter(lp_ctx, "tls priority", "NORMAL:-VERS-SSL3.0");
-	lpcfg_do_global_parameter(lp_ctx, "prefork children:smb", "4");
 
 	lpcfg_do_global_parameter(lp_ctx, "rndc command", "/usr/sbin/rndc");
 	lpcfg_do_global_parameter(lp_ctx, "nsupdate command", "/usr/bin/nsupdate -g");
@@ -3015,7 +3016,9 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 				  "rpc server dynamic port range",
 				  "49152-65535");
 
-	lpcfg_do_global_parameter(lp_ctx, "prefork children", "1");
+	lpcfg_do_global_parameter(lp_ctx, "prefork children", "4");
+	lpcfg_do_global_parameter(lp_ctx, "prefork backoff increment", "10");
+	lpcfg_do_global_parameter(lp_ctx, "prefork maximum backoff", "120");
 
 	/* Allow modules to adjust defaults */
 	for (defaults_hook = defaults_hooks; defaults_hook;
