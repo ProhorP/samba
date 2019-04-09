@@ -61,17 +61,19 @@
  * Local functions...
  */
 
-static int      get_exit_code(struct cli_state * cli, NTSTATUS nt_status, bool use_kerberos);
+static int      get_exit_code(struct cli_state * cli, NTSTATUS nt_status);
 static void     list_devices(void);
 static struct cli_state *smb_complete_connection(const char *, const char *,
 	int, const char *, const char *, const char *, const char *, int, bool *need_auth);
 static struct cli_state *smb_connect(const char *, const char *, int, const
 	char *, const char *, const char *, const char *, bool *need_auth);
-static int      smb_print(struct cli_state *, char *, FILE *);
+static int      smb_print(struct cli_state *, const char *, FILE *);
 static char    *uri_unescape_alloc(const char *);
 #if 0
 static bool     smb_encrypt;
 #endif
+
+static const char *auth_info_required;
 
 /*
  * 'main()' - Main entry for SMB backend.
@@ -98,10 +100,12 @@ main(int argc,			/* I - Number of command-line arguments */
 	char            empty_str[] = "";
 	int             tries = 0;
 	bool		need_auth = true;
-	const char     *dev_uri;
+	const char     *dev_uri = NULL;
+	const char     *env = NULL;
 	const char     *config_file = NULL;
 	TALLOC_CTX     *frame = talloc_stackframe();
-	bool device_uri_cmdline = false;
+	const char *print_user = NULL;
+	const char *print_title = NULL;
 	const char *print_file = NULL;
 	const char *print_copies = NULL;
 	int cmp;
@@ -138,21 +142,81 @@ main(int argc,			/* I - Number of command-line arguments */
 	}
 
 	/*
-	 * If we have 6 arguments find out if we have the device_uri from the
-	 * command line or the print data
+	 * Find out if we have the device_uri in the command line.
+	 *
+	 * If we are started as a CUPS backend argv[0] is normally the
+	 * device_uri!
 	 */
-	if (argc == 7) {
-		cmp = strncmp(argv[1], "smb://", 6);
-		if (cmp == 0) {
-			device_uri_cmdline = true;
+	if (argc == 8) {
+		/*
+		 * smbspool <uri> <job> <user> <title> <copies> <options> <file>
+		 * 0        1     2     3      4       5        6         7
+		 */
+
+		dev_uri = argv[1];
+
+		print_user = argv[3];
+		print_title = argv[4];
+		print_copies = argv[5];
+		print_file = argv[7];
+	} else if (argc == 7) {
+		int cmp1;
+		int cmp2;
+
+		/*
+		 * <uri>    <job> <user> <title> <copies> <options> <file>
+		 * smbspool <uri> <job>  <user>  <title>  <copies>  <options>
+		 * smbspool <job> <user> <title> <copies> <options> <file> | DEVICE_URI
+		 */
+		cmp1 = strncmp(argv[0], "smb://", 6);
+		cmp2 = strncmp(argv[1], "smb://", 6);
+
+		if (cmp1 == 0) {
+			/*
+			 * <uri>    <job> <user> <title> <copies> <options> <file>
+			 * 0        1     2      3       4        5         6
+			 */
+			dev_uri = argv[0];
+
+			print_user = argv[2];
+			print_title = argv[3];
+			print_copies = argv[4];
+			print_file = argv[6];
+		} else if (cmp2 == 0) {
+			/*
+			 * smbspool <uri> <job>  <user>  <title>  <copies>  <options>
+			 * 0        1     2      3       4        5         6
+			 */
+			dev_uri = argv[1];
+
+			print_user = argv[3];
+			print_title = argv[4];
+			print_copies = argv[5];
+			print_file = NULL;
 		} else {
+			/*
+			 * smbspool <job> <user> <title> <copies> <options> <file> | DEVICE_URI
+			 * 0        1     2      3       4        5         6
+			 */
+			print_user = argv[2];
+			print_title = argv[3];
 			print_copies = argv[4];
 			print_file = argv[6];
 		}
-	} else if (argc == 8) {
-		device_uri_cmdline = true;
-		print_copies = argv[5];
-		print_file = argv[7];
+	} else if (argc == 6) {
+		/*
+		 * <uri>    <job> <user> <title> <copies> <options>
+		 * smbspool <job> <user> <title> <copies> <options> | DEVICE_URI
+		 * 0        1     2      3       4        5
+		 */
+		cmp = strncmp(argv[0], "smb://", 6);
+		if (cmp == 0) {
+			dev_uri = argv[0];
+		}
+
+		print_user = argv[2];
+		print_title = argv[3];
+		print_copies = argv[4];
 	}
 
 	if (print_file != NULL) {
@@ -177,13 +241,17 @@ main(int argc,			/* I - Number of command-line arguments */
 	/*
 	 * Find the URI ...
 	 */
-	if (device_uri_cmdline) {
-		dev_uri = argv[1];
-	} else {
-		dev_uri = getenv("DEVICE_URI");
-		if (dev_uri == NULL || strlen(dev_uri) == 0) {
-			dev_uri = "";
+	if (dev_uri == NULL) {
+		env = getenv("DEVICE_URI");
+		if (env != NULL && env[0] != '\0') {
+			dev_uri = env;
 		}
+	}
+
+	if (dev_uri == NULL) {
+		fprintf(stderr,
+			"ERROR: No valid device URI has been specified\n");
+		goto done;
 	}
 
 	cmp = strncmp(dev_uri, "smb://", 6);
@@ -197,6 +265,11 @@ main(int argc,			/* I - Number of command-line arguments */
 		fprintf(stderr,
 			"ERROR: The URI is too long.\n");
 		goto done;
+	}
+
+	auth_info_required = getenv("AUTH_INFO_REQUIRED");
+	if (auth_info_required == NULL) {
+		auth_info_required = "none";
 	}
 
 	/*
@@ -232,6 +305,10 @@ main(int argc,			/* I - Number of command-line arguments */
 		}
 
 		server = uri + 6;
+	}
+
+	if (password != empty_str) {
+		auth_info_required = "username,password";
 	}
 
 	tmp = server;
@@ -291,8 +368,14 @@ main(int argc,			/* I - Number of command-line arguments */
 	load_interfaces();
 
 	do {
-		cli = smb_connect(workgroup, server, port, printer,
-			username, password, argv[3], &need_auth);
+		cli = smb_connect(workgroup,
+				  server,
+				  port,
+				  printer,
+				  username,
+				  password,
+				  print_user,
+				  &need_auth);
 		if (cli == NULL) {
 			if (need_auth) {
 				exit(2);
@@ -328,7 +411,7 @@ main(int argc,			/* I - Number of command-line arguments */
          */
 
 	for (i = 0; i < copies; i++) {
-		status = smb_print(cli, argv[4] /* title */ , fp);
+		status = smb_print(cli, print_title, fp);
 		if (status != 0) {
 			break;
 		}
@@ -353,8 +436,7 @@ done:
 
 static int
 get_exit_code(struct cli_state * cli,
-	      NTSTATUS nt_status,
-	      bool use_kerberos)
+	      NTSTATUS nt_status)
 {
 	int i;
 
@@ -381,10 +463,7 @@ get_exit_code(struct cli_state * cli,
 		}
 
 		if (cli) {
-			if (use_kerberos)
-				fputs("ATTR: auth-info-required=negotiate\n", stderr);
-			else
-				fputs("ATTR: auth-info-required=username,password\n", stderr);
+			fprintf(stderr, "ATTR: auth-info-required=%s\n", auth_info_required);
 		}
 
 		/*
@@ -453,6 +532,7 @@ smb_complete_connection(const char *myname,
 	}
 
 	if (flags & CLI_FULL_CONNECTION_USE_KERBEROS) {
+		auth_info_required = "negotiate";
 		use_kerberos = true;
 	}
 
@@ -475,7 +555,7 @@ smb_complete_connection(const char *myname,
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		fprintf(stderr, "ERROR: Session setup failed: %s\n", nt_errstr(nt_status));
 
-		if (get_exit_code(cli, nt_status, use_kerberos) == 2) {
+		if (get_exit_code(cli, nt_status) == 2) {
 			*need_auth = true;
 		}
 
@@ -489,7 +569,7 @@ smb_complete_connection(const char *myname,
 		fprintf(stderr, "ERROR: Tree connect failed (%s)\n",
 			nt_errstr(nt_status));
 
-		if (get_exit_code(cli, nt_status, use_kerberos) == 2) {
+		if (get_exit_code(cli, nt_status) == 2) {
 			*need_auth = true;
 		}
 
@@ -651,7 +731,7 @@ kerberos_auth:
 
 static int			/* O - 0 = success, non-0 = failure */
 smb_print(struct cli_state * cli,	/* I - SMB connection */
-	  char *title,		/* I - Title/job name */
+	  const char *print_title,		/* I - Title/job name */
 	  FILE * fp)
 {				/* I - File to print */
 	uint16_t             fnum;	/* File number */
@@ -659,12 +739,18 @@ smb_print(struct cli_state * cli,	/* I - SMB connection */
 	                tbytes;	/* Total bytes read */
 	char            buffer[8192],	/* Buffer for copy */
 	               *ptr;	/* Pointer into title */
+	char title[1024] = {0};
+	int len;
 	NTSTATUS nt_status;
 
 
 	/*
-         * Sanitize the title...
-         */
+	 * Sanitize the title...
+	 */
+	len = snprintf(title, sizeof(title), "%s", print_title);
+	if (len != strlen(print_title)) {
+		return 2;
+	}
 
 	for (ptr = title; *ptr; ptr++) {
 		if (!isalnum((int) *ptr) && !isspace((int) *ptr)) {
@@ -681,7 +767,7 @@ smb_print(struct cli_state * cli,	/* I - SMB connection */
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		fprintf(stderr, "ERROR: %s opening remote spool %s\n",
 			nt_errstr(nt_status), title);
-		return get_exit_code(cli, nt_status, false);
+		return get_exit_code(cli, nt_status);
 	}
 
 	/*
@@ -699,7 +785,7 @@ smb_print(struct cli_state * cli,	/* I - SMB connection */
 		status = cli_writeall(cli, fnum, 0, (uint8_t *)buffer,
 				      tbytes, nbytes, NULL);
 		if (!NT_STATUS_IS_OK(status)) {
-			int ret = get_exit_code(cli, status, false);
+			int ret = get_exit_code(cli, status);
 			fprintf(stderr, "ERROR: Error writing spool: %s\n",
 				nt_errstr(status));
 			fprintf(stderr, "DEBUG: Returning status %d...\n",
@@ -715,7 +801,7 @@ smb_print(struct cli_state * cli,	/* I - SMB connection */
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		fprintf(stderr, "ERROR: %s closing remote spool %s\n",
 			nt_errstr(nt_status), title);
-		return get_exit_code(cli, nt_status, false);
+		return get_exit_code(cli, nt_status);
 	} else {
 		return (0);
 	}
