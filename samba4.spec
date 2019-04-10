@@ -56,7 +56,7 @@
 %endif
 
 Name:    samba
-Version: 4.10.0
+Version: 4.10.1
 Release: alt1
 
 Group:   System/Servers
@@ -1578,6 +1578,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Apr 09 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.1-alt1
+- Update to second release of Samba 4.10
+
 * Wed Mar 20 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.0-alt1
 - Update to first release of Samba 4.10
 
