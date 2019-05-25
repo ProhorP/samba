@@ -2125,12 +2125,14 @@ static NTSTATUS smbd_marshall_dir_entry(TALLOC_CTX *ctx,
 		SOFF_T(p,0,allocation_size); p += 8;
 		SIVAL(p,0,mode); p += 4;
 		q = p; p += 4; /* q is placeholder for name length. */
-		{
+		if (mode & FILE_ATTRIBUTE_REPARSE_POINT) {
+			SIVAL(p, 0, IO_REPARSE_TAG_DFS);
+		} else {
 			unsigned int ea_size = estimate_ea_size(conn, NULL,
 								smb_fname);
 			SIVAL(p,0,ea_size); /* Extended attributes */
-			p +=4;
 		}
+		p +=4;
 		status = srvstr_push(base_data, flags2, p,
 				  fname, PTR_DIFF(end_data, p),
 				  STR_TERMINATE_ASCII, &len);
@@ -8830,6 +8832,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		if (info_level == SMB_SET_FILE_UNIX_BASIC ||
 				info_level == SMB_SET_FILE_UNIX_INFO2 ||
 				info_level == SMB_FILE_RENAME_INFORMATION ||
+				info_level == SMB_POSIX_PATH_OPEN ||
 				info_level == SMB_POSIX_PATH_UNLINK) {
 			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
 		}

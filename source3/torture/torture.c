@@ -7255,6 +7255,207 @@ static bool run_posix_ofd_lock_test(int dummy)
 	return correct;
 }
 
+/*
+  Test POSIX mkdir is case-sensitive.
+ */
+static bool run_posix_mkdir_test(int dummy)
+{
+	static struct cli_state *cli;
+	const char *fname_foo = "POSIX_foo";
+	const char *fname_foo_Foo = "POSIX_foo/Foo";
+	const char *fname_foo_foo = "POSIX_foo/foo";
+	const char *fname_Foo = "POSIX_Foo";
+	const char *fname_Foo_Foo = "POSIX_Foo/Foo";
+	const char *fname_Foo_foo = "POSIX_Foo/foo";
+	bool correct = false;
+	NTSTATUS status;
+	TALLOC_CTX *frame = NULL;
+	uint16_t fnum = (uint16_t)-1;
+
+	frame = talloc_stackframe();
+
+	printf("Starting POSIX mkdir test\n");
+
+	if (!torture_open_connection(&cli, 0)) {
+		TALLOC_FREE(frame);
+		return false;
+	}
+
+	smbXcli_conn_set_sockopt(cli->conn, sockops);
+
+	status = torture_setup_unix_extensions(cli);
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(frame);
+		return false;
+	}
+
+	cli_posix_rmdir(cli, fname_foo_foo);
+	cli_posix_rmdir(cli, fname_foo_Foo);
+	cli_posix_rmdir(cli, fname_foo);
+
+	cli_posix_rmdir(cli, fname_Foo_foo);
+	cli_posix_rmdir(cli, fname_Foo_Foo);
+	cli_posix_rmdir(cli, fname_Foo);
+
+	/*
+	 * Create a file POSIX_foo then try
+	 * and use it in a directory path by
+	 * doing mkdir POSIX_foo/bar.
+	 * The mkdir should fail with
+	 * NT_STATUS_OBJECT_PATH_NOT_FOUND
+	 */
+
+	status = cli_posix_open(cli,
+			fname_foo,
+			O_RDWR|O_CREAT,
+			0666,
+			&fnum);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_open of %s failed error %s\n",
+			fname_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_foo_foo, 0777);
+	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+		printf("cli_posix_mkdir of %s should fail with "
+			"NT_STATUS_OBJECT_PATH_NOT_FOUND got "
+			"%s instead\n",
+			fname_foo_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_close(cli, fnum);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_close failed %s\n", nt_errstr(status));
+		goto out;
+	}
+	fnum = (uint16_t)-1;
+
+	status = cli_posix_unlink(cli, fname_foo);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_unlink of %s failed error %s\n",
+			fname_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	/*
+	 * Now we've deleted everything, posix_mkdir, posix_rmdir,
+	 * posix_open, posix_unlink, on
+	 * POSIX_foo/foo should return NT_STATUS_OBJECT_PATH_NOT_FOUND
+	 * not silently create POSIX_foo/foo.
+	 */
+
+	status = cli_posix_mkdir(cli, fname_foo_foo, 0777);
+	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+		printf("cli_posix_mkdir of %s should fail with "
+			"NT_STATUS_OBJECT_PATH_NOT_FOUND got "
+			"%s instead\n",
+			fname_foo_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_posix_rmdir(cli, fname_foo_foo);
+	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+		printf("cli_posix_rmdir of %s should fail with "
+			"NT_STATUS_OBJECT_PATH_NOT_FOUND got "
+			"%s instead\n",
+			fname_foo_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_posix_open(cli,
+			fname_foo_foo,
+			O_RDWR|O_CREAT,
+			0666,
+			&fnum);
+	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+		printf("cli_posix_open of %s should fail with "
+			"NT_STATUS_OBJECT_PATH_NOT_FOUND got "
+			"%s instead\n",
+			fname_foo_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_posix_unlink(cli, fname_foo_foo);
+	if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND)) {
+		printf("cli_posix_unlink of %s should fail with "
+			"NT_STATUS_OBJECT_PATH_NOT_FOUND got "
+			"%s instead\n",
+			fname_foo_foo,
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_foo);
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_Foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_Foo);
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_foo_foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_foo_foo);
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_foo_Foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_foo_Foo);
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_Foo_foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_Foo_foo);
+		goto out;
+	}
+
+	status = cli_posix_mkdir(cli, fname_Foo_Foo, 0777);
+	if (!NT_STATUS_IS_OK(status)) {
+		printf("cli_posix_mkdir of %s failed\n", fname_Foo_Foo);
+		goto out;
+	}
+
+	printf("POSIX mkdir test passed\n");
+	correct = true;
+
+  out:
+
+	if (fnum != (uint16_t)-1) {
+		cli_close(cli, fnum);
+		fnum = (uint16_t)-1;
+	}
+
+	cli_posix_rmdir(cli, fname_foo_foo);
+	cli_posix_rmdir(cli, fname_foo_Foo);
+	cli_posix_rmdir(cli, fname_foo);
+
+	cli_posix_rmdir(cli, fname_Foo_foo);
+	cli_posix_rmdir(cli, fname_Foo_Foo);
+	cli_posix_rmdir(cli, fname_Foo);
+
+	if (!torture_close_connection(cli)) {
+		correct = false;
+	}
+
+	TALLOC_FREE(frame);
+	return correct;
+}
+
+
 static uint32_t open_attrs_table[] = {
 		FILE_ATTRIBUTE_NORMAL,
 		FILE_ATTRIBUTE_ARCHIVE,
@@ -9445,7 +9646,7 @@ static bool run_uid_regression_test(int dummy)
 		goto out;
 	}
 
-	/* Now try a SMBtdis with the invald vuid set to zero. */
+	/* Now try a SMBtdis with the invalid vuid set to zero. */
 	cli_state_set_uid(cli, 0);
 
 	/* This should succeed. */
@@ -10940,13 +11141,14 @@ static bool data_blob_equal(DATA_BLOB a, DATA_BLOB b)
 static bool run_local_memcache(int dummy)
 {
 	struct memcache *cache;
-	DATA_BLOB k1, k2, k3;
+	DATA_BLOB k1, k2, k3, k4, k5;
 	DATA_BLOB d1, d3;
 	DATA_BLOB v1, v3;
 
 	TALLOC_CTX *mem_ctx;
 	char *ptr1 = NULL;
 	char *ptr2 = NULL;
+	char *ptr3 = NULL;
 
 	char *str1, *str2;
 	size_t size1, size2;
@@ -10972,6 +11174,8 @@ static bool run_local_memcache(int dummy)
 	k1 = data_blob_const("d1", 2);
 	k2 = data_blob_const("d2", 2);
 	k3 = data_blob_const("d3", 2);
+	k4 = data_blob_const("d4", 2);
+	k5 = data_blob_const("d5", 2);
 
 	memcache_add(cache, STAT_CACHE, k1, d1);
 
@@ -11032,6 +11236,71 @@ static bool run_local_memcache(int dummy)
 	ptr2 = memcache_lookup_talloc(cache, GETWD_CACHE, k2);
 	if (ptr2 != NULL) {
 		printf("Did find k2, should have been purged\n");
+		return false;
+	}
+
+	/*
+	 * Test that talloc size also is accounted in memcache and
+	 * causes purge of other object.
+	 */
+
+	str1 = talloc_zero_size(mem_ctx, 100);
+	str2 = talloc_zero_size(mem_ctx, 100);
+
+	memcache_add_talloc(cache, GETWD_CACHE, k4, &str1);
+	memcache_add_talloc(cache, GETWD_CACHE, k5, &str1);
+
+	ptr3 = memcache_lookup_talloc(cache, GETWD_CACHE, k4);
+	if (ptr3 != NULL) {
+		printf("Did find k4, should have been purged\n");
+		return false;
+	}
+
+	/*
+	 * Test that adding a duplicate non-talloced
+	 * key/value on top of a talloced key/value takes account
+	 * of the talloc_freed value size.
+	 */
+	TALLOC_FREE(cache);
+	TALLOC_FREE(mem_ctx);
+
+	mem_ctx = talloc_init("key_replace");
+	if (mem_ctx == NULL) {
+		return false;
+	}
+
+	cache = memcache_init(NULL, sizeof(void *) == 8 ? 200 : 100);
+	if (cache == NULL) {
+		return false;
+	}
+
+	/*
+	 * Add a 100 byte talloced string. This will
+	 * store a (4 or 8 byte) pointer and record the
+	 * total talloced size.
+	 */
+	str1 = talloc_zero_size(mem_ctx, 100);
+	memcache_add_talloc(cache, GETWD_CACHE, k4, &str1);
+	/*
+	 * Now overwrite with a small talloced
+	 * value. This should fit in the existing size
+	 * and the total talloced size should be removed
+	 * from the cache size.
+	 */
+	str1 = talloc_zero_size(mem_ctx, 2);
+	memcache_add_talloc(cache, GETWD_CACHE, k4, &str1);
+	/*
+	 * Now store a 20 byte string. If the
+	 * total talloced size wasn't accounted for
+	 * and removed in the overwrite, then this
+	 * will evict k4.
+	 */
+	str2 = talloc_zero_size(mem_ctx, 20);
+	memcache_add_talloc(cache, GETWD_CACHE, k5, &str2);
+
+	ptr3 = memcache_lookup_talloc(cache, GETWD_CACHE, k4);
+	if (ptr3 == NULL) {
+		printf("Did not find k4, should not have been purged\n");
 		return false;
 	}
 
@@ -11761,6 +12030,7 @@ static struct {
 	{"POSIX-SYMLINK-EA", run_ea_symlink_test, 0},
 	{"POSIX-STREAM-DELETE", run_posix_stream_delete, 0},
 	{"POSIX-OFD-LOCK", run_posix_ofd_lock_test, 0},
+	{"POSIX-MKDIR", run_posix_mkdir_test, 0},
 	{"WINDOWS-BAD-SYMLINK", run_symlink_open_test, 0},
 	{"CASE-INSENSITIVE-CREATE", run_case_insensitive_create, 0},
 	{"ASYNC-ECHO", run_async_echo, 0},
@@ -11871,6 +12141,7 @@ static struct {
 	{ "LOCAL-G-LOCK-PING-PONG", run_g_lock_ping_pong, 0 },
 	{ "LOCAL-CANONICALIZE-PATH", run_local_canonicalize_path, 0 },
 	{ "LOCAL-NAMEMAP-CACHE1", run_local_namemap_cache1, 0 },
+	{ "LOCAL-IDMAP-CACHE1", run_local_idmap_cache1, 0 },
 	{ "qpathinfo-bufsize", run_qpathinfo_bufsize, 0 },
 	{NULL, NULL, 0}};
 

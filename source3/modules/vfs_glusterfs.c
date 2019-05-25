@@ -628,7 +628,11 @@ static ssize_t vfs_gluster_pread(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
+#ifdef HAVE_GFAPI_VER_7_6
+	return glfs_pread(glfd, data, n, offset, 0, NULL);
+#else
 	return glfs_pread(glfd, data, n, offset, 0);
+#endif
 }
 
 struct glusterfs_aio_state;
@@ -659,7 +663,14 @@ static int aio_wrapper_destructor(struct glusterfs_aio_wrapper *wrap)
  * threads once the async IO submitted is complete. To notify
  * Samba of the completion we use a pipe based queue.
  */
+#ifdef HAVE_GFAPI_VER_7_6
+static void aio_glusterfs_done(glfs_fd_t *fd, ssize_t ret,
+			       struct glfs_stat *prestat,
+			       struct glfs_stat *poststat,
+			       void *data)
+#else
 static void aio_glusterfs_done(glfs_fd_t *fd, ssize_t ret, void *data)
+#endif
 {
 	struct glusterfs_aio_state *state = NULL;
 	int sts = 0;
@@ -958,7 +969,11 @@ static ssize_t vfs_gluster_pwrite(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
+#ifdef HAVE_GFAPI_VER_7_6
+	return glfs_pwrite(glfd, data, n, offset, 0, NULL, NULL);
+#else
 	return glfs_pwrite(glfd, data, n, offset, 0);
+#endif
 }
 
 static off_t vfs_gluster_lseek(struct vfs_handle_struct *handle,
@@ -1243,7 +1258,11 @@ static int vfs_gluster_ftruncate(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
+#ifdef HAVE_GFAPI_VER_7_6
+	return glfs_ftruncate(glfd, offset, NULL, NULL);
+#else
 	return glfs_ftruncate(glfd, offset);
+#endif
 }
 
 static int vfs_gluster_fallocate(struct vfs_handle_struct *handle,
@@ -1431,33 +1450,54 @@ static int vfs_gluster_chflags(struct vfs_handle_struct *handle,
 
 static int vfs_gluster_get_real_filename(struct vfs_handle_struct *handle,
 					 const char *path, const char *name,
-					 TALLOC_CTX *mem_ctx, char **found_name)
+					 TALLOC_CTX *mem_ctx, char **_found_name)
 {
 	int ret;
-	char key_buf[NAME_MAX + 64];
-	char val_buf[NAME_MAX + 1];
+	char *key_buf = NULL, *val_buf = NULL;
+	long name_max;
+	char *found_name = NULL;
 
-	if (strlen(name) >= NAME_MAX) {
+	name_max = pathconf(path, _PC_NAME_MAX);
+	if ((name_max + 1) < 1) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (strlen(name) >= name_max) {
 		errno = ENAMETOOLONG;
 		return -1;
 	}
 
-	snprintf(key_buf, NAME_MAX + 64,
-		 "glusterfs.get_real_filename:%s", name);
+	key_buf = talloc_asprintf(mem_ctx, "glusterfs.get_real_filename:%s",
+				  name);
+	if (key_buf == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
 
+	val_buf = talloc_zero_array(mem_ctx, char, name_max + 1);
+	if (val_buf == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
 	ret = glfs_getxattr(handle->data, path, key_buf, val_buf, NAME_MAX + 1);
 	if (ret == -1) {
-		if (errno == ENODATA) {
+		if (errno == ENOATTR) {
 			errno = EOPNOTSUPP;
 		}
 		return -1;
 	}
 
-	*found_name = talloc_strdup(mem_ctx, val_buf);
-	if (found_name[0] == NULL) {
+	found_name = talloc_strdup(mem_ctx, val_buf);
+	if (found_name == NULL) {
 		errno = ENOMEM;
 		return -1;
 	}
+	*_found_name = found_name;
+
+	TALLOC_FREE(key_buf);
+	TALLOC_FREE(val_buf);
+
 	return 0;
 }
 
