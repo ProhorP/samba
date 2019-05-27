@@ -60,7 +60,7 @@
 
 Name:    samba
 Version: 4.10.2
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1808,6 +1808,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon May 27 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.2-alt2
+- Initial support build with MIT and Heimdal separately:
+  + Replace common DC and Winbind common files to separate subpackages
+  + Add samba-vfs-cephfs and samba-vfs-glusterfs subpackages
+
 * Thu Apr 11 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.2-alt1
 - Update to spring security release
 - Security fixes:
