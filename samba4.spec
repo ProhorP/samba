@@ -36,8 +36,8 @@
 %def_with ldb_modules
 %endif
 
-%def_without mitkrb5
-%def_without separate_heimdal_server
+%def_with mitkrb5
+%def_with separate_heimdal_server
 %def_with systemd
 %def_enable avahi
 
@@ -60,7 +60,7 @@
 
 Name:    samba
 Version: 4.10.3
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -239,7 +239,7 @@ Summary: Samba Active Directory client programs
 Group: Networking/Other
 Requires: %name-client = %version-%release
 Provides: %dcname-client = %version-%release
-Obsoletes: %dcname-client <= 4.9.4-alt2
+Obsoletes: %dcname-client < 4.10
 
 %description dc-client
 The %rname-client package provides Active Directory Domain Services clients.
@@ -252,7 +252,7 @@ Requires: %name-libs = %version-%release
 Requires: libnetapi = %version-%release
 %endif
 Provides: %dcname-common = %version-%release
-Obsoletes: %dcname-common <= 4.9.4-alt2
+Obsoletes: %dcname-common < 4.10
 
 %description common
 %rname-common provides files necessary for both the server and client
@@ -300,7 +300,7 @@ Summary: Samba libraries
 Group: System/Libraries
 Requires: %name-libs = %version-%release
 Provides: %dcname-libs = %version-%release
-Obsoletes: %dcname-libs <= 4.9.4-alt2
+Obsoletes: %dcname-libs < 4.10
 
 %if_with ldb_modules
 Requires: libldb-modules-dc = %version-%release
@@ -314,9 +314,9 @@ link against the SMB, RPC and other protocols provided by the Samba suite.
 Summary: Samba common libraries
 Group: System/Libraries
 Provides: %dcname-common-libs = %version-%release
-Obsoletes: %dcname-common-libs <= 4.9.4-alt2
+Obsoletes: %dcname-common-libs < 4.10
 Provides: %rname-client-libs = %version-%release
-Obsoletes: %rname-client-libs <= 4.9.4-alt2
+Obsoletes: %rname-client-libs < 4.10
 %if_without ldb
 Requires: libldb = %ldb_version
 %endif
@@ -330,7 +330,7 @@ Summary: Tools for Samba servers and clients
 Group: System/Servers
 Requires: %name-libs = %version-%release
 Provides: %dcname-common-tools = %version-%release
-Obsoletes: %dcname-common-tools <= 4.9.4-alt2
+Obsoletes: %dcname-common-tools < 4.10
 
 %description common-tools
 The %rname-common-tools package contains tools for Samba servers and
@@ -340,7 +340,7 @@ SMB/CIFS clients.
 Summary: The SMB client library
 Group: System/Libraries
 Provides: libsmbclient-DC = %version-%release
-Obsoletes: libsmbclient-DC <= 4.9.4-alt2
+Obsoletes: libsmbclient-DC < 4.10
 
 %description -n libsmbclient
 The libsmbclient contains the SMB client library from the Samba suite.
@@ -349,7 +349,7 @@ The libsmbclient contains the SMB client library from the Samba suite.
 Summary: The LDB domain controller modules
 Group: System/Libraries
 Provides: libldb-modules-DC = %version-%release
-Obsoletes: libldb-modules-DC <= 4.9.4-alt2
+Obsoletes: libldb-modules-DC < 4.10
 
 %description -n libldb-modules-dc
 The libldb-modules-DC contains the ldb library modules from the Samba domain controller.
@@ -359,7 +359,7 @@ Summary: Developer tools for the SMB client library
 Group: Development/C
 Requires: libsmbclient = %version-%release
 Provides: libsmbclient-DC-devel = %version-%release
-Obsoletes: libsmbclient-DC-devel <= 4.9.4-alt2
+Obsoletes: libsmbclient-DC-devel < 4.10
 
 %description -n libsmbclient-devel
 The libsmbclient-devel package contains the header files and libraries needed to
@@ -370,7 +370,7 @@ Summary: The winbind client library
 Group: System/Libraries
 Conflicts: libwbclient-sssd
 Provides: libwbclient-DC = %version-%release
-Obsoletes: libwbclient-DC <= 4.9.4-alt2
+Obsoletes: libwbclient-DC < 4.10
 
 %description -n libwbclient
 The libwbclient package contains the winbind client library from the Samba suite.
@@ -380,7 +380,7 @@ Summary: Developer tools for the winbind library
 Group: Development/C
 Requires: libwbclient = %version-%release
 Provides: libwbclient-DC-devel = %version-%release
-Obsoletes: libwbclient-DC-devel <= 4.9.4-alt2
+Obsoletes: libwbclient-DC-devel < 4.10
 
 %description -n libwbclient-devel
 The libwbclient-devel package provides developer tools for the wbclient library.
@@ -389,7 +389,7 @@ The libwbclient-devel package provides developer tools for the wbclient library.
 Summary: Samba netapi library
 Group: System/Libraries
 Provides: libnetapi-DC = %version-%release
-Obsoletes: libnetapi-DC <= 4.9.4-alt2
+Obsoletes: libnetapi-DC < 4.10
 
 %description -n libnetapi
 Samba netapi library
@@ -400,7 +400,7 @@ Group: Development/Other
 Requires: libnetapi = %version-%release
 Conflicts: libnetapi-devel
 Provides: libnetapi-DC-devel = %version-%release
-Obsoletes: libnetapi-DC-devel <= 4.9.4-alt2
+Obsoletes: libnetapi-DC-devel < 4.10
 
 %description -n libnetapi-devel
 Samba netapi development files
@@ -410,7 +410,7 @@ Summary: Samba Python libraries
 Group: Networking/Other
 Requires: %name-libs = %version-%release
 Provides: python-module-%dcname = %version-%release
-Obsoletes: python-module-%dcname <= 4.9.4-alt2
+Obsoletes: python-module-%dcname < 4.10
 
 %add_python_req_skip Tdb
 
@@ -423,7 +423,7 @@ Summary: Samba Python3 libraries
 Group: Networking/Other
 Requires: %name-libs = %version-%release
 Provides: python3-module-%dcname = %version-%release
-Obsoletes: python3-module-%dcname <= 4.9.4-alt2
+Obsoletes: python3-module-%dcname < 4.10
 
 # these modules currently don't support Python3 and aren't packaged
 %add_python3_req_skip dsdb
@@ -474,7 +474,7 @@ Summary: Developer tools for Samba libraries
 Group: Development/C
 Requires: %name-libs = %version-%release
 Provides: %dcname-devel = %version-%release
-Obsoletes: %dcname-devel <= 4.9.4-alt2
+Obsoletes: %dcname-devel < 4.10
 
 %description devel
 The %rname-devel package contains the header files for the libraries
@@ -487,7 +487,7 @@ Group: Development/Tools
 BuildArch: noarch
 # Requires: perl(:MODULE_COMPAT_%(eval "`perl -V:version`"; echo $version))
 Provides: %dcname-pidl = %version-%release
-Obsoletes: %dcname-pidl <= 4.9.4-alt2
+Obsoletes: %dcname-pidl < 4.10
 
 %description pidl
 The %rname-pidl package contains the Perl IDL compiler used by Samba
@@ -506,7 +506,7 @@ Requires: %name-winbind = %version-%release
 Requires: libsmbclient = %version-%release
 %endif
 Provides: %dcname-test = %version-%release
-Obsoletes: %dcname-test <= 4.9.4-alt2
+Obsoletes: %dcname-test < 4.10
 
 %description test
 %rname-test provides testing tools for both the server and client
@@ -528,7 +528,7 @@ Requires: %name-winbind-common = %version-%release
 Requires: %name-common = %version-%release
 Requires: %name-libs = %version-%release
 Provides: %dcname-winbind = %version-%release
-Obsoletes: %dcname-winbind <= 4.9.4-alt2
+Obsoletes: %dcname-winbind < 4.10
 %if_with libwbclient
 # There are working configurations exists where samba-winbind could be
 # using with sssd. Also it could be already installed from installation DVD.
@@ -546,7 +546,7 @@ Summary: Samba winbind clients
 Group: System/Servers
 Requires: %name-winbind = %version-%release
 Provides: %dcname-winbind-clients = %version-%release
-Obsoletes: %dcname-winbind-clients <= 4.9.4-alt2
+Obsoletes: %dcname-winbind-clients < 4.10
 %if_with libwbclient
 Requires: libwbclient = %version-%release
 %endif
@@ -564,7 +564,7 @@ Requires: libwbclient = %version-%release
 Requires: %name-libs = %version-%release
 %endif
 Provides: %dcname-winbind-krb5-locator = %version-%release
-Obsoletes: %dcname-winbind-krb5-locator <= 4.9.4-alt2
+Obsoletes: %dcname-winbind-krb5-locator < 4.10
 
 %description winbind-krb5-locator
 The winbind krb5 locator is a plugin for the system kerberos library to allow
@@ -579,7 +579,7 @@ Requires: libwbclient = %version-%release
 Requires: %name-libs = %version-%release
 %endif
 Provides: %dcname-winbind-krb5-localauth = %version-%release
-Obsoletes: %dcname-winbind-krb5-localauth <= 4.9.4-alt2
+Obsoletes: %dcname-winbind-krb5-localauth < 4.10
 
 %description winbind-krb5-localauth
 The winbind krb5 localauth is a plugin that permits the MIT Kerberos libraries
@@ -624,7 +624,7 @@ Conflicts: ctdb-devel
 Provides:  %name-ctdb-devel = %version-%release
 Obsoletes: %name-ctdb-devel < %version-%release
 Provides: %dcname-ctdb-tests = %version-%release
-Obsoletes: %dcname-ctdb-tests <= 4.9.4-alt2
+Obsoletes: %dcname-ctdb-tests < 4.10
 
 %description ctdb-tests
 Test suite for CTDB.
@@ -641,7 +641,7 @@ Group: Documentation
 Requires: %name-common = %version-%release
 BuildArch: noarch
 Provides: %dcname-doc = %version-%release
-Obsoletes: %dcname-doc <= 4.9.4-alt2
+Obsoletes: %dcname-doc < 4.10
 
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
@@ -664,7 +664,7 @@ Microsoft Active Directory.
 Summary: libsamba_util private headers
 Group: Development/C
 Provides: %dcname-util-private-headers = %version-%release
-Obsoletes: %dcname-util-private-headers <= 4.9.4-alt2
+Obsoletes: %dcname-util-private-headers < 4.10
 
 %description util-private-headers
 libsamba_util private headers.
@@ -1808,6 +1808,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon May 27 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.3-alt2
+- Build with MIT and Heimdal separately
+- Fix upgrade of latest samba-4.9 builds from branches
+
 * Mon May 27 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.3-alt1
 - Update to latest security release
 - Security fixes:
