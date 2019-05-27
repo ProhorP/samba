@@ -59,8 +59,8 @@
 %endif
 
 Name:    samba
-Version: 4.10.2
-Release: alt2
+Version: 4.10.3
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1808,6 +1808,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon May 27 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.3-alt1
+- Update to latest security release
+- Security fixes:
+  + CVE-2018-16860 Samba AD DC S4U2Self/S4U2Proxy unkeyed checksum
+
 * Mon May 27 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.2-alt2
 - Initial support build with MIT and Heimdal separately:
   + Replace common DC and Winbind common files to separate subpackages
