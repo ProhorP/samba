@@ -838,12 +838,6 @@ popd
 mkdir -p %buildroot%_altdir
 
 mv %buildroot%python3_sitelibdir %buildroot%_samba_dc_mod_libdir/python%_python3_version
-printf "%python3_sitelibdir/samba\t%_samba_dc_mod_libdir/python%_python3_version/samba\t50\n" > %buildroot%_altdir/samba-heimdal
-for f in %buildroot%_samba_dc_mod_libdir/libsamba*.cpython-*.so.*; do
-    fname=$(basename $f)
-    printf "%_libdir/$fname\t%_samba_dc_mod_libdir/$fname\t50\n" >> %buildroot%_altdir/samba-heimdal
-done
-
 mv %buildroot%_bindir %buildroot%_samba_dc_mod_libdir/bin
 mv %buildroot%_sbindir %buildroot%_samba_dc_mod_libdir/sbin
 for f in samba samba_kcc samba_dnsupdate samba_spnupdate samba_upgradedns eventlogadm nmbd smbd winbindd; do
@@ -854,16 +848,6 @@ printf "%_bindir/ntlm_auth\t%_samba_dc_mod_libdir/bin/ntlm_auth\t50\n" >> %build
 printf "%_samba_mod_libdir/ldb\t%_samba_dc_mod_libdir/ldb\t50\n" >> %buildroot%_altdir/samba-heimdal
 
 %makeinstall_std
-
-%allow_python3_import_path %_samba_mod_libdir/python%_python3_version
-%add_python3_path %_samba_mod_libdir/python%_python3_version
-mv %buildroot%python3_sitelibdir %buildroot%_samba_mod_libdir/python%_python3_version
-printf "%python3_sitelibdir/samba\t%_samba_mod_libdir/python%_python3_version/samba\t20\n" > %buildroot%_altdir/samba-mit-python3
-for f in %buildroot%_libdir/libsamba*.cpython-*.so.*; do
-    fname=$(basename $f)
-    mv $f %buildroot%_samba_mod_libdir/
-    printf "%_libdir/$fname\t%_samba_mod_libdir/$fname\t20\n" >> %buildroot%_altdir/samba-mit-python3
-done
 
 rm -f %buildroot%_altdir/samba-mit
 touch %buildroot%_altdir/samba-mit
@@ -1004,12 +988,9 @@ ln -s %_bindir/smbspool %buildroot%{cups_serverbin}/backend/smb
 # remove tests form python modules
 rm -rf %buildroot%python_sitelibdir/samba/{tests,subunit,external/subunit,external/testtool}
 rm -f %buildroot%python_sitelibdir/samba/third_party/iso8601/test_*.py
-%if_without separate_heimdal_server
 rm -rf %buildroot%python3_sitelibdir/samba/{tests,subunit,external/subunit,external/testtool}
 rm -f %buildroot%python3_sitelibdir/samba/third_party/iso8601/test_*.py
-%else
-rm -rf %buildroot%_samba_mod_libdir/python%_python3_version/samba/{tests,subunit,external/subunit,external/testtool}
-rm -f %buildroot%_samba_mod_libdir/python%_python3_version/samba/third_party/iso8601/test_*.py
+%if_with separate_heimdal_server
 rm -rf %buildroot%_samba_dc_mod_libdir/python%_python3_version/samba/{tests,subunit,external/subunit,external/testtool}
 rm -f %buildroot%_samba_dc_mod_libdir/python%_python3_version/samba/third_party/iso8601/test_*.py
 %endif
@@ -1634,14 +1615,8 @@ TDB_NO_FSYNC=1 %make_build test
 %python_sitelibdir/samba/
 
 %files -n python3-module-%name
-%if_with separate_heimdal_server
-%_altdir/samba-mit-python3
-%_samba_mod_libdir/python%_python3_version/
-%_samba_mod_libdir/libsamba*.cpython-*.so.*
-%else
 %python3_sitelibdir/samba/
 %_libdir/libsamba*.cpython-*.so.*
-%endif
 %_samba_mod_libdir/libsamba*.cpython-*.so
 
 %files -n python3-module-%name-devel
