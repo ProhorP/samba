@@ -847,6 +847,10 @@ printf "%_bindir/wbinfo\t%_samba_dc_mod_libdir/bin/wbinfo\t50\n" >> %buildroot%_
 printf "%_bindir/ntlm_auth\t%_samba_dc_mod_libdir/bin/ntlm_auth\t50\n" >> %buildroot%_altdir/samba-heimdal
 printf "%_samba_mod_libdir/ldb\t%_samba_dc_mod_libdir/ldb\t50\n" >> %buildroot%_altdir/samba-heimdal
 
+printf '#!/bin/bash\nexport PYTHONPATH="%_samba_dc_mod_libdir/python%_python3_version"\nexec %_bindir/samba-tool.py3 "$@"\n' >%buildroot%_samba_dc_mod_libdir/bin/samba-tool
+printf "%_bindir/samba-tool\t%_samba_dc_mod_libdir/bin/samba-tool\t50\n" >> %buildroot%_altdir/samba-heimdal
+chmod 0755 %buildroot%_samba_dc_mod_libdir/bin/samba-tool
+
 %makeinstall_std
 
 rm -f %buildroot%_altdir/samba-mit
@@ -871,6 +875,11 @@ printf "%_bindir/ntlm_auth\t%_samba_mod_libdir/bin/ntlm_auth\t20\n" >> %buildroo
 
 mv %buildroot%_samba_mod_libdir/ldb %buildroot%_samba_mod_libdir/ldb.mit
 printf "%_samba_mod_libdir/ldb\t%_samba_mod_libdir/ldb.mit\t50\n" > %buildroot%_altdir/samba-mit-dc-modules
+
+mv %buildroot%_bindir/samba-tool %buildroot%_bindir/samba-tool.py3
+printf '#!/bin/bash\nexec %_bindir/samba-tool.py3 "$@"\n' >%buildroot%_samba_mod_libdir/bin/samba-tool
+printf "%_bindir/samba-tool\t%_samba_mod_libdir/bin/samba-tool\t20\n" > %buildroot%_altdir/samba-mit-dc-client
+chmod 0755 %buildroot%_samba_mod_libdir/bin/samba-tool
 
 %endif
 
@@ -1136,7 +1145,13 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %files dc-client
+%if_with separate_heimdal_server
+%_altdir/samba-mit-dc-client
+%_samba_mod_libdir/bin/samba-tool
+%_bindir/samba-tool.py3
+%else
 %_bindir/samba-tool
+%endif
 %_sbindir/samba-gpupdate
 %if_with doc
 %_man8dir/samba-tool.8*
