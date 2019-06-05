@@ -1414,6 +1414,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libgensec-samba4.so
 %_samba_mod_libdir/libgse-samba4.so
 %_samba_mod_libdir/libgpext-samba4.so
+%if_with dc
+%_samba_mod_libdir/libdfs-server-ad-samba4.so
+%endif
 %_samba_mod_libdir/libhttp-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
 %_samba_mod_libdir/libiov-buf-samba4.so
@@ -1467,7 +1470,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libutil-setid-samba4.so
 %_samba_mod_libdir/libutil-tdb-samba4.so
 %_samba_mod_libdir/libxattr-tdb-samba4.so
-%_samba_mod_libdir/libscavenge-dns-records-samba4.so
 
 %if_with libcephfs
 %files vfs-cephfs
@@ -1527,9 +1529,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libpac-samba4.so
 %endif #!mitkrb5
 %_samba_mod_libdir/libdnsserver-common-samba4.so
-%_samba_mod_libdir/libdfs-server-ad-samba4.so
 %_samba_mod_libdir/libdsdb-module-samba4.so
 %_samba_mod_libdir/libdsdb-garbage-collect-tombstones-samba4.so
+%_samba_mod_libdir/libscavenge-dns-records-samba4.so
 %if_without ldb_modules
 %if_with separate_heimdal_server
 %_altdir/samba-mit-dc-modules
