@@ -1017,6 +1017,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libgenrand-samba4.so
 %_libdir/samba/libgensec-samba4.so
 %_libdir/samba/libgpext-samba4.so
+%if_with dc
+%_libdir/libdfs-server-ad-samba4.so
+%endif
 %_libdir/samba/libgse-samba4.so
 %_libdir/samba/libhttp-samba4.so
 %_libdir/samba/libinterfaces-samba4.so
@@ -1209,11 +1212,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/service/winbindd.so
 %_libdir/samba/service/wrepl.so
 %_libdir/libdcerpc-server.so.*
-%_libdir/samba/libdfs-server-ad-samba4.so
 %_libdir/samba/libdnsserver-common-samba4.so
 %_libdir/samba/libdsdb-module-samba4.so
 %_libdir/samba/libntvfs-samba4.so
 %_libdir/samba/libposix-eadb-samba4.so
+%_libdir/samba/libscavenge-dns-records-samba4.so
 %_libdir/samba/bind9/dlz_bind9_9.so
 %else
 %doc %_defaultdocdir/%name/README.dc-libs
@@ -1319,7 +1322,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_libdir/samba/libkrb5-samba4.so.*
 %_libdir/samba/libroken-samba4.so.*
 %_libdir/samba/libwind-samba4.so.*
-%_libdir/samba/libscavenge-dns-records-samba4.so
 %endif
 
 %if_with libsmbclient
