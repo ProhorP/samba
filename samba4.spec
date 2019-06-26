@@ -52,8 +52,8 @@
 %endif
 
 Name: samba
-Version: 4.9.4
-Release: alt2
+Version: 4.9.9
+Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1530,54 +1530,47 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
-* Fri Dec 28 2018 Evgeny Sinelikov <sin@altlinux.org> 4.9.4-alt2
-- Merge and rebuild for e2k
+* Wed Jun 26 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.9-alt1
+- Update to summer security release of samba-4.9 backported to p8
+- Security fixes:
+  + CVE-2019-12435 Samba AD DC Denial of Service in DNS management server (dnsserver)
+  + CVE-2018-16860 Samba AD DC S4U2Self/S4U2Proxy unkeyed checksum
+  + CVE-2018-16852 NULL pointer de-reference in Samba AD DC DNS servers
+  + CVE-2018-16857 Bad password count in AD DC not always effective
+
+* Thu Jan 03 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.7.12-alt2
 - Change group access for private directory due effective mask with acl
-- Fix build without clustering_support
 
-* Thu Dec 20 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.4-alt1
-- Update to first winter security release
-- Security fixes regressions:
-  + CVE-2018-16853 Do not segfault if client is not set
-  + CVE-2018-14629 Fix CNAME loop prevention using counter regression
-
-* Fri Nov 30 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.3-alt1
+* Tue Nov 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.12-alt1
 - Update to autumn security release
 - Clean test module of third_party/iso8601 and subunit modules
+- Security fixes:
+  + CVE-2018-14629 Unprivileged adding of CNAME record causing loop in AD Internal DNS server
+  + CVE-2018-16841 Double-free in Samba AD DC KDC with PKINIT
+  + CVE-2018-16851 NULL pointer de-reference in Samba AD DC LDAP server
+  + CVE-2018-16853 Samba AD DC S4U2Self crash in experimental MIT Kerberos configuration (unsupported)
 
-* Wed Nov 28 2018 Vladimir D. Seleznev <vseleznv@altlinux.org> 4.9.1-alt2
-- libsmbclient-devel: fix compatibility issues with the timespec struct
+* Mon Oct 29 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.11-alt1
+- Update to first autumn release
 
-* Wed Oct 17 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.1-alt1
-- Rebuild latest release of Samba 4.9 without ubt macros
+* Thu Sep 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt3
+- Rebuild next release without ubt macros due binary package identity changes
 
-* Thu Oct 11 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.6-alt1
-- Update to latest autumn release
-- Disable ubt macros due binary package identity changes
-- Remove depcrecated libntdb options from spec
+* Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt2%ubt
+- Revert the effective default for "client max protocol" to the NT1 protocol
 
-* Mon Sep 24 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.1-alt1%ubt
-- Update to latest release of Samba 4.9
-
-* Fri Aug 24 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.5-alt1%ubt
+* Tue Aug 28 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.10-alt1%ubt
 - Update to latest summer release
+- Build with subpackage for Python3
 
-* Tue Aug 14 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.4-alt1%ubt
+* Tue Aug 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.9-alt1%ubt
 - Update to summer security release
 - Security fixes:
   + CVE-2018-1139 Weak authentication protocol allowed
-  + CVE-2018-1140 Denial of Service Attack on DNS and LDAP server
   + CVE-2018-10858 Insufficient input validation on client directory
     listing in libsmbclient
   + CVE-2018-10918 Denial of Service Attack on AD DC DRSUAPI server
   + CVE-2018-10919 Confidential attribute disclosure from the AD LDAP server
-
-* Wed Jul 25 2018 Stanislav Levin <slev@altlinux.org> 4.8.3-alt2%ubt
-- Build package for Python3
-
-* Thu Jul 05 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt1%ubt
-- Update to new summer release of Samba 4.8
-- Add winbind-krb5-localauth package with plugin for mapping user accounts
 
 * Fri Jun 22 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt1%ubt
 - Update to first summer release of Samba 4.7
