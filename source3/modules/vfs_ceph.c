@@ -1216,14 +1216,14 @@ static struct smb_filename *cephwrap_realpath(struct vfs_handle_struct *handle,
 	} else if ((len >= 2) && (path[0] == '.') && (path[1] == '/')) {
 		if (len == 2) {
 			r = asprintf(&result, "%s",
-					handle->conn->connectpath);
+					handle->conn->cwd_fname->base_name);
 		} else {
 			r = asprintf(&result, "%s/%s",
-					handle->conn->connectpath, &path[2]);
+					handle->conn->cwd_fname->base_name, &path[2]);
 		}
 	} else {
 		r = asprintf(&result, "%s/%s",
-				handle->conn->connectpath, path);
+				handle->conn->cwd_fname->base_name, path);
 	}
 
 	if (r < 0) {
@@ -1328,7 +1328,8 @@ static ssize_t cephwrap_listxattr(struct vfs_handle_struct *handle,
 static ssize_t cephwrap_flistxattr(struct vfs_handle_struct *handle, struct files_struct *fsp, char *list, size_t size)
 {
 	int ret;
-	DBG_DEBUG("[CEPH] flistxattr(%p, %p, %s, %llu)\n", handle, fsp, list, llu(size));
+	DBG_DEBUG("[CEPH] flistxattr(%p, %p, %p, %llu)\n",
+		  handle, fsp, list, llu(size));
 #if LIBCEPHFS_VERSION_CODE >= LIBCEPHFS_VERSION(0, 94, 0)
 	ret = ceph_flistxattr(handle->data, fsp->fh->fd, list, size);
 #else

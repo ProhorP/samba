@@ -47,6 +47,7 @@
 #include "modules/posixacl_xattr.h"
 
 #define DEFAULT_VOLFILE_SERVER "localhost"
+#define GLUSTER_NAME_MAX 255
 
 static int read_fd = -1;
 static int write_fd = -1;
@@ -1450,37 +1451,22 @@ static int vfs_gluster_chflags(struct vfs_handle_struct *handle,
 
 static int vfs_gluster_get_real_filename(struct vfs_handle_struct *handle,
 					 const char *path, const char *name,
-					 TALLOC_CTX *mem_ctx, char **_found_name)
+					 TALLOC_CTX *mem_ctx, char **found_name)
 {
 	int ret;
-	char *key_buf = NULL, *val_buf = NULL;
-	long name_max;
-	char *found_name = NULL;
+	char key_buf[GLUSTER_NAME_MAX + 64];
+	char val_buf[GLUSTER_NAME_MAX + 1];
 
-	name_max = pathconf(path, _PC_NAME_MAX);
-	if ((name_max + 1) < 1) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	if (strlen(name) >= name_max) {
+	if (strlen(name) >= GLUSTER_NAME_MAX) {
 		errno = ENAMETOOLONG;
 		return -1;
 	}
 
-	key_buf = talloc_asprintf(mem_ctx, "glusterfs.get_real_filename:%s",
-				  name);
-	if (key_buf == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
+	snprintf(key_buf, GLUSTER_NAME_MAX + 64,
+		 "glusterfs.get_real_filename:%s", name);
 
-	val_buf = talloc_zero_array(mem_ctx, char, name_max + 1);
-	if (val_buf == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	ret = glfs_getxattr(handle->data, path, key_buf, val_buf, NAME_MAX + 1);
+	ret = glfs_getxattr(handle->data, path, key_buf, val_buf,
+			    GLUSTER_NAME_MAX + 1);
 	if (ret == -1) {
 		if (errno == ENOATTR) {
 			errno = EOPNOTSUPP;
@@ -1488,16 +1474,11 @@ static int vfs_gluster_get_real_filename(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
-	found_name = talloc_strdup(mem_ctx, val_buf);
-	if (found_name == NULL) {
+	*found_name = talloc_strdup(mem_ctx, val_buf);
+	if (found_name[0] == NULL) {
 		errno = ENOMEM;
 		return -1;
 	}
-	*_found_name = found_name;
-
-	TALLOC_FREE(key_buf);
-	TALLOC_FREE(val_buf);
-
 	return 0;
 }
 
