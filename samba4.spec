@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.9
+Version: 4.9.10
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -153,7 +153,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-BuildRequires: libldb-devel >= 1.4.3
+BuildRequires: libldb-devel >= 1.4.7
 BuildRequires: python-module-pyldb-devel
     %if_with python3
 BuildRequires: python3-module-pyldb-devel
@@ -1530,6 +1530,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Mon Jul 15 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.10-alt1
+- Update to latest summer release of samba-4.9
+
 * Wed Jun 26 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.9-alt1
 - Update to summer security release of samba-4.9 backported to p8
 - Security fixes:
