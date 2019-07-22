@@ -638,6 +638,7 @@ static void init_globals(struct loadparm_context *lp_ctx, bool reinit_globals)
 	Globals.lpq_cache_time = 30;	/* changed to handle large print servers better -- jerry */
 	Globals._disable_spoolss = false;
 	Globals.max_smbd_processes = 0;/* no limit specified */
+	Globals.smbd_read_timeout = 3000;
 	Globals.username_level = 0;
 	Globals.deadtime = 0;
 	Globals.getwd_cache = true;
