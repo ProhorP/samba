@@ -1,7 +1,3 @@
-%define if_branch_le() %if "%(rpmvercmp '%ubt_id' '%1')" <= "0"
-%define if_branch_eq() %if "%(rpmvercmp '%ubt_id' '%1')" == "0"
-%define if_branch_ge() %if "%(rpmvercmp '%ubt_id' '%1')" >= "0"
-
 %set_verify_elf_method unresolved=relaxed
 %add_findprov_skiplist /%_lib/*
 %add_debuginfo_skiplist /%_lib
@@ -43,7 +39,7 @@
 
 Name: samba
 Version: 4.6.14
-Release: alt1%ubt.1
+Release: alt2.M80C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -90,8 +86,6 @@ Requires: %name-common-tools = %version-%release
 Requires: libwbclient = %version-%release
 %endif
 
-BuildRequires(pre):rpm-build-ubt
-
 BuildRequires: libe2fs-devel
 BuildRequires: libxfs-devel
 BuildRequires: libacl-devel
@@ -119,11 +113,7 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_without_ldb:BuildRequires: libldb-devel >= 1.1.29 python-module-pyldb-devel}
 #{?_with_clustering_support:BuildRequires: ctdb-devel}
 %{?_with_testsuite:BuildRequires: ldb-tools}
-%if_branch_le M70P
-%{?_with_systemd:BuildRequires: systemd-devel}
-%else
 %{?_with_systemd:BuildRequires: libsystemd-devel}
-%endif
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: glusterfs3-devel >= 3.4.0.16}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
@@ -1406,6 +1396,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Jul 23 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt2.M80C.1
+- Partial fixes for SMBLoris vulnerability on smbd
+  + Add smbd read timeout parameter
+  + Set max smbd processes to 768
+
 * Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt.1
 - Rebuild security release (Fixes: CVE-2018-1050, CVE-2018-1057) with old
   ceph version without libceph-common for c7/c8
