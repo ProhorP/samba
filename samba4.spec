@@ -38,8 +38,8 @@
 %def_with libcephfs
 
 Name: samba
-Version: 4.6.14
-Release: alt2.M80C.1
+Version: 4.6.16
+Release: alt1.M80C.1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1396,6 +1396,13 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Jul 23 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.6.16-alt1.M80C.1
+- Update to latest samba-4.6 security release
+- Security fixes:
+  + CVE-2018-10858 Insufficient input validation on client directory
+    listing in libsmbclient
+  + CVE-2018-10919 Confidential attribute disclosure from the AD LDAP server
+
 * Tue Jul 23 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt2.M80C.1
 - Partial fixes for SMBLoris vulnerability on smbd
   + Add smbd read timeout parameter
