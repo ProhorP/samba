@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.11
+Version: 4.9.12
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1530,6 +1530,9 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Thu Aug 27 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.12-alt1
+- Update to final summer release of samba-4.9
+
 * Thu Aug 01 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.11-alt1
 - Update to latest release of samba-4.9 with ldb 1.4.7
 - Fix join with don't exists machine account (SAMBA#14007)
