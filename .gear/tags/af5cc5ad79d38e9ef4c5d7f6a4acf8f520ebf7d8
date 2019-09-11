@@ -1,0 +1,12 @@
+object 1acf30ac5c1c1ffc6f92ff9786b1be897c3b5092
+type commit
+tag samba-4.9.13
+tagger Karolin Seeger <kseeger@samba.org> 1566978449 +0200
+
+samba: tag release samba-4.9.13
+-----BEGIN PGP SIGNATURE-----
+
+iF0EABECAB0WIQRS+8C4bZVLCEMyTNxvM5FbZWi36gUCXWYxkQAKCRBvM5FbZWi3
+6oR0AKCNdW2NXsDC/AwtYdjXjO20JXRIUQCeLxhNcxH29BTRDQKRyWe1HIg2j4I=
+=KDID
+-----END PGP SIGNATURE-----
