@@ -188,6 +188,18 @@ NTSTATUS mitkdc_task_init(struct task_server *task)
 	setenv("KRB5_KDC_PROFILE", kdc_config, 0);
 	TALLOC_FREE(kdc_config);
 
+	kdc_config = talloc_asprintf(task,
+				     "%s/krb5.conf",
+				     lpcfg_private_dir(task->lp_ctx));
+	if (kdc_config == NULL) {
+		task_server_terminate(task,
+				      "KDC: no memory",
+				      false);
+		return NT_STATUS_NO_MEMORY;
+	}
+	setenv("KRB5_CONFIG", kdc_config, 0);
+	TALLOC_FREE(kdc_config);
+
 	/* start it as a child process */
 	kdc_cmd = lpcfg_mit_kdc_command(task->lp_ctx);
 
