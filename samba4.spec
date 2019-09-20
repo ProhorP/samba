@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.12
+Version: 4.9.13
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1530,6 +1530,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Sep 20 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.13-alt1
+- Update to first security autumn release
+- Security fixes:
+  + CVE-2019-10197 Permissions check deny can allow user to escape from the share
+
 * Thu Aug 27 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.12-alt1
 - Update to final summer release of samba-4.9
 
