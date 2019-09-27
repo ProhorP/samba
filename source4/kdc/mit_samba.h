@@ -56,7 +56,6 @@ int mit_samba_get_pac(struct mit_samba_context *smb_ctx,
 krb5_error_code mit_samba_reget_pac(struct mit_samba_context *ctx,
 				    krb5_context context,
 				    int flags,
-				    krb5_const_principal client_principal,
 				    krb5_db_entry *client,
 				    krb5_db_entry *server,
 				    krb5_db_entry *krbtgt,
@@ -73,9 +72,8 @@ int mit_samba_check_client_access(struct mit_samba_context *ctx,
 				  DATA_BLOB *e_data);
 
 int mit_samba_check_s4u2proxy(struct mit_samba_context *ctx,
-			      krb5_db_entry *kentry,
-			      const char *target_name,
-			      bool is_nt_enterprise_name);
+			      const krb5_db_entry *server,
+			      krb5_const_principal target_principal);
 
 int mit_samba_kpasswd_change_password(struct mit_samba_context *ctx,
 				      char *pwd,

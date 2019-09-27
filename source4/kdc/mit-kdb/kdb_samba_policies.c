@@ -192,13 +192,17 @@ static krb5_error_code ks_verify_pac(krb5_context context,
 				     krb5_keyblock *krbtgt_key,
 				     krb5_timestamp authtime,
 				     krb5_authdata **tgt_auth_data,
-				     krb5_pac *pac)
+				     krb5_pac *out_pac)
 {
 	struct mit_samba_context *mit_ctx;
 	krb5_authdata **authdata = NULL;
-	krb5_pac ipac = NULL;
-	DATA_BLOB logon_data = { NULL, 0 };
+	krb5_keyblock *header_server_key = NULL;
+	krb5_key_data *impersonator_kd = NULL;
+	krb5_keyblock impersonator_key = {0};
 	krb5_error_code code;
+	krb5_pac pac;
+
+	*out_pac = NULL;
 
 	mit_ctx = ks_get_context(context);
 	if (mit_ctx == NULL) {
@@ -230,41 +234,43 @@ static krb5_error_code ks_verify_pac(krb5_context context,
 	code = krb5_pac_parse(context,
 			      authdata[0]->contents,
 			      authdata[0]->length,
-			      &ipac);
+			      &pac);
 	if (code != 0) {
 		goto done;
 	}
 
-	/* TODO: verify this is correct
-	 *
-	 * In the constrained delegation case, the PAC is from a service
-	 * ticket rather than a TGT; we must verify the server and KDC
-	 * signatures to assert that the server did not forge the PAC.
+	/*
+	 * For constrained delegation in MIT version < 1.18 we aren't provided
+	 * with the 2nd ticket server key to verify the PAC.
+	 * We can workaround that by fetching the key from the client db entry,
+	 * which is the impersonator account in that version.
+	 * TODO: use the provided entry in the new 1.18 version.
 	 */
 	if (flags & KRB5_KDB_FLAG_CONSTRAINED_DELEGATION) {
-		code = krb5_pac_verify(context,
-				       ipac,
-				       authtime,
-				       client_princ,
-				       server_key,
-				       krbtgt_key);
+		/* The impersonator must be local. */
+		if (client == NULL) {
+			code = KRB5KDC_ERR_BADOPTION;
+			goto done;
+		}
+		/* Fetch and decrypt 2nd ticket server's current key. */
+		code = krb5_dbe_find_enctype(context, client, -1, -1, 0,
+					     &impersonator_kd);
+		if (code != 0) {
+			goto done;
+		}
+		code = krb5_dbe_decrypt_key_data(context, NULL,
+						 impersonator_kd,
+						 &impersonator_key, NULL);
+		if (code != 0) {
+			goto done;
+		}
+		header_server_key = &impersonator_key;
 	} else {
-		code = krb5_pac_verify(context,
-				       ipac,
-				       authtime,
-				       client_princ,
-				       krbtgt_key,
-				       NULL);
-	}
-	if (code != 0) {
-		goto done;
+		header_server_key = krbtgt_key;
 	}
 
-	/* check and update PAC */
-	code = krb5_pac_parse(context,
-			      authdata[0]->contents,
-			      authdata[0]->length,
-			      pac);
+	code = krb5_pac_verify(context, pac, authtime, client_princ,
+			       header_server_key, NULL);
 	if (code != 0) {
 		goto done;
 	}
@@ -272,17 +278,22 @@ static krb5_error_code ks_verify_pac(krb5_context context,
 	code = mit_samba_reget_pac(mit_ctx,
 				   context,
 				   flags,
-				   client_princ,
 				   client,
 				   server,
 				   krbtgt,
 				   krbtgt_key,
-				   pac);
+				   &pac);
+	if (code != 0) {
+		goto done;
+	}
+
+	*out_pac = pac;
+	pac = NULL;
 
 done:
+	krb5_free_keyblock_contents(context, &impersonator_key);
 	krb5_free_authdata(context, authdata);
-	krb5_pac_free(context, ipac);
-	free(logon_data.data);
+	krb5_pac_free(context, pac);
 
 	return code;
 }
@@ -328,6 +339,7 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 	krb5_authdata **pac_auth_data = NULL;
 	krb5_authdata **authdata = NULL;
 	krb5_boolean is_as_req;
+	krb5_const_principal pac_client;
 	krb5_error_code code;
 	krb5_pac pac = NULL;
 	krb5_data pac_data;
@@ -340,11 +352,6 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 	krbtgt = krbtgt == NULL ? local_krbtgt : krbtgt;
 	krbtgt_key = krbtgt_key == NULL ? local_krbtgt_key : krbtgt_key;
 #endif
-
-	/* FIXME: We don't support S4U yet */
-	if (flags & KRB5_KDB_FLAGS_S4U) {
-		return KRB5_KDB_DBTYPE_NOSUP;
-	}
 
 	is_as_req = ((flags & KRB5_KDB_FLAG_CLIENT_REFERRALS_ONLY) != 0);
 
@@ -404,6 +411,16 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 			return 0;
 		}
 		ks_client_princ = client->princ;
+	}
+
+	/* In protocol transition, we are currently not provided with the tgt
+	 * client name to verify the PAC, we could probably skip the name
+	 * verification and just verify the signatures, but since we don't
+	 * support cross-realm nor aliases, we can just use server->princ */
+	if (flags & KRB5_KDB_FLAG_PROTOCOL_TRANSITION) {
+		pac_client = server->princ;
+	} else {
+		pac_client = ks_client_princ;
 	}
 
 	if (client_entry == NULL) {
@@ -470,7 +487,7 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 
 			code = ks_verify_pac(context,
 					     flags,
-					     ks_client_princ,
+					     pac_client,
 					     client_entry,
 					     server,
 					     krbtgt,
@@ -510,7 +527,7 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 		  is_as_req ? "AS-REQ" : "TGS-REQ",
 		  client_name);
 	code = krb5_pac_sign(context, pac, authtime, ks_client_princ,
-			server_key, krbtgt_key, &pac_data);
+			     server_key, krbtgt_key, &pac_data);
 	if (code != 0) {
 		DBG_ERR("krb5_pac_sign failed: %d\n", code);
 		goto done;
@@ -536,12 +553,6 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 					      KRB5_AUTHDATA_IF_RELEVANT,
 					      authdata,
 					      signed_auth_data);
-	if (code != 0) {
-		goto done;
-	}
-
-	code = 0;
-
 done:
 	if (client_entry != NULL && client_entry != client) {
 		ks_free_principal(context, client_entry);
@@ -567,32 +578,13 @@ krb5_error_code kdb_samba_db_check_allowed_to_delegate(krb5_context context,
 	 * server; -> delegating service
 	 * proxy; -> target principal
 	 */
-	krb5_db_entry *delegating_service = discard_const_p(krb5_db_entry, server);
-
-	char *target_name = NULL;
-	bool is_enterprise;
-	krb5_error_code code;
 
 	mit_ctx = ks_get_context(context);
 	if (mit_ctx == NULL) {
 		return KRB5_KDB_DBNOTINITED;
 	}
 
-	code = krb5_unparse_name(context, proxy, &target_name);
-	if (code) {
-		goto done;
-	}
-
-	is_enterprise = (proxy->type == KRB5_NT_ENTERPRISE_PRINCIPAL);
-
-	code = mit_samba_check_s4u2proxy(mit_ctx,
-					 delegating_service,
-					 target_name,
-					 is_enterprise);
-
-done:
-	free(target_name);
-	return code;
+	return mit_samba_check_s4u2proxy(mit_ctx, server, proxy);
 }
 
 
