@@ -481,7 +481,6 @@ int ctdb_ibw_init(struct ctdb_context *ctdb);
 
 /* from ctdb_banning.c */
 
-void ctdb_local_node_got_banned(struct ctdb_context *ctdb);
 int32_t ctdb_control_set_ban_state(struct ctdb_context *ctdb, TDB_DATA indata);
 int32_t ctdb_control_get_ban_state(struct ctdb_context *ctdb, TDB_DATA *outdata);
 void ctdb_ban_self(struct ctdb_context *ctdb);
@@ -829,6 +828,8 @@ int32_t ctdb_control_recd_ping(struct ctdb_context *ctdb);
 int32_t ctdb_control_set_recmaster(struct ctdb_context *ctdb,
 				   uint32_t opcode, TDB_DATA indata);
 
+void ctdb_node_become_inactive(struct ctdb_context *ctdb);
+
 int32_t ctdb_control_stop_node(struct ctdb_context *ctdb);
 int32_t ctdb_control_continue_node(struct ctdb_context *ctdb);
 
@@ -841,7 +842,10 @@ void ctdb_stop_recoverd(struct ctdb_context *ctdb);
 
 int ctdb_set_transport(struct ctdb_context *ctdb, const char *transport);
 
-int ctdb_ip_to_nodeid(struct ctdb_context *ctdb, const ctdb_sock_addr *nodeip);
+struct ctdb_node *ctdb_ip_to_node(struct ctdb_context *ctdb,
+				  const ctdb_sock_addr *nodeip);
+uint32_t ctdb_ip_to_pnn(struct ctdb_context *ctdb,
+			const ctdb_sock_addr *nodeip);
 
 void ctdb_load_nodes_file(struct ctdb_context *ctdb);
 

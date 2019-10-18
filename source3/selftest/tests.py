@@ -415,6 +415,10 @@ if with_pthreadpool:
                                 "script/tests/test_libwbclient_threads.sh"),
                    "$DOMAIN", "$DC_USERNAME"])
 
+plantestsuite("samba3.test_nfs4_acl", "none",
+              [os.path.join(bindir(), "test_nfs4_acls"),
+               "$SMB_CONF_PATH"])
+
 plantestsuite(
     "samba3.resolvconf", "none",
     [os.path.join(samba3srcdir, "script/tests/test_resolvconf.sh")])
@@ -474,7 +478,8 @@ nbt = ["nbt.dgram"]
 libsmbclient = ["libsmbclient.version", "libsmbclient.initialize",
                 "libsmbclient.configuration", "libsmbclient.setConfiguration",
                 "libsmbclient.options", "libsmbclient.opendir",
-                "libsmbclient.list_shares", "libsmbclient.readdirplus"]
+                "libsmbclient.list_shares", "libsmbclient.readdirplus",
+		"libsmbclient.readdirplus_seek"]
 
 vfs = [
     "vfs.fruit",
@@ -715,6 +720,10 @@ plantestsuite("samba3.blackbox.net_tdb", "simpleserver:local",
 
 plantestsuite("samba3.blackbox.smbd_error", "simpleserver:local",
               [os.path.join(samba3srcdir, "script/tests/test_smbd_error.sh")])
+
+plantestsuite("samba3.blackbox.smbd_no_krb5", "ad_member:local",
+              [os.path.join(samba3srcdir, "script/tests/test_smbd_no_krb5.sh"),
+               smbclient3, '$SERVER', "$DC_USERNAME", "$DC_PASSWORD", "$PREFIX"])
 
 plantestsuite("samba3.blackbox.durable_v2_delay", "simpleserver:local",
               [os.path.join(samba3srcdir, "script/tests/test_durable_handle_reconnect.sh")])
