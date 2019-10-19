@@ -23,6 +23,9 @@
 #include "includes.h"
 #include "libcli/auth/libcli_auth.h"
 
+#include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
+
 /* NOTES: 
 
    This code makes no attempt to be fast! In fact, it is a very
@@ -271,6 +274,50 @@ static void str_to_key(const uint8_t *str,uint8_t *key)
 	for (i=0;i<8;i++) {
 		key[i] = (key[i]<<1);
 	}
+}
+
+static int des_crypt56_gnutls(uint8_t out[8], const uint8_t in[8],
+			      const uint8_t key_in[7], bool enc)
+{
+	static uint8_t iv8[8];
+	gnutls_datum_t iv = { iv8, 8 };
+	gnutls_datum_t key;
+	gnutls_cipher_hd_t ctx;
+	uint8_t key2[8];
+	uint8_t outb[8];
+	int ret;
+
+	memset(out, 0, 8);
+
+	str_to_key(key_in, key2);
+
+	key.data = key2;
+	key.size = 8;
+
+	ret = gnutls_global_init();
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = gnutls_cipher_init(&ctx, GNUTLS_CIPHER_DES_CBC, &key, &iv);
+	if (ret != 0) {
+		return ret;
+	}
+
+	memcpy(outb, in, 8);
+	if (enc) {
+		ret = gnutls_cipher_encrypt(ctx, outb, 8);
+	} else {
+		ret = gnutls_cipher_decrypt(ctx, outb, 8);
+	}
+
+	if (ret == 0) {
+		memcpy(out, outb, 8);
+	}
+
+	gnutls_cipher_deinit(ctx);
+
+	return ret;
 }
 
 /*
