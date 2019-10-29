@@ -136,6 +136,7 @@ struct spnego_state {
 	bool done_mic_check;
 
 	bool simulate_w2k;
+	bool no_optimistic;
 
 	/*
 	 * The following is used to implement
@@ -187,6 +188,10 @@ static NTSTATUS gensec_spnego_client_start(struct gensec_security *gensec_securi
 
 	spnego_state->simulate_w2k = gensec_setting_bool(gensec_security->settings,
 						"spnego", "simulate_w2k", false);
+	spnego_state->no_optimistic = gensec_setting_bool(gensec_security->settings,
+							  "spnego",
+							  "client_no_optimistic",
+							  false);
 
 	gensec_security->private_data = spnego_state;
 	return NT_STATUS_OK;
@@ -1295,6 +1300,10 @@ static NTSTATUS gensec_spnego_server_negTokenInit_step(
 			spnego_state->mic_requested = true;
 		}
 
+		if (sub_in.length == 0) {
+			spnego_state->no_optimistic = true;
+		}
+
 		/*
 		 * Note that 'cur_sec' is temporary memory, but
 		 * cur_sec->oid points to a const string in the
@@ -1923,6 +1932,21 @@ static void gensec_spnego_update_pre(struct tevent_req *req)
 		 * blob and NT_STATUS_OK.
 		 */
 		state->sub.status = NT_STATUS_OK;
+	} else if (spnego_state->state_position == SPNEGO_CLIENT_START &&
+		   spnego_state->no_optimistic) {
+		/*
+		 * Skip optimistic token per conf.
+		 */
+		state->sub.status = NT_STATUS_MORE_PROCESSING_REQUIRED;
+	} else if (spnego_state->state_position == SPNEGO_SERVER_START &&
+		   state->sub.in.length == 0 && spnego_state->no_optimistic) {
+		/*
+		 * If we didn't like the mechanism for which the client sent us
+		 * an optimistic token, or if he didn't send any, don't call
+		 * the sub mechanism just yet.
+		 */
+		state->sub.status = NT_STATUS_MORE_PROCESSING_REQUIRED;
+		spnego_state->no_optimistic = false;
 	} else {
 		/*
 		 * MORE_PROCESSING_REQUIRED =>

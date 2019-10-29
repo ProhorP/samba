@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 import optparse
 import sys
 
@@ -29,11 +30,13 @@ lp_ctx = sambaopts.get_loadparm()
 lp_ctx.set("dsdb:guid index", "false")
 
 if opts.H is None:
-    url = lp_ctx.samdb_url()
+    url = lp_ctx.private_path("sam.ldb")
 else:
     url = opts.H
 
-samdb = ldb.Ldb(url=url, options=["modules:"])
+samdb = ldb.Ldb(url=url,
+                flags=ldb.FLG_DONT_CREATE_DB,
+                options=["modules:"])
 
 partitions = samdb.search(base="@PARTITION",
 			  scope=ldb.SCOPE_BASE,
@@ -57,10 +60,13 @@ privatedir = os.path.dirname(url)
 
 dbs = []
 for part in partitions[0]['partition']:
-    tdbname = part.split(":")[1]
-    tdbpath = os.path.join(privatedir, tdbname)
-
-    db = ldb.Ldb(url=tdbpath, options=["modules:"])
+    dbname = str(part).split(":")[1]
+    dbpath = os.path.join(privatedir, dbname)
+    if os.path.isfile(dbpath):
+        dbpath = "ldb://" + dbpath
+    db = ldb.Ldb(url=dbpath,
+                 options=["modules:"],
+                 flags=ldb.FLG_DONT_CREATE_DB)
     db.transaction_start()
     db.modify(modmsg)
     dbs.append(db)
@@ -70,14 +76,16 @@ for db in dbs:
 
 samdb.transaction_commit()
 
-print "Re-opening with the full DB stack"
+print("Re-opening with the full DB stack")
 samdb = SamDB(url=url,
-                          lp=lp_ctx)
-print "Re-triggering another re-index"
+              flags=ldb.FLG_DONT_CREATE_DB,
+              lp=lp_ctx)
+print("Re-triggering another re-index")
 chk = dbcheck(samdb)
 
 chk.reindex_database()
 
-print "Your database has been downgraded to DN-based index values."
+print("Your database has been downgraded to DN-based index values.")
 
-print "NOTE: Any use of a Samba 4.8 tool including ldbsearch will auto-upgrade back to GUID index mode"
+print("NOTE: Any use of a Samba 4.8 or later tool including ldbsearch will "
+      "auto-upgrade back to GUID index mode")
