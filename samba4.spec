@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.13
+Version: 4.9.15
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -153,7 +153,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-BuildRequires: libldb-devel >= 1.4.7
+BuildRequires: libldb-devel >= 1.4.8
 BuildRequires: python-module-pyldb-devel
     %if_with python3
 BuildRequires: python3-module-pyldb-devel
@@ -1530,6 +1530,13 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Oct 29 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.15-alt1
+- Update to second security autumn release
+- Security fixes:
+  + CVE-2019-10218 Client code can return filenames containing path separators
+  + CVE-2019-14833 Samba AD DC check password script does not receive the full password
+  + CVE-2019-14847 User with "get changes" permission can crash AD DC LDAP server via dirsync
+
 * Fri Sep 20 2019 Evgeny Sinelnikov <sin@altlinux.org> 4.9.13-alt1
 - Update to first security autumn release
 - Security fixes:
