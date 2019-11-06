@@ -786,6 +786,7 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 	 * create ENCTYPE_DES_CBC_MD5 key out of
 	 * the salt and the cleartext password
 	 */
+#ifdef SAMBA4_USES_HEIMDAL
 	krb5_ret = smb_krb5_create_key_from_string(io->smb_krb5_context->krb5_context,
 						   NULL,
 						   &salt,
@@ -804,6 +805,11 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 					 KRB5_KEY_DATA(&key),
 					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
+#else
+	/* MIT has dropped support for DES enctypes, store a random key instead. */
+	io->g.des_md5 = data_blob_talloc(io->ac, NULL, 8);
+	generate_secret_buffer(io->g.des_md5.data, 8);
+#endif
 	if (!io->g.des_md5.data) {
 		return ldb_oom(ldb);
 	}
@@ -812,6 +818,7 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 	 * create ENCTYPE_DES_CBC_CRC key out of
 	 * the salt and the cleartext password
 	 */
+#ifdef SAMBA4_USES_HEIMDAL
 	krb5_ret = smb_krb5_create_key_from_string(io->smb_krb5_context->krb5_context,
 						   NULL,
 						   &salt,
@@ -830,6 +837,11 @@ static int setup_kerberos_keys(struct setup_password_fields_io *io)
 					 KRB5_KEY_DATA(&key),
 					 KRB5_KEY_LENGTH(&key));
 	krb5_free_keyblock_contents(io->smb_krb5_context->krb5_context, &key);
+#else
+	/* MIT has dropped support for DES enctypes, store a random key instead. */
+	io->g.des_crc = data_blob_talloc(io->ac, NULL, 8);
+	generate_secret_buffer(io->g.des_crc.data, 8);
+#endif
 	if (!io->g.des_crc.data) {
 		return ldb_oom(ldb);
 	}
