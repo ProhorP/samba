@@ -53,7 +53,7 @@
 
 Name: samba
 Version: 4.9.15
-Release: alt1
+Release: alt2
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1530,6 +1530,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Tue Nov 07 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.15-alt2
+- Partial fixes for SMBLoris vulnerability on smbd (W-2019-0061)
+  + Add smbd read timeout parameter (default 3000)
+  + Set max smbd processes to 768
+
 * Tue Oct 29 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.15-alt1
 - Update to second security autumn release
 - Security fixes:
