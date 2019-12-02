@@ -36,19 +36,17 @@
 %def_with systemd
 %def_enable avahi
 
-# https://bugzilla.altlinux.org/show_bug.cgi?id=36315                                                                                                                      │·······························································
-# Not all macroses exists on stable branches:                                                                                                                              │·······························································
-# ifarch %ix86 %arm %mips32 ppc %e2k                                                                                                                                       │·······························································
-%ifarch %ix86 %arm mipsel ppc e2k e2kv4
+%ifarch e2k e2kv4
+%def_disable glusterfs
 %def_without libcephfs
 %else
+%ifarch mipsel
+%def_enable glusterfs
+%def_without libcephfs
+%else
+%def_enable glusterfs
 %def_with libcephfs
 %endif
-
-%ifarch e2k e2kv4                                                                                                                                                          │·······························································
-%def_disable glusterfs                                                                                                                                                     │·······························································
-%else                                                                                                                                                                      │·······························································
-%def_enable glusterfs
 %endif
 
 Name: samba
