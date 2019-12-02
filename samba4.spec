@@ -52,8 +52,8 @@
 %endif
 
 Name: samba
-Version: 4.9.15
-Release: alt2
+Version: 4.9.16
+Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
 License: GPLv3+ and LGPLv3+
@@ -1530,6 +1530,11 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Mon Dec 02 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.16-alt1
+- Update to last winter release of samba-4.9 (closes: 37245)
+- Fix print using spoolss with kerberos credentials: SAMBA#13939
+- username/password authentication doesn't work with CUPS and smbspool: SAMBA#14128
+
 * Tue Nov 07 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.15-alt2
 - Partial fixes for SMBLoris vulnerability on smbd (W-2019-0061)
   + Add smbd read timeout parameter (default 3000)
