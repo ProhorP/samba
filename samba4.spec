@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.16
+Version: 4.9.17
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1530,6 +1530,12 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Dec 13 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.17-alt1
+- Update to last security winter release
+- Security fixes:
+  + CVE-2019-14861: Samba AD DC zone-named record Denial of Service in DNS management server
+  + CVE-2019-14870: DelegationNotAllowed not being enforced in protocol transition on Samba AD DC
+
 * Mon Dec 02 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.16-alt1
 - Update to last winter release of samba-4.9 (closes: 37245)
 - Fix print using spoolss with kerberos credentials: SAMBA#13939
