@@ -115,7 +115,6 @@ BuildRequires: libpam-devel
 BuildRequires: perl-devel
 BuildRequires: perl-Parse-Yapp
 BuildRequires: libpopt-devel
-BuildRequires: python-devel
 BuildRequires(pre): rpm-build-python3
 BuildRequires: python3-devel
 BuildRequires: libreadline-devel
@@ -141,26 +140,22 @@ BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %if_without talloc
 BuildRequires: libtalloc-devel >= 2.1.16
-BuildRequires: python-module-talloc-devel
 BuildRequires: python3-module-talloc-devel
 %endif
 
 %if_without tevent
 BuildRequires: libtevent-devel >= 0.9.39
-BuildRequires: python-module-tevent
 BuildRequires: python3-module-tevent
 %endif
 
 %if_without tdb
 BuildRequires: libtdb-devel >= 1.3.18
-BuildRequires: python-module-tdb
 BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
 %define ldb_version 1.5.6
 BuildRequires: libldb-devel = %ldb_version
-BuildRequires: python-module-pyldb-devel
 BuildRequires: python3-module-pyldb-devel
 %endif
 %{?_with_testsuite:BuildRequires: ldb-tools}
@@ -407,19 +402,6 @@ Obsoletes: libnetapi-DC-devel < 4.10
 
 %description -n libnetapi-devel
 Samba netapi development files
-
-%package -n python-module-%name
-Summary: Samba Python libraries
-Group: Networking/Other
-Requires: %name-libs = %version-%release
-Provides: python-module-%dcname = %version-%release
-Obsoletes: python-module-%dcname < 4.10
-
-%add_python_req_skip Tdb
-
-%description -n python-module-%name
-The %rname-python package contains the Python libraries needed by programs
-that use SMB, RPC and other Samba provided protocols in Python programs.
 
 %package -n python3-module-%name
 Summary: Samba Python3 libraries
@@ -802,7 +784,6 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 %if_with clustering_support \
 	--with-cluster-support \
 %endif \
-	--extra-python=python2.7 \
 	--libdir=%_samba_libdir \
 	--with-modulesdir=%_samba_mod_libdir \
 	--with-privatelibdir=%_samba_mod_libdir \
@@ -1341,7 +1322,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamba-credentials.so
 %_samba_libdir/libsamba-errors.so
 %_samba_libdir/libsamba-hostconfig.so
-%_samba_libdir/libsamba-policy.so
+#_samba_libdir/libsamba-policy.so
 %_samba_libdir/libsamba-util.so
 %_samba_libdir/libsamdb.so
 %_samba_libdir/libsmbconf.so
@@ -1357,7 +1338,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_pkgconfigdir/ndr_standard.pc
 %_pkgconfigdir/samba-credentials.pc
 %_pkgconfigdir/samba-hostconfig.pc
-%_pkgconfigdir/samba-policy.pc
+#_pkgconfigdir/samba-policy.pc
 %_pkgconfigdir/samba-util.pc
 %_pkgconfigdir/samdb.pc
 
@@ -1377,7 +1358,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_libdir/libsamba-credentials.so.*
 %_samba_libdir/libsamba-errors.so.*
 %_samba_libdir/libsamba-hostconfig.so.*
-%_samba_libdir/libsamba-policy.so.*
+#_samba_libdir/libsamba-policy.so.*
 %_samba_libdir/libsamba-util.so.*
 %_samba_libdir/libsamdb.so.*
 %_samba_libdir/libsmbconf.so.*
@@ -1457,10 +1438,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsamba-cluster-support-samba4.so
 %_samba_mod_libdir/libsamba-debug-samba4.so
 %_samba_mod_libdir/libsamba-modules-samba4.so
-%_samba_mod_libdir/libsamba-net-samba4.so
+#_samba_mod_libdir/libsamba-net-samba4.so
 %_samba_mod_libdir/libsamba-security-samba4.so
 %_samba_mod_libdir/libsamba-sockets-samba4.so
-%_samba_mod_libdir/libsamba-python-samba4.so
+#_samba_mod_libdir/libsamba-python-samba4.so
 %_samba_mod_libdir/libsamdb-common-samba4.so
 %_samba_mod_libdir/libsecrets3-samba4.so
 %_samba_mod_libdir/libserver-id-db-samba4.so
@@ -1642,9 +1623,6 @@ TDB_NO_FSYNC=1 %make_build test
 %_man3dir/Parse::Pidl::*
 %endif
 %perl_vendor_privlib/*
-
-%files -n python-module-%name
-%python_sitelibdir/samba/
 
 %files -n python3-module-%name
 %python3_sitelibdir/samba/
