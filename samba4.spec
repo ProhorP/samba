@@ -60,7 +60,7 @@
 
 Name:    samba
 Version: 4.10.11
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1801,6 +1801,10 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Jan 23 2020 Grigory Ustinov <grenka@altlinux.org> 4.10.11-alt2
+- Build without python2 support
+- Get rid of ubt macros
+
 * Fri Dec 13 2019 Evgeny Sinelikov <sin@altlinux.org> 4.10.11-alt1
 - Update to last security winter release
 - Security fixes:
@@ -1928,19 +1932,19 @@ TDB_NO_FSYNC=1 %make_build test
 - Update to latest autumn release
 - Disable ubt macros due binary package identity change
 
-* Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.1-alt1%ubt
+* Tue Sep 25 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.1-alt1.S1
 - Update to second release of Samba 4.9
 
-* Tue Sep 18 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.0-alt1%ubt
+* Tue Sep 18 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.9.0-alt1.S1
 - Update to first release of Samba 4.9
 
-* Fri Sep 14 2018 Alexey Sheplyakov <asheplyakov@altlinux.org> 4.8.5-alt2%ubt
+* Fri Sep 14 2018 Alexey Sheplyakov <asheplyakov@altlinux.org> 4.8.5-alt2.S1
 - Fixed the patch which allows joining to Windows based domain controllers
 
-* Fri Aug 24 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.5-alt1%ubt
+* Fri Aug 24 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.5-alt1.S1
 - Update to latest summer release
 
-* Tue Aug 14 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.4-alt1%ubt
+* Tue Aug 14 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.4-alt1.S1
 - Update to summer security release
 - Security fixes:
   + CVE-2018-1139 Weak authentication protocol allowed
@@ -1951,170 +1955,170 @@ TDB_NO_FSYNC=1 %make_build test
   + CVE-2018-10919 Confidential attribute disclosure from the AD LDAP server
 + Build with subpackage for Python3
 
-* Wed Jul 07 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt2%ubt
+* Wed Jul 07 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt2.S1
 - Rebuild Samba DC with MIT Kerberos
 - Fix join.py with automatically connect to domain naming master
 
-* Wed Jul 04 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt1%ubt
+* Wed Jul 04 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.3-alt1.S1
 - Update to new summer release of Samba 4.8
 
-* Thu Jun 21 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt1%ubt
+* Thu Jun 21 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.8-alt1.S1
 - Update to first summer release of Samba 4.7
 - Fix doc knob: task-samba-dc should conditionally R: samba-DC-doc
 - Rebuild for e2k with missing SYS_setgroups32
 - Disable glusterfs and cephfs for e2k
 - Disable cephfs support for mipsel
 
-* Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt2%ubt
+* Fri Jun 08 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt2.S1
 - Split samba-DC-common to separate samba-DC-common-tools
 - Fix build against new python Sisyphus release with libnsl2
 
-* Fri Apr 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.1-alt1%ubt
+* Fri Apr 27 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.8.1-alt1.S1
 - Update to latest release of Samba 4.8
 
-* Thu Apr 19 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt1%ubt
+* Thu Apr 19 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.7-alt1.S1
 - Update to first spring release of Samba 4.7
 
-* Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1%ubt
+* Fri Mar 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.6-alt1.S1
 - Update to latest winter release of Samba 4.7
 
-* Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt.1
+* Thu Mar 15 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1.S1.1
 - Rebuild security release (Fixes: CVE-2018-1050, CVE-2018-1057) with old
   ceph version without libceph-common for c7/c8
 
-* Mon Mar 12 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1%ubt
+* Mon Mar 12 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.14-alt1.S1
 - Update to spring security release
 - Security fixes:
   + CVE-2018-1050 Codenomicon crashes in spoolss server code
   + CVE-2018-1057 Unprivileged user can change any user (and admin) password
 
-* Tue Feb 20 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.13-alt1%ubt
+* Tue Feb 20 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.13-alt1.S1
 - Update to second winter release with common bugfixes
 
-* Tue Jan 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt2%ubt
+* Tue Jan 23 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt2.S1
 - Fix trouble with joined machine account moving when it already exists.
   Move it only if the admin specified an explicit OU (Samba bug #12696)
 
-* Fri Jan 05 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.4-alt1%ubt
+* Fri Jan 05 2018 Evgeny Sinelnikov <sin@altlinux.org> 4.7.4-alt1.S1
 - Update to first winter release of Samba 4.7
 
-* Thu Dec 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt1%ubt
+* Thu Dec 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.12-alt1.S1
 - Update to first winter release with common bugfixes (closes: 33210)
 
-* Thu Nov 23 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt2%ubt
+* Thu Nov 23 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt2.S1
 - Backport from Heimdal upstream include/includedir directives for krb5.conf
 
-* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.3-alt1%ubt
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.3-alt1.S1
 - Update for second autumn security release of Samba 4.7
 
-* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt1%ubt
+* Tue Nov 21 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.11-alt1.S1
 - Second autumn security release (Fixes: CVE-2017-14746, CVE-2017-15275)
 
-* Fri Nov 17 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.2-alt1%ubt
+* Fri Nov 17 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.2-alt1.S1
 - Update to third autumn release of Samba 4.7
 
-* Thu Nov 16 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.10-alt1%ubt
+* Thu Nov 16 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.10-alt1.S1
 - Update for third autumn release with common bugfixes
 
-* Tue Nov 14 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.1-alt1%ubt
+* Tue Nov 14 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.1-alt1.S1
 - Update for second autumn release with common bugfixes of Samba 4.7
 
-* Wed Oct 25 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.0-alt2%ubt
+* Wed Oct 25 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.7.0-alt2.S1
 - Fix KDC not works in configuration with trusted domain (samba bug #13078)
 
-* Wed Oct 25 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.9-alt1%ubt
+* Wed Oct 25 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.9-alt1.S1
 - Update for second autumn release with common bugfixes
 
-* Thu Oct 12 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.8-alt3%ubt
+* Thu Oct 12 2017 Evgeny Sinelnikov <sin@altlinux.org> 4.6.8-alt3.S1
 - Fix KDC not works in configuration with trusted domain (samba bug #13078)
 
-* Wed Sep 27 2017 Alexey Shabalin <shaba@altlinux.ru> 4.6.8-alt2%ubt
+* Wed Sep 27 2017 Alexey Shabalin <shaba@altlinux.ru> 4.6.8-alt2.S1
 - rebuild with new  libcephfs
 
-* Fri Sep 22 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt1%ubt
+* Fri Sep 22 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.7.0-alt1.S1
 - Update to new autumn release of Samba 4.7
 - Revert removed lpcfg_register_defaults_hook() for openchange
 
-* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.8-alt1%ubt
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.8-alt1.S1
 - Update for autumn security release:
   + CVE-2017-12150 (SMB1/2/3 connections may not require signing where they
    should)
   + CVE-2017-12151 (SMB3 connections don't keep encryption across DFS redirects)
   + CVE-2017-12163 (Server memory information leak over SMB1)
 
-* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt3%ubt
+* Wed Sep 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt3.S1
 - Avoid build trouble with ubt macros id on branch c8
 
-* Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2%ubt
+* Fri Aug 18 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt2.S1
 - Clean code from old merged chunks
 
-* Wed Aug 09 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt1%ubt
+* Wed Aug 09 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.7-alt1.S1
 - Update to second summer release
 
-* Sat Jul 15 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt2%ubt
+* Sat Jul 15 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt2.S1
 - Rebuild with universal build tag (aka ubt macros) for p7 and c7
 
-* Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt1%ubt
+* Wed Jul 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.6-alt1.S1
 - Update to summer security release
 - Security fixes:
   + CVE-2017-11103 Orpheus' Lyre KDC-REP service name validation
 
-* Tue Jun 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt2%ubt
+* Tue Jun 20 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt2.S1
 - Remove conflict samba-DC-libs with samba-libs
 - Adjust python module requirement to samba-DC-common-libs
 - Add conflict python-module-samba-DC with python-module-samba
 
-* Tue Jun 06 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt1%ubt
+* Tue Jun 06 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.5-alt1.S1
 - Udpate to first summer release
 
-* Mon Jun 05 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.4-alt2%ubt
+* Mon Jun 05 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.4-alt2.S1
 - Add libldb-modules-DC package with domain controller ldb modules for ldb-tools
 - Add samba-DC-common-libs with libraries for common modules
 - Append list of libraries consists in libwbclient-DC to not require
   samba-DC-common-libs
 
-* Wed May 24 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.4-alt1%ubt
+* Wed May 24 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.4-alt1.S1
 - Update to second spring security release
 - Fix longtime initialization bug in ldb proxy
 - Security fixes:
   + CVE-2017-7494 Remote code execution from a writable share
 
-* Tue Apr 25 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.3-alt1%ubt
+* Tue Apr 25 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.3-alt1.S1
 - Udpate to second spring release
 - Remove conflict winbind with libwbclient-sssd due upgrade problems
 
-* Wed Apr 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt2%ubt
+* Wed Apr 12 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt2.S1
 - Fix problem with failed to create kerberos keytab during join to domain
 
-* Fri Mar 31 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt1%ubt
+* Fri Mar 31 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.2-alt1.S1
 - Update with regression fix of spring security release
 - Revert winbind problem fixes with access user to keytab due troubles in 4.6.x
 
-* Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.1-alt1%ubt
+* Thu Mar 23 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.1-alt1.S1
 - Update to spring security release
 - Fixed build --without docs (closes: 33118)
 - Security fixes:
   + CVE-2017-2619 Symlink race allows access outside share definition
 
-* Tue Mar 07 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.0-alt1%ubt
+* Tue Mar 07 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.6.0-alt1.S1
 - Udpate to first spring release
 - Revert removed unused DCERPC_FAULT_UNK_IF for openchange
 
-* Wed Feb 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.5-alt1%ubt
+* Wed Feb 01 2017 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.5-alt1.S1
 - Update to winter release
 - Fix PAM winbind problem with access user to keytab
 
-* Wed Dec 28 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.3-alt2%ubt
+* Wed Dec 28 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.3-alt2.S1
 - Do not delete an existing valid credential cache for KEYRING type
 - Set FQDN to lower at fill_mem_keytab_from_system_keytab()
 
-* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.3-alt1%ubt
+* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.3-alt1.S1
 - Update for release with security fixes:
   - CVE-2016-2123 (ndr_pull_dnsp_name contains an integer wrap problem)
   - CVE-2016-2125 (client code always requests a forwardable ticket)
   - CVE-2016-2126 (crash winbindd using a legitimate Kerberos ticket)
 
-* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.2-alt1%ubt
+* Mon Dec 19 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.2-alt1.S1
 - Udpate to first winter release
 
 * Sat Dec 03 2016 Evgeny Sinelnikov <sin@altlinux.ru> 4.5.1-alt2
