@@ -52,7 +52,7 @@
 %endif
 
 Name: samba
-Version: 4.9.17
+Version: 4.9.18
 Release: alt1
 Group: System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1530,6 +1530,13 @@ TDB_NO_FSYNC=1 %make_build test
 %endif
 
 %changelog
+* Fri Jan 24 2020 Evgeny Sinelikov <sin@altlinux.org> 4.9.18-alt1
+- Update to latest security release of the Samba 4.9
+- Security fixes:
+  + CVE-2019-14902: Replication of ACLs set to inherit down a subtree on AD Directory not automatic
+  + CVE-2019-14907: Crash after failed character conversion at log level 3 or above
+  + CVE-2019-19344: Use after free during DNS zone scavenging in Samba AD DC
+
 * Fri Dec 13 2019 Evgeny Sinelikov <sin@altlinux.org> 4.9.17-alt1
 - Update to last security winter release
 - Security fixes:
