@@ -350,7 +350,7 @@ dir_list_fn(const char *mnt,
 	return NT_STATUS_OK;
 }
 
-static int
+static NTSTATUS
 net_share_enum_rpc(struct cli_state *cli,
                    void (*fn)(const char *name,
                               uint32_t type,
@@ -377,7 +377,7 @@ net_share_enum_rpc(struct cli_state *cli,
 					     &pipe_hnd);
         if (!NT_STATUS_IS_OK(nt_status)) {
                 DEBUG(1, ("net_share_enum_rpc pipe open fail!\n"));
-                return -1;
+		goto done;
         }
 
 	ZERO_STRUCT(info_ctr);
@@ -400,18 +400,18 @@ net_share_enum_rpc(struct cli_state *cli,
         /* Was it successful? */
 	if (!NT_STATUS_IS_OK(nt_status)) {
                 /*  Nope.  Go clean up. */
-		result = ntstatus_to_werror(nt_status);
 		goto done;
 	}
 
 	if (!W_ERROR_IS_OK(result)) {
                 /*  Nope.  Go clean up. */
+		nt_status = werror_to_ntstatus(result);
 		goto done;
         }
 
 	if (total_entries == 0) {
                 /*  Nope.  Go clean up. */
-		result = WERR_GEN_FAILURE;
+		nt_status = NT_STATUS_NOT_FOUND;
 		goto done;
 	}
 
@@ -436,7 +436,7 @@ done:
         TALLOC_FREE(pipe_hnd);
 
         /* Tell 'em if it worked */
-        return W_ERROR_IS_OK(result) ? 0 : -1;
+        return nt_status;
 }
 
 
@@ -474,7 +474,6 @@ SMBC_opendir_ctx(SMBCCTX *context,
 	char *workgroup = NULL;
 	char *path = NULL;
 	size_t path_len = 0;
-        uint16_t mode;
 	uint16_t port = 0;
 	SMBCSRV *srv  = NULL;
 	SMBCFILE *dir = NULL;
@@ -825,7 +824,7 @@ SMBC_opendir_ctx(SMBCCTX *context,
 				}
 			} else if (srv ||
                                    (resolve_name(server, &rem_ss, 0x20, false))) {
-				int rc;
+				NTSTATUS status;
 
                                 /*
                                  * If we hadn't found the server, get one now
@@ -852,22 +851,38 @@ SMBC_opendir_ctx(SMBCCTX *context,
 
                                 /* List the shares ... */
 
-				rc = net_share_enum_rpc(srv->cli,
+				status = net_share_enum_rpc(srv->cli,
 							list_fn,
 							(void *)dir);
-				if (rc != 0 &&
-				    lp_client_min_protocol() <= PROTOCOL_NT1) {
-					rc = cli_RNetShareEnum(srv->cli,
+				if (!NT_STATUS_IS_OK(status) &&
+				    smbXcli_conn_protocol(srv->cli->conn) <=
+						PROTOCOL_NT1) {
+					/*
+					 * Only call cli_RNetShareEnum()
+					 * on SMB1 connections, not SMB2+.
+					 */
+					int rc = cli_RNetShareEnum(srv->cli,
 							       list_fn,
 							       (void *)dir);
+					if (rc != 0) {
+						status = cli_nt_error(srv->cli);
+					} else {
+						status = NT_STATUS_OK;
+					}
 				}
-				if (rc != 0) {
-					errno = cli_errno(srv->cli);
+				if (!NT_STATUS_IS_OK(status)) {
+					/*
+					 * Set cli->raw_status so SMBC_errno()
+					 * will correctly return the error.
+					 */
+					srv->cli->raw_status = status;
 					if (dir != NULL) {
 						SAFE_FREE(dir->fname);
 						SAFE_FREE(dir);
 					}
 					TALLOC_FREE(frame);
+					errno = map_errno_from_nt_status(
+								status);
 					return NULL;
 				}
                         } else {
@@ -945,6 +960,7 @@ SMBC_opendir_ctx(SMBCCTX *context,
 				saved_errno = SMBC_errno(context, targetcli);
 
                                 if (saved_errno == EINVAL) {
+					struct stat sb = {0};
                                         /*
                                          * See if they asked to opendir
                                          * something other than a directory.
@@ -954,11 +970,11 @@ SMBC_opendir_ctx(SMBCCTX *context,
                                          */
                                         path[path_len] = '\0'; /* restore original path */
 
-                                        if (SMBC_getatr(context, srv, path,
-                                                        &mode, NULL,
-                                                        NULL, NULL, NULL, NULL,
-                                                        NULL) &&
-                                            ! IS_DOS_DIR(mode)) {
+                                        if (SMBC_getatr(context,
+							srv,
+							path,
+							&sb) &&
+                                            !S_ISDIR(sb.st_mode)) {
 
                                                 /* It is.  Correct the error value */
                                                 saved_errno = ENOTDIR;
@@ -2082,20 +2098,11 @@ SMBC_unlink_ctx(SMBCCTX *context,
 		if (errno == EACCES) { /* Check if the file is a directory */
 
 			int saverr = errno;
-			off_t size = 0;
-			uint16_t mode = 0;
-			struct timespec write_time_ts;
-                        struct timespec access_time_ts;
-                        struct timespec change_time_ts;
-			SMB_INO_T ino = 0;
+			struct stat sb = {0};
+			bool ok;
 
-			if (!SMBC_getatr(context, srv, path, &mode, &size,
-					 NULL,
-                                         &access_time_ts,
-                                         &write_time_ts,
-                                         &change_time_ts,
-                                         &ino)) {
-
+			ok = SMBC_getatr(context, srv, path, &sb);
+			if (!ok) {
 				/* Hmmm, bad error ... What? */
 
 				errno = SMBC_errno(context, targetcli);
@@ -2105,7 +2112,7 @@ SMBC_unlink_ctx(SMBCCTX *context,
 			}
 			else {
 
-				if (IS_DOS_DIR(mode))
+				if (S_ISDIR(sb.st_mode))
 					errno = EISDIR;
 				else
 					errno = saverr;  /* Restore this */
