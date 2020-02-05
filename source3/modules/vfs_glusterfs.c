@@ -71,12 +71,16 @@ static void smb_stat_ex_from_stat(struct stat_ex *dst, const struct stat *src)
 	dst->st_ex_btime.tv_sec = src->st_mtime;
 	dst->st_ex_blksize = src->st_blksize;
 	dst->st_ex_blocks = src->st_blocks;
+	dst->st_ex_file_id = dst->st_ex_ino;
+	dst->st_ex_iflags |= ST_EX_IFLAG_CALCULATED_FILE_ID;
 #ifdef STAT_HAVE_NSEC
 	dst->st_ex_atime.tv_nsec = src->st_atime_nsec;
 	dst->st_ex_mtime.tv_nsec = src->st_mtime_nsec;
 	dst->st_ex_ctime.tv_nsec = src->st_ctime_nsec;
 	dst->st_ex_btime.tv_nsec = src->st_mtime_nsec;
 #endif
+	dst->st_ex_itime = dst->st_ex_btime;
+	dst->st_ex_iflags |= ST_EX_IFLAG_CALCULATED_ITIME;
 }
 
 /* pre-opened glfs_t */
@@ -159,8 +163,8 @@ static int vfs_gluster_set_volfile_servers(glfs_t *fs,
 					   const char *volfile_servers)
 {
 	char *server = NULL;
-	int   server_count = 0;
-	int   server_success = 0;
+	size_t server_count = 0;
+	size_t server_success = 0;
 	int   ret = -1;
 	TALLOC_CTX *frame = talloc_stackframe();
 
@@ -172,7 +176,7 @@ static int vfs_gluster_set_volfile_servers(glfs_t *fs,
 		int   port = 0;
 
 		server_count++;
-		DBG_INFO("server %d %s\n", server_count, server);
+		DBG_INFO("server %zu %s\n", server_count, server);
 
 		/* Determine the transport type */
 		if (strncmp(server, "unix+", 5) == 0) {
@@ -249,7 +253,7 @@ out:
 	if (server_count == 0) {
 		ret = -1;
 	} else if (server_success < server_count) {
-		DBG_WARNING("Failed to set %d out of %d servers parsed\n",
+		DBG_WARNING("Failed to set %zu out of %zu servers parsed\n",
 			    server_count - server_success, server_count);
 		ret = 0;
 	}
@@ -630,6 +634,13 @@ static int vfs_gluster_open(struct vfs_handle_struct *handle,
 
 	START_PROFILE(syscall_open);
 
+	p_tmp = VFS_ADD_FSP_EXTENSION(handle, fsp, glfs_fd_t *, NULL);
+	if (p_tmp == NULL) {
+		END_PROFILE(syscall_open);
+		errno = ENOMEM;
+		return -1;
+	}
+
 	if (flags & O_DIRECTORY) {
 		glfd = glfs_opendir(handle->data, smb_fname->base_name);
 	} else if (flags & O_CREAT) {
@@ -641,9 +652,11 @@ static int vfs_gluster_open(struct vfs_handle_struct *handle,
 
 	if (glfd == NULL) {
 		END_PROFILE(syscall_open);
+		/* no extension destroy_fn, so no need to save errno */
+		VFS_REMOVE_FSP_EXTENSION(handle, fsp);
 		return -1;
 	}
-	p_tmp = VFS_ADD_FSP_EXTENSION(handle, fsp, glfs_fd_t *, NULL);
+
 	*p_tmp = glfd;
 
 	END_PROFILE(syscall_open);
@@ -1922,7 +1935,6 @@ static struct vfs_fn_pointers glusterfs_fns = {
 
 	.brl_lock_windows_fn = NULL,
 	.brl_unlock_windows_fn = NULL,
-	.brl_cancel_windows_fn = NULL,
 	.strict_lock_check_fn = NULL,
 	.translate_name_fn = NULL,
 	.fsctl_fn = NULL,

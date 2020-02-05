@@ -362,8 +362,7 @@ static bool test_PACVerify(struct torture_context *tctx,
 	/* Validate it over the netlogon pipe */
 
 	generic.identity_info.parameter_control = 0;
-	generic.identity_info.logon_id_high = 0;
-	generic.identity_info.logon_id_low = 0;
+	generic.identity_info.logon_id = 0;
 	generic.identity_info.domain_name.string = session_info->info->domain_name;
 	generic.identity_info.account_name.string = session_info->info->account_name;
 	generic.identity_info.workstation.string = test_machine_name;
@@ -873,8 +872,7 @@ static bool test_S4U2Self(struct torture_context *tctx,
 	ninfo.nt.length = nt_resp.length;
 
 	ninfo.identity_info.parameter_control = 0;
-	ninfo.identity_info.logon_id_low = 0;
-	ninfo.identity_info.logon_id_high = 0;
+	ninfo.identity_info.logon_id = 0;
 	ninfo.identity_info.workstation.string = cli_credentials_get_workstation(server_creds);
 
 	logon.network = &ninfo;

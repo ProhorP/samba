@@ -862,6 +862,10 @@ static int wbc_auth_error_to_pam_error(struct pwb_context *ctx,
 	}
 
 	ret = wbc_error_to_pam_error(status);
+	_pam_log(ctx, LOG_ERR,
+		 "request %s failed: %s, PAM error: %s (%d)!",
+		 fn, wbcErrorString(status),
+		 _pam_error_code_str(ret), ret);
 	return pam_winbind_request_log(ctx, ret, username, fn);
 }
 
@@ -1375,14 +1379,16 @@ static void _pam_set_data_string(struct pwb_context *ctx,
 static void _pam_set_data_info3(struct pwb_context *ctx,
 				const struct wbcAuthUserInfo *info)
 {
-	_pam_set_data_string(ctx, PAM_WINBIND_HOMEDIR,
+	if (info != NULL) {
+		_pam_set_data_string(ctx, PAM_WINBIND_HOMEDIR,
 			     info->home_directory);
-	_pam_set_data_string(ctx, PAM_WINBIND_LOGONSCRIPT,
+		_pam_set_data_string(ctx, PAM_WINBIND_LOGONSCRIPT,
 			     info->logon_script);
-	_pam_set_data_string(ctx, PAM_WINBIND_LOGONSERVER,
+		_pam_set_data_string(ctx, PAM_WINBIND_LOGONSERVER,
 			     info->logon_server);
-	_pam_set_data_string(ctx, PAM_WINBIND_PROFILEPATH,
+		_pam_set_data_string(ctx, PAM_WINBIND_PROFILEPATH,
 			     info->profile_path);
+	}
 }
 
 /**

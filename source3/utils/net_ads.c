@@ -2140,7 +2140,8 @@ static int net_ads_dns_unregister(struct net_context *c,
 			   "net ads dns unregister [hostname]\n"
 			   "    %s\n",
 			 _("Usage:"),
-			 _("Register hostname with DNS\n"));
+			 _("Remove all IP Address entires for a given\n"
+                           "    hostname from the Active Directory server.\n"));
 		return -1;
 	}
 

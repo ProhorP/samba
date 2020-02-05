@@ -674,16 +674,6 @@ struct lock_request *ctdb_lock_db(TALLOC_CTX *mem_ctx,
 bool ctdb_logging_init(TALLOC_CTX *mem_ctx, const char *logging,
 		       const char *debug_level);
 
-struct ctdb_log_state *ctdb_vfork_with_logging(TALLOC_CTX *mem_ctx,
-					       struct ctdb_context *ctdb,
-					       const char *log_prefix,
-					       const char *helper,
-					       int helper_argc,
-					       const char **helper_argv,
-					       void (*logfn)(const char *,
-							     uint16_t, void *),
-					       void *logfn_private, pid_t *pid);
-
 int ctdb_set_child_logging(struct ctdb_context *ctdb);
 
 /* from ctdb_logging_file.c */
@@ -712,7 +702,7 @@ int ctdb_load_persistent_health(struct ctdb_context *ctdb,
 int ctdb_update_persistent_health(struct ctdb_context *ctdb,
 				  struct ctdb_db_context *ctdb_db,
 				  const char *reason,/* NULL means healthy */
-				  int num_healthy_nodes);
+				  unsigned int num_healthy_nodes);
 int ctdb_recheck_persistent_health(struct ctdb_context *ctdb);
 
 int32_t ctdb_control_db_set_healthy(struct ctdb_context *ctdb,

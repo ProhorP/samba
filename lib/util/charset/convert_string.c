@@ -349,14 +349,17 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 				  size_t *converted_size)
 
 {
-	size_t i_len, o_len, destlen = (srclen * 3) / 2;
+	size_t i_len, o_len, destlen;
 	size_t retval;
-	const char *inbuf = (const char *)src;
+	const char *inbuf = NULL;
 	char *outbuf = NULL, *ob = NULL;
 	smb_iconv_t descriptor;
 	void **dest = (void **)dst;
 
 	*dest = NULL;
+	if (converted_size != NULL) {
+		*converted_size = 0;
+	}
 
 	if (src == NULL || srclen == (size_t)-1) {
 		errno = EINVAL;
@@ -394,18 +397,14 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 		return false;
 	}
 
-  convert:
-
-	/* +2 is for ucs2 null termination. */
-	if ((destlen*2)+2 < destlen) {
-		/* wrapped ! abort. */
-		DEBUG(0, ("convert_string_talloc: destlen wrapped !\n"));
-		TALLOC_FREE(outbuf);
+	if (srclen >= (SIZE_MAX - 2) / 3) {
+		DBG_ERR("convert_string_talloc: "
+			"srclen is %zu, destlen would wrap!\n",
+			srclen);
 		errno = EOPNOTSUPP;
 		return false;
-	} else {
-		destlen = destlen * 2;
 	}
+	destlen = srclen * 3;
 
 	/* +2 is for ucs2 null termination. */
 	ob = talloc_realloc(ctx, ob, char, destlen + 2);
@@ -418,6 +417,7 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 	outbuf = ob;
 	i_len = srclen;
 	o_len = destlen;
+	inbuf = (const char *)src;
 
 	retval = smb_iconv(descriptor,
 			   &inbuf, &i_len,
@@ -431,7 +431,10 @@ bool convert_string_talloc_handle(TALLOC_CTX *ctx, struct smb_iconv_handle *ic,
 					   reason);
 				break;
 			case E2BIG:
-				goto convert;
+				reason = "output buffer is too small";
+				DBG_NOTICE("Conversion error: %s\n",
+					   reason);
+				break;
 			case EILSEQ:
 				reason="Illegal multibyte sequence";
 				DBG_NOTICE("Conversion error: %s\n",

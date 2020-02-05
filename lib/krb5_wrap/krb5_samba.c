@@ -23,7 +23,7 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "krb5_samba.h"
-#include "lib/crypto/crypto.h"
+#include "lib/crypto/md4.h"
 #include "../libds/common/flags.h"
 
 #ifdef HAVE_COM_ERR_H
@@ -3237,7 +3237,7 @@ static krb5_error_code ads_create_gss_checksum(krb5_data *in_data, /* [inout] */
 
 	SIVAL(gss_cksum, 20, gss_flags);
 
-	if (orig_length) {
+	if (orig_length && in_data->data != NULL) {
 		SSVAL(gss_cksum, 24, 1); /* The Delegation Option identifier */
 		SSVAL(gss_cksum, 26, orig_length);
 		/* Copy the kerberos KRB_CRED data */
