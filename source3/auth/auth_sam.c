@@ -35,6 +35,17 @@ static NTSTATUS auth_sam_ignoredomain_auth(const struct auth_context *auth_conte
 	if (!user_info || !auth_context) {
 		return NT_STATUS_UNSUCCESSFUL;
 	}
+
+	if (user_info->mapped.account_name == NULL ||
+	    user_info->mapped.account_name[0] == '\0')
+	{
+		return NT_STATUS_NOT_IMPLEMENTED;
+	}
+
+	DBG_DEBUG("Check auth for: [%s]\\[%s]\n",
+		  user_info->mapped.domain_name,
+		  user_info->mapped.account_name);
+
 	return check_sam_security(&auth_context->challenge, mem_ctx,
 				  user_info, server_info);
 }
@@ -66,16 +77,52 @@ static NTSTATUS auth_samstrict_auth(const struct auth_context *auth_context,
 				    const struct auth_usersupplied_info *user_info,
 				    struct auth_serversupplied_info **server_info)
 {
+	const char *effective_domain = NULL;
 	bool is_local_name, is_my_domain;
 
 	if (!user_info || !auth_context) {
 		return NT_STATUS_LOGON_FAILURE;
 	}
+	effective_domain = user_info->mapped.domain_name;
 
-	DEBUG(10, ("Check auth for: [%s]\n", user_info->mapped.account_name));
+	if (user_info->mapped.account_name == NULL ||
+	    user_info->mapped.account_name[0] == '\0')
+	{
+		return NT_STATUS_NOT_IMPLEMENTED;
+	}
 
-	is_local_name = is_myname(user_info->mapped.domain_name);
-	is_my_domain  = strequal(user_info->mapped.domain_name, lp_workgroup());
+	if (lp_server_role() == ROLE_DOMAIN_MEMBER) {
+		const char *p = NULL;
+
+		p = strchr_m(user_info->mapped.account_name, '@');
+		if (p != NULL) {
+			/*
+			 * This needs to go to the DC,
+			 * even if @ is the last character
+			 */
+			return NT_STATUS_NOT_IMPLEMENTED;
+		}
+	}
+
+	if (effective_domain == NULL) {
+		effective_domain = "";
+	}
+
+	DBG_DEBUG("Check auth for: [%s]\\[%s]\n",
+		  effective_domain,
+		  user_info->mapped.account_name);
+
+
+	if (strequal(effective_domain, "") || strequal(effective_domain, ".")) {
+		/*
+		 * An empty domain name or '.' should be handled
+		 * as the local SAM name.
+		 */
+		effective_domain = lp_netbios_name();
+	}
+
+	is_local_name = is_myname(effective_domain);
+	is_my_domain  = strequal(effective_domain, lp_workgroup());
 
 	/* check whether or not we service this domain/workgroup name */
 
@@ -84,21 +131,21 @@ static NTSTATUS auth_samstrict_auth(const struct auth_context *auth_context,
 		case ROLE_DOMAIN_MEMBER:
 			if ( !is_local_name ) {
 				DEBUG(6,("check_samstrict_security: %s is not one of my local names (%s)\n",
-					user_info->mapped.domain_name, (lp_server_role() == ROLE_DOMAIN_MEMBER
+					effective_domain, (lp_server_role() == ROLE_DOMAIN_MEMBER
 					? "ROLE_DOMAIN_MEMBER" : "ROLE_STANDALONE") ));
 				return NT_STATUS_NOT_IMPLEMENTED;
 			}
 
-			FALL_THROUGH;
+			break;
 		case ROLE_DOMAIN_PDC:
 		case ROLE_DOMAIN_BDC:
 			if ( !is_local_name && !is_my_domain ) {
 				DEBUG(6,("check_samstrict_security: %s is not one of my local names or domain name (DC)\n",
-					user_info->mapped.domain_name));
+					effective_domain));
 				return NT_STATUS_NOT_IMPLEMENTED;
 			}
 
-			FALL_THROUGH;
+			break;
 		default: /* name is ok */
 			break;
 	}
@@ -135,14 +182,26 @@ static NTSTATUS auth_sam_netlogon3_auth(const struct auth_context *auth_context,
 					const struct auth_usersupplied_info *user_info,
 					struct auth_serversupplied_info **server_info)
 {
+	const char *effective_domain = NULL;
 	bool is_my_domain;
 
 	if (!user_info || !auth_context) {
 		return NT_STATUS_LOGON_FAILURE;
 	}
+	effective_domain = user_info->mapped.domain_name;
+
+	if (user_info->mapped.account_name == NULL ||
+	    user_info->mapped.account_name[0] == '\0')
+	{
+		return NT_STATUS_NOT_IMPLEMENTED;
+	}
+
+	if (effective_domain == NULL) {
+		effective_domain = "";
+	}
 
 	DBG_DEBUG("Check auth for: [%s]\\[%s]\n",
-		  user_info->mapped.domain_name,
+		  effective_domain,
 		  user_info->mapped.account_name);
 
 	/* check whether or not we service this domain/workgroup name */
@@ -156,10 +215,18 @@ static NTSTATUS auth_sam_netlogon3_auth(const struct auth_context *auth_context,
 		return NT_STATUS_INVALID_SERVER_STATE;
 	}
 
+	if (strequal(effective_domain, "") || strequal(effective_domain, ".")) {
+		/*
+		 * An empty domain name or '.' should be handled
+		 * as the local SAM name.
+		 */
+		effective_domain = lp_workgroup();
+	}
+
 	is_my_domain = strequal(user_info->mapped.domain_name, lp_workgroup());
 	if (!is_my_domain) {
 		DBG_INFO("%s is not our domain name (DC for %s)\n",
-			 user_info->mapped.domain_name, lp_workgroup());
+			 effective_domain, lp_workgroup());
 		return NT_STATUS_NOT_IMPLEMENTED;
 	}
 
