@@ -1499,9 +1499,8 @@ static NTSTATUS vfswrap_fsctl(struct vfs_handle_struct *handle,
 	return NT_STATUS_NOT_SUPPORTED;
 }
 
-static bool vfswrap_is_offline(struct vfs_handle_struct *handle,
-			       const struct smb_filename *fname,
-			       SMB_STRUCT_STAT *sbuf);
+static bool vfswrap_is_offline(struct connection_struct *conn,
+			       const struct smb_filename *fname);
 
 static NTSTATUS vfswrap_get_dos_attributes(struct vfs_handle_struct *handle,
 					   struct smb_filename *smb_fname,
@@ -1509,7 +1508,7 @@ static NTSTATUS vfswrap_get_dos_attributes(struct vfs_handle_struct *handle,
 {
 	bool offline;
 
-	offline = vfswrap_is_offline(handle, smb_fname, &smb_fname->st);
+	offline = vfswrap_is_offline(handle->conn, smb_fname);
 	if (offline) {
 		*dosmode |= FILE_ATTRIBUTE_OFFLINE;
 	}
@@ -1581,6 +1580,12 @@ static void vfswrap_get_dos_attributes_getxattr_done(struct tevent_req *subreq)
 		struct vfswrap_get_dos_attributes_state);
 	ssize_t xattr_size;
 	DATA_BLOB blob = {0};
+	char *path = NULL;
+	char *tofree = NULL;
+	char pathbuf[PATH_MAX+1];
+	ssize_t pathlen;
+	struct smb_filename smb_fname;
+	bool offline;
 	NTSTATUS status;
 
 	xattr_size = SMB_VFS_GETXATTRAT_RECV(subreq,
@@ -1629,6 +1634,29 @@ static void vfswrap_get_dos_attributes_getxattr_done(struct tevent_req *subreq)
 		return;
 	}
 
+	pathlen = full_path_tos(state->dir_fsp->fsp_name->base_name,
+				state->smb_fname->base_name,
+				pathbuf,
+				sizeof(pathbuf),
+				&path,
+				&tofree);
+	if (pathlen == -1) {
+		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
+		return;
+	}
+
+	smb_fname = (struct smb_filename) {
+		.base_name = path,
+		.st = state->smb_fname->st,
+		.flags = state->smb_fname->flags,
+	};
+
+	offline = vfswrap_is_offline(state->conn, &smb_fname);
+	if (offline) {
+		state->dosmode |= FILE_ATTRIBUTE_OFFLINE;
+	}
+	TALLOC_FREE(tofree);
+
 	tevent_req_done(req);
 	return;
 }
@@ -1659,7 +1687,7 @@ static NTSTATUS vfswrap_fget_dos_attributes(struct vfs_handle_struct *handle,
 {
 	bool offline;
 
-	offline = vfswrap_is_offline(handle, fsp->fsp_name, &fsp->fsp_name->st);
+	offline = vfswrap_is_offline(handle->conn, fsp->fsp_name);
 	if (offline) {
 		*dosmode |= FILE_ATTRIBUTE_OFFLINE;
 	}
@@ -3115,12 +3143,12 @@ static struct tevent_req *vfswrap_getxattrat_send(
 
 static void vfswrap_getxattrat_do_sync(struct tevent_req *req)
 {
-	struct vfswrap_getxattrat_state *state = talloc_get_type_abort(
+	struct vfswrap_getxattrat_state *state = tevent_req_data(
 		req, struct vfswrap_getxattrat_state);
 	char *path = NULL;
 	char *tofree = NULL;
 	char pathbuf[PATH_MAX+1];
-	size_t pathlen;
+	ssize_t pathlen;
 	int err;
 
 	pathlen = full_path_tos(state->dir_fsp->fsp_name->base_name,
@@ -3332,9 +3360,8 @@ static bool vfswrap_aio_force(struct vfs_handle_struct *handle, struct files_str
 	return false;
 }
 
-static bool vfswrap_is_offline(struct vfs_handle_struct *handle,
-			       const struct smb_filename *fname,
-			       SMB_STRUCT_STAT *sbuf)
+static bool vfswrap_is_offline(struct connection_struct *conn,
+			       const struct smb_filename *fname)
 {
 	NTSTATUS status;
 	char *path;
@@ -3344,7 +3371,7 @@ static bool vfswrap_is_offline(struct vfs_handle_struct *handle,
 		return false;
 	}
 
-	if (!lp_dmapi_support(SNUM(handle->conn)) || !dmapi_have_session()) {
+	if (!lp_dmapi_support(SNUM(conn)) || !dmapi_have_session()) {
 #if defined(ENOTSUP)
 		errno = ENOTSUP;
 #endif
