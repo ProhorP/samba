@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 APPNAME = 'ldb'
-VERSION = '2.0.10'
+VERSION = '2.0.11'
 
 import sys, os
 
@@ -527,6 +527,15 @@ def build(bld):
                          deps='cmocka ldb ldb_tdb_err_map',
                          install=False)
 
+        # If both libldap and liblber are available, test ldb_ldap
+        # code for a regression of bz#14413 -- even if we don't build
+        # it ourselves and simply using the system version
+        if bld.env.LIB_LDAP and bld.env.LIB_LBER:
+            bld.SAMBA_BINARY('lldb_ldap_test',
+                             source='tests/lldb_ldap.c',
+                             deps='cmocka talloc lber ldap ldb',
+                             install=False)
+
         if bld.CONFIG_SET('HAVE_LMDB'):
             bld.SAMBA_BINARY('ldb_mdb_mod_op_test',
                              source='tests/ldb_mod_op_test.c',
@@ -551,6 +560,11 @@ def build(bld):
                              deps='cmocka ldb',
                              install=False)
 
+            bld.SAMBA_BINARY('ldb_lmdb_free_list_test',
+                             source='tests/ldb_lmdb_free_list_test.c',
+                             cflags='-DTEST_BE=\"mdb\" -DTEST_LMDB=1',
+                             deps='cmocka ldb',
+                             install=False)
             #
             # We rely on the versions of the ldb_key_value functions included
             # in ldb_key_value_sub_txn_test.c taking priority over the versions
@@ -623,6 +637,11 @@ def test(ctx):
                  # 'ldb_key_value_sub_txn_tdb_test'
                  'ldb_parse_test']
 
+    # if LIB_LDAP and LIB_LBER defined, then we can test ldb_ldap backend
+    # behavior regression for bz#14413
+    if env.LIB_LDAP and env.LIB_LBER:
+        test_exes += ["lldb_ldap_test"]
+
     if env.HAVE_LMDB:
         test_exes += ['ldb_mdb_mod_op_test',
                      'ldb_lmdb_test',
@@ -630,7 +649,8 @@ def test(ctx):
                      # fit > 4G of data into the DB), it would fill up the disk on
                      # many of our test instances
                      'ldb_mdb_kv_ops_test',
-                     'ldb_key_value_sub_txn_mdb_test']
+                     'ldb_key_value_sub_txn_mdb_test',
+                     'ldb_lmdb_free_list_test']
     else:
         test_exes += ['ldb_no_lmdb_test']
 
