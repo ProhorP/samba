@@ -59,7 +59,7 @@
 %endif
 
 Name:    samba
-Version: 4.11.12
+Version: 4.12.6
 Release: alt1
 
 Group:   System/Servers
@@ -139,22 +139,22 @@ BuildRequires: libcups-devel
 BuildRequires: gawk libgtk+2-devel libcap-devel libuuid-devel
 %{?_with_doc:BuildRequires: inkscape libxslt xsltproc netpbm dblatex html2text docbook-style-xsl}
 %if_without talloc
-BuildRequires: libtalloc-devel >= 2.2.0
+BuildRequires: libtalloc-devel >= 2.3.1
 BuildRequires: python3-module-talloc-devel
 %endif
 
 %if_without tevent
-BuildRequires: libtevent-devel >= 0.10.0
+BuildRequires: libtevent-devel >= 0.10.2
 BuildRequires: python3-module-tevent
 %endif
 
 %if_without tdb
-BuildRequires: libtdb-devel >= 1.4.2
+BuildRequires: libtdb-devel >= 1.4.3
 BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.0.12
+%define ldb_version 2.1.4
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -815,6 +815,12 @@ popd
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs
 
+pushd pidl
+%__perl Makefile.PL PREFIX=%_prefix
+
+%make_build
+popd
+
 %if_with doc
 pushd docs-xml
 export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
@@ -962,11 +968,14 @@ install -d -m 0755 %buildroot%_sysconfdir/NetworkManager/dispatcher.d/
 install -m 0755 packaging/NetworkManager/30-winbind-systemd \
             %buildroot%_sysconfdir/NetworkManager/dispatcher.d/30-winbind
 
+pushd pidl
+make DESTDIR=%buildroot install_vendor
 
 # Clean out crap left behind by the PIDL install.
 find %buildroot -type f -name .packlist -exec rm -f {} \;
 rm -f %buildroot%perl_vendorlib/wscript_build
-rm -rf %buildroot%perl_vendorlib/Parse/Yapp
+rm -f %buildroot%perl_vendor_archlib/perllocal.pod
+popd
 
 # winbind
 %if_with winbind
@@ -1276,6 +1285,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %files common-tools -f net.lang
 %_bindir/mvxattr
+%_bindir/mdfind
 %_bindir/net
 %_bindir/pdbedit
 %_bindir/profiles
@@ -1284,6 +1294,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_bindir/testparm
 %if_with doc
 %_man1dir/mvxattr.1*
+%_man1dir/mdfind.1*
 %_man1dir/profiles.1*
 %_man1dir/smbcontrol.1*
 %_man1dir/smbstatus.1*
@@ -1341,6 +1352,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_pkgconfigdir/samdb.pc
 
 %if_with dc
+%_samba_libdir/libdcerpc-server-core.so
 %_samba_libdir/libdcerpc-server.so
 %_pkgconfigdir/dcerpc_server.pc
 %endif
@@ -1452,6 +1464,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/libsmbpasswdparser-samba4.so
 %_samba_mod_libdir/libsys-rw-samba4.so
 %_samba_mod_libdir/libsocket-blocking-samba4.so
+%_samba_mod_libdir/libtalloc-report-printf-samba4.so
 %_samba_mod_libdir/libtalloc-report-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
 %_samba_mod_libdir/libtime-basic-samba4.so
@@ -1555,6 +1568,7 @@ TDB_NO_FSYNC=1 %make_build test
 %_samba_mod_libdir/process_model
 %_samba_mod_libdir/service
 %_samba_libdir/libdcerpc-server.so.*
+%_samba_libdir/libdcerpc-server-core.so.*
 %if_with ntvfs
 %_samba_mod_libdir/libntvfs-samba4.so
 %endif
@@ -1612,7 +1626,6 @@ TDB_NO_FSYNC=1 %make_build test
 %attr(755,root,root) %_bindir/pidl
 %if_with doc
 %_man1dir/pidl.1.*
-%_man3dir/Parse::Pidl::*
 %endif
 %perl_vendor_privlib/*
 
@@ -1793,6 +1806,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Aug 29 2020 Evgeny Sinelikov <sin@altlinux.org> 4.12.6-alt1
+- Update to newest release of Samba 4.12
+
 * Wed Aug 26 2020 Evgeny Sinelikov <sin@altlinux.org> 4.11.12-alt1
 - Update to latest stable security release of the Samba 4.11
 
