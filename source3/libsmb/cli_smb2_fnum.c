@@ -1236,7 +1236,8 @@ static NTSTATUS parse_finfo_id_both_directory_info(uint8_t *dir_data,
 	finfo->ctime_ts = interpret_long_date((const char *)dir_data + 32);
 	finfo->size = IVAL2_TO_SMB_BIG_UINT(dir_data + 40, 0);
 	finfo->allocated_size = IVAL2_TO_SMB_BIG_UINT(dir_data + 48, 0);
-	finfo->mode = CVAL(dir_data + 56, 0);
+	/* NB. We need to enlarge finfo->mode to be 32-bits. */
+	finfo->mode = (uint16_t)IVAL(dir_data + 56, 0);
 	finfo->ino = IVAL2_TO_SMB_BIG_UINT(dir_data + 96, 0);
 	namelen = IVAL(dir_data + 60,0);
 	if (namelen > (dir_data_length - 104)) {
@@ -1889,7 +1890,7 @@ static NTSTATUS get_fnum_from_path(struct cli_state *cli,
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
 			FILE_OPEN,		/* create_disposition */
-			FILE_DIRECTORY_FILE,	/* create_options */
+			create_options,		/* create_options */
 			NULL,
 			pfnum,
 			NULL,

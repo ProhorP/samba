@@ -19,5 +19,5 @@ bld.SAMBA_BINARY(
         NDR_SECURITY
         cli-ldap
     ''',
-    install=False
+    for_selftest=True
 )

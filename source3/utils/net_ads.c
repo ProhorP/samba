@@ -1474,7 +1474,7 @@ int net_ads_testjoin(struct net_context *c, int argc, const char **argv)
 }
 
 /*******************************************************************
-  Simple configu checks before beginning the join
+  Simple config checks before beginning the join
  ********************************************************************/
 
 static WERROR check_ads_config( void )
@@ -1710,6 +1710,8 @@ static int net_ads_join_usage(struct net_context *c, int argc, const char **argv
 {
 	d_printf(_("net ads join [--no-dns-updates] [options]\n"
 	           "Valid options:\n"));
+	d_printf(_("   dnshostname=FQDN      Set the dnsHostName attribute during the join.\n"
+		   "                         The default is in the form netbiosname.dnsdomain\n"));
 	d_printf(_("   createupn[=UPN]       Set the userPrincipalName attribute during the join.\n"
 		   "                         The default UPN is in the form host/netbiosname@REALM.\n"));
 	d_printf(_("   createcomputer=OU     Precreate the computer account in a specific OU.\n"
@@ -1830,6 +1832,7 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	const char *domain = lp_realm();
 	WERROR werr = WERR_NERR_SETUPNOTJOINED;
 	bool createupn = false;
+	const char *dnshostname = NULL;
 	const char *machineupn = NULL;
 	const char *machine_password = NULL;
 	const char *create_in_ou = NULL;
@@ -1870,7 +1873,10 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	/* process additional command line args */
 
 	for ( i=0; i<argc; i++ ) {
-		if ( !strncasecmp_m(argv[i], "createupn", strlen("createupn")) ) {
+		if ( !strncasecmp_m(argv[i], "dnshostname", strlen("dnshostname")) ) {
+			dnshostname = get_string_param(argv[i]);
+		}
+		else if ( !strncasecmp_m(argv[i], "createupn", strlen("createupn")) ) {
 			createupn = true;
 			machineupn = get_string_param(argv[i]);
 		}
@@ -1938,6 +1944,7 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	r->in.domain_name_type	= domain_name_type;
 	r->in.create_upn	= createupn;
 	r->in.upn		= machineupn;
+	r->in.dnshostname	= dnshostname;
 	r->in.account_ou	= create_in_ou;
 	r->in.os_name		= os_name;
 	r->in.os_version	= os_version;
@@ -2197,8 +2204,8 @@ static int net_ads_dns_gethostbyname(struct net_context *c, int argc, const char
 			 _("Usage:"),
 			 _("net ads dns gethostbyname <server> <name>\n"),
 			 _("  Look up hostname from the AD\n"
-			   "    server\tName server to use\n"
-			   "    name\tName to look up\n"));
+			   "    nameserver\tName server to use\n"
+			   "    hostname\tName to look up\n"));
 		return -1;
 	}
 
@@ -3088,7 +3095,7 @@ int net_ads_keytab(struct net_context *c, int argc, const char **argv)
 			NET_TRANSPORT_ADS,
 			N_("Create a fresh keytab"),
 			N_("net ads keytab create\n"
-			   "    Create a fresh keytab or update exising one.")
+			   "    Create a fresh keytab or update existing one.")
 		},
 		{
 			"flush",

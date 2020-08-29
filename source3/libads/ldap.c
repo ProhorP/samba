@@ -367,7 +367,7 @@ static NTSTATUS resolve_and_ping_netbios(ADS_STRUCT *ads,
 {
 	int count, i;
 	struct ip_service *ip_list;
-	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
+	NTSTATUS status;
 
 	DEBUG(6, ("resolve_and_ping_netbios: (cldap) looking for domain '%s'\n",
 		  domain));
@@ -414,7 +414,7 @@ static NTSTATUS resolve_and_ping_dns(ADS_STRUCT *ads, const char *sitename,
 {
 	int count;
 	struct ip_service *ip_list = NULL;
-	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
+	NTSTATUS status;
 
 	DEBUG(6, ("resolve_and_ping_dns: (cldap) looking for realm '%s'\n",
 		  realm));
@@ -1377,6 +1377,7 @@ char *ads_parent_dn(const char *dn)
 		"unicodePwd",
 
 		/* Additional attributes Samba checks */
+		"msDS-AdditionalDnsHostName",
 		"msDS-SupportedEncryptionTypes",
 		"nTSecurityDescriptor",
 
@@ -1802,7 +1803,7 @@ uint32_t ads_get_kvno(ADS_STRUCT *ads, const char *account_name)
 	char *filter;
 	const char *attrs[] = {"msDS-KeyVersionNumber", NULL};
 	char *dn_string = NULL;
-	ADS_STATUS ret = ADS_ERROR(LDAP_SUCCESS);
+	ADS_STATUS ret;
 
 	DEBUG(5,("ads_get_kvno: Searching for account %s\n", account_name));
 	if (asprintf(&filter, "(samAccountName=%s)", account_name) == -1) {
@@ -1881,7 +1882,7 @@ ADS_STATUS ads_clear_service_principal_names(ADS_STRUCT *ads, const char *machin
 	LDAPMessage *res = NULL;
 	ADS_MODLIST mods;
 	const char *servicePrincipalName[1] = {NULL};
-	ADS_STATUS ret = ADS_ERROR(LDAP_SUCCESS);
+	ADS_STATUS ret;
 	char *dn_string = NULL;
 
 	ret = ads_find_machine_acct(ads, &res, machine_name);
@@ -2295,8 +2296,6 @@ ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads,
 	/* Check if the machine account already exists. */
 	ret = ads_find_machine_acct(ads, &res, machine_escaped);
 	if (ADS_ERR_OK(ret) && ads_count_replies(ads, res) > 0) {
-		DBG_DEBUG("Host account for %s already exists.\n",
-				machine_escaped);
 		/* Change the machine account password */
 		ret = ads_change_machine_acct(ads, res, &machine_pw_val);
 		ads_msgfree(ads, res);
@@ -2373,7 +2372,8 @@ ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads,
 	/* Make sure to NULL terminate the array */
 	spn_array = talloc_realloc(ctx, spn_array, const char *, num_spns + 1);
 	if (spn_array == NULL) {
-		return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+		ret = ADS_ERROR(LDAP_NO_MEMORY);
+		goto done;
 	}
 	spn_array[num_spns] = NULL;
 
@@ -3664,6 +3664,86 @@ out:
 	ads_msgfree(ads, res);
 
 	return name;
+}
+
+/********************************************************************
+********************************************************************/
+
+static char **get_addl_hosts(ADS_STRUCT *ads, TALLOC_CTX *mem_ctx,
+			      LDAPMessage *msg, size_t *num_values)
+{
+	const char *field = "msDS-AdditionalDnsHostName";
+	struct berval **values = NULL;
+	char **ret = NULL;
+	size_t i, converted_size;
+
+	values = ldap_get_values_len(ads->ldap.ld, msg, field);
+	if (values == NULL) {
+		return NULL;
+	}
+
+	*num_values = ldap_count_values_len(values);
+
+	ret = talloc_array(mem_ctx, char *, *num_values + 1);
+	if (ret == NULL) {
+		ldap_value_free_len(values);
+		return NULL;
+	}
+
+	for (i = 0; i < *num_values; i++) {
+		ret[i] = NULL;
+		if (!convert_string_talloc(mem_ctx, CH_UTF8, CH_UNIX,
+					   values[i]->bv_val,
+					   strnlen(values[i]->bv_val,
+						   values[i]->bv_len),
+					   &ret[i], &converted_size)) {
+			ldap_value_free_len(values);
+			return NULL;
+		}
+	}
+	ret[i] = NULL;
+
+	ldap_value_free_len(values);
+	return ret;
+}
+
+ADS_STATUS ads_get_additional_dns_hostnames(TALLOC_CTX *mem_ctx,
+					    ADS_STRUCT *ads,
+					    const char *machine_name,
+					    char ***hostnames_array,
+					    size_t *num_hostnames)
+{
+	ADS_STATUS status;
+	LDAPMessage *res = NULL;
+	int count;
+
+	status = ads_find_machine_acct(ads,
+				       &res,
+				       machine_name);
+	if (!ADS_ERR_OK(status)) {
+		DEBUG(1,("Host Account for %s not found... skipping operation.\n",
+			 machine_name));
+		return status;
+	}
+
+	count = ads_count_replies(ads, res);
+	if (count != 1) {
+		status = ADS_ERROR(LDAP_NO_SUCH_OBJECT);
+		goto done;
+	}
+
+	*hostnames_array = get_addl_hosts(ads, mem_ctx, res, num_hostnames);
+	if (*hostnames_array == NULL) {
+		DEBUG(1, ("Host account for %s does not have msDS-AdditionalDnsHostName.\n",
+			  machine_name));
+		status = ADS_ERROR(LDAP_NO_SUCH_OBJECT);
+		goto done;
+	}
+
+done:
+	ads_msgfree(ads, res);
+
+	return status;
 }
 
 /********************************************************************

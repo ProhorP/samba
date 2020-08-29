@@ -152,7 +152,7 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 			finfo->mtime_ts = convert_time_t_to_timespec(
 				make_unix_date2(p+12, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->size = IVAL(p,16);
-			finfo->mode = CVAL(p,24);
+			finfo->mode = SVAL(p,24);
 			len = CVAL(p, 26);
 			p += 27;
 			if (recv_flags2 & FLAGS2_UNICODE_STRINGS) {
@@ -211,7 +211,7 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 			finfo->mtime_ts = convert_time_t_to_timespec(
 				make_unix_date2(p+12, smb1cli_conn_server_time_zone(cli->conn)));
 			finfo->size = IVAL(p,16);
-			finfo->mode = CVAL(p,24);
+			finfo->mode = SVAL(p,24);
 			len = CVAL(p, 30);
 			p += 31;
 			/* check for unisys! */
@@ -257,7 +257,8 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 			finfo->size = IVAL2_TO_SMB_BIG_UINT(p,0);
 			p += 8;
 			p += 8; /* alloc size */
-			finfo->mode = CVAL(p,0);
+			/* NB. We need to enlarge finfo->mode to be 32-bits. */
+			finfo->mode = (uint16_t)IVAL(p,0);
 			p += 4;
 			namelen = IVAL(p,0);
 			p += 4;
@@ -576,7 +577,7 @@ NTSTATUS cli_list_old(struct cli_state *cli, const char *mask,
 	struct tevent_context *ev;
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
-	struct file_info *finfo;
+	struct file_info *finfo = NULL;
 	size_t i, num_finfo;
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
@@ -1046,7 +1047,7 @@ NTSTATUS cli_list(struct cli_state *cli, const char *mask, uint16_t attribute,
 	struct tevent_req *req;
 	NTSTATUS status = NT_STATUS_NO_MEMORY;
 	struct file_info *finfo;
-	size_t i, num_finfo;
+	size_t i, num_finfo = 0;
 	uint16_t info_level;
 
 	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {

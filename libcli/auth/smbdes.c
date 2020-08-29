@@ -43,11 +43,21 @@ static void str_to_key(const uint8_t *str,uint8_t *key)
 	}
 }
 
-static int des_crypt56_gnutls(uint8_t out[8], const uint8_t in[8],
-			      const uint8_t key_in[7], bool enc)
+int des_crypt56_gnutls(uint8_t out[8], const uint8_t in[8],
+		       const uint8_t key_in[7],
+		       enum samba_gnutls_direction encrypt)
 {
-	static uint8_t iv8[8];
-	gnutls_datum_t iv = { iv8, 8 };
+	/*
+	 * A single block DES-CBC op, with an all-zero IV is the same as DES
+	 * because the IV is combined with the data using XOR.
+	 * This allows us to use GNUTLS_CIPHER_DES_CBC from GnuTLS and not
+	 * implement single-DES in Samba.
+	 *
+	 * In turn this is used to build DES-ECB, which is used
+	 * for example in the NTLM challenge/response calculation.
+	 */
+	static const uint8_t iv8[8];
+	gnutls_datum_t iv = { discard_const(iv8), 8 };
 	gnutls_datum_t key;
 	gnutls_cipher_hd_t ctx;
 	uint8_t key2[8];
@@ -72,7 +82,7 @@ static int des_crypt56_gnutls(uint8_t out[8], const uint8_t in[8],
 	}
 
 	memcpy(outb, in, 8);
-	if (enc) {
+	if (encrypt == SAMBA_GNUTLS_ENCRYPT) {
 		ret = gnutls_cipher_encrypt(ctx, outb, 8);
 	} else {
 		ret = gnutls_cipher_decrypt(ctx, outb, 8);
@@ -87,75 +97,117 @@ static int des_crypt56_gnutls(uint8_t out[8], const uint8_t in[8],
 	return ret;
 }
 
-/*
-  basic des crypt using a 56 bit (7 byte) key
-*/
-void des_crypt56(uint8_t out[8], const uint8_t in[8], const uint8_t key[7], int forw)
-{
-	(void)des_crypt56_gnutls(out, in, key, forw);
-}
-
-void E_P16(const uint8_t *p14,uint8_t *p16)
+int E_P16(const uint8_t *p14,uint8_t *p16)
 {
 	const uint8_t sp8[8] = {0x4b, 0x47, 0x53, 0x21, 0x40, 0x23, 0x24, 0x25};
-	des_crypt56(p16, sp8, p14, 1);
-	des_crypt56(p16+8, sp8, p14+7, 1);
+	int ret;
+
+	ret = des_crypt56_gnutls(p16, sp8, p14, SAMBA_GNUTLS_ENCRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return des_crypt56_gnutls(p16+8, sp8, p14+7, SAMBA_GNUTLS_ENCRYPT);
 }
 
-void E_P24(const uint8_t *p21, const uint8_t *c8, uint8_t *p24)
+int E_P24(const uint8_t *p21, const uint8_t *c8, uint8_t *p24)
 {
-	des_crypt56(p24, c8, p21, 1);
-	des_crypt56(p24+8, c8, p21+7, 1);
-	des_crypt56(p24+16, c8, p21+14, 1);
+	int ret;
+
+	ret = des_crypt56_gnutls(p24, c8, p21, SAMBA_GNUTLS_ENCRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = des_crypt56_gnutls(p24+8, c8, p21+7, SAMBA_GNUTLS_ENCRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return des_crypt56_gnutls(p24+16, c8, p21+14, SAMBA_GNUTLS_ENCRYPT);
 }
 
-void D_P16(const uint8_t *p14, const uint8_t *in, uint8_t *out)
+int E_old_pw_hash( uint8_t *p14, const uint8_t *in, uint8_t *out)
 {
-	des_crypt56(out, in, p14, 0);
-        des_crypt56(out+8, in+8, p14+7, 0);
-}
+	int ret;
 
-void E_old_pw_hash( uint8_t *p14, const uint8_t *in, uint8_t *out)
-{
-        des_crypt56(out, in, p14, 1);
-        des_crypt56(out+8, in+8, p14+7, 1);
+        ret = des_crypt56_gnutls(out, in, p14, SAMBA_GNUTLS_ENCRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+        return des_crypt56_gnutls(out+8, in+8, p14+7, SAMBA_GNUTLS_ENCRYPT);
 }
 
 /* des encryption with a 128 bit key */
-void des_crypt128(uint8_t out[8], const uint8_t in[8], const uint8_t key[16])
+int des_crypt128(uint8_t out[8], const uint8_t in[8], const uint8_t key[16])
 {
 	uint8_t buf[8];
-	des_crypt56(buf, in, key, 1);
-	des_crypt56(out, buf, key+9, 1);
+	int ret;
+
+	ret = des_crypt56_gnutls(buf, in, key, SAMBA_GNUTLS_ENCRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return des_crypt56_gnutls(out, buf, key+9, SAMBA_GNUTLS_ENCRYPT);
 }
 
 /* des encryption with a 112 bit (14 byte) key */
-void des_crypt112(uint8_t out[8], const uint8_t in[8], const uint8_t key[14], int forw)
+int des_crypt112(uint8_t out[8], const uint8_t in[8], const uint8_t key[14],
+		 enum samba_gnutls_direction encrypt)
 {
 	uint8_t buf[8];
-	des_crypt56(buf, in, key, forw);
-	des_crypt56(out, buf, key+7, forw);
+	int ret;
+
+	if (encrypt == SAMBA_GNUTLS_ENCRYPT) {
+		ret = des_crypt56_gnutls(buf, in, key, SAMBA_GNUTLS_ENCRYPT);
+		if (ret != 0) {
+			return ret;
+		}
+
+		return des_crypt56_gnutls(out, buf, key+7, SAMBA_GNUTLS_ENCRYPT);
+	}
+
+	ret = des_crypt56_gnutls(buf, in, key+7, SAMBA_GNUTLS_DECRYPT);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return des_crypt56_gnutls(out, buf, key, SAMBA_GNUTLS_DECRYPT);
 }
 
 /* des encryption of a 16 byte lump of data with a 112 bit key */
-void des_crypt112_16(uint8_t out[16], const uint8_t in[16], const uint8_t key[14], int forw)
+int des_crypt112_16(uint8_t out[16], const uint8_t in[16], const uint8_t key[14],
+		    enum samba_gnutls_direction encrypt)
 {
-        des_crypt56(out, in, key, forw);
-        des_crypt56(out + 8, in + 8, key+7, forw);
+	int ret;
+
+	ret = des_crypt56_gnutls(out, in, key, encrypt);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return des_crypt56_gnutls(out + 8, in + 8, key+7, encrypt);
 }
 
 /* Decode a sam password hash into a password.  The password hash is the
    same method used to store passwords in the NT registry.  The DES key
    used is based on the RID of the user. */
-void sam_rid_crypt(unsigned int rid, const uint8_t *in, uint8_t *out, int forw)
+int sam_rid_crypt(unsigned int rid, const uint8_t *in, uint8_t *out,
+		  enum samba_gnutls_direction encrypt)
 {
 	uint8_t s[14];
+	int ret;
 
 	s[0] = s[4] = s[8] = s[12] = (uint8_t)(rid & 0xFF);
 	s[1] = s[5] = s[9] = s[13] = (uint8_t)((rid >> 8) & 0xFF);
 	s[2] = s[6] = s[10]        = (uint8_t)((rid >> 16) & 0xFF);
 	s[3] = s[7] = s[11]        = (uint8_t)((rid >> 24) & 0xFF);
 
-	des_crypt56(out, in, s, forw);
-	des_crypt56(out+8, in+8, s+7, forw);
+	ret = des_crypt56_gnutls(out, in, s, encrypt);
+	if (ret != 0) {
+		return ret;
+	}
+	return des_crypt56_gnutls(out+8, in+8, s+7, encrypt);
 }

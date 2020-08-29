@@ -764,9 +764,11 @@ static DIR *ceph_snap_gmt_opendir(vfs_handle_struct *handle,
 	return dir;
 }
 
-static int ceph_snap_gmt_rename(vfs_handle_struct *handle,
-			      const struct smb_filename *smb_fname_src,
-			      const struct smb_filename *smb_fname_dst)
+static int ceph_snap_gmt_renameat(vfs_handle_struct *handle,
+			files_struct *srcfsp,
+			const struct smb_filename *smb_fname_src,
+			files_struct *dstfsp,
+			const struct smb_filename *smb_fname_dst)
 {
 	int ret;
 	time_t timestamp_src, timestamp_dst;
@@ -793,12 +795,17 @@ static int ceph_snap_gmt_rename(vfs_handle_struct *handle,
 		errno = EROFS;
 		return -1;
 	}
-	return SMB_VFS_NEXT_RENAME(handle, smb_fname_src, smb_fname_dst);
+	return SMB_VFS_NEXT_RENAMEAT(handle,
+				srcfsp,
+				smb_fname_src,
+				dstfsp,
+				smb_fname_dst);
 }
 
 /* block links from writeable shares to snapshots for now, like other modules */
-static int ceph_snap_gmt_symlink(vfs_handle_struct *handle,
+static int ceph_snap_gmt_symlinkat(vfs_handle_struct *handle,
 				const char *link_contents,
+				struct files_struct *dirfsp,
 				const struct smb_filename *new_smb_fname)
 {
 	int ret;
@@ -825,12 +832,18 @@ static int ceph_snap_gmt_symlink(vfs_handle_struct *handle,
 		errno = EROFS;
 		return -1;
 	}
-	return SMB_VFS_NEXT_SYMLINK(handle, link_contents, new_smb_fname);
+	return SMB_VFS_NEXT_SYMLINKAT(handle,
+				link_contents,
+				dirfsp,
+				new_smb_fname);
 }
 
-static int ceph_snap_gmt_link(vfs_handle_struct *handle,
+static int ceph_snap_gmt_linkat(vfs_handle_struct *handle,
+				files_struct *srcfsp,
 				const struct smb_filename *old_smb_fname,
-				const struct smb_filename *new_smb_fname)
+				files_struct *dstfsp,
+				const struct smb_filename *new_smb_fname,
+				int flags)
 {
 	int ret;
 	time_t timestamp_old = 0;
@@ -856,7 +869,12 @@ static int ceph_snap_gmt_link(vfs_handle_struct *handle,
 		errno = EROFS;
 		return -1;
 	}
-	return SMB_VFS_NEXT_LINK(handle, old_smb_fname, new_smb_fname);
+	return SMB_VFS_NEXT_LINKAT(handle,
+			srcfsp,
+			old_smb_fname,
+			dstfsp,
+			new_smb_fname,
+			flags);
 }
 
 static int ceph_snap_gmt_stat(vfs_handle_struct *handle,
@@ -962,45 +980,29 @@ static int ceph_snap_gmt_open(vfs_handle_struct *handle,
 	return ret;
 }
 
-static int ceph_snap_gmt_unlink(vfs_handle_struct *handle,
-			      const struct smb_filename *csmb_fname)
+static int ceph_snap_gmt_unlinkat(vfs_handle_struct *handle,
+			struct files_struct *dirfsp,
+			const struct smb_filename *csmb_fname,
+			int flags)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_UNLINK(handle, csmb_fname);
-	}
-
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_UNLINK(handle, new_fname);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_UNLINKAT(handle,
+			dirfsp,
+			csmb_fname,
+			flags);
 }
 
 static int ceph_snap_gmt_chmod(vfs_handle_struct *handle,
@@ -1008,84 +1010,20 @@ static int ceph_snap_gmt_chmod(vfs_handle_struct *handle,
 			mode_t mode)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_CHMOD(handle, csmb_fname, mode);
-	}
-
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_CHMOD(handle, new_fname, mode);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
-}
-
-static int ceph_snap_gmt_chown(vfs_handle_struct *handle,
-			const struct smb_filename *csmb_fname,
-			uid_t uid,
-			gid_t gid)
-{
-	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
-	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
-
-	ret = ceph_snap_gmt_strip_snapshot(handle,
-					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
-	if (ret < 0) {
-		errno = -ret;
-		return -1;
-	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_CHOWN(handle, csmb_fname, uid, gid);
-	}
-
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
-		return -1;
-	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_CHOWN(handle, new_fname, uid, gid);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_CHMOD(handle, csmb_fname, mode);
 }
 
 static int ceph_snap_gmt_chdir(vfs_handle_struct *handle,
@@ -1134,44 +1072,24 @@ static int ceph_snap_gmt_ntimes(vfs_handle_struct *handle,
 			      struct smb_file_time *ft)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_NTIMES(handle, csmb_fname, ft);
-	}
-
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_NTIMES(handle, new_fname, ft);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_NTIMES(handle, csmb_fname, ft);
 }
 
-static int ceph_snap_gmt_readlink(vfs_handle_struct *handle,
+static int ceph_snap_gmt_readlinkat(vfs_handle_struct *handle,
+				files_struct *dirfsp,
 				const struct smb_filename *csmb_fname,
 				char *buf,
 				size_t bufsiz)
@@ -1191,7 +1109,11 @@ static int ceph_snap_gmt_readlink(vfs_handle_struct *handle,
 		return -1;
 	}
 	if (timestamp == 0) {
-		return SMB_VFS_NEXT_READLINK(handle, csmb_fname, buf, bufsiz);
+		return SMB_VFS_NEXT_READLINKAT(handle,
+				dirfsp,
+				csmb_fname,
+				buf,
+				bufsiz);
 	}
 	ret = ceph_snap_gmt_convert(handle, stripped,
 					timestamp, conv, sizeof(conv));
@@ -1206,53 +1128,42 @@ static int ceph_snap_gmt_readlink(vfs_handle_struct *handle,
 	}
 	new_fname->base_name = conv;
 
-	ret = SMB_VFS_NEXT_READLINK(handle, new_fname, buf, bufsiz);
+	ret = SMB_VFS_NEXT_READLINKAT(handle,
+				dirfsp,
+				new_fname,
+				buf,
+				bufsiz);
 	saved_errno = errno;
 	TALLOC_FREE(new_fname);
 	errno = saved_errno;
 	return ret;
 }
 
-static int ceph_snap_gmt_mknod(vfs_handle_struct *handle,
+static int ceph_snap_gmt_mknodat(vfs_handle_struct *handle,
+			files_struct *dirfsp,
 			const struct smb_filename *csmb_fname,
 			mode_t mode,
 			SMB_DEV_T dev)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_MKNOD(handle, csmb_fname, mode, dev);
-	}
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_MKNOD(handle, new_fname, mode, dev);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_MKNODAT(handle,
+			dirfsp,
+			csmb_fname,
+			mode,
+			dev);
 }
 
 static struct smb_filename *ceph_snap_gmt_realpath(vfs_handle_struct *handle,
@@ -1390,85 +1301,29 @@ static NTSTATUS ceph_snap_gmt_get_nt_acl(vfs_handle_struct *handle,
 	return status;
 }
 
-static int ceph_snap_gmt_mkdir(vfs_handle_struct *handle,
+static int ceph_snap_gmt_mkdirat(vfs_handle_struct *handle,
+				struct files_struct *dirfsp,
 				const struct smb_filename *csmb_fname,
 				mode_t mode)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_MKDIR(handle, csmb_fname, mode);
-	}
-	ret = ceph_snap_gmt_convert_dir(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_MKDIR(handle, new_fname, mode);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
-}
-
-static int ceph_snap_gmt_rmdir(vfs_handle_struct *handle,
-				const struct smb_filename *csmb_fname)
-{
-	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
-	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
-
-	ret = ceph_snap_gmt_strip_snapshot(handle,
-					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
-	if (ret < 0) {
-		errno = -ret;
-		return -1;
-	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_RMDIR(handle, csmb_fname);
-	}
-	ret = ceph_snap_gmt_convert_dir(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
-		return -1;
-	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_RMDIR(handle, new_fname);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_MKDIRAT(handle,
+			dirfsp,
+			csmb_fname,
+			mode);
 }
 
 static int ceph_snap_gmt_chflags(vfs_handle_struct *handle,
@@ -1476,40 +1331,20 @@ static int ceph_snap_gmt_chflags(vfs_handle_struct *handle,
 				unsigned int flags)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_CHFLAGS(handle, csmb_fname, flags);
-	}
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_CHFLAGS(handle, new_fname, flags);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_CHFLAGS(handle, csmb_fname, flags);
 }
 
 static ssize_t ceph_snap_gmt_getxattr(vfs_handle_struct *handle,
@@ -1602,40 +1437,20 @@ static int ceph_snap_gmt_removexattr(vfs_handle_struct *handle,
 				const char *aname)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_REMOVEXATTR(handle, csmb_fname, aname);
-	}
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_REMOVEXATTR(handle, new_fname, aname);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
+	return SMB_VFS_NEXT_REMOVEXATTR(handle, csmb_fname, aname);
 }
 
 static int ceph_snap_gmt_setxattr(struct vfs_handle_struct *handle,
@@ -1644,42 +1459,21 @@ static int ceph_snap_gmt_setxattr(struct vfs_handle_struct *handle,
 				size_t size, int flags)
 {
 	time_t timestamp = 0;
-	char stripped[PATH_MAX + 1];
-	char conv[PATH_MAX + 1];
 	int ret;
-	struct smb_filename *new_fname;
-	int saved_errno;
 
 	ret = ceph_snap_gmt_strip_snapshot(handle,
 					csmb_fname->base_name,
-					&timestamp, stripped, sizeof(stripped));
+					&timestamp, NULL, 0);
 	if (ret < 0) {
 		errno = -ret;
 		return -1;
 	}
-	if (timestamp == 0) {
-		return SMB_VFS_NEXT_SETXATTR(handle, csmb_fname,
-					aname, value, size, flags);
-	}
-	ret = ceph_snap_gmt_convert(handle, stripped,
-					timestamp, conv, sizeof(conv));
-	if (ret < 0) {
-		errno = -ret;
+	if (timestamp != 0) {
+		errno = EROFS;
 		return -1;
 	}
-	new_fname = cp_smb_filename(talloc_tos(), csmb_fname);
-	if (new_fname == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	new_fname->base_name = conv;
-
-	ret = SMB_VFS_NEXT_SETXATTR(handle, new_fname,
+	return SMB_VFS_NEXT_SETXATTR(handle, csmb_fname,
 				aname, value, size, flags);
-	saved_errno = errno;
-	TALLOC_FREE(new_fname);
-	errno = saved_errno;
-	return ret;
 }
 
 static int ceph_snap_gmt_get_real_filename(struct vfs_handle_struct *handle,
@@ -1807,25 +1601,23 @@ static struct vfs_fn_pointers ceph_snap_fns = {
 	.opendir_fn = ceph_snap_gmt_opendir,
 	.disk_free_fn = ceph_snap_gmt_disk_free,
 	.get_quota_fn = ceph_snap_gmt_get_quota,
-	.rename_fn = ceph_snap_gmt_rename,
-	.link_fn = ceph_snap_gmt_link,
-	.symlink_fn = ceph_snap_gmt_symlink,
+	.renameat_fn = ceph_snap_gmt_renameat,
+	.linkat_fn = ceph_snap_gmt_linkat,
+	.symlinkat_fn = ceph_snap_gmt_symlinkat,
 	.stat_fn = ceph_snap_gmt_stat,
 	.lstat_fn = ceph_snap_gmt_lstat,
 	.open_fn = ceph_snap_gmt_open,
-	.unlink_fn = ceph_snap_gmt_unlink,
+	.unlinkat_fn = ceph_snap_gmt_unlinkat,
 	.chmod_fn = ceph_snap_gmt_chmod,
-	.chown_fn = ceph_snap_gmt_chown,
 	.chdir_fn = ceph_snap_gmt_chdir,
 	.ntimes_fn = ceph_snap_gmt_ntimes,
-	.readlink_fn = ceph_snap_gmt_readlink,
-	.mknod_fn = ceph_snap_gmt_mknod,
+	.readlinkat_fn = ceph_snap_gmt_readlinkat,
+	.mknodat_fn = ceph_snap_gmt_mknodat,
 	.realpath_fn = ceph_snap_gmt_realpath,
 	.get_nt_acl_fn = ceph_snap_gmt_get_nt_acl,
 	.fget_nt_acl_fn = ceph_snap_gmt_fget_nt_acl,
 	.get_nt_acl_fn = ceph_snap_gmt_get_nt_acl,
-	.mkdir_fn = ceph_snap_gmt_mkdir,
-	.rmdir_fn = ceph_snap_gmt_rmdir,
+	.mkdirat_fn = ceph_snap_gmt_mkdirat,
 	.getxattr_fn = ceph_snap_gmt_getxattr,
 	.getxattrat_send_fn = vfs_not_implemented_getxattrat_send,
 	.getxattrat_recv_fn = vfs_not_implemented_getxattrat_recv,
