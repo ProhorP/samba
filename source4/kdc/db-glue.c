@@ -916,17 +916,21 @@ static krb5_error_code samba_kdc_message2entry(krb5_context context,
 			}
 		}
 
-	} else if (ent_type == SAMBA_KDC_ENT_TYPE_ANY && principal == NULL) {
+	} else if (ent_type == SAMBA_KDC_ENT_TYPE_ANY && principal == NULL) { // was this supposed to be || ?
 		ret = smb_krb5_make_principal(context, &entry_ex->entry.principal, lpcfg_realm(lp_ctx), samAccountName, NULL);
 		if (ret) {
 			krb5_clear_error_message(context);
 			goto out;
 		}
-	} else if ((flags & SDB_F_CANON) && (flags & SDB_F_FOR_AS_REQ)) {
+	} else if (((flags & SDB_F_CANON) && (flags & SDB_F_FOR_AS_REQ)) || (flags & SDB_F_FORCE_CANON)){
 		/*
 		 * SDB_F_CANON maps from the canonicalize flag in the
 		 * packet, and has a different meaning between AS-REQ
 		 * and TGS-REQ.  We only change the principal in the AS-REQ case
+		 *
+		 * The SDB_F_FORCE_CANON if for the new MIT kdc code that wants
+		 * the canonical name in all lookups, and takes care to canonicalize
+		 * only when appropriate.
 		 */
 		ret = smb_krb5_make_principal(context, &entry_ex->entry.principal, lpcfg_realm(lp_ctx), samAccountName, NULL);
 		if (ret) {

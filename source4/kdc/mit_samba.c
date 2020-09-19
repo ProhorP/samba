@@ -198,6 +198,9 @@ int mit_samba_get_principal(struct mit_samba_context *ctx,
 	if (kflags & KRB5_KDB_FLAG_CANONICALIZE) {
 		sflags |= SDB_F_CANON;
 	}
+#if KRB5_KDB_API_VERSION >= 10
+	sflags |= SDB_F_FORCE_CANON;
+#endif
 	if (kflags & (KRB5_KDB_FLAG_CLIENT_REFERRALS_ONLY |
 		      KRB5_KDB_FLAG_INCLUDE_PAC)) {
 		/*
