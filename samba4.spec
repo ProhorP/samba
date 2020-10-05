@@ -40,6 +40,7 @@
 %def_with separate_heimdal_server
 %def_with systemd
 %def_enable avahi
+%def_enable spotlight
 
 # https://bugzilla.altlinux.org/show_bug.cgi?id=36315
 # Not all macroses exists on stable branches:
@@ -59,7 +60,7 @@
 %endif
 
 Name:    samba
-Version: 4.12.6
+Version: 4.12.7
 Release: alt1
 
 Group:   System/Servers
@@ -123,6 +124,7 @@ BuildRequires: zlib-devel
 BuildRequires: libarchive-devel >= 3.1.2
 BuildRequires: libjansson-devel
 BuildRequires: libgpgme-devel
+BuildRequires: liburing-devel >= 0.4
 
 %if_with mitkrb5
 BuildRequires: libssl-devel
@@ -163,6 +165,7 @@ BuildRequires: python3-module-pyldb-devel
 %{?_enable_avahi:BuildRequires: libavahi-devel}
 %{?_enable_glusterfs:BuildRequires: libglusterfs-api-devel}
 %{?_with_libcephfs:BuildRequires: ceph-devel}
+%{?_enable_spotlight:BuildRequires: tracker-devel flex}
 
 %description
 Samba is the standard Windows interoperability suite of programs for Linux and Unix.
@@ -767,6 +770,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 %if_with profiling_data \
 	--with-profiling-data \\\
 %endif \
+	%{subst_enable spotlight} \\\
 	%{subst_enable avahi} \\\
 	--with-libcephfs-common=%_libdir/ceph \\\
 	%{subst_enable cephfs} \\\
@@ -1806,8 +1810,14 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
-* Sat Aug 29 2020 Evgeny Sinelikov <sin@altlinux.org> 4.12.6-alt1
+* Sat Sep 19 2020 Evgeny Sinelikov <sin@altlinux.org> 4.12.7-alt1
 - Update to newest release of Samba 4.12
+
+* Sat Sep 19 2020 Evgeny Sinelikov <sin@altlinux.org> 4.11.13-alt1
+- Update to latest stable security release of the Samba 4.11
+- Security fixes:
+  + CVE-2020-1472: Unauthenticated domain takeover via netlogon ("ZeroLogon")
+    https://www.samba.org/samba/security/CVE-2020-1472.html
 
 * Wed Aug 26 2020 Evgeny Sinelikov <sin@altlinux.org> 4.11.12-alt1
 - Update to latest stable security release of the Samba 4.11
