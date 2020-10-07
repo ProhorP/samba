@@ -427,6 +427,10 @@ sub setup_ad_member
 	path = $share_dir/D_%D/u_%u/g_%g
 	writeable = yes
 
+[sub_valid_users]
+	path = $share_dir
+	valid users = ADDOMAIN/%U
+
 ";
 
 	my $ret = $self->provision($prefix, $dcvars->{DOMAIN},
@@ -728,6 +732,7 @@ sub setup_ad_member_idmap_ad
 	idmap config $dcvars->{DOMAIN} : range = 2000000-2999999
 	idmap config $dcvars->{TRUST_DOMAIN} : backend = ad
 	idmap config $dcvars->{TRUST_DOMAIN} : range = 2000000-2999999
+	gensec_gssapi:requested_life_time = 5
 ";
 
 	my $ret = $self->provision($prefix, $dcvars->{DOMAIN},
