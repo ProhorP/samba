@@ -44,6 +44,7 @@
 #include "ldb_wrap.h"
 #include "lib/util/tfork.h"
 #include "lib/messaging/irpc.h"
+#include "server_util.h"
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 
@@ -113,7 +114,7 @@ static void sighup_signal_handler(struct tevent_context *ev,
 				int signum, int count, void *siginfo,
 				void *private_data)
 {
-	debug_schedule_reopen_logs();
+	reopen_logs_internal();
 }
 
 static void sigterm_signal_handler(struct tevent_context *ev,
@@ -153,6 +154,7 @@ static void prefork_reload_after_fork(void)
 	if (!NT_STATUS_IS_OK(status)) {
 		smb_panic("Failed to re-initialise imessaging after fork");
 	}
+	force_check_log_size();
 }
 
 /*
@@ -243,6 +245,7 @@ static void prefork_fork_master(
 	struct tevent_context *ev2;
 	struct task_server *task = NULL;
 	struct process_details pd = initial_process_details;
+	struct samba_tevent_trace_state *samba_tevent_trace_state = NULL;
 	int control_pipe[2];
 
 	t = tfork_create();
@@ -320,6 +323,17 @@ static void prefork_fork_master(
 	 * to work with
 	 */
 	ev2 = s4_event_context_init(NULL);
+
+	samba_tevent_trace_state = create_samba_tevent_trace_state(ev2);
+	if (samba_tevent_trace_state == NULL) {
+		TALLOC_FREE(ev);
+		TALLOC_FREE(ev2);
+		exit(127);
+	}
+
+	tevent_set_trace_callback(ev2,
+				  samba_tevent_trace_callback,
+				  samba_tevent_trace_state);
 
 	/* setup this new connection: process will bind to it's sockets etc
 	 *

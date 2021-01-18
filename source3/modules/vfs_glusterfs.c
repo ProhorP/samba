@@ -315,15 +315,25 @@ static int check_for_write_behind_translator(TALLOC_CTX *mem_ctx,
 		return -1;
 	}
 
+	/*
+	 * file_lines_parse() plays horrible tricks with
+	 * the passed-in talloc pointers and the hierarcy
+	 * which makes freeing hard to get right.
+	 *
+	 * As we know mem_ctx is freed by the caller, after
+	 * this point don't free on exit and let the caller
+	 * handle it. This violates good Samba coding practice
+	 * but we know we're not leaking here.
+	 */
+
 	lines = file_lines_parse(buf,
 				newlen,
 				&numlines,
 				mem_ctx);
 	if (lines == NULL || numlines <= 0) {
-		TALLOC_FREE(option);
-		TALLOC_FREE(buf);
 		return -1;
 	}
+	/* On success, buf is now a talloc child of lines !! */
 
 	for (i=0; i < numlines; i++) {
 		if (strequal(lines[i], option)) {
@@ -335,18 +345,15 @@ static int check_for_write_behind_translator(TALLOC_CTX *mem_ctx,
 	if (write_behind_present) {
 		DBG_ERR("Write behind translator is enabled for "
 			"volume (%s), refusing to connect! "
-			"Please check the vfs_glusterfs(8) manpage for "
+			"Please turn off the write behind translator by calling "
+			"'gluster volume set %s performance.write-behind off' "
+			"on the commandline. "
+			"Check the vfs_glusterfs(8) manpage for "
 			"further details.\n",
-			volume);
-		TALLOC_FREE(lines);
-		TALLOC_FREE(option);
-		TALLOC_FREE(buf);
+			volume, volume);
 		return -1;
 	}
 
-	TALLOC_FREE(lines);
-	TALLOC_FREE(option);
-	TALLOC_FREE(buf);
 	return 0;
 }
 
@@ -363,6 +370,7 @@ static int vfs_gluster_connect(struct vfs_handle_struct *handle,
 	glfs_t *fs = NULL;
 	TALLOC_CTX *tmp_ctx;
 	int ret = 0;
+	bool write_behind_pass_through_set = false;
 
 	tmp_ctx = talloc_new(NULL);
 	if (tmp_ctx == NULL) {
@@ -429,6 +437,17 @@ static int vfs_gluster_connect(struct vfs_handle_struct *handle,
 		goto done;
 	}
 
+#ifdef HAVE_GFAPI_VER_7_9
+	ret = glfs_set_xlator_option(fs, "*-write-behind", "pass-through",
+				     "true");
+	if (ret < 0) {
+		DBG_ERR("%s: Failed to set xlator option: pass-through\n",
+			volume);
+		goto done;
+	}
+	write_behind_pass_through_set = true;
+#endif
+
 	ret = glfs_set_logging(fs, logfile, loglevel);
 	if (ret < 0) {
 		DEBUG(0, ("%s: Failed to set logfile %s loglevel %d\n",
@@ -443,9 +462,11 @@ static int vfs_gluster_connect(struct vfs_handle_struct *handle,
 		goto done;
 	}
 
-	ret = check_for_write_behind_translator(tmp_ctx, fs, volume);
-	if (ret < 0) {
-		goto done;
+	if (!write_behind_pass_through_set) {
+		ret = check_for_write_behind_translator(tmp_ctx, fs, volume);
+		if (ret < 0) {
+			goto done;
+		}
 	}
 
 	ret = glfs_set_preopened(volume, handle->conn->connectpath, fs);

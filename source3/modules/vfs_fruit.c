@@ -178,9 +178,6 @@ struct fio {
 	/* Denote stream type, meta or rsrc */
 	adouble_type_t type;
 
-	/* Whether the create created the stream */
-	bool created;
-
 	/*
 	 * AFP_AfpInfo stream created, but not written yet, thus still a fake
 	 * pipe fd. This is set to true in fruit_open_meta if there was no
@@ -1635,6 +1632,7 @@ static int fruit_open(vfs_handle_struct *handle,
 static int fruit_close_meta(vfs_handle_struct *handle,
 			    files_struct *fsp)
 {
+	struct fio *fio = (struct fio *)VFS_FETCH_FSP_EXTENSION(handle, fsp);
 	int ret;
 	struct fruit_config_data *config = NULL;
 
@@ -1643,11 +1641,16 @@ static int fruit_close_meta(vfs_handle_struct *handle,
 
 	switch (config->meta) {
 	case FRUIT_META_STREAM:
-		ret = SMB_VFS_NEXT_CLOSE(handle, fsp);
+		if (fio->fake_fd) {
+			ret = vfs_fake_fd_close(fsp->fh->fd);
+			fsp->fh->fd = -1;
+		} else {
+			ret = SMB_VFS_NEXT_CLOSE(handle, fsp);
+		}
 		break;
 
 	case FRUIT_META_NETATALK:
-		ret = close(fsp->fh->fd);
+		ret = vfs_fake_fd_close(fsp->fh->fd);
 		fsp->fh->fd = -1;
 		break;
 
@@ -1676,7 +1679,7 @@ static int fruit_close_rsrc(vfs_handle_struct *handle,
 		break;
 
 	case FRUIT_RSRC_XATTR:
-		ret = close(fsp->fh->fd);
+		ret = vfs_fake_fd_close(fsp->fh->fd);
 		fsp->fh->fd = -1;
 		break;
 
@@ -2189,8 +2192,13 @@ static ssize_t fruit_pread_meta_stream(vfs_handle_struct *handle,
 				       files_struct *fsp, void *data,
 				       size_t n, off_t offset)
 {
+	struct fio *fio = (struct fio *)VFS_FETCH_FSP_EXTENSION(handle, fsp);
 	ssize_t nread;
 	int ret;
+
+	if (fio->fake_fd) {
+		return -1;
+	}
 
 	nread = SMB_VFS_NEXT_PREAD(handle, fsp, data, n, offset);
 	if (nread == -1 || nread == n) {
@@ -2300,7 +2308,7 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
 		return -1;
 	}
 
-	if (nread == -1 && fio->created) {
+	if (nread == -1 && fio->fake_fd) {
 		AfpInfo *ai = NULL;
 		char afpinfo_buf[AFP_INFO_SIZE];
 
@@ -2527,13 +2535,13 @@ static ssize_t fruit_pwrite_meta_stream(vfs_handle_struct *handle,
 	}
 
 	if (fio->fake_fd) {
-		int fd;
+		int fd = fsp->fh->fd;
 
-		ret = SMB_VFS_NEXT_CLOSE(handle, fsp);
+		ret = vfs_fake_fd_close(fd);
+		fsp->fh->fd = -1;
 		if (ret != 0) {
 			DBG_ERR("Close [%s] failed: %s\n",
 				fsp_str_dbg(fsp), strerror(errno));
-			fsp->fh->fd = -1;
 			return -1;
 		}
 
@@ -3999,7 +4007,6 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	NTSTATUS status;
 	struct fruit_config_data *config = NULL;
 	files_struct *fsp = NULL;
-	struct fio *fio = NULL;
 	bool internal_open = (oplock_request & INTERNAL_OPEN_ONLY);
 	int ret;
 
@@ -4070,11 +4077,6 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	{
 		status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
 		goto fail;
-	}
-
-	fio = (struct fio *)VFS_FETCH_FSP_EXTENSION(handle, fsp);
-	if (fio != NULL && pinfo != NULL && *pinfo == FILE_WAS_CREATED) {
-		fio->created = true;
 	}
 
 	if (is_named_stream(smb_fname)
