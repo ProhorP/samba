@@ -41,6 +41,7 @@ static struct tevent_req *smbd_smb2_ioctl_send(TALLOC_CTX *mem_ctx,
 static NTSTATUS smbd_smb2_ioctl_recv(struct tevent_req *req,
 				     TALLOC_CTX *mem_ctx,
 				     DATA_BLOB *out_output,
+				     uint8_t *body_padding,
 				     bool *disconnect);
 
 static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq);
@@ -194,6 +195,8 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	case FSCTL_VALIDATE_NEGOTIATE_INFO_224:
 	case FSCTL_VALIDATE_NEGOTIATE_INFO:
 	case FSCTL_QUERY_NETWORK_INTERFACE_INFO:
+	case FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT:
+	case FSCTL_SMBTORTURE_IOCTL_RESPONSE_BODY_PADDING8:
 		/*
 		 * Some SMB2 specific CtlCodes like FSCTL_DFS_GET_REFERRALS or
 		 * FSCTL_PIPE_WAIT does not take a file handle.
@@ -283,9 +286,12 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 	NTSTATUS status;
 	NTSTATUS error; /* transport error */
 	bool disconnect = false;
+	uint16_t body_size;
+	uint8_t body_padding = 0;
 
 	status = smbd_smb2_ioctl_recv(subreq, req,
 				      &out_output_buffer,
+				      &body_padding,
 				      &disconnect);
 
 	DEBUG(10,("smbd_smb2_request_ioctl_done: smbd_smb2_ioctl_recv returned "
@@ -318,10 +324,15 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 		return;
 	}
 
-	out_input_offset = SMB2_HDR_BODY + 0x30;
-	out_output_offset = SMB2_HDR_BODY + 0x30;
+	/*
+	 * Only FSCTL_SMBTORTURE_IOCTL_RESPONSE_BODY_PADDING8
+	 * sets body_padding to a value different from 0.
+	 */
+	body_size = 0x30 + body_padding;
+	out_input_offset = SMB2_HDR_BODY + body_size;
+	out_output_offset = SMB2_HDR_BODY + body_size;
 
-	outbody = smbd_smb2_generate_outbody(req, 0x30);
+	outbody = smbd_smb2_generate_outbody(req, body_size);
 	if (outbody.data == NULL) {
 		error = smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
 		if (!NT_STATUS_IS_OK(error)) {
@@ -349,6 +360,9 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 	      out_output_buffer.length);	/* output count */
 	SIVAL(outbody.data, 0x28, 0);		/* flags */
 	SIVAL(outbody.data, 0x2C, 0);		/* reserved */
+	if (body_padding != 0) {
+		memset(outbody.data + 0x30, 0, body_padding);
+	}
 
 	/*
 	 * Note: Windows Vista and 2008 send back also the
@@ -364,6 +378,65 @@ static void smbd_smb2_request_ioctl_done(struct tevent_req *subreq)
 						 nt_errstr(error));
 		return;
 	}
+}
+
+static struct tevent_req *smb2_ioctl_smbtorture(uint32_t ctl_code,
+					struct tevent_context *ev,
+					struct tevent_req *req,
+					struct smbd_smb2_ioctl_state *state)
+{
+	NTSTATUS status;
+	bool ok;
+
+	ok = lp_parm_bool(-1, "smbd", "FSCTL_SMBTORTURE", false);
+	if (!ok) {
+		goto not_supported;
+	}
+
+	switch (ctl_code) {
+	case FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT:
+		if (state->in_input.length != 0) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+
+		state->smb2req->xconn->ack.force_unacked_timeout = true;
+		tevent_req_done(req);
+		return tevent_req_post(req, ev);
+
+	case FSCTL_SMBTORTURE_IOCTL_RESPONSE_BODY_PADDING8:
+		if (state->in_input.length != 0) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+
+		if (state->in_max_output > 0) {
+			uint32_t size = state->in_max_output;
+
+			state->out_output = data_blob_talloc(state, NULL, size);
+			if (tevent_req_nomem(state->out_output.data, req)) {
+				return tevent_req_post(req, ev);
+			}
+			memset(state->out_output.data, 8, size);
+		}
+
+		state->body_padding = 8;
+		tevent_req_done(req);
+		return tevent_req_post(req, ev);
+
+	default:
+		goto not_supported;
+	}
+
+not_supported:
+	if (IS_IPC(state->smbreq->conn)) {
+		status = NT_STATUS_FS_DRIVER_REQUIRED;
+	} else {
+		status = NT_STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	tevent_req_nterror(req, status);
+	return tevent_req_post(req, ev);
 }
 
 static struct tevent_req *smbd_smb2_ioctl_send(TALLOC_CTX *mem_ctx,
@@ -415,6 +488,9 @@ static struct tevent_req *smbd_smb2_ioctl_send(TALLOC_CTX *mem_ctx,
 	case FSCTL_NETWORK_FILESYSTEM:
 		return smb2_ioctl_network_fs(in_ctl_code, ev, req, state);
 		break;
+	case FSCTL_SMBTORTURE:
+		return smb2_ioctl_smbtorture(in_ctl_code, ev, req, state);
+		break;
 	default:
 		if (IS_IPC(smbreq->conn)) {
 			tevent_req_nterror(req, NT_STATUS_FS_DRIVER_REQUIRED);
@@ -433,6 +509,7 @@ static struct tevent_req *smbd_smb2_ioctl_send(TALLOC_CTX *mem_ctx,
 static NTSTATUS smbd_smb2_ioctl_recv(struct tevent_req *req,
 				     TALLOC_CTX *mem_ctx,
 				     DATA_BLOB *out_output,
+				     uint8_t *body_padding,
 				     bool *disconnect)
 {
 	NTSTATUS status = NT_STATUS_OK;
@@ -441,6 +518,7 @@ static NTSTATUS smbd_smb2_ioctl_recv(struct tevent_req *req,
 	enum tevent_req_state req_state;
 	uint64_t err;
 
+	*body_padding = state->body_padding;
 	*disconnect = state->disconnect;
 
 	if ((tevent_req_is_error(req, &req_state, &err) == false)

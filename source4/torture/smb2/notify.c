@@ -140,7 +140,7 @@ static bool test_valid_request(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &n);
-	CHECK_STATUS(status, STATUS_NOTIFY_ENUM_DIR);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_ENUM_DIR);
 
 	/*
 	 * if the change response fits in the buffer we get
@@ -191,7 +191,7 @@ static bool test_valid_request(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &n);
-	CHECK_STATUS(status, STATUS_NOTIFY_ENUM_DIR);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_ENUM_DIR);
 
 	n.in.buffer_size        = max_buffer_size;
 	req = smb2_notify_send(tree, &n);
@@ -205,7 +205,7 @@ static bool test_valid_request(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &n);
-	CHECK_STATUS(status, STATUS_NOTIFY_ENUM_DIR);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_ENUM_DIR);
 
 	/* if the buffer size is too large, we get invalid parameter */
 	n.in.recursive		= 0x0000;
@@ -466,7 +466,7 @@ static bool torture_smb2_notify_dir(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 9);
 
 done:
@@ -1338,7 +1338,7 @@ static bool torture_smb2_notify_tree_disconnect_1(
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 done:
@@ -1409,7 +1409,7 @@ static bool torture_smb2_notify_close(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 done:
@@ -1479,7 +1479,7 @@ static bool torture_smb2_notify_ulogoff(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_OK);
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 done:
@@ -1556,7 +1556,7 @@ static bool torture_smb2_notify_session_reconnect(struct torture_context *tortur
 		       "session setup with previous_session_id failed");
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 	status = smb2_logoff(tree1->session);
@@ -1644,7 +1644,7 @@ static bool torture_smb2_notify_invalid_reauth(struct torture_context *torture,
 	CHECK_STATUS(status, NT_STATUS_LOGON_FAILURE);
 
 	status = smb2_notify_recv(req, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_CLEANUP);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_CLEANUP);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 done:
@@ -2158,7 +2158,7 @@ static bool torture_smb2_notify_overflow(struct torture_context *torture,
 
 	req1 = smb2_notify_send(tree, &(notify.smb2));
 	status = smb2_notify_recv(req1, torture, &(notify.smb2));
-	CHECK_STATUS(status, STATUS_NOTIFY_ENUM_DIR);
+	CHECK_STATUS(status, NT_STATUS_NOTIFY_ENUM_DIR);
 	CHECK_VAL(notify.smb2.out.num_changes, 0);
 
 done:
@@ -2564,7 +2564,7 @@ static bool torture_smb2_inotify_rename(struct torture_context *torture,
 	req = smb2_notify_send(tree1, &notify);
 	torture_assert_not_null_goto(torture, req, ok, done, "smb2_notify_send failed\n");
 
-	while (!NT_STATUS_EQUAL(req->status, STATUS_PENDING)) {
+	while (!NT_STATUS_EQUAL(req->status, NT_STATUS_PENDING)) {
 		if (tevent_loop_once(torture->ev) != 0) {
 			goto done;
 		}

@@ -84,15 +84,19 @@ connection_struct *conn_new(struct smbd_server_connection *sconn)
 		TALLOC_FREE(conn);
 		return NULL;
 	}
-	conn->origpath = talloc_strdup(conn, "");
-	if (conn->origpath == NULL) {
+	conn->cwd_fsp = talloc_zero(conn, struct files_struct);
+	if (conn->cwd_fsp == NULL) {
 		DBG_ERR("talloc_zero failed\n");
 		TALLOC_FREE(conn);
 		return NULL;
 	}
-	conn->cwd_fsp = talloc_zero(conn, struct files_struct);
-	if (conn->cwd_fsp == NULL) {
-		DBG_ERR("talloc_zero failed\n");
+	conn->cwd_fsp->fsp_name = synthetic_smb_fname(conn->cwd_fsp,
+						      ".",
+						      NULL,
+						      NULL,
+						      0,
+						      0);
+	if (conn->cwd_fsp->fsp_name == NULL) {
 		TALLOC_FREE(conn);
 		return NULL;
 	}
@@ -227,4 +231,23 @@ void conn_free(connection_struct *conn)
 	conn->sconn->num_connections--;
 
 	conn_free_internal(conn);
+}
+
+/*
+ * Correctly initialize a share with case options.
+ */
+void conn_setup_case_options(connection_struct *conn)
+{
+	int snum = conn->params->service;
+
+	if (lp_case_sensitive(snum) == Auto) {
+		/* We will be setting this per packet. Set to be case
+		* insensitive for now. */
+		conn->case_sensitive = false;
+	} else {
+		conn->case_sensitive = (bool)lp_case_sensitive(snum);
+	}
+
+	conn->case_preserve = lp_preserve_case(snum);
+	conn->short_case_preserve = lp_short_preserve_case(snum);
 }

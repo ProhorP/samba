@@ -663,6 +663,8 @@ static int binary_smbd_main(const char *binary_name,
 	if (opt_daemon) {
 		DBG_NOTICE("Becoming a daemon.\n");
 		become_daemon(opt_fork, opt_no_process_group, false);
+	} else if (!opt_interactive) {
+		daemon_status("samba", "Starting process...");
 	}
 
 	/* Create the memory context to hang everything off. */
@@ -977,7 +979,7 @@ static int binary_smbd_main(const char *binary_name,
 		}
 	}
 
-	if (opt_daemon) {
+	if (!opt_interactive) {
 		daemon_ready("samba");
 	}
 

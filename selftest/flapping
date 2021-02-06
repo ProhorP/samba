@@ -23,14 +23,13 @@
 ^samba3.smb2.acls.DYNAMIC\(ad_dc\)  # Seems to flap - succeeds on sn-devel, fails on Fedora 16
 ^samba3.raw.acls.dynamic\(ad_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
 ^samba3.raw.acls.inheritance\(ad_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
-^samba3.raw.samba3checkfsp.samba3checkfsp\(ad_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
-^samba3.raw.samba3closeerr.samba3closeerr\(ad_dc\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.samba3checkfsp.samba3checkfsp\(ad_dc_smb1\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
+^samba3.raw.samba3closeerr.samba3closeerr\(ad_dc_smb1\) # Seems to flap - succeeds on sn-devel, fails on Fedora 16
 ^samba4.smb2.create.mkdir-dup\(ad_dc_ntvfs\) # This test (for bug 11486) involves a race, not always protected against in the NTVFS file server
 ^samba4.winbind.struct.domain_info.ad_member # flakey on sn-devel-104 and sn-devel-144
 #
 # This test just is not reliable in finding the max search limit
 #
 ^samba4.ldap.notification.python\(.*\).__main__.LDAPNotificationTest.test_max_search
-^samba3.blackbox.smbclient_tar.* # fails very, very often on sn-devel
 ^samba3.blackbox.smbclient_s3.*.sending a message to the remote server # flakey on sn-devel-104 and sn-devel-144
 ^samba3.blackbox.smbclient_s3.*.creating a good symlink and deleting it by path # flakey on sn-devel-104 and sn-devel-144

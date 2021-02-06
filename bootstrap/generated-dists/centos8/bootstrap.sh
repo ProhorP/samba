@@ -10,8 +10,12 @@ set -xueo pipefail
 yum update -y
 yum install -y dnf-plugins-core
 yum install -y epel-release
+
+yum -v repolist all
 yum config-manager --set-enabled PowerTools -y || \
     yum config-manager --set-enabled powertools -y
+yum config-manager --set-enabled Devel -y || \
+    yum config-manager --set-enabled devel -y
 yum update -y
 
 yum install -y \
@@ -24,6 +28,7 @@ yum install -y \
     bind-utils \
     binutils \
     bison \
+    ccache \
     chrpath \
     cups-devel \
     curl \
@@ -85,12 +90,15 @@ yum install -y \
     procps-ng \
     psmisc \
     python3 \
+    python3-cryptography \
     python3-devel \
     python3-dns \
     python3-gpg \
     python3-libsemanage \
     python3-markdown \
     python3-policycoreutils \
+    python3-pyasn1 \
+    quota-devel \
     readline-devel \
     redhat-lsb \
     rng-tools \
@@ -102,6 +110,7 @@ yum install -y \
     systemd-devel \
     tar \
     tree \
+    wget \
     which \
     xfsprogs-devel \
     yum-utils \

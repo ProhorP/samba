@@ -409,23 +409,28 @@ static NTSTATUS zfsacl_fget_nt_acl(struct vfs_handle_struct *handle,
 	return status;
 }
 
-static NTSTATUS zfsacl_get_nt_acl(struct vfs_handle_struct *handle,
+static NTSTATUS zfsacl_get_nt_acl_at(struct vfs_handle_struct *handle,
+				struct files_struct *dirfsp,
 				const struct smb_filename *smb_fname,
 				uint32_t security_info,
 				TALLOC_CTX *mem_ctx,
 				struct security_descriptor **ppdesc)
 {
-	struct SMB4ACL_T *pacl;
+	struct SMB4ACL_T *pacl = NULL;
 	NTSTATUS status;
 	struct zfsacl_config_data *config = NULL;
+	TALLOC_CTX *frame = NULL;
 	int naces;
 	ace_t *acebuf = NULL;
 
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
+	SMB_ASSERT(dirfsp == handle->conn->cwd_fsp);
+
+	SMB_VFS_HANDLE_GET_DATA(handle,
+				config,
 				struct zfsacl_config_data,
 				return NT_STATUS_INTERNAL_ERROR);
 
-	TALLOC_CTX *frame = talloc_stackframe();
+	frame = talloc_stackframe();
 
 	naces = get_zfsacl(frame, smb_fname, &acebuf);
 	if (naces == -1) {
@@ -500,12 +505,12 @@ static NTSTATUS zfsacl_fset_nt_acl(vfs_handle_struct *handle,
 
    But while "traditional" POSIX DRAFT ACLs (using acl(2) with SETACL
    / GETACL / GETACLCNT) fail for ZFS, the Solaris NFS client
-   implemets a compatibility wrapper, which will make calls to
+   implements a compatibility wrapper, which will make calls to
    traditional ACL calls though vfs_solarisacl succeed. As the
    compatibility wrapper's implementation is (by design) incomplete,
    we want to make sure that it is never being called.
 
-   As long as Samba does not support an exiplicit method for a module
+   As long as Samba does not support an explicit method for a module
    to define conflicting vfs methods, we should override all conflicting
    methods here.
 
@@ -617,7 +622,7 @@ static struct vfs_fn_pointers zfsacl_fns = {
 	.sys_acl_set_fd_fn = zfsacl_fail__sys_acl_set_fd,
 	.sys_acl_delete_def_file_fn = zfsacl_fail__sys_acl_delete_def_file,
 	.fget_nt_acl_fn = zfsacl_fget_nt_acl,
-	.get_nt_acl_fn = zfsacl_get_nt_acl,
+	.get_nt_acl_at_fn = zfsacl_get_nt_acl_at,
 	.fset_nt_acl_fn = zfsacl_fset_nt_acl,
 };
 
