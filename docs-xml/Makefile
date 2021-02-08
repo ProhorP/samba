@@ -154,7 +154,7 @@ endif
 endif
 
 # Adobe PDF files  
-$(PDFDIR)/%.pdf: %/index.xml $(PDFDIR) xslt/latex.xsl %-images-latex-png %-images-latex-pdf
+$(PDFDIR)/%.pdf: %/index.xml $(PDFDIR) xslt/latex.xsl
 	$(DBLATEX) $(DBLATEX_OPTIONS) -I $*/images -t pdf -o $@ $<
 
 # PostScript files
