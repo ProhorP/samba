@@ -4,7 +4,7 @@
 # released under GNU GPL v3 or later
 
 from __future__ import print_function
-from subprocess import call, check_call, check_output, Popen, PIPE
+from subprocess import call, check_call, check_output, Popen, PIPE, CalledProcessError
 import os
 import tarfile
 import sys
@@ -37,7 +37,7 @@ def find_git_root():
     '''get to the top of the git repo'''
     p = os.getcwd()
     while p != '/':
-        if os.path.isdir(os.path.join(p, ".git")):
+        if os.path.exists(os.path.join(p, ".git")):
             return p
         p = os.path.abspath(os.path.join(p, '..'))
     return None
@@ -823,6 +823,17 @@ def run_cmd(cmd, dir=".", show=None, output=False, checkfail=True):
     else:
         return call(cmd, shell=True, cwd=dir)
 
+def rmdir_force(dirname, re_raise=True):
+    try:
+        run_cmd("test -d %s && chmod -R +w %s; rm -rf %s" % (
+                dirname, dirname, dirname), output=True, show=True)
+    except CalledProcessError as e:
+        do_print("Failed: '%s'" % (str(e)))
+        run_cmd("tree %s" % dirname, output=True, show=True)
+        if re_raise:
+            raise
+        return False
+    return True
 
 class builder(object):
     '''handle build of one directory'''
@@ -845,10 +856,10 @@ class builder(object):
         self.test_source_dir = "%s/%s" % (testbase, self.tag)
         self.cwd = "%s/%s" % (self.test_source_dir, self.dir)
         self.prefix = "%s/%s" % (test_prefix, self.tag)
-        run_cmd("rm -rf %s" % self.test_source_dir)
-        run_cmd("rm -rf %s" % self.prefix)
+        rmdir_force(self.test_source_dir)
+        rmdir_force(self.prefix)
         if cp:
-            run_cmd("cp --recursive --link --archive %s %s" % (test_master, self.test_source_dir), dir=test_master, show=True)
+            run_cmd("cp -R -a -l %s %s" % (test_master, self.test_source_dir), dir=test_master, show=True)
         else:
             run_cmd("git clone --recursive --shared %s %s" % (test_master, self.test_source_dir), dir=test_master, show=True)
         self.start_next()
@@ -856,8 +867,8 @@ class builder(object):
     def start_next(self):
         if self.next == len(self.sequence):
             if not options.nocleanup:
-                run_cmd("rm -rf %s" % self.test_source_dir)
-                run_cmd("rm -rf %s" % self.prefix)
+                rmdir_force(self.test_source_dir)
+                rmdir_force(self.prefix)
             do_print('%s: Completed OK' % self.name)
             self.done = True
             return
@@ -979,7 +990,10 @@ class buildlist(object):
                         'cc --version',
                         'df -m .',
                         'df -m %s' % testbase]:
-                out = run_cmd(cmd, output=True, checkfail=False)
+                try:
+                    out = run_cmd(cmd, output=True, checkfail=False)
+                except CalledProcessError as e:
+                    out = "<failed: %s>" % str(e)
                 print('### %s' % cmd, file=f)
                 print(out, file=f)
                 print(file=f)
@@ -1008,14 +1022,23 @@ class buildlist(object):
         self.tail_proc = Popen(cmd, close_fds=True)
 
 
-def cleanup():
+def cleanup(do_raise=False):
     if options.nocleanup:
         return
     run_cmd("stat %s || true" % test_tmpdir, show=True)
     run_cmd("stat %s" % testbase, show=True)
     do_print("Cleaning up %r" % cleanup_list)
     for d in cleanup_list:
-        run_cmd("rm -rf %s" % d)
+        ok = rmdir_force(d, re_raise=False)
+        if ok:
+            continue
+        if os.path.isdir(d):
+            do_print("Killing, waiting and retry")
+            run_cmd("killbysubdir %s > /dev/null 2>&1" % d, checkfail=False)
+        else:
+            do_print("Waiting and retry")
+        time.sleep(1)
+        rmdir_force(d, re_raise=do_raise)
 
 
 def daemonize(logfile):
@@ -1281,7 +1304,7 @@ while True:
         (status, failed_task, failed_stage, failed_tag, errstr) = blist.run()
         if status != 0 or errstr != "retry":
             break
-        cleanup()
+        cleanup(do_raise=True)
     except Exception:
         cleanup()
         raise
