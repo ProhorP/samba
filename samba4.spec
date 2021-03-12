@@ -61,7 +61,7 @@
 %endif
 
 Name:    samba
-Version: 4.13.4
+Version: 4.13.5
 Release: alt1
 
 Group:   System/Servers
@@ -1867,6 +1867,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Mar 13 2021 Evgeny Sinelikov <sin@altlinux.org> 4.13.5-alt1
+- Update to latest release of Samba 4.13
+
 * Mon Feb 08 2021 Evgeny Sinelikov <sin@altlinux.org> 4.13.4-alt1
 - Update to latest release of Samba 4.13:
   + Insecure wide links functionality has been moved into a separate VFS module;
