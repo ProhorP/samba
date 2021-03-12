@@ -1343,6 +1343,7 @@ static bool run_tcon_test(int dummy)
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("%s refused 2nd tree connect (%s)\n", host,
 		       nt_errstr(status));
+		cli_state_restore_tcon(cli, orig_tcon);
 		cli_shutdown(cli);
 		return False;
 	}
@@ -1395,6 +1396,8 @@ static bool run_tcon_test(int dummy)
 	status = cli_close(cli, fnum1);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("close failed (%s)\n", nt_errstr(status));
+		cli_state_restore_tcon(cli, orig_tcon);
+		cli_shutdown(cli);
 		return False;
 	}
 
@@ -1403,6 +1406,8 @@ static bool run_tcon_test(int dummy)
 	status = cli_tdis(cli);
 	if (!NT_STATUS_IS_OK(status)) {
 		printf("secondary tdis failed (%s)\n", nt_errstr(status));
+		cli_state_restore_tcon(cli, orig_tcon);
+		cli_shutdown(cli);
 		return False;
 	}
 
@@ -11714,7 +11719,7 @@ static bool run_uid_regression_test(int dummy)
 	int16_t old_vuid;
 	int32_t old_cnum;
 	bool correct = True;
-	struct smbXcli_tcon *orig_tcon = NULL;
+	struct smbXcli_tcon *tcon_copy = NULL;
 	NTSTATUS status;
 
 	printf("starting uid regression test\n");
@@ -11755,8 +11760,20 @@ static bool run_uid_regression_test(int dummy)
 	}
 
 	old_cnum = cli_state_get_tid(cli);
-	orig_tcon = cli_state_save_tcon(cli);
-	if (orig_tcon == NULL) {
+	/*
+	 * This is an SMB1-only test.
+	 * Copy the tcon, not "save/restore".
+	 *
+	 * In SMB1 the cli_tdis() below frees
+	 * cli->smb1.tcon so we need a copy
+	 * of the struct to put back for the
+	 * second tdis call with invalid vuid.
+	 *
+	 * This is a test-only hack. Real client code
+	 * uses cli_state_save_tcon()/cli_state_restore_tcon().
+	 */
+	tcon_copy = smbXcli_tcon_copy(cli, cli->smb1.tcon);
+	if (tcon_copy == NULL) {
 		correct = false;
 		goto out;
 	}
@@ -11772,11 +11789,11 @@ static bool run_uid_regression_test(int dummy)
 	} else {
 		d_printf("First tdis failed (%s)\n", nt_errstr(status));
 		correct = false;
-		cli_state_restore_tcon(cli, orig_tcon);
+		cli->smb1.tcon = tcon_copy;
 		goto out;
 	}
 
-	cli_state_restore_tcon(cli, orig_tcon);
+	cli->smb1.tcon = tcon_copy;
 	cli_state_set_uid(cli, old_vuid);
 	cli_state_set_tid(cli, old_cnum);
 
