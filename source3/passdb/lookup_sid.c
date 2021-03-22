@@ -113,17 +113,36 @@ bool lookup_name(TALLOC_CTX *mem_ctx,
 		full_name, domain, name));
 	DEBUG(10, ("lookup_name: flags = 0x0%x\n", flags));
 
-	if (((flags & LOOKUP_NAME_DOMAIN) || (flags == 0)) &&
-	    strequal(domain, get_global_sam_name()))
-	{
+	if ((flags & LOOKUP_NAME_DOMAIN) || (flags == 0)) {
+		bool check_global_sam = false;
 
-		/* It's our own domain, lookup the name in passdb */
-		if (lookup_global_sam_name(name, flags, &rid, &type)) {
-			sid_compose(&sid, get_global_sam_sid(), rid);
-			goto ok;
+		check_global_sam = strequal(domain, get_global_sam_name());
+
+		/* If we are running on a DC that has PASSDB module with domain
+		 * information, check if DNS forest name is matching the domain
+		 * name. This is the case of FreeIPA domain controller when
+		 * trusted AD DC looks up users found in a Global Catalog of
+		 * the forest root domain. */
+		if (!check_global_sam && (IS_DC)) {
+			struct pdb_domain_info *dom_info = NULL;
+			dom_info = pdb_get_domain_info(tmp_ctx);
+
+			if ((dom_info != NULL) && (dom_info->dns_forest != NULL)) {
+				check_global_sam = strequal(domain, dom_info->dns_forest);
+			}
+
+			TALLOC_FREE(dom_info);
 		}
-		TALLOC_FREE(tmp_ctx);
-		return false;
+
+		if (check_global_sam) {
+			/* It's our own domain, lookup the name in passdb */
+			if (lookup_global_sam_name(name, flags, &rid, &type)) {
+				sid_compose(&sid, get_global_sam_sid(), rid);
+				goto ok;
+			}
+			TALLOC_FREE(tmp_ctx);
+			return false;
+		}
 	}
 
 	if ((flags & LOOKUP_NAME_BUILTIN) &&
@@ -1339,14 +1358,21 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
 done:
 	for (i=0; i<num_sids; i++) {
 		switch(ids[i].type) {
-		case WBC_ID_TYPE_GID:
-		case WBC_ID_TYPE_UID:
-		case WBC_ID_TYPE_BOTH:
+		case ID_TYPE_GID:
+		case ID_TYPE_UID:
+		case ID_TYPE_BOTH:
 			if (ids[i].id == -1) {
 				ids[i].type = ID_TYPE_NOT_SPECIFIED;
 			}
 			break;
-		case WBC_ID_TYPE_NOT_SPECIFIED:
+		case ID_TYPE_NOT_SPECIFIED:
+			break;
+		case ID_TYPE_WB_REQUIRE_TYPE:
+			/*
+			 * these are internal between winbindd
+			 * parent and child.
+			 */
+			smb_panic(__location__);
 			break;
 		}
 	}

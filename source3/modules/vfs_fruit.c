@@ -585,7 +585,7 @@ static NTSTATUS fruit_check_access(vfs_handle_struct *handle,
 		  access_mask & FILE_WRITE_DATA ? "WRITE" : "-",
 		  share_mode);
 
-	if (fsp->fh->fd == -1) {
+	if (fsp_get_io_fd(fsp) == -1) {
 		return NT_STATUS_OK;
 	}
 
@@ -892,10 +892,14 @@ static bool readdir_attr_meta_finderi_stream(
 		return false;
 	}
 
+	status = openat_pathref_fsp(handle->conn->cwd_fsp, stream_name);
+	if (!NT_STATUS_IS_OK(status)) {
+		return false;
+	}
+
 	status = SMB_VFS_CREATE_FILE(
 		handle->conn,                           /* conn */
 		NULL,                                   /* req */
-		&handle->conn->cwd_fsp,			/* dirfsp */
 		stream_name,				/* fname */
 		FILE_READ_DATA,                         /* access_mask */
 		(FILE_SHARE_READ | FILE_SHARE_WRITE |   /* share_access */
@@ -1309,27 +1313,6 @@ static int fruit_connect(vfs_handle_struct *handle,
 	return rc;
 }
 
-static int fruit_fake_fd(void)
-{
-	int pipe_fds[2];
-	int fd;
-	int ret;
-
-	/*
-	 * Return a valid fd, but ensure any attempt to use it returns
-	 * an error (EPIPE). Once we get a write on the handle, we open
-	 * the real fd.
-	 */
-	ret = pipe(pipe_fds);
-	if (ret != 0) {
-		return -1;
-	}
-	fd = pipe_fds[0];
-	close(pipe_fds[1]);
-
-	return fd;
-}
-
 static int fruit_open_meta_stream(vfs_handle_struct *handle,
 				  const struct files_struct *dirfsp,
 				  const struct smb_filename *smb_fname,
@@ -1366,7 +1349,7 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
 		return -1;
 	}
 
-	fd = fruit_fake_fd();
+	fd = vfs_fake_fd();
 	if (fd == -1) {
 		VFS_REMOVE_FSP_EXTENSION(handle, fsp);
 		return -1;
@@ -1406,7 +1389,7 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
 		return -1;
 	}
 
-	fd = fruit_fake_fd();
+	fd = vfs_fake_fd();
 	if (fd == -1) {
 		return -1;
 	}
@@ -1509,10 +1492,10 @@ static int fruit_open_rsrc_adouble(vfs_handle_struct *handle,
 			goto exit;
 		}
 
-		fsp->fh->fd = hostfd;
+		fsp_set_fd(fsp, hostfd);
 
 		rc = ad_fset(handle, ad, fsp);
-		fsp->fh->fd = -1;
+		fsp_set_fd(fsp, -1);
 		if (rc != 0) {
 			rc = -1;
 			goto exit;
@@ -1533,7 +1516,7 @@ exit:
 			 * fd_close_posix here, but we don't have a
 			 * full fsp yet
 			 */
-			fsp->fh->fd = hostfd;
+			fsp_set_fd(fsp, hostfd);
 			SMB_VFS_CLOSE(fsp);
 		}
 		hostfd = -1;
@@ -1555,7 +1538,7 @@ static int fruit_open_rsrc_xattr(vfs_handle_struct *handle,
 	/*
 	 * As there's no attropenat() this is only going to work with AT_FDCWD.
 	 */
-	SMB_ASSERT(dirfsp->fh->fd == AT_FDCWD);
+	SMB_ASSERT(fsp_get_pathref_fd(dirfsp) == AT_FDCWD);
 
 	fd = attropen(smb_fname->base_name,
 		      AFPRESOURCE_EA_NETATALK,
@@ -1670,6 +1653,8 @@ static int fruit_openat(vfs_handle_struct *handle,
 
 	DBG_DEBUG("Path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
 
+	/* Prevent reopen optimisation */
+	fsp->fsp_flags.have_proc_fds = false;
 	return fd;
 }
 
@@ -1683,19 +1668,23 @@ static int fruit_close_meta(vfs_handle_struct *handle,
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
 				struct fruit_config_data, return -1);
 
+	if (fio == NULL) {
+		return -1;
+	}
+
 	switch (config->meta) {
 	case FRUIT_META_STREAM:
 		if (fio->fake_fd) {
-			ret = vfs_fake_fd_close(fsp->fh->fd);
-			fsp->fh->fd = -1;
+			ret = vfs_fake_fd_close(fsp_get_pathref_fd(fsp));
+			fsp_set_fd(fsp, -1);
 		} else {
 			ret = SMB_VFS_NEXT_CLOSE(handle, fsp);
 		}
 		break;
 
 	case FRUIT_META_NETATALK:
-		ret = vfs_fake_fd_close(fsp->fh->fd);
-		fsp->fh->fd = -1;
+		ret = vfs_fake_fd_close(fsp_get_pathref_fd(fsp));
+		fsp_set_fd(fsp, -1);
 		break;
 
 	default:
@@ -1723,8 +1712,8 @@ static int fruit_close_rsrc(vfs_handle_struct *handle,
 		break;
 
 	case FRUIT_RSRC_XATTR:
-		ret = vfs_fake_fd_close(fsp->fh->fd);
-		fsp->fh->fd = -1;
+		ret = vfs_fake_fd_close(fsp_get_pathref_fd(fsp));
+		fsp_set_fd(fsp, -1);
 		break;
 
 	default:
@@ -1741,7 +1730,7 @@ static int fruit_close(vfs_handle_struct *handle,
 	int ret;
 	int fd;
 
-	fd = fsp->fh->fd;
+	fd = fsp_get_pathref_fd(fsp);
 
 	DBG_DEBUG("Path [%s] fd [%d]\n", smb_fname_str_dbg(fsp->fsp_name), fd);
 
@@ -2147,7 +2136,7 @@ static ssize_t fruit_pread_meta_stream(vfs_handle_struct *handle,
 	ssize_t nread;
 	int ret;
 
-	if (fio->fake_fd) {
+	if ((fio == NULL) || fio->fake_fd) {
 		return -1;
 	}
 
@@ -2486,10 +2475,10 @@ static ssize_t fruit_pwrite_meta_stream(vfs_handle_struct *handle,
 	}
 
 	if (fio->fake_fd) {
-		int fd = fsp->fh->fd;
+		int fd = fsp_get_pathref_fd(fsp);
 
 		ret = vfs_fake_fd_close(fd);
-		fsp->fh->fd = -1;
+		fsp_set_fd(fsp, -1);
 		if (ret != 0) {
 			DBG_ERR("Close [%s] failed: %s\n",
 				fsp_str_dbg(fsp), strerror(errno));
@@ -2497,7 +2486,7 @@ static ssize_t fruit_pwrite_meta_stream(vfs_handle_struct *handle,
 		}
 
 		fd = SMB_VFS_NEXT_OPENAT(handle,
-					 fsp->dirfsp,
+					 fsp->conn->cwd_fsp,
 					 fsp->fsp_name,
 					 fsp,
 					 fio->flags,
@@ -2507,7 +2496,7 @@ static ssize_t fruit_pwrite_meta_stream(vfs_handle_struct *handle,
 				fsp_str_dbg(fsp), strerror(errno));
 			return -1;
 		}
-		fsp->fh->fd = fd;
+		fsp_set_fd(fsp, fd);
 		fio->fake_fd = false;
 	}
 
@@ -3836,7 +3825,7 @@ static int fruit_ftruncate_rsrc_adouble(struct vfs_handle_struct *handle,
 
 	ad_off = ad_getentryoff(ad, ADEID_RFORK);
 
-	rc = ftruncate(fsp->fh->fd, offset + ad_off);
+	rc = SMB_VFS_NEXT_FTRUNCATE(handle, fsp, offset + ad_off);
 	if (rc != 0) {
 		TALLOC_FREE(ad);
 		return -1;
@@ -3941,7 +3930,6 @@ static int fruit_ftruncate(struct vfs_handle_struct *handle,
 
 static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 				  struct smb_request *req,
-				  struct files_struct **dirfsp,
 				  struct smb_filename *smb_fname,
 				  uint32_t access_mask,
 				  uint32_t share_access,
@@ -3995,7 +3983,7 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	}
 
 	status = SMB_VFS_NEXT_CREATE_FILE(
-		handle, req, dirfsp, smb_fname,
+		handle, req, smb_fname,
 		access_mask, share_access,
 		create_disposition, create_options,
 		file_attributes, oplock_request,
@@ -4039,7 +4027,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
 	}
 
 	if ((config->locking == FRUIT_LOCKING_NETATALK) &&
-	    (fsp->op != NULL))
+	    (fsp->op != NULL) &&
+	    !fsp->fsp_flags.is_pathref)
 	{
 		status = fruit_check_access(
 			handle, *result,
@@ -4755,7 +4744,6 @@ static bool fruit_get_bandsize(vfs_handle_struct *handle,
 	status = SMB_VFS_NEXT_CREATE_FILE(
 		handle,				/* conn */
 		NULL,				/* req */
-		&handle->conn->cwd_fsp,		/* dirfsp */
 		smb_fname,			/* fname */
 		FILE_GENERIC_READ,		/* access_mask */
 		FILE_SHARE_READ | FILE_SHARE_WRITE, /* share_access */
@@ -4778,7 +4766,9 @@ static bool fruit_get_bandsize(vfs_handle_struct *handle,
 		goto out;
 	}
 
-	file_data = talloc_array(talloc_tos(), uint8_t, plist_file_size);
+	file_data = talloc_zero_array(talloc_tos(),
+				      uint8_t,
+				      plist_file_size + 1);
 	if (file_data == NULL) {
 		ok = false;
 		goto out;

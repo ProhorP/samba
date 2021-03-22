@@ -650,7 +650,9 @@ static int vfs_gluster_closedir(struct vfs_handle_struct *handle, DIR *dirp)
 }
 
 static struct dirent *vfs_gluster_readdir(struct vfs_handle_struct *handle,
-					  DIR *dirp, SMB_STRUCT_STAT *sbuf)
+					  struct files_struct *dirfsp,
+					  DIR *dirp,
+					  SMB_STRUCT_STAT *sbuf)
 {
 	static char direntbuf[512];
 	int ret;
@@ -712,11 +714,23 @@ static int vfs_gluster_mkdirat(struct vfs_handle_struct *handle,
 			const struct smb_filename *smb_fname,
 			mode_t mode)
 {
+	struct smb_filename *full_fname = NULL;
 	int ret;
 
 	START_PROFILE(syscall_mkdirat);
-	SMB_ASSERT(dirfsp == dirfsp->conn->cwd_fsp);
-	ret = glfs_mkdir(handle->data, smb_fname->base_name, mode);
+
+	full_fname = full_path_from_dirfsp_atname(talloc_tos(),
+						  dirfsp,
+						  smb_fname);
+	if (full_fname == NULL) {
+		END_PROFILE(syscall_mkdirat);
+		return -1;
+	}
+
+	ret = glfs_mkdir(handle->data, full_fname->base_name, mode);
+
+	TALLOC_FREE(full_fname);
+
 	END_PROFILE(syscall_mkdirat);
 
 	return ret;
@@ -729,6 +743,8 @@ static int vfs_gluster_openat(struct vfs_handle_struct *handle,
 			      int flags,
 			      mode_t mode)
 {
+	struct smb_filename *name = NULL;
+	bool became_root = false;
 	glfs_fd_t *glfd;
 	glfs_fd_t **p_tmp;
 
@@ -737,13 +753,31 @@ static int vfs_gluster_openat(struct vfs_handle_struct *handle,
 	/*
 	 * Looks like glfs API doesn't have openat().
 	 */
-	SMB_ASSERT(dirfsp->fh->fd == AT_FDCWD);
+	if (fsp_get_pathref_fd(dirfsp) != AT_FDCWD) {
+		name = full_path_from_dirfsp_atname(talloc_tos(),
+						    dirfsp,
+						    smb_fname);
+		if (name == NULL) {
+			return -1;
+		}
+		smb_fname = name;
+	}
 
 	p_tmp = VFS_ADD_FSP_EXTENSION(handle, fsp, glfs_fd_t *, NULL);
 	if (p_tmp == NULL) {
+		TALLOC_FREE(name);
 		END_PROFILE(syscall_openat);
 		errno = ENOMEM;
 		return -1;
+	}
+
+	if (fsp->fsp_flags.is_pathref) {
+		/*
+		 * ceph doesn't support O_PATH so we have to fallback to
+		 * become_root().
+		 */
+		become_root();
+		became_root = true;
 	}
 
 	if (flags & O_DIRECTORY) {
@@ -755,7 +789,14 @@ static int vfs_gluster_openat(struct vfs_handle_struct *handle,
 		glfd = glfs_open(handle->data, smb_fname->base_name, flags);
 	}
 
+	if (became_root) {
+		unbecome_root();
+	}
+
+	fsp->fsp_flags.have_proc_fds = false;
+
 	if (glfd == NULL) {
+		TALLOC_FREE(name);
 		END_PROFILE(syscall_openat);
 		/* no extension destroy_fn, so no need to save errno */
 		VFS_REMOVE_FSP_EXTENSION(handle, fsp);
@@ -764,6 +805,7 @@ static int vfs_gluster_openat(struct vfs_handle_struct *handle,
 
 	*p_tmp = glfd;
 
+	TALLOC_FREE(name);
 	END_PROFILE(syscall_openat);
 	/* An arbitrary value for error reporting, so you know its us. */
 	return 13371337;
@@ -1347,7 +1389,7 @@ static int vfs_gluster_fstat(struct vfs_handle_struct *handle,
 	}
 	if (ret < 0) {
 		DEBUG(0, ("glfs_fstat(%d) failed: %s\n",
-			  fsp->fh->fd, strerror(errno)));
+			  fsp_get_io_fd(fsp), strerror(errno)));
 	}
 	END_PROFILE(syscall_fstat);
 
@@ -1802,20 +1844,32 @@ static int vfs_gluster_symlinkat(struct vfs_handle_struct *handle,
 				struct files_struct *dirfsp,
 				const struct smb_filename *new_smb_fname)
 {
+	struct smb_filename *full_fname = NULL;
 	int ret;
 
 	START_PROFILE(syscall_symlinkat);
-	SMB_ASSERT(dirfsp == dirfsp->conn->cwd_fsp);
+
+	full_fname = full_path_from_dirfsp_atname(talloc_tos(),
+						dirfsp,
+						new_smb_fname);
+	if (full_fname == NULL) {
+		END_PROFILE(syscall_symlinkat);
+		return -1;
+	}
+
 	ret = glfs_symlink(handle->data,
 			link_target->base_name,
-			new_smb_fname->base_name);
+			full_fname->base_name);
+
+	TALLOC_FREE(full_fname);
+
 	END_PROFILE(syscall_symlinkat);
 
 	return ret;
 }
 
 static int vfs_gluster_readlinkat(struct vfs_handle_struct *handle,
-				files_struct *dirfsp,
+				const struct files_struct *dirfsp,
 				const struct smb_filename *smb_fname,
 				char *buf,
 				size_t bufsiz)
@@ -1858,11 +1912,23 @@ static int vfs_gluster_mknodat(struct vfs_handle_struct *handle,
 				mode_t mode,
 				SMB_DEV_T dev)
 {
+	struct smb_filename *full_fname = NULL;
 	int ret;
 
 	START_PROFILE(syscall_mknodat);
-	SMB_ASSERT(dirfsp == dirfsp->conn->cwd_fsp);
-	ret = glfs_mknod(handle->data, smb_fname->base_name, mode, dev);
+
+	full_fname = full_path_from_dirfsp_atname(talloc_tos(),
+						dirfsp,
+						smb_fname);
+	if (full_fname == NULL) {
+		END_PROFILE(syscall_mknodat);
+		return -1;
+	}
+
+	ret = glfs_mknod(handle->data, full_fname->base_name, mode, dev);
+
+	TALLOC_FREE(full_fname);
+
 	END_PROFILE(syscall_mknodat);
 
 	return ret;
@@ -2251,7 +2317,6 @@ static struct vfs_fn_pointers glusterfs_fns = {
 	.sys_acl_get_fd_fn = posixacl_xattr_acl_get_fd,
 	.sys_acl_blob_get_file_fn = posix_sys_acl_blob_get_file,
 	.sys_acl_blob_get_fd_fn = posix_sys_acl_blob_get_fd,
-	.sys_acl_set_file_fn = posixacl_xattr_acl_set_file,
 	.sys_acl_set_fd_fn = posixacl_xattr_acl_set_fd,
 	.sys_acl_delete_def_file_fn = posixacl_xattr_acl_delete_def_file,
 

@@ -101,10 +101,6 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 		goto error;
 	}
 
-	cli->dfs_mountpoint = talloc_strdup(cli, "");
-	if (!cli->dfs_mountpoint) {
-		goto error;
-	}
 	cli->raw_status = NT_STATUS_INTERNAL_ERROR;
 	cli->map_dos_errors = true; /* remove this */
 	cli->timeout = CLIENT_TIMEOUT;
@@ -210,7 +206,7 @@ struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
  Close all pipes open on this session.
 ****************************************************************************/
 
-void cli_nt_pipes_close(struct cli_state *cli)
+static void cli_nt_pipes_close(struct cli_state *cli)
 {
 	while (cli->pipe_list != NULL) {
 		/*

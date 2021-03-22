@@ -73,6 +73,7 @@
 #include "lib/util/samba_util.h"
 #include "libcli/auth/ntlm_check.h"
 #include "lib/crypto/gnutls_helpers.h"
+#include "lib/util/smb_strtox.h"
 
 #ifdef HAVE_HTTPCONNECTENCRYPT
 #include <cups/http.h>
@@ -2407,11 +2408,14 @@ bool lpcfg_dump_a_parameter(struct loadparm_context *lp_ctx,
 				local_parm_name, parm_opt);
 			if (parm_opt_value) {
 				fprintf(f, "%s\n", parm_opt_value);
+				TALLOC_FREE(local_parm_name);
 				return true;
 			}
 		}
+		TALLOC_FREE(local_parm_name);
 		return false;
 	}
+	TALLOC_FREE(local_parm_name);
 
 	/* parameter is not parametric, search the table */
 	parm = lpcfg_parm_struct(lp_ctx, parm_name);
@@ -3111,6 +3115,13 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 	lpcfg_do_global_parameter(
 		lp_ctx, "ldap max search request size", "256000");
 
+	/* Async DNS query timeout in seconds. */
+	lpcfg_do_global_parameter(lp_ctx, "async dns timeout", "10");
+
+	lpcfg_do_global_parameter(lp_ctx,
+				  "client smb encrypt",
+				  "default");
+
 	for (i = 0; parm_table[i].label; i++) {
 		if (!(lp_ctx->flags[i] & FLAG_CMDLINE)) {
 			lp_ctx->flags[i] |= FLAG_DEFAULT;
@@ -3702,4 +3713,34 @@ char *lpcfg_substituted_string(TALLOC_CTX *mem_ctx,
 					     lp_sub,
 					     raw_value,
 					     lp_sub->private_data);
+}
+
+/**
+ * @brief Parse a string value of a given parameter to its integer enum value.
+ *
+ * @param[in]  param_name    The parameter name (e.g. 'client smb encrypt')
+ *
+ * @param[in]  param_value   The parameter value (e.g. 'required').
+ *
+ * @return The integer value of the enum the param_value matches or INT32_MIN
+ * on error.
+ */
+int32_t lpcfg_parse_enum_vals(const char *param_name,
+			      const char *param_value)
+{
+	struct parm_struct *parm = NULL;
+	int32_t ret = INT32_MIN;
+	bool ok;
+
+	parm = lpcfg_parm_struct(NULL, param_name);
+	if (parm == NULL) {
+		return INT32_MIN;
+	}
+
+	ok = lp_set_enum_parm(parm, param_value, &ret);
+	if (!ok) {
+		return INT32_MIN;
+	}
+
+	return ret;
 }

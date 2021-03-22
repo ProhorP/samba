@@ -239,7 +239,7 @@ sub check_env($$)
 	ad_member_idmap_ad  => ["fl2008r2dc"],
 	ad_member_fips      => ["ad_dc_fips"],
 
-	clusteredmember_smb1 => ["nt4_dc"],
+	clusteredmember => ["nt4_dc"],
 );
 
 %Samba3::ENV_DEPS_POST = ();
@@ -465,7 +465,7 @@ sub setup_nt4_member
 	return $ret;
 }
 
-sub setup_clusteredmember_smb1
+sub setup_clusteredmember
 {
 	my ($self, $prefix, $nt4_dc_vars) = @_;
 	my $count = 0;
@@ -515,8 +515,6 @@ sub setup_clusteredmember_smb1
        server signing = on
        clustering = yes
        ctdbd socket = ${socket}
-       client min protocol = CORE
-       server min protocol = LANMAN1
        dbwrap_tdb_mutexes:* = yes
        ${require_mutexes}
 ";
@@ -718,6 +716,46 @@ sub provision_ad_member
 	path = $share_dir
 	valid users = ADDOMAIN/%U
 
+[sub_valid_users_domain]
+    path = $share_dir
+    valid users = %D/%U
+
+[sub_valid_users_group]
+    path = $share_dir
+    valid users = \@$dcvars->{DOMAIN}/%G
+
+[valid_users]
+    path = $share_dir
+    valid users = $dcvars->{DOMAIN}/$dcvars->{DC_USERNAME}
+
+[valid_users_group]
+    path = $share_dir
+    valid users = \"\@$dcvars->{DOMAIN}/domain users\"
+
+[valid_users_unix_group]
+    path = $share_dir
+    valid users = \"+$dcvars->{DOMAIN}/domain users\"
+
+[valid_users_nis_group]
+    path = $share_dir
+    valid users = \"&$dcvars->{DOMAIN}/domain users\"
+
+[valid_users_unix_nis_group]
+    path = $share_dir
+    valid users = \"+&$dcvars->{DOMAIN}/domain users\"
+
+[valid_users_nis_unix_group]
+    path = $share_dir
+    valid users = \"&+$dcvars->{DOMAIN}/domain users\"
+
+[invalid_users]
+    path = $share_dir
+    invalid users = $dcvars->{DOMAIN}/$dcvars->{DC_USERNAME}
+
+[valid_and_invalid_users]
+    path = $share_dir
+    valid users = $dcvars->{DOMAIN}/$dcvars->{DC_USERNAME} $dcvars->{DOMAIN}/alice
+    invalid users = $dcvars->{DOMAIN}/$dcvars->{DC_USERNAME}
 ";
 
 	my $ret = $self->provision(
@@ -1062,6 +1100,8 @@ sub setup_ad_member_idmap_ad
 	idmap config * : range = 1000000-1999999
 	idmap config $dcvars->{DOMAIN} : backend = ad
 	idmap config $dcvars->{DOMAIN} : range = 2000000-2999999
+	idmap config $dcvars->{DOMAIN} : unix_primary_group = yes
+	idmap config $dcvars->{DOMAIN} : unix_nss_info = yes
 	idmap config $dcvars->{TRUST_DOMAIN} : backend = ad
 	idmap config $dcvars->{TRUST_DOMAIN} : range = 2000000-2999999
 	gensec_gssapi:requested_life_time = 5
@@ -1182,7 +1222,7 @@ sub setup_simpleserver
 	ntlm auth = yes
 	vfs objects = xattr_tdb streams_depot
 	change notify = no
-	smb encrypt = off
+	server smb encrypt = off
 
 [vfs_aio_pthread]
 	path = $prefix_abs/share
@@ -1245,11 +1285,6 @@ sub setup_simpleserver
 	store dos attributes = yes
 	hide files = /hidefile/
 	hide dot files = yes
-
-[enc_desired]
-	path = $prefix_abs/share
-	vfs objects =
-	smb encrypt = desired
 
 [hidenewfiles]
 	path = $prefix_abs/share
@@ -2031,6 +2066,12 @@ sub provision($$)
 	my $smbcacls_sharedir_dfs="$shrdir/smbcacls_sharedir_dfs";
 	push(@dirs,$smbcacls_sharedir_dfs);
 
+	my $smbcacls_share="$shrdir/smbcacls_share";
+	push(@dirs,$smbcacls_share);
+
+	my $smbcacls_share_testdir="$shrdir/smbcacls_share/smbcacls";
+	push(@dirs,$smbcacls_share_testdir);
+
 	my $badnames_shrdir="$shrdir/badnames";
 	push(@dirs,$badnames_shrdir);
 
@@ -2359,6 +2400,11 @@ sub provision($$)
 	}
 
 	print CONF "
+[smbcacls_share]
+	path = $smbcacls_share
+        comment = smb username is [%U]
+	msdfs root = yes
+
 [smbcacls_sharedir_dfs]
 	path = $smbcacls_sharedir_dfs
         comment = smb username is [%U]
@@ -2372,7 +2418,7 @@ sub provision($$)
 [tmpenc]
 	path = $shrdir
 	comment = encrypt smb username is [%U]
-	smb encrypt = required
+	server smb encrypt = required
 	vfs objects = dirsort
 [tmpguest]
 	path = $shrdir
@@ -2854,7 +2900,22 @@ sub provision($$)
 [delete_readonly]
 	path = $prefix_abs/share
 	delete readonly = yes
+
+[enc_desired]
+	path = $prefix_abs/share
+	vfs objects =
+	server smb encrypt = desired
+
+[enc_off]
+	path = $prefix_abs/share
+	vfs objects =
+	server smb encrypt = off
+
+[notify_priv]
+	copy = tmp
+	honor change notify privilege = yes
 	";
+
 	close(CONF);
 
 	my $net = Samba::bindir_path($self, "net");
@@ -3389,20 +3450,13 @@ sub check_or_start_ctdb($$) {
 
 		my $cmd = "ctdb/tests/local_daemons.sh";
 		my @full_cmd = ("$cmd", "$prefix", "start", "$i");
-		# Dummy environment variables to avoid
-		# Samba3::get_env_for_process() from generating them
-		# and including UID_WRAPPER_ROOT=1, which causes
-		# "Unable to secure ctdb socket" error.
-		my $env_vars = {
-			CTDB_DUMMY => "1",
-		};
 		my $daemon_ctx = {
 			NAME => "ctdbd",
 			BINARY_PATH => $cmd,
 			FULL_CMD => [ @full_cmd ],
 			TEE_STDOUT => 1,
 			LOG_FILE => "/dev/null",
-			ENV_VARS => $env_vars,
+			ENV_VARS => {},
 		};
 
 		print "STARTING CTDBD (node ${i})\n";

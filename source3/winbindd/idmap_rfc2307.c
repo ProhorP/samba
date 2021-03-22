@@ -31,6 +31,7 @@
 #include "nsswitch/winbind_client.h"
 #include "lib/winbind_util.h"
 #include "libcli/security/dom_sid.h"
+#include "lib/global_contexts.h"
 
 /*
  * Config and connection info per domain.
@@ -836,7 +837,7 @@ err:
 	return status;
 }
 
-static struct idmap_methods rfc2307_methods = {
+static const struct idmap_methods rfc2307_methods = {
 	.init = idmap_rfc2307_initialize,
 	.unixids_to_sids = idmap_rfc2307_unixids_to_sids,
 	.sids_to_unixids = idmap_rfc2307_sids_to_unixids,

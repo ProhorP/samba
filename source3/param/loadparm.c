@@ -74,6 +74,7 @@
 #include "source4/lib/tls/tls.h"
 #include "libcli/auth/ntlm_check.h"
 #include "lib/crypto/gnutls_helpers.h"
+#include "lib/util/string_wrappers.h"
 
 #ifdef HAVE_SYS_SYSCTL_H
 #include <sys/sysctl.h>
@@ -241,7 +242,7 @@ static const struct loadparm_service _sDefault =
 	.aio_write_size = 1,
 	.map_readonly = MAP_READONLY_NO,
 	.directory_name_cache_size = 100,
-	.smb_encrypt = SMB_SIGNING_DEFAULT,
+	.server_smb_encrypt = SMB_ENCRYPTION_DEFAULT,
 	.kernel_share_modes = true,
 	.durable_handles = true,
 	.check_parent_directory_delete_on_close = false,
@@ -249,6 +250,7 @@ static const struct loadparm_service _sDefault =
 	.smbd_search_ask_sharemode = true,
 	.smbd_getinfo_ask_sharemode = true,
 	.spotlight_backend = SPOTLIGHT_BACKEND_NOINDEX,
+	.honor_change_notify_privilege = false,
 	.dummy = ""
 };
 
@@ -960,6 +962,11 @@ static void init_globals(struct loadparm_context *lp_ctx, bool reinit_globals)
 	Globals.ldap_max_anonymous_request_size = 256000;
 	Globals.ldap_max_authenticated_request_size = 16777216;
 	Globals.ldap_max_search_request_size = 256000;
+
+	/* Async DNS query timeout (in seconds). */
+	Globals.async_dns_timeout = 10;
+
+	Globals.client_smb_encrypt = SMB_ENCRYPTION_DEFAULT;
 
 	/* Now put back the settings that were set with lp_set_cmdline() */
 	apply_lp_set_cmdline();
@@ -4764,4 +4771,13 @@ enum samba_weak_crypto lp_weak_crypto()
 	}
 
 	return Globals.weak_crypto;
+}
+
+uint32_t lp_get_async_dns_timeout(void)
+{
+	/*
+	 * Clamp minimum async dns timeout to 1 second
+	 * as per the man page.
+	 */
+	return MAX(Globals.async_dns_timeout, 1);
 }
