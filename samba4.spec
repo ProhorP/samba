@@ -61,7 +61,7 @@
 %endif
 
 Name:    samba
-Version: 4.14.0
+Version: 4.14.2
 Release: alt1
 
 Group:   System/Servers
@@ -170,7 +170,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.2.0
+%define ldb_version 2.3.0
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -1877,6 +1877,12 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Mar 25 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.2-alt1
+- Update to latest stable security release of the Samba 4.14
+- Security fixes:
+  + CVE-2020-27840: Heap corruption via crafted DN strings
+  + CVE-2021-20277: Out of bounds read in AD DC LDAP server
+
 * Mon Mar 22 2021 Evgeny Sinelikov <sin@altlinux.org> 4.14.0-alt1
 - Update to release of Samba 4.14 with client Group Policy support
 
