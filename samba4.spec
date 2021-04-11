@@ -62,7 +62,7 @@
 
 Name:    samba
 Version: 4.14.2
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -184,9 +184,19 @@ BuildRequires: python3-module-pyldb-devel
 %description
 Samba is the standard Windows interoperability suite of programs for Linux and Unix.
 
+%package -n admx-samba
+Summary: Samba ADMX policy templates
+Group: System/Configuration/Other
+BuildArch: noarch
+
+%description -n admx-samba
+admx-samba provides ADMX policy templates for Samba project.
+
 %package dc-common
 Summary: Files used by MIT and Heimdal Active Directory Domain Services servers
 Group: System/Servers
+BuildArch: noarch
+Requires: admx-samba = %version-%release
 
 %description dc-common
 %rname-dc-common provides files necessary for both MIT and Heimdal
@@ -271,6 +281,7 @@ The %rname-client package provides Active Directory Domain Services clients.
 %package common
 Summary: Files used by both Samba servers and clients
 Group: System/Servers
+BuildArch: noarch
 Requires: %name-libs = %version-%release
 %if_with libnetapi
 Requires: libnetapi = %version-%release
@@ -1084,6 +1095,9 @@ install -m755 script/traffic_learner %buildroot%_bindir/traffic_learner
 install -m755 script/traffic_replay %buildroot%_bindir/traffic_replay
 #install -m755 script/traffic_summary.pl %buildroot%_bindir/traffic_summary (perl-XML-Twig requires)
 
+# Compatiblity symlink for admx policy templates
+#ln -s ../PolicyDefinitions %buildroot%_datadir/samba/admx
+
 %find_lang pam_winbind
 %find_lang net
 
@@ -1141,16 +1155,16 @@ TDB_NO_FSYNC=1 %make_build test
 %_unitdir/smb.service
 
 %if_with dc
+%files -n admx-samba
+%_datadir/PolicyDefinitions/*.admx
+%_datadir/PolicyDefinitions/*/*.adml
+
 %files dc-common
 %attr(755,root,root) %_initdir/samba
 %_unitdir/samba.service
 %dir /var/lib/samba/sysvol
 %dir %_datadir/samba/setup
 %_datadir/samba/setup
-%dir %_datadir/samba/admx
-%_datadir/samba/admx/samba.admx
-%dir %_datadir/samba/admx/en-US
-%_datadir/samba/admx/en-US/samba.adml
 %if_with doc
 %_man8dir/samba.8*
 %endif #doc
@@ -1330,6 +1344,7 @@ TDB_NO_FSYNC=1 %make_build test
 
 %if_with libcephfs
 %exclude %_man8dir/vfs_ceph.8*
+%exclude %_man8dir/vfs_ceph_snapshots.8*
 %endif
 %if_enabled glusterfs
 %exclude %_man8dir/vfs_glusterfs.8*
@@ -1539,6 +1554,7 @@ TDB_NO_FSYNC=1 %make_build test
 %files vfs-cephfs
 %_samba_mod_libdir/vfs/ceph.so
 %_man8dir/vfs_ceph.8*
+%_man8dir/vfs_ceph_snapshots.8*
 %endif
 
 %if_enabled glusterfs
@@ -1877,6 +1893,11 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Apr 11 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.2-alt2
+- Add separate admx-samba subpackage with Samba ADMX policy templates.
+- Replace ADMX policy templates to common PolicyDefinitions directory.
+- Set buildarch of samba-common and samba-dc-common to noarch.
+
 * Thu Mar 25 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.2-alt1
 - Update to latest stable security release of the Samba 4.14
 - Security fixes:
