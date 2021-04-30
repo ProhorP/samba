@@ -393,14 +393,9 @@ def cache_gpo_dir(conn, cache, sub_dir):
 
 def check_safe_path(path):
     dirs = re.split('/|\\\\', path)
-    sysvol_index = 0
-    ignorecase = re.compile('sysvol', re.IGNORECASE)
-    for d in dirs:
-        if ignorecase.match(d):
-            sysvol_index += 1
-            break
-        sysvol_index += 1
-    dirs = dirs[sysvol_index:]
+    if 'sysvol' in path.lower():
+        ldirs = re.split('/|\\\\', path.lower())
+        dirs = dirs[ldirs.index('sysvol') + 1:]
     if '..' not in dirs:
         return os.path.join(*dirs)
     raise OSError(path)
