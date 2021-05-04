@@ -134,7 +134,9 @@ BuildRequires: zlib-devel
 BuildRequires: libarchive-devel >= 3.1.2
 BuildRequires: libjansson-devel
 BuildRequires: libgpgme-devel
+%ifnarch %e2k
 BuildRequires: liburing-devel >= 0.4
+%endif
 BuildRequires: /usr/bin/rpcgen
 BuildRequires: libtirpc-devel
 BuildRequires: libtasn1-devel
