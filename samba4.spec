@@ -73,7 +73,7 @@
 
 Name:    samba
 Version: 4.14.4
-Release: alt2
+Release: alt2.1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1922,6 +1922,9 @@ TDB_NO_FSYNC=1 %make_build test
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri May 14 2021 Michael Shigorin <mike@altlinux.org> 4.14.4-alt2.1
+- Fix doc knob
+
 * Thu May 06 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.4-alt2
 - Fix backward compatibility to fixed version of libldb with CVE-2021-20254.
 - Replace auth and vfs libraries from samba-libs to samba-dc-libs and samba packages.
