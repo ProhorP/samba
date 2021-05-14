@@ -1602,20 +1602,26 @@ TDB_NO_FSYNC=1 %make_build test
 %if_with libcephfs
 %files vfs-cephfs
 %_samba_mod_libdir/vfs/ceph.so
+%if_with doc
 %_man8dir/vfs_ceph.8*
 %_man8dir/vfs_ceph_snapshots.8*
+%endif
 %endif
 
 %if_enabled glusterfs
 %files vfs-glusterfs
 %_samba_mod_libdir/vfs/glusterfs.so
+%if_with doc
 %_man8dir/vfs_glusterfs.8*
+%endif
 %endif
 
 %if_with snapper
 %files vfs-snapper
 %_samba_mod_libdir/vfs/snapper.so
+%if_with doc
 %_man8dir/vfs_snapper.8*
+%endif
 %endif
 
 %if_with dc
