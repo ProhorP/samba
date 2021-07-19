@@ -395,6 +395,7 @@ static NTSTATUS open_pathref_base_fsp(const struct files_struct *dirfsp,
 {
 	struct smb_filename *smb_fname_base = NULL;
 	NTSTATUS status;
+	int ret;
 
 	smb_fname_base = synthetic_smb_fname(talloc_tos(),
 					     fsp->fsp_name->base_name,
@@ -404,6 +405,11 @@ static NTSTATUS open_pathref_base_fsp(const struct files_struct *dirfsp,
 					     fsp->fsp_name->flags);
 	if (smb_fname_base == NULL) {
 		return NT_STATUS_NO_MEMORY;
+	}
+
+	ret = vfs_stat(fsp->conn, smb_fname_base);
+	if (ret != 0) {
+		return map_nt_error_from_unix(errno);
 	}
 
 	status = openat_pathref_fsp(dirfsp, smb_fname_base);
@@ -435,7 +441,6 @@ NTSTATUS openat_pathref_fsp(const struct files_struct *dirfsp,
 {
 	connection_struct *conn = dirfsp->conn;
 	struct smb_filename *full_fname = NULL;
-	bool file_existed = VALID_STAT(smb_fname->st);
 	struct files_struct *fsp = NULL;
 	int open_flags = O_RDONLY;
 	NTSTATUS status;
@@ -449,8 +454,12 @@ NTSTATUS openat_pathref_fsp(const struct files_struct *dirfsp,
 		return NT_STATUS_OK;
 	}
 
-	if (file_existed && S_ISLNK(smb_fname->st.st_ex_mode)) {
-		return NT_STATUS_STOPPED_ON_SYMLINK;
+	if (!VALID_STAT(smb_fname->st)) {
+		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
+	}
+
+	if (S_ISLNK(smb_fname->st.st_ex_mode)) {
+		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
 
 	status = fsp_new(conn, conn, &fsp);
@@ -496,23 +505,9 @@ NTSTATUS openat_pathref_fsp(const struct files_struct *dirfsp,
 
 	status = fd_openat(dirfsp, smb_fname, fsp, open_flags, 0);
 	if (!NT_STATUS_IS_OK(status)) {
-		DBG_DEBUG("Could not open fd for [%s]: %s\n",
-			  fsp_str_dbg(fsp),
-			  nt_errstr(status));
-
-		if (fsp->base_fsp != NULL) {
-			struct files_struct *tmp_base_fsp = fsp->base_fsp;
-
-			fsp_set_base_fsp(fsp, NULL);
-
-			fd_close(tmp_base_fsp);
-			file_free(NULL, tmp_base_fsp);
-		}
-		file_free(NULL, fsp);
-		fsp = NULL;
-
 		if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND) ||
-		    NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND))
+		    NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_PATH_NOT_FOUND) ||
+		    NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK))
 		{
 			/*
 			 * streams_xattr return NT_STATUS_NOT_FOUND for
@@ -524,19 +519,17 @@ NTSTATUS openat_pathref_fsp(const struct files_struct *dirfsp,
 			 *
 			 * NT_STATUS_OBJECT_NAME_NOT_FOUND is the simple
 			 * ENOENT case.
+			 *
+			 * NT_STATUS_STOPPED_ON_SYMLINK is returned when trying
+			 * to open a symlink, our callers are not interested in
+			 * this.
 			 */
 			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
 		}
-		if (!NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
-			goto fail;
-		}
-
-		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
+		goto fail;
 	}
 
-	if (file_existed &&
-	    !check_same_dev_ino(&smb_fname->st, &fsp->fsp_name->st))
-	{
+	if (!check_same_dev_ino(&smb_fname->st, &fsp->fsp_name->st)) {
 		DBG_DEBUG("file [%s] - dev/ino mismatch. "
 			  "Old (dev=%ju, ino=%ju). "
 			  "New (dev=%ju, ino=%ju).\n",
@@ -622,6 +615,58 @@ NTSTATUS move_smb_fname_fsp_link(struct smb_filename *smb_fname_dst,
 
 	smb_fname_fsp_unlink(smb_fname_src);
 
+	return NT_STATUS_OK;
+}
+
+/**
+ * Create an smb_fname and open smb_fname->fsp pathref
+ **/
+NTSTATUS synthetic_pathref(TALLOC_CTX *mem_ctx,
+			   struct files_struct *dirfsp,
+			   const char *base_name,
+			   const char *stream_name,
+			   const SMB_STRUCT_STAT *psbuf,
+			   NTTIME twrp,
+			   uint32_t flags,
+			   struct smb_filename **_smb_fname)
+{
+	struct smb_filename *smb_fname = NULL;
+	NTSTATUS status;
+	int ret;
+
+	smb_fname = synthetic_smb_fname(mem_ctx,
+					base_name,
+					stream_name,
+					psbuf,
+					twrp,
+					flags);
+	if (smb_fname == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	if (!VALID_STAT(smb_fname->st)) {
+		ret = vfs_stat(dirfsp->conn, smb_fname);
+		if (ret != 0) {
+			DBG_ERR("stat [%s] failed: %s",
+				smb_fname_str_dbg(smb_fname),
+				strerror(errno));
+			TALLOC_FREE(smb_fname);
+			return map_nt_error_from_unix(errno);
+		}
+	}
+
+	status = openat_pathref_fsp(dirfsp, smb_fname);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
+		status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
+	}
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("opening [%s] failed\n",
+			smb_fname_str_dbg(smb_fname));
+		TALLOC_FREE(smb_fname);
+		return status;
+	}
+
+	*_smb_fname = smb_fname;
 	return NT_STATUS_OK;
 }
 

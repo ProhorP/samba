@@ -242,6 +242,7 @@ static NTSTATUS parse_dfs_path(connection_struct *conn,
 *********************************************************/
 
 static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
+			    struct tevent_context *ev,
 			    struct messaging_context *msg,
 			    connection_struct **pconn,
 			    int snum,
@@ -260,12 +261,7 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	sconn->ev_ctx = samba_tevent_context_init(sconn);
-	if (sconn->ev_ctx == NULL) {
-		TALLOC_FREE(sconn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
+	sconn->ev_ctx = ev;
 	sconn->msg_ctx = msg;
 
 	conn = conn_new(sconn);
@@ -401,6 +397,7 @@ NTSTATUS create_conn_struct_tos(struct messaging_context *msg,
 				struct conn_struct_tos **_c)
 {
 	struct conn_struct_tos *c = NULL;
+	struct tevent_context *ev = NULL;
 	NTSTATUS status;
 
 	*_c = NULL;
@@ -410,8 +407,15 @@ NTSTATUS create_conn_struct_tos(struct messaging_context *msg,
 		return NT_STATUS_NO_MEMORY;
 	}
 
+	ev = samba_tevent_context_init(c);
+	if (ev == NULL) {
+		TALLOC_FREE(c);
+		return NT_STATUS_NO_MEMORY;
+	}
+
 	become_root();
 	status = create_conn_struct_as_root(c,
+					    ev,
 					    msg,
 					    &c->conn,
 					    snum,
@@ -488,6 +492,44 @@ NTSTATUS create_conn_struct_tos_cwd(struct messaging_context *msg,
 	}
 
 	*_c = c;
+	return NT_STATUS_OK;
+}
+
+/********************************************************
+ Fake up a connection struct for the VFS layer.
+ This takes an TALLOC_CTX and tevent_context from the
+ caller and the resulting connection_struct is stable
+ across the lifetime of mem_ctx and ev.
+
+ Note: this performs a vfs connect and changes cwd.
+
+ See also the comment for create_conn_struct_tos() above!
+*********************************************************/
+
+NTSTATUS create_conn_struct_cwd(TALLOC_CTX *mem_ctx,
+				struct tevent_context *ev,
+				struct messaging_context *msg,
+				const struct auth_session_info *session_info,
+				int snum,
+				const char *path,
+				struct connection_struct **c)
+{
+	NTSTATUS status;
+
+	become_root();
+	status = create_conn_struct_as_root(mem_ctx,
+					    ev,
+					    msg,
+					    c,
+					    snum,
+					    path,
+					    session_info);
+	unbecome_root();
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(c);
+		return status;
+	}
+
 	return NT_STATUS_OK;
 }
 

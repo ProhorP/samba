@@ -468,6 +468,15 @@ void smb_fname_fsp_unlink(struct smb_filename *smb_fname);
 NTSTATUS move_smb_fname_fsp_link(struct smb_filename *smb_fname_dst,
 				 struct smb_filename *smb_fname_src);
 
+NTSTATUS synthetic_pathref(TALLOC_CTX *mem_ctx,
+			   struct files_struct *dirfsp,
+			   const char *base_name,
+			   const char *stream_name,
+			   const SMB_STRUCT_STAT *psbuf,
+			   NTTIME twrp,
+			   uint32_t flags,
+			   struct smb_filename **_smb_fname);
+
 /* The following definitions come from smbd/ipc.c  */
 
 NTSTATUS nt_status_np_pipe(NTSTATUS status);
@@ -570,6 +579,14 @@ NTSTATUS dfs_redirect(TALLOC_CTX *ctx,
 			char **pp_name_out);
 struct connection_struct;
 struct smb_filename;
+
+NTSTATUS create_conn_struct_cwd(TALLOC_CTX *mem_ctx,
+				struct tevent_context *ev,
+				struct messaging_context *msg,
+				const struct auth_session_info *session_info,
+				int snum,
+				const char *path,
+				struct connection_struct **c);
 struct conn_struct_tos {
 	struct connection_struct *conn;
 	struct smb_filename *oldcwd_fname;

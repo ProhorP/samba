@@ -793,6 +793,7 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 	const char *dpath = dirptr->smb_dname->base_name;
 	bool dirptr_path_is_dot = ISDOT(dpath);
 	NTSTATUS status;
+	int ret;
 
 	*_smb_fname = NULL;
 	*_mode = 0;
@@ -860,73 +861,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			return false;
 		}
 
-		/* Create smb_fname with NULL stream_name. */
-		atname = synthetic_smb_fname(talloc_tos(),
-					     dname,
-					     NULL,
-					     &sbuf,
-					     dirptr->smb_dname->twrp,
-					     dirptr->smb_dname->flags);
-		if (atname == NULL) {
-			TALLOC_FREE(dname);
-			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
-			return false;
-		}
-
-		/*
-		 * openat_pathref_fsp() will return
-		 * NT_STATUS_OBJECT_NAME_NOT_FOUND in non-POSIX context when
-		 * hitting a dangling symlink. It may be a DFS symlink, this is
-		 * checked below by the mode_fn() call, so we have to allow this
-		 * here.
-		 *
-		 * NT_STATUS_STOPPED_ON_SYMLINK is returned in POSIX context
-		 * when hitting a symlink and ensures we always return directory
-		 * entries that are symlinks in POSIX context.
-		 */
-		status = openat_pathref_fsp(dirptr->dir_hnd->fsp, atname);
-		if (!NT_STATUS_IS_OK(status) &&
-		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND) &&
-		    !NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK))
-		{
-			TALLOC_FREE(atname);
-			TALLOC_FREE(dname);
-			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
-			continue;
-		} else if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			if (!(atname->flags & SMB_FILENAME_POSIX_PATH)) {
-				TALLOC_FREE(atname);
-				TALLOC_FREE(dname);
-				TALLOC_FREE(fname);
-				TALLOC_FREE(pathreal);
-				continue;
-			}
-			/*
-			 * It's a symlink, disable getting dosmode in the
-			 * mode_fn() and prime the mode as
-			 * FILE_ATTRIBUTE_NORMAL.
-			 */
-			mode = FILE_ATTRIBUTE_NORMAL;
-			get_dosmode = false;
-		} else if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
-			if (atname->flags & SMB_FILENAME_POSIX_PATH) {
-				TALLOC_FREE(atname);
-				TALLOC_FREE(dname);
-				TALLOC_FREE(fname);
-				TALLOC_FREE(pathreal);
-				continue;
-			}
-			/*
-			 * Likely a dangling symlink. We only want to return
-			 * this if it's a DFS symlink, so we need to check for
-			 * that. Set get_dosmode to skip getting dosmode.
-			 */
-			get_dosmode = false;
-			check_dfs_symlink = true;
-		}
-
 		/*
 		 * We don't want to pass ./xxx to modules below us so don't
 		 * add the path if it is just . by itself.
@@ -947,12 +881,75 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 						&sbuf,
 						dirptr->smb_dname->twrp,
 						dirptr->smb_dname->flags);
+		TALLOC_FREE(pathreal);
 		if (smb_fname == NULL) {
+			TALLOC_FREE(dname);
+			TALLOC_FREE(fname);
+			return false;
+		}
+
+		if (!VALID_STAT(smb_fname->st)) {
+			/*
+			 * If stat() fails with ENOENT it might be a
+			 * msdfs-symlink in Windows context, this is checked
+			 * below, for now we just want to fill stat info as good
+			 * as we can.
+			 */
+			ret = vfs_stat(conn, smb_fname);
+			if (ret != 0 && errno != ENOENT) {
+				TALLOC_FREE(smb_fname);
+				TALLOC_FREE(dname);
+				TALLOC_FREE(fname);
+				continue;
+			}
+		}
+
+		/* Create smb_fname with NULL stream_name. */
+		atname = synthetic_smb_fname(talloc_tos(),
+					     dname,
+					     NULL,
+					     &smb_fname->st,
+					     dirptr->smb_dname->twrp,
+					     dirptr->smb_dname->flags);
+		if (atname == NULL) {
+			TALLOC_FREE(dname);
+			TALLOC_FREE(fname);
+			TALLOC_FREE(smb_fname);
+			return false;
+		}
+
+		/*
+		 * openat_pathref_fsp() will return
+		 * NT_STATUS_OBJECT_NAME_NOT_FOUND in non-POSIX context when
+		 * hitting a dangling symlink. It may be a DFS symlink, this is
+		 * checked below by the mode_fn() call, so we have to allow this
+		 * here.
+		 *
+		 * NT_STATUS_STOPPED_ON_SYMLINK is returned in POSIX context
+		 * when hitting a symlink and ensures we always return directory
+		 * entries that are symlinks in POSIX context.
+		 */
+		status = openat_pathref_fsp(dirptr->dir_hnd->fsp, atname);
+		if (!NT_STATUS_IS_OK(status) &&
+		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
+		{
 			TALLOC_FREE(atname);
 			TALLOC_FREE(dname);
 			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
-			return false;
+			TALLOC_FREE(smb_fname);
+			continue;
+		} else if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
+			if (!(atname->flags & SMB_FILENAME_POSIX_PATH)) {
+				check_dfs_symlink = true;
+			}
+			/*
+			 * Check if it's a symlink. We only want to return this
+			 * if it's a DFS symlink or in POSIX mode. Disable
+			 * getting dosmode in the mode_fn() and prime the mode
+			 * as FILE_ATTRIBUTE_NORMAL.
+			 */
+			mode = FILE_ATTRIBUTE_NORMAL;
+			get_dosmode = false;
 		}
 
 		status = move_smb_fname_fsp_link(smb_fname, atname);
@@ -964,7 +961,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			TALLOC_FREE(smb_fname);
 			TALLOC_FREE(dname);
 			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
 			continue;
 		}
 
@@ -973,7 +969,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			TALLOC_FREE(smb_fname);
 			TALLOC_FREE(dname);
 			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
 			continue;
 		}
 
@@ -992,7 +987,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			TALLOC_FREE(smb_fname);
 			TALLOC_FREE(dname);
 			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
 			continue;
 		}
 
@@ -1002,7 +996,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			TALLOC_FREE(smb_fname);
 			TALLOC_FREE(dname);
 			TALLOC_FREE(fname);
-			TALLOC_FREE(pathreal);
 			continue;
 		}
 
@@ -1037,7 +1030,6 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 		TALLOC_FREE(dname);
 
 		*_smb_fname = talloc_move(ctx, &smb_fname);
-		TALLOC_FREE(pathreal);
 		if (*_smb_fname == NULL) {
 			return false;
 		}

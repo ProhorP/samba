@@ -1834,9 +1834,6 @@ void reply_search(struct smb_request *req)
 		}
 
 		nt_status = openat_pathref_fsp(conn->cwd_fsp, smb_dname);
-		if (NT_STATUS_EQUAL(nt_status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			nt_status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		}
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			reply_nterror(req, nt_status);
 			goto out;
@@ -3281,6 +3278,7 @@ NTSTATUS unlink_internals(connection_struct *conn,
 	NTSTATUS status = NT_STATUS_OK;
 	struct smb_filename *smb_fname_dir = NULL;
 	TALLOC_CTX *ctx = talloc_tos();
+	int ret;
 
 	/* Split up the directory from the filename/mask. */
 	status = split_fname_dir_mask(ctx, smb_fname->base_name,
@@ -3457,10 +3455,23 @@ NTSTATUS unlink_internals(connection_struct *conn,
 				goto out;
 			}
 
+			ret = vfs_stat(conn, f);
+			if (ret != 0) {
+				status = map_nt_error_from_unix(errno);
+				TALLOC_FREE(dir_hnd);
+				TALLOC_FREE(frame);
+				TALLOC_FREE(talloced);
+				goto out;
+			}
+
 			status = openat_pathref_fsp(conn->cwd_fsp, f);
-			if (!NT_STATUS_IS_OK(status) &&
-			    !NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK))
+			if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND) &&
+			    (f->flags & SMB_FILENAME_POSIX_PATH) &&
+			    S_ISLNK(f->st.st_ex_mode))
 			{
+				status = NT_STATUS_OK;
+			}
+			if (!NT_STATUS_IS_OK(status)) {
 				TALLOC_FREE(dir_hnd);
 				TALLOC_FREE(frame);
 				TALLOC_FREE(talloced);
@@ -8034,9 +8045,6 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 		}
 
 		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_src);
-		if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		}
 		if (!NT_STATUS_IS_OK(status)) {
 			goto out;
 		}
@@ -8202,9 +8210,6 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 		vfs_stat(conn, smb_fname_src);
 
 		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_src);
-		if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		}
 		if (!NT_STATUS_IS_OK(status)) {
 			DBG_INFO("openat_pathref_fsp [%s] failed: %s\n",
 				 smb_fname_str_dbg(smb_fname_src),
@@ -8514,9 +8519,6 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 	}
 
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_src);
-	if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-		status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-	}
 	if (!NT_STATUS_IS_OK(status)) {
 		goto out;
 	}
@@ -8566,10 +8568,6 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 	}
 
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_dst);
-	if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-		status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		goto out;
-	}
 	if (!NT_STATUS_IS_OK(status) &&
 	    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
 	{

@@ -993,7 +993,6 @@ void change_file_owner_to_parent(connection_struct *conn,
 			 "directory %s. Error was %s\n",
 			 smb_fname_str_dbg(smb_fname_parent),
 			 strerror(errno)));
-		TALLOC_FREE(smb_fname_parent);
 		return;
 	}
 
@@ -1003,7 +1002,6 @@ void change_file_owner_to_parent(connection_struct *conn,
 			"is already owned by uid %d\n",
 			fsp_str_dbg(fsp),
 			(int)fsp->fsp_name->st.st_ex_uid ));
-		TALLOC_FREE(smb_fname_parent);
 		return;
 	}
 
@@ -4997,9 +4995,6 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
 		}
 
 		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_cp);
-		if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		}
 		if (!NT_STATUS_IS_OK(status)) {
 			DBG_DEBUG("Unable to open stream [%s]: %s\n",
 				  smb_fname_str_dbg(smb_fname_cp),
@@ -5587,6 +5582,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 	files_struct *base_fsp = NULL;
 	files_struct *fsp = NULL;
 	NTSTATUS status;
+	int ret;
 
 	DBG_DEBUG("create_file_unixpath: access_mask = 0x%x "
 		  "file_attributes = 0x%x, share_access = 0x%x, "
@@ -5734,37 +5730,28 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 			goto fail;
 		}
 
-		SET_STAT_INVALID(smb_fname_base->st);
-
 		/*
 		 * We may be creating the basefile as part of creating the
 		 * stream, so it's legal if the basefile doesn't exist at this
 		 * point, the create_file_unixpath() below will create it. But
 		 * if the basefile exists we want a handle so we can fstat() it.
 		 */
-		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_base);
-		if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-		}
-		if (!NT_STATUS_IS_OK(status) &&
-		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
-		{
-			DBG_ERR("open_smb_fname_fsp [%s] failed: %s\n",
-				smb_fname_str_dbg(smb_fname_base),
-				nt_errstr(status));
+
+		ret = vfs_stat(conn, smb_fname_base);
+		if (ret == -1 && errno != ENOENT) {
+			status = map_nt_error_from_unix(errno);
 			TALLOC_FREE(smb_fname_base);
 			goto fail;
 		}
-
-		if (smb_fname_base->fsp != NULL) {
-			int ret;
-
-			ret = SMB_VFS_FSTAT(smb_fname_base->fsp,
-					    &smb_fname_base->st);
-			if (ret != 0) {
-				DBG_DEBUG("Unable to stat stream [%s]: %s\n",
-					  smb_fname_str_dbg(smb_fname_base),
-					  strerror(errno));
+		if (ret == 0) {
+			status = openat_pathref_fsp(conn->cwd_fsp,
+						    smb_fname_base);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("open_smb_fname_fsp [%s] failed: %s\n",
+					smb_fname_str_dbg(smb_fname_base),
+					nt_errstr(status));
+				TALLOC_FREE(smb_fname_base);
+				goto fail;
 			}
 
 			/*
@@ -5783,6 +5770,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 					"for base %s failed: "
 					"%s\n", smb_fname->base_name,
 					nt_errstr(status)));
+				TALLOC_FREE(smb_fname_base);
 				goto fail;
 			}
 		}
@@ -5824,13 +5812,39 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 	 * request to create a file that doesn't exist.
 	 */
 	if (smb_fname->fsp != NULL) {
-		fsp = smb_fname->fsp;
+		bool need_fsp_unlink = true;
 
 		/*
-		 * Unlink the fsp from the smb_fname so the fsp is not
-		 * autoclosed by the smb_fname pathref fsp talloc destructor.
+		 * This is really subtle. If someone passes in an smb_fname
+		 * where smb_fname actually is taken from fsp->fsp_name, then
+		 * the lifetime of these objects is meant to be the same.
+		 *
+		 * This is commonly the case from an SMB1 path-based call,
+		 * (call_trans2qfilepathinfo) where we use the pathref fsp
+		 * (smb_fname->fsp) as the handle. In this case we must not
+		 * unlink smb_fname->fsp from it's owner.
+		 *
+		 * The asserts below:
+		 *
+		 * SMB_ASSERT(fsp->fsp_name->fsp != NULL);
+		 * SMB_ASSERT(fsp->fsp_name->fsp == fsp);
+		 *
+		 * ensure the required invarients are met.
 		 */
-		smb_fname_fsp_unlink(smb_fname);
+		if (smb_fname->fsp->fsp_name == smb_fname) {
+			need_fsp_unlink = false;
+		}
+
+		fsp = smb_fname->fsp;
+
+		if (need_fsp_unlink) {
+			/*
+			 * Unlink the fsp from the smb_fname so the fsp is not
+			 * autoclosed by the smb_fname pathref fsp talloc
+			 * destructor.
+			 */
+			smb_fname_fsp_unlink(smb_fname);
+		}
 
 		status = fsp_bind_smb(fsp, req);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -5859,6 +5873,9 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 			goto fail;
 		}
 	}
+
+	SMB_ASSERT(fsp->fsp_name->fsp != NULL);
+	SMB_ASSERT(fsp->fsp_name->fsp == fsp);
 
 	if (base_fsp) {
 		/*
