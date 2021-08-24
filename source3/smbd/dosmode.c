@@ -28,6 +28,7 @@
 #include "lib/param/loadparm.h"
 #include "lib/util/tevent_ntstatus.h"
 #include "lib/util/string_wrappers.h"
+#include "fake_file.h"
 
 static NTSTATUS get_file_handle_for_metadata(connection_struct *conn,
 				const struct smb_filename *smb_fname,
@@ -382,6 +383,19 @@ NTSTATUS fget_ea_dos_attribute(struct files_struct *fsp,
 				    SAMBA_XATTR_DOS_ATTRIB,
 				    attrstr,
 				    sizeof(attrstr));
+	if (sizeret == -1 && ( errno == EPERM || errno == EACCES )) {
+		/* we may also retrieve dos attribs for unreadable files, this
+		   is why we'll retry as root. We don't use root in the first
+		   run because in cases like NFS, root might have even less
+		   rights than the real user
+		*/
+		become_root();
+		sizeret = SMB_VFS_FGETXATTR(fsp->base_fsp ? fsp->base_fsp : fsp,
+					    SAMBA_XATTR_DOS_ATTRIB,
+					    attrstr,
+					    sizeof(attrstr));
+		unbecome_root();
+	}
 	if (sizeret == -1) {
 		DBG_INFO("Cannot get attribute "
 			 "from EA on file %s: Error = %s\n",
@@ -737,6 +751,10 @@ uint32_t fdos_mode(struct files_struct *fsp)
 	}
 
 	DBG_DEBUG("%s\n", fsp_str_dbg(fsp));
+
+	if (fsp->fake_file_handle != NULL) {
+		return dosmode_from_fake_filehandle(fsp->fake_file_handle);
+	}
 
 	if (!VALID_STAT(fsp->fsp_name->st)) {
 		return 0;

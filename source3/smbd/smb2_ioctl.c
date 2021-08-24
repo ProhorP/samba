@@ -197,6 +197,7 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	case FSCTL_QUERY_NETWORK_INTERFACE_INFO:
 	case FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT:
 	case FSCTL_SMBTORTURE_IOCTL_RESPONSE_BODY_PADDING8:
+	case FSCTL_SMBTORTURE_GLOBAL_READ_RESPONSE_BODY_PADDING8:
 		/*
 		 * Some SMB2 specific CtlCodes like FSCTL_DFS_GET_REFERRALS or
 		 * FSCTL_PIPE_WAIT does not take a file handle.
@@ -229,6 +230,21 @@ NTSTATUS smbd_smb2_request_process_ioctl(struct smbd_smb2_request *req)
 	if (subreq == NULL) {
 		return smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
 	}
+
+	/*
+	 * If the FSCTL has gone async on a file handle, remember
+	 * to add it to the list of async requests we need to wait
+	 * for on file handle close.
+	 */
+	if (in_fsp != NULL && tevent_req_is_in_progress(subreq)) {
+		bool ok;
+
+		ok = aio_add_req_to_fsp(in_fsp, subreq);
+		if (!ok) {
+			return smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
+		}
+	}
+
 	tevent_req_set_callback(subreq, smbd_smb2_request_ioctl_done, req);
 
 	return smbd_smb2_request_pending_queue(req, subreq, 1000);
@@ -424,6 +440,15 @@ static struct tevent_req *smb2_ioctl_smbtorture(uint32_t ctl_code,
 		tevent_req_done(req);
 		return tevent_req_post(req, ev);
 
+	case FSCTL_SMBTORTURE_GLOBAL_READ_RESPONSE_BODY_PADDING8:
+		if (state->in_input.length != 0) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+			return tevent_req_post(req, ev);
+		}
+
+		state->smb2req->xconn->smb2.smbtorture.read_body_padding = 8;
+		tevent_req_done(req);
+		return tevent_req_post(req, ev);
 	default:
 		goto not_supported;
 	}
