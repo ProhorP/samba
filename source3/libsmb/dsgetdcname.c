@@ -587,6 +587,8 @@ static NTSTATUS discover_dc_dns(TALLOC_CTX *mem_ctx,
 		for (j = 0; j < dcs[i].num_ips; j++) {
 			if (dcs[i].ss_s[j].ss_family == AF_INET) {
 				bool ok;
+				if (&dcs[i].ss_s[j] == NULL)
+					continue;
 				ok = sockaddr_storage_to_samba_sockaddr(
 					&dclist[ret_count].sa,
 					&dcs[i].ss_s[j]);
@@ -601,6 +603,8 @@ static NTSTATUS discover_dc_dns(TALLOC_CTX *mem_ctx,
 		if (j == dcs[i].num_ips) {
 			/* No IPv4- use the first IPv6 addr. */
 			bool ok;
+			if (&dcs[i].ss_s[0] == NULL)
+				continue;
 			ok = sockaddr_storage_to_samba_sockaddr(
 					&dclist[ret_count].sa,
 					&dcs[i].ss_s[0]);
