@@ -43,12 +43,12 @@
 %def_enable avahi
 %def_enable spotlight
 
-%ifarch %ix86 %arm %mips32 ppc %e2k
-%def_without libcephfs
-%def_disable cephfs
-%else
+%ifarch x86_64 aarch64 ppc64le
 %def_with libcephfs
 %def_enable cephfs
+%else
+%def_without libcephfs
+%def_disable cephfs
 %endif
 
 %ifarch %e2k
