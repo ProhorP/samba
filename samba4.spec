@@ -843,18 +843,18 @@ pushd ../%rname-%version-separate-heimdal-server
 	--without-pam
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
-%make_build NPROCS=%__nprocs
+%make_build NPROCS=%__nprocs V=2 -Onone
 
 popd
 %endif
 
 [ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
-%make_build NPROCS=%__nprocs
+%make_build NPROCS=%__nprocs V=2 -Onone
 
 pushd pidl
 %__perl Makefile.PL PREFIX=%_prefix
 
-%make_build
+%make_build V=2 -Onone
 popd
 
 %if_with doc
@@ -862,18 +862,18 @@ pushd docs-xml
 export XML_CATALOG_FILES="file:///etc/xml/catalog file://$(pwd)/build/catalog.xml"
 %autoreconf
 %configure
-%make_build smbdotconf/parameters.all.xml
-%make_build release
+%make_build smbdotconf/parameters.all.xml V=2 -Onone
+%make_build release V=2 -Onone
 popd
 %endif
 
 %install
 %if_without separate_heimdal_server
-%makeinstall_std
+%makeinstall_std V=2 -Onone
 %else
 pushd ../%rname-%version-separate-heimdal-server
 
-%makeinstall_std
+%makeinstall_std V=2 -Onone
 
 popd
 
@@ -898,7 +898,7 @@ printf '#!/bin/bash\nexport PYTHONPATH="%_samba_dc_mod_libdir/python%_python3_ve
 printf "%_sbindir/samba_downgrade_db\t%_samba_dc_mod_libdir/sbin/samba_downgrade_db\t50\n" >> %buildroot%_altdir/samba-heimdal
 chmod 0755 %buildroot%_samba_dc_mod_libdir/sbin/samba_downgrade_db
 
-%makeinstall_std
+%makeinstall_std V=2 -Onone
 
 rm -f %buildroot%_altdir/samba-mit
 touch %buildroot%_altdir/samba-mit
@@ -1092,7 +1092,7 @@ install -m755 script/traffic_replay %buildroot%_bindir/traffic_replay
 
 %if_with testsuite
 %check
-TDB_NO_FSYNC=1 %make_build test
+TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
 %post
