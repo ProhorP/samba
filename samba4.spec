@@ -842,13 +842,11 @@ pushd ../%rname-%version-separate-heimdal-server
 	--with-privatelibdir=%_samba_dc_mod_libdir \
 	--without-pam
 
-[ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs V=2 -Onone
 
 popd
 %endif
 
-[ -n "$NPROCS" ] || NPROCS=%__nprocs; export JOBS=$NPROCS
 %make_build NPROCS=%__nprocs V=2 -Onone
 
 pushd pidl
