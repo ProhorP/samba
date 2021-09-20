@@ -73,7 +73,7 @@
 
 Name:    samba
 Version: 4.14.7
-Release: alt3
+Release: alt4
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1921,6 +1921,12 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Sep 20 2021 Ivan A. Melnikov <iv@altlinux.org> 4.14.7-alt4
+- Use parallel make install.
+- Make building and installing more verbose.
+- Explicitly list architectures where ceph is enabled
+  (fixes build on riscv64).
+
 * Wed Sep 01 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.7-alt3
 - Fix net ads join segmentation fault problem if ldap SRV host record not found.
 
