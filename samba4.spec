@@ -867,11 +867,11 @@ popd
 
 %install
 %if_without separate_heimdal_server
-%makeinstall_std V=2 -Onone
+%makeinstall_std V=2 -Onone %_smp_mflags
 %else
 pushd ../%rname-%version-separate-heimdal-server
 
-%makeinstall_std V=2 -Onone
+%makeinstall_std V=2 -Onone %_smp_mflags
 
 popd
 
@@ -896,7 +896,7 @@ printf '#!/bin/bash\nexport PYTHONPATH="%_samba_dc_mod_libdir/python%_python3_ve
 printf "%_sbindir/samba_downgrade_db\t%_samba_dc_mod_libdir/sbin/samba_downgrade_db\t50\n" >> %buildroot%_altdir/samba-heimdal
 chmod 0755 %buildroot%_samba_dc_mod_libdir/sbin/samba_downgrade_db
 
-%makeinstall_std V=2 -Onone
+%makeinstall_std V=2 -Onone %_smp_mflags
 
 rm -f %buildroot%_altdir/samba-mit
 touch %buildroot%_altdir/samba-mit
