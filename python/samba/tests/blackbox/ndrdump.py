@@ -25,13 +25,7 @@ import os
 import re
 from samba.tests import BlackboxTestCase, BlackboxProcessError
 
-for p in ["../../../../../source4/librpc/tests",
-          "../../../../../librpc/tests"]:
-    data_path_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), p))
-    print(data_path_dir)
-    if os.path.exists(data_path_dir):
-        break
-
+data_path_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../source4/librpc/tests"))
 
 class NdrDumpTests(BlackboxTestCase):
     """Blackbox tests for ndrdump."""
@@ -320,6 +314,43 @@ dump OK
             actual = self.check_output(
                 "ndrdump drsuapi drsuapi_DsReplicaAttribute struct --base64-input --validate %s" %
                 self.data_path("fuzzed_drsuapi_DsReplicaAttribute.b64.txt"))
+        except BlackboxProcessError as e:
+            self.fail(e)
+        # check_output will return bytes
+        # convert expected to bytes for python 3
+        self.assertEqual(actual, expected.encode('utf-8'))
+
+    def test_ndrdump_Krb5ccache(self):
+        expected = open(self.data_path("../../../source3/selftest/"
+                                       "ktest-krb5_ccache-2.txt")).read()
+        try:
+            # Specify -d1 to match the generated output file, because ndrdump
+            # only outputs some additional info if this parameter is specified,
+            # and the --configfile parameter gives us an empty smb.conf to avoid
+            # extraneous output.
+            actual = self.check_output(
+                "ndrdump krb5ccache CCACHE struct "
+                "--configfile /dev/null -d1 --validate " +
+                self.data_path("../../../source3/selftest/"
+                               "ktest-krb5_ccache-2"))
+        except BlackboxProcessError as e:
+            self.fail(e)
+        # check_output will return bytes
+        # convert expected to bytes for python 3
+        self.assertEqual(actual, expected.encode('utf-8'))
+
+        expected = open(self.data_path("../../../source3/selftest/"
+                                       "ktest-krb5_ccache-3.txt")).read()
+        try:
+            # Specify -d1 to match the generated output file, because ndrdump
+            # only outputs some additional info if this parameter is specified,
+            # and the --configfile parameter gives us an empty smb.conf to avoid
+            # extraneous output.
+            actual = self.check_output(
+                "ndrdump krb5ccache CCACHE struct "
+                "--configfile /dev/null -d1 --validate " +
+                self.data_path("../../../source3/selftest/"
+                               "ktest-krb5_ccache-3"))
         except BlackboxProcessError as e:
             self.fail(e)
         # check_output will return bytes

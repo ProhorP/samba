@@ -49,8 +49,9 @@ class KdcTgsTests(KDCBaseTest):
             that differs from that provided to the krbtgt
         '''
         # Create the user account
+        samdb = self.get_samdb()
         user_name = "tsttktusr"
-        (uc, _) = self.create_account(user_name)
+        (uc, _) = self.create_account(samdb, user_name)
         realm = uc.get_realm().lower()
 
         # Do the initial AS-REQ, should get a pre-authentication required
@@ -62,12 +63,12 @@ class KdcTgsTests(KDCBaseTest):
             name_type=NT_SRV_INST, names=["krbtgt", realm])
 
         rep = self.as_req(cname, sname, realm, etype)
-        self.check_pre_authenication(rep)
+        self.check_pre_authentication(rep)
 
         # Do the next AS-REQ
-        padata = self.get_pa_data(uc, rep)
+        padata = self.get_enc_timestamp_pa_data(uc, rep)
         key = self.get_as_rep_key(uc, rep)
-        rep = self.as_req(cname, sname, realm, etype, padata=padata)
+        rep = self.as_req(cname, sname, realm, etype, padata=[padata])
         self.check_as_reply(rep)
 
         # Request a service ticket, but use a cname that does not match
@@ -81,7 +82,7 @@ class KdcTgsTests(KDCBaseTest):
             names=["Administrator"])
         sname = self.PrincipalName_create(
             name_type=NT_PRINCIPAL,
-            names=["host", self.dns_host_name])
+            names=["host", samdb.host_dns_name()])
 
         (rep, enc_part) = self.tgs_req(cname, sname, realm, ticket, key, etype)
 
@@ -98,8 +99,9 @@ class KdcTgsTests(KDCBaseTest):
         '''Get a ticket to the ldap service
         '''
         # Create the user account
+        samdb = self.get_samdb()
         user_name = "tsttktusr"
-        (uc, _) = self.create_account(user_name)
+        (uc, _) = self.create_account(samdb, user_name)
         realm = uc.get_realm().lower()
 
         # Do the initial AS-REQ, should get a pre-authentication required
@@ -111,12 +113,12 @@ class KdcTgsTests(KDCBaseTest):
             name_type=NT_SRV_INST, names=["krbtgt", realm])
 
         rep = self.as_req(cname, sname, realm, etype)
-        self.check_pre_authenication(rep)
+        self.check_pre_authentication(rep)
 
         # Do the next AS-REQ
-        padata = self.get_pa_data(uc, rep)
+        padata = self.get_enc_timestamp_pa_data(uc, rep)
         key = self.get_as_rep_key(uc, rep)
-        rep = self.as_req(cname, sname, realm, etype, padata=padata)
+        rep = self.as_req(cname, sname, realm, etype, padata=[padata])
         self.check_as_reply(rep)
 
         enc_part2 = self.get_as_rep_enc_data(key, rep)
@@ -126,7 +128,7 @@ class KdcTgsTests(KDCBaseTest):
         # Request a ticket to the ldap service
         sname = self.PrincipalName_create(
             name_type=NT_SRV_INST,
-            names=["ldap", self.dns_host_name])
+            names=["ldap", samdb.host_dns_name()])
 
         (rep, _) = self.tgs_req(
             cname, sname, uc.get_realm(), ticket, key, etype)
@@ -137,9 +139,10 @@ class KdcTgsTests(KDCBaseTest):
 
         # Create a user and machine account for the test.
         #
+        samdb = self.get_samdb()
         user_name = "tsttktusr"
-        (uc, dn) = self.create_account(user_name)
-        (mc, _) = self.create_account("tsttktmac", machine_account=True)
+        (uc, dn) = self.create_account(samdb, user_name)
+        (mc, _) = self.create_account(samdb, "tsttktmac", machine_account=True)
         realm = uc.get_realm().lower()
 
         # Do the initial AS-REQ, should get a pre-authentication required
@@ -151,12 +154,12 @@ class KdcTgsTests(KDCBaseTest):
             name_type=NT_SRV_INST, names=["krbtgt", realm])
 
         rep = self.as_req(cname, sname, realm, etype)
-        self.check_pre_authenication(rep)
+        self.check_pre_authentication(rep)
 
         # Do the next AS-REQ
-        padata = self.get_pa_data(uc, rep)
+        padata = self.get_enc_timestamp_pa_data(uc, rep)
         key = self.get_as_rep_key(uc, rep)
-        rep = self.as_req(cname, sname, realm, etype, padata=padata)
+        rep = self.as_req(cname, sname, realm, etype, padata=[padata])
         self.check_as_reply(rep)
 
         # Request a ticket to the host service on the machine account
@@ -179,7 +182,7 @@ class KdcTgsTests(KDCBaseTest):
         enc_part = self.decode_service_ticket(mc, ticket)
 
         pac_data = self.get_pac_data(enc_part['authorization-data'])
-        sid = self.get_objectSid(dn)
+        sid = self.get_objectSid(samdb, dn)
         upn = "%s@%s" % (uc.get_username(), realm)
         self.assertEqual(
             uc.get_username(),

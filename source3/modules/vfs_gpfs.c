@@ -55,6 +55,9 @@ struct gpfs_config_data {
 	bool acl;
 	bool settimes;
 	bool recalls;
+	struct {
+		bool gpfs_fstat_x;
+	} pathref_ok;
 };
 
 struct gpfs_fsp_extension {
@@ -1648,6 +1651,9 @@ static NTSTATUS vfs_gpfs_fget_dos_attributes(struct vfs_handle_struct *handle,
 					     uint32_t *dosmode)
 {
 	struct gpfs_config_data *config;
+	int fd = fsp_get_pathref_fd(fsp);
+	char buf[PATH_MAX];
+	const char *p = NULL;
 	struct gpfs_iattr64 iattr = { };
 	unsigned int litemask;
 	struct timespec ts;
@@ -1663,7 +1669,22 @@ static NTSTATUS vfs_gpfs_fget_dos_attributes(struct vfs_handle_struct *handle,
 		return SMB_VFS_NEXT_FGET_DOS_ATTRIBUTES(handle, fsp, dosmode);
 	}
 
-	ret = gpfswrap_fstat_x(fsp_get_pathref_fd(fsp), &litemask, &iattr, sizeof(iattr));
+	if (fsp->fsp_flags.is_pathref && !config->pathref_ok.gpfs_fstat_x) {
+		if (fsp->fsp_flags.have_proc_fds) {
+			p = sys_proc_fd_path(fd, buf, sizeof(buf));
+			if (p == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+		} else {
+			p = fsp->fsp_name->base_name;
+		}
+	}
+
+	if (p != NULL) {
+		ret = gpfswrap_stat_x(p, &litemask, &iattr, sizeof(iattr));
+	} else {
+		ret = gpfswrap_fstat_x(fd, &litemask, &iattr, sizeof(iattr));
+	}
 	if (ret == -1 && errno == ENOSYS) {
 		return SMB_VFS_NEXT_FGET_DOS_ATTRIBUTES(handle, fsp, dosmode);
 	}
@@ -1680,8 +1701,17 @@ static NTSTATUS vfs_gpfs_fget_dos_attributes(struct vfs_handle_struct *handle,
 
 		set_effective_capability(DAC_OVERRIDE_CAPABILITY);
 
-		ret = gpfswrap_fstat_x(fsp_get_pathref_fd(fsp), &litemask,
-				       &iattr, sizeof(iattr));
+		if (p != NULL) {
+			ret = gpfswrap_stat_x(p,
+					      &litemask,
+					      &iattr,
+					      sizeof(iattr));
+		} else {
+			ret = gpfswrap_fstat_x(fd,
+					       &litemask,
+					       &iattr,
+					       sizeof(iattr));
+		}
 		if (ret == -1) {
 			saved_errno = errno;
 		}
@@ -1766,16 +1796,48 @@ static NTSTATUS vfs_gpfs_fset_dos_attributes(struct vfs_handle_struct *handle,
 	}
 
 	attrs.winAttrs = vfs_gpfs_dosmode_to_winattrs(dosmode);
-	ret = gpfswrap_set_winattrs(fsp_get_io_fd(fsp),
-				    GPFS_WINATTR_SET_ATTRS, &attrs);
 
-	if (ret == -1 && errno == ENOSYS) {
-		return SMB_VFS_NEXT_FSET_DOS_ATTRIBUTES(handle, fsp, dosmode);
+	if (!fsp->fsp_flags.is_pathref) {
+		ret = gpfswrap_set_winattrs(fsp_get_io_fd(fsp),
+					    GPFS_WINATTR_SET_ATTRS, &attrs);
+		if (ret == -1) {
+			DBG_WARNING("Setting winattrs failed for %s: %s\n",
+				    fsp_str_dbg(fsp), strerror(errno));
+			return map_nt_error_from_unix(errno);
+		}
+		return NT_STATUS_OK;
 	}
 
+	if (fsp->fsp_flags.have_proc_fds) {
+		int fd = fsp_get_pathref_fd(fsp);
+		const char *p = NULL;
+		char buf[PATH_MAX];
+
+		p = sys_proc_fd_path(fd, buf, sizeof(buf));
+		if (p == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		ret = gpfswrap_set_winattrs_path(p,
+						 GPFS_WINATTR_SET_ATTRS,
+						 &attrs);
+		if (ret == -1) {
+			DBG_WARNING("Setting winattrs failed for [%s][%s]: %s\n",
+				    p, fsp_str_dbg(fsp), strerror(errno));
+			return map_nt_error_from_unix(errno);
+		}
+		return NT_STATUS_OK;
+	}
+
+	/*
+	 * This is no longer a handle based call.
+	 */
+	ret = gpfswrap_set_winattrs_path(fsp->fsp_name->base_name,
+					 GPFS_WINATTR_SET_ATTRS,
+					 &attrs);
 	if (ret == -1) {
-		DBG_WARNING("Setting winattrs failed for %s: %s\n",
-			    fsp->fsp_name->base_name, strerror(errno));
+		DBG_WARNING("Setting winattrs failed for [%s]: %s\n",
+			    fsp_str_dbg(fsp), strerror(errno));
 		return map_nt_error_from_unix(errno);
 	}
 
@@ -1831,11 +1893,6 @@ static int vfs_gpfs_stat(struct vfs_handle_struct *handle,
 			 struct smb_filename *smb_fname)
 {
 	int ret;
-	struct gpfs_config_data *config;
-
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct gpfs_config_data,
-				return -1);
 
 	ret = SMB_VFS_NEXT_STAT(handle, smb_fname);
 	if (ret == -1 && errno == EACCES) {
@@ -1850,11 +1907,6 @@ static int vfs_gpfs_lstat(struct vfs_handle_struct *handle,
 			  struct smb_filename *smb_fname)
 {
 	int ret;
-	struct gpfs_config_data *config;
-
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct gpfs_config_data,
-				return -1);
 
 	ret = SMB_VFS_NEXT_LSTAT(handle, smb_fname);
 	if (ret == -1 && errno == EACCES) {
@@ -2079,12 +2131,83 @@ static ssize_t vfs_gpfs_sendfile(vfs_handle_struct *handle, int tofd,
 	return SMB_VFS_NEXT_SENDFILE(handle, tofd, fsp, hdr, offset, n);
 }
 
+#ifdef O_PATH
+static int vfs_gpfs_check_pathref_fstat_x(struct gpfs_config_data *config,
+					  struct connection_struct *conn)
+{
+	struct gpfs_iattr64 iattr = {0};
+	unsigned int litemask;
+	int saved_errno;
+	int fd;
+	int ret;
+
+	fd = open(conn->connectpath, O_PATH);
+	if (fd == -1) {
+		DBG_ERR("openat() of share with O_PATH failed: %s\n",
+			strerror(errno));
+		return -1;
+	}
+
+	ret = gpfswrap_fstat_x(fd, &litemask, &iattr, sizeof(iattr));
+	if (ret == 0) {
+		close(fd);
+		config->pathref_ok.gpfs_fstat_x = true;
+		return 0;
+	}
+
+	saved_errno = errno;
+	ret = close(fd);
+	if (ret != 0) {
+		DBG_ERR("close failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	if (saved_errno != EBADF) {
+		DBG_ERR("gpfswrap_fstat_x() of O_PATH handle failed: %s\n",
+			strerror(saved_errno));
+		return -1;
+	}
+
+	return 0;
+}
+#endif
+
+static int vfs_gpfs_check_pathref(struct gpfs_config_data *config,
+				  struct connection_struct *conn)
+{
+#ifndef O_PATH
+	/*
+	 * This code path leaves all struct gpfs_config_data.pathref_ok members
+	 * initialized to false.
+	 */
+	return 0;
+#else
+	int ret;
+
+	ret = vfs_gpfs_check_pathref_fstat_x(config, conn);
+	if (ret != 0) {
+		return -1;
+	}
+
+	return 0;
+#endif
+}
+
 static int vfs_gpfs_connect(struct vfs_handle_struct *handle,
 			    const char *service, const char *user)
 {
 	struct gpfs_config_data *config;
 	int ret;
 	bool check_fstype;
+
+	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (IS_IPC(handle->conn)) {
+		return 0;
+	}
 
 	gpfswrap_lib_init(0);
 
@@ -2095,16 +2218,10 @@ static int vfs_gpfs_connect(struct vfs_handle_struct *handle,
 		return -1;
 	}
 
-	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-	if (ret < 0) {
-		TALLOC_FREE(config);
-		return ret;
-	}
-
 	check_fstype = lp_parm_bool(SNUM(handle->conn), "gpfs",
 				    "check_fstype", true);
 
-	if (check_fstype && !IS_IPC(handle->conn)) {
+	if (check_fstype) {
 		const char *connectpath = handle->conn->connectpath;
 		struct statfs buf = { 0 };
 
@@ -2164,6 +2281,14 @@ static int vfs_gpfs_connect(struct vfs_handle_struct *handle,
 					"settimes", true);
 	config->recalls = lp_parm_bool(SNUM(handle->conn), "gpfs",
 				       "recalls", true);
+
+	ret = vfs_gpfs_check_pathref(config, handle->conn);
+	if (ret != 0) {
+		DBG_ERR("vfs_gpfs_check_pathref() on [%s] failed\n",
+			handle->conn->connectpath);
+		TALLOC_FREE(config);
+		return -1;
+	}
 
 	SMB_VFS_HANDLE_SET_DATA(handle, config,
 				NULL, struct gpfs_config_data,

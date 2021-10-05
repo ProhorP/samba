@@ -96,6 +96,13 @@ EXCLUDE_USAGE = {
     'python/samba/tests/krb5/kdc_tests.py',
     'python/samba/tests/krb5/kdc_base_test.py',
     'python/samba/tests/krb5/kdc_tgs_tests.py',
+    'python/samba/tests/krb5/test_ccache.py',
+    'python/samba/tests/krb5/test_ldap.py',
+    'python/samba/tests/krb5/test_rpc.py',
+    'python/samba/tests/krb5/test_smb.py',
+    'python/samba/tests/krb5/ms_kile_client_principal_lookup_tests.py',
+    'python/samba/tests/krb5/as_req_tests.py',
+    'python/samba/tests/krb5/fast_tests.py',
 }
 
 EXCLUDE_HELP = {

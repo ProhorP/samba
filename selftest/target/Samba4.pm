@@ -561,7 +561,7 @@ sub provision_raw_prepare($$$$$$$$$$$$$$)
 	$ctx->{force_fips_mode} = $force_fips_mode;
 	$ctx->{krb5_ccname} = "$prefix_abs/krb5cc_%{uid}";
 	if ($functional_level eq "2000") {
-		$ctx->{supported_enctypes} = "arcfour-hmac-md5 des-cbc-md5 des-cbc-crc"
+		$ctx->{supported_enctypes} = "arcfour-hmac-md5 des-cbc-md5 des-cbc-crc";
 	}
 
 #

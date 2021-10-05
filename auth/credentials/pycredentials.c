@@ -604,8 +604,6 @@ static PyObject *py_creds_get_forced_sasl_mech(PyObject *self, PyObject *unused)
 static PyObject *py_creds_set_forced_sasl_mech(PyObject *self, PyObject *args)
 {
 	char *newval;
-	enum credentials_obtained obt = CRED_SPECIFIED;
-	int _obt = obt;
 	struct cli_credentials *creds = PyCredentials_AsCliCredentials(self);
 	if (creds == NULL) {
 		PyErr_Format(PyExc_TypeError, "Credentials expected");
@@ -615,7 +613,6 @@ static PyObject *py_creds_set_forced_sasl_mech(PyObject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "s", &newval)) {
 		return NULL;
 	}
-	obt = _obt;
 
 	cli_credentials_set_forced_sasl_mech(creds, newval);
 	Py_RETURN_NONE;
@@ -803,6 +800,7 @@ static PyObject *py_creds_set_named_ccache(PyObject *self, PyObject *args)
 
 	if (!PyArg_ParseTuple(args, "s|iO", &newval, &_obt, &py_lp_ctx))
 		return NULL;
+	obt = _obt;
 
 	mem_ctx = talloc_new(NULL);
 	if (mem_ctx == NULL) {
@@ -818,7 +816,7 @@ static PyObject *py_creds_set_named_ccache(PyObject *self, PyObject *args)
 
 	ret = cli_credentials_set_ccache(creds,
 					 lp_ctx,
-					 newval, CRED_SPECIFIED,
+					 newval, obt,
 					 &error_string);
 
 	if (ret != 0) {
@@ -1433,7 +1431,7 @@ static struct PyModuleDef moduledef = {
 PyTypeObject PyCredentials = {
 	.tp_name = "credentials.Credentials",
 	.tp_new = py_creds_new,
-	.tp_flags = Py_TPFLAGS_DEFAULT,
+	.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
 	.tp_methods = py_creds_methods,
 };
 
