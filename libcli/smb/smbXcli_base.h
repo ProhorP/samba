@@ -31,6 +31,7 @@ struct GUID;
 struct iovec;
 struct smb2_create_blobs;
 struct smb_create_returns;
+struct smb311_capabilities;
 
 struct smbXcli_conn *smbXcli_conn_create(TALLOC_CTX *mem_ctx,
 					 int fd,
@@ -38,7 +39,8 @@ struct smbXcli_conn *smbXcli_conn_create(TALLOC_CTX *mem_ctx,
 					 enum smb_signing_setting signing_state,
 					 uint32_t smb1_capabilities,
 					 struct GUID *client_guid,
-					 uint32_t smb2_capabilities);
+					 uint32_t smb2_capabilities,
+					 const struct smb311_capabilities *smb3_capabilities);
 
 bool smbXcli_conn_is_connected(struct smbXcli_conn *conn);
 void smbXcli_conn_disconnect(struct smbXcli_conn *conn, NTSTATUS status);
@@ -373,6 +375,8 @@ NTSTATUS smb1cli_readx_recv(struct tevent_req *req,
 bool smb2cli_conn_req_possible(struct smbXcli_conn *conn, uint32_t *max_dyn_len);
 uint32_t smb2cli_conn_server_capabilities(struct smbXcli_conn *conn);
 uint16_t smb2cli_conn_server_security_mode(struct smbXcli_conn *conn);
+uint16_t smb2cli_conn_server_signing_algo(struct smbXcli_conn *conn);
+uint16_t smb2cli_conn_server_encryption_algo(struct smbXcli_conn *conn);
 uint32_t smb2cli_conn_max_trans_size(struct smbXcli_conn *conn);
 uint32_t smb2cli_conn_max_read_size(struct smbXcli_conn *conn);
 uint32_t smb2cli_conn_max_write_size(struct smbXcli_conn *conn);

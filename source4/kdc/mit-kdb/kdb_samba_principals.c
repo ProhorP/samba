@@ -30,6 +30,9 @@
 #include "kdc/mit_samba.h"
 #include "kdb_samba.h"
 
+#undef DBGC_CLASS
+#define DBGC_CLASS DBGC_KERBEROS
+
 #define ADMIN_LIFETIME 60*60*3 /* 3 hours */
 #define CHANGEPW_LIFETIME 60*5 /* 5 minutes */
 
@@ -308,18 +311,11 @@ krb5_error_code kdb_samba_db_delete_principal(krb5_context context,
 	return KRB5_KDB_DB_INUSE;
 }
 
-#if KRB5_KDB_API_VERSION >= 8
 krb5_error_code kdb_samba_db_iterate(krb5_context context,
 				     char *match_entry,
 				     int (*func)(krb5_pointer, krb5_db_entry *),
 				     krb5_pointer func_arg,
 				     krb5_flags iterflags)
-#else
-krb5_error_code kdb_samba_db_iterate(krb5_context context,
-				     char *match_entry,
-				     int (*func)(krb5_pointer, krb5_db_entry *),
-				     krb5_pointer func_arg)
-#endif
 {
 	struct mit_samba_context *mit_ctx;
 	krb5_db_entry *kentry = NULL;

@@ -49,6 +49,7 @@
 #include "smb1_utils.h"
 #include "libcli/smb/smb2_posix.h"
 #include "lib/util/string_wrappers.h"
+#include "source3/printing/rap_jobid.h"
 
 /****************************************************************************
  Ensure we check the path in *exactly* the same way as W2K for a findfirst/findnext
@@ -965,7 +966,7 @@ void reply_tcon_and_X(struct smb_request *req)
 	 * Once the application key is defined, it does not
 	 * change any more.
 	 */
-	if (session->global->application_key.length == 0 &&
+	if (session->global->application_key_blob.length == 0 &&
 	    smb2_signing_key_valid(session->global->signing_key))
 	{
 		struct smbXsrv_session *x = session;
@@ -980,22 +981,23 @@ void reply_tcon_and_X(struct smb_request *req)
 		/*
 		 * The application key is truncated/padded to 16 bytes
 		 */
-		x->global->application_key = data_blob_talloc(x->global,
+		x->global->application_key_blob = data_blob_talloc(x->global,
 							     session_key,
 							     sizeof(session_key));
 		ZERO_STRUCT(session_key);
-		if (x->global->application_key.data == NULL) {
+		if (x->global->application_key_blob.data == NULL) {
 			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			END_PROFILE(SMBtconX);
 			return;
 		}
+		talloc_keep_secret(x->global->application_key_blob.data);
 
 		if (tcon_flags & TCONX_FLAG_EXTENDED_SIGNATURES) {
 			NTSTATUS status;
 
-			status = smb_key_derivation(x->global->application_key.data,
-						    x->global->application_key.length,
-						    x->global->application_key.data);
+			status = smb_key_derivation(x->global->application_key_blob.data,
+						    x->global->application_key_blob.length,
+						    x->global->application_key_blob.data);
 			if (!NT_STATUS_IS_OK(status)) {
 				DBG_ERR("smb_key_derivation failed: %s\n",
 					nt_errstr(status));
@@ -1010,13 +1012,14 @@ void reply_tcon_and_X(struct smb_request *req)
 		 */
 		data_blob_clear_free(&session_info->session_key);
 		session_info->session_key = data_blob_dup_talloc(session_info,
-						x->global->application_key);
+						x->global->application_key_blob);
 		if (session_info->session_key.data == NULL) {
-			data_blob_clear_free(&x->global->application_key);
+			data_blob_clear_free(&x->global->application_key_blob);
 			reply_nterror(req, NT_STATUS_NO_MEMORY);
 			END_PROFILE(SMBtconX);
 			return;
 		}
+		talloc_keep_secret(session_info->session_key.data);
 		session_key_updated = true;
 	}
 
@@ -1029,7 +1032,7 @@ void reply_tcon_and_X(struct smb_request *req)
 			struct smbXsrv_session *x = session;
 			struct auth_session_info *session_info =
 				session->global->auth_session_info;
-			data_blob_clear_free(&x->global->application_key);
+			data_blob_clear_free(&x->global->application_key_blob);
 			data_blob_clear_free(&session_info->session_key);
 		}
 		reply_nterror(req, nt_status);
@@ -1489,6 +1492,12 @@ void reply_setatr(struct smb_request *req)
 		goto out;
 	}
 
+	if (smb_fname->fsp == NULL) {
+		/* Can't set access rights on a symlink. */
+		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
+		goto out;
+	}
+
 	mode = SVAL(req->vwv+0, 0);
 	mtime = srv_make_unix_date3(req->vwv+1);
 
@@ -1498,9 +1507,8 @@ void reply_setatr(struct smb_request *req)
 		else
 			mode &= ~FILE_ATTRIBUTE_DIRECTORY;
 
-		status = smbd_check_access_rights(conn,
-					conn->cwd_fsp,
-					smb_fname,
+		status = smbd_check_access_rights_fsp(conn->cwd_fsp,
+					smb_fname->fsp,
 					false,
 					FILE_WRITE_ATTRIBUTES);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -3403,18 +3411,14 @@ NTSTATUS unlink_internals(connection_struct *conn,
 			char *p = NULL;
 			struct smb_filename *f = NULL;
 
-			if (!is_visible_file(conn,
-					dir_hnd,
-					dname,
-					&smb_fname->st,
-					true)) {
+			/* Quick check for "." and ".." */
+			if (ISDOT(dname) || ISDOTDOT(dname)) {
 				TALLOC_FREE(frame);
 				TALLOC_FREE(talloced);
 				continue;
 			}
 
-			/* Quick check for "." and ".." */
-			if (ISDOT(dname) || ISDOTDOT(dname)) {
+			if (IS_VETO_PATH(conn, dname)) {
 				TALLOC_FREE(frame);
 				TALLOC_FREE(talloced);
 				continue;
@@ -3476,6 +3480,12 @@ NTSTATUS unlink_internals(connection_struct *conn,
 				TALLOC_FREE(frame);
 				TALLOC_FREE(talloced);
 				goto out;
+			}
+
+			if (!is_visible_fsp(f->fsp)) {
+				TALLOC_FREE(frame);
+				TALLOC_FREE(talloced);
+				continue;
 			}
 
 			status = check_name(conn, f);
@@ -3562,7 +3572,7 @@ void reply_unlink(struct smb_request *req)
 		goto out;
 	}
 
-	if (req != NULL && !req->posix_pathnames) {
+	if (!req->posix_pathnames) {
 		char *lcomp = get_original_lcomp(ctx,
 					conn,
 					name,
@@ -3697,13 +3707,7 @@ ssize_t sendfile_short_send(struct smbXsrv_connection *xconn,
 	nread -= headersize;
 
 	if (nread < smb_maxcnt) {
-		char *buf = SMB_CALLOC_ARRAY(char, SHORT_SEND_BUFSIZE);
-		if (!buf) {
-			DEBUG(0,("sendfile_short_send: malloc failed "
-				"for file %s (%s). Terminating\n",
-				fsp_str_dbg(fsp), strerror(errno)));
-			return -1;
-		}
+		char buf[SHORT_SEND_BUFSIZE] = { 0 };
 
 		DEBUG(0,("sendfile_short_send: filling truncated file %s "
 			"with zeros !\n", fsp_str_dbg(fsp)));
@@ -3743,7 +3747,6 @@ ssize_t sendfile_short_send(struct smbXsrv_connection *xconn,
 			}
 			nread += to_write;
 		}
-		SAFE_FREE(buf);
 	}
 
 	return 0;
@@ -7521,14 +7524,15 @@ static NTSTATUS parent_dirname_compatible_open(connection_struct *conn,
 	struct file_id id;
 	files_struct *fsp = NULL;
 	int ret;
-	bool ok;
+	NTSTATUS status;
 
-	ok = parent_smb_fname(talloc_tos(),
-			      smb_fname_dst_in,
-			      &smb_fname_parent,
-			      NULL);
-	if (!ok) {
-		return NT_STATUS_NO_MEMORY;
+	status = SMB_VFS_PARENT_PATHNAME(conn,
+					 talloc_tos(),
+					 smb_fname_dst_in,
+					 &smb_fname_parent,
+					 NULL);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	ret = SMB_VFS_LSTAT(conn, smb_fname_parent);
@@ -7563,6 +7567,10 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 			bool replace_if_exists)
 {
 	TALLOC_CTX *ctx = talloc_tos();
+	struct smb_filename *parent_dir_fname_dst = NULL;
+	struct smb_filename *parent_dir_fname_dst_atname = NULL;
+	struct smb_filename *parent_dir_fname_src = NULL;
+	struct smb_filename *parent_dir_fname_src_atname = NULL;
 	struct smb_filename *smb_fname_dst = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 	struct share_mode_lock *lck = NULL;
@@ -7787,17 +7795,105 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 		/* We're moving a directory. */
 		access_mask = SEC_DIR_ADD_SUBDIR;
 	}
-	status = check_parent_access(conn,
+
+	/*
+	 * Get a pathref on the destination parent directory, so
+	 * we can call check_parent_access_fsp().
+	 */
+	status = parent_pathref(ctx,
 				conn->cwd_fsp,
 				smb_fname_dst,
+				&parent_dir_fname_dst,
+				&parent_dir_fname_dst_atname);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto out;
+	}
+
+	status = check_parent_access_fsp(parent_dir_fname_dst->fsp,
 				access_mask);
 	if (!NT_STATUS_IS_OK(status)) {
-		DBG_INFO("check_parent_access on "
+		DBG_INFO("check_parent_access_fsp on "
 			"dst %s returned %s\n",
 			smb_fname_str_dbg(smb_fname_dst),
 			nt_errstr(status));
 		goto out;
 	}
+
+	/*
+	 * If the target existed, make sure the destination
+	 * atname has the same stat struct.
+	 */
+	parent_dir_fname_dst_atname->st = smb_fname_dst->st;
+
+	/*
+	 * It's very common that source and
+	 * destination directories are the same.
+	 * Optimize by not opening the
+	 * second parent_pathref if we know
+	 * this is the case.
+	 */
+
+	status = SMB_VFS_PARENT_PATHNAME(conn,
+					 ctx,
+					 fsp->fsp_name,
+					 &parent_dir_fname_src,
+					 &parent_dir_fname_src_atname);
+	if (!NT_STATUS_IS_OK(status)) {
+		goto out;
+	}
+
+	/*
+	 * We do a case-sensitive string comparison. We want to be *sure*
+	 * this is the same path. The worst that can happen if
+	 * the case doesn't match is we lose out on the optimization,
+	 * the code still works.
+	 *
+	 * We can ignore twrp fields here. Rename is not allowed on
+	 * shadow copy handles.
+	 */
+
+	if (strcmp(parent_dir_fname_src->base_name,
+		   parent_dir_fname_dst->base_name) == 0) {
+		/*
+		 * parent directory is the same for source
+		 * and destination.
+		 */
+		/* Reparent the src_atname to the parent_dir_dest fname. */
+		parent_dir_fname_src_atname = talloc_move(
+						parent_dir_fname_dst,
+						&parent_dir_fname_src_atname);
+		/* Free the unneeded duplicate parent name. */
+		TALLOC_FREE(parent_dir_fname_src);
+		/*
+		 * And make the source parent name a copy of the
+		 * destination parent name.
+		 */
+		parent_dir_fname_src = parent_dir_fname_dst;
+	} else {
+		/*
+		 * source and destingation parent directories are
+		 * different.
+		 *
+		 * Get a pathref on the source parent directory, so
+		 * we can do a relative rename.
+		 */
+		TALLOC_FREE(parent_dir_fname_src);
+		status = parent_pathref(ctx,
+				conn->cwd_fsp,
+				fsp->fsp_name,
+				&parent_dir_fname_src,
+				&parent_dir_fname_src_atname);
+		if (!NT_STATUS_IS_OK(status)) {
+			goto out;
+		}
+	}
+
+	/*
+	 * Some modules depend on the source smb_fname having a valid stat.
+	 * The parent_dir_fname_src_atname is the relative name of the
+	 * currently open file, so just copy the stat from the open fsp.
+	 */
+	parent_dir_fname_src_atname->st = fsp->fsp_name->st;
 
 	lck = get_existing_share_mode_lock(talloc_tos(), fsp->file_id);
 
@@ -7809,10 +7905,10 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 	SMB_ASSERT(lck != NULL);
 
 	ret = SMB_VFS_RENAMEAT(conn,
-			conn->cwd_fsp,
-			fsp->fsp_name,
-			conn->cwd_fsp,
-			smb_fname_dst);
+			parent_dir_fname_src->fsp,
+			parent_dir_fname_src_atname,
+			parent_dir_fname_dst->fsp,
+			parent_dir_fname_dst_atname);
 	if (ret == 0) {
 		uint32_t create_options = fh_get_private_options(fsp->fh);
 
@@ -7837,18 +7933,20 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 			 * We must set the archive bit on the newly renamed
 			 * file.
 			 */
-			ret = SMB_VFS_FSTAT(fsp, &smb_fname_dst->st);
+			ret = SMB_VFS_FSTAT(fsp, &fsp->fsp_name->st);
 			if (ret == 0) {
 				uint32_t old_dosmode;
-
-				fsp->fsp_name->st = smb_fname_dst->st;
 				old_dosmode = fdos_mode(fsp);
-
+				/*
+				 * We can use fsp->fsp_name here as it has
+				 * already been changed to the new name.
+				 */
+				SMB_ASSERT(fsp->fsp_name->fsp == fsp);
 				file_set_dosmode(conn,
-					smb_fname_dst,
-					old_dosmode | FILE_ATTRIBUTE_ARCHIVE,
-					NULL,
-					true);
+						fsp->fsp_name,
+						old_dosmode | FILE_ATTRIBUTE_ARCHIVE,
+						NULL,
+						true);
 			}
 		}
 
@@ -7888,6 +7986,16 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 		  smb_fname_str_dbg(smb_fname_dst)));
 
  out:
+
+	/*
+	 * parent_dir_fname_src may be a copy of parent_dir_fname_dst.
+	 * See the optimization for same source and destination directory
+	 * above. Only free one in that case.
+	 */
+	if (parent_dir_fname_src != parent_dir_fname_dst) {
+		TALLOC_FREE(parent_dir_fname_src);
+	}
+	TALLOC_FREE(parent_dir_fname_dst);
 	TALLOC_FREE(smb_fname_dst);
 
 	return status;
@@ -8046,7 +8154,19 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 
 		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_src);
 		if (!NT_STATUS_IS_OK(status)) {
-			goto out;
+			if (!NT_STATUS_EQUAL(status,
+					NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
+				goto out;
+			}
+			/*
+			 * Possible symlink src.
+			 */
+			if (!(smb_fname_src->flags & SMB_FILENAME_POSIX_PATH)) {
+				goto out;
+			}
+			if (!S_ISLNK(smb_fname_src->st.st_ex_mode)) {
+				goto out;
+			}
 		}
 
 		if (S_ISDIR(smb_fname_src->st.st_ex_mode)) {
@@ -8154,15 +8274,6 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 			}
 		}
 
-		if (!is_visible_file(conn,
-				dir_hnd,
-				dname,
-				&smb_fname_src->st,
-				false)) {
-			TALLOC_FREE(talloced);
-			continue;
-		}
-
 		if(!mask_match(dname, fname_src_mask, conn->case_sensitive)) {
 			TALLOC_FREE(talloced);
 			continue;
@@ -8215,6 +8326,11 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 				 smb_fname_str_dbg(smb_fname_src),
 				 nt_errstr(status));
 			break;
+		}
+
+		if (!is_visible_fsp(smb_fname_src->fsp)) {
+			TALLOC_FREE(talloced);
+			continue;
 		}
 
 		create_options = 0;
@@ -8945,11 +9061,7 @@ void reply_copy(struct smb_request *req)
 				continue;
 			}
 
-			if (!is_visible_file(conn,
-					dir_hnd,
-					dname,
-					&smb_fname_src->st,
-					false)) {
+			if (IS_VETO_PATH(conn, dname)) {
 				TALLOC_FREE(talloced);
 				continue;
 			}
@@ -8997,6 +9109,23 @@ void reply_copy(struct smb_request *req)
 
 			TALLOC_FREE(smb_fname_dst->base_name);
 			smb_fname_dst->base_name = destname;
+
+			ZERO_STRUCT(smb_fname_src->st);
+			vfs_stat(conn, smb_fname_src);
+
+			status = openat_pathref_fsp(conn->cwd_fsp,
+						    smb_fname_src);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_INFO("openat_pathref_fsp [%s] failed: %s\n",
+					smb_fname_str_dbg(smb_fname_src),
+					nt_errstr(status));
+				break;
+			}
+
+			if (!is_visible_fsp(smb_fname_src->fsp)) {
+				TALLOC_FREE(talloced);
+				continue;
+			}
 
 			status = check_name(conn, smb_fname_src);
 			if (!NT_STATUS_IS_OK(status)) {

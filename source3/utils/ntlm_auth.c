@@ -26,7 +26,7 @@
 
 #include "includes.h"
 #include "lib/param/param.h"
-#include "popt_common.h"
+#include "lib/cmdline/cmdline.h"
 #include "libcli/security/security.h"
 #include "utils/ntlm_auth.h"
 #include "../libcli/auth/libcli_auth.h"
@@ -1365,9 +1365,13 @@ static NTSTATUS ntlm_auth_prepare_gensec_server(TALLOC_CTX *mem_ctx,
 	cli_credentials_set_conf(server_credentials, lp_ctx);
 
 	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC || lp_security() == SEC_ADS || USE_KERBEROS_KEYTAB) {
-		cli_credentials_set_kerberos_state(server_credentials, CRED_USE_KERBEROS_DESIRED);
+		cli_credentials_set_kerberos_state(server_credentials,
+						   CRED_USE_KERBEROS_DESIRED,
+						   CRED_SPECIFIED);
 	} else {
-		cli_credentials_set_kerberos_state(server_credentials, CRED_USE_KERBEROS_DISABLED);
+		cli_credentials_set_kerberos_state(server_credentials,
+						   CRED_USE_KERBEROS_DISABLED,
+						   CRED_SPECIFIED);
 	}
 
 	nt_status = gensec_server_start(tmp_ctx, gensec_settings,
@@ -2527,6 +2531,7 @@ enum {
 	const char *hex_nt_response = NULL;
 	struct loadparm_context *lp_ctx;
 	poptContext pc;
+	bool ok;
 
 	/* NOTE: DO NOT change this interface without considering the implications!
 	   This is an external interface, which other programs will use to interact
@@ -2683,44 +2688,35 @@ enum {
 			.val        = OPT_TARGET_HOSTNAME,
 			.descrip    = "Target hostname",
 		},
-		POPT_COMMON_CONFIGFILE
+		POPT_COMMON_DEBUG_ONLY
+		POPT_COMMON_CONFIG_ONLY
+		POPT_COMMON_OPTION_ONLY
 		POPT_COMMON_VERSION
-		POPT_COMMON_OPTION
 		POPT_TABLEEND
 	};
 
 	/* Samba client initialisation */
 	smb_init_locale();
 
-	setup_logging("ntlm_auth", DEBUG_STDERR);
-	fault_setup();
-
-	/* Parse options */
-
-	pc = poptGetContext("ntlm_auth", argc, argv, long_options, 0);
-
-	/* Parse command line options */
-
-	if (argc == 1) {
-		poptPrintHelp(pc, stderr, 0);
-		poptFreeContext(pc);
-		return 1;
-	}
-
-	while((opt = poptGetNextOpt(pc)) != -1) {
-		/* Get generic config options like --configfile */
-	}
-
-	poptFreeContext(pc);
-
-	if (!lp_load_global(get_dyn_CONFIGFILE())) {
-		d_fprintf(stderr, "ntlm_auth: error opening config file %s. Error was %s\n",
-			get_dyn_CONFIGFILE(), strerror(errno));
+	ok = samba_cmdline_init(frame,
+				SAMBA_CMDLINE_CONFIG_CLIENT,
+				false /* require_smbconf */);
+	if (!ok) {
+		DBG_ERR("Failed to init cmdline parser!\n");
+		TALLOC_FREE(frame);
 		exit(1);
 	}
 
-	pc = poptGetContext(NULL, argc, (const char **)argv, long_options, 
-			    POPT_CONTEXT_KEEP_FIRST);
+	pc = samba_popt_get_context(getprogname(),
+				    argc,
+				    argv,
+				    long_options,
+				    POPT_CONTEXT_KEEP_FIRST);
+	if (pc == NULL) {
+		DBG_ERR("Failed to setup popt context!\n");
+		TALLOC_FREE(frame);
+		exit(1);
+	}
 
 	while((opt = poptGetNextOpt(pc)) != -1) {
 		switch (opt) {
@@ -2761,6 +2757,12 @@ enum {
 				require_membership_of_sid = require_membership_of;
 			}
 			break;
+
+		case POPT_ERROR_BADOPT:
+			fprintf(stderr, "\nInvalid option %s: %s\n\n",
+				poptBadOption(pc, 0), poptStrerror(opt));
+			poptPrintUsage(pc, stderr, 0);
+			exit(1);
 		}
 	}
 

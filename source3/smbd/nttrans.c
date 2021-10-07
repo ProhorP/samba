@@ -787,14 +787,14 @@ void reply_ntcreate_and_X(struct smb_request *req)
 		if (lp_ea_support(SNUM(conn))) {
 			size_t num_names = 0;
 			/* Do we have any EA's ? */
-			status = get_ea_names_from_file(
-			    ctx, conn, fsp, smb_fname, NULL, &num_names);
+			status = get_ea_names_from_fsp(
+			    ctx, smb_fname->fsp, NULL, &num_names);
 			if (NT_STATUS_IS_OK(status) && num_names) {
 				file_status &= ~NO_EAS;
 			}
 		}
 
-		status = vfs_streaminfo(conn, NULL, smb_fname, ctx,
+		status = vfs_fstreaminfo(smb_fname->fsp, ctx,
 			&num_streams, &streams);
 		/* There is always one stream, ::$DATA. */
 		if (NT_STATUS_IS_OK(status) && num_streams > 1) {
@@ -811,9 +811,7 @@ void reply_ntcreate_and_X(struct smb_request *req)
 		p += 25;
 		if (fsp->fsp_flags.is_directory ||
 		    fsp->fsp_flags.can_write ||
-		    can_write_to_file(conn,
-				conn->cwd_fsp,
-				smb_fname))
+		    can_write_to_fsp(fsp))
 		{
 			perms = FILE_GENERIC_ALL;
 		} else {
@@ -947,7 +945,8 @@ static void do_nt_transact_create_pipe(connection_struct *conn,
  same.
 *********************************************************************/
 
-static void canonicalize_inheritance_bits(struct security_descriptor *psd)
+static void canonicalize_inheritance_bits(struct files_struct *fsp,
+					  struct security_descriptor *psd)
 {
 	bool set_auto_inherited = false;
 
@@ -963,6 +962,11 @@ static void canonicalize_inheritance_bits(struct security_descriptor *psd)
 	 *
 	 * for details.
 	 */
+
+	if (!lp_acl_flag_inherited_canonicalization(SNUM(fsp->conn))) {
+		psd->type &= ~SEC_DESC_DACL_AUTO_INHERIT_REQ;
+		return;
+	}
 
 	if ((psd->type & (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ))
 			== (SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_AUTO_INHERIT_REQ)) {
@@ -982,6 +986,7 @@ static void canonicalize_inheritance_bits(struct security_descriptor *psd)
 NTSTATUS set_sd(files_struct *fsp, struct security_descriptor *psd,
 		       uint32_t security_info_sent)
 {
+	files_struct *sd_fsp = fsp;
 	NTSTATUS status;
 
 	if (!CAN_WRITE(fsp->conn)) {
@@ -992,10 +997,11 @@ NTSTATUS set_sd(files_struct *fsp, struct security_descriptor *psd,
 		return NT_STATUS_OK;
 	}
 
-	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
-		DEBUG(10, ("ACL set on symlink %s denied.\n",
-			fsp_str_dbg(fsp)));
-		return NT_STATUS_ACCESS_DENIED;
+	status = refuse_symlink_fsp(fsp);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_DEBUG("ACL set on symlink %s denied.\n",
+			fsp_str_dbg(fsp));
+		return status;
 	}
 
 	if (psd->owner_sid == NULL) {
@@ -1051,14 +1057,21 @@ NTSTATUS set_sd(files_struct *fsp, struct security_descriptor *psd,
 		}
 	}
 
-	canonicalize_inheritance_bits(psd);
+	canonicalize_inheritance_bits(fsp, psd);
 
 	if (DEBUGLEVEL >= 10) {
 		DEBUG(10,("set_sd for file %s\n", fsp_str_dbg(fsp)));
 		NDR_PRINT_DEBUG(security_descriptor, psd);
 	}
 
-	status = SMB_VFS_FSET_NT_ACL(fsp, security_info_sent, psd);
+	if (fsp->base_fsp != NULL) {
+		/*
+		 * This is a stream handle. Use
+		 * the underlying pathref handle.
+		 */
+		sd_fsp = fsp->base_fsp;
+	}
+	status = SMB_VFS_FSET_NT_ACL(sd_fsp, security_info_sent, psd);
 
 	TALLOC_FREE(psd);
 
@@ -1465,14 +1478,14 @@ static void call_nt_transact_create(connection_struct *conn,
 		if (lp_ea_support(SNUM(conn))) {
 			size_t num_names = 0;
 			/* Do we have any EA's ? */
-			status = get_ea_names_from_file(
-			    ctx, conn, fsp, smb_fname, NULL, &num_names);
+			status = get_ea_names_from_fsp(
+			    ctx, smb_fname->fsp, NULL, &num_names);
 			if (NT_STATUS_IS_OK(status) && num_names) {
 				file_status &= ~NO_EAS;
 			}
 		}
 
-		status = vfs_streaminfo(conn, NULL, smb_fname, ctx,
+		status = vfs_fstreaminfo(smb_fname->fsp, ctx,
 			&num_streams, &streams);
 		/* There is always one stream, ::$DATA. */
 		if (NT_STATUS_IS_OK(status) && num_streams > 1) {
@@ -1489,9 +1502,7 @@ static void call_nt_transact_create(connection_struct *conn,
 		p += 25;
 		if (fsp->fsp_flags.is_directory ||
 		    fsp->fsp_flags.can_write ||
-		    can_write_to_file(conn,
-				conn->cwd_fsp,
-				smb_fname))
+		    can_write_to_fsp(fsp))
 		{
 			perms = FILE_GENERIC_ALL;
 		} else {
@@ -1542,12 +1553,12 @@ void reply_ntcancel(struct smb_request *req)
  Copy a file.
 ****************************************************************************/
 
-static NTSTATUS copy_internals(TALLOC_CTX *ctx,
-				connection_struct *conn,
-				struct smb_request *req,
-				struct smb_filename *smb_fname_src,
-				struct smb_filename *smb_fname_dst,
-				uint32_t attrs)
+NTSTATUS copy_internals(TALLOC_CTX *ctx,
+			connection_struct *conn,
+			struct smb_request *req,
+			struct smb_filename *smb_fname_src,
+			struct smb_filename *smb_fname_dst,
+			uint32_t attrs)
 {
 	files_struct *fsp1,*fsp2;
 	uint32_t fattr;
@@ -1555,7 +1566,7 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 	off_t ret=-1;
 	NTSTATUS status = NT_STATUS_OK;
 	struct smb_filename *parent = NULL;
-	bool ok;
+	struct smb_filename *pathref = NULL;
 
 	if (!CAN_WRITE(conn)) {
 		status = NT_STATUS_MEDIA_WRITE_PROTECTED;
@@ -1663,15 +1674,34 @@ static NTSTATUS copy_internals(TALLOC_CTX *ctx,
 	   creates the file. This isn't the correct thing to do in the copy
 	   case. JRA */
 
-	ok = parent_smb_fname(talloc_tos(),
-			      smb_fname_dst,
-			      &parent,
-			      NULL);
-	if (!ok) {
-		status = NT_STATUS_NO_MEMORY;
+	status = SMB_VFS_PARENT_PATHNAME(conn,
+					 talloc_tos(),
+					 smb_fname_dst,
+					 &parent,
+					 NULL);
+	if (!NT_STATUS_IS_OK(status)) {
 		goto out;
 	}
-	file_set_dosmode(conn, smb_fname_dst, fattr, parent, false);
+	if (smb_fname_dst->fsp == NULL) {
+		status = synthetic_pathref(parent,
+					conn->cwd_fsp,
+					smb_fname_dst->base_name,
+					smb_fname_dst->stream_name,
+					NULL,
+					smb_fname_dst->twrp,
+					smb_fname_dst->flags,
+					&pathref);
+
+		/* should we handle NT_STATUS_OBJECT_NAME_NOT_FOUND specially here ???? */
+		if (!NT_STATUS_IS_OK(status)) {
+			TALLOC_FREE(parent);
+			goto out;
+		}
+		file_set_dosmode(conn, pathref, fattr, parent, false);
+		smb_fname_dst->st.st_ex_mode = pathref->st.st_ex_mode;
+	} else {
+		file_set_dosmode(conn, smb_fname_dst, fattr, parent, false);
+	}
 	TALLOC_FREE(parent);
 
 	if (ret < (off_t)smb_fname_src->st.st_ex_size) {
@@ -2126,11 +2156,12 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
-		DEBUG(10, ("ACL get on symlink %s denied.\n",
-			fsp_str_dbg(fsp)));
+	status = refuse_symlink_fsp(fsp);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_DEBUG("ACL get on symlink %s denied.\n",
+			fsp_str_dbg(fsp));
 		TALLOC_FREE(frame);
-		return NT_STATUS_ACCESS_DENIED;
+		return status;
 	}
 
 	if (security_info_wanted & (SECINFO_DACL|SECINFO_OWNER|
@@ -2152,8 +2183,16 @@ NTSTATUS smbd_do_query_security_desc(connection_struct *conn,
 	    ((security_info_wanted & SECINFO_LABEL) == 0) &&
 	    need_to_read_sd)
 	{
+		files_struct *sd_fsp = fsp;
+		if (fsp->base_fsp != NULL) {
+			/*
+			 * This is a stream handle. Use
+			 * the underlying pathref handle.
+			 */
+			sd_fsp = fsp->base_fsp;
+		}
 		status = SMB_VFS_FGET_NT_ACL(
-			fsp, security_info_wanted, frame, &psd);
+			sd_fsp, security_info_wanted, frame, &psd);
 	} else {
 		status = get_null_nt_acl(frame, &psd);
 	}

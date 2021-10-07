@@ -22,7 +22,6 @@
 #include "python/modules.h"
 #include "pycredentials.h"
 #include "param/param.h"
-#include "lib/cmdline/credentials.h"
 #include "auth/credentials/credentials_internal.h"
 #include "librpc/gen_ndr/samr.h" /* for struct samr_Password */
 #include "librpc/gen_ndr/netlogon.h"
@@ -31,7 +30,6 @@
 #include "param/pyparam.h"
 #include <tevent.h>
 #include "libcli/auth/libcli_auth.h"
-#include "auth/credentials/credentials_internal.h"
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
 #include "libcli/smb/smb_constants.h"
@@ -571,7 +569,7 @@ static PyObject *py_creds_set_kerberos_state(PyObject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "i", &state))
 		return NULL;
 
-	cli_credentials_set_kerberos_state(creds, state);
+	cli_credentials_set_kerberos_state(creds, state, CRED_SPECIFIED);
 	Py_RETURN_NONE;
 }
 
@@ -624,6 +622,7 @@ static PyObject *py_creds_set_conf(PyObject *self, PyObject *args)
 	struct loadparm_context *lp_ctx;
 	TALLOC_CTX *mem_ctx;
 	struct cli_credentials *creds;
+	bool ok;
 
 	creds = PyCredentials_AsCliCredentials(self);
 	if (creds == NULL) {
@@ -647,9 +646,11 @@ static PyObject *py_creds_set_conf(PyObject *self, PyObject *args)
 		return NULL;
 	}
 
-	cli_credentials_set_conf(creds, lp_ctx);
-
+	ok = cli_credentials_set_conf(creds, lp_ctx);
 	talloc_free(mem_ctx);
+	if (!ok) {
+		return NULL;
+	}
 
 	Py_RETURN_NONE;
 }
@@ -660,6 +661,7 @@ static PyObject *py_creds_guess(PyObject *self, PyObject *args)
 	struct loadparm_context *lp_ctx;
 	TALLOC_CTX *mem_ctx;
 	struct cli_credentials *creds;
+	bool ok;
 
 	creds = PyCredentials_AsCliCredentials(self);
 	if (creds == NULL) {
@@ -682,9 +684,11 @@ static PyObject *py_creds_guess(PyObject *self, PyObject *args)
 		return NULL;
 	}
 
-	cli_credentials_guess(creds, lp_ctx);
-
+	ok = cli_credentials_guess(creds, lp_ctx);
 	talloc_free(mem_ctx);
+	if (!ok) {
+		return NULL;
+	}
 
 	Py_RETURN_NONE;
 }
@@ -842,7 +846,9 @@ static PyObject *py_creds_set_gensec_features(PyObject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "I", &gensec_features))
 		return NULL;
 
-	cli_credentials_set_gensec_features(creds, gensec_features);
+	cli_credentials_set_gensec_features(creds,
+					    gensec_features,
+					    CRED_SPECIFIED);
 
 	Py_RETURN_NONE;
 }

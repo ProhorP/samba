@@ -162,7 +162,8 @@ static NTSTATUS check_parent_exists(TALLOC_CTX *ctx,
 				bool posix_pathnames,
 				const struct smb_filename *smb_fname,
 				char **pp_dirpath,
-				char **pp_start)
+				char **pp_start,
+				int *p_parent_stat_errno)
 {
 	char *parent_name = NULL;
 	struct smb_filename *parent_fname = NULL;
@@ -211,6 +212,16 @@ static NTSTATUS check_parent_exists(TALLOC_CTX *ctx,
 	   with the normal tree walk. */
 
 	if (ret == -1) {
+		/*
+		 * Optimization. Preserving the
+		 * errno from the STAT/LSTAT here
+		 * will allow us to save a duplicate
+		 * STAT/LSTAT system call of the parent
+		 * pathname in a hot code path in the caller.
+		 */
+		if (p_parent_stat_errno != NULL) {
+			*p_parent_stat_errno = errno;
+		}
 		goto no_optimization_out;
 	}
 
@@ -1163,6 +1174,8 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 		  state->smb_fname->base_name, state->dirpath, state->name);
 
 	if (!state->name_has_wildcard) {
+		int parent_stat_errno = 0;
+
 		/*
 		 * stat the name - if it exists then we can add the stream back (if
 		 * there was one) and be done!
@@ -1206,7 +1219,8 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 						state->posix_pathnames,
 						state->smb_fname,
 						&state->dirpath,
-						&state->name);
+						&state->name,
+						&parent_stat_errno);
 			errno = saved_errno;
 			if (!NT_STATUS_IS_OK(status)) {
 				goto fail;
@@ -1240,28 +1254,29 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 				/*
 				 * Was it a missing last component ?
 				 * or a missing intermediate component ?
+				 *
+				 * Optimization.
+				 *
+				 * For this code path we can guarantee that
+				 * we have gone through check_parent_exists()
+				 * and it returned NT_STATUS_OK.
+				 *
+				 * Either there was no parent component (".")
+				 * parent_stat_errno == 0 and we have a missing
+				 * last component here.
+				 *
+				 * OR check_parent_exists() called STAT/LSTAT
+				 * and if it failed parent_stat_errno has been
+				 * set telling us if the parent existed or not.
+				 *
+				 * Either way we can avoid another STAT/LSTAT
+				 * system call on the parent here.
 				 */
-				struct smb_filename *parent_fname = NULL;
-				struct smb_filename *base_fname = NULL;
-				bool ok;
-
-				ok = parent_smb_fname(state->mem_ctx,
-						      state->smb_fname,
-						      &parent_fname,
-						      &base_fname);
-				if (!ok) {
-					status = NT_STATUS_NO_MEMORY;
+				if (parent_stat_errno == ENOTDIR ||
+						parent_stat_errno == ENOENT ||
+						parent_stat_errno == ELOOP) {
+					status = NT_STATUS_OBJECT_PATH_NOT_FOUND;
 					goto fail;
-				}
-				ret = vfs_stat(state->conn, parent_fname);
-				TALLOC_FREE(parent_fname);
-				if (ret == -1) {
-					if (errno == ENOTDIR ||
-							errno == ENOENT ||
-							errno == ELOOP) {
-						status = NT_STATUS_OBJECT_PATH_NOT_FOUND;
-						goto fail;
-					}
 				}
 
 				/*
@@ -1287,7 +1302,8 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 					state->posix_pathnames,
 					state->smb_fname,
 					&state->dirpath,
-					&state->name);
+					&state->name,
+					NULL);
 		errno = saved_errno;
 		if (!NT_STATUS_IS_OK(status)) {
 			goto fail;
@@ -1720,6 +1736,7 @@ static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 	NTSTATUS status;
 	unsigned int i, num_streams = 0;
 	struct stream_struct *streams = NULL;
+	struct smb_filename *pathref = NULL;
 
 	if (SMB_VFS_STAT(conn, smb_fname) == 0) {
 		DEBUG(10, ("'%s' exists\n", smb_fname_str_dbg(smb_fname)));
@@ -1732,17 +1749,41 @@ static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 		goto fail;
 	}
 
-	/* Fall back to a case-insensitive scan of all streams on the file. */
-	status = vfs_streaminfo(conn, NULL, smb_fname, mem_ctx,
-				&num_streams, &streams);
+	if (smb_fname->fsp == NULL) {
+		status = synthetic_pathref(mem_ctx,
+					conn->cwd_fsp,
+					smb_fname->base_name,
+					NULL,
+					NULL,
+					smb_fname->twrp,
+					smb_fname->flags,
+					&pathref);
+		if (!NT_STATUS_IS_OK(status)) {
+			if (NT_STATUS_EQUAL(status,
+				NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
+				TALLOC_FREE(pathref);
+				SET_STAT_INVALID(smb_fname->st);
+				return NT_STATUS_OK;
+			}
+			DBG_DEBUG("synthetic_pathref failed: %s\n",
+				  nt_errstr(status));
+			goto fail;
+		}
+	} else {
+		pathref = smb_fname;
+	}
 
+	/* Fall back to a case-insensitive scan of all streams on the file. */
+	status = vfs_fstreaminfo(pathref->fsp, mem_ctx,
+				&num_streams, &streams);
 	if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
 		SET_STAT_INVALID(smb_fname->st);
+		TALLOC_FREE(pathref);
 		return NT_STATUS_OK;
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(10, ("vfs_streaminfo failed: %s\n", nt_errstr(status)));
+		DEBUG(10, ("vfs_fstreaminfo failed: %s\n", nt_errstr(status)));
 		goto fail;
 	}
 
@@ -1760,6 +1801,7 @@ static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 	/* Couldn't find the stream. */
 	if (i == num_streams) {
 		SET_STAT_INVALID(smb_fname->st);
+		TALLOC_FREE(pathref);
 		TALLOC_FREE(streams);
 		return NT_STATUS_OK;
 	}
@@ -1782,6 +1824,7 @@ static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 	}
 	status = NT_STATUS_OK;
  fail:
+	TALLOC_FREE(pathref);
 	TALLOC_FREE(streams);
 	return status;
 }
@@ -2004,9 +2047,9 @@ static NTSTATUS filename_convert_internal(TALLOC_CTX *ctx,
 		}
 	}
 	if (!NT_STATUS_IS_OK(status)) {
-		DBG_ERR("open_pathref_fsp [%s] failed: %s\n",
-			smb_fname_str_dbg(smb_fname),
-			nt_errstr(status));
+		DBG_DEBUG("open_pathref_fsp [%s] failed: %s\n",
+			  smb_fname_str_dbg(smb_fname),
+			  nt_errstr(status));
 		return status;
 	}
 

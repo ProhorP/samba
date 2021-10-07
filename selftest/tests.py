@@ -45,8 +45,8 @@ finally:
 have_man_pages_support = ("XSLTPROC_MANPAGES" in config_hash)
 with_pam = ("WITH_PAM" in config_hash)
 with_elasticsearch_backend = ("HAVE_SPOTLIGHT_BACKEND_ES" in config_hash)
-pam_wrapper_so_path = config_hash["LIBPAM_WRAPPER_SO_PATH"]
-pam_set_items_so_path = config_hash["PAM_SET_ITEMS_SO_PATH"]
+pam_wrapper_so_path = config_hash.get("LIBPAM_WRAPPER_SO_PATH")
+pam_set_items_so_path = config_hash.get("PAM_SET_ITEMS_SO_PATH")
 
 planpythontestsuite("none", "samba.tests.source")
 if have_man_pages_support:
@@ -218,6 +218,7 @@ planpythontestsuite("none", "samba.tests.glue")
 planpythontestsuite("none", "samba.tests.tdb_util")
 planpythontestsuite("none", "samba.tests.samdb")
 planpythontestsuite("none", "samba.tests.samdb_api")
+planpythontestsuite("none", "samba.tests.ndr")
 
 if with_pam:
     env = "ad_member"
@@ -378,6 +379,12 @@ plantestsuite("samba.unittests.sambafs_srv_pipe", "none",
               [os.path.join(bindir(), "default/testsuite/unittests/test_sambafs_srv_pipe")])
 plantestsuite("samba.unittests.lib_util_modules", "none",
               [os.path.join(bindir(), "default/testsuite/unittests/test_lib_util_modules")])
+plantestsuite("samba.unittests.background_send",
+              "none",
+              [os.path.join(
+                  bindir(),
+                  "default/testsuite/unittests/test_background_send"),
+               "$SMB_CONF_PATH"])
 
 plantestsuite("samba.unittests.smb1cli_session", "none",
               [os.path.join(bindir(), "default/libcli/smb/test_smb1cli_session")])

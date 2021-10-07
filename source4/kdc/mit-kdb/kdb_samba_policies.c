@@ -30,6 +30,9 @@
 #include "kdc/mit_samba.h"
 #include "kdb_samba.h"
 
+#undef DBGC_CLASS
+#define DBGC_CLASS DBGC_KERBEROS
+
 /* FIXME: This is a krb5 function which is exported, but in no header */
 extern krb5_error_code decode_krb5_padata_sequence(const krb5_data *output,
 						   krb5_pa_data ***rep);
@@ -287,22 +290,6 @@ done:
 	return code;
 }
 
-#if KRB5_KDB_API_VERSION < 10
-krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
-					    unsigned int flags,
-					    krb5_const_principal client_princ,
-					    krb5_db_entry *client,
-					    krb5_db_entry *server,
-					    krb5_db_entry *krbtgt,
-					    krb5_keyblock *client_key,
-					    krb5_keyblock *server_key,
-					    krb5_keyblock *krbtgt_key,
-					    krb5_keyblock *session_key,
-					    krb5_timestamp authtime,
-					    krb5_authdata **tgt_auth_data,
-					    krb5_authdata ***signed_auth_data)
-{
-#else
 krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 					    unsigned int flags,
 					    krb5_const_principal client_princ,
@@ -322,17 +309,14 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 					    krb5_data ***auth_indicators,
 					    krb5_authdata ***signed_auth_data)
 {
-#endif
 	krb5_authdata **authdata = NULL;
 	krb5_boolean is_as_req;
 	krb5_error_code code;
 	krb5_pac pac = NULL;
 	krb5_data pac_data;
 
-#if KRB5_KDB_API_VERSION >= 10
 	krbtgt = krbtgt == NULL ? local_krbtgt : krbtgt;
 	krbtgt_key = krbtgt_key == NULL ? local_krbtgt_key : krbtgt_key;
-#endif
 
 	/* FIXME: We don't support S4U yet */
 	if (flags & KRB5_KDB_FLAGS_S4U) {
@@ -475,7 +459,6 @@ static void samba_bad_password_count(krb5_db_entry *client,
 	}
 }
 
-#if KRB5_KDB_API_VERSION >= 9
 void kdb_samba_db_audit_as_req(krb5_context context,
 			       krb5_kdc_req *request,
 			       const krb5_address *local_addr,
@@ -497,22 +480,3 @@ void kdb_samba_db_audit_as_req(krb5_context context,
 
 	/* TODO: perform proper audit logging for addresses */
 }
-#else
-void kdb_samba_db_audit_as_req(krb5_context context,
-			       krb5_kdc_req *request,
-			       krb5_db_entry *client,
-			       krb5_db_entry *server,
-			       krb5_timestamp authtime,
-			       krb5_error_code error_code)
-{
-	/*
-	 * FIXME: This segfaulted with a FAST test
-	 * FIND_FAST: <unknown client> for <unknown server>, Unknown FAST armor type 0
-	 */
-	if (client == NULL) {
-		return;
-	}
-
-	samba_bad_password_count(client, error_code);
-}
-#endif

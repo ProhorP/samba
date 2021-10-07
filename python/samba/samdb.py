@@ -34,6 +34,7 @@ from samba.dcerpc import drsblobs, misc
 from samba.common import normalise_int32
 from samba.common import get_bytes, cmp
 from samba.dcerpc import security
+from samba import is_ad_dc_built
 import binascii
 
 __docformat__ = "restructuredText"
@@ -227,7 +228,12 @@ lockoutTime: 0
         :param sd: security descriptor of the object
         """
 
-        group_dn = "CN=%s,%s,%s" % (groupname, (groupou or "CN=Users"), self.domain_dn())
+        if groupou:
+            group_dn = "CN=%s,%s,%s" % (groupname, groupou, self.domain_dn())
+        else:
+            group_dn = "CN=%s,%s" % (groupname, self.get_wellknown_dn(
+                                        self.get_default_basedn(),
+                                        dsdb.DS_GUID_USERS_CONTAINER))
 
         # The new user record. Note the reliance on the SAMLDB module which
         # fills in the default information
@@ -529,7 +535,12 @@ member: %s
         if useusernameascn is None and displayname != "":
             cn = displayname
 
-        user_dn = "CN=%s,%s,%s" % (cn, (userou or "CN=Users"), self.domain_dn())
+        if userou:
+            user_dn = "CN=%s,%s,%s" % (cn, userou, self.domain_dn())
+        else:
+            user_dn = "CN=%s,%s" % (cn, self.get_wellknown_dn(
+                                        self.get_default_basedn(),
+                                        dsdb.DS_GUID_USERS_CONTAINER))
 
         dnsdomain = ldb.Dn(self, self.domain_dn()).canonical_str().replace("/", "")
         user_principal_name = "%s@%s" % (username, dnsdomain)
@@ -762,7 +773,8 @@ member: %s
             raise Exception('Illegal computername "%s"' % computername)
         samaccountname = "%s$" % cn
 
-        computercontainer_dn = "CN=Computers,%s" % self.domain_dn()
+        computercontainer_dn = self.get_wellknown_dn(self.get_default_basedn(),
+                                              dsdb.DS_GUID_COMPUTERS_CONTAINER)
         if computerou:
             computercontainer_dn = self.normalize_dn_in_domain(computerou)
 
@@ -1369,6 +1381,10 @@ schemaUpdateNow: 1
         '''garbage_collect_tombstones(lp, samdb, [dn], current_time, tombstone_lifetime)
         -> (num_objects_expunged, num_links_expunged)'''
 
+        if not is_ad_dc_built():
+            raise SamDBError('Cannot garbage collect tombstones: ' \
+                'AD DC was not built')
+
         if tombstone_lifetime is None:
             return dsdb._dsdb_garbage_collect_tombstones(self, dn,
                                                          current_time)
@@ -1464,8 +1480,8 @@ schemaUpdateNow: 1
         if prev_pool == uint64_max or next_rid == uint32_max:
             prev_pool = alloc_pool
             next_rid = prev_pool & uint32_max
-
-        next_rid += 1
+        else:
+            next_rid += 1
 
         # Now check if our current pool is still usable
         prev_pool_lo = prev_pool & uint32_max

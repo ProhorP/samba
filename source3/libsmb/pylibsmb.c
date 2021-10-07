@@ -1330,12 +1330,15 @@ static PyObject *py_cli_notify_get_changes(struct py_cli_notify_state *self,
 				       "name", changes[i].name,
 				       "action", changes[i].action);
 		if (change == NULL) {
+			Py_XDECREF(result);
 			TALLOC_FREE(req);
 			return NULL;
 		}
 
 		ret = PyList_Append(result, change);
+		Py_DECREF(change);
 		if (ret == -1) {
+			Py_XDECREF(result);
 			TALLOC_FREE(req);
 			return NULL;
 		}
@@ -1346,18 +1349,22 @@ static PyObject *py_cli_notify_get_changes(struct py_cli_notify_state *self,
 }
 
 static PyMethodDef py_cli_notify_state_methods[] = {
-	{ "get_changes",
-	  (PyCFunction)py_cli_notify_get_changes,
-	  METH_VARARGS|METH_KEYWORDS,
-	  "Wait for change notifications: \n"
-	  "N.get_changes(wait=BOOLEAN) -> "
-	  "change notifications as a dictionary\n"
-	  "\t\tList contents of a directory. The keys are, \n"
-	  "\t\t\tname: name of changed object\n"
-	  "\t\t\taction: type of the change\n"
-	  "None is returned if there's no response jet and wait=False is passed"
+	{
+		.ml_name = "get_changes",
+		.ml_meth = (PyCFunction)py_cli_notify_get_changes,
+		.ml_flags = METH_VARARGS|METH_KEYWORDS,
+		.ml_doc  = "Wait for change notifications: \n"
+			   "N.get_changes(wait=BOOLEAN) -> "
+			   "change notifications as a dictionary\n"
+			   "\t\tList contents of a directory. The keys are, \n"
+			   "\t\t\tname: name of changed object\n"
+			   "\t\t\taction: type of the change\n"
+			   "None is returned if there's no response jet and "
+			   "wait=False is passed"
 	},
-	{ NULL }
+	{
+		.ml_name = NULL
+	}
 };
 
 static PyTypeObject py_cli_notify_state_type = {
@@ -1750,7 +1757,7 @@ static PyObject *py_smb_get_sd(struct py_cli_state *self, PyObject *args)
 	req = cli_query_security_descriptor_send(
 		NULL, self->ev, self->cli, fnum, sinfo);
 	if (!py_tevent_req_wait_exc(self, req)) {
-		return false;
+		return NULL;
 	}
 	status = cli_query_security_descriptor_recv(req, NULL, &sd);
 	PyErr_NTSTATUS_NOT_OK_RAISE(status);
@@ -1783,7 +1790,7 @@ static PyObject *py_smb_set_sd(struct py_cli_state *self, PyObject *args)
 	req = cli_set_security_descriptor_send(
 		NULL, self->ev, self->cli, fnum, sinfo, sd);
 	if (!py_tevent_req_wait_exc(self, req)) {
-		return false;
+		return NULL;
 	}
 
 	status = cli_set_security_descriptor_recv(req);
@@ -1852,10 +1859,10 @@ static PyMethodDef py_cli_state_methods[] = {
 	  "chkpath(dir_path) -> True or False\n\n"
 	  "\t\tReturn true if directory exists, false otherwise." },
 	{ "savefile", (PyCFunction)py_smb_savefile, METH_VARARGS,
-	  "savefile(path, str) -> None\n\n"
-	  "\t\tWrite " PY_DESC_PY3_BYTES " str to file." },
+	  "savefile(path, bytes) -> None\n\n"
+	  "\t\tWrite bytes to file." },
 	{ "loadfile", (PyCFunction)py_smb_loadfile, METH_VARARGS,
-	  "loadfile(path) -> file contents as a " PY_DESC_PY3_BYTES
+	  "loadfile(path) -> file contents as a bytes object"
 	  "\n\n\t\tRead contents of a file." },
 	{ "get_sd", (PyCFunction)py_smb_get_sd, METH_VARARGS,
 	  "get_sd(fnum[, security_info=0]) -> security_descriptor object\n\n"

@@ -658,18 +658,17 @@ NTSTATUS synthetic_pathref(TALLOC_CTX *mem_ctx,
 	if (!VALID_STAT(smb_fname->st)) {
 		ret = vfs_stat(dirfsp->conn, smb_fname);
 		if (ret != 0) {
-			DBG_ERR("stat [%s] failed: %s",
+			int err = errno;
+			int lvl = err == ENOENT ? DBGLVL_INFO : DBGLVL_ERR;
+			DBG_PREFIX(lvl, ("stat [%s] failed: %s\n",
 				smb_fname_str_dbg(smb_fname),
-				strerror(errno));
+				strerror(err)));
 			TALLOC_FREE(smb_fname);
-			return map_nt_error_from_unix(errno);
+			return map_nt_error_from_unix(err);
 		}
 	}
 
 	status = openat_pathref_fsp(dirfsp, smb_fname);
-	if (NT_STATUS_EQUAL(status, NT_STATUS_STOPPED_ON_SYMLINK)) {
-		status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-	}
 	if (!NT_STATUS_IS_OK(status)) {
 		DBG_ERR("opening [%s] failed\n",
 			smb_fname_str_dbg(smb_fname));
@@ -678,6 +677,77 @@ NTSTATUS synthetic_pathref(TALLOC_CTX *mem_ctx,
 	}
 
 	*_smb_fname = smb_fname;
+	return NT_STATUS_OK;
+}
+
+static int atname_destructor(struct smb_filename *smb_fname)
+{
+	destroy_fsp_smb_fname_link(&smb_fname->fsp_link);
+	return 0;
+}
+
+/**
+ * Turn a path into a parent pathref and atname
+ *
+ * This returns the parent pathref in _parent and the name relative to it. If
+ * smb_fname was a pathref (ie smb_fname->fsp != NULL), then _atname will be a
+ * pathref as well, ie _atname->fsp will point at the same fsp as
+ * smb_fname->fsp.
+ **/
+NTSTATUS parent_pathref(TALLOC_CTX *mem_ctx,
+			struct files_struct *dirfsp,
+			const struct smb_filename *smb_fname,
+			struct smb_filename **_parent,
+			struct smb_filename **_atname)
+{
+	struct smb_filename *parent = NULL;
+	struct smb_filename *atname = NULL;
+	NTSTATUS status;
+	int ret;
+
+	status = SMB_VFS_PARENT_PATHNAME(dirfsp->conn,
+					 mem_ctx,
+					 smb_fname,
+					 &parent,
+					 &atname);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	/*
+	 * We know that the parent name must
+	 * exist, and the name has been canonicalized
+	 * even if this was a POSIX pathname.
+	 * Ensure that we follow symlinks for
+	 * the parent. See the torture test
+	 * POSIX-SYMLINK-PARENT for details.
+	 */
+	parent->flags &= ~SMB_FILENAME_POSIX_PATH;
+
+	ret = vfs_stat(dirfsp->conn, parent);
+	if (ret != 0) {
+		TALLOC_FREE(parent);
+		return map_nt_error_from_unix(errno);
+	}
+
+	status = openat_pathref_fsp(dirfsp, parent);
+	if (!NT_STATUS_IS_OK(status)) {
+		TALLOC_FREE(parent);
+		return status;
+	}
+
+	if (smb_fname->fsp != NULL) {
+		status = fsp_smb_fname_link(smb_fname->fsp,
+					    &atname->fsp_link,
+					    &atname->fsp);
+		if (!NT_STATUS_IS_OK(status)) {
+			TALLOC_FREE(parent);
+			return status;
+		}
+		talloc_set_destructor(atname, atname_destructor);
+	}
+	*_parent = parent;
+	*_atname = atname;
 	return NT_STATUS_OK;
 }
 
@@ -1288,8 +1358,19 @@ NTSTATUS file_name_hash(connection_struct *conn,
 
 	/* Set the hash of the full pathname. */
 
-	len = full_path_tos(conn->connectpath, name, tmpbuf, sizeof(tmpbuf),
-			    &fullpath, &to_free);
+	if (name[0] == '/') {
+		strlcpy(tmpbuf, name, sizeof(tmpbuf));
+		fullpath = tmpbuf;
+		len = strlen(fullpath);
+		to_free = NULL;
+	} else {
+		len = full_path_tos(conn->connectpath,
+				    name,
+				    tmpbuf,
+				    sizeof(tmpbuf),
+				    &fullpath,
+				    &to_free);
+	}
 	if (len == -1) {
 		return NT_STATUS_NO_MEMORY;
 	}

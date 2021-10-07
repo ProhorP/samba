@@ -560,7 +560,8 @@ bool mds_add_result(struct sl_query *slq, const char *path)
 		return true;
 	}
 
-	status = smbd_check_access_rights_fsp(smb_fname->fsp,
+	status = smbd_check_access_rights_fsp(slq->mds_ctx->conn->cwd_fsp,
+					      smb_fname->fsp,
 					      false,
 					      FILE_READ_DATA);
 	if (!NT_STATUS_IS_OK(status)) {

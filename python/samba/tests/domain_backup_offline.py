@@ -113,13 +113,13 @@ class DomainBackupOfflineCmp(BlackboxTestCase):
     def test_domain_backup_offline_untar_tdb(self):
         self.untar_testcase('tdb')
 
-    def test_domain_backup_offline_untar_mbd(self):
+    def test_domain_backup_offline_untar_mdb(self):
         self.untar_testcase('mdb')
 
     def test_domain_backup_offline_restore_tdb(self):
         self.restore_testcase('tdb')
 
-    def test_domain_backup_offline_restore_mbd(self):
+    def test_domain_backup_offline_restore_mdb(self):
         self.restore_testcase('mdb')
 
     def restore_testcase(self, backend):
@@ -176,7 +176,7 @@ class DomainBackupOfflineCmp(BlackboxTestCase):
                    "--targetdir {target} " +\
                    "--backend-store {backend} " +\
                    "--host-name OLDSERVER "+\
-                   "--option=\"vfs objects=fake_acls xattr_tdb\""
+                   "--option=\"vfs objects=dfs_samba4 acl_xattr fake_acls xattr_tdb\""
         prov_cmd = prov_cmd.format(target=target, backend=backend)
         self.check_output(prov_cmd)
 
@@ -185,12 +185,15 @@ class DomainBackupOfflineCmp(BlackboxTestCase):
     def join(self, backend):
         target = tempfile.mkdtemp(dir=self.tempdir)
 
+        new_dc_name = "offlinebackupdc"
+
         join_cmd = "samba-tool domain join {domain} DC " +\
                    "--server {server} " +\
                    "--realm {realm} " +\
                    "--username {username}%{password} " +\
                    "--targetdir {target} " +\
                    "--backend-store {backend} " +\
+                   "--option='netbios name = {new_dc_name}' " +\
                    "--option=\"vfs objects=dfs_samba4 acl_xattr fake_acls xattr_tdb\""
         join_cmd = join_cmd.format(server=os.environ["DC_SERVER"],
                                    domain=os.environ["DOMAIN"],
@@ -198,15 +201,27 @@ class DomainBackupOfflineCmp(BlackboxTestCase):
                                    username=os.environ["USERNAME"],
                                    password=os.environ["PASSWORD"],
                                    target=target,
-                                   backend=backend)
+                                   backend=backend,
+                                   new_dc_name=new_dc_name)
         self.check_output(join_cmd)
+
+        demote_cmd = "samba-tool domain demote " +\
+                   "--server {server} " +\
+                   "--username {username}%{password} " +\
+                   "--remove-other-dead-server={new_dc_name}"
+
+        demote_cmd = demote_cmd.format(server=os.environ["DC_SERVER"],
+                                       username=os.environ["USERNAME"],
+                                       password=os.environ["PASSWORD"],
+                                       new_dc_name=new_dc_name)
+        self.check_output(demote_cmd)
 
         return target
 
     def backup(self, prov_dir):
         # Run the backup and check we got one backup tar file
         cmd = ("samba-tool domain backup offline --targetdir={prov_dir} "
-               "-s {prov_dir}/etc/smb.conf").format(prov_dir=prov_dir)
+               "--configfile={prov_dir}/etc/smb.conf").format(prov_dir=prov_dir)
         self.check_output(cmd)
 
         tar_files = [fn for fn in os.listdir(prov_dir)

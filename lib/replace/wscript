@@ -95,17 +95,6 @@ def configure(conf):
     if not conf.CONFIG_SET('HAVE_RPC_RPC_H'):
             Logs.warn('No rpc/rpc.h header found, tirpc or libntirpc missing?')
 
-    if not conf.CHECK_LIB('nsl'):
-        conf.SET_TARGET_TYPE('nsl', 'EMPTY')
-    conf.CHECK_HEADERS('rpc/rpc.h rpcsvc/yp_prot.h', lib='tirpc')
-    if not conf.CONFIG_SET('HAVE_RPCSVC_YP_PROT_H'):
-        if conf.CHECK_CFG(package='libnsl', args='--cflags --libs',
-                          msg='Checking for libnsl',
-                          uselib_store='NSL'):
-            conf.SET_TARGET_TYPE('nsl', 'SYSLIB')
-            conf.CHECK_HEADERS('rpc/rpc.h rpcsvc/yp_prot.h', lib='tirpc nsl')
-    conf.CHECK_HEADERS('rpcsvc/nis.h rpcsvc/ypclnt.h', lib='tirpc nsl')
-
     # This file is decprecated with glibc >= 2.30 so we need to check if it
     # includes a deprecation warning:
     # #warning "The <sys/sysctl.h> header is deprecated and will be removed."
@@ -473,8 +462,6 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
                         ''',
                         'HAVE_SYSCALL_COPY_FILE_RANGE',
                         msg='Checking whether we have copy_file_range system call')
-    if conf.CONFIG_SET('HAVE_COPY_FILE_RANGE') or conf.CONFIG_SET('HAVE_SYSCALL_COPY_FILE_RANGE'):
-        conf.DEFINE('USE_COPY_FILE_RANGE', 1)
 
     conf.SET_TARGET_TYPE('attr', 'EMPTY')
 
@@ -891,8 +878,7 @@ def build(bld):
         REPLACE_HOSTCC_SOURCE,
         use_hostcc=True,
         use_global_deps=False,
-        cflags='-D_SAMBA_HOSTCC_',
-        group='compiler_libraries',
+        group='hostcc_base_build_main',
         deps = extra_libs
     )
 

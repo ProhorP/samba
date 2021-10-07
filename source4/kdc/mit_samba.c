@@ -25,6 +25,7 @@
 #include "param/param.h"
 #include "dsdb/samdb/samdb.h"
 #include "system/kerberos.h"
+#include <com_err.h>
 #include <kdb.h>
 #include <kadm5/kadm_err.h>
 #include "kdc/sdb.h"
@@ -40,6 +41,9 @@
 
 #include "mit_samba.h"
 
+#undef DBGC_CLASS
+#define DBGC_CLASS DBGC_KERBEROS
+
 void mit_samba_context_free(struct mit_samba_context *ctx)
 {
 	/* free heimdal's krb5_context */
@@ -49,6 +53,22 @@ void mit_samba_context_free(struct mit_samba_context *ctx)
 
 	/* then free everything else */
 	talloc_free(ctx);
+}
+
+/*
+ * Implemant a callback to log to the MIT KDC log facility
+ *
+ * http://web.mit.edu/kerberos/krb5-devel/doc/plugindev/general.html#logging-from-kdc-and-kadmind-plugin-modules
+ */
+static void mit_samba_debug(void *private_ptr, int msg_level, const char *msg)
+{
+	int is_error = 1;
+
+	if (msg_level > 0) {
+		is_error = 0;
+	}
+
+	com_err("", is_error, "%s", msg);
 }
 
 int mit_samba_context_init(struct mit_samba_context **_ctx)
@@ -77,12 +97,18 @@ int mit_samba_context_init(struct mit_samba_context **_ctx)
 		goto done;
 	}
 
-	setup_logging("mitkdc", DEBUG_DEFAULT_STDOUT);
+	debug_set_callback(NULL, mit_samba_debug);
 
 	/* init s4 configuration */
 	s4_conf_file = lpcfg_configfile(base_ctx.lp_ctx);
-	if (s4_conf_file) {
-		lpcfg_load(base_ctx.lp_ctx, s4_conf_file);
+	if (s4_conf_file != NULL) {
+		char *p = talloc_strdup(ctx, s4_conf_file);
+		if (p == NULL) {
+			ret = ENOMEM;
+			goto done;
+		}
+		lpcfg_load(base_ctx.lp_ctx, p);
+		TALLOC_FREE(p);
 	} else {
 		lpcfg_load_default(base_ctx.lp_ctx);
 	}
@@ -1050,7 +1076,8 @@ int mit_samba_kpasswd_change_password(struct mit_samba_context *ctx,
 	struct samr_DomInfo1 *dominfo;
 	const char *error_string = NULL;
 	struct auth_user_info_dc *user_info_dc;
-	struct samba_kdc_entry *p;
+	struct samba_kdc_entry *p =
+		talloc_get_type_abort(db_entry->e_data, struct samba_kdc_entry);
 	krb5_error_code code = 0;
 
 #ifdef DEBUG_PASSWORD
@@ -1061,8 +1088,6 @@ int mit_samba_kpasswd_change_password(struct mit_samba_context *ctx,
 	if (tmp_ctx == NULL) {
 		return ENOMEM;
 	}
-
-	p = (struct samba_kdc_entry *)db_entry->e_data;
 
 	status = authsam_make_user_info_dc(tmp_ctx,
 					   ctx->db_ctx->samdb,
@@ -1139,10 +1164,9 @@ out:
 void mit_samba_zero_bad_password_count(krb5_db_entry *db_entry)
 {
 	struct netr_SendToSamBase *send_to_sam = NULL;
-	struct samba_kdc_entry *p;
+	struct samba_kdc_entry *p =
+		talloc_get_type_abort(db_entry->e_data, struct samba_kdc_entry);
 	struct ldb_dn *domain_dn;
-
-	p = (struct samba_kdc_entry *)db_entry->e_data;
 
 	domain_dn = ldb_get_default_basedn(p->kdc_db_ctx->samdb);
 
@@ -1157,9 +1181,8 @@ void mit_samba_zero_bad_password_count(krb5_db_entry *db_entry)
 
 void mit_samba_update_bad_password_count(krb5_db_entry *db_entry)
 {
-	struct samba_kdc_entry *p;
-
-	p = (struct samba_kdc_entry *)db_entry->e_data;
+	struct samba_kdc_entry *p =
+		talloc_get_type_abort(db_entry->e_data, struct samba_kdc_entry);
 
 	authsam_update_bad_pwd_count(p->kdc_db_ctx->samdb,
 				     p->msg,

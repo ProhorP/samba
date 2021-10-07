@@ -14572,7 +14572,7 @@ static bool run_ign_bad_negprot(int dummy)
 	}
 
 	conn = smbXcli_conn_create(talloc_tos(), fd, host, SMB_SIGNING_OFF, 0,
-				   NULL, 0);
+				   NULL, 0, NULL);
 	if (conn == NULL) {
 		d_fprintf(stderr, "smbXcli_conn_create failed\n");
 		return false;
@@ -14948,6 +14948,30 @@ static struct {
 		.fn    = run_posix_stat_test,
 	},
 	{
+		.name  = "POSIX-SYMLINK-PARENT",
+		.fn    = run_posix_symlink_parent_test,
+	},
+	{
+		.name  = "POSIX-SYMLINK-CHMOD",
+		.fn    = run_posix_symlink_chmod_test,
+	},
+	{
+		.name  = "POSIX-SYMLINK-RENAME",
+		.fn    = run_posix_symlink_rename_test,
+	},
+	{
+		.name  = "POSIX-DIR-DEFAULT-ACL",
+		.fn    = run_posix_dir_default_acl_test,
+	},
+	{
+		.name  = "POSIX-SYMLINK-GETPATHINFO",
+		.fn    = run_posix_symlink_getpathinfo_test,
+	},
+	{
+		.name  = "POSIX-SYMLINK-SETPATHINFO",
+		.fn    = run_posix_symlink_setpathinfo_test,
+	},
+	{
 		.name  = "WINDOWS-BAD-SYMLINK",
 		.fn    = run_symlink_open_test,
 	},
@@ -15218,6 +15242,14 @@ static struct {
 		.fn    = run_smb2_quota1,
 	},
 	{
+		.name  = "SMB2-STREAM-ACL",
+		.fn    = run_smb2_stream_acl,
+	},
+	{
+		.name  = "SMB2-LIST-DIR-ASYNC",
+		.fn    = run_list_dir_async_test,
+	},
+	{
 		.name  = "CLEANUP1",
 		.fn    = run_cleanup1,
 	},
@@ -15316,6 +15348,14 @@ static struct {
 	{
 		.name  = "LOCAL-STREAM-NAME",
 		.fn    = run_local_stream_name,
+	},
+	{
+		.name  = "LOCAL-STR-MATCH-MSWILD",
+		.fn    = run_str_match_mswild,
+	},
+	{
+		.name  = "LOCAL-STR-MATCH-REGEX-SUB1",
+		.fn    = run_str_match_regex_sub1,
 	},
 	{
 		.name  = "WBCLIENT-MULTI-PING",

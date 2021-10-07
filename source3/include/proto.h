@@ -73,7 +73,6 @@ void display_set_stderr(void);
 /* The following definitions come from lib/errmap_unix.c  */
 
 NTSTATUS map_nt_error_from_unix(int unix_error);
-int map_errno_from_nt_status(NTSTATUS status);
 
 /* The following definitions come from lib/file_id.c  */
 
@@ -215,6 +214,11 @@ int sys_fstat(int fd, SMB_STRUCT_STAT *sbuf,
 	      bool fake_dir_create_times);
 int sys_lstat(const char *fname,SMB_STRUCT_STAT *sbuf,
 	      bool fake_dir_create_times);
+int sys_fstatat(int fd,
+		const char *pathname,
+		SMB_STRUCT_STAT *sbuf,
+		int flags,
+		bool fake_dir_create_times);
 int sys_posix_fallocate(int fd, off_t offset, off_t len);
 int sys_fallocate(int fd, uint32_t mode, off_t offset, off_t len);
 void kernel_flock(int fd, uint32_t share_access, uint32_t access_mask);
@@ -226,7 +230,8 @@ void set_effective_capability(enum smbd_capability capability);
 void drop_effective_capability(enum smbd_capability capability);
 long sys_random(void);
 void sys_srandom(unsigned int seed);
-int groups_max(void);
+int getgroups_max(void);
+int setgroups_max(void);
 int sys_getgroups(int setlen, gid_t *gidset);
 int sys_setgroups(gid_t UNUSED(primary_gid), int setlen, gid_t *gidset);
 uint32_t unix_dev_major(SMB_DEV_T dev);
@@ -237,7 +242,7 @@ int sys_get_number_of_cores(void);
 #endif
 
 bool sys_have_proc_fds(void);
-const char *sys_proc_fd_path(int fd, char *buf, int bufsize);
+const char *sys_proc_fd_path(int fd, char *buf, size_t bufsize);
 
 struct stat;
 void init_stat_ex_from_stat (struct stat_ex *dst,
@@ -310,11 +315,7 @@ bool is_allowed_domain(const char *domain_name);
 
 enum protocol_types get_Protocol(void);
 void set_Protocol(enum protocol_types  p);
-void gfree_names(void);
 void gfree_all( void );
-const char *my_netbios_names(int i);
-bool set_netbios_aliases(const char **str_array);
-bool init_names(void);
 bool file_exist_stat(const char *fname,SMB_STRUCT_STAT *sbuf,
 		     bool fake_dir_create_times);
 bool socket_exist(const char *fname);
@@ -330,6 +331,7 @@ char *unix_clean_name(TALLOC_CTX *ctx, const char *s);
 char *clean_name(TALLOC_CTX *ctx, const char *s);
 ssize_t write_data_at_offset(int fd, const char *buffer, size_t N, off_t pos);
 NTSTATUS init_before_fork(void);
+int parent_watch_fd(void);
 NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 			   struct tevent_context *ev_ctx,
 			   bool parent_longlived,
@@ -379,10 +381,6 @@ char *myhostname_upper(void);
 #include "lib/util_path.h"
 bool parent_dirname(TALLOC_CTX *mem_ctx, const char *dir, char **parent,
 		    const char **name);
-bool parent_smb_fname(TALLOC_CTX *mem_ctx,
-		      const struct smb_filename *path,
-		      struct smb_filename **_parent,
-		      struct smb_filename  **_name);
 bool ms_has_wild(const char *s);
 bool ms_has_wild_w(const smb_ucs2_t *s);
 bool mask_match(const char *string, const char *pattern, bool is_case_sensitive);
@@ -519,11 +517,11 @@ NTSTATUS receive_smb_raw(int fd,
 			unsigned int timeout,
 			size_t maxlen,
 			size_t *p_len);
-int open_socket_in(int type,
-		uint16_t port,
-		int dlevel,
-		const struct sockaddr_storage *psock,
-		bool rebind);
+int open_socket_in(
+	int type,
+	const struct sockaddr_storage *paddr,
+	uint16_t port,
+	bool rebind);
 NTSTATUS open_socket_out(const struct sockaddr_storage *pss, uint16_t port,
 			 int timeout, int *pfd);
 struct tevent_req *open_socket_out_send(TALLOC_CTX *mem_ctx,
@@ -576,21 +574,7 @@ char *realloc_string_sub2(char *string,
 char *realloc_string_sub(char *string,
 			const char *pattern,
 			const char *insert);
-char *talloc_string_sub2(TALLOC_CTX *mem_ctx, const char *src,
-			const char *pattern,
-			const char *insert,
-			bool remove_unsafe_characters,
-			bool replace_once,
-			bool allow_trailing_dollar);
-char *talloc_string_sub(TALLOC_CTX *mem_ctx,
-			const char *src,
-			const char *pattern,
-			const char *insert);
 void all_string_sub(char *s,const char *pattern,const char *insert, size_t len);
-char *talloc_all_string_sub(TALLOC_CTX *ctx,
-				const char *src,
-				const char *pattern,
-				const char *insert);
 char *octal_string(int i);
 char *string_truncate(char *s, unsigned int length);
 char *strchr_m(const char *src, char c);

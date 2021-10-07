@@ -45,6 +45,8 @@
 #include "auth/credentials/credentials.h"
 #include "krb5_env.h"
 #include "libsmb/dsgetdcname.h"
+#include "rpc_client/util_netlogon.h"
+#include "libnet/libnet_join_offline.h"
 
 /****************************************************************
 ****************************************************************/
@@ -433,6 +435,7 @@ static ADS_STATUS libnet_join_find_machine_acct(TALLOC_CTX *mem_ctx,
 	ADS_STATUS status;
 	LDAPMessage *res = NULL;
 	char *dn = NULL;
+	struct dom_sid sid;
 
 	if (!r->in.machine_name) {
 		return ADS_ERROR(LDAP_NO_MEMORY);
@@ -467,6 +470,12 @@ static ADS_STATUS libnet_join_find_machine_acct(TALLOC_CTX *mem_ctx,
 		r->out.set_encryption_types = 0;
 	}
 
+	if (!ads_pull_sid(r->in.ads, res, "objectSid", &sid)) {
+		status = ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+		goto done;
+	}
+
+	dom_sid_split_rid(mem_ctx, &sid, NULL, &r->out.account_rid);
  done:
 	ads_msgfree(r->in.ads, res);
 	TALLOC_FREE(dn);
@@ -940,6 +949,14 @@ static ADS_STATUS libnet_join_post_processing_ads_modify(TALLOC_CTX *mem_ctx,
 	ADS_STATUS status;
 	bool need_etype_update = false;
 
+	if (r->in.request_offline_join) {
+		/*
+		 * When in the "request offline join" path we can no longer
+		 * modify the AD account as we are operating w/o network - gd
+		 */
+		return ADS_SUCCESS;
+	}
+
 	if (!r->in.ads) {
 		status = libnet_join_connect_ads_user(mem_ctx, r);
 		if (!ADS_ERR_OK(status)) {
@@ -1344,7 +1361,6 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL, result;
 	char *acct_name;
 	struct lsa_String lsa_acct_name;
-	uint32_t user_rid;
 	uint32_t acct_flags = ACB_WSTRUST;
 	struct samr_Ids user_rids;
 	struct samr_Ids name_types;
@@ -1458,7 +1474,7 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 						 access_desired,
 						 &user_pol,
 						 &access_granted,
-						 &user_rid,
+						 &r->out.account_rid,
 						 &result);
 		if (!NT_STATUS_IS_OK(status)) {
 			goto done;
@@ -1528,14 +1544,14 @@ static NTSTATUS libnet_join_joindomain_rpc(TALLOC_CTX *mem_ctx,
 		goto done;
 	}
 
-	user_rid = user_rids.ids[0];
+	r->out.account_rid = user_rids.ids[0];
 
 	/* Open handle on user */
 
 	status = dcerpc_samr_OpenUser(b, mem_ctx,
 				      &domain_pol,
 				      SEC_FLAG_MAXIMUM_ALLOWED,
-				      user_rid,
+				      r->out.account_rid,
 				      &user_pol,
 				      &result);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -1718,7 +1734,8 @@ NTSTATUS libnet_join_ok(struct messaging_context *msg_ctx,
 
 	if (use_kerberos) {
 		cli_credentials_set_kerberos_state(cli_creds,
-				CRED_USE_KERBEROS_REQUIRED);
+						   CRED_USE_KERBEROS_REQUIRED,
+						   CRED_SPECIFIED);
 	}
 
 	status = cli_full_connection_creds(&cli, NULL,
@@ -2051,6 +2068,13 @@ static WERROR do_join_modify_vals_config(struct libnet_JoinCtx *r)
 		goto done;
 	}
 
+	err = smbconf_set_global_parameter(ctx, "netbios name",
+					   r->in.machine_name);
+	if (!SBC_ERROR_IS_OK(err)) {
+		werr = WERR_SERVICE_DOES_NOT_EXIST;
+		goto done;
+	}
+
 	if (!(r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_TYPE)) {
 
 		err = smbconf_set_global_parameter(ctx, "security", "user");
@@ -2275,6 +2299,14 @@ static WERROR libnet_join_pre_processing(TALLOC_CTX *mem_ctx,
 		return WERR_INVALID_PARAMETER;
 	}
 
+	if (r->in.request_offline_join) {
+		/*
+		 * When in the "request offline join" path we do not have admin
+		 * credentials available so we can skip the next steps - gd
+		 */
+		return WERR_OK;
+	}
+
 	if (!r->in.admin_domain) {
 		char *admin_domain = NULL;
 		char *admin_account = NULL;
@@ -2380,6 +2412,13 @@ static WERROR libnet_join_post_processing(TALLOC_CTX *mem_ctx,
 		}
 	}
 #endif /* HAVE_ADS */
+
+	if (r->in.provision_computer_account_only) {
+		/*
+		 * When we only provision a computer account we are done here - gd.
+		 */
+		return WERR_OK;
+	}
 
 	saf_join_store(r->out.netbios_domain_name, r->in.dc_name);
 	if (r->out.dns_domain_name) {
@@ -2503,11 +2542,13 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 	bool valid_security = false;
 	bool valid_workgroup = false;
 	bool valid_realm = false;
+	bool valid_hostname = false;
 	bool ignored_realm = false;
 
 	/* check if configuration is already set correctly */
 
 	valid_workgroup = strequal(lp_workgroup(), r->out.netbios_domain_name);
+	valid_hostname = strequal(lp_netbios_name(), r->in.machine_name);
 
 	switch (r->out.domain_is_ad) {
 		case false:
@@ -2533,7 +2574,8 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 				valid_security = true;
 			}
 
-			if (valid_workgroup && valid_realm && valid_security) {
+			if (valid_workgroup && valid_realm && valid_security &&
+					valid_hostname) {
 				if (ignored_realm && !r->in.modify_config)
 				{
 					libnet_join_set_error_string(mem_ctx, r,
@@ -2556,6 +2598,13 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 	if (!r->in.modify_config) {
 
 		char *wrong_conf = talloc_strdup(mem_ctx, "");
+
+		if (!valid_hostname) {
+			wrong_conf = talloc_asprintf_append(wrong_conf,
+				"\"netbios name\" set to '%s', should be '%s'",
+				lp_netbios_name(), r->in.machine_name);
+			W_ERROR_HAVE_NO_MEMORY(wrong_conf);
+		}
 
 		if (!valid_workgroup) {
 			wrong_conf = talloc_asprintf_append(wrong_conf,
@@ -2618,6 +2667,9 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 	const char *pre_connect_realm = NULL;
 	const char *numeric_dcip = NULL;
 	const char *sitename = NULL;
+	struct netr_DsRGetDCNameInfo *info;
+	const char *dc;
+	uint32_t name_type_flags = 0;
 
 	/* Before contacting a DC, we can securely know
 	 * the realm only if the user specifies it.
@@ -2627,15 +2679,23 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 		pre_connect_realm = r->in.domain_name;
 	}
 
-	if (!r->in.dc_name) {
-		struct netr_DsRGetDCNameInfo *info;
-		const char *dc;
-		uint32_t name_type_flags = 0;
-		if (r->in.domain_name_type == JoinDomNameTypeDNS) {
-			name_type_flags = DS_IS_DNS_NAME;
-		} else if (r->in.domain_name_type == JoinDomNameTypeNBT) {
-			name_type_flags = DS_IS_FLAT_NAME;
-		}
+	if (r->in.domain_name_type == JoinDomNameTypeDNS) {
+		name_type_flags = DS_IS_DNS_NAME;
+	} else if (r->in.domain_name_type == JoinDomNameTypeNBT) {
+		name_type_flags = DS_IS_FLAT_NAME;
+	}
+
+	if (r->in.dc_name) {
+		status = dsgetonedcname(mem_ctx,
+					r->in.msg_ctx,
+					r->in.domain_name,
+					r->in.dc_name,
+					DS_DIRECTORY_SERVICE_REQUIRED |
+					DS_WRITABLE_REQUIRED |
+					DS_RETURN_DNS_NAME |
+					name_type_flags,
+					&info);
+	} else {
 		status = dsgetdcname(mem_ctx,
 				     r->in.msg_ctx,
 				     r->in.domain_name,
@@ -2647,30 +2707,33 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 				     DS_RETURN_DNS_NAME |
 				     name_type_flags,
 				     &info);
-		if (!NT_STATUS_IS_OK(status)) {
-			libnet_join_set_error_string(mem_ctx, r,
-				"failed to find DC for domain %s - %s",
-				r->in.domain_name,
-				get_friendly_nt_error_msg(status));
-			return WERR_NERR_DCNOTFOUND;
-		}
-
-		dc = strip_hostname(info->dc_unc);
-		r->in.dc_name = talloc_strdup(mem_ctx, dc);
-		W_ERROR_HAVE_NO_MEMORY(r->in.dc_name);
-
-		if (info->dc_address == NULL || info->dc_address[0] != '\\' ||
-		    info->dc_address[1] != '\\') {
-			DBG_ERR("ill-formed DC address '%s'\n",
-				info->dc_address);
-			return WERR_NERR_DCNOTFOUND;
-		}
-
-		numeric_dcip = info->dc_address + 2;
-		sitename = info->dc_site_name;
-		/* info goes out of scope but the memory stays
-		   allocated on the talloc context */
 	}
+	if (!NT_STATUS_IS_OK(status)) {
+		libnet_join_set_error_string(mem_ctx, r,
+			"failed to find DC for domain %s - %s",
+			r->in.domain_name,
+			get_friendly_nt_error_msg(status));
+		return WERR_NERR_DCNOTFOUND;
+	}
+
+	dc = strip_hostname(info->dc_unc);
+	r->in.dc_name = talloc_strdup(mem_ctx, dc);
+	W_ERROR_HAVE_NO_MEMORY(r->in.dc_name);
+
+	if (info->dc_address == NULL || info->dc_address[0] != '\\' ||
+	    info->dc_address[1] != '\\') {
+		DBG_ERR("ill-formed DC address '%s'\n",
+			info->dc_address);
+		return WERR_NERR_DCNOTFOUND;
+	}
+
+	numeric_dcip = info->dc_address + 2;
+	sitename = info->dc_site_name;
+	/* info goes out of scope but the memory stays
+	   allocated on the talloc context */
+
+	/* return the allocated netr_DsRGetDCNameInfo struct */
+	r->out.dcinfo = info;
 
 	if (pre_connect_realm != NULL) {
 		struct sockaddr_storage ss = {0};
@@ -2713,7 +2776,10 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 
 	werr = libnet_join_check_config(mem_ctx, r);
 	if (!W_ERROR_IS_OK(werr)) {
-		goto done;
+		if (!r->in.provision_computer_account_only) {
+			goto done;
+		}
+		/* do not fail when only provisioning */
 	}
 
 #ifdef HAVE_ADS
@@ -2798,6 +2864,86 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 /****************************************************************
 ****************************************************************/
 
+static WERROR libnet_DomainOfflineJoin(TALLOC_CTX *mem_ctx,
+				       struct libnet_JoinCtx *r)
+{
+	NTSTATUS status;
+	WERROR werr;
+	struct ODJ_WIN7BLOB win7blob;
+	struct OP_JOINPROV3_PART joinprov3;
+	const char *dc_name;
+
+	if (!r->in.request_offline_join) {
+		return WERR_NERR_DEFAULTJOINREQUIRED;
+	}
+
+	if (r->in.odj_provision_data == NULL) {
+		return WERR_INVALID_PARAMETER;
+	}
+
+	werr = libnet_odj_find_win7blob(r->in.odj_provision_data, &win7blob);
+	if (!W_ERROR_IS_OK(werr)) {
+		return werr;
+	}
+
+	r->out.netbios_domain_name = talloc_strdup(mem_ctx,
+			win7blob.DnsDomainInfo.Name.string);
+	W_ERROR_HAVE_NO_MEMORY(r->out.netbios_domain_name);
+
+	r->out.dns_domain_name = talloc_strdup(mem_ctx,
+			win7blob.DnsDomainInfo.DnsDomainName.string);
+	W_ERROR_HAVE_NO_MEMORY(r->out.dns_domain_name);
+
+	r->out.forest_name = talloc_strdup(mem_ctx,
+			win7blob.DnsDomainInfo.DnsForestName.string);
+	W_ERROR_HAVE_NO_MEMORY(r->out.forest_name);
+
+	r->out.domain_guid = win7blob.DnsDomainInfo.DomainGuid;
+	r->out.domain_sid = dom_sid_dup(mem_ctx,
+			win7blob.DnsDomainInfo.Sid);
+	W_ERROR_HAVE_NO_MEMORY(r->out.domain_sid);
+
+	werr = libnet_odj_find_joinprov3(r->in.odj_provision_data, &joinprov3);
+	if (!W_ERROR_IS_OK(werr)) {
+		return werr;
+	}
+
+	r->out.account_rid = joinprov3.Rid;
+
+	dc_name = strip_hostname(win7blob.DcInfo.dc_address);
+	if (dc_name == NULL) {
+		return WERR_DOMAIN_CONTROLLER_NOT_FOUND;
+	}
+	r->in.dc_name = talloc_strdup(mem_ctx, dc_name);
+	W_ERROR_HAVE_NO_MEMORY(r->in.dc_name);
+
+	r->out.domain_is_ad = true;
+
+	/* we cannot use talloc_steal but have to deep copy the struct here */
+	status = copy_netr_DsRGetDCNameInfo(mem_ctx, &win7blob.DcInfo,
+					    &r->out.dcinfo);
+	if (!NT_STATUS_IS_OK(status)) {
+		return ntstatus_to_werror(status);
+	}
+
+	werr = libnet_join_check_config(mem_ctx, r);
+	if (!W_ERROR_IS_OK(werr)) {
+		return werr;
+	}
+
+	return WERR_OK;
+#if 0
+	/* the following fields are currently not filled in */
+
+	const char * dn;
+	uint32_t set_encryption_types;
+	const char * krb5_salt;
+#endif
+}
+
+/****************************************************************
+****************************************************************/
+
 static WERROR libnet_join_rollback(TALLOC_CTX *mem_ctx,
 				   struct libnet_JoinCtx *r)
 {
@@ -2845,7 +2991,11 @@ WERROR libnet_Join(TALLOC_CTX *mem_ctx,
 	}
 
 	if (r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_TYPE) {
-		werr = libnet_DomainJoin(mem_ctx, r);
+		if (r->in.request_offline_join) {
+			werr = libnet_DomainOfflineJoin(mem_ctx, r);
+		} else {
+			werr = libnet_DomainJoin(mem_ctx, r);
+		}
 		if (!W_ERROR_IS_OK(werr)) {
 			goto done;
 		}
@@ -2856,7 +3006,22 @@ WERROR libnet_Join(TALLOC_CTX *mem_ctx,
 		goto done;
 	}
 
+	if (r->in.provision_computer_account_only) {
+		/*
+		 * When we only provision a computer account we are done here - gd.
+		 */
+		goto done;
+	}
+
 	if (r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_TYPE) {
+		if (r->in.request_offline_join) {
+			/*
+			 * When we are serving an offline domain join request we
+			 * have no network so we are done here - gd.
+			 */
+			goto done;
+		}
+
 		werr = libnet_join_post_verify(mem_ctx, r);
 		if (!W_ERROR_IS_OK(werr)) {
 			libnet_join_rollback(mem_ctx, r);

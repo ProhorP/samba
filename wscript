@@ -11,6 +11,7 @@ sys.path.insert(0, top+"/buildtools/wafsamba")
 import shutil
 import wafsamba, samba_dist, samba_git, samba_version, samba_utils
 from waflib import Options, Scripting, Logs, Context, Errors
+from waflib.Tools import bison
 
 samba_dist.DIST_DIRS('.')
 samba_dist.DIST_BLACKLIST('.gitignore .bzrignore source4/selftest/provisions')
@@ -98,14 +99,6 @@ def options(opt):
     opt.add_option('--without-ad-dc',
                    help='disable AD DC functionality (enables only Samba FS (File Server, Winbind, NMBD) and client utilities.',
                    action='store_true', dest='without_ad_dc', default=False)
-
-    opt.add_option('--with-ntvfs-fileserver',
-                   help='enable the deprecated NTVFS file server from the original Samba4 branch (default if --enable-selftest specified).  Conflicts with --with-system-mitkrb5 and --without-ad-dc',
-                   action='store_true', dest='with_ntvfs_fileserver')
-
-    opt.add_option('--without-ntvfs-fileserver',
-                   help='disable the deprecated NTVFS file server from the original Samba4 branch',
-                   action='store_false', dest='with_ntvfs_fileserver')
 
     opt.add_option('--with-pie',
                   help=("Build Position Independent Executables " +
@@ -263,6 +256,17 @@ def configure(conf):
     # #line statements in these generated files cause issues for lcov
     conf.env.FLEXFLAGS += ["--noline"]
 
+    Logs.info("Checking for bison")
+    bison.configure(conf)
+    if conf.env['BISON']:
+        conf.CHECK_COMMAND('%s --version  | head -n1' % conf.env.BISON[0],
+                           msg='Using bison version',
+                           define=None,
+                           on_target=False)
+
+    # #line statements in these generated files cause issues for lcov
+    conf.env.BISONFLAGS += ["--no-line"]
+
     if Options.options.with_system_mitkrb5:
         if not Options.options.with_experimental_mit_ad_dc and \
            not Options.options.without_ad_dc:
@@ -305,18 +309,9 @@ def configure(conf):
     conf.RECURSE('lib/crypto')
     conf.RECURSE('pidl')
     if conf.CONFIG_GET('ENABLE_SELFTEST'):
-        if Options.options.with_ntvfs_fileserver != False:
-            if not (Options.options.without_ad_dc):
-                conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
-        if Options.options.with_ntvfs_fileserver == False:
-            if not (Options.options.without_ad_dc):
-                raise Errors.WafError('--without-ntvfs-fileserver conflicts with --enable-selftest while building the AD DC')
+        if not (Options.options.without_ad_dc):
+            conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
         conf.RECURSE('testsuite/unittests')
-
-    if Options.options.with_ntvfs_fileserver == True:
-        if Options.options.without_ad_dc:
-            raise Errors.WafError('--with-ntvfs-fileserver conflicts with --without-ad-dc')
-        conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
 
     if Options.options.with_pthreadpool:
         if conf.CONFIG_SET('HAVE_PTHREAD'):
@@ -394,6 +389,34 @@ def configure(conf):
         if conf.check_cc(cflags='', ldflags='-Wl,-z,relro,-z,now', mandatory=need_relro,
                          msg="Checking compiler for full RELRO support"):
             conf.env['ENABLE_RELRO'] = True
+
+    #
+    # FreeBSD is broken. It doesn't include 'extern char **environ'
+    # in any shared library, but statically inside crt0.o.
+    #
+    # If we're running on a FreeBSD with the GNU linker ld we
+    # can get around this by explicitly telling the linker to
+    # ignore 'environ' as an unresolved symbol in a shared library.
+    #
+    # However, the clang linker ld.lld-XX is broken in that it
+    # doesn't have that option.
+    #
+    # First try to see if have '-Wl,--ignore-unresolved-symbol,environ'
+    # and just use that if so.
+    #
+    # If not, we have to use '-Wl,--allow-shlib-undefined' instead
+    # and remove all instances of '-Wl,-no-undefined'.
+
+    if sys.platform.startswith('freebsd'):
+        # Do we have Wl,--ignore-unresolved-symbol,environ ?
+        flag_added = conf.ADD_LDFLAGS('-Wl,--ignore-unresolved-symbol,environ', testflags=True)
+        if not flag_added:
+            # No, fall back to -Wl,--allow-shlib-undefined.
+            conf.ADD_LDFLAGS('-Wl,--allow-shlib-undefined', testflags=True)
+            # Remove any uses of '-Wl,-no-undefined'
+            conf.env['EXTRA_LDFLAGS'] = list(filter(('-Wl,-no-undefined').__ne__, conf.env['EXTRA_LDFLAGS']))
+            # And make sure we don't try and remove it again when 'allow_undefined_symbols=true'
+            conf.env.undefined_ldflags = []
 
     conf.SAMBA_CONFIG_H('include/config.h')
 

@@ -11,7 +11,7 @@ bld.SAMBA3_BINARY('profiles',
                  source='profiles.c',
                  deps='''
                  talloc
-                 popt_samba3
+                 CMDLINE_S3
                  smbconf
                  REGFIO''')
 
@@ -20,7 +20,7 @@ bld.SAMBA3_BINARY('smbcontrol',
                  deps='''
                  talloc
                  smbconf
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  PRINTBASE''')
 
@@ -31,7 +31,7 @@ bld.SAMBA3_BINARY('smbtree',
                  smbconf
                  smbclient
                  msrpc3
-                 popt_samba3_cmdline
+                 CMDLINE_S3
                  RPC_NDR_SRVSVC''')
 
 bld.SAMBA3_BINARY('smbpasswd',
@@ -50,7 +50,7 @@ bld.SAMBA3_BINARY('pdbedit',
                  deps='''
                  talloc
                  smbconf
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  pdb
                  PASSWD_UTIL''')
@@ -59,7 +59,7 @@ bld.SAMBA3_BINARY('smbget',
                  source='smbget.c',
                  deps='''
                  talloc
-                 popt_samba3_cmdline
+                 cmdline
                  smbclient''')
 
 bld.SAMBA3_BINARY('nmblookup',
@@ -67,14 +67,14 @@ bld.SAMBA3_BINARY('nmblookup',
                  deps='''
                  talloc
                  smbconf
-                 popt_samba3
+                 CMDLINE_S3
                  LIBNMB''')
 
 bld.SAMBA3_BINARY('smbcacls',
                  source='smbcacls.c ../lib/util_sd.c',
                  deps='''
                  talloc
-                 popt_samba3_cmdline
+                 CMDLINE_S3
                  msrpc3
                  libcli_lsa3
                  krb5samba''')
@@ -83,7 +83,7 @@ bld.SAMBA3_BINARY('smbcquotas',
                  source='smbcquotas.c',
                  deps='''
                  talloc
-                 popt_samba3_cmdline
+                 CMDLINE_S3
                  libsmb
                  msrpc3
                  libcli_lsa3''')
@@ -103,17 +103,12 @@ bld.SAMBA3_BINARY('sharesec',
                  talloc
                  msrpc3
                  libcli_lsa3
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  ''')
 
 bld.SAMBA3_BINARY('log2pcap',
                  source='log2pcaphex.c',
-                 deps='''talloc popt''',
-                 install=False)
-
-bld.SAMBA3_BINARY('debug2html',
-                 source='''debug2html.c debugparse.c''',
                  deps='''talloc popt''',
                  install=False)
 
@@ -132,7 +127,7 @@ bld.SAMBA3_BINARY('ntlm_auth',
                  krb5samba
                  tiniparser
                  libsmb
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  gse gensec''')
 
@@ -140,7 +135,7 @@ bld.SAMBA3_BINARY('dbwrap_tool',
                  source='dbwrap_tool.c',
                  deps='''
                  talloc
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  ''')
 
@@ -148,14 +143,18 @@ bld.SAMBA3_BINARY('dbwrap_torture',
                  source='dbwrap_torture.c',
                  deps='''
                  talloc
-                 popt_samba3''',
+                 CMDLINE_S3
+                 smbconf
+                 ''',
                  install=False)
 
 bld.SAMBA3_BINARY('split_tokens',
                  source='split_tokens.c',
                  deps='''
                  talloc
-                 popt_samba3''',
+                 CMDLINE_S3
+                 smbconf
+                 ''',
                  install=False)
 
 bld.SAMBA3_BINARY('samba-regedit',
@@ -164,7 +163,13 @@ bld.SAMBA3_BINARY('samba-regedit',
                             regedit_valuelist.c regedit_dialog.c
                             regedit_hexedit.c regedit_list.c""",
                   deps='''
-                  ncurses menu panel form registry smbconf popt_samba3_cmdline
+                  ncurses
+                  menu
+                  panel
+                  form
+                  registry
+                  smbconf
+                  CMDLINE_S3
                   ''',
                   enabled=bld.env.build_regedit)
 
@@ -173,7 +178,7 @@ bld.SAMBA3_BINARY('testparm',
                  deps='''
                  talloc
                  smbconf
-                 popt_samba3
+                 CMDLINE_S3
                  cmdline_contexts
                  GNUTLS_HELPERS
                  ''')
@@ -210,6 +215,7 @@ bld.SAMBA3_BINARY('net',
                  net_conf.c
                  net_conf_util.c
                  net_join.c
+                 net_offlinejoin.c
                  net_user.c
                  net_group.c
                  net_file.c
@@ -237,7 +243,8 @@ bld.SAMBA3_BINARY('net',
                  netapi
                  addns
                  samba_intl
-                 popt_samba3_cmdline
+                 CMDLINE_S3
+                 cmdline_contexts
                  pdb
                  libsmb
                  smbconf
@@ -305,7 +312,7 @@ bld.SAMBA3_BINARY('smbstatus',
                  deps='''
                       talloc
                       smbconf
-                      popt_samba3
+                      CMDLINE_S3
                       cmdline_contexts
                       smbd_base
                       LOCKING
@@ -313,16 +320,24 @@ bld.SAMBA3_BINARY('smbstatus',
                       CONN_TDB
                       ''')
 
-bld.SAMBA3_BINARY('mdfind',
-                 source='mdfind.c',
+bld.SAMBA3_BINARY('mdsearch',
+                 source='mdsearch.c',
                  deps='''
                  talloc
                  tevent
                  smbconf
-                 popt_samba3
-                 popt_samba3_cmdline
+                 CMDLINE_S3
+                 cmdline_contexts
                  libsmb
                  msrpc3
                  RPCCLI_MDSSVC
                  mdssvc
                  ''')
+
+pytalloc_util = bld.pyembed_libname('pytalloc-util')
+pyrpc_util = bld.pyembed_libname('pyrpc_util')
+bld.SAMBA3_PYTHON('python_net_s3',
+        source='py_net.c',
+        deps='LIBNET cmdline_contexts %s %s' % (pytalloc_util, pyrpc_util),
+        realname='samba/net_s3.so'
+        )

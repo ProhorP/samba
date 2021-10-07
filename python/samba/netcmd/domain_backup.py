@@ -631,18 +631,11 @@ class cmd_domain_backup_restore(cmd_fsmo_seize):
         # Seize DNS roles
         domain_dn = samdb.domain_dn()
         forest_dn = samba.dn_from_dns_name(samdb.forest_dns_name())
-        domaindns_dn = ("CN=Infrastructure,DC=DomainDnsZones,", domain_dn)
-        forestdns_dn = ("CN=Infrastructure,DC=ForestDnsZones,", forest_dn)
-        for dn_prefix, dns_dn in [forestdns_dn, domaindns_dn]:
-            if dns_dn not in ncs:
-                continue
-            full_dn = dn_prefix + dns_dn
-            m = ldb.Message()
-            m.dn = ldb.Dn(samdb, full_dn)
-            m["fSMORoleOwner"] = ldb.MessageElement(samdb.get_dsServiceName(),
-                                                    ldb.FLAG_MOD_REPLACE,
-                                                    "fSMORoleOwner")
-            samdb.modify(m)
+        dns_roles = [("domaindns", domain_dn),
+                     ("forestdns", forest_dn)]
+        for role, dn in dns_roles:
+            if dn in ncs:
+                self.seize_dns_role(role, samdb, None, None, None, force=True)
 
         # Seize other roles
         for role in ['rid', 'pdc', 'naming', 'infrastructure', 'schema']:
@@ -1011,7 +1004,12 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
 
     # sam.ldb must have a transaction started on it before backing up
     # everything in sam.ldb.d with the appropriate backup function.
+    #
+    # Obtains the sidForRestore (SID for the new DC) and returns it
+    # from under the transaction
     def backup_smb_dbs(self, private_dir, samdb, lp, logger):
+        sam_ldb_path = os.path.join(private_dir, 'sam.ldb')
+
         # First, determine if DB backend is MDB.  Assume not unless there is a
         # 'backendStore' attribute on @PARTITION containing the text 'mdb'
         store_label = "backendStore"
@@ -1019,16 +1017,28 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
                            attrs=[store_label])
         mdb_backend = store_label in res[0] and str(res[0][store_label][0]) == 'mdb'
 
-        sam_ldb_path = os.path.join(private_dir, 'sam.ldb')
+        # This is needed to keep this variable in scope until the end
+        # of the transaction.
+        res_iterator = None
+
         copy_function = None
         if mdb_backend:
             logger.info('MDB backend detected.  Using mdb backup function.')
             copy_function = self.offline_mdb_copy
+
+            # We can't backup with a write transaction open, so get a
+            # read lock with a search_iterator().
+            #
+            # We have tests in lib/ldb/tests/python/api.py that the
+            # search iterator takes a read lock effective against a
+            # transaction.  This in turn will ensure there are no
+            # transactions on either the main or sub-database, even if
+            # the read locks were not enforced globally (they are).
+            res_iterator = samdb.search_iterator()
         else:
             logger.info('Starting transaction on ' + sam_ldb_path)
             copy_function = self.offline_tdb_copy
-            sam_obj = Ldb(sam_ldb_path, lp=lp, flags=ldb.FLG_DONT_CREATE_DB)
-            sam_obj.transaction_start()
+            samdb.transaction_start()
 
         logger.info('   backing up ' + sam_ldb_path)
         self.offline_tdb_copy(sam_ldb_path)
@@ -1038,17 +1048,27 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
             if sam_file.endswith('.ldb'):
                 logger.info('   backing up locked/related file ' + sam_file)
                 copy_function(sam_file)
+            elif sam_file.endswith('.tdb'):
+                logger.info('   tdbbackup of locked/related file ' + sam_file)
+                self.offline_tdb_copy(sam_file)
             else:
                 logger.info('   copying locked/related file ' + sam_file)
                 shutil.copyfile(sam_file, sam_file + self.backup_ext)
 
-        if not mdb_backend:
-            sam_obj.transaction_cancel()
+        sid = get_sid_for_restore(samdb, logger)
+
+        if mdb_backend:
+            # Delete the iterator, release the read lock
+            del(res_iterator)
+        else:
+            samdb.transaction_cancel()
+
+        return sid
 
     # Find where a path should go in the fixed backup archive structure.
     def get_arc_path(self, path, conf_paths):
         backup_dirs = {"private": conf_paths.private_dir,
-                       "statedir": conf_paths.state_dir,
+                       "state": conf_paths.state_dir,
                        "etc": os.path.dirname(conf_paths.smbconf)}
         matching_dirs = [(_, p) for (_, p) in backup_dirs.items() if
                          path.startswith(p)]
@@ -1078,10 +1098,6 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
                                'are running this command on an AD DC')
 
         check_targetdir(logger, targetdir)
-
-        samdb = SamDB(url=paths.samdb, session_info=system_session(), lp=lp,
-                      flags=ldb.FLG_RDONLY)
-        sid = get_sid_for_restore(samdb, logger)
 
         # Iterating over the directories in this specific order ensures that
         # when the private directory contains hardlinks that are also contained
@@ -1125,22 +1141,41 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
 
                     all_files.append(full_path)
 
+        # We would prefer to open with FLG_RDONLY but then we can't
+        # start a transaction which is the strong isolation we want
+        # for the backup.
+        samdb = SamDB(url=paths.samdb, session_info=system_session(), lp=lp,
+                      flags=ldb.FLG_DONT_CREATE_DB)
+
         # Backup secrets, sam.ldb and their downstream files
         self.backup_secrets(paths.private_dir, lp, logger)
-        self.backup_smb_dbs(paths.private_dir, samdb, lp, logger)
+        sid = self.backup_smb_dbs(paths.private_dir, samdb, lp, logger)
+
+        # Get the domain SID so we can later place it in the backup
+        dom_sid_str = samdb.get_domain_sid()
+        dom_sid = security.dom_sid(dom_sid_str)
+
+        # Close the original samdb, to avoid any confusion, we will
+        # not use this any more as the data has all been copied under
+        # the transaction
+        samdb = None
 
         # Open the new backed up samdb, flag it as backed up, and write
-        # the next SID so the restore tool can add objects.
+        # the next SID so the restore tool can add objects. We use
+        # options=["modules:"] here to prevent any modules from loading.
         # WARNING: Don't change this code unless you know what you're doing.
         #          Writing to a .bak file only works because the DN being
         #          written to happens to be top level.
-        samdb = SamDB(url=paths.samdb + self.backup_ext,
+        samdb = Ldb(url=paths.samdb + self.backup_ext,
                       session_info=system_session(), lp=lp,
-                      flags=ldb.FLG_DONT_CREATE_DB)
+                      options=["modules:"], flags=ldb.FLG_DONT_CREATE_DB)
         time_str = get_timestamp()
         add_backup_marker(samdb, "backupDate", time_str)
         add_backup_marker(samdb, "sidForRestore", sid)
         add_backup_marker(samdb, "backupType", "offline")
+
+        # Close the backed up samdb
+        samdb = None
 
         # Now handle all the LDB and TDB files that are not linked to
         # anything else.  Use transactions for LDBs.
@@ -1167,7 +1202,7 @@ class cmd_domain_backup_offline(samba.netcmd.Command):
         logger.info('running offline ntacl backup of sysvol')
         sysvol_tar_fn = 'sysvol.tar.gz'
         sysvol_tar = os.path.join(temp_tar_dir, sysvol_tar_fn)
-        backup_offline(paths.sysvol, sysvol_tar, samdb, paths.smbconf)
+        backup_offline(paths.sysvol, sysvol_tar, paths.smbconf, dom_sid)
         tar.add(sysvol_tar, sysvol_tar_fn)
         os.remove(sysvol_tar)
 
