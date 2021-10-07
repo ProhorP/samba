@@ -73,7 +73,7 @@
 %endif
 
 Name:    samba
-Version: 4.14.8
+Version: 4.15.0
 Release: alt1
 
 Group:   System/Servers
@@ -171,22 +171,22 @@ BuildRequires: libdbus-devel
 %endif
 
 %if_without talloc
-BuildRequires: libtalloc-devel >= 2.3.2
+BuildRequires: libtalloc-devel >= 2.3.3
 BuildRequires: python3-module-talloc-devel
 %endif
 
 %if_without tevent
-BuildRequires: libtevent-devel >= 0.10.2
+BuildRequires: libtevent-devel >= 0.11.0
 BuildRequires: python3-module-tevent
 %endif
 
 %if_without tdb
-BuildRequires: libtdb-devel >= 1.4.3
+BuildRequires: libtdb-devel >= 1.4.4
 BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.3.0
+%define ldb_version 2.4.0
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -1127,6 +1127,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/sbin/eventlogadm
 %_samba_mod_libdir/sbin/nmbd
 %_samba_mod_libdir/sbin/smbd
+%_libexecdir/samba/samba-bgqd
 %else
 %_sbindir/eventlogadm
 %_sbindir/nmbd
@@ -1231,9 +1232,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_bindir/cifsdd
 %_bindir/dbwrap_tool
 %_bindir/dumpmscat
-%_bindir/findsmb
+%_bindir/mdsearch
 %_bindir/mvxattr
-%_bindir/mdfind
 %_bindir/nmblookup
 %_bindir/oLschema2ldif
 %_bindir/regdiff
@@ -1257,8 +1257,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %{cups_serverbin}/backend/smb
 %if_with doc
 %_man1dir/dbwrap_tool.1*
+%_man1dir/mdsearch.1*
 %_man1dir/mvxattr.1*
-%_man1dir/mdfind.1*
 %_man1dir/nmblookup.1*
 %_man1dir/oLschema2ldif.1*
 %_man1dir/regdiff.1*
@@ -1266,7 +1266,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_man1dir/regpatch.1*
 %_man1dir/regshell.1*
 %_man1dir/regtree.1*
-%exclude %_man1dir/findsmb.1*
 %_man1dir/log2pcap.1*
 %_man1dir/rpcclient.1*
 %_man1dir/sharesec.1*
@@ -1352,6 +1351,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_man8dir/eventlogadm.8*
 %_man8dir/smbd.8*
 %_man8dir/nmbd.8*
+%_man8dir/samba-bgqd.8*
 %_man8dir/vfs_*.8*
 
 %if_with libcephfs
@@ -1457,6 +1457,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libasn1util-samba4.so
 %_samba_mod_libdir/libgenrand-samba4.so
 %_samba_mod_libdir/libdbwrap-samba4.so
+%_samba_mod_libdir/libflag-mapping-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
 %_samba_mod_libdir/libiov-buf-samba4.so
 %_samba_mod_libdir/libmessages-dgm-samba4.so
@@ -1509,13 +1510,13 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libcliauth-samba4.so
 %_samba_mod_libdir/libclidns-samba4.so
 %_samba_mod_libdir/libcluster-samba4.so
+%_samba_mod_libdir/libcmdline-samba4.so
 %_samba_mod_libdir/libcmdline-contexts-samba4.so
-%_samba_mod_libdir/libcmdline-credentials-samba4.so
 %_samba_mod_libdir/libcommon-auth-samba4.so
+%_samba_mod_libdir/libdcerpc-pkt-auth-samba4.so
 %_samba_mod_libdir/libdcerpc-samba-samba4.so
 %_samba_mod_libdir/libdcerpc-samba4.so
 %_samba_mod_libdir/libevents-samba4.so
-%_samba_mod_libdir/libflag-mapping-samba4.so
 %_samba_mod_libdir/libgensec-samba4.so
 %_samba_mod_libdir/libgpo-samba4.so
 %_samba_mod_libdir/libgse-samba4.so
@@ -1534,8 +1535,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libnet-keytab-samba4.so
 %_samba_mod_libdir/libnetif-samba4.so
 %_samba_mod_libdir/libnpa-tstream-samba4.so
-%_samba_mod_libdir/libpopt-samba3-samba4.so
-%_samba_mod_libdir/libpopt-samba3-cmdline-samba4.so
 %_samba_mod_libdir/libposix-eadb-samba4.so
 %_samba_mod_libdir/libprinter-driver-samba4.so
 %_samba_mod_libdir/libprinting-migrate-samba4.so
@@ -1552,7 +1551,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libsmbpasswdparser-samba4.so
 %_samba_mod_libdir/libtorture-samba4.so
 %_samba_mod_libdir/libtrusts-util-samba4.so
-%_samba_mod_libdir/libutil-cmdline-samba4.so
 
 %_samba_libdir/libdcerpc-binding.so.*
 %_samba_libdir/libdcerpc-samr.so.*
@@ -1621,8 +1619,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %if_with dc
 %files dc-libs
-%_samba_mod_libdir/bind9/dlz_bind9.so
-%_samba_mod_libdir/bind9/dlz_bind9_9.so
 %_samba_mod_libdir/bind9/dlz_bind9_10.so
 %_samba_mod_libdir/bind9/dlz_bind9_11.so
 %_samba_mod_libdir/bind9/dlz_bind9_12.so
@@ -1881,6 +1877,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_libexecdir/ctdb/ctdb_natgw
 %_libexecdir/ctdb/ctdb_recovery_helper
 %_libexecdir/ctdb/ctdb_takeover_helper
+%_libexecdir/ctdb/tdb_mutex_check
 %_libexecdir/ctdb/smnotify
 
 %if_with doc
@@ -1917,6 +1914,12 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Oct 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.15.0-alt1
+- Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
+  samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
+  with the LMDB backend and always use enterprise principals for Kerberos (so
+  that the DC will be able to redirect ticket requests to the right DC) support.
+
 * Wed Oct 06 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.8-alt1
 - Update to latest security release of Samba 4.14
 - Fix performance regressions in lsa_LookupSids3/LookupNames4 since Samba 4.9 by
