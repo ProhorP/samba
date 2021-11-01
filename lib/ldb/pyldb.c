@@ -182,6 +182,10 @@ static PyObject *py_ldb_control_get_critical(PyLdbControlObject *self,
 
 static int py_ldb_control_set_critical(PyLdbControlObject *self, PyObject *value, void *closure)
 {
+	if (value == NULL) {
+		PyErr_SetString(PyExc_AttributeError, "cannot delete critical flag");
+		return -1;
+	}
 	if (PyObject_IsTrue(value)) {
 		self->data->critical = true;
 	} else {
@@ -839,7 +843,7 @@ static PyMethodDef py_ldb_dn_methods[] = {
 		"S.get_component_value(num) -> string\n"
 		"get the attribute value of the specified component as a binary string" },
 	{ "set_component", (PyCFunction)py_ldb_dn_set_component, METH_VARARGS,
-		"S.get_component_value(num, name, value) -> None\n"
+		"S.set_component(num, name, value) -> None\n"
 		"set the attribute name and value of the specified component" },
 	{ "get_rdn_name", (PyCFunction)py_ldb_dn_get_rdn_name, METH_NOARGS,
 		"S.get_rdn_name() -> string\n"
@@ -3429,33 +3433,41 @@ static PyObject *py_ldb_msg_keys(PyLdbMessageObject *self,
 	return obj;
 }
 
-static PyObject *py_ldb_msg_getitem_helper(PyLdbMessageObject *self, PyObject *py_name)
+static int py_ldb_msg_contains(PyLdbMessageObject *self, PyObject *py_name)
 {
-	struct ldb_message_element *el;
-	const char *name;
+	struct ldb_message_element *el = NULL;
+	const char *name = NULL;
 	struct ldb_message *msg = pyldb_Message_AsMessage(self);
 	name = PyUnicode_AsUTF8(py_name);
 	if (name == NULL) {
-		PyErr_SetNone(PyExc_TypeError);
-		return NULL;
+		return -1;
 	}
-	if (!ldb_attr_cmp(name, "dn"))
-		return pyldb_Dn_FromDn(msg->dn);
+	if (!ldb_attr_cmp(name, "dn")) {
+		return 1;
+	}
 	el = ldb_msg_find_element(msg, name);
-	if (el == NULL) {
-		return NULL;
-	}
-	return (PyObject *)PyLdbMessageElement_FromMessageElement(el, msg->elements);
+	return el != NULL ? 1 : 0;
 }
 
 static PyObject *py_ldb_msg_getitem(PyLdbMessageObject *self, PyObject *py_name)
 {
-	PyObject *ret = py_ldb_msg_getitem_helper(self, py_name);
-	if (ret == NULL) {
+	struct ldb_message_element *el = NULL;
+	const char *name = NULL;
+	struct ldb_message *msg = pyldb_Message_AsMessage(self);
+	name = PyUnicode_AsUTF8(py_name);
+	if (name == NULL) {
+		return NULL;
+	}
+	if (!ldb_attr_cmp(name, "dn")) {
+		return pyldb_Dn_FromDn(msg->dn);
+	}
+	el = ldb_msg_find_element(msg, name);
+	if (el == NULL) {
 		PyErr_SetString(PyExc_KeyError, "No such element");
 		return NULL;
 	}
-	return ret;
+
+	return PyLdbMessageElement_FromMessageElement(el, msg->elements);
 }
 
 static PyObject *py_ldb_msg_get(PyLdbMessageObject *self, PyObject *args, PyObject *kwargs)
@@ -3665,6 +3677,10 @@ static Py_ssize_t py_ldb_msg_length(PyLdbMessageObject *self)
 	return pyldb_Message_AsMessage(self)->num_elements;
 }
 
+static PySequenceMethods py_ldb_msg_sequence = {
+	.sq_contains = (objobjproc)py_ldb_msg_contains,
+};
+
 static PyMappingMethods py_ldb_msg_mapping = {
 	.mp_length = (lenfunc)py_ldb_msg_length,
 	.mp_subscript = (binaryfunc)py_ldb_msg_getitem,
@@ -3741,6 +3757,10 @@ static PyObject *py_ldb_msg_get_dn(PyLdbMessageObject *self, void *closure)
 static int py_ldb_msg_set_dn(PyLdbMessageObject *self, PyObject *value, void *closure)
 {
 	struct ldb_message *msg = pyldb_Message_AsMessage(self);
+	if (value == NULL) {
+		PyErr_SetString(PyExc_AttributeError, "cannot delete dn");
+		return -1;
+	}
 	if (!pyldb_Dn_Check(value)) {
 		PyErr_SetString(PyExc_TypeError, "expected dn");
 		return -1;
@@ -3838,6 +3858,7 @@ static PyTypeObject PyLdbMessage = {
 	.tp_name = "ldb.Message",
 	.tp_methods = py_ldb_msg_methods,
 	.tp_getset = py_ldb_msg_getset,
+	.tp_as_sequence = &py_ldb_msg_sequence,
 	.tp_as_mapping = &py_ldb_msg_mapping,
 	.tp_basicsize = sizeof(PyLdbMessageObject),
 	.tp_dealloc = (destructor)py_ldb_msg_dealloc,
