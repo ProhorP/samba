@@ -3535,13 +3535,13 @@ static PyObject *py_ldb_msg_items(PyLdbMessageObject *self,
 		PyObject *value = NULL;
 		PyObject *py_el = PyLdbMessageElement_FromMessageElement(&msg->elements[i], msg->elements);
 		int res = 0;
-		Py_CLEAR(py_el);
 		value = Py_BuildValue("(sO)", msg->elements[i].name, py_el);
+		Py_CLEAR(py_el);
 		if (value == NULL ) {
 			Py_CLEAR(l);
 			return NULL;
 		}
-		res = PyList_SetItem(l, 0, value);
+		res = PyList_SetItem(l, j, value);
 		if (res == -1) {
 			Py_CLEAR(l);
 			return NULL;
@@ -4227,6 +4227,13 @@ static PyObject *py_timestring(PyObject *module, PyObject *args)
 	if (!PyArg_ParseTuple(args, "l", &t_val))
 		return NULL;
 	tresult = ldb_timestring(NULL, (time_t) t_val);
+	if (tresult == NULL) {
+		/*
+		 * Most likely EOVERFLOW from gmtime()
+		 */
+		PyErr_SetFromErrno(PyExc_OSError);
+		return NULL;
+	}
 	ret = PyUnicode_FromString(tresult);
 	talloc_free(tresult);
 	return ret;
@@ -4307,7 +4314,7 @@ static PyMethodDef py_ldb_global_methods[] = {
 		"S.string_to_time(string) -> int\n\n"
 		"Parse a LDAP time string into a UNIX timestamp." },
 	{ "valid_attr_name", py_valid_attr_name, METH_VARARGS,
-		"S.valid_attr_name(name) -> bool\n\nn"
+		"S.valid_attr_name(name) -> bool\n\n"
 		"Check whether the supplied name is a valid attribute name." },
 	{ "binary_encode", py_binary_encode, METH_VARARGS,
 		"S.binary_encode(string) -> string\n\n"
