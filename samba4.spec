@@ -74,7 +74,7 @@
 
 Name:    samba
 Version: 4.14.9
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -186,7 +186,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.3.1
+%define ldb_version 2.3.2
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -1917,6 +1917,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Nov 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.9-alt2
+- Rebuild with updated ldb-2.3.2 with backported all C code changes from
+  ldb-2.4.1 to be available for Samba 4.14.x.
+
 * Mon Nov 01 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.9-alt1
 - Update to latest security release of Samba 4.14
 - Backport bronze bit fixes, tests, and selftest improvements. Provide a fix
