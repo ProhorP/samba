@@ -73,7 +73,7 @@
 %endif
 
 Name:    samba
-Version: 4.15.0
+Version: 4.15.1
 Release: alt1
 
 Group:   System/Servers
@@ -186,7 +186,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.4.0
+%define ldb_version 2.4.1
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -1914,6 +1914,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Nov 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.15.1-alt1
+- Update to latest security release of Samba 4.15
+- Provide a fix for MS in Samba [SECURITY] 'Bronze bit' S4U2Proxy Constrained
+  Delegation bypass in Samba with embedded Heimdal (Fixes: CVE-2020-17049).
+
 * Thu Oct 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.15.0-alt1
 - Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
   samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
