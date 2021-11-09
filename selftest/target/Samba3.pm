@@ -238,6 +238,7 @@ sub check_env($$)
 	ad_member_idmap_rid => ["ad_dc"],
 	ad_member_idmap_ad  => ["fl2008r2dc"],
 	ad_member_fips      => ["ad_dc_fips"],
+	ad_member_no_nss_wb => ["ad_dc"],
 
 	clusteredmember => ["nt4_dc"],
 );
@@ -646,10 +647,13 @@ sub provision_ad_member
 {
 	my ($self,
 	    $prefix,
+	    $machine_account,
 	    $dcvars,
 	    $trustvars_f,
 	    $trustvars_e,
-	    $force_fips_mode) = @_;
+	    $extra_member_options,
+	    $force_fips_mode,
+	    $no_nss_winbind) = @_;
 
 	my $prefix_abs = abs_path($prefix);
 	my @dirs = ();
@@ -681,11 +685,21 @@ sub provision_ad_member
 	$substitution_path = "$share_dir/D_$dcvars->{DOMAIN}/u_$dcvars->{DOMAIN}/alice/g_$dcvars->{DOMAIN}/domain users";
 	push(@dirs, $substitution_path);
 
+
+	my $netbios_aliases = "";
+	if ($machine_account eq "LOCALADMEMBER") {
+		$netbios_aliases = "netbios aliases = foo bar";
+	}
+
+	unless (defined($extra_member_options)) {
+		$extra_member_options = "";
+	}
+
 	my $member_options = "
 	security = ads
         workgroup = $dcvars->{DOMAIN}
         realm = $dcvars->{REALM}
-        netbios aliases = foo bar
+        $netbios_aliases
 	template homedir = /home/%D/%G/%U
 	auth event notification = true
 	password server = $dcvars->{SERVER}
@@ -703,6 +717,10 @@ sub provision_ad_member
 
 	rpc_daemon:epmd = fork
 	rpc_daemon:lsasd = fork
+
+	# Begin extra member options
+	$extra_member_options
+	# End extra member options
 
 [sub_dug]
 	path = $share_dir/D_%D/U_%U/G_%G
@@ -762,7 +780,7 @@ sub provision_ad_member
 	    prefix => $prefix,
 	    domain => $dcvars->{DOMAIN},
 	    realm => $dcvars->{REALM},
-	    server => "LOCALADMEMBER",
+	    server => $machine_account,
 	    password => "loCalMemberPass",
 	    extra_options => $member_options,
 	    resolv_conf => $dcvars->{RESOLV_CONF});
@@ -822,12 +840,17 @@ sub provision_ad_member
 	# access the share for tests.
 	chmod 0777, "$prefix/share";
 
-	if (not $self->check_or_start(
-		env_vars => $ret,
-		nmbd => "yes",
-		winbindd => "yes",
-		smbd => "yes")) {
-	    return undef;
+        if (defined($no_nss_winbind)) {
+	        $ret->{NSS_WRAPPER_MODULE_SO_PATH} = "";
+	        $ret->{NSS_WRAPPER_MODULE_FN_PREFIX} = "";
+        }
+
+        if (not $self->check_or_start(
+			env_vars => $ret,
+			nmbd => "yes",
+			winbindd => "yes",
+			smbd => "yes")) {
+			return undef;
 	}
 
 	$ret->{DC_SERVER} = $dcvars->{SERVER};
@@ -876,7 +899,11 @@ sub setup_ad_member
 
 	print "PROVISIONING AD MEMBER...";
 
-	return $self->provision_ad_member($prefix, $dcvars, $trustvars_f, $trustvars_e);
+	return $self->provision_ad_member($prefix,
+					  "LOCALADMEMBER",
+					  $dcvars,
+					  $trustvars_f,
+					  $trustvars_e);
 }
 
 sub setup_ad_member_rfc2307
@@ -1199,10 +1226,49 @@ sub setup_ad_member_fips
 	print "PROVISIONING AD FIPS MEMBER...";
 
 	return $self->provision_ad_member($prefix,
+					  "FIPSADMEMBER",
 					  $dcvars,
 					  $trustvars_f,
 					  $trustvars_e,
+					  undef,
 					  1);
+}
+
+sub setup_ad_member_no_nss_wb
+{
+	my ($self,
+	    $prefix,
+	    $dcvars,
+	    $trustvars_f,
+	    $trustvars_e) = @_;
+
+	# If we didn't build with ADS, pretend this env was never available
+	if (not $self->have_ads()) {
+	        return "UNKNOWN";
+	}
+
+	print "PROVISIONING AD MEMBER WITHOUT NSS WINBIND...";
+
+	my $extra_member_options = "
+	username map = $prefix/lib/username.map
+";
+
+	my $ret = $self->provision_ad_member($prefix,
+					     "ADMEMNONSSWB",
+					     $dcvars,
+					     $trustvars_f,
+					     $trustvars_e,
+					     $extra_member_options,
+					     undef,
+					     1);
+
+	open(USERMAP, ">$prefix/lib/username.map") or die("Unable to open $prefix/lib/username.map");
+	print USERMAP "
+root = $dcvars->{DOMAIN}/root
+";
+	close(USERMAP);
+
+	return $ret;
 }
 
 sub setup_simpleserver
@@ -1663,7 +1729,6 @@ sub setup_ktest
         workgroup = KTEST
         realm = ktest.samba.example.com
 	security = ads
-        username map = $prefix/lib/username.map
         server signing = required
 	server min protocol = SMB3_00
 	client max protocol = SMB3
@@ -1671,6 +1736,10 @@ sub setup_ktest
         # This disables NTLM auth against the local SAM, which
         # we use can then test this setting by.
         ntlm auth = disabled
+
+        idmap config * : backend = autorid
+        idmap config * : range = 1000000-1999999
+        idmap config * : rangesize = 100000
 ";
 
 	my $ret = $self->provision(
@@ -1695,12 +1764,6 @@ sub setup_ktest
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
-
-	open(USERMAP, ">$prefix/lib/username.map") or die("Unable to open $prefix/lib/username.map");
-	print USERMAP "
-$ret->{USERNAME} = KTEST\\Administrator
-";
-	close(USERMAP);
 
 #This is the secrets.tdb created by 'net ads join' from Samba3 to a
 #Samba4 DC with the same parameters as are being used here.  The
@@ -1753,6 +1816,7 @@ $ret->{USERNAME} = KTEST\\Administrator
 	if (not $self->check_or_start(
 		env_vars => $ret,
 		nmbd => "yes",
+		winbindd => "offline",
 		smbd => "yes")) {
 	       return undef;
 	}

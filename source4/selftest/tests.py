@@ -811,28 +811,33 @@ planoldpythontestsuite("ad_dc:local", "samba.tests.dckeytab", extra_args=['-U"$U
 
 have_fast_support = int('SAMBA_USES_MITKDC' in config_hash)
 tkt_sig_support = int('SAMBA4_USES_HEIMDAL' in config_hash)
+expect_pac = int('SAMBA4_USES_HEIMDAL' in config_hash)
 planoldpythontestsuite("none", "samba.tests.krb5.kcrypto")
 planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.simple_tests",
                        environ={'SERVICE_USERNAME':'$SERVER',
                                 'FAST_SUPPORT': have_fast_support,
-                                'TKT_SIG_SUPPORT': tkt_sig_support})
+                                'TKT_SIG_SUPPORT': tkt_sig_support,
+                                'EXPECT_PAC': expect_pac})
 planoldpythontestsuite("ad_dc_default:local", "samba.tests.krb5.s4u_tests",
                        environ={'ADMIN_USERNAME':'$USERNAME',
                                 'ADMIN_PASSWORD':'$PASSWORD',
                                 'FOR_USER':'$USERNAME',
                                 'STRICT_CHECKING':'0',
                                 'FAST_SUPPORT': have_fast_support,
-                                'TKT_SIG_SUPPORT': tkt_sig_support})
+                                'TKT_SIG_SUPPORT': tkt_sig_support,
+                                'EXPECT_PAC': expect_pac})
 planoldpythontestsuite("rodc:local", "samba.tests.krb5.rodc_tests",
                        environ={'ADMIN_USERNAME':'$USERNAME',
                                 'ADMIN_PASSWORD':'$PASSWORD',
                                 'STRICT_CHECKING':'0',
                                 'FAST_SUPPORT': have_fast_support,
-                                'TKT_SIG_SUPPORT': tkt_sig_support})
+                                'TKT_SIG_SUPPORT': tkt_sig_support,
+                                'EXPECT_PAC': expect_pac})
 
 planoldpythontestsuite("fl2008r2dc:local", "samba.tests.krb5.xrealm_tests",
                        environ={'FAST_SUPPORT': have_fast_support,
-                                'TKT_SIG_SUPPORT': tkt_sig_support})
+                                'TKT_SIG_SUPPORT': tkt_sig_support,
+                                'EXPECT_PAC': expect_pac})
 
 planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.test_ccache",
                        environ={
@@ -840,7 +845,8 @@ planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.test_ccache",
                            'ADMIN_PASSWORD': '$PASSWORD',
                            'STRICT_CHECKING': '0',
                            'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
+                           'TKT_SIG_SUPPORT': tkt_sig_support,
+                           'EXPECT_PAC': expect_pac
                        })
 planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.test_ldap",
                        environ={
@@ -848,23 +854,34 @@ planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.test_ldap",
                            'ADMIN_PASSWORD': '$PASSWORD',
                            'STRICT_CHECKING': '0',
                            'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
+                           'TKT_SIG_SUPPORT': tkt_sig_support,
+                           'EXPECT_PAC': expect_pac
                        })
-planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.test_rpc",
-                       environ={
-                           'ADMIN_USERNAME': '$USERNAME',
-                           'ADMIN_PASSWORD': '$PASSWORD',
-                           'STRICT_CHECKING': '0',
-                           'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
-                       })
+for env in ['ad_dc_default', 'ad_member']:
+    planoldpythontestsuite(env, "samba.tests.krb5.test_rpc",
+                           environ={
+                               'ADMIN_USERNAME': '$DC_USERNAME',
+                               'ADMIN_PASSWORD': '$DC_PASSWORD',
+                               'STRICT_CHECKING': '0',
+                               'FAST_SUPPORT': have_fast_support,
+                               'TKT_SIG_SUPPORT': tkt_sig_support,
+                               'EXPECT_PAC': expect_pac
+                           })
 planoldpythontestsuite("ad_dc_smb1", "samba.tests.krb5.test_smb",
                        environ={
                            'ADMIN_USERNAME': '$USERNAME',
                            'ADMIN_PASSWORD': '$PASSWORD',
                            'STRICT_CHECKING': '0',
                            'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
+                           'TKT_SIG_SUPPORT': tkt_sig_support,
+                           'EXPECT_PAC': expect_pac
+                       })
+planoldpythontestsuite("ad_member_no_nss_wb:local",
+                       "samba.tests.krb5.test_min_domain_uid",
+                       environ={
+                           'ADMIN_USERNAME': '$DC_USERNAME',
+                           'ADMIN_PASSWORD': '$DC_PASSWORD',
+                           'STRICT_CHECKING': '0'
                        })
 
 for env in ["ad_dc", smbv1_disabled_testenv]:
@@ -1065,12 +1082,31 @@ planoldpythontestsuite("ad_dc",
                        extra_args=['-U"$USERNAME%$PASSWORD"'],
                        environ={'TEST_ENV': 'ad_dc'})
 
+plantestsuite_loadlist("samba.tests.ldap_spn", "ad_dc",
+                       [python,
+                        f"{srcdir()}/python/samba/tests/ldap_spn.py",
+                        '$SERVER',
+                        '-U"$USERNAME%$PASSWORD"',
+                        '--workgroup=$DOMAIN',
+                        '$LOADLIST', '$LISTOPT'])
+
+plantestsuite_loadlist("samba.tests.ldap_upn_sam_account", "ad_dc_ntvfs",
+                       [python,
+                        f"{srcdir()}/python/samba/tests/ldap_upn_sam_account.py",
+                        '$SERVER',
+                        '-U"$USERNAME%$PASSWORD"',
+                        '--workgroup=$DOMAIN',
+                        '$LOADLIST', '$LISTOPT'])
+
+
 plantestsuite_loadlist("samba4.tokengroups.krb5.python(ad_dc_default)", "ad_dc_default:local", [python, os.path.join(DSDB_PYTEST_DIR, "token_group.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '-k', 'yes', '$LOADLIST', '$LISTOPT'])
 plantestsuite_loadlist("samba4.tokengroups.ntlm.python(ad_dc_default)", "ad_dc_default:local", [python, os.path.join(DSDB_PYTEST_DIR, "token_group.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '-k', 'no', '$LOADLIST', '$LISTOPT'])
 plantestsuite("samba4.sam.python(fl2008r2dc)", "fl2008r2dc", [python, os.path.join(DSDB_PYTEST_DIR, "sam.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
 plantestsuite("samba4.sam.python(ad_dc_default)", "ad_dc_default", [python, os.path.join(DSDB_PYTEST_DIR, "sam.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
 plantestsuite("samba4.asq.python(ad_dc_default)", "ad_dc_default", [python, os.path.join(DSDB_PYTEST_DIR, "asq.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
 plantestsuite("samba4.user_account_control.python(ad_dc_default)", "ad_dc_default", [python, os.path.join(DSDB_PYTEST_DIR, "user_account_control.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
+plantestsuite("samba4.priv_attrs.python(ad_dc_default)", "ad_dc_default", ["STRICT_CHECKING=0", python, os.path.join(DSDB_PYTEST_DIR, "priv_attrs.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
+plantestsuite("samba4.priv_attrs.strict.python(ad_dc_default)", "ad_dc_default", [python, os.path.join(DSDB_PYTEST_DIR, "priv_attrs.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN'])
 
 for env in ['ad_dc_default:local', 'schema_dc:local']:
     planoldpythontestsuite(env, "dsdb_schema_info",
@@ -1426,7 +1462,8 @@ for env in ["fl2008r2dc", "fl2003dc"]:
                                'ADMIN_PASSWORD': '$PASSWORD',
                                'STRICT_CHECKING': '0',
                                'FAST_SUPPORT': have_fast_support,
-                               'TKT_SIG_SUPPORT': tkt_sig_support
+                               'TKT_SIG_SUPPORT': tkt_sig_support,
+                               'EXPECT_PAC': expect_pac
                            })
 
 planoldpythontestsuite('fl2008r2dc', 'samba.tests.krb5.salt_tests',
@@ -1435,7 +1472,8 @@ planoldpythontestsuite('fl2008r2dc', 'samba.tests.krb5.salt_tests',
                            'ADMIN_PASSWORD': '$PASSWORD',
                            'STRICT_CHECKING': '0',
                            'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
+                           'TKT_SIG_SUPPORT': tkt_sig_support,
+                           'EXPECT_PAC': expect_pac
                        })
 
 for env in ["rodc", "promoted_dc", "fl2000dc", "fl2008r2dc"]:
@@ -1457,7 +1495,8 @@ planpythontestsuite("ad_dc", "samba.tests.krb5.as_canonicalization_tests",
                            'ADMIN_USERNAME': '$USERNAME',
                            'ADMIN_PASSWORD': '$PASSWORD',
                            'FAST_SUPPORT': have_fast_support,
-                           'TKT_SIG_SUPPORT': tkt_sig_support
+                           'TKT_SIG_SUPPORT': tkt_sig_support,
+                           'EXPECT_PAC': expect_pac
                        })
 planpythontestsuite("ad_dc", "samba.tests.krb5.compatability_tests",
                     environ={
@@ -1465,11 +1504,13 @@ planpythontestsuite("ad_dc", "samba.tests.krb5.compatability_tests",
                         'ADMIN_PASSWORD': '$PASSWORD',
                         'STRICT_CHECKING': '0',
                         'FAST_SUPPORT': have_fast_support,
-                        'TKT_SIG_SUPPORT': tkt_sig_support
+                        'TKT_SIG_SUPPORT': tkt_sig_support,
+                        'EXPECT_PAC': expect_pac
                     })
 planpythontestsuite("ad_dc", "samba.tests.krb5.kdc_tests",
                     environ={'FAST_SUPPORT': have_fast_support,
-                             'TKT_SIG_SUPPORT': tkt_sig_support})
+                             'TKT_SIG_SUPPORT': tkt_sig_support,
+                             'EXPECT_PAC': expect_pac})
 planpythontestsuite(
     "ad_dc",
     "samba.tests.krb5.kdc_tgs_tests",
@@ -1478,7 +1519,8 @@ planpythontestsuite(
         'ADMIN_PASSWORD': '$PASSWORD',
         'STRICT_CHECKING': '0',
         'FAST_SUPPORT': have_fast_support,
-        'TKT_SIG_SUPPORT': tkt_sig_support
+        'TKT_SIG_SUPPORT': tkt_sig_support,
+        'EXPECT_PAC': expect_pac
     })
 planpythontestsuite(
     "ad_dc",
@@ -1488,7 +1530,8 @@ planpythontestsuite(
         'ADMIN_PASSWORD': '$PASSWORD',
         'STRICT_CHECKING': '0',
         'FAST_SUPPORT': have_fast_support,
-        'TKT_SIG_SUPPORT': tkt_sig_support
+        'TKT_SIG_SUPPORT': tkt_sig_support,
+        'EXPECT_PAC': expect_pac
     })
 planpythontestsuite(
     "ad_dc",
@@ -1498,7 +1541,30 @@ planpythontestsuite(
         'ADMIN_PASSWORD': '$PASSWORD',
         'STRICT_CHECKING': '0',
         'FAST_SUPPORT': have_fast_support,
-        'TKT_SIG_SUPPORT': tkt_sig_support
+        'TKT_SIG_SUPPORT': tkt_sig_support,
+        'EXPECT_PAC': expect_pac
+    })
+planpythontestsuite(
+    "ad_dc",
+    "samba.tests.krb5.spn_tests",
+    environ={
+        'ADMIN_USERNAME': '$USERNAME',
+        'ADMIN_PASSWORD': '$PASSWORD',
+        'STRICT_CHECKING': '0',
+        'FAST_SUPPORT': have_fast_support,
+        'TKT_SIG_SUPPORT': tkt_sig_support,
+        'EXPECT_PAC': expect_pac
+    })
+planpythontestsuite(
+    "ad_dc",
+    "samba.tests.krb5.alias_tests",
+    environ={
+        'ADMIN_USERNAME': '$USERNAME',
+        'ADMIN_PASSWORD': '$PASSWORD',
+        'STRICT_CHECKING': '0',
+        'FAST_SUPPORT': have_fast_support,
+        'TKT_SIG_SUPPORT': tkt_sig_support,
+        'EXPECT_PAC': expect_pac
     })
 
 for env in [
