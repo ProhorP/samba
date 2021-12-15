@@ -74,8 +74,8 @@
 %endif
 
 Name:    samba
-Version: 4.14.10
-Release: alt3
+Version: 4.14.11
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1927,6 +1927,12 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Dec 15 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt1
+- Update to latest maintenance release of Samba 4.14.
+- Fix broken of recursive directory delete with veto files.
+- Fix directory containing dangling symlinks cannot be deleted by
+  SMB2 alone when they are the only entry in the directory.
+
 * Mon Dec 13 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.10-alt3
 - Update for the latest fixes release of Samba 4.14
   + CVE-2020-25727 idmap_nss, krb5 and s3-auth regressions
