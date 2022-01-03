@@ -2445,6 +2445,8 @@ NTSTATUS cm_connect_sam(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 	struct netlogon_creds_cli_context *p_creds;
 	struct cli_credentials *creds = NULL;
 	bool retry = false; /* allow one retry attempt for expired session */
+	const char *remote_name = NULL;
+	const struct sockaddr_storage *remote_sockaddr = NULL;
 
 	if (sid_check_is_our_sam(&domain->sid)) {
 		if (domain->rodc == false || need_rw_dc == false) {
@@ -2498,6 +2500,9 @@ retry:
 		goto anonymous;
 	}
 
+	remote_name = smbXcli_conn_remote_name(conn->cli->conn);
+	remote_sockaddr = smbXcli_conn_remote_sockaddr(conn->cli->conn);
+
 	/*
 	 * We have an authenticated connection. Use a SPNEGO
 	 * authenticated SAMR pipe with sign & seal.
@@ -2507,7 +2512,8 @@ retry:
 					      NCACN_NP,
 					      DCERPC_AUTH_TYPE_SPNEGO,
 					      conn->auth_level,
-					      smbXcli_conn_remote_name(conn->cli->conn),
+					      remote_name,
+					      remote_sockaddr,
 					      creds,
 					      &conn->samr_pipe);
 
@@ -2574,6 +2580,8 @@ retry:
 	TALLOC_FREE(creds);
 	status = cli_rpc_pipe_open_schannel_with_creds(
 		conn->cli, &ndr_table_samr, NCACN_NP, p_creds,
+		remote_name,
+		remote_sockaddr,
 		&conn->samr_pipe);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_NETWORK_SESSION_EXPIRED)
@@ -2716,6 +2724,8 @@ static NTSTATUS cm_connect_lsa_tcp(struct winbindd_domain *domain,
 	struct winbindd_cm_conn *conn;
 	struct netlogon_creds_cli_context *p_creds = NULL;
 	NTSTATUS status;
+	const char *remote_name = NULL;
+	const struct sockaddr_storage *remote_sockaddr = NULL;
 
 	DEBUG(10,("cm_connect_lsa_tcp\n"));
 
@@ -2742,11 +2752,17 @@ static NTSTATUS cm_connect_lsa_tcp(struct winbindd_domain *domain,
 		goto done;
 	}
 
-	status = cli_rpc_pipe_open_schannel_with_creds(conn->cli,
-						       &ndr_table_lsarpc,
-						       NCACN_IP_TCP,
-						       p_creds,
-						       &conn->lsa_pipe_tcp);
+	remote_name = smbXcli_conn_remote_name(conn->cli->conn);
+	remote_sockaddr = smbXcli_conn_remote_sockaddr(conn->cli->conn);
+
+	status = cli_rpc_pipe_open_schannel_with_creds(
+			conn->cli,
+			&ndr_table_lsarpc,
+			NCACN_IP_TCP,
+			p_creds,
+			remote_name,
+			remote_sockaddr,
+			&conn->lsa_pipe_tcp);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10,("cli_rpc_pipe_open_schannel_with_key failed: %s\n",
 			nt_errstr(status)));
@@ -2772,6 +2788,8 @@ NTSTATUS cm_connect_lsa(struct winbindd_domain *domain, TALLOC_CTX *mem_ctx,
 	struct netlogon_creds_cli_context *p_creds;
 	struct cli_credentials *creds = NULL;
 	bool retry = false; /* allow one retry attempt for expired session */
+	const char *remote_name = NULL;
+	const struct sockaddr_storage *remote_sockaddr = NULL;
 
 retry:
 	result = init_dc_connection_rpc(domain, false);
@@ -2804,6 +2822,9 @@ retry:
 		goto anonymous;
 	}
 
+	remote_name = smbXcli_conn_remote_name(conn->cli->conn);
+	remote_sockaddr = smbXcli_conn_remote_sockaddr(conn->cli->conn);
+
 	/*
 	 * We have an authenticated connection. Use a SPNEGO
 	 * authenticated LSA pipe with sign & seal.
@@ -2812,7 +2833,8 @@ retry:
 		(conn->cli, &ndr_table_lsarpc, NCACN_NP,
 		 DCERPC_AUTH_TYPE_SPNEGO,
 		 conn->auth_level,
-		 smbXcli_conn_remote_name(conn->cli->conn),
+		 remote_name,
+		 remote_sockaddr,
 		 creds,
 		 &conn->lsa_pipe);
 
@@ -2873,6 +2895,8 @@ retry:
 	TALLOC_FREE(creds);
 	result = cli_rpc_pipe_open_schannel_with_creds(
 		conn->cli, &ndr_table_lsarpc, NCACN_NP, p_creds,
+		remote_name,
+		remote_sockaddr,
 		&conn->lsa_pipe);
 
 	if (NT_STATUS_EQUAL(result, NT_STATUS_NETWORK_SESSION_EXPIRED)
@@ -3070,6 +3094,11 @@ static NTSTATUS cm_connect_netlogon_transport(struct winbindd_domain *domain,
 
 	sec_chan_type = cli_credentials_get_secure_channel_type(creds);
 	if (sec_chan_type == SEC_CHAN_NULL) {
+		const char *remote_name =
+			smbXcli_conn_remote_name(conn->cli->conn);
+		const struct sockaddr_storage *remote_sockaddr =
+			smbXcli_conn_remote_sockaddr(conn->cli->conn);
+
 		if (transport == NCACN_IP_TCP) {
 			DBG_NOTICE("get_secure_channel_type gave SEC_CHAN_NULL "
 				   "for %s, deny NCACN_IP_TCP and let the "
@@ -3086,6 +3115,8 @@ static NTSTATUS cm_connect_netlogon_transport(struct winbindd_domain *domain,
 			conn->cli,
 			transport,
 			&ndr_table_netlogon,
+			remote_name,
+			remote_sockaddr,
 			&conn->netlogon_pipe);
 		if (!NT_STATUS_IS_OK(result)) {
 			invalidate_cm_connection(domain);

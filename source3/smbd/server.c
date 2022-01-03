@@ -60,6 +60,7 @@
 #include "rpc_server/fssd.h"
 #include "rpc_server/mdssd.h"
 #include "lib/global_contexts.h"
+#include "source3/lib/substitute.h"
 
 #ifdef CLUSTER_SUPPORT
 #include "ctdb_protocol.h"
@@ -1930,7 +1931,7 @@ extern void build_options(bool screen);
 		exit_daemon("smbd can not open secrets.tdb", EACCES);
 	}
 
-	if (lp_server_role() == ROLE_DOMAIN_BDC || lp_server_role() == ROLE_DOMAIN_PDC) {
+	if (lp_server_role() == ROLE_DOMAIN_BDC || lp_server_role() == ROLE_DOMAIN_PDC || lp_server_role() == ROLE_IPA_DC) {
 		struct loadparm_context *lp_ctx = loadparm_init_s3(NULL, loadparm_s3_helpers());
 		if (!open_schannel_session_store(NULL, lp_ctx)) {
 			exit_daemon("ERROR: Samba cannot open schannel store for secured NETLOGON operations.", EACCES);

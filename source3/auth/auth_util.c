@@ -38,6 +38,7 @@
 #include "rpc_client/util_netlogon.h"
 #include "source4/auth/auth.h"
 #include "auth/auth_util.h"
+#include "source3/lib/substitute.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_AUTH
@@ -570,13 +571,11 @@ NTSTATUS create_local_token(TALLOC_CTX *mem_ctx,
 	}
 
 	/*
-	 * If winbind is not around, we can not make much use of the SIDs the
-	 * domain controller provided us with. Likewise if the user name was
-	 * mapped to some local unix user.
+	 * If the user name was mapped to some local unix user,
+	 * we can not make much use of the SIDs the
+	 * domain controller provided us with.
 	 */
-
-	if (((lp_server_role() == ROLE_DOMAIN_MEMBER) && !winbind_ping()) ||
-	    (server_info->nss_token)) {
+	if (server_info->nss_token) {
 		char *found_username = NULL;
 		status = create_token_from_username(session_info,
 						    server_info->unix_name,
@@ -1878,7 +1877,9 @@ const struct auth_session_info *get_session_info_system(void)
 ***************************************************************************/
 
 static NTSTATUS check_account(TALLOC_CTX *mem_ctx, const char *domain,
-			      const char *username, char **found_username,
+			      const char *username,
+			      const struct dom_sid *sid,
+			      char **found_username,
 			      struct passwd **pwd,
 			      bool *username_was_mapped)
 {
@@ -1912,7 +1913,32 @@ static NTSTATUS check_account(TALLOC_CTX *mem_ctx, const char *domain,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	passwd = smb_getpwnam(mem_ctx, dom_user, &real_username, true );
+	passwd = smb_getpwnam(mem_ctx, dom_user, &real_username, false);
+	if (!passwd && !*username_was_mapped) {
+		struct dom_sid_buf buf;
+		uid_t uid;
+		bool ok;
+
+		DBG_DEBUG("Failed to find authenticated user %s via "
+			  "getpwnam(), fallback to sid_to_uid(%s).\n",
+			  dom_user, dom_sid_str_buf(sid, &buf));
+
+		ok = sid_to_uid(sid, &uid);
+		if (!ok) {
+			DBG_ERR("Failed to convert SID %s to a UID (dom_user[%s])\n",
+				dom_sid_str_buf(sid, &buf), dom_user);
+			return NT_STATUS_NO_SUCH_USER;
+		}
+		passwd = getpwuid_alloc(mem_ctx, uid);
+		if (!passwd) {
+			DBG_ERR("Failed to find local account with UID %lld for SID %s (dom_user[%s])\n",
+				(long long)uid,
+				dom_sid_str_buf(sid, &buf),
+				dom_user);
+			return NT_STATUS_NO_SUCH_USER;
+		}
+		real_username = talloc_strdup(mem_ctx, passwd->pw_name);
+	}
 	if (!passwd) {
 		DEBUG(3, ("Failed to find authenticated user %s via "
 			  "getpwnam(), denying access.\n", dom_user));
@@ -1947,7 +1973,7 @@ struct passwd *smb_getpwnam( TALLOC_CTX *mem_ctx, const char *domuser,
 {
 	struct passwd *pw = NULL;
 	char *p = NULL;
-	char *username = NULL;
+	const char *username = NULL;
 
 	/* we only save a copy of the username it has been mangled 
 	   by winbindd use default domain */
@@ -1966,48 +1992,55 @@ struct passwd *smb_getpwnam( TALLOC_CTX *mem_ctx, const char *domuser,
 	/* code for a DOMAIN\user string */
 
 	if ( p ) {
-		pw = Get_Pwnam_alloc( mem_ctx, domuser );
-		if ( pw ) {
-			/* make sure we get the case of the username correct */
-			/* work around 'winbind use default domain = yes' */
+		const char *domain = NULL;
 
-			if ( lp_winbind_use_default_domain() &&
-			     !strchr_m( pw->pw_name, *lp_winbind_separator() ) ) {
-				char *domain;
+		/* split the domain and username into 2 strings */
+		*p = '\0';
+		domain = username;
+		p++;
+		username = p;
 
-				/* split the domain and username into 2 strings */
-				*p = '\0';
-				domain = username;
-
-				*p_save_username = talloc_asprintf(mem_ctx,
-								"%s%c%s",
-								domain,
-								*lp_winbind_separator(),
-								pw->pw_name);
-				if (!*p_save_username) {
-					TALLOC_FREE(pw);
-					return NULL;
-				}
-			} else {
-				*p_save_username = talloc_strdup(mem_ctx, pw->pw_name);
-			}
-
-			/* whew -- done! */
-			return pw;
+		if (strequal(domain, get_global_sam_name())) {
+			/*
+			 * This typically don't happen
+			 * as check_sam_Security()
+			 * don't call make_server_info_info3()
+			 * and thus check_account().
+			 *
+			 * But we better keep this.
+			 */
+			goto username_only;
 		}
 
-		/* setup for lookup of just the username */
-		/* remember that p and username are overlapping memory */
-
-		p++;
-		username = talloc_strdup(mem_ctx, p);
-		if (!username) {
+		pw = Get_Pwnam_alloc( mem_ctx, domuser );
+		if (pw == NULL) {
 			return NULL;
 		}
+		/* make sure we get the case of the username correct */
+		/* work around 'winbind use default domain = yes' */
+
+		if ( lp_winbind_use_default_domain() &&
+		     !strchr_m( pw->pw_name, *lp_winbind_separator() ) ) {
+			*p_save_username = talloc_asprintf(mem_ctx,
+							"%s%c%s",
+							domain,
+							*lp_winbind_separator(),
+							pw->pw_name);
+			if (!*p_save_username) {
+				TALLOC_FREE(pw);
+				return NULL;
+			}
+		} else {
+			*p_save_username = talloc_strdup(mem_ctx, pw->pw_name);
+		}
+
+		/* whew -- done! */
+		return pw;
+
 	}
 
 	/* just lookup a plain username */
-
+username_only:
 	pw = Get_Pwnam_alloc(mem_ctx, username);
 
 	/* Create local user if requested but only if winbindd
@@ -2051,6 +2084,7 @@ NTSTATUS make_server_info_info3(TALLOC_CTX *mem_ctx,
 	bool username_was_mapped;
 	struct passwd *pwd;
 	struct auth_serversupplied_info *result;
+	struct dom_sid sid;
 	TALLOC_CTX *tmp_ctx = talloc_stackframe();
 
 	/* 
@@ -2097,9 +2131,13 @@ NTSTATUS make_server_info_info3(TALLOC_CTX *mem_ctx,
 
 	/* this call will try to create the user if necessary */
 
+	sid_copy(&sid, info3->base.domain_sid);
+	sid_append_rid(&sid, info3->base.rid);
+
 	nt_status = check_account(tmp_ctx,
 				  nt_domain,
 				  nt_username,
+				  &sid,
 				  &found_username,
 				  &pwd,
 				  &username_was_mapped);
@@ -2116,6 +2154,22 @@ NTSTATUS make_server_info_info3(TALLOC_CTX *mem_ctx,
 				*server_info = talloc_move(mem_ctx, &result);
 			}
 		}
+		goto out;
+	} else if ((lp_security() == SEC_ADS || lp_security() == SEC_DOMAIN) &&
+		   !is_myname(domain) && pwd->pw_uid < lp_min_domain_uid()) {
+		/*
+		 * !is_myname(domain) because when smbd starts tries to setup
+		 * the guest user info, calling this function with nobody
+		 * username. Nobody is usually uid 65535 but it can be changed
+		 * to a regular user with 'guest account' parameter
+		 */
+		nt_status = NT_STATUS_INVALID_TOKEN;
+		DBG_NOTICE("Username '%s%s%s' is invalid on this system, "
+			   "it does not meet 'min domain uid' "
+			   "restriction (%u < %u): %s\n",
+			   nt_domain, lp_winbind_separator(), nt_username,
+			   pwd->pw_uid, lp_min_domain_uid(),
+			   nt_errstr(nt_status));
 		goto out;
 	}
 
