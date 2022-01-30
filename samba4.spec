@@ -1,3 +1,4 @@
+%define _unpackaged_files_terminate_build 1
 %set_verify_elf_method unresolved=relaxed
 %add_findprov_skiplist /%_lib/*
 %add_debuginfo_skiplist /%_lib
@@ -73,7 +74,7 @@
 %endif
 
 Name:    samba
-Version: 4.15.1
+Version: 4.15.4
 Release: alt1
 
 Group:   System/Servers
@@ -568,7 +569,6 @@ Obsoletes: %dcname-test < 4.10
 %rname-test provides testing tools for both the server and client
 packages of Samba.
 
-%if_with winbind
 %package winbind-common
 Summary: Files used by MIT and Heimdal Winbind servers
 Group: System/Servers
@@ -621,7 +621,6 @@ Obsoletes: %dcname-winbind-krb5-localauth < 4.10
 The winbind krb5 localauth is a plugin that permits the MIT Kerberos libraries
 that Kerberos principals can be validated against local user accounts.
 
-%if_with clustering_support
 %package ctdb
 Summary: A Clustered Database based on Samba's Trivial Database (TDB)
 Group: System/Servers
@@ -665,9 +664,7 @@ CTDB is a cluster implementation of the TDB database used by Samba and other
 projects to store temporary data. If an application is already using TDB for
 temporary data it is very easy to convert that application to be cluster aware
 and use CTDB instead.
-%endif
 
-%if_with doc
 %package doc
 Summary: Documentation for the Samba suite
 Group: Documentation
@@ -679,7 +676,6 @@ Obsoletes: %dcname-doc < 4.10
 %description doc
 The samba-doc package includes all the non-manpage documentation for the
 Samba suite.
-%endif
 
 %package -n task-samba-dc
 Summary: Complete Samba Active Directory Domain Controller with Heimdal Kerberos
@@ -831,8 +827,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 	--with-modulesdir=%_samba_mod_libdir \
 	--with-privatelibdir=%_samba_mod_libdir \
 	--with-pammodulesdir=/%_lib/security \
-	--with-pam \
-%endif
+	--with-pam
 
 %if_with separate_heimdal_server
 pushd ../%rname-%version-separate-heimdal-server
@@ -889,6 +884,7 @@ printf "%_bindir/ntlm_auth\t%_samba_dc_mod_libdir/bin/ntlm_auth\t50\n" >> %build
 printf "%_bindir/pdbedit\t%_samba_dc_mod_libdir/bin/pdbedit\t50\n" >> %buildroot%_altdir/samba-heimdal
 printf "%_samba_mod_libdir/ldb\t%_samba_dc_mod_libdir/ldb\t50\n" >> %buildroot%_altdir/samba-heimdal
 
+printf "%_bindir/samba-tool-plus\t%_samba_dc_mod_libdir/bin/samba-tool-plus\t50\n" >> %buildroot%_altdir/samba-heimdal
 printf "%_bindir/samba-tool\t%_samba_dc_mod_libdir/bin/samba-tool\t50\n" >> %buildroot%_altdir/samba-heimdal
 chmod 0755 %buildroot%_samba_dc_mod_libdir/bin/samba-tool
 
@@ -1914,16 +1910,84 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
-* Sun Nov 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.15.1-alt1
-- Update to latest security release of Samba 4.15
-- Provide a fix for MS in Samba [SECURITY] 'Bronze bit' S4U2Proxy Constrained
-  Delegation bypass in Samba with embedded Heimdal (Fixes: CVE-2020-17049).
-
-* Thu Oct 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.15.0-alt1
+* Fri Jan 28 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.4-alt1
 - Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
   samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
   with the LMDB backend and always use enterprise principals for Kerberos (so
   that the DC will be able to redirect ticket requests to the right DC) support.
+
+* Thu Jan 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt3
+- Update for the latest fixes release of Samba 4.14
+  + Fix resolv_wrapper with glibc 2.34
+  + kill_tcp_connections does not work
+  + Failed to parse NTLMv2_RESPONSE length 95 - Buffer Size Error -
+    NT_STATUS_BUFFER_TOO_SMALL
+  + Can't connect to Windows shares not requiring authentication using KDE/Gnome
+  + Duplicate SMB file_ids leading to Windows client cache poisoning
+  + Missing pop_sec_ctx() in error path inside close_directory()
+  + rpc_server/netlogon: let CSDVersion="" wipe operatingSystemServicePack
+
+* Sun Jan 16 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt2
+- Apply s4u support patch for samba-4.15 (due already updated kdb code base):
+  + basic local realm S4U support
+  + enable S4U client support for MIT build
+  + wip: for canonicalization with new MIT kdc code
+
+* Wed Dec 15 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt1
+- Update to latest maintenance release of Samba 4.14.
+- Fix broken of recursive directory delete with veto files.
+- Fix directory containing dangling symlinks cannot be deleted by
+  SMB2 alone when they are the only entry in the directory.
+
+* Mon Dec 13 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.10-alt3
+- Update for the latest fixes release of Samba 4.14
+  + CVE-2020-25727 idmap_nss, krb5 and s3-auth regressions
+  + CVE-2021-3670 ldap_server, dsdb/anr and ldb (libldb-2.3.2-alt2) regressions
+  + smbd: s3-dsgetdcname: handle num_ips == 0
+  + dsdb: Use DSDB_SEARCH_SHOW_EXTENDED_DN when searching for the local replicated object
+  + lib: handle NTTIME_THAW in nt_time_to_full_timespec()
+  + IPA DC: add missing checks
+  + s3:winbindd: fix "allow trusted domains = no" regression
+- Update tob more compatible with ALT distributions:
+  + loadparm: Set parameter "min domain uid" deafult value to 500.
+
+* Sat Nov 13 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.10-alt2
+- Add support samba-tool-plus alternative for samba-dc build with heimdal.
+
+* Sun Nov 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.10-alt1
+- Update to latest security release of Samba 4.14
+- Security fixes:
+  + CVE-2016-2124:  SMB1 client connections can be downgraded to plaintext
+                    authentication.
+                    https://www.samba.org/samba/security/CVE-2016-2124.html
+  + CVE-2020-25717: A user on the domain can become root on domain members.
+                    https://www.samba.org/samba/security/CVE-2020-25717.html
+  + CVE-2020-25718: Samba AD DC did not correctly sandbox Kerberos tickets
+                    issued by an RODC.
+                    https://www.samba.org/samba/security/CVE-2020-25718.html
+  + CVE-2020-25719: Samba AD DC did not always rely on the SID and PAC in
+                    Kerberos tickets.
+                    https://www.samba.org/samba/security/CVE-2020-25719.html
+  + CVE-2020-25721: Kerberos acceptors need easy access to stable AD identifiers
+                    (eg objectSid).
+                    https://www.samba.org/samba/security/CVE-2020-25721.html
+  + CVE-2020-25722: Samba AD DC did not do suffienct access and conformance
+                    checking of data stored.
+                    https://www.samba.org/samba/security/CVE-2020-25722.html
+  + CVE-2021-3738:  Use after free in Samba AD DC RPC server.
+                    https://www.samba.org/samba/security/CVE-2021-3738.html
+  + CVE-2021-23192: Subsequent DCE/RPC fragment injection vulnerability.
+                    https://www.samba.org/samba/security/CVE-2021-23192.html
+
+* Sun Nov 07 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.9-alt2
+- Rebuild with updated ldb-2.3.2 with backported all C code changes from
+  ldb-2.4.1 to be available for Samba 4.14.x.
+
+* Mon Nov 01 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.9-alt1
+- Update to latest security release of Samba 4.14
+- Backport bronze bit fixes, tests, and selftest improvements. Provide a fix
+  for MS in Samba [SECURITY] 'Bronze bit' S4U2Proxy Constrained Delegation
+  bypass in Samba with embedded Heimdal (Fixes: CVE-2020-17049).
 
 * Wed Oct 06 2021 Evgeny Sinelnikov <sin@altlinux.org> 4.14.8-alt1
 - Update to latest security release of Samba 4.14
