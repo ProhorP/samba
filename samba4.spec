@@ -74,8 +74,8 @@
 %endif
 
 Name:    samba
-Version: 4.14.11
-Release: alt3
+Version: 4.14.12
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1921,6 +1921,12 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Feb 09 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.12-alt1
+- Update to latest security release of Samba 4.14
+- Security fixes:
+  + CVE-2021-44142: Out-of-Bound Read/Write on Samba vfs_fruit module.
+  + CVE-2022-0336:  Re-adding an SPN skips subsequent SPN conflict checks.
+
 * Thu Jan 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt3
 - Update for the latest fixes release of Samba 4.14
   + Fix resolv_wrapper with glibc 2.34
