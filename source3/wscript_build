@@ -269,7 +269,7 @@ bld.SAMBA3_SUBSYSTEM('REG_FULL',
 
 bld.SAMBA3_LIBRARY('popt_samba3',
                    source='lib/popt_common.c',
-                   deps='popt samba-util smbconf',
+                   deps='popt samba-util smbconf samba-debug',
                    private_library=True)
 
 bld.SAMBA3_LIBRARY('popt_samba3_cmdline',
@@ -495,7 +495,7 @@ bld.SAMBA3_LIBRARY('secrets3',
 
 bld.SAMBA3_LIBRARY('smbldap',
                     source='lib/smbldap.c',
-                    deps='ldap lber samba-util smbconf',
+                    deps='ldap lber samba-util smbconf samba-security smbd_shim samba-debug replace',
                     enabled=bld.CONFIG_SET("HAVE_LDAP"),
                     private_library=False,
                     abi_directory='lib/ABI',
