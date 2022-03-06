@@ -74,7 +74,7 @@
 %endif
 
 Name:    samba
-Version: 4.15.4
+Version: 4.15.5
 Release: alt1
 
 Group:   System/Servers
@@ -1910,11 +1910,22 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
-* Fri Jan 28 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.4-alt1
+* Sun Mar 06 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.5-alt1
 - Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
   samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
   with the LMDB backend and always use enterprise principals for Kerberos (so
   that the DC will be able to redirect ticket requests to the right DC) support.
+
+* Thu Mar 03 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.12-alt2
+- Fix linking of some libraries (libsmbldap.so.2.1.0, libpopt-samba3-samba4.so,
+  libsamba-modules-samba4.so, winbind_krb5_locator.so and smbpasswd.so):
+  + find-requires: ERROR: /usr/lib/rpm/lib.req failed.
+
+* Tue Feb 09 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.12-alt1
+- Update to latest security release of Samba 4.14
+- Security fixes:
+  + CVE-2021-44142: Out-of-Bound Read/Write on Samba vfs_fruit module.
+  + CVE-2022-0336:  Re-adding an SPN skips subsequent SPN conflict checks.
 
 * Thu Jan 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.11-alt3
 - Update for the latest fixes release of Samba 4.14
