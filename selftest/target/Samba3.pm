@@ -188,7 +188,7 @@ sub getlog_env_app($$$)
 	close(LOG);
 
 	return "" if $out eq $title;
- 
+
 	return $out;
 }
 
@@ -1688,6 +1688,9 @@ sub setup_fileserver
 	my $veto_sharedir="$share_dir/veto";
 	push(@dirs,$veto_sharedir);
 
+	my $virusfilter_sharedir="$share_dir/virusfilter";
+	push(@dirs,$virusfilter_sharedir);
+
 	my $ip4 = Samba::get_ipv4_addr("FILESERVER");
 	my $fileserver_options = "
 	kernel change notify = yes
@@ -1812,6 +1815,15 @@ sub setup_fileserver
 [delete_veto_files_only]
 	path = $veto_sharedir
 	delete veto files = yes
+
+[virusfilter]
+	path = $virusfilter_sharedir
+	vfs objects = acl_xattr virusfilter
+	virusfilter:scanner = dummy
+	virusfilter:min file size = 0
+	virusfilter:infected files = *infected*
+	virusfilter:infected file action = rename
+	virusfilter:scan on close = yes
 
 [homes]
 	comment = Home directories
@@ -2153,7 +2165,7 @@ sub make_bin_cmd
 {
 	my ($self, $binary, $env_vars, $options, $valgrind, $dont_log_stdout) = @_;
 
-	my @optargs = ("-d0");
+	my @optargs = ();
 	if (defined($options)) {
 		@optargs = split(/ /, $options);
 	}
@@ -2426,7 +2438,7 @@ sub provision($$)
 	my $nmbdsockdir="$prefix_abs/nmbd";
 	unlink($nmbdsockdir);
 
-	## 
+	##
 	## create the test directory layout
 	##
 	die ("prefix_abs = ''") if $prefix_abs eq "";
@@ -3290,7 +3302,7 @@ sub provision($$)
 	unless (open(PASSWD, ">$nss_wrapper_passwd")) {
            warn("Unable to open $nss_wrapper_passwd");
            return undef;
-        } 
+        }
 	print PASSWD "nobody:x:$uid_nobody:$gid_nobody:nobody gecos:$prefix_abs:/bin/false
 $unix_name:x:$unix_uid:$unix_gids[0]:$unix_name gecos:$prefix_abs:/bin/false
 pdbtest:x:$uid_pdbtest:$gid_nogroup:pdbtest gecos:$prefix_abs:/bin/false
