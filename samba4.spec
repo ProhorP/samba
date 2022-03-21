@@ -74,7 +74,7 @@
 %endif
 
 Name:    samba
-Version: 4.15.5
+Version: 4.15.6
 Release: alt1
 
 Group:   System/Servers
@@ -187,7 +187,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.4.1
+%define ldb_version 2.4.2
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -1910,6 +1910,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Mar 16 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.6-alt1
+- Update to latest bugfix release of Samba 4.15
+
 * Sun Mar 06 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.5-alt1
 - Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
   samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
