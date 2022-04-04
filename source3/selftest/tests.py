@@ -878,6 +878,8 @@ for t in tests:
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD')
     elif t == "smb2.fileid":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit_xattr -U$USERNAME%$PASSWORD')
+    elif t == "smb2.fileid_unique":
+        plansmbtorture4testsuite(t, "fileserver", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD')
     elif t == "rpc.wkssvc":
         plansmbtorture4testsuite(t, "ad_member", '//$SERVER/tmp -U$DC_USERNAME%$DC_PASSWORD')
     elif t == "rpc.srvsvc":
@@ -1109,6 +1111,15 @@ plantestsuite("samba3.blackbox.rpcclient.pw-nt-hash", "simpleserver",
 plantestsuite("samba3.blackbox.smbclient.encryption_off", "simpleserver",
               [os.path.join(samba3srcdir, "script/tests/test_smbclient_encryption_off.sh"),
                "$USERNAME", "$PASSWORD", "$SERVER",
+               smbclient3])
+
+env = 'fileserver'
+plantestsuite("samba3.blackbox.virus_scanner", "%s:local" % (env),
+              [os.path.join(samba3srcdir,
+                            "script/tests/test_virus_scanner.sh"),
+               '$SERVER_IP',
+               "virusfilter",
+               '$LOCAL_PATH',
                smbclient3])
 
 for env in ['fileserver', 'simpleserver']:
