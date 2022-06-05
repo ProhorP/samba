@@ -677,7 +677,6 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 	fstring name_namespace, name_domain, name_user;
 	time_t ticket_lifetime = 0;
 	time_t renewal_until = 0;
-	ADS_STRUCT *ads;
 	time_t time_offset = 0;
 	const char *user_ccache_file;
 	struct PAC_LOGON_INFO *logon_info = NULL;
@@ -716,9 +715,8 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 	/* 2nd step:
 	 * get kerberos properties */
 
-	if (domain->private_data) {
-		ads = (ADS_STRUCT *)domain->private_data;
-		time_offset = ads->auth.time_offset;
+	if (domain->backend_data.ads_conn != NULL) {
+		time_offset = domain->backend_data.ads_conn->auth.time_offset;
 	}
 
 
@@ -1430,9 +1428,6 @@ static NTSTATUS winbindd_dual_auth_passdb(TALLOC_CTX *mem_ctx,
 		TALLOC_FREE(frame);
 		return NT_STATUS_NO_MEMORY;
 	}
-
-	/* We don't want any more mapping of the username */
-	user_info->mapped_state = True;
 
 	/* We don't want to come back to winbindd or to do PAM account checks */
 	user_info->flags |= USER_INFO_INFO3_AND_NO_AUTHZ;
