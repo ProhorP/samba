@@ -75,7 +75,7 @@
 
 Name:    samba
 Version: 4.15.7
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1910,6 +1910,16 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Jun 19 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt2
+- Revert get_naming_master() for dc replica join, which requires due only domain
+  naming master can create application directory partitions.
+- Fix smbd doesn't handle UPNs for looking up names (Samba#15054).
+- Fix net ads info shows LDAP Server: 0.0.0.0 (Samba#14674).
+- Fix logging dsdb audit to specific files does not work (Samba#15076).
+- Fix use pathref fd instead of io fd in vfs_default_durable_cookie (Samba#15042).
+- Fix vfs_gpfs recalls=no option prevents listing files (Samba#15055).
+- Fix smbget manpage (no &stdarg.encrypt anymore).
+
 * Mon Jun 06 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt1
 - Update to release of Samba 4.15 with SMB multi-channel, Offline Domain Join,
   samba-tool dns zoneoptions for aging control, samba-tool domain backup offline
