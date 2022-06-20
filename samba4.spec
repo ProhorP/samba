@@ -61,6 +61,7 @@
 %endif
 
 %define _samba_libdir  %_libdir
+%define _samba_libexecdir  %_libexecdir/samba
 %define _samba_mod_libdir  %_libdir/samba
 %define _samba_dc_libdir  %_libdir/samba-dc
 %define _samba_dc_mod_libdir  %_libdir/samba-dc
@@ -75,7 +76,7 @@
 
 Name:    samba
 Version: 4.15.7
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -834,6 +835,7 @@ pushd ../%rname-%version-separate-heimdal-server
 
 %configure_common \
 	--libdir=%_samba_dc_libdir \
+	--libexecdir=%_samba_dc_libdir \
 	--with-modulesdir=%_samba_dc_mod_libdir \
 	--with-privatelibdir=%_samba_dc_mod_libdir \
 	--pythonarchdir=%_samba_dc_pythonarchdir \
@@ -1123,12 +1125,12 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/sbin/eventlogadm
 %_samba_mod_libdir/sbin/nmbd
 %_samba_mod_libdir/sbin/smbd
-%_libexecdir/samba/samba-bgqd
 %else
 %_sbindir/eventlogadm
 %_sbindir/nmbd
 %_sbindir/smbd
 %endif
+%_samba_libexecdir/samba-bgqd
 %config(noreplace) %_sysconfdir/samba/smbusers
 %attr(755,root,root) %_initdir/smb
 %attr(755,root,root) %_initdir/nmb
@@ -1249,7 +1251,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 #_bindir/smbta-util
 %_bindir/smbtar
 %_bindir/smbtree
-%_libexecdir/samba/smbspool_krb5_wrapper
+%_samba_libexecdir/smbspool_krb5_wrapper
 %{cups_serverbin}/backend/smb
 %if_with doc
 %_man1dir/dbwrap_tool.1*
@@ -1910,6 +1912,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Jun 20 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt3
+- samba-dc: Replace internal helper program performing asynchronous
+  printing-related jobs (samba-bgqd) to internal package directory.
+
 * Sun Jun 19 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt2
 - Revert get_naming_master() for dc replica join, which requires due only domain
   naming master can create application directory partitions.
