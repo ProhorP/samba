@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.15.7
-Release: alt3
+Release: alt4
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1934,6 +1934,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Jun 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt4
+- Add samba-krb5-printing with CUPS backend for printing with Kerberos support.
+- Fix samba-tool domain backup DC with forced local samdb.
+
 * Mon Jun 20 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.7-alt3
 - samba-dc: Replace internal helper program performing asynchronous
   printing-related jobs (samba-bgqd) to internal package directory.
