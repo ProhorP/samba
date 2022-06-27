@@ -351,6 +351,10 @@ class DCJoinContext(object):
         ctx.promote_from_dn = res[0].dn
 
     def reconnect_to_naming_master(ctx):
+        # Forced local samdb used during the backup process when reconnecting to naming master is not available
+        if ctx.forced_local_samdb:
+            return
+
         ctx.naming_master = ctx.get_naming_master()
         if ctx.naming_master != ctx.server:
             ctx.logger.info("Reconnecting to naming master %s" % ctx.naming_master)
