@@ -75,7 +75,7 @@
 
 Name:    samba
 Version: 4.14.13
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1921,6 +1921,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Jun 28 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.13-alt2
+- Fix samba-tool domain backup DC with forced local samdb.
+
 * Tue Apr 05 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.13-alt1
 - Update to latest bugfix release of Samba 4.14
 - Fixes:
