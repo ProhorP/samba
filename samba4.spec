@@ -74,8 +74,8 @@
 %endif
 
 Name:    samba
-Version: 4.14.13
-Release: alt2
+Version: 4.14.14
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -187,7 +187,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.3.3
+%define ldb_version 2.3.4
 %define ldb_version_release %nil
 BuildRequires: libldb-devel = %ldb_version
 %if "%ldb_version_release" != ""
@@ -1921,6 +1921,18 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Jul 31 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.14-alt1
+- Update to security release of Samba 4.14
+  + CVE-2022-2031:  Samba AD users can bypass certain restrictions associated
+                    with changing passwords.
+  + CVE-2022-32744: Samba AD users can forge password change requests for any
+                    user.
+  + CVE-2022-32745: Samba AD users can crash the server process with an LDAP add
+                    or modify request.
+  + CVE-2022-32746: Samba AD users can induce a use-after-free in the server
+                    process with an LDAP add or modify request.
+  + CVE-2022-32742: Server memory information leak via SMB1.
+
 * Tue Jun 28 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.13-alt2
 - Fix samba-tool domain backup DC with forced local samdb.
 
