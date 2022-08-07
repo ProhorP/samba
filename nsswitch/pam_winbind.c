@@ -2746,7 +2746,7 @@ static int openpam_convert_error_code(struct pwb_context *ctx,
 #define pam_error_code(a, b, c) (c)
 #endif
 
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 			int argc, const char **argv)
 {
@@ -2905,7 +2905,7 @@ out:
 	return retval;
 }
 
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_setcred(pam_handle_t *pamh, int flags,
 		   int argc, const char **argv)
 {
@@ -2957,7 +2957,7 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
  * Account management. We want to verify that the account exists
  * before returning PAM_SUCCESS
  */
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 		   int argc, const char **argv)
 {
@@ -3056,7 +3056,7 @@ int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 	return pam_error_code(ctx, PAM_WINBIND_ACCT_MGMT, ret);
 }
 
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_open_session(pam_handle_t *pamh, int flags,
 			int argc, const char **argv)
 {
@@ -3083,7 +3083,7 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 	return pam_error_code(ctx, PAM_WINBIND_OPEN_SESSION, ret);
 }
 
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_close_session(pam_handle_t *pamh, int flags,
 			 int argc, const char **argv)
 {
@@ -3155,7 +3155,7 @@ static bool _pam_require_krb5_auth_after_chauthtok(struct pwb_context *ctx,
 }
 
 
-PAM_EXTERN
+_PUBLIC_ PAM_EXTERN
 int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 		     int argc, const char **argv)
 {

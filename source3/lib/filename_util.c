@@ -57,13 +57,14 @@ struct smb_filename *synthetic_smb_fname(TALLOC_CTX *mem_ctx,
 					 NTTIME twrp,
 					 uint32_t flags)
 {
-	struct smb_filename smb_fname_loc = { 0, };
-
 	/* Setup the base_name/stream_name. */
-	smb_fname_loc.base_name = discard_const_p(char, base_name);
-	smb_fname_loc.stream_name = discard_const_p(char, stream_name);
-	smb_fname_loc.flags = flags;
-	smb_fname_loc.twrp = twrp;
+
+	struct smb_filename smb_fname_loc = {
+		.base_name = discard_const_p(char, base_name),
+		.stream_name = discard_const_p(char, stream_name),
+		.flags = flags,
+		.twrp = twrp,
+	};
 
 	/* Copy the psbuf if one was given. */
 	if (psbuf)
@@ -80,12 +81,12 @@ struct smb_filename *synthetic_smb_fname(TALLOC_CTX *mem_ctx,
 struct smb_filename *cp_smb_filename_nostream(TALLOC_CTX *mem_ctx,
 					const struct smb_filename *smb_fname_in)
 {
-	struct smb_filename *smb_fname = cp_smb_filename(mem_ctx,
-							smb_fname_in);
-	if (smb_fname == NULL) {
-		return NULL;
-	}
-	TALLOC_FREE(smb_fname->stream_name);
+	struct smb_filename smb_fname_loc = *smb_fname_in;
+	struct smb_filename *smb_fname = NULL;
+
+	smb_fname_loc.stream_name = NULL;
+
+	smb_fname = cp_smb_filename(mem_ctx, &smb_fname_loc);
 	return smb_fname;
 }
 
@@ -207,8 +208,7 @@ const char *fsp_fnum_dbg(const struct files_struct *fsp)
 		return "fnum [invalid value]";
 	}
 
-	str = talloc_asprintf(talloc_tos(), "fnum %llu",
-			      (unsigned long long)fsp->fnum);
+	str = talloc_asprintf(talloc_tos(), "fnum %"PRIu64, fsp->fnum);
 	if (str == NULL) {
 		DEBUG(1, ("%s: talloc_asprintf failed\n", __FUNCTION__));
 		return "fnum [talloc failed!]";

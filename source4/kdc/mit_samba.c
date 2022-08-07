@@ -62,7 +62,7 @@ void mit_samba_context_free(struct mit_samba_context *ctx)
  */
 static void mit_samba_debug(void *private_ptr, int msg_level, const char *msg)
 {
-	int is_error = 1;
+	int is_error = errno;
 
 	if (msg_level > 0) {
 		is_error = 0;
@@ -479,7 +479,7 @@ int mit_samba_get_pac(struct mit_samba_context *smb_ctx,
 					    cred_ndr_ptr,
 					    &upn_dns_info_blob,
 					    is_krbtgt ? &pac_attrs_blob : NULL,
-					    NULL,
+					    PAC_ATTRIBUTE_FLAG_PAC_WAS_GIVEN_IMPLICITLY,
 					    is_krbtgt ? &requester_sid_blob : NULL,
 					    NULL);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -511,7 +511,7 @@ int mit_samba_get_pac(struct mit_samba_context *smb_ctx,
 				   pac_attrs_blob,
 				   requester_sid_blob,
 				   NULL,
-				   pac);
+				   *pac);
 
 	talloc_free(tmp_ctx);
 	return code;
@@ -620,7 +620,8 @@ krb5_error_code mit_samba_reget_pac(struct mit_samba_context *ctx,
 						    &pac_blob,
 						    NULL,
 						    &upn_blob,
-						    NULL, NULL,
+						    NULL,
+						    0,
 						    &requester_sid_blob,
 						    NULL);
 		if (!NT_STATUS_IS_OK(nt_status)) {

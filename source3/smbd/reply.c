@@ -31,6 +31,7 @@
 #include "locking/share_mode_lock.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "smbd/smbXsrv_open.h"
 #include "fake_file.h"
 #include "rpc_client/rpc_client.h"
 #include "../librpc/gen_ndr/ndr_spoolss_c.h"
@@ -1820,8 +1821,7 @@ void reply_search(struct smb_request *req)
 			 * as this is not a client visible handle so
 			 * can'tbe part of an SMB1 chain.
 			 */
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 			reply_nterror(req, nt_status);
 			goto out;
 		}
@@ -1952,15 +1952,13 @@ void reply_search(struct smb_request *req)
 	if (numentries == 0) {
 		dptr_num = -1;
 		if (fsp != NULL) {
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 	} else if(expect_close && status_len == 0) {
 		/* Close the dptr - we know it's gone */
 		dptr_num = -1;
 		if (fsp != NULL) {
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 	}
 
@@ -1969,8 +1967,7 @@ void reply_search(struct smb_request *req)
 		dptr_num = -1;
 		/* fsp may have been closed above. */
 		if (fsp != NULL) {
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 	}
 
@@ -2072,8 +2069,7 @@ void reply_fclose(struct smb_request *req)
 	fsp = dptr_fetch_fsp(sconn, status+12,&dptr_num);
 	if(fsp != NULL) {
 		/*  Close the file - we know it's gone */
-		close_file(NULL, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		dptr_num = -1;
 	}
 
@@ -2215,7 +2211,7 @@ void reply_open(struct smb_request *req)
 	if (fattr & FILE_ATTRIBUTE_DIRECTORY) {
 		DEBUG(3,("attempt to open a directory %s\n",
 			 fsp_str_dbg(fsp)));
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		reply_botherror(req, NT_STATUS_ACCESS_DENIED,
 			ERRDOS, ERRnoaccess);
 		goto out;
@@ -2400,19 +2396,19 @@ void reply_open_and_X(struct smb_request *req)
 	if (((smb_action == FILE_WAS_CREATED) || (smb_action == FILE_WAS_OVERWRITTEN)) && allocation_size) {
 		fsp->initial_allocation_size = smb_roundup(fsp->conn, allocation_size);
 		if (vfs_allocate_file_space(fsp, fsp->initial_allocation_size) == -1) {
-			close_file(req, fsp, ERROR_CLOSE);
+			close_file_free(req, &fsp, ERROR_CLOSE);
 			reply_nterror(req, NT_STATUS_DISK_FULL);
 			goto out;
 		}
 		retval = vfs_set_filelen(fsp, (off_t)allocation_size);
 		if (retval < 0) {
-			close_file(req, fsp, ERROR_CLOSE);
+			close_file_free(req, &fsp, ERROR_CLOSE);
 			reply_nterror(req, NT_STATUS_DISK_FULL);
 			goto out;
 		}
 		status = vfs_stat_fsp(fsp);
 		if (!NT_STATUS_IS_OK(status)) {
-			close_file(req, fsp, ERROR_CLOSE);
+			close_file_free(req, &fsp, ERROR_CLOSE);
 			reply_nterror(req, status);
 			goto out;
 		}
@@ -2420,7 +2416,7 @@ void reply_open_and_X(struct smb_request *req)
 
 	fattr = fdos_mode(fsp);
 	if (fattr & FILE_ATTRIBUTE_DIRECTORY) {
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		goto out;
 	}
@@ -3188,7 +3184,7 @@ NTSTATUS unlink_internals(connection_struct *conn,
 			"(%s)\n",
 			smb_fname_str_dbg(smb_fname),
 			nt_errstr(status));
-		close_file(req, fsp, NORMAL_CLOSE);
+		close_file_free(req, &fsp, NORMAL_CLOSE);
 		return status;
 	}
 
@@ -3196,11 +3192,11 @@ NTSTATUS unlink_internals(connection_struct *conn,
 	if (!set_delete_on_close(fsp, True,
 				conn->session_info->security_token,
 				conn->session_info->unix_token)) {
-		close_file(req, fsp, NORMAL_CLOSE);
+		close_file_free(req, &fsp, NORMAL_CLOSE);
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	return close_file(req, fsp, NORMAL_CLOSE);
+	return close_file_free(req, &fsp, NORMAL_CLOSE);
 }
 
 /****************************************************************************
@@ -3696,9 +3692,13 @@ void reply_readbraw(struct smb_request *req)
 	/* ensure we don't overrun the packet size */
 	maxcount = MIN(65535,maxcount);
 
-	init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-	    (uint64_t)startpos, (uint64_t)maxcount, READ_LOCK,
-	    &lock);
+	init_strict_lock_struct(fsp,
+			(uint64_t)req->smbpid,
+			(uint64_t)startpos,
+			(uint64_t)maxcount,
+			READ_LOCK,
+			lp_posix_cifsu_locktype(fsp),
+			&lock);
 
 	if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 		reply_readbraw_error(xconn);
@@ -3793,6 +3793,7 @@ void reply_lockread(struct smb_request *req)
 		.req_guid = smbd_request_guid(req, 0),
 		.smblctx = req->smbpid,
 		.brltype = WRITE_LOCK,
+		.lock_flav = WINDOWS_LOCK,
 		.count = SVAL(req->vwv+1, 0),
 		.offset = IVAL_TO_SMB_OFF_T(req->vwv+2, 0),
 	};
@@ -3804,7 +3805,6 @@ void reply_lockread(struct smb_request *req)
 		fsp,
 		0,
 		false,		/* large_offset */
-		WINDOWS_LOCK,
 		1,
 		lck);
 	if (subreq == NULL) {
@@ -3963,9 +3963,13 @@ Returning short read of maximum allowed for compatibility with Windows 2000.\n",
 
 	data = smb_buf(req->outbuf) + 3;
 
-	init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-	    (uint64_t)startpos, (uint64_t)numtoread, READ_LOCK,
-	    &lock);
+	init_strict_lock_struct(fsp,
+			(uint64_t)req->smbpid,
+			(uint64_t)startpos,
+			(uint64_t)numtoread,
+			READ_LOCK,
+			lp_posix_cifsu_locktype(fsp),
+			&lock);
 
 	if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 		reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -4040,9 +4044,13 @@ static void send_file_readX(connection_struct *conn, struct smb_request *req,
 	int saved_errno = 0;
 	NTSTATUS status;
 
-	init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-	    (uint64_t)startpos, (uint64_t)smb_maxcnt, READ_LOCK,
-	    &lock);
+	init_strict_lock_struct(fsp,
+			(uint64_t)req->smbpid,
+			(uint64_t)startpos,
+			(uint64_t)smb_maxcnt,
+			READ_LOCK,
+			lp_posix_cifsu_locktype(fsp),
+			&lock);
 
 	if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 		reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -4563,9 +4571,13 @@ void reply_writebraw(struct smb_request *req)
 	}
 
 	if (!fsp->print_file) {
-		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-		    (uint64_t)startpos, (uint64_t)tcount, WRITE_LOCK,
-		    &lock);
+		init_strict_lock_struct(fsp,
+				(uint64_t)req->smbpid,
+				(uint64_t)startpos,
+				(uint64_t)tcount,
+				WRITE_LOCK,
+				lp_posix_cifsu_locktype(fsp),
+				&lock);
 
 		if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 			reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -4778,9 +4790,13 @@ void reply_writeunlock(struct smb_request *req)
 	}
 
 	if (!fsp->print_file && numtowrite > 0) {
-		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-		    (uint64_t)startpos, (uint64_t)numtowrite, WRITE_LOCK,
-		    &lock);
+		init_strict_lock_struct(fsp,
+				(uint64_t)req->smbpid,
+				(uint64_t)startpos,
+				(uint64_t)numtowrite,
+				WRITE_LOCK,
+				lp_posix_cifsu_locktype(fsp),
+				&lock);
 
 		if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 			reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -4822,10 +4838,11 @@ void reply_writeunlock(struct smb_request *req)
 			.req_guid = smbd_request_guid(req, 0),
 			.smblctx = req->smbpid,
 			.brltype = UNLOCK_LOCK,
+			.lock_flav = WINDOWS_LOCK,
 			.offset = startpos,
 			.count = numtowrite,
 		};
-		status = smbd_do_unlocking(req, fsp, 1, &l, WINDOWS_LOCK);
+		status = smbd_do_unlocking(req, fsp, 1, &l);
 		if (NT_STATUS_V(status)) {
 			reply_nterror(req, status);
 			goto out;
@@ -4908,9 +4925,13 @@ void reply_write(struct smb_request *req)
 	}
 
 	if (!fsp->print_file) {
-		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-			(uint64_t)startpos, (uint64_t)numtowrite, WRITE_LOCK,
-			&lock);
+		init_strict_lock_struct(fsp,
+				(uint64_t)req->smbpid,
+				(uint64_t)startpos,
+				(uint64_t)numtowrite,
+				WRITE_LOCK,
+				lp_posix_cifsu_locktype(fsp),
+				&lock);
 
 		if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 			reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -5204,9 +5225,13 @@ void reply_write_and_X(struct smb_request *req)
 			/* NT_STATUS_RETRY - fall through to sync write. */
 		}
 
-		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-		    (uint64_t)startpos, (uint64_t)numtowrite, WRITE_LOCK,
-		    &lock);
+		init_strict_lock_struct(fsp,
+				(uint64_t)req->smbpid,
+				(uint64_t)startpos,
+				(uint64_t)numtowrite,
+				WRITE_LOCK,
+				lp_posix_cifsu_locktype(fsp),
+				&lock);
 
 		if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 			reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -5631,7 +5656,7 @@ static void reply_exit_done(struct tevent_req *req)
 			smb_request_done(smb1req);
 			END_PROFILE(SMBexit);
 		}
-		close_file(NULL, fsp, SHUTDOWN_CLOSE);
+		close_file_free(NULL, &fsp, SHUTDOWN_CLOSE);
 	}
 
 	reply_outbuf(smb1req, 0, 0);
@@ -5707,12 +5732,12 @@ void reply_close(struct smb_request *smb1req)
 	}
 
 	/*
-	 * close_file() returns the unix errno if an error was detected on
+	 * close_file_free() returns the unix errno if an error was detected on
 	 * close - normally this is due to a disk full error. If not then it
 	 * was probably an I/O error.
 	 */
 
-	status = close_file(smb1req, fsp, NORMAL_CLOSE);
+	status = close_file_free(smb1req, &fsp, NORMAL_CLOSE);
 done:
 	if (!NT_STATUS_IS_OK(status)) {
 		reply_nterror(smb1req, status);
@@ -5838,7 +5863,7 @@ static void reply_close_done(struct tevent_req *req)
 		return;
 	}
 
-	status = close_file(smb1req, state->fsp, NORMAL_CLOSE);
+	status = close_file_free(smb1req, &state->fsp, NORMAL_CLOSE);
 	if (NT_STATUS_IS_OK(status)) {
 		reply_outbuf(smb1req, 0, 0);
 	} else {
@@ -5906,9 +5931,13 @@ void reply_writeclose(struct smb_request *req)
 	}
 
 	if (fsp->print_file == NULL) {
-		init_strict_lock_struct(fsp, (uint64_t)req->smbpid,
-		    (uint64_t)startpos, (uint64_t)numtowrite, WRITE_LOCK,
-		    &lock);
+		init_strict_lock_struct(fsp,
+				(uint64_t)req->smbpid,
+				(uint64_t)startpos,
+				(uint64_t)numtowrite,
+				WRITE_LOCK,
+				lp_posix_cifsu_locktype(fsp),
+				&lock);
 
 		if (!SMB_VFS_STRICT_LOCK_CHECK(conn, fsp, &lock)) {
 			reply_nterror(req, NT_STATUS_FILE_LOCK_CONFLICT);
@@ -5933,8 +5962,7 @@ void reply_writeclose(struct smb_request *req)
 	if (numtowrite) {
 		DEBUG(3,("reply_writeclose: zero length write doesn't close "
 			 "file %s\n", fsp_str_dbg(fsp)));
-		close_status = close_file(req, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_status = close_file_free(req, &fsp, NORMAL_CLOSE);
 	}
 
 	if(((nwritten == 0) && (numtowrite != 0))||(nwritten < 0)) {
@@ -5999,6 +6027,7 @@ void reply_lock(struct smb_request *req)
 		.req_guid = smbd_request_guid(req, 0),
 		.smblctx = req->smbpid,
 		.brltype = WRITE_LOCK,
+		.lock_flav = WINDOWS_LOCK,
 		.count = IVAL(req->vwv+1, 0),
 		.offset = IVAL(req->vwv+3, 0),
 	};
@@ -6016,7 +6045,6 @@ void reply_lock(struct smb_request *req)
 		fsp,
 		0,
 		false,		/* large_offset */
-		WINDOWS_LOCK,
 		1,
 		lck);
 	if (subreq == NULL) {
@@ -6091,11 +6119,12 @@ void reply_unlock(struct smb_request *req)
 		.req_guid = smbd_request_guid(req, 0),
 		.smblctx = req->smbpid,
 		.brltype = UNLOCK_LOCK,
+		.lock_flav = WINDOWS_LOCK,
 		.offset = IVAL(req->vwv+3, 0),
 		.count = IVAL(req->vwv+1, 0),
 	};
 
-	status = smbd_do_unlocking(req, fsp, 1, &lck, WINDOWS_LOCK);
+	status = smbd_do_unlocking(req, fsp, 1, &lck);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		reply_nterror(req, status);
@@ -6481,7 +6510,7 @@ void reply_printclose(struct smb_request *req)
 	DEBUG(3,("printclose fd=%d %s\n",
 		 fsp_get_io_fd(fsp), fsp_fnum_dbg(fsp)));
 
-	status = close_file(req, fsp, NORMAL_CLOSE);
+	status = close_file_free(req, &fsp, NORMAL_CLOSE);
 
 	if(!NT_STATUS_IS_OK(status)) {
 		reply_nterror(req, status);
@@ -6884,7 +6913,7 @@ void reply_rmdir(struct smb_request *req)
 
 	status = can_set_delete_on_close(fsp, FILE_ATTRIBUTE_DIRECTORY);
 	if (!NT_STATUS_IS_OK(status)) {
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		reply_nterror(req, status);
 		goto out;
 	}
@@ -6892,12 +6921,12 @@ void reply_rmdir(struct smb_request *req)
 	if (!set_delete_on_close(fsp, true,
 			conn->session_info->security_token,
 			conn->session_info->unix_token)) {
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		goto out;
 	}
 
-	status = close_file(req, fsp, NORMAL_CLOSE);
+	status = close_file_free(req, &fsp, NORMAL_CLOSE);
 	if (!NT_STATUS_IS_OK(status)) {
 		reply_nterror(req, status);
 	} else {
@@ -7086,7 +7115,7 @@ static NTSTATUS parent_dirname_compatible_open(connection_struct *conn,
 		return status;
 	}
 
-	ret = SMB_VFS_LSTAT(conn, smb_fname_parent);
+	ret = vfs_stat(conn, smb_fname_parent);
 	if (ret == -1) {
 		return map_nt_error_from_unix(errno);
 	}
@@ -7128,6 +7157,10 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 	uint32_t access_mask = SEC_DIR_ADD_FILE;
 	bool dst_exists, old_is_stream, new_is_stream;
 	int ret;
+	bool case_sensitive = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) ?
+				true : conn->case_sensitive;
+	bool case_preserve = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) ?
+				true : conn->case_preserve;
 
 	status = parent_dirname_compatible_open(conn, smb_fname_dst_in);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -7153,7 +7186,7 @@ NTSTATUS rename_internals_fsp(connection_struct *conn,
 	 * the rename (user is trying to change the case of the
 	 * filename).
 	 */
-	if (!conn->case_sensitive && conn->case_preserve &&
+	if (!case_sensitive && case_preserve &&
 	    strequal(fsp->fsp_name->base_name, smb_fname_dst->base_name) &&
 	    strequal(fsp->fsp_name->stream_name, smb_fname_dst->stream_name)) {
 		char *fname_dst_parent = NULL;
@@ -7565,10 +7598,15 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 	NTSTATUS status = NT_STATUS_OK;
 	int create_options = 0;
 	struct smb2_create_blobs *posx = NULL;
-	struct files_struct *fsp = NULL;
 	int rc;
+	struct files_struct *fsp = NULL;
+	bool posix_pathname = (smb_fname_src->flags & SMB_FILENAME_POSIX_PATH);
+	bool case_sensitive = posix_pathname ? true : conn->case_sensitive;
+	bool case_preserve = posix_pathname ? true : conn->case_preserve;
+	bool short_case_preserve = posix_pathname ? true :
+					conn->short_case_preserve;
 
-	if (smb_fname_src->flags & SMB_FILENAME_POSIX_PATH) {
+	if (posix_pathname) {
 		status = make_smb2_posix_create_ctx(talloc_tos(), &posx, 0777);
 		if (!NT_STATUS_IS_OK(status)) {
 			DBG_WARNING("make_smb2_posix_create_ctx failed: %s\n",
@@ -7581,8 +7619,8 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 		  "case_preserve = %d, short case preserve = %d, "
 		  "directory = %s, newname = %s, "
 		  "last_component_dest = %s\n",
-		  conn->case_sensitive, conn->case_preserve,
-		  conn->short_case_preserve,
+		  case_sensitive, case_preserve,
+		  short_case_preserve,
 		  smb_fname_str_dbg(smb_fname_src),
 		  smb_fname_str_dbg(smb_fname_dst),
 		  dst_original_lcomp);
@@ -7651,7 +7689,7 @@ NTSTATUS rename_internals(TALLOC_CTX *ctx,
 					attrs,
 					replace_if_exists);
 
-	close_file(req, fsp, NORMAL_CLOSE);
+	close_file_free(req, &fsp, NORMAL_CLOSE);
 
 	DBG_NOTICE("Error %s rename %s -> %s\n",
 		  nt_errstr(status), smb_fname_str_dbg(smb_fname_src),
@@ -7945,7 +7983,7 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
-		close_file(NULL, fsp1, ERROR_CLOSE);
+		close_file_free(NULL, &fsp1, ERROR_CLOSE);
 		goto out;
 	}
 
@@ -7955,8 +7993,8 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 			DEBUG(0, ("error - vfs lseek returned error %s\n",
 				strerror(errno)));
 			status = map_nt_error_from_unix(errno);
-			close_file(NULL, fsp1, ERROR_CLOSE);
-			close_file(NULL, fsp2, ERROR_CLOSE);
+			close_file_free(NULL, &fsp1, ERROR_CLOSE);
+			close_file_free(NULL, &fsp2, ERROR_CLOSE);
 			goto out;
 		}
 	}
@@ -7968,7 +8006,7 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 		ret = 0;
 	}
 
-	close_file(NULL, fsp1, NORMAL_CLOSE);
+	close_file_free(NULL, &fsp1, NORMAL_CLOSE);
 
 	/* Ensure the modtime is set correctly on the destination file. */
 	set_close_write_time(fsp2, smb_fname_src->st.st_ex_mtime);
@@ -7979,7 +8017,7 @@ NTSTATUS copy_file(TALLOC_CTX *ctx,
 	 * Thus we don't look at the error return from the
 	 * close of fsp1.
 	 */
-	status = close_file(NULL, fsp2, NORMAL_CLOSE);
+	status = close_file_free(NULL, &fsp2, NORMAL_CLOSE);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		goto out;
@@ -8083,7 +8121,6 @@ struct smbd_do_unlocking_state {
 	struct files_struct *fsp;
 	uint16_t num_ulocks;
 	struct smbd_lock_element *ulocks;
-	enum brl_flavour lock_flav;
 	NTSTATUS status;
 };
 
@@ -8095,7 +8132,6 @@ static void smbd_do_unlocking_fn(
 {
 	struct smbd_do_unlocking_state *state = private_data;
 	struct files_struct *fsp = state->fsp;
-	enum brl_flavour lock_flav = state->lock_flav;
 	uint16_t i;
 
 	for (i = 0; i < state->num_ulocks; i++) {
@@ -8115,7 +8151,7 @@ static void smbd_do_unlocking_fn(
 		}
 
 		state->status = do_unlock(
-			fsp, e->smblctx, e->count, e->offset, lock_flav);
+			fsp, e->smblctx, e->count, e->offset, e->lock_flav);
 
 		DBG_DEBUG("do_unlock returned %s\n",
 			  nt_errstr(state->status));
@@ -8131,14 +8167,12 @@ static void smbd_do_unlocking_fn(
 NTSTATUS smbd_do_unlocking(struct smb_request *req,
 			   files_struct *fsp,
 			   uint16_t num_ulocks,
-			   struct smbd_lock_element *ulocks,
-			   enum brl_flavour lock_flav)
+			   struct smbd_lock_element *ulocks)
 {
 	struct smbd_do_unlocking_state state = {
 		.fsp = fsp,
 		.num_ulocks = num_ulocks,
 		.ulocks = ulocks,
-		.lock_flav = lock_flav,
 	};
 	NTSTATUS status;
 
@@ -8321,6 +8355,7 @@ void reply_lockingX(struct smb_request *req)
 			ulocks[i].offset = get_lock_offset(
 				data, i, large_file_format);
 			ulocks[i].brltype = UNLOCK_LOCK;
+			ulocks[i].lock_flav = WINDOWS_LOCK;
 		}
 
 		/*
@@ -8330,7 +8365,6 @@ void reply_lockingX(struct smb_request *req)
 		ok = smbd_smb1_brl_finish_by_lock(
 			fsp,
 			large_file_format,
-			WINDOWS_LOCK,
 			ulocks[0],
 			NT_STATUS_OK);
 		if (ok) {
@@ -8342,7 +8376,7 @@ void reply_lockingX(struct smb_request *req)
 		}
 
 		status = smbd_do_unlocking(
-			req, fsp, num_ulocks, ulocks, WINDOWS_LOCK);
+			req, fsp, num_ulocks, ulocks);
 		TALLOC_FREE(ulocks);
 		if (!NT_STATUS_IS_OK(status)) {
 			END_PROFILE(SMBlockingX);
@@ -8376,6 +8410,7 @@ void reply_lockingX(struct smb_request *req)
 		locks[i].count = get_lock_count(data, i, large_file_format);
 		locks[i].offset = get_lock_offset(data, i, large_file_format);
 		locks[i].brltype = brltype;
+		locks[i].lock_flav = WINDOWS_LOCK;
 	}
 
 	if (locktype & LOCKING_ANDX_CANCEL_LOCK) {
@@ -8395,7 +8430,6 @@ void reply_lockingX(struct smb_request *req)
 		ok = smbd_smb1_brl_finish_by_lock(
 			fsp,
 			large_file_format,
-			WINDOWS_LOCK,
 			locks[0], /* Windows only cancels the first lock */
 			NT_STATUS_FILE_LOCK_CONFLICT);
 
@@ -8419,7 +8453,6 @@ void reply_lockingX(struct smb_request *req)
 		fsp,
 		lock_timeout,
 		large_file_format,
-		WINDOWS_LOCK,
 		num_locks,
 		locks);
 	if (subreq == NULL) {

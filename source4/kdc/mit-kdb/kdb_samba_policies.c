@@ -20,9 +20,12 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-
-#include "system/kerberos.h"
+#include "lib/replace/replace.h"
+#include "lib/replace/system/kerberos.h"
+#include "lib/util/data_blob.h"
+#include "lib/util/debug.h"
+#include "lib/util/fault.h"
+#include "lib/util/memory.h"
 
 #include <profile.h>
 #include <kdb.h>
@@ -442,7 +445,17 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 	 */
 	if (with_pac && generate_pac) {
 		DBG_DEBUG("Generate PAC for AS-REQ [%s]\n", client_name);
-		code = ks_get_pac(context, client_entry, server, client_key, &pac);
+
+		code = krb5_pac_init(context, &pac);
+		if (code != 0) {
+			goto done;
+		}
+
+		code = ks_get_pac(context,
+				  client_entry,
+				  server,
+				  NULL,
+				  &pac);
 		if (code != 0) {
 			goto done;
 		}
@@ -491,10 +504,15 @@ krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 					  "delegation TGS [%s]\n",
 					  client_name);
 
+				code = krb5_pac_init(context, &pac);
+				if (code != 0) {
+					goto done;
+				}
+
 				code = ks_get_pac(context,
 						  client_entry,
 						  server,
-						  client_key,
+						  NULL,
 						  &pac);
 				if (code != 0 && code != ENOENT) {
 					goto done;

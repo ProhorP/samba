@@ -167,7 +167,7 @@ sub nss_wrapper_winbind_so_path($) {
         my ($object) = @_;
 	my $ret = $ENV{NSS_WRAPPER_WINBIND_SO_PATH};
         if (not defined($ret)) {
-	    $ret = bindir_path($object, "shared/libnss_wrapper_winbind.so.2");
+	    $ret = bindir_path($object, "plugins/libnss_wrapper_winbind.so.2");
 	    $ret = abs_path($ret);
 	}
 	return $ret;
@@ -331,6 +331,7 @@ sub mk_krb5_conf($$)
  # system clock differences
  kdc_timesync = 0
 
+ fcache_strict_checking = false
 ";
 
 	if (defined($ENV{MITKRB5})) {
@@ -457,15 +458,22 @@ sub mk_mitkdc_conf($$)
 [kdcdefaults]
 	kdc_ports = 88
 	kdc_tcp_ports = 88
+	restrict_anonymous_to_tgt = true
 
 [realms]
 	$ctx->{realm} = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
 	}
 
 	$ctx->{dnsname} = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
 	}
 
 	$ctx->{domain} = {
+		master_key_type = aes256-cts
+		default_principal_flags = +preauth
 	}
 
 [dbmodules]
@@ -611,6 +619,7 @@ sub get_interface($)
 		offlineadmem      => 58,
 		s2kmember         => 59,
 		admemidmapnss     => 60,
+		localadmember2    => 61,
 
 		rootdnsforwarder  => 64,
 
@@ -937,10 +946,6 @@ my @exported_envvars = (
 	# resolv_wrapper
 	"RESOLV_WRAPPER_CONF",
 	"RESOLV_WRAPPER_HOSTS",
-
-	# crypto libraries
-	"GNUTLS_FORCE_FIPS_MODE",
-	"OPENSSL_FORCE_FIPS_MODE",
 );
 
 sub exported_envvars_str

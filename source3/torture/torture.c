@@ -4333,6 +4333,50 @@ static bool run_attrtest(int dummy)
 	return correct;
 }
 
+static NTSTATUS cli_qfilename(
+	struct cli_state *cli,
+	uint16_t fnum,
+	TALLOC_CTX *mem_ctx,
+	char **_name)
+{
+	uint16_t recv_flags2;
+	uint8_t *rdata;
+	uint32_t num_rdata;
+	NTSTATUS status;
+	char *name = NULL;
+	uint32_t namelen;
+
+	status = cli_qfileinfo(talloc_tos(), cli, fnum,
+			       SMB_QUERY_FILE_NAME_INFO,
+			       4, CLI_BUFFER_SIZE, &recv_flags2,
+			       &rdata, &num_rdata);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	namelen = IVAL(rdata, 0);
+	if (namelen > (num_rdata - 4)) {
+		TALLOC_FREE(rdata);
+		return NT_STATUS_INVALID_NETWORK_RESPONSE;
+	}
+
+	pull_string_talloc(mem_ctx,
+			   (const char *)rdata,
+			   recv_flags2,
+			   &name,
+			   rdata + 4,
+			   namelen,
+			   STR_UNICODE);
+	if (name == NULL) {
+		status = map_nt_error_from_unix(errno);
+		TALLOC_FREE(rdata);
+		return status;
+	}
+
+	*_name = name;
+	TALLOC_FREE(rdata);
+	return NT_STATUS_OK;
+}
 
 /*
   This checks a couple of trans2 calls
@@ -4347,7 +4391,7 @@ static bool run_trans2test(int dummy)
 	const char *fname = "\\trans2.tst";
 	const char *dname = "\\trans2";
 	const char *fname2 = "\\trans2\\trans2.tst";
-	char *pname;
+	char *pname = NULL;
 	bool correct = True;
 	NTSTATUS status;
 	uint32_t fs_attr;
@@ -9949,8 +9993,7 @@ static bool run_eatest(int dummy)
 	const char *fname = "\\eatest.txt";
 	bool correct = True;
 	uint16_t fnum;
-	int i;
-	size_t num_eas;
+	size_t i, num_eas;
 	struct ea_struct *ea_list = NULL;
 	TALLOC_CTX *mem_ctx = talloc_init("eatest");
 	NTSTATUS status;
@@ -9977,7 +10020,7 @@ static bool run_eatest(int dummy)
 	for (i = 0; i < 10; i++) {
 		fstring ea_name, ea_val;
 
-		slprintf(ea_name, sizeof(ea_name), "EA_%d", i);
+		slprintf(ea_name, sizeof(ea_name), "EA_%zu", i);
 		memset(ea_val, (char)i+1, i+1);
 		status = cli_set_ea_fnum(cli, fnum, ea_name, ea_val, i+1);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -9992,7 +10035,7 @@ static bool run_eatest(int dummy)
 	for (i = 0; i < 10; i++) {
 		fstring ea_name, ea_val;
 
-		slprintf(ea_name, sizeof(ea_name), "EA_%d", i+10);
+		slprintf(ea_name, sizeof(ea_name), "EA_%zu", i+10);
 		memset(ea_val, (char)i+1, i+1);
 		status = cli_set_ea_path(cli, fname, ea_name, ea_val, i+1);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -10017,7 +10060,7 @@ static bool run_eatest(int dummy)
 	}
 
 	for (i = 0; i < num_eas; i++) {
-		printf("%d: ea_name = %s. Val = ", i, ea_list[i].name);
+		printf("%zu: ea_name = %s. Val = ", i, ea_list[i].name);
 		dump_data(0, ea_list[i].value.data,
 			  ea_list[i].value.length);
 	}
@@ -10049,7 +10092,7 @@ static bool run_eatest(int dummy)
 
 	printf("num_eas = %d\n", (int)num_eas);
 	for (i = 0; i < num_eas; i++) {
-		printf("%d: ea_name = %s. Val = ", i, ea_list[i].name);
+		printf("%zu: ea_name = %s. Val = ", i, ea_list[i].name);
 		dump_data(0, ea_list[i].value.data,
 			  ea_list[i].value.length);
 	}
@@ -10650,10 +10693,9 @@ static void torture_createdels_done(struct tevent_req *subreq)
 		subreq, struct tevent_req);
 	struct torture_createdels_state *state = tevent_req_data(
 		req, struct torture_createdels_state);
-	size_t num_parallel = talloc_array_length(state->reqs);
+	size_t i, num_parallel = talloc_array_length(state->reqs);
 	NTSTATUS status;
 	char *name;
-	int i;
 
 	status = torture_createdel_recv(subreq);
 	if (!NT_STATUS_IS_OK(status)){
@@ -14343,7 +14385,7 @@ static bool run_local_hex_encode_buf(int dummy)
 {
 	char buf[17];
 	uint8_t src[8];
-	int i;
+	size_t i;
 
 	for (i=0; i<sizeof(src); i++) {
 		src[i] = i;

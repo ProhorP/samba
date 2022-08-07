@@ -66,6 +66,12 @@ PADATA_PW_SALT = int(
     krb5_asn1.PADataTypeValues('kRB5-PADATA-PW-SALT'))
 PADATA_SUPPORTED_ETYPES = int(
     krb5_asn1.PADataTypeValues('kRB5-PADATA-SUPPORTED-ETYPES'))
+PADATA_PKINIT_KX = int(
+    krb5_asn1.PADataTypeValues('kRB5-PADATA-PKINIT-KX'))
+PADATA_GSS = int(
+    krb5_asn1.PADataTypeValues('kRB5-PADATA-GSS'))
+PADATA_REQ_ENC_PA_REP = int(
+    krb5_asn1.PADataTypeValues('kRB5-PADATA-REQ-ENC-PA-REP'))
 
 # Error codes
 KDC_ERR_C_PRINCIPAL_UNKNOWN = 6
@@ -194,6 +200,7 @@ KU_FAST_REP = 52
 KU_FAST_FINISHED = 53
 KU_ENC_CHALLENGE_CLIENT = 54
 KU_ENC_CHALLENGE_KDC = 55
+KU_AS_REQ = 56
 
 # Armor types
 FX_FAST_ARMOR_AP_REQUEST = 1

@@ -1340,12 +1340,11 @@ static NTSTATUS vfswrap_parent_pathname(struct vfs_handle_struct *handle,
 	struct smb_filename *name = NULL;
 	char *p = NULL;
 
-	parent = cp_smb_filename(frame, smb_fname_in);
+	parent = cp_smb_filename_nostream(frame, smb_fname_in);
 	if (parent == NULL) {
 		TALLOC_FREE(frame);
 		return NT_STATUS_NO_MEMORY;
 	}
-	TALLOC_FREE(parent->stream_name);
 	SET_STAT_INVALID(parent->st);
 
 	p = strrchr_m(parent->base_name, '/'); /* Find final '/', if any */
@@ -1998,6 +1997,8 @@ static struct tevent_req *vfswrap_offload_read_send(
 static NTSTATUS vfswrap_offload_read_recv(struct tevent_req *req,
 					  struct vfs_handle_struct *handle,
 					  TALLOC_CTX *mem_ctx,
+					  uint32_t *flags,
+					  uint64_t *xferlen,
 					  DATA_BLOB *token)
 {
 	struct vfswrap_offload_read_state *state = tevent_req_data(
@@ -2009,6 +2010,8 @@ static NTSTATUS vfswrap_offload_read_recv(struct tevent_req *req,
 		return status;
 	}
 
+	*flags = 0;
+	*xferlen = 0;
 	token->length = state->token.length;
 	token->data = talloc_move(mem_ctx, &state->token.data);
 
@@ -2250,6 +2253,7 @@ static NTSTATUS vfswrap_offload_copy_file_range(struct tevent_req *req)
 				state->src_off,
 				state->remaining,
 				READ_LOCK,
+				lp_posix_cifsu_locktype(state->src_fsp),
 				&lck);
 
 	ok = SMB_VFS_STRICT_LOCK_CHECK(state->src_fsp->conn,
@@ -2269,6 +2273,7 @@ static NTSTATUS vfswrap_offload_copy_file_range(struct tevent_req *req)
 				state->dst_off,
 				state->remaining,
 				WRITE_LOCK,
+				lp_posix_cifsu_locktype(state->dst_fsp),
 				&lck);
 
 	ok = SMB_VFS_STRICT_LOCK_CHECK(state->dst_fsp->conn,
@@ -2363,6 +2368,7 @@ static NTSTATUS vfswrap_offload_write_loop(struct tevent_req *req)
 				state->src_off,
 				state->next_io_size,
 				READ_LOCK,
+				lp_posix_cifsu_locktype(state->src_fsp),
 				&read_lck);
 
 	ok = SMB_VFS_STRICT_LOCK_CHECK(state->src_fsp->conn,
@@ -2426,6 +2432,7 @@ static void vfswrap_offload_write_read_done(struct tevent_req *subreq)
 				state->dst_off,
 				state->next_io_size,
 				WRITE_LOCK,
+				lp_posix_cifsu_locktype(state->dst_fsp),
 				&write_lck);
 
 	ok = SMB_VFS_STRICT_LOCK_CHECK(state->dst_fsp->conn,
@@ -3023,13 +3030,13 @@ static bool vfswrap_lock(vfs_handle_struct *handle, files_struct *fsp, int op, o
 	return result;
 }
 
-static int vfswrap_kernel_flock(vfs_handle_struct *handle, files_struct *fsp,
-				uint32_t share_access, uint32_t access_mask)
+static int vfswrap_filesystem_sharemode(vfs_handle_struct *handle,
+					files_struct *fsp,
+					uint32_t share_access,
+					uint32_t access_mask)
 {
-	START_PROFILE(syscall_kernel_flock);
-	kernel_flock(fsp_get_io_fd(fsp), share_access, access_mask);
-	END_PROFILE(syscall_kernel_flock);
-	return 0;
+	errno = ENOTSUP;
+	return -1;
 }
 
 static int vfswrap_fcntl(vfs_handle_struct *handle, files_struct *fsp, int cmd,
@@ -3980,7 +3987,7 @@ static struct vfs_fn_pointers vfs_default_fns = {
 	.ftruncate_fn = vfswrap_ftruncate,
 	.fallocate_fn = vfswrap_fallocate,
 	.lock_fn = vfswrap_lock,
-	.kernel_flock_fn = vfswrap_kernel_flock,
+	.filesystem_sharemode_fn = vfswrap_filesystem_sharemode,
 	.fcntl_fn = vfswrap_fcntl,
 	.linux_setlease_fn = vfswrap_linux_setlease,
 	.getlock_fn = vfswrap_getlock,

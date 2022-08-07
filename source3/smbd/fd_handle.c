@@ -18,7 +18,30 @@
 */
 
 #include "fd_handle.h"
-#include "fd_handle_private.h"
+
+struct fd_handle {
+	size_t ref_count;
+	int fd;
+	uint64_t position_information;
+	off_t pos;
+	/*
+	 * NT Create options, but we only look at
+	 * NTCREATEX_FLAG_DENY_DOS and
+	 * NTCREATEX_FLAG_DENY_FCB and
+	 * NTCREATEX_FLAG_DELETE_ON_CLOSE
+	 * for print files *only*, where
+	 * DELETE_ON_CLOSE is not stored in the share
+	 * mode database.
+	 */
+	uint32_t private_options;
+	uint64_t gen_id;
+};
+
+static int fd_handle_destructor(struct fd_handle *fh)
+{
+	SMB_ASSERT((fh->fd == -1) || (fh->fd == AT_FDCWD));
+	return 0;
+}
 
 struct fd_handle *fd_handle_create(TALLOC_CTX *mem_ctx)
 {
@@ -29,6 +52,9 @@ struct fd_handle *fd_handle_create(TALLOC_CTX *mem_ctx)
 		return NULL;
 	}
 	fh->fd = -1;
+
+	talloc_set_destructor(fh, fd_handle_destructor);
+
 	return fh;
 }
 

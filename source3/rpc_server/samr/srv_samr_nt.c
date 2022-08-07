@@ -35,6 +35,7 @@
 #include "system/passwd.h"
 #include "../libcli/auth/libcli_auth.h"
 #include "ntdomain.h"
+#include "librpc/rpc/dcesrv_core.h"
 #include "../librpc/gen_ndr/ndr_samr.h"
 #include "../librpc/gen_ndr/ndr_samr_scompat.h"
 #include "rpc_server/samr/srv_samr_util.h"
@@ -53,6 +54,7 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
 #include "lib/global_contexts.h"
+#include "nsswitch/winbind_client.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_RPC_SRV
@@ -534,6 +536,9 @@ NTSTATUS _samr_Close(struct pipes_struct *p, struct samr_Close *r)
 NTSTATUS _samr_OpenDomain(struct pipes_struct *p,
 			  struct samr_OpenDomain *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct security_descriptor *psd = NULL;
 	uint32_t    acc_granted;
 	uint32_t    des_access = r->in.access_mask;
@@ -554,8 +559,8 @@ NTSTATUS _samr_OpenDomain(struct pipes_struct *p,
 	}
 
 	/*check if access can be granted as requested by client. */
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd( p->mem_ctx, &psd, &sd_size, &dom_generic_mapping, NULL, 0 );
@@ -565,7 +570,8 @@ NTSTATUS _samr_OpenDomain(struct pipes_struct *p,
 	 * Users with SeAddUser get the ability to manipulate groups
 	 * and aliases.
 	 */
-	if (security_token_has_privilege(p->session_info->security_token, SEC_PRIV_ADD_USERS)) {
+	if (security_token_has_privilege(
+		    session_info->security_token, SEC_PRIV_ADD_USERS)) {
 		extra_access |= (SAMR_DOMAIN_ACCESS_CREATE_GROUP |
 				SAMR_DOMAIN_ACCESS_ENUM_ACCOUNTS |
 				SAMR_DOMAIN_ACCESS_OPEN_ACCOUNT |
@@ -578,7 +584,7 @@ NTSTATUS _samr_OpenDomain(struct pipes_struct *p,
 	 * SAMR_DOMAIN_ACCESS_CREATE_USER access.
 	 */
 
-	status = access_check_object( psd, p->session_info->security_token,
+	status = access_check_object( psd, session_info->security_token,
 				      SEC_PRIV_MACHINE_ACCOUNT, SEC_PRIV_ADD_USERS,
 				      extra_access, des_access,
 				      &acc_granted, "_samr_OpenDomain" );
@@ -955,7 +961,7 @@ NTSTATUS _samr_EnumDomainUsers(struct pipes_struct *p,
 {
 	NTSTATUS status;
 	struct samr_info *dinfo;
-	int num_account;
+	uint32_t num_account;
 	uint32_t enum_context = *r->in.resume_handle;
 	enum remote_arch_types ra_type = get_remote_arch();
 	int max_sam_entries = (ra_type == RA_WIN95) ? MAX_SAM_ENTRIES_W95 : MAX_SAM_ENTRIES_W2K;
@@ -1458,7 +1464,8 @@ NTSTATUS _samr_QueryDisplayInfo(struct pipes_struct *p,
 	NTSTATUS disp_ret = NT_STATUS_UNSUCCESSFUL;
 	uint32_t num_account = 0;
 	enum remote_arch_types ra_type = get_remote_arch();
-	int max_sam_entries = (ra_type == RA_WIN95) ? MAX_SAM_ENTRIES_W95 : MAX_SAM_ENTRIES_W2K;
+	uint32_t max_sam_entries = (ra_type == RA_WIN95) ?
+		MAX_SAM_ENTRIES_W95 : MAX_SAM_ENTRIES_W2K;
 	struct samr_displayentry *entries = NULL;
 
 	DEBUG(5,("_samr_QueryDisplayInfo: %d\n", __LINE__));
@@ -1782,8 +1789,7 @@ NTSTATUS _samr_LookupNames(struct pipes_struct *p,
 	NTSTATUS status;
 	uint32_t *rid;
 	enum lsa_SidType *type;
-	int i;
-	int num_rids = r->in.num_names;
+	uint32_t i, num_rids = r->in.num_names;
 	struct samr_Ids rids, types;
 	uint32_t num_mapped = 0;
 	struct dom_sid_buf buf;
@@ -1886,6 +1892,12 @@ NTSTATUS _samr_ChangePasswordUser(struct pipes_struct *p,
 NTSTATUS _samr_ChangePasswordUser2(struct pipes_struct *p,
 				   struct samr_ChangePasswordUser2 *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct dcesrv_connection *dcesrv_conn = dce_call->conn;
+	const struct tsocket_address *remote_address =
+		dcesrv_connection_get_remote_address(dcesrv_conn);
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	NTSTATUS status;
 	char *user_name = NULL;
 	char *rhost;
@@ -1913,13 +1925,13 @@ NTSTATUS _samr_ChangePasswordUser2(struct pipes_struct *p,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rhost = tsocket_address_inet_addr_string(p->remote_address,
+	rhost = tsocket_address_inet_addr_string(remote_address,
 						 talloc_tos());
 	if (rhost == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	encrypted = dcerpc_is_transport_encrypted(p->session_info);
+	encrypted = dcerpc_is_transport_encrypted(session_info);
 	if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 	    !encrypted) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -1954,6 +1966,12 @@ NTSTATUS _samr_ChangePasswordUser2(struct pipes_struct *p,
 NTSTATUS _samr_OemChangePasswordUser2(struct pipes_struct *p,
 				      struct samr_OemChangePasswordUser2 *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct dcesrv_connection *dcesrv_conn = dce_call->conn;
+	const struct tsocket_address *remote_address =
+		dcesrv_connection_get_remote_address(dcesrv_conn);
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	NTSTATUS status;
 	char *user_name = NULL;
 	const char *wks = NULL;
@@ -1990,13 +2008,13 @@ NTSTATUS _samr_OemChangePasswordUser2(struct pipes_struct *p,
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
-	rhost = tsocket_address_inet_addr_string(p->remote_address,
+	rhost = tsocket_address_inet_addr_string(remote_address,
 						 talloc_tos());
 	if (rhost == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	encrypted = dcerpc_is_transport_encrypted(p->session_info);
+	encrypted = dcerpc_is_transport_encrypted(session_info);
 	if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 	    !encrypted) {
 		return NT_STATUS_ACCESS_DENIED;
@@ -2026,6 +2044,10 @@ NTSTATUS _samr_OemChangePasswordUser2(struct pipes_struct *p,
 NTSTATUS _samr_ChangePasswordUser3(struct pipes_struct *p,
 				   struct samr_ChangePasswordUser3 *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct dcesrv_connection *dcesrv_conn = dce_call->conn;
+	const struct tsocket_address *remote_address =
+		dcesrv_connection_get_remote_address(dcesrv_conn);
 	NTSTATUS status;
 	char *user_name = NULL;
 	const char *wks = NULL;
@@ -2058,7 +2080,7 @@ NTSTATUS _samr_ChangePasswordUser3(struct pipes_struct *p,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	rhost = tsocket_address_inet_addr_string(p->remote_address,
+	rhost = tsocket_address_inet_addr_string(remote_address,
 						 talloc_tos());
 	if (rhost == NULL) {
 		return NT_STATUS_NO_MEMORY;
@@ -2258,6 +2280,9 @@ NTSTATUS _samr_LookupRids(struct pipes_struct *p,
 NTSTATUS _samr_OpenUser(struct pipes_struct *p,
 			struct samr_OpenUser *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct samu *sampass=NULL;
 	struct dom_sid sid;
 	struct samr_info *dinfo;
@@ -2295,8 +2320,8 @@ NTSTATUS _samr_OpenUser(struct pipes_struct *p,
 		return NT_STATUS_NO_SUCH_USER;
 
 	/* check if access can be granted as requested by client. */
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd(p->mem_ctx, &psd, &sd_size, &usr_generic_mapping, &sid, SAMR_USR_RIGHTS_WRITE_PW);
@@ -2344,8 +2369,10 @@ NTSTATUS _samr_OpenUser(struct pipes_struct *p,
 		 * DOMAIN_RID_ADMINS.
 		 */
 		if (acb_info & (ACB_SVRTRUST|ACB_DOMTRUST)) {
-			if (lp_enable_privileges() && nt_token_check_domain_rid(p->session_info->security_token,
-							DOMAIN_RID_ADMINS)) {
+			if (lp_enable_privileges() &&
+			    nt_token_check_domain_rid(
+				    session_info->security_token,
+				    DOMAIN_RID_ADMINS)) {
 				des_access &= ~GENERIC_RIGHTS_USER_WRITE;
 				extra_access = GENERIC_RIGHTS_USER_WRITE;
 				DEBUG(4,("_samr_OpenUser: Allowing "
@@ -2357,7 +2384,7 @@ NTSTATUS _samr_OpenUser(struct pipes_struct *p,
 
 	TALLOC_FREE(sampass);
 
-	nt_status = access_check_object(psd, p->session_info->security_token,
+	nt_status = access_check_object(psd, session_info->security_token,
 					needed_priv_1, needed_priv_2,
 					GENERIC_RIGHTS_USER_WRITE, des_access,
 					&acc_granted, "_samr_OpenUser");
@@ -2794,6 +2821,9 @@ static NTSTATUS get_user_info_18(struct pipes_struct *p,
 				 struct samr_UserInfo18 *r,
 				 struct dom_sid *user_sid)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct samu *smbpass=NULL;
 	bool ret;
 	const uint8_t *nt_pass = NULL;
@@ -2805,7 +2835,7 @@ static NTSTATUS get_user_info_18(struct pipes_struct *p,
 		return NT_STATUS_INVALID_INFO_CLASS;
 	}
 
-	if (!security_token_is_system(p->session_info->security_token)) {
+	if (!security_token_is_system(session_info->security_token)) {
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
@@ -3838,6 +3868,9 @@ static NTSTATUS can_create(TALLOC_CTX *mem_ctx, const char *new_name)
 NTSTATUS _samr_CreateUser2(struct pipes_struct *p,
 			   struct samr_CreateUser2 *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	const char *account = NULL;
 	struct dom_sid sid;
 	uint32_t acb_info = r->in.acct_flags;
@@ -3891,24 +3924,26 @@ NTSTATUS _samr_CreateUser2(struct pipes_struct *p,
 		can_add_account = true;
 	} else if (acb_info & ACB_WSTRUST) {
 		needed_priv = SEC_PRIV_MACHINE_ACCOUNT;
-		can_add_account = security_token_has_privilege(p->session_info->security_token, SEC_PRIV_MACHINE_ACCOUNT);
+		can_add_account = security_token_has_privilege(
+			session_info->security_token, needed_priv);
 	} else if (acb_info & ACB_NORMAL &&
 		  (account[strlen(account)-1] != '$')) {
-		/* usrmgr.exe (and net rpc trustdom grant) creates a normal user
+		/* usrmgr.exe (and net rpc trustdom add) creates a normal user
 		   account for domain trusts and changes the ACB flags later */
 		needed_priv = SEC_PRIV_ADD_USERS;
-		can_add_account = security_token_has_privilege(p->session_info->security_token, SEC_PRIV_ADD_USERS);
+		can_add_account = security_token_has_privilege(
+			session_info->security_token, needed_priv);
 	} else if (lp_enable_privileges()) {
 		/* implicit assumption of a BDC or domain trust account here
 		 * (we already check the flags earlier) */
 		/* only Domain Admins can add a BDC or domain trust */
 		can_add_account = nt_token_check_domain_rid(
-			p->session_info->security_token,
+			session_info->security_token,
 			DOMAIN_RID_ADMINS );
 	}
 
 	DEBUG(5, ("_samr_CreateUser2: %s can add this account : %s\n",
-		  uidtoname(p->session_info->unix_token->uid),
+		  uidtoname(session_info->unix_token->uid),
 		  can_add_account ? "True":"False" ));
 
 	if (!can_add_account) {
@@ -3917,10 +3952,12 @@ NTSTATUS _samr_CreateUser2(struct pipes_struct *p,
 
 	/********** BEGIN Admin BLOCK **********/
 
+	(void)winbind_off();
 	become_root();
 	nt_status = pdb_create_user(p->mem_ctx, account, acb_info,
 				    r->out.rid);
 	unbecome_root();
+	(void)winbind_on();
 
 	/********** END Admin BLOCK **********/
 
@@ -3933,8 +3970,8 @@ NTSTATUS _samr_CreateUser2(struct pipes_struct *p,
 
 	sid_compose(&sid, get_global_sam_sid(), *r->out.rid);
 
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd(p->mem_ctx, &psd, &sd_size, &usr_generic_mapping,
@@ -3948,7 +3985,7 @@ NTSTATUS _samr_CreateUser2(struct pipes_struct *p,
 	 * just assume we have all the rights we need ?
 	 */
 
-	nt_status = access_check_object(psd, p->session_info->security_token,
+	nt_status = access_check_object(psd, session_info->security_token,
 					needed_priv, SEC_PRIV_INVALID,
 					GENERIC_RIGHTS_USER_WRITE, des_access,
 		&acc_granted, "_samr_CreateUser2");
@@ -4003,6 +4040,9 @@ NTSTATUS _samr_CreateUser(struct pipes_struct *p,
 NTSTATUS _samr_Connect(struct pipes_struct *p,
 		       struct samr_Connect *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	uint32_t acc_granted;
 	uint32_t    des_access = r->in.access_mask;
 	NTSTATUS status;
@@ -4018,8 +4058,8 @@ NTSTATUS _samr_Connect(struct pipes_struct *p,
 	   was observed from a win98 client trying to enumerate users (when configured
 	   user level access control on shares)   --jerry */
 
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	se_map_generic( &des_access, &sam_generic_mapping );
@@ -4049,6 +4089,9 @@ NTSTATUS _samr_Connect(struct pipes_struct *p,
 NTSTATUS _samr_Connect2(struct pipes_struct *p,
 			struct samr_Connect2 *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct security_descriptor *psd = NULL;
 	uint32_t    acc_granted;
 	uint32_t    des_access = r->in.access_mask;
@@ -4056,7 +4099,7 @@ NTSTATUS _samr_Connect2(struct pipes_struct *p,
 	size_t    sd_size;
 	const char *fn = "_samr_Connect2";
 
-	switch (p->opnum) {
+	switch (dce_call->pkt.u.request.opnum) {
 	case NDR_SAMR_CONNECT2:
 		fn = "_samr_Connect2";
 		break;
@@ -4080,14 +4123,14 @@ NTSTATUS _samr_Connect2(struct pipes_struct *p,
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd(p->mem_ctx, &psd, &sd_size, &sam_generic_mapping, NULL, 0);
 	se_map_generic(&des_access, &sam_generic_mapping);
 
-	nt_status = access_check_object(psd, p->session_info->security_token,
+	nt_status = access_check_object(psd, session_info->security_token,
 					SEC_PRIV_INVALID, SEC_PRIV_INVALID,
 					0, des_access, &acc_granted, fn);
 
@@ -4279,6 +4322,9 @@ NTSTATUS _samr_EnumDomains(struct pipes_struct *p,
 NTSTATUS _samr_OpenAlias(struct pipes_struct *p,
 			 struct samr_OpenAlias *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct dom_sid sid;
 	uint32_t alias_rid = r->in.rid;
 	struct samr_info *dinfo;
@@ -4305,14 +4351,14 @@ NTSTATUS _samr_OpenAlias(struct pipes_struct *p,
 
 	/*check if access can be granted as requested by client. */
 
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd(p->mem_ctx, &psd, &sd_size, &ali_generic_mapping, NULL, 0);
 	se_map_generic(&des_access,&ali_generic_mapping);
 
-	status = access_check_object(psd, p->session_info->security_token,
+	status = access_check_object(psd, session_info->security_token,
 				     SEC_PRIV_ADD_USERS, SEC_PRIV_INVALID,
 				     GENERIC_RIGHTS_ALIAS_ALL_ACCESS,
 				     des_access, &acc_granted, "_samr_OpenAlias");
@@ -4622,11 +4668,9 @@ static NTSTATUS set_user_info_18(struct samr_UserInfo18 *id18,
 	}
 
 	if (id18->nt_pwd_active) {
-
-		DATA_BLOB in, out;
-
-		in = data_blob_const(id18->nt_pwd.hash, 16);
-		out = data_blob_talloc_zero(mem_ctx, 16);
+		DATA_BLOB in = data_blob_const(id18->nt_pwd.hash, 16);
+		uint8_t outbuf[16] = { 0, };
+		DATA_BLOB out = data_blob_const(outbuf, sizeof(outbuf));
 
 		rc = sess_crypt_blob(&out, &in, session_key, SAMBA_GNUTLS_DECRYPT);
 		if (rc != 0) {
@@ -4642,11 +4686,9 @@ static NTSTATUS set_user_info_18(struct samr_UserInfo18 *id18,
 	}
 
 	if (id18->lm_pwd_active) {
-
-		DATA_BLOB in, out;
-
-		in = data_blob_const(id18->lm_pwd.hash, 16);
-		out = data_blob_talloc_zero(mem_ctx, 16);
+		DATA_BLOB in = data_blob_const(id18->lm_pwd.hash, 16);
+		uint8_t outbuf[16] = { 0, };
+		DATA_BLOB out = data_blob_const(outbuf, sizeof(outbuf));
 
 		rc = sess_crypt_blob(&out, &in, session_key, SAMBA_GNUTLS_DECRYPT);
 		if (rc != 0) {
@@ -4711,7 +4753,11 @@ static NTSTATUS set_user_info_21(struct samr_UserInfo21 *id21,
 
 	if (id21->fields_present & SAMR_FIELD_NT_PASSWORD_PRESENT) {
 		if (id21->nt_password_set) {
-			DATA_BLOB in, out;
+			DATA_BLOB in = data_blob_const(
+				id21->nt_owf_password.array, 16);
+			uint8_t outbuf[16] = { 0, };
+			DATA_BLOB out = data_blob_const(
+				outbuf, sizeof(outbuf));
 
 			if ((id21->nt_owf_password.length != 16) ||
 			    (id21->nt_owf_password.size != 16)) {
@@ -4721,9 +4767,6 @@ static NTSTATUS set_user_info_21(struct samr_UserInfo21 *id21,
 			if (!session_key->length) {
 				return NT_STATUS_NO_USER_SESSION_KEY;
 			}
-
-			in = data_blob_const(id21->nt_owf_password.array, 16);
-			out = data_blob_talloc_zero(mem_ctx, 16);
 
 			rc = sess_crypt_blob(&out, &in, session_key, SAMBA_GNUTLS_DECRYPT);
 			if (rc != 0) {
@@ -4738,7 +4781,11 @@ static NTSTATUS set_user_info_21(struct samr_UserInfo21 *id21,
 
 	if (id21->fields_present & SAMR_FIELD_LM_PASSWORD_PRESENT) {
 		if (id21->lm_password_set) {
-			DATA_BLOB in, out;
+			DATA_BLOB in = data_blob_const(
+				id21->lm_owf_password.array, 16);
+			uint8_t outbuf[16] = { 0, };
+			DATA_BLOB out = data_blob_const(
+				outbuf, sizeof(outbuf));
 
 			if ((id21->lm_owf_password.length != 16) ||
 			    (id21->lm_owf_password.size != 16)) {
@@ -4748,9 +4795,6 @@ static NTSTATUS set_user_info_21(struct samr_UserInfo21 *id21,
 			if (!session_key->length) {
 				return NT_STATUS_NO_USER_SESSION_KEY;
 			}
-
-			in = data_blob_const(id21->lm_owf_password.array, 16);
-			out = data_blob_talloc_zero(mem_ctx, 16);
 
 			rc = sess_crypt_blob(&out, &in, session_key, SAMBA_GNUTLS_DECRYPT);
 			if (rc != 0) {
@@ -5207,6 +5251,12 @@ out:
 NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 			   struct samr_SetUserInfo *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct dcesrv_connection *dcesrv_conn = dce_call->conn;
+	const struct tsocket_address *remote_address =
+		dcesrv_connection_get_remote_address(dcesrv_conn);
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct samr_info *uinfo;
 	NTSTATUS status;
 	struct samu *pwd = NULL;
@@ -5309,7 +5359,7 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 		return NT_STATUS_NO_SUCH_USER;
 	}
 
-	rhost = tsocket_address_inet_addr_string(p->remote_address,
+	rhost = tsocket_address_inet_addr_string(remote_address,
 						 talloc_tos());
 	if (rhost == NULL) {
 		return NT_STATUS_NO_MEMORY;
@@ -5384,7 +5434,8 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 			break;
 
 		case 18:
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -5401,7 +5452,8 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 			break;
 
 		case 21:
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -5413,14 +5465,15 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 
 		case 23:
 			encrypted =
-				dcerpc_is_transport_encrypted(p->session_info);
+				dcerpc_is_transport_encrypted(session_info);
 			if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 			    !encrypted) {
 				status = NT_STATUS_ACCESS_DENIED;
 				break;
 			}
 
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -5449,14 +5502,15 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 
 		case 24:
 			encrypted =
-				dcerpc_is_transport_encrypted(p->session_info);
+				dcerpc_is_transport_encrypted(session_info);
 			if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 			    !encrypted) {
 				status = NT_STATUS_ACCESS_DENIED;
 				break;
 			}
 
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -5484,14 +5538,15 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 
 		case 25:
 			encrypted =
-				dcerpc_is_transport_encrypted(p->session_info);
+				dcerpc_is_transport_encrypted(session_info);
 			if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 			    !encrypted) {
 				status = NT_STATUS_ACCESS_DENIED;
 				break;
 			}
 
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -5518,14 +5573,15 @@ NTSTATUS _samr_SetUserInfo(struct pipes_struct *p,
 
 		case 26:
 			encrypted =
-				dcerpc_is_transport_encrypted(p->session_info);
+				dcerpc_is_transport_encrypted(session_info);
 			if (lp_weak_crypto() == SAMBA_WEAK_CRYPTO_DISALLOWED &&
 			    !encrypted) {
 				status = NT_STATUS_ACCESS_DENIED;
 				break;
 			}
 
-			status = session_extract_session_key(p->session_info, &session_key, KEY_USE_16BYTES);
+			status = session_extract_session_key(
+				session_info, &session_key, KEY_USE_16BYTES);
 			if(!NT_STATUS_IS_OK(status)) {
 				break;
 			}
@@ -6629,6 +6685,9 @@ NTSTATUS _samr_OpenGroup(struct pipes_struct *p,
 			 struct samr_OpenGroup *r)
 
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct dom_sid info_sid;
 	struct dom_sid_buf buf;
 	GROUP_MAP *map;
@@ -6651,14 +6710,14 @@ NTSTATUS _samr_OpenGroup(struct pipes_struct *p,
 	}
 
 	/*check if access can be granted as requested by client. */
-	map_max_allowed_access(p->session_info->security_token,
-			       p->session_info->unix_token,
+	map_max_allowed_access(session_info->security_token,
+			       session_info->unix_token,
 			       &des_access);
 
 	make_samr_object_sd(p->mem_ctx, &psd, &sd_size, &grp_generic_mapping, NULL, 0);
 	se_map_generic(&des_access,&grp_generic_mapping);
 
-	status = access_check_object(psd, p->session_info->security_token,
+	status = access_check_object(psd, session_info->security_token,
 				     SEC_PRIV_ADD_USERS, SEC_PRIV_INVALID, GENERIC_RIGHTS_GROUP_ALL_ACCESS,
 				     des_access, &acc_granted, "_samr_OpenGroup");
 
@@ -6945,8 +7004,7 @@ NTSTATUS _samr_GetDisplayEnumerationIndex(struct pipes_struct *p,
 	struct samr_info *dinfo;
 	uint32_t max_entries = (uint32_t) -1;
 	uint32_t enum_context = 0;
-	int i;
-	uint32_t num_account = 0;
+	uint32_t i, num_account = 0;
 	struct samr_displayentry *entries = NULL;
 	NTSTATUS status;
 
@@ -7184,6 +7242,8 @@ static enum samr_ValidationStatus samr_ValidatePassword_Reset(TALLOC_CTX *mem_ct
 NTSTATUS _samr_ValidatePassword(struct pipes_struct *p,
 				struct samr_ValidatePassword *r)
 {
+	struct dcesrv_call_state *dce_call = p->dce_call;
+	enum dcerpc_AuthLevel auth_level = DCERPC_AUTH_LEVEL_NONE;
 	union samr_ValidatePasswordRep *rep;
 	NTSTATUS status;
 	struct samr_GetDomPwInfo pw;
@@ -7194,7 +7254,9 @@ NTSTATUS _samr_ValidatePassword(struct pipes_struct *p,
 		return NT_STATUS_ACCESS_DENIED;
 	}
 
-	if (p->auth.auth_level != DCERPC_AUTH_LEVEL_PRIVACY) {
+	dcesrv_call_auth_info(dce_call, NULL, &auth_level);
+
+	if (auth_level != DCERPC_AUTH_LEVEL_PRIVACY) {
 		p->fault_state = DCERPC_FAULT_ACCESS_DENIED;
 		return NT_STATUS_ACCESS_DENIED;
 	}

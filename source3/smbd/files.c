@@ -20,6 +20,7 @@
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "smbd/smbXsrv_open.h"
 #include "libcli/security/security.h"
 #include "util_tdb.h"
 #include "lib/util/bitmap.h"
@@ -286,8 +287,8 @@ NTSTATUS open_internal_dirfsp(connection_struct *conn,
  * sense. It's a object that "links" together an fsp and an smb_fname
  * and the link allocated as talloc child of an fsp.
  *
- * The link is created for fsps that open_smbfname_fsp() returns in
- * smb_fname->fsp. When this fsp is freed by fsp_free() by some caller
+ * The link is created for fsps that openat_pathref_fsp() returns in
+ * smb_fname->fsp. When this fsp is freed by file_free() by some caller
  * somewhere, the destructor fsp_smb_fname_link_destructor() on the link object
  * will use the link to reset the reference in smb_fname->fsp that is about to
  * go away.
@@ -751,26 +752,97 @@ NTSTATUS parent_pathref(TALLOC_CTX *mem_ctx,
 	return NT_STATUS_OK;
 }
 
+static bool close_file_in_loop(struct files_struct *fsp)
+{
+	if (fsp->base_fsp != NULL) {
+		/*
+		 * This is a stream, it can't be a base
+		 */
+		SMB_ASSERT(fsp->stream_fsp == NULL);
+		SMB_ASSERT(fsp->base_fsp->stream_fsp == fsp);
+
+		/*
+		 * Remove the base<->stream link so that
+		 * close_file_free() does not close fsp->base_fsp as
+		 * well. This would destroy walking the linked list of
+		 * fsps.
+		 */
+		fsp->base_fsp->stream_fsp = NULL;
+		fsp->base_fsp = NULL;
+
+		close_file_free(NULL, &fsp, SHUTDOWN_CLOSE);
+		return NULL;
+	}
+
+	if (fsp->stream_fsp != NULL) {
+		/*
+		 * This is the base of a stream.
+		 */
+		SMB_ASSERT(fsp->stream_fsp->base_fsp == fsp);
+
+		/*
+		 * Remove the base<->stream link. This will make fsp
+		 * look like a normal fsp for the next round.
+		 */
+		fsp->stream_fsp->base_fsp = NULL;
+		fsp->stream_fsp = NULL;
+
+		/*
+		 * Have us called back a second time. In the second
+		 * round, "fsp" now looks like a normal fsp.
+		 */
+		return false;
+	}
+
+	close_file_free(NULL, &fsp, SHUTDOWN_CLOSE);
+	return true;
+}
+
 /****************************************************************************
  Close all open files for a connection.
 ****************************************************************************/
 
+struct file_close_conn_state {
+	struct connection_struct *conn;
+	bool fsp_left_behind;
+};
+
+static struct files_struct *file_close_conn_fn(
+	struct files_struct *fsp,
+	void *private_data)
+{
+	struct file_close_conn_state *state = private_data;
+	bool did_close;
+
+	if (fsp->conn != state->conn) {
+		return NULL;
+	}
+
+	if (fsp->op != NULL && fsp->op->global->durable) {
+		/*
+		 * A tree disconnect closes a durable handle
+		 */
+		fsp->op->global->durable = false;
+	}
+
+	did_close = close_file_in_loop(fsp);
+	if (!did_close) {
+		state->fsp_left_behind = true;
+	}
+
+	return NULL;
+}
+
 void file_close_conn(connection_struct *conn)
 {
-	files_struct *fsp, *next;
+	struct file_close_conn_state state = { .conn = conn };
 
-	for (fsp=conn->sconn->files; fsp; fsp=next) {
-		next = fsp->next;
-		if (fsp->conn != conn) {
-			continue;
-		}
-		if (fsp->op != NULL && fsp->op->global->durable) {
-			/*
-			 * A tree disconnect closes a durable handle
-			 */
-			fsp->op->global->durable = false;
-		}
-		close_file(NULL, fsp, SHUTDOWN_CLOSE);
+	files_forall(conn->sconn, file_close_conn_fn, &state);
+
+	if (state.fsp_left_behind) {
+		state.fsp_left_behind = false;
+		files_forall(conn->sconn, file_close_conn_fn, &state);
+		SMB_ASSERT(!state.fsp_left_behind);
 	}
 }
 
@@ -833,15 +905,40 @@ bool file_init(struct smbd_server_connection *sconn)
  Close files open by a specified vuid.
 ****************************************************************************/
 
+struct file_close_user_state {
+	uint64_t vuid;
+	bool fsp_left_behind;
+};
+
+static struct files_struct *file_close_user_fn(
+	struct files_struct *fsp,
+	void *private_data)
+{
+	struct file_close_user_state *state = private_data;
+	bool did_close;
+
+	if (fsp->vuid != state->vuid) {
+		return NULL;
+	}
+
+	did_close = close_file_in_loop(fsp);
+	if (!did_close) {
+		state->fsp_left_behind = true;
+	}
+
+	return NULL;
+}
+
 void file_close_user(struct smbd_server_connection *sconn, uint64_t vuid)
 {
-	files_struct *fsp, *next;
+	struct file_close_user_state state = { .vuid = vuid };
 
-	for (fsp=sconn->files; fsp; fsp=next) {
-		next=fsp->next;
-		if (fsp->vuid == vuid) {
-			close_file(NULL, fsp, SHUTDOWN_CLOSE);
-		}
+	files_forall(sconn, file_close_user_fn, &state);
+
+	if (state.fsp_left_behind) {
+		state.fsp_left_behind = false;
+		files_forall(sconn, file_close_user_fn, &state);
+		SMB_ASSERT(!state.fsp_left_behind);
 	}
 }
 
@@ -1120,11 +1217,11 @@ static void fsp_free(files_struct *fsp)
 	TALLOC_FREE(fsp);
 }
 
-void file_free(struct smb_request *req, files_struct *fsp)
+/*
+ * Rundown of all smb-related sub-structures of an fsp
+ */
+void fsp_unbind_smb(struct smb_request *req, files_struct *fsp)
 {
-	struct smbd_server_connection *sconn = fsp->conn->sconn;
-	uint64_t fnum = fsp->fnum;
-
 	if (fsp == fsp->conn->cwd_fsp) {
 		return;
 	}
@@ -1165,14 +1262,23 @@ void file_free(struct smb_request *req, files_struct *fsp)
 	 * pointers in the SMB2 request queue.
 	 */
 	remove_smb2_chained_fsp(fsp);
+}
+
+void file_free(struct smb_request *req, files_struct *fsp)
+{
+	struct smbd_server_connection *sconn = fsp->conn->sconn;
+	uint64_t fnum = fsp->fnum;
+
+	fsp_unbind_smb(req, fsp);
 
 	/* Drop all remaining extensions. */
 	vfs_remove_all_fsp_extensions(fsp);
 
 	fsp_free(fsp);
 
-	DEBUG(5,("freed files structure %llu (%u used)\n",
-		 (unsigned long long)fnum, (unsigned int)sconn->num_files));
+	DBG_INFO("freed files structure %"PRIu64" (%zu used)\n",
+		 fnum,
+		 sconn->num_files);
 }
 
 /****************************************************************************
@@ -1460,6 +1566,7 @@ size_t fsp_fullbasepath(struct files_struct *fsp, char *buf, size_t buflen)
 	 */
 	if (buf == NULL) {
 		buf = tmp_buf;
+		SMB_ASSERT(buflen==0);
 	}
 
 	len = snprintf(buf, buflen, "%s/%s", fsp->conn->connectpath,

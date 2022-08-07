@@ -99,7 +99,6 @@ bool aio_add_req_to_fsp(files_struct *fsp, struct tevent_req *req);
 
 NTSTATUS smbd_do_locks_try(
 	struct files_struct *fsp,
-	enum brl_flavour lock_flav,
 	uint16_t num_locks,
 	struct smbd_lock_element *locks,
 	uint16_t *blocker_idx,
@@ -112,7 +111,6 @@ struct tevent_req *smbd_smb1_do_locks_send(
 	struct files_struct *fsp,
 	uint32_t lock_timeout,
 	bool large_offset,
-	enum brl_flavour lock_flav,
 	uint16_t num_locks,
 	struct smbd_lock_element *locks);
 NTSTATUS smbd_smb1_do_locks_recv(struct tevent_req *req);
@@ -124,7 +122,6 @@ void smbd_smb1_brl_finish_by_req(struct tevent_req *req, NTSTATUS status);
 bool smbd_smb1_brl_finish_by_lock(
 	struct files_struct *fsp,
 	bool large_offset,
-	enum brl_flavour lock_flav,
 	struct smbd_lock_element lock,
 	NTSTATUS finish_status);
 bool smbd_smb1_brl_finish_by_mid(
@@ -133,8 +130,12 @@ bool smbd_smb1_brl_finish_by_mid(
 /* The following definitions come from smbd/close.c  */
 
 void set_close_write_time(struct files_struct *fsp, struct timespec ts);
-NTSTATUS close_file(struct smb_request *req, files_struct *fsp,
-		    enum file_close_type close_type);
+NTSTATUS close_file_smb(struct smb_request *req,
+			struct files_struct *fsp,
+			enum file_close_type close_type);
+NTSTATUS close_file_free(struct smb_request *req,
+			 struct files_struct **_fsp,
+			 enum file_close_type close_type);
 void msg_close_file(struct messaging_context *msg_ctx,
 		    void *private_data,
 		    uint32_t msg_type,
@@ -208,6 +209,7 @@ bool dptr_has_wild(struct dptr_struct *dptr);
 int dptr_dnum(struct dptr_struct *dptr);
 bool dptr_get_priv(struct dptr_struct *dptr);
 void dptr_set_priv(struct dptr_struct *dptr);
+bool dptr_case_sensitive(struct dptr_struct *dptr);
 bool dptr_SearchDir(struct dptr_struct *dptr, const char *name, long *poffset, SMB_STRUCT_STAT *pst);
 bool dptr_fill(struct smbd_server_connection *sconn,
 	       char *buf1,unsigned int key);
@@ -361,11 +363,6 @@ NTSTATUS unix_convert(TALLOC_CTX *ctx,
 NTSTATUS canonicalize_snapshot_path(struct smb_filename *smb_fname,
 				    uint32_t ucf_flags,
 				    NTTIME twrp);
-int get_real_filename(connection_struct *conn,
-		      struct smb_filename *path,
-		      const char *name,
-		      TALLOC_CTX *mem_ctx,
-		      char **found_name);
 int get_real_filename_full_scan(connection_struct *conn,
 				const char *path,
 				const char *name,
@@ -418,6 +415,7 @@ struct files_struct *file_find_one_fsp_from_lease_key(
 	struct smbd_server_connection *sconn,
 	const struct smb2_lease_key *lease_key);
 bool file_find_subpath(files_struct *dir_fsp);
+void fsp_unbind_smb(struct smb_request *req, files_struct *fsp);
 void file_free(struct smb_request *req, files_struct *fsp);
 files_struct *file_fsp(struct smb_request *req, uint16_t fid);
 struct files_struct *file_fsp_get(struct smbd_smb2_request *smb2req,
@@ -934,7 +932,6 @@ bool smb1_parse_chain(TALLOC_CTX *mem_ctx, const uint8_t *buf,
 bool req_is_in_chain(const struct smb_request *req);
 void smbd_process(struct tevent_context *ev_ctx,
 		  struct messaging_context *msg_ctx,
-		  struct dcesrv_context *dce_ctx,
 		  int sock_fd,
 		  bool interactive);
 bool fork_echo_handler(struct smbXsrv_connection *xconn);
@@ -1170,7 +1167,6 @@ void stat_cache_add( const char *full_orig_name,
 		NTTIME twrp,
 		bool case_sensitive);
 bool stat_cache_lookup(connection_struct *conn,
-			bool posix_paths,
 			char **pp_name,
 			char **pp_dirpath,
 			char **pp_start,
@@ -1181,8 +1177,6 @@ void smbd_send_stat_cache_delete_message(struct messaging_context *msg_ctx,
 void send_stat_cache_delete_message(struct messaging_context *msg_ctx,
 				    const char *name);
 void stat_cache_delete(const char *name);
-struct TDB_DATA;
-unsigned int fast_string_hash(struct TDB_DATA *key);
 bool reset_stat_cache( void );
 
 /* The following definitions come from smbd/statvfs.c  */
@@ -1206,7 +1200,6 @@ NTSTATUS get_ea_names_from_fsp(TALLOC_CTX *mem_ctx,
 			size_t *pnum_names);
 NTSTATUS set_ea(connection_struct *conn, files_struct *fsp,
 		struct ea_list *ea_list);
-struct ea_list *read_ea_list_entry(TALLOC_CTX *ctx, const char *pdata, size_t data_size, size_t *pbytes_used);
 void send_trans2_replies(connection_struct *conn,
 			struct smb_request *req,
 			NTSTATUS status,

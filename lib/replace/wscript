@@ -128,6 +128,9 @@ def configure(conf):
     if conf.CHECK_CFLAGS('-Wno-strict-overflow'):
         conf.define('HAVE_WNO_STRICT_OVERFLOW', '1')
 
+    if conf.CHECK_CFLAGS('-Wuse-after-free=1'):
+        conf.define('HAVE_WUSE_AFTER_FREE_1', '1')
+
     # Check for process set name support
     conf.CHECK_CODE('''
                     #include <sys/prctl.h>
@@ -299,12 +302,35 @@ def configure(conf):
                     msg='Checking for __sync_fetch_and_add compiler builtin')
 
     conf.CHECK_CODE('''
+                    int i;
+                    (void)__sync_add_and_fetch(&i, 1);
+                    ''',
+                    'HAVE___SYNC_ADD_AND_FETCH',
+                    msg='Checking for __sync_add_and_fetch compiler builtin')
+
+    conf.CHECK_CODE('''
                     int32_t i;
                     atomic_add_32(&i, 1);
                     ''',
                     'HAVE_ATOMIC_ADD_32',
                     headers='stdint.h sys/atomic.h',
                     msg='Checking for atomic_add_32 compiler builtin')
+
+    conf.CHECK_CODE('''
+                    uint32_t i,j;
+                    j = __atomic_add_fetch(&i,1,__ATOMIC_SEQ_CST)
+                    ''',
+                    'HAVE___ATOMIC_ADD_FETCH',
+                    headers='stdint.h',
+                    msg='Checking for __atomic_add_fetch compiler builtin')
+
+    conf.CHECK_CODE('''
+                    uint32_t i,j;
+                    __atomic_load(&i,&j,__ATOMIC_SEQ_CST)
+                    ''',
+                    'HAVE___ATOMIC_ADD_LOAD',
+                    headers='stdint.h',
+                    msg='Checking for __atomic_load compiler builtin')
 
     # Check for thread fence. */
     tf = conf.CHECK_CODE('atomic_thread_fence(memory_order_seq_cst);',
@@ -456,11 +482,10 @@ def configure(conf):
     conf.CHECK_FUNCS('getprogname')
     if not conf.CHECK_FUNCS('copy_file_range'):
         conf.CHECK_CODE('''
-#include <sys/syscall.h>
-#include <unistd.h>
 syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
                         ''',
                         'HAVE_SYSCALL_COPY_FILE_RANGE',
+                        headers='sys/syscall.h unistd.h',
                         msg='Checking whether we have copy_file_range system call')
 
     conf.SET_TARGET_TYPE('attr', 'EMPTY')
@@ -883,7 +908,6 @@ def build(bld):
     )
 
     REPLACE_SOURCE = REPLACE_HOSTCC_SOURCE
-    REPLACE_SOURCE += ' cwrap.c'
 
     if not bld.CONFIG_SET('HAVE_DLOPEN'):        REPLACE_SOURCE += ' dlfcn.c'
     if not bld.CONFIG_SET('HAVE_POLL'):          REPLACE_SOURCE += ' poll.c'
@@ -911,6 +935,7 @@ def build(bld):
                       # at the moment:
                       # hide_symbols=bld.BUILTIN_LIBRARY('replace'),
                       private_library=True,
+                      provide_builtin_linking=True,
                       deps='dl attr' + extra_libs)
 
     replace_test_cflags = ''

@@ -189,7 +189,6 @@ int sys_fstatat(int fd,
 		bool fake_dir_create_times);
 int sys_posix_fallocate(int fd, off_t offset, off_t len);
 int sys_fallocate(int fd, uint32_t mode, off_t offset, off_t len);
-void kernel_flock(int fd, uint32_t share_access, uint32_t access_mask);
 DIR *sys_fdopendir(int fd);
 int sys_mknod(const char *path, mode_t mode, SMB_DEV_T dev);
 int sys_mknodat(int dirfd, const char *path, mode_t mode, SMB_DEV_T dev);
@@ -558,8 +557,6 @@ int fstr_sprintf(fstring s, const char *fmt, ...);
 
 uint64_t STR_TO_SMB_BIG_UINT(const char *nptr, const char **entptr);
 uint64_t conv_str_size(const char * str);
-int asprintf_strupper_m(char **strp, const char *fmt, ...)
-			PRINTF_ATTRIBUTE(2,3);
 char *talloc_asprintf_strupper_m(TALLOC_CTX *t, const char *fmt, ...)
 				 PRINTF_ATTRIBUTE(2,3);
 char *talloc_asprintf_strlower_m(TALLOC_CTX *t, const char *fmt, ...)
@@ -718,11 +715,6 @@ bool lookup_wellknown_sid(TALLOC_CTX *mem_ctx, const struct dom_sid *sid,
 			  const char **domain, const char **name);
 bool lookup_wellknown_name(TALLOC_CTX *mem_ctx, const char *name,
 			   struct dom_sid *sid, const char **domain);
-
-/* The following definitions come from lib/util_specialsids.c  */
-bool sid_check_is_asserted_identity(const struct dom_sid *sid);
-bool sid_check_is_in_asserted_identity(const struct dom_sid *sid);
-const char *asserted_identity_domain_name(void);
 
 /* The following definitions come from lib/filename_util.c */
 

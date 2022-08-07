@@ -170,21 +170,6 @@ long ret = splice(0,0,1,0,400,SPLICE_F_MOVE);
     if conf.CHECK_DECLS('F_SETLEASE', headers='linux/fcntl.h', reverse=True):
         conf.DEFINE('HAVE_KERNEL_OPLOCKS_LINUX', 1)
 
-    # Check for kernel share modes
-    conf.CHECK_CODE('''
-#include <sys/types.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/file.h>
-#ifndef LOCK_MAND
-#define LOCK_MAND        32
-#define LOCK_READ        64
-#endif
-main() {
-        exit(flock(open("/dev/null", O_RDWR), LOCK_MAND|LOCK_READ) != 0);
-}''', 'HAVE_KERNEL_SHARE_MODES', addmain=False, execute=True,
-        msg="Checking for kernel share modes")
-
     # check for fam libs
     samba_fam_libs=None
     check_for_fam=False
@@ -1879,7 +1864,6 @@ main() {
             conf.fatal("Unmet dependencies for Spotlight backends")
 
         Logs.info("Building with Spotlight support, available backends: %s" % ', '.join(backends))
-        default_static_modules.extend(['rpc_mdssvc_module'])
         conf.DEFINE('WITH_SPOTLIGHT', '1')
         conf.env.with_spotlight = True
 
@@ -2062,7 +2046,7 @@ main() {
     static_list = {}
     shared_list = {}
 
-    prefixes = ['vfs', 'pdb', 'auth', 'nss_info', 'charset', 'idmap', 'gpext', 'perfcount', 'rpc']
+    prefixes = ['vfs', 'pdb', 'auth', 'nss_info', 'charset', 'idmap', 'gpext', 'perfcount']
     conf.env['MODULE_PREFIXES'] = prefixes
     for p in prefixes:
         for m in final_static_modules:

@@ -120,6 +120,12 @@ else:
 
 CLEAN_SOURCE_TREE_CMD = "cd ${TEST_SOURCE_DIR} && script/clean-source-tree.sh"
 
+def nm_grep_symbols(sofile, expected_symbols=""):
+    return "nm " + sofile + " | " + \
+           "egrep -v ' (__bss_start|_edata|_init|_fini|_end)' | " + \
+           "egrep -v '" + expected_symbols + "' |" + \
+           "egrep ' [BDGTRVWS] ' && exit 1; exit 0;"
+
 if args:
     # If we are only running specific test,
     # do not sleep randomly to wait for it to start
@@ -331,6 +337,8 @@ tasks = {
             "schema_pair_dc",
             "schema_dc",
             "clusteredmember",
+            "ad_dc_fips",
+            "ad_member_fips",
             ])),
             ("test-slow-none", make_test(cmd='make test', TESTS="--include=selftest/slow-none", include_envs=["none"])),
             ("lcov", LCOV_CMD),
@@ -397,6 +405,8 @@ tasks = {
             "schema_pair_dc",
             "schema_dc",
             "clusteredmember",
+            "ad_dc_fips",
+            "ad_member_fips",
             ])),
             ("lcov", LCOV_CMD),
             ("install", "make install"),
@@ -787,7 +797,6 @@ tasks = {
          "PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PKG_CONFIG_PATH} "
          "./configure.developer ${PREFIX} "
          "--with-selftest-prefix=./bin/ab "
-         "--enable-clangdb "
          "--with-cluster-support "
          "--without-ad-dc "
          "--bundled-libraries=!tdb"),
@@ -828,16 +837,77 @@ tasks = {
             ("ldb-make", "cd lib/ldb && make"),
             ("ldb-install", "cd lib/ldb && make install"),
 
-            ("nondevel-configure", "./configure ${PREFIX}"),
+            ("nondevel-configure", samba_libs_envvars + " ./configure ${PREFIX}"),
             ("nondevel-make", "make -j"),
             ("nondevel-check", "./bin/smbd -b | grep WITH_NTVFS_FILESERVER && exit 1; exit 0"),
-            ("nondevel-install", "make install"),
+            ("nondevel-no-libtalloc", "find ./bin | grep -v 'libtalloc-report' | grep 'libtalloc' && exit 1; exit 0"),
+            ("nondevel-no-libtdb", "find ./bin | grep -v 'libtdb-wrap' | grep 'libtdb' && exit 1; exit 0"),
+            ("nondevel-no-libtevent", "find ./bin | grep -v 'libtevent-util' | grep 'libtevent' && exit 1; exit 0"),
+            ("nondevel-no-libldb", "find ./bin | grep -v 'module' | grep -v 'libldbsamba' | grep 'libldb' && exit 1; exit 0"),
+            ("nondevel-no-samba-nss_winbind", "ldd ./bin/plugins/libnss_winbind.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("nondevel-no-samba-nss_wins", "ldd ./bin/plugins/libnss_wins.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("nondevel-no-samba-libwbclient", "ldd ./bin/shared/libwbclient.so.0 | grep 'samba' && exit 1; exit 0"),
+            ("nondevel-no-samba-pam_winbind", "ldd ./bin/plugins/pam_winbind.so | grep -v 'libtalloc.so.2' | grep 'samba' && exit 1; exit 0"),
+            ("nondevel-no-public-nss_winbind",
+                nm_grep_symbols("./bin/plugins/libnss_winbind.so.2", " T _nss_winbind_")),
+            ("nondevel-no-public-nss_wins",
+                nm_grep_symbols("./bin/plugins/libnss_wins.so.2", " T _nss_wins_")),
+            ("nondevel-no-public-libwbclient",
+                nm_grep_symbols("./bin/shared/libwbclient.so.0", " T wbc")),
+            ("nondevel-no-public-pam_winbind",
+                nm_grep_symbols("./bin/plugins/pam_winbind.so", "T pam_sm_")),
+            ("nondevel-no-public-winbind_krb5_locator",
+                nm_grep_symbols("./bin/plugins/winbind_krb5_locator.so", " D resolve\>")),
+            ("nondevel-no-public-async_dns_krb5_locator",
+                nm_grep_symbols("./bin/plugins/async_dns_krb5_locator.so", " D resolve\>")),
+            ("nondevel-install", "make -j install"),
             ("nondevel-dist", "make dist"),
 
-        # retry with all modules shared
+            ("prefix-no-private-libtalloc", "find ${PREFIX_DIR} | grep -v 'libtalloc-report' | grep 'private.*libtalloc' && exit 1; exit 0"),
+            ("prefix-no-private-libtdb", "find ${PREFIX_DIR} | grep -v 'libtdb-wrap' | grep 'private.*libtdb' && exit 1; exit 0"),
+            ("prefix-no-private-libtevent", "find ${PREFIX_DIR} | grep -v 'libtevent-util' | grep 'private.*libtevent' && exit 1; exit 0"),
+            ("prefix-no-private-libldb", "find ${PREFIX_DIR} | grep -v 'module' | grep -v 'libldbsamba' | grep 'private.*libldb' && exit 1; exit 0"),
+            ("prefix-no-samba-nss_winbind", "ldd ${PREFIX_DIR}/lib/libnss_winbind.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("prefix-no-samba-nss_wins", "ldd ${PREFIX_DIR}/lib/libnss_wins.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("prefix-no-samba-libwbclient", "ldd ${PREFIX_DIR}/lib/libwbclient.so.0 | grep 'samba' && exit 1; exit 0"),
+            ("prefix-no-samba-pam_winbind", "ldd ${PREFIX_DIR}/lib/security/pam_winbind.so | grep -v 'libtalloc.so.2' | grep 'samba' && exit 1; exit 0"),
+            ("prefix-no-public-nss_winbind",
+                nm_grep_symbols("${PREFIX_DIR}/lib/libnss_winbind.so.2", " T _nss_winbind_")),
+            ("prefix-no-public-nss_wins",
+                nm_grep_symbols("${PREFIX_DIR}/lib/libnss_wins.so.2", " T _nss_wins_")),
+            ("prefix-no-public-libwbclient",
+                nm_grep_symbols("${PREFIX_DIR}/lib/libwbclient.so.0", " T wbc")),
+            ("prefix-no-public-pam_winbind",
+                nm_grep_symbols("${PREFIX_DIR}/lib/security/pam_winbind.so", "T pam_sm_")),
+            ("prefix-no-public-winbind_krb5_locator",
+                nm_grep_symbols("${PREFIX_DIR}/lib/krb5/winbind_krb5_locator.so", " D resolve\>")),
+            ("prefix-no-public-async_dns_krb5_locator",
+                nm_grep_symbols("${PREFIX_DIR}/lib/krb5/async_dns_krb5_locator.so", " D resolve\>")),
+
+            # retry with all modules shared
             ("allshared-distclean", "make distclean"),
             ("allshared-configure", samba_libs_configure_samba + " --with-shared-modules=ALL"),
             ("allshared-make", "make -j"),
+            ("allshared-no-libtalloc", "find ./bin | grep -v 'libtalloc-report' | grep 'libtalloc' && exit 1; exit 0"),
+            ("allshared-no-libtdb", "find ./bin | grep -v 'libtdb-wrap' | grep 'libtdb' && exit 1; exit 0"),
+            ("allshared-no-libtevent", "find ./bin | grep -v 'libtevent-util' | grep 'libtevent' && exit 1; exit 0"),
+            ("allshared-no-libldb", "find ./bin | grep -v 'module' | grep -v 'libldbsamba' | grep 'libldb' && exit 1; exit 0"),
+            ("allshared-no-samba-nss_winbind", "ldd ./bin/plugins/libnss_winbind.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("allshared-no-samba-nss_wins", "ldd ./bin/plugins/libnss_wins.so.2 | grep 'samba' && exit 1; exit 0"),
+            ("allshared-no-samba-libwbclient", "ldd ./bin/shared/libwbclient.so.0 | grep 'samba' && exit 1; exit 0"),
+            ("allshared-no-samba-pam_winbind", "ldd ./bin/plugins/pam_winbind.so | grep -v 'libtalloc.so.2' | grep 'samba' && exit 1; exit 0"),
+            ("allshared-no-public-nss_winbind",
+                nm_grep_symbols("./bin/plugins/libnss_winbind.so.2", " T _nss_winbind_")),
+            ("allshared-no-public-nss_wins",
+                nm_grep_symbols("./bin/plugins/libnss_wins.so.2", " T _nss_wins_")),
+            ("allshared-no-public-libwbclient",
+                nm_grep_symbols("./bin/shared/libwbclient.so.0", " T wbc")),
+            ("allshared-no-public-pam_winbind",
+                nm_grep_symbols("./bin/plugins/pam_winbind.so", "T pam_sm_")),
+            ("allshared-no-public-winbind_krb5_locator",
+                nm_grep_symbols("./bin/plugins/winbind_krb5_locator.so", " D resolve\>")),
+            ("allshared-no-public-async_dns_krb5_locator",
+                nm_grep_symbols("./bin/plugins/async_dns_krb5_locator.so", " D resolve\>")),
         ],
     },
 

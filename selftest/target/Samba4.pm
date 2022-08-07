@@ -1335,15 +1335,6 @@ winbindd:use external pipes = true
 server signing = enabled
 raw NTLMv2 auth = yes
 
-rpc_server:default = external
-rpc_server:svcctl = embedded
-rpc_server:srvsvc = embedded
-rpc_server:eventlog = embedded
-rpc_server:ntsvcs = embedded
-rpc_server:winreg = embedded
-rpc_server:spoolss = embedded
-rpc_daemon:spoolssd = embedded
-rpc_server:tcpip = no
 # override the new SMB2 only default
 client min protocol = CORE
 server min protocol = LANMAN1
@@ -1664,6 +1655,7 @@ sub provision_fl2000dc($$)
 
 	print "PROVISIONING DC WITH FOREST LEVEL 2000...\n";
 	my $extra_conf_options = "
+	kdc enable fast = no
 	spnego:simulate_w2k=yes
 	ntlmssp_server:force_old_spnego=yes
 ";
@@ -1703,13 +1695,14 @@ sub provision_fl2003dc($$$)
 {
 	my ($self, $prefix, $dcvars) = @_;
 	my $ip_addr1 = Samba::get_ipv4_addr("fakednsforwarder1");
-	my $ip_addr2 = Samba::get_ipv4_addr("fakednsforwarder2");
+	my $ip_addr2 = Samba::get_ipv6_addr("fakednsforwarder2");
 
 	print "PROVISIONING DC WITH FOREST LEVEL 2003...\n";
 	my $extra_conf_options = "allow dns updates = nonsecure and secure
+	kdc enable fast = no
 	dcesrv:header signing = no
 	dcesrv:max auth states = 0
-	dns forwarder = $ip_addr1 $ip_addr2";
+	dns forwarder = $ip_addr1 [$ip_addr2]:54";
 	my $extra_provision_options = ["--base-schema=2008_R2"];
 	my $ret = $self->provision($prefix,
 				   "domain controller",

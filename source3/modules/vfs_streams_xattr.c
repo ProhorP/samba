@@ -330,8 +330,9 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct streams_xattr_config,
 				return -1);
 
-	DEBUG(10, ("streams_xattr_open called for %s with flags 0x%x\n",
-		   smb_fname_str_dbg(smb_fname), flags));
+	DBG_DEBUG("called for %s with flags 0x%x\n",
+		  smb_fname_str_dbg(smb_fname),
+		  flags);
 
 	if (!is_named_stream(smb_fname)) {
 		return SMB_VFS_NEXT_OPENAT(handle,
@@ -1507,17 +1508,19 @@ static bool streams_xattr_getlock(vfs_handle_struct *handle,
 	return false;
 }
 
-static int streams_xattr_kernel_flock(vfs_handle_struct *handle,
-				      files_struct *fsp,
-				      uint32_t share_access,
-				      uint32_t access_mask)
+static int streams_xattr_filesystem_sharemode(vfs_handle_struct *handle,
+					      files_struct *fsp,
+					      uint32_t share_access,
+					      uint32_t access_mask)
 {
 	struct stream_io *sio =
 		(struct stream_io *)VFS_FETCH_FSP_EXTENSION(handle, fsp);
 
 	if (sio == NULL) {
-		return SMB_VFS_NEXT_KERNEL_FLOCK(handle, fsp,
-						 share_access, access_mask);
+		return SMB_VFS_NEXT_FILESYSTEM_SHAREMODE(handle,
+							 fsp,
+							 share_access,
+							 access_mask);
 	}
 
 	return 0;
@@ -1576,7 +1579,7 @@ static struct vfs_fn_pointers vfs_streams_xattr_fns = {
 
 	.lock_fn = streams_xattr_lock,
 	.getlock_fn = streams_xattr_getlock,
-	.kernel_flock_fn = streams_xattr_kernel_flock,
+	.filesystem_sharemode_fn = streams_xattr_filesystem_sharemode,
 	.linux_setlease_fn = streams_xattr_linux_setlease,
 	.strict_lock_check_fn = streams_xattr_strict_lock_check,
 

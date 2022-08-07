@@ -34,9 +34,13 @@ from selftesthelpers import smbtorture4, ntlm_auth3, samba3srcdir
 print("OPTIONS %s" % " ".join(smbtorture4_options), file=sys.stderr)
 
 
-def plansmbtorture4testsuite(name, env, options, modname=None):
-    return selftesthelpers.plansmbtorture4testsuite(name, env, options,
-                                                    target='samba4', modname=modname)
+def plansmbtorture4testsuite(name, env, options, modname=None, environ={}):
+    return selftesthelpers.plansmbtorture4testsuite(name,
+                                                    env,
+                                                    options,
+                                                    target='samba4',
+                                                    modname=modname,
+                                                    environ=environ)
 
 
 samba4srcdir = source4dir()
@@ -197,7 +201,11 @@ all_rpc_tests = ncalrpc_tests + ncacn_np_tests + ncacn_ip_tcp_tests + slow_ncacn
 rpc_s3only = [
     "rpc.mdssvc",
 ]
-rpc_tests = [x for x in smbtorture4_testsuites("rpc.") if x not in rpc_s3only]
+rpc_fipsonly = [
+    "rpc.fips.netlogon.crypto",
+]
+rpc_exclude = rpc_s3only + rpc_fipsonly
+rpc_tests = [x for x in smbtorture4_testsuites("rpc.") if x not in rpc_exclude]
 auto_rpc_tests = list(filter(lambda t: t not in all_rpc_tests, rpc_tests))
 
 for bindoptions in ["seal,padcheck"] + validate_list + ["bigendian"]:
@@ -641,12 +649,53 @@ if have_gnutls_fips_mode_support:
     plantestsuite("samba4.blackbox.test_weak_disable_ntlmssp_ldap", "ad_member:local", [os.path.join(bbdir, "test_weak_disable_ntlmssp_ldap.sh"),'$DC_USERNAME', '$DC_PASSWORD'])
 
     for env in ["ad_dc_fips", "ad_member_fips"]:
-        plantestsuite("samba4.blackbox.weak_crypto.server", env, [os.path.join(bbdir, "test_weak_crypto_server.sh"), '$SERVER', '$USERNAME', '$PASSWORD', '$REALM', '$DOMAIN', "$PREFIX/ad_dc_fips", configuration])
-    plantestsuite("samba4.blackbox.net_ads_fips", "ad_dc_fips:client", [os.path.join(bbdir, "test_net_ads_fips.sh"), '$DC_SERVER', '$DC_USERNAME', '$DC_PASSWORD', '$PREFIX_ABS'])
+        plantestsuite("samba4.blackbox.weak_crypto.server",
+                      env,
+                      [os.path.join(bbdir, "test_weak_crypto_server.sh"),
+                       '$SERVER',
+                       '$USERNAME',
+                       '$PASSWORD',
+                       '$REALM',
+                       '$DOMAIN',
+                       "$PREFIX/ad_dc_fips",
+                       configuration],
+                      environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                               'OPENSSL_FORCE_FIPS_MODE': '1'})
+
+    plantestsuite("samba4.blackbox.net_ads_fips",
+                  "ad_dc_fips:client",
+                  [os.path.join(bbdir, "test_net_ads_fips.sh"),
+                   '$DC_SERVER',
+                   '$DC_USERNAME',
+                   '$DC_PASSWORD',
+                   '$PREFIX_ABS'],
+                  environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                           'OPENSSL_FORCE_FIPS_MODE': '1'})
 
     t = "--krb5auth=$DOMAIN/$DC_USERNAME%$DC_PASSWORD"
-    plantestsuite("samba3.wbinfo_simple.fips.%s" % t, "ad_member_fips:local", [os.path.join(srcdir(), "nsswitch/tests/test_wbinfo_simple.sh"), t])
-    plantestsuite("samba4.wbinfo_name_lookup.fips", "ad_member_fips", [os.path.join(srcdir(), "nsswitch/tests/test_wbinfo_name_lookup.sh"), '$DOMAIN', '$REALM', '$DC_USERNAME'])
+    plantestsuite("samba3.wbinfo_simple.fips.%s" % t,
+                  "ad_member_fips:local",
+                  [os.path.join(srcdir(), "nsswitch/tests/test_wbinfo_simple.sh"), t],
+                  environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                           'OPENSSL_FORCE_FIPS_MODE': '1'})
+    plantestsuite("samba4.wbinfo_name_lookup.fips",
+                  "ad_member_fips",
+                  [os.path.join(srcdir(), "nsswitch/tests/test_wbinfo_name_lookup.sh"),
+                   '$DOMAIN',
+                   '$REALM',
+                   '$DC_USERNAME'],
+                  environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                           'OPENSSL_FORCE_FIPS_MODE': '1'})
+
+    plansmbtorture4testsuite('rpc.fips.netlogon.crypto',
+                             'ad_dc_fips',
+                             ['ncacn_np:$SERVER[krb5]',
+                              '-U$USERNAME%$PASSWORD',
+                              '--workgroup=$DOMAIN',
+                              '--client-protection=encrypt'],
+                             'samba4.rpc.fips.netlogon.crypto',
+                             environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                                      'OPENSSL_FORCE_FIPS_MODE': '1'})
 
 plansmbtorture4testsuite('rpc.echo', "ad_dc_ntvfs", ['ncacn_np:$NETBIOSALIAS', '-U$DOMAIN/$USERNAME%$PASSWORD'], "samba4.rpc.echo against NetBIOS alias")
 
@@ -781,7 +830,7 @@ for env in ["s4member_dflt_domain", "s4member"]:
 nsstest4 = binpath("nsstest")
 for env in ["ad_dc:local", "s4member:local", "nt4_dc:local", "ad_member:local", "nt4_member:local"]:
     if os.path.exists(nsstest4):
-        plantestsuite("samba.nss.test using winbind(%s)" % env, env, [os.path.join(bbdir, "nsstest.sh"), nsstest4, os.path.join(samba4bindir, "shared/libnss_wrapper_winbind.so.2")])
+        plantestsuite("samba.nss.test using winbind(%s)" % env, env, [os.path.join(bbdir, "nsstest.sh"), nsstest4, os.path.join(samba4bindir, "plugins/libnss_wrapper_winbind.so.2")])
     else:
         skiptestsuite("samba.nss.test using winbind(%s)" % env, "nsstest not available")
 
@@ -801,8 +850,14 @@ def planoldpythontestsuite(env, module, name=None, extra_path=[], environ={}, ex
     plantestsuite_loadlist(name, env, args)
 
 if have_gnutls_fips_mode_support:
-    planoldpythontestsuite("ad_dc", "samba.tests.dcerpc.createtrustrelax", environ={'GNUTLS_FORCE_FIPS_MODE':'1'})
-    planoldpythontestsuite("ad_dc_fips", "samba.tests.dcerpc.createtrustrelax", environ={'GNUTLS_FORCE_FIPS_MODE':'1'})
+    planoldpythontestsuite("ad_dc",
+                           "samba.tests.dcerpc.createtrustrelax",
+                           environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                                    'OPENSSL_FORCE_FIPS_MODE': '1'})
+    planoldpythontestsuite("ad_dc_fips",
+                           "samba.tests.dcerpc.createtrustrelax",
+                           environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                                    'OPENSSL_FORCE_FIPS_MODE': '1'})
 
 # Run complex search expressions test once for each database backend.
 # Right now ad_dc has mdb and ad_dc_ntvfs has tdb
@@ -822,6 +877,7 @@ planpythontestsuite("ad_dc_default:local", "samba.tests.dcerpc.unix")
 planpythontestsuite("ad_dc_ntvfs:local", "samba.tests.dcerpc.srvsvc")
 planpythontestsuite("ad_dc_default:local", "samba.tests.samba_tool.timecmd")
 planpythontestsuite("ad_dc_default:local", "samba.tests.samba_tool.join")
+planpythontestsuite("ad_member_s3_join", "samba.tests.samba_tool.join_member")
 planpythontestsuite("ad_dc_default",
                     "samba.tests.samba_tool.join_lmdb_size")
 planpythontestsuite("ad_dc_default",
@@ -894,7 +950,9 @@ planpythontestsuite("chgdcpass:local", "samba.tests.samba_tool.dnscmd")
 planpythontestsuite("chgdcpass:local", "samba.tests.dcerpc.rpcecho")
 
 planoldpythontestsuite("nt4_dc", "samba.tests.netbios", extra_args=['-U"$USERNAME%$PASSWORD"'])
-planoldpythontestsuite("ad_dc:local", "samba.tests.gpo", extra_args=['-U"$USERNAME%$PASSWORD"'])
+test_bin = os.path.abspath(os.path.join(os.getenv('BINDIR', './bin'), '../python/samba/tests/bin'))
+planoldpythontestsuite("ad_dc:local", "samba.tests.gpo", extra_args=['-U"$USERNAME%$PASSWORD"'],
+                       environ={'PATH':':'.join([test_bin, os.getenv('PATH', '')])})
 planoldpythontestsuite("ad_member", "samba.tests.gpo_member", extra_args=['-U"$USERNAME%$PASSWORD"'])
 planoldpythontestsuite("ad_dc:local", "samba.tests.dckeytab", extra_args=['-U"$USERNAME%$PASSWORD"'])
 
@@ -902,12 +960,14 @@ planoldpythontestsuite("ad_dc:local", "samba.tests.dckeytab", extra_args=['-U"$U
 for env in ['fileserver_smb1', 'nt4_member', 'clusteredmember', 'ktest', 'nt4_dc', 'nt4_dc_smb1_done', 'nt4_dc_smb1', 'simpleserver', 'fileserver_smb1_done', 'fileserver', 'maptoguest', 'nt4_dc_schannel']:
     planoldpythontestsuite(env, "samba.tests.imports")
 
-have_fast_support = int('SAMBA_USES_MITKDC' in config_hash)
+have_fast_support = 1
 claims_support = 0
 compound_id_support = 0
 tkt_sig_support = int('SAMBA4_USES_HEIMDAL' in config_hash)
 expect_pac = int('SAMBA4_USES_HEIMDAL' in config_hash)
 extra_pac_buffers = int('SAMBA4_USES_HEIMDAL' in config_hash)
+check_cname = int('SAMBA4_USES_HEIMDAL' in config_hash)
+check_padata = int('SAMBA4_USES_HEIMDAL' in config_hash)
 krb5_environ = {
     'SERVICE_USERNAME': '$SERVER',
     'ADMIN_USERNAME': '$DC_USERNAME',
@@ -921,6 +981,8 @@ krb5_environ = {
     'TKT_SIG_SUPPORT': tkt_sig_support,
     'EXPECT_PAC': expect_pac,
     'EXPECT_EXTRA_PAC_BUFFERS': extra_pac_buffers,
+    'CHECK_CNAME': check_cname,
+    'CHECK_PADATA': check_padata,
 }
 planoldpythontestsuite("none", "samba.tests.krb5.kcrypto")
 planoldpythontestsuite("ad_dc_default", "samba.tests.krb5.simple_tests",
@@ -1544,8 +1606,14 @@ plansmbtorture4testsuite('krb5.kdc', env, ['ncacn_np:$SERVER_IP', "-k", "yes", '
                                            '--option=torture:krb5-service=http'],
                          "samba4.krb5.kdc with account having identical UPN and SPN")
 for env in ["fl2008r2dc", "fl2003dc"]:
+    fast_support = have_fast_support
+    if env in ["fl2003dc"]:
+        fast_support = 0
     planoldpythontestsuite(env, "samba.tests.krb5.as_req_tests",
-                           environ=krb5_environ)
+                           environ={
+                               **krb5_environ,
+                               'FAST_SUPPORT': fast_support,
+                           })
 
 planoldpythontestsuite('fl2008r2dc', 'samba.tests.krb5.salt_tests',
                        environ=krb5_environ)
@@ -1589,6 +1657,10 @@ planpythontestsuite(
 planpythontestsuite(
     "ad_dc",
     "samba.tests.krb5.alias_tests",
+    environ=krb5_environ)
+planoldpythontestsuite(
+    'ad_dc',
+    'samba.tests.krb5.pac_align_tests',
     environ=krb5_environ)
 planoldpythontestsuite(
     'ad_dc',

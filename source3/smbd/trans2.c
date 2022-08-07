@@ -1396,7 +1396,7 @@ static void call_trans2open(connection_struct *conn,
 	mtime = convert_timespec_to_time_t(smb_fname->st.st_ex_mtime);
 	inode = smb_fname->st.st_ex_ino;
 	if (fattr & FILE_ATTRIBUTE_DIRECTORY) {
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		reply_nterror(req, NT_STATUS_ACCESS_DENIED);
 		goto out;
 	}
@@ -1591,6 +1591,7 @@ struct smbd_dirptr_lanman2_state {
 	bool check_mangled_names;
 	bool has_wild;
 	bool got_exact_match;
+	bool case_sensitive;
 };
 
 static bool smbd_dirptr_lanman2_match_fn(TALLOC_CTX *ctx,
@@ -1644,12 +1645,12 @@ static bool smbd_dirptr_lanman2_match_fn(TALLOC_CTX *ctx,
 	}
 
 	got_match = exact_match(state->has_wild,
-				state->conn->case_sensitive,
+				state->case_sensitive,
 				fname, mask);
 	state->got_exact_match = got_match;
 	if (!got_match) {
 		got_match = mask_match(fname, mask,
-				       state->conn->case_sensitive);
+				       state->case_sensitive);
 	}
 
 	if(!got_match && state->check_mangled_names &&
@@ -1668,12 +1669,12 @@ static bool smbd_dirptr_lanman2_match_fn(TALLOC_CTX *ctx,
 		}
 
 		got_match = exact_match(state->has_wild,
-					state->conn->case_sensitive,
+					state->case_sensitive,
 					mangled_name, mask);
 		state->got_exact_match = got_match;
 		if (!got_match) {
 			got_match = mask_match(mangled_name, mask,
-					       state->conn->case_sensitive);
+					       state->case_sensitive);
 		}
 	}
 
@@ -2484,6 +2485,7 @@ NTSTATUS smbd_dirptr_lanman2_entry(TALLOC_CTX *ctx,
 	}
 	state.has_wild = dptr_has_wild(dirptr);
 	state.got_exact_match = false;
+	state.case_sensitive = dptr_case_sensitive(dirptr);
 
 	*got_exact_match = false;
 
@@ -2689,11 +2691,18 @@ static void call_trans2findfirst(connection_struct *conn,
 
 	info_level = SVAL(params,6);
 
-	DEBUG(3,("call_trans2findfirst: dirtype = %x, maxentries = %d, close_after_first=%d, \
-close_if_end = %d requires_resume_key = %d backup_priv = %d level = 0x%x, max_data_bytes = %d\n",
-		(unsigned int)dirtype, maxentries, close_after_first, close_if_end, requires_resume_key,
-		(int)backup_priv,
-		info_level, max_data_bytes));
+	DBG_NOTICE("dirtype = %"PRIx32", maxentries = %d, "
+		   "close_after_first=%d, close_if_end = %d "
+		   "requires_resume_key = %d backup_priv = %d level = 0x%x, "
+		   "max_data_bytes = %d\n",
+		   dirtype,
+		   maxentries,
+		   close_after_first,
+		   close_if_end,
+		   requires_resume_key,
+		   backup_priv,
+		   info_level,
+		   max_data_bytes);
 
 	if (!maxentries) {
 		/* W2K3 seems to treat zero as 1. */
@@ -2887,8 +2896,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		 * as this is not a client visible handle so
 		 * can'tbe part of an SMB1 chain.
 		 */
-		close_file(NULL, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		reply_nterror(req, ntstatus);
 		goto out;
 	}
@@ -2909,7 +2917,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		 directory,lp_dont_descend(talloc_tos(), lp_sub, SNUM(conn))));
 	if (in_list(directory,
 		    lp_dont_descend(talloc_tos(), lp_sub, SNUM(conn)),
-			conn->case_sensitive)) {
+			dptr_case_sensitive(fsp->dptr))) {
 		dont_descend = True;
 	}
 
@@ -2978,8 +2986,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 	if(close_after_first || (finished && close_if_end)) {
 		DEBUG(5,("call_trans2findfirst - (2) closing dptr_num %d\n", dptr_num));
 		dptr_num = -1;
-		close_file(NULL, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_file_free(NULL, &fsp, NORMAL_CLOSE);
 	}
 
 	/*
@@ -2996,8 +3003,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		 * close_after_first or finished case above.
 		 */
 		if (fsp != NULL) {
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 		if (get_Protocol() < PROTOCOL_NT1) {
 			reply_force_doserror(req, ERRDOS, ERRnofiles);
@@ -3288,7 +3294,8 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 
 	DEBUG(8,("dirpath=<%s> dontdescend=<%s>\n",
 		 directory,lp_dont_descend(ctx, lp_sub, SNUM(conn))));
-	if (in_list(directory,lp_dont_descend(ctx, lp_sub, SNUM(conn)),conn->case_sensitive))
+	if (in_list(directory,lp_dont_descend(ctx, lp_sub, SNUM(conn)),
+			dptr_case_sensitive(fsp->dptr)))
 		dont_descend = True;
 
 	p = pdata;
@@ -3307,6 +3314,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 
 	if(!continue_bit && resume_name && *resume_name) {
 		SMB_STRUCT_STAT st;
+		bool posix_open = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN);
 
 		long current_pos = 0;
 		/*
@@ -3315,7 +3323,8 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 		 * could be mangled. Ensure we check the unmangled name.
 		 */
 
-		if (mangle_is_mangled(resume_name, conn->params)) {
+		if (!posix_open &&
+				mangle_is_mangled(resume_name, conn->params)) {
 			char *new_resume_name = NULL;
 			mangle_lookup_name_from_8_3(ctx,
 						resume_name,
@@ -3397,8 +3406,7 @@ total_data=%u (should be %u)\n", (unsigned int)total_data, (unsigned int)IVAL(pd
 	if(close_after_request || (finished && close_if_end)) {
 		DEBUG(5,("call_trans2findnext: closing dptr_num = %d\n", dptr_num));
 		dptr_num = -1;
-		close_file(NULL, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_file_free(NULL, &fsp, NORMAL_CLOSE);
 	}
 
 	if (as_root) {
@@ -3986,7 +3994,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 		{
 			uint32_t flags = 0;
 			uint32_t sid_bytes;
-			int i;
+			uint32_t i;
 
 			if (!lp_unix_extensions()) {
 				return NT_STATUS_INVALID_LEVEL;
@@ -4667,7 +4675,7 @@ static const struct {unsigned stat_fflag; unsigned smb_fflag;}
 static void map_info2_flags_from_sbuf(const SMB_STRUCT_STAT *psbuf,
 				uint32_t *smb_fflags, uint32_t *smb_fmask)
 {
-	int i;
+	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(info2_flags_map); ++i) {
 	    *smb_fmask |= info2_flags_map[i].smb_fflag;
@@ -4683,7 +4691,7 @@ static bool map_info2_flags_to_sbuf(const SMB_STRUCT_STAT *psbuf,
 				int *stat_fflags)
 {
 	uint32_t max_fmask = 0;
-	int i;
+	size_t i;
 
 	*stat_fflags = psbuf->st_ex_flags;
 
@@ -5031,8 +5039,7 @@ static NTSTATUS smb_query_posix_acl(connection_struct *conn,
 		 * date. Structure copy.
 		 */
 		smb_fname->st = fsp->fsp_name->st;
-		(void)close_file(req, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		(void)close_file_free(req, &fsp, NORMAL_CLOSE);
 	}
 
 	TALLOC_FREE(file_acl);
@@ -5944,6 +5951,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 	char *lock_data = NULL;
 	size_t fixed_portion;
 	NTSTATUS status = NT_STATUS_OK;
+	int ret;
 
 	if (!params) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -6002,24 +6010,11 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 			 * handle (returned from an NT SMB). NT5.0 seems
 			 * to do this call. JRA.
 			 */
-
-			if (INFO_LEVEL_IS_UNIX(info_level)) {
-				/* Always do lstat for UNIX calls. */
-				if (SMB_VFS_LSTAT(conn, smb_fname)) {
-					DEBUG(3,("call_trans2qfilepathinfo: "
-						 "SMB_VFS_LSTAT of %s failed "
-						 "(%s)\n",
-						 smb_fname_str_dbg(smb_fname),
-						 strerror(errno)));
-					reply_nterror(req,
-						map_nt_error_from_unix(errno));
-					return;
-				}
-			} else if (SMB_VFS_STAT(conn, smb_fname)) {
-				DEBUG(3,("call_trans2qfilepathinfo: "
-					 "SMB_VFS_STAT of %s failed (%s)\n",
+			ret = vfs_stat(conn, smb_fname);
+			if (ret != 0) {
+				DBG_NOTICE("vfs_stat of %s failed (%s)\n",
 					 smb_fname_str_dbg(smb_fname),
-					 strerror(errno)));
+					 strerror(errno));
 				reply_nterror(req,
 					map_nt_error_from_unix(errno));
 				return;
@@ -6120,6 +6115,17 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 		}
 
 		/*
+		 * qpathinfo must operate on an existing file, so we
+		 * can exit early if filename_convert() returned the "new file"
+		 * NT_STATUS_OK, !VALID_STAT case.
+		 */
+
+		if (!VALID_STAT(smb_fname->st)) {
+			reply_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+			return;
+		}
+
+		/*
 		 * smb_fname->fsp may be NULL if smb_fname points at a symlink
 		 * and we're in POSIX context, so be careful when using fsp
 		 * below, it can still be NULL.
@@ -6144,31 +6150,16 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 				return;
 			}
 
-			if (INFO_LEVEL_IS_UNIX(info_level) || req->posix_pathnames) {
-				/* Always do lstat for UNIX calls. */
-				if (SMB_VFS_LSTAT(conn, smb_fname_base) != 0) {
-					DEBUG(3,("call_trans2qfilepathinfo: "
-						 "SMB_VFS_LSTAT of %s failed "
-						 "(%s)\n",
-						 smb_fname_str_dbg(smb_fname_base),
-						 strerror(errno)));
-					TALLOC_FREE(smb_fname_base);
-					reply_nterror(req,
-						map_nt_error_from_unix(errno));
-					return;
-				}
-			} else {
-				if (SMB_VFS_STAT(conn, smb_fname_base) != 0) {
-					DEBUG(3,("call_trans2qfilepathinfo: "
-						 "fileinfo of %s failed "
-						 "(%s)\n",
-						 smb_fname_str_dbg(smb_fname_base),
-						 strerror(errno)));
-					TALLOC_FREE(smb_fname_base);
-					reply_nterror(req,
-						map_nt_error_from_unix(errno));
-					return;
-				}
+			ret = vfs_stat(conn, smb_fname_base);
+			if (ret != 0) {
+				DBG_NOTICE("vfs_stat of %s failed "
+					"(%s)\n",
+					smb_fname_str_dbg(smb_fname_base),
+					strerror(errno));
+				TALLOC_FREE(smb_fname_base);
+				reply_nterror(req,
+					map_nt_error_from_unix(errno));
+				return;
 			}
 
 			status = file_name_hash(conn,
@@ -6186,30 +6177,6 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 			get_file_infos(fileid, name_hash, &delete_pending, NULL);
 			if (delete_pending) {
 				reply_nterror(req, NT_STATUS_DELETE_PENDING);
-				return;
-			}
-		}
-
-		if (INFO_LEVEL_IS_UNIX(info_level) || req->posix_pathnames) {
-			/* Always do lstat for UNIX calls. */
-			if (SMB_VFS_LSTAT(conn, smb_fname)) {
-				DEBUG(3,("call_trans2qfilepathinfo: "
-					 "SMB_VFS_LSTAT of %s failed (%s)\n",
-					 smb_fname_str_dbg(smb_fname),
-					 strerror(errno)));
-				reply_nterror(req,
-					map_nt_error_from_unix(errno));
-				return;
-			}
-
-		} else {
-			if (SMB_VFS_STAT(conn, smb_fname) != 0) {
-				DEBUG(3,("call_trans2qfilepathinfo: "
-					 "SMB_VFS_STAT of %s failed (%s)\n",
-					 smb_fname_str_dbg(smb_fname),
-					 strerror(errno)));
-				reply_nterror(req,
-					map_nt_error_from_unix(errno));
 				return;
 			}
 		}
@@ -6715,18 +6682,18 @@ static NTSTATUS smb_set_file_size(connection_struct *conn,
 
 	/* See RAW-SFILEINFO-END-OF-FILE */
 	if (fail_after_createfile) {
-		close_file(req, new_fsp,NORMAL_CLOSE);
+		close_file_free(req, &new_fsp, NORMAL_CLOSE);
 		return NT_STATUS_INVALID_LEVEL;
 	}
 
 	if (vfs_set_filelen(new_fsp, size) == -1) {
 		status = map_nt_error_from_unix(errno);
-		close_file(req, new_fsp,NORMAL_CLOSE);
+		close_file_free(req, &new_fsp, NORMAL_CLOSE);
 		return status;
 	}
 
 	trigger_write_time_update_immediate(new_fsp);
-	close_file(req, new_fsp,NORMAL_CLOSE);
+	close_file_free(req, &new_fsp, NORMAL_CLOSE);
 	return NT_STATUS_OK;
 }
 
@@ -7611,8 +7578,7 @@ static NTSTATUS smb_set_posix_acl(connection_struct *conn,
   out:
 
 	if (close_fsp) {
-		(void)close_file(req, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		(void)close_file_free(req, &fsp, NORMAL_CLOSE);
 	}
 	return status;
 }
@@ -7703,10 +7669,11 @@ static NTSTATUS smb_set_posix_lock(connection_struct *conn,
 			.req_guid = smbd_request_guid(req, 0),
 			.smblctx = smblctx,
 			.brltype = UNLOCK_LOCK,
+			.lock_flav = POSIX_LOCK,
 			.offset = offset,
 			.count = count,
 		};
-		status = smbd_do_unlocking(req, fsp, 1, &l, POSIX_LOCK);
+		status = smbd_do_unlocking(req, fsp, 1, &l);
 		return status;
 	}
 
@@ -7719,6 +7686,7 @@ static NTSTATUS smb_set_posix_lock(connection_struct *conn,
 		.req_guid = smbd_request_guid(req, 0),
 		.smblctx = smblctx,
 		.brltype = lock_type,
+		.lock_flav = POSIX_LOCK,
 		.count = count,
 		.offset = offset,
 	};
@@ -7730,7 +7698,6 @@ static NTSTATUS smb_set_posix_lock(connection_struct *conn,
 		fsp,
 		blocking_lock ? UINT32_MAX : 0,
 		true,		/* large_offset */
-		POSIX_LOCK,
 		1,
 		lck);
 	if (subreq == NULL) {
@@ -7987,7 +7954,7 @@ static NTSTATUS smb_set_file_allocation_info(connection_struct *conn,
 	if (allocation_size != get_file_size_stat(&smb_fname->st)) {
 		if (vfs_allocate_file_space(new_fsp, allocation_size) == -1) {
 			status = map_nt_error_from_unix(errno);
-			close_file(req, new_fsp, NORMAL_CLOSE);
+			close_file_free(req, &new_fsp, NORMAL_CLOSE);
 			return status;
 		}
 	}
@@ -7998,7 +7965,7 @@ static NTSTATUS smb_set_file_allocation_info(connection_struct *conn,
 	 * if there are no pending writes.
 	 */
 	trigger_write_time_update_immediate(new_fsp);
-	close_file(req, new_fsp, NORMAL_CLOSE);
+	close_file_free(req, &new_fsp, NORMAL_CLOSE);
 	return NT_STATUS_OK;
 }
 
@@ -8503,7 +8470,7 @@ static NTSTATUS smb_posix_mkdir(connection_struct *conn,
 	TALLOC_FREE(posx);
 
         if (NT_STATUS_IS_OK(status)) {
-                close_file(req, fsp, NORMAL_CLOSE);
+                close_file_free(req, &fsp, NORMAL_CLOSE);
         }
 
 	info_level_return = SVAL(pdata,16);
@@ -8771,7 +8738,7 @@ static NTSTATUS smb_posix_open(connection_struct *conn,
 	/* Realloc the data size */
 	*ppdata = (char *)SMB_REALLOC(*ppdata,*pdata_return_size);
 	if (*ppdata == NULL) {
-		close_file(req, fsp, ERROR_CLOSE);
+		close_file_free(req, &fsp, ERROR_CLOSE);
 		*pdata_return_size = 0;
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -8899,7 +8866,7 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 	if (lck == NULL) {
 		DEBUG(0, ("smb_posix_unlink: Could not get share mode "
 			  "lock for file %s\n", fsp_str_dbg(fsp)));
-		close_file(req, fsp, NORMAL_CLOSE);
+		close_file_free(req, &fsp, NORMAL_CLOSE);
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
@@ -8907,7 +8874,7 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 	if (other_nonposix_opens) {
 		/* Fail with sharing violation. */
 		TALLOC_FREE(lck);
-		close_file(req, fsp, NORMAL_CLOSE);
+		close_file_free(req, &fsp, NORMAL_CLOSE);
 		return NT_STATUS_SHARING_VIOLATION;
 	}
 
@@ -8923,10 +8890,10 @@ static NTSTATUS smb_posix_unlink(connection_struct *conn,
 	TALLOC_FREE(lck);
 
 	if (!NT_STATUS_IS_OK(status)) {
-		close_file(req, fsp, NORMAL_CLOSE);
+		close_file_free(req, &fsp, NORMAL_CLOSE);
 		return status;
 	}
-	return close_file(req, fsp, NORMAL_CLOSE);
+	return close_file_free(req, &fsp, NORMAL_CLOSE);
 }
 
 static NTSTATUS smbd_do_posix_setfilepathinfo(struct connection_struct *conn,
@@ -9288,6 +9255,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 	files_struct *fsp = NULL;
 	NTSTATUS status = NT_STATUS_OK;
 	int data_return_size = 0;
+	int ret;
 
 	if (!params) {
 		reply_nterror(req, NT_STATUS_INVALID_PARAMETER);
@@ -9326,26 +9294,14 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 			 * handle (returned from an NT SMB). NT5.0 seems
 			 * to do this call. JRA.
 			 */
-			if (INFO_LEVEL_IS_UNIX(info_level)) {
-				/* Always do lstat for UNIX calls. */
-				if (SMB_VFS_LSTAT(conn, smb_fname)) {
-					DEBUG(3,("call_trans2setfilepathinfo: "
-						 "SMB_VFS_LSTAT of %s failed "
-						 "(%s)\n",
-						 smb_fname_str_dbg(smb_fname),
-						 strerror(errno)));
-					reply_nterror(req, map_nt_error_from_unix(errno));
-					return;
-				}
-			} else {
-				if (SMB_VFS_STAT(conn, smb_fname) != 0) {
-					DEBUG(3,("call_trans2setfilepathinfo: "
-						 "fileinfo of %s failed (%s)\n",
-						 smb_fname_str_dbg(smb_fname),
-						 strerror(errno)));
-					reply_nterror(req, map_nt_error_from_unix(errno));
-					return;
-				}
+			ret = vfs_stat(conn, smb_fname);
+			if (ret != 0) {
+				DBG_NOTICE("vfs_stat of %s failed (%s)\n",
+					smb_fname_str_dbg(smb_fname),
+					strerror(errno));
+				reply_nterror(req,
+					map_nt_error_from_unix(errno));
+				return;
 			}
 		} else if (fsp->print_file) {
 			/*
@@ -9389,6 +9345,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 	} else {
 		char *fname = NULL;
 		uint32_t ucf_flags = ucf_flags_from_smb_request(req);
+		bool require_existing_object = true;
 
 		/* set path info */
 		if (total_params < 7) {
@@ -9456,22 +9413,30 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		 */
 		fsp = smb_fname->fsp;
 
-		if (INFO_LEVEL_IS_UNIX(info_level)) {
-			/*
-			 * For CIFS UNIX extensions the target name may not exist.
-			 */
+		/*
+		 * There are 4 info levels which can
+		 * create a new object in the filesystem.
+		 * They are:
+		 * SMB_SET_FILE_UNIX_LINK -> creates POSIX symlink.
+		 * SMB_POSIX_PATH_OPEN -> creates POSIX file or directory.
+		 * SMB_SET_FILE_UNIX_BASIC:
+		 * SMB_SET_FILE_UNIX_INFO2: can create a POSIX special file.
+		 *
+		 * These info levels do not require an existing object.
+		 */
+		switch (info_level) {
+		case SMB_SET_FILE_UNIX_LINK:
+		case SMB_POSIX_PATH_OPEN:
+		case SMB_SET_FILE_UNIX_BASIC:
+		case SMB_SET_FILE_UNIX_INFO2:
+			require_existing_object = false;
+			break;
+		default:
+			break;
+		}
 
-			/* Always do lstat for UNIX calls. */
-			SMB_VFS_LSTAT(conn, smb_fname);
-
-		} else if (!VALID_STAT(smb_fname->st) &&
-			   SMB_VFS_STAT(conn, smb_fname)) {
-			DEBUG(3,("call_trans2setfilepathinfo: SMB_VFS_STAT of "
-				 "%s failed (%s)\n",
-				 smb_fname_str_dbg(smb_fname),
-				 strerror(errno)));
-			reply_nterror(req, map_nt_error_from_unix(errno));
-			return;
+		if (!VALID_STAT(smb_fname->st) && require_existing_object) {
+			reply_nterror(req, NT_STATUS_OBJECT_NAME_NOT_FOUND);
 		}
 	}
 
@@ -9696,8 +9661,7 @@ static void call_trans2mkdir(connection_struct *conn, struct smb_request *req,
 
  out:
 	if (fsp != NULL) {
-		close_file(NULL, fsp, NORMAL_CLOSE);
-		fsp = NULL;
+		close_file_free(NULL, &fsp, NORMAL_CLOSE);
 	}
 	TALLOC_FREE(smb_dname);
 	return;
@@ -9934,8 +9898,7 @@ void reply_findclose(struct smb_request *req)
 		fsp = dptr_fetch_lanman2_fsp(sconn, dptr_num);
 		dptr_num = -1;
 		if (fsp != NULL) {
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 	}
 
@@ -10253,8 +10216,8 @@ void reply_trans2(struct smb_request *req)
 
 	if (state->total_data) {
 
-		if (trans_oob(state->total_data, 0, dscnt)
-		    || trans_oob(smb_len(req->inbuf), dsoff, dscnt)) {
+		if (smb_buffer_oob(state->total_data, 0, dscnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), dsoff, dscnt)) {
 			goto bad_param;
 		}
 
@@ -10275,8 +10238,8 @@ void reply_trans2(struct smb_request *req)
 
 	if (state->total_param) {
 
-		if (trans_oob(state->total_param, 0, pscnt)
-		    || trans_oob(smb_len(req->inbuf), psoff, pscnt)) {
+		if (smb_buffer_oob(state->total_param, 0, pscnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), psoff, pscnt)) {
 			goto bad_param;
 		}
 
@@ -10397,16 +10360,16 @@ void reply_transs2(struct smb_request *req)
 		goto bad_param;
 
 	if (pcnt) {
-		if (trans_oob(state->total_param, pdisp, pcnt)
-		    || trans_oob(smb_len(req->inbuf), poff, pcnt)) {
+		if (smb_buffer_oob(state->total_param, pdisp, pcnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), poff, pcnt)) {
 			goto bad_param;
 		}
 		memcpy(state->param+pdisp,smb_base(req->inbuf)+poff,pcnt);
 	}
 
 	if (dcnt) {
-		if (trans_oob(state->total_data, ddisp, dcnt)
-		    || trans_oob(smb_len(req->inbuf), doff, dcnt)) {
+		if (smb_buffer_oob(state->total_data, ddisp, dcnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), doff, dcnt)) {
 			goto bad_param;
 		}
 		memcpy(state->data+ddisp, smb_base(req->inbuf)+doff,dcnt);

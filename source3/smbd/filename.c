@@ -30,6 +30,12 @@
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
 
+static int get_real_filename(connection_struct *conn,
+			     struct smb_filename *path,
+			     const char *name,
+			     TALLOC_CTX *mem_ctx,
+			     char **found_name);
+
 static NTSTATUS check_name(connection_struct *conn,
 			   const struct smb_filename *smb_fname);
 
@@ -166,11 +172,7 @@ static NTSTATUS check_parent_exists(TALLOC_CTX *ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	if (posix_pathnames) {
-		ret = SMB_VFS_LSTAT(conn, parent_fname);
-	} else {
-		ret = SMB_VFS_STAT(conn, parent_fname);
-	}
+	ret = vfs_stat(conn, parent_fname);
 
 	/* If the parent stat failed, just continue
 	   with the normal tree walk. */
@@ -290,7 +292,7 @@ static NTSTATUS rearrange_snapshot_path(struct smb_filename *smb_fname,
 				smb_fname->base_name,
 				&parent,
 				&last_component);
-	if (ret == false) {
+	if (!ret) {
 		/* Must terminate debug with \n */
 		DBG_DEBUG("NT_STATUS_NO_MEMORY\n");
 		return NT_STATUS_NO_MEMORY;
@@ -422,10 +424,18 @@ NTSTATUS canonicalize_snapshot_path(struct smb_filename *smb_fname,
  * Performs an in-place case conversion guaranteed to stay the same size.
  */
 
-static NTSTATUS normalize_filename_case(connection_struct *conn, char *filename)
+static NTSTATUS normalize_filename_case(connection_struct *conn,
+					char *filename,
+					uint32_t ucf_flags)
 {
 	bool ok;
 
+	if (ucf_flags & UCF_POSIX_PATHNAMES) {
+		/*
+		 * POSIX never normalizes filename case.
+		 */
+		return NT_STATUS_OK;
+	}
 	if (!conn->case_sensitive) {
 		return NT_STATUS_OK;
 	}
@@ -485,6 +495,9 @@ struct uc_state {
 	bool component_was_mangled;
 	bool posix_pathnames;
 	bool done;
+	bool case_sensitive;
+	bool case_preserve;
+	bool short_case_preserve;
 };
 
 static NTSTATUS unix_convert_step_search_fail(struct uc_state *state)
@@ -595,16 +608,23 @@ static NTSTATUS unix_convert_step_search_fail(struct uc_state *state)
 	}
 
 	/*
+	 * POSIX pathnames must never call into mangling.
+	 */
+	if (state->posix_pathnames) {
+		goto done;
+	}
+
+	/*
 	 * Just the last part of the name doesn't exist.
 	 * We need to strupper() or strlower() it as
 	 * this conversion may be used for file creation
 	 * purposes. Fix inspired by
 	 * Thomas Neumann <t.neumann@iku-ag.de>.
 	 */
-	if (!state->conn->case_preserve ||
+	if (!state->case_preserve ||
 	    (mangle_is_8_3(state->name, false,
 			   state->conn->params) &&
-	     !state->conn->short_case_preserve)) {
+	     !state->short_case_preserve)) {
 		if (!strnorm(state->name,
 			     lp_default_case(SNUM(state->conn)))) {
 			DBG_DEBUG("strnorm %s failed\n",
@@ -646,6 +666,8 @@ static NTSTATUS unix_convert_step_search_fail(struct uc_state *state)
 			state->smb_fname->base_name + name_ofs;
 		state->end = state->name + strlen(state->name);
 	}
+
+  done:
 
 	DBG_DEBUG("New file [%s]\n", state->name);
 	state->done = true;
@@ -898,7 +920,7 @@ static NTSTATUS unix_convert_step(struct uc_state *state)
 		stat_cache_add(state->orig_path,
 			       state->dirpath,
 			       state->smb_fname->twrp,
-			       state->conn->case_sensitive);
+			       state->case_sensitive);
 	}
 
 	/*
@@ -930,9 +952,19 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 		.orig_path = orig_path,
 		.ucf_flags = ucf_flags,
 		.posix_pathnames = (ucf_flags & UCF_POSIX_PATHNAMES),
+		.case_sensitive = conn->case_sensitive,
+		.case_preserve = conn->case_preserve,
+		.short_case_preserve = conn->short_case_preserve,
 	};
 
 	*smb_fname_out = NULL;
+
+	if (state->posix_pathnames) {
+		/* POSIX means ignore case settings on share. */
+		state->case_sensitive = true;
+		state->case_preserve = true;
+		state->short_case_preserve = true;
+	}
 
 	state->smb_fname = talloc_zero(state->mem_ctx, struct smb_filename);
 	if (state->smb_fname == NULL) {
@@ -1018,7 +1050,9 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 	 * the man page. Thanks to jht@samba.org for finding this. JRA.
 	 */
 
-	status = normalize_filename_case(state->conn, state->smb_fname->base_name);
+	status = normalize_filename_case(state->conn,
+					 state->smb_fname->base_name,
+					 ucf_flags);
 	if (!NT_STATUS_IS_OK(status)) {
 		DBG_ERR("normalize_filename_case %s failed\n",
 				state->smb_fname->base_name);
@@ -1088,13 +1122,12 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 	 * added and verified in build_stream_path().
 	 */
 
-	if (!state->conn->case_sensitive ||
+	if (!state->case_sensitive ||
 	    !(state->conn->fs_capabilities & FILE_CASE_SENSITIVE_SEARCH))
 	{
 		bool found;
 
 		found = stat_cache_lookup(state->conn,
-					  state->posix_pathnames,
 					  &state->smb_fname->base_name,
 					  &state->dirpath,
 					  &state->name,
@@ -1160,7 +1193,7 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 		stat_cache_add(state->orig_path,
 			       state->smb_fname->base_name,
 			       state->smb_fname->twrp,
-			       state->conn->case_sensitive);
+			       state->case_sensitive);
 		DBG_DEBUG("Conversion of base_name finished "
 			  "[%s] -> [%s]\n",
 			  state->orig_path, state->smb_fname->base_name);
@@ -1200,9 +1233,12 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 	 * A special case - if we don't have any wildcards or mangling chars and are case
 	 * sensitive or the underlying filesystem is case insensitive then searching
 	 * won't help.
+	 *
+	 * NB. As POSIX sets state->case_sensitive as
+	 * true we will never call into mangle_is_mangled() here.
 	 */
 
-	if ((state->conn->case_sensitive || !(state->conn->fs_capabilities &
+	if ((state->case_sensitive || !(state->conn->fs_capabilities &
 				FILE_CASE_SENSITIVE_SEARCH)) &&
 			!mangle_is_mangled(state->smb_fname->base_name, state->conn->params)) {
 
@@ -1262,7 +1298,13 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 	 * just a component. JRA.
 	 */
 
-	if (mangle_is_mangled(state->name, state->conn->params)) {
+	if (state->posix_pathnames) {
+		/*
+		 * POSIX names are never mangled and we must not
+		 * call into mangling functions.
+		 */
+		state->component_was_mangled = false;
+	} else if (mangle_is_mangled(state->name, state->conn->params)) {
 		state->component_was_mangled = true;
 	}
 
@@ -1298,7 +1340,7 @@ NTSTATUS unix_convert(TALLOC_CTX *mem_ctx,
 		stat_cache_add(state->orig_path,
 			       state->smb_fname->base_name,
 			       state->smb_fname->twrp,
-			       state->conn->case_sensitive);
+			       state->case_sensitive);
 	}
 
 	/*
@@ -1613,11 +1655,11 @@ int get_real_filename_full_scan(connection_struct *conn,
  fallback.
 ****************************************************************************/
 
-int get_real_filename(connection_struct *conn,
-		      struct smb_filename *path,
-		      const char *name,
-		      TALLOC_CTX *mem_ctx,
-		      char **found_name)
+static int get_real_filename(connection_struct *conn,
+			     struct smb_filename *path,
+			     const char *name,
+			     TALLOC_CTX *mem_ctx,
+			     char **found_name)
 {
 	int ret;
 	bool mangled;
@@ -1716,14 +1758,19 @@ static NTSTATUS build_stream_path(TALLOC_CTX *mem_ctx,
 	}
 
 	for (i=0; i<num_streams; i++) {
-		DEBUG(10, ("comparing [%s] and [%s]: ",
-			   smb_fname->stream_name, streams[i].name));
-		if (sname_equal(smb_fname->stream_name, streams[i].name,
-				conn->case_sensitive)) {
-			DEBUGADD(10, ("equal\n"));
+		bool equal = sname_equal(
+			smb_fname->stream_name,
+			streams[i].name,
+			conn->case_sensitive);
+
+		DBG_DEBUG("comparing [%s] and [%s]: %sequal\n",
+			  smb_fname->stream_name,
+			  streams[i].name,
+			  equal ? "" : "not ");
+
+		if (equal) {
 			break;
 		}
-		DEBUGADD(10, ("not equal\n"));
 	}
 
 	/* Couldn't find the stream. */
@@ -1837,7 +1884,7 @@ char *get_original_lcomp(TALLOC_CTX *ctx,
 	if (orig_lcomp == NULL) {
 		return NULL;
 	}
-	status = normalize_filename_case(conn, orig_lcomp);
+	status = normalize_filename_case(conn, orig_lcomp, ucf_flags);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(orig_lcomp);
 		return NULL;
@@ -1969,7 +2016,7 @@ NTSTATUS filename_convert(TALLOC_CTX *ctx,
 		}
 	}
 	if (!NT_STATUS_IS_OK(status)) {
-		DBG_DEBUG("open_pathref_fsp [%s] failed: %s\n",
+		DBG_DEBUG("openat_pathref_fsp [%s] failed: %s\n",
 			  smb_fname_str_dbg(smb_fname),
 			  nt_errstr(status));
 		return status;

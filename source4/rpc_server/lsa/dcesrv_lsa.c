@@ -2249,7 +2249,7 @@ done:
 }
 
 /*
-  lsa_SetInfomrationTrustedDomain
+  lsa_SetInformationTrustedDomain
 */
 static NTSTATUS dcesrv_lsa_SetInformationTrustedDomain(
 				struct dcesrv_call_state *dce_call,

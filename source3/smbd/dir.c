@@ -59,6 +59,7 @@ struct smb_Dir {
 	struct name_cache_entry *name_cache;
 	unsigned int name_cache_index;
 	unsigned int file_number;
+	bool case_sensitive;
 	files_struct *fsp; /* Back pointer to containing fsp, only
 			      set from OpenDir_fsp(). */
 };
@@ -184,9 +185,12 @@ void dptr_closecnum(connection_struct *conn)
 	for(dptr = sconn->searches.dirptrs; dptr; dptr = next) {
 		next = dptr->next;
 		if (dptr->conn == conn) {
-			files_struct *fsp = dptr->dir_hnd->fsp;
-			close_file(NULL, fsp, NORMAL_CLOSE);
-			fsp = NULL;
+			/*
+			 * Need to make a copy, "dptr" will be gone
+			 * after close_file_free() returns
+			 */
+			struct files_struct *fsp = dptr->dir_hnd->fsp;
+			close_file_free(NULL, &fsp, NORMAL_CLOSE);
 		}
 	}
 }
@@ -396,6 +400,11 @@ void dptr_set_priv(struct dptr_struct *dptr)
 	dptr->priv = true;
 }
 
+bool dptr_case_sensitive(struct dptr_struct *dptr)
+{
+	return dptr->dir_hnd->case_sensitive;
+}
+
 /****************************************************************************
  Return the next visible file name, skipping veto'd and invisible files.
 ****************************************************************************/
@@ -472,11 +481,11 @@ static char *dptr_ReadDirName(TALLOC_CTX *ctx,
 		}
 	}
 
-	/* Stat failed. We know this is authoratiative if we are
+	/* Stat failed. We know this is authoritative if we are
 	 * providing case sensitive semantics or the underlying
 	 * filesystem is case sensitive.
 	 */
-	if (dptr->conn->case_sensitive ||
+	if (dptr->dir_hnd->case_sensitive ||
 	    !(dptr->conn->fs_capabilities & FILE_CASE_SENSITIVE_SEARCH))
 	{
 		goto clean;
@@ -1356,6 +1365,14 @@ bool is_visible_fsp(struct files_struct *fsp)
 	hide_special = lp_hide_special_files(SNUM(fsp->conn));
 	hide_new_files_timeout = lp_hide_new_files_timeout(SNUM(fsp->conn));
 
+	if (!hide_unreadable &&
+	    !hide_unwriteable &&
+	    !hide_special &&
+	    (hide_new_files_timeout == 0))
+	{
+		return true;
+	}
+
 	if (fsp->base_fsp != NULL) {
 		/* Only operate on non-stream files. */
 		fsp = fsp->base_fsp;
@@ -1541,6 +1558,11 @@ static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
 		goto fail;
 	}
 	dir_hnd->fsp = fsp;
+	if (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) {
+		dir_hnd->case_sensitive = true;
+	} else {
+		dir_hnd->case_sensitive = conn->case_sensitive;
+	}
 
 	talloc_set_destructor(dir_hnd, smb_Dir_destructor);
 
@@ -1707,7 +1729,7 @@ static bool SearchDir(struct smb_Dir *dir_hnd, const char *name, long *poffset)
 	if (dir_hnd->name_cache_size && dir_hnd->name_cache) {
 		for (i = dir_hnd->name_cache_index; i >= 0; i--) {
 			struct name_cache_entry *e = &dir_hnd->name_cache[i];
-			if (e->name && (conn->case_sensitive ? (strcmp(e->name, name) == 0) : strequal(e->name, name))) {
+			if (e->name && (dir_hnd->case_sensitive ? (strcmp(e->name, name) == 0) : strequal(e->name, name))) {
 				*poffset = e->offset;
 				SeekDir(dir_hnd, e->offset);
 				return True;
@@ -1716,7 +1738,7 @@ static bool SearchDir(struct smb_Dir *dir_hnd, const char *name, long *poffset)
 		for (i = dir_hnd->name_cache_size - 1;
 				i > dir_hnd->name_cache_index; i--) {
 			struct name_cache_entry *e = &dir_hnd->name_cache[i];
-			if (e->name && (conn->case_sensitive ? (strcmp(e->name, name) == 0) : strequal(e->name, name))) {
+			if (e->name && (dir_hnd->case_sensitive ? (strcmp(e->name, name) == 0) : strequal(e->name, name))) {
 				*poffset = e->offset;
 				SeekDir(dir_hnd, e->offset);
 				return True;
@@ -1729,7 +1751,7 @@ static bool SearchDir(struct smb_Dir *dir_hnd, const char *name, long *poffset)
 	dir_hnd->file_number = 0;
 	*poffset = START_OF_DIRECTORY_OFFSET;
 	while ((entry = ReadDirName(dir_hnd, poffset, NULL, &talloced))) {
-		if (conn->case_sensitive ? (strcmp(entry, name) == 0) : strequal(entry, name)) {
+		if (dir_hnd->case_sensitive ? (strcmp(entry, name) == 0) : strequal(entry, name)) {
 			TALLOC_FREE(talloced);
 			return True;
 		}

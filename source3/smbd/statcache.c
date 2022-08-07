@@ -196,7 +196,6 @@ void stat_cache_add( const char *full_orig_name,
  */
 
 bool stat_cache_lookup(connection_struct *conn,
-			bool posix_paths,
 			char **pp_name,
 			char **pp_dirpath,
 			char **pp_start,
@@ -331,12 +330,7 @@ bool stat_cache_lookup(connection_struct *conn,
 		.twrp = twrp,
 	};
 
-	if (posix_paths) {
-		ret = SMB_VFS_LSTAT(conn, &smb_fname);
-	} else {
-		ret = SMB_VFS_STAT(conn, &smb_fname);
-	}
-
+	ret = vfs_stat(conn, &smb_fname);
 	if (ret != 0) {
 		/* Discard this entry - it doesn't exist in the filesystem. */
 		memcache_delete(smbd_memcache(), STAT_CACHE,
@@ -437,22 +431,6 @@ void stat_cache_delete(const char *name)
 	memcache_delete(smbd_memcache(), STAT_CACHE,
 			data_blob_const(lname, talloc_get_size(lname)-1));
 	TALLOC_FREE(lname);
-}
-
-/***************************************************************
- Compute a hash value based on a string key value.
- The function returns the bucket index number for the hashed key.
- JRA. Use a djb-algorithm hash for speed.
-***************************************************************/
-
-unsigned int fast_string_hash(TDB_DATA *key)
-{
-        unsigned int n = 0;
-        const char *p;
-        for (p = (const char *)key->dptr; *p != '\0'; p++) {
-                n = ((n << 5) + n) ^ (unsigned int)(*p);
-        }
-        return n;
 }
 
 /***************************************************************************

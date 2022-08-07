@@ -1496,7 +1496,9 @@ static void fetch_share_mode_fn(
 		ltdb.share_mode_data_len);
 	if (state->lck->data == NULL) {
 		DBG_DEBUG("parse_share_modes failed\n");
+		state->status = NT_STATUS_INTERNAL_DB_CORRUPTION;
 		TALLOC_FREE(state->lck);
+		return;
 	}
 }
 
@@ -2400,34 +2402,10 @@ bool downgrade_share_oplock(struct share_mode_lock *lck, files_struct *fsp)
 	return true;
 }
 
-struct mark_share_mode_disconnected_state {
-	uint64_t open_persistent_id;
-	bool ok;
-};
-
-static void mark_share_mode_disconnected_fn(
-	struct share_mode_entry *e,
-	size_t num_share_modes,
-	bool *modified,
-	void *private_data)
-{
-	struct mark_share_mode_disconnected_state *state = private_data;
-
-	if (num_share_modes != 1) {
-		state->ok = false;
-		return;
-	}
-
-	server_id_set_disconnected(&e->pid);
-	e->share_file_id = state->open_persistent_id;
-	*modified = true;
-	state->ok = true;
-}
-
 bool mark_share_mode_disconnected(struct share_mode_lock *lck,
 				  struct files_struct *fsp)
 {
-	struct mark_share_mode_disconnected_state state;
+	struct server_id disconnected_pid = { .pid = 0 };
 	bool ok;
 
 	if (fsp->op == NULL) {
@@ -2437,27 +2415,17 @@ bool mark_share_mode_disconnected(struct share_mode_lock *lck,
 		return false;
 	}
 
-	state = (struct mark_share_mode_disconnected_state) {
-		.open_persistent_id = fsp->op->global->open_persistent_id,
-	};
+	server_id_set_disconnected(&disconnected_pid);
 
-	ok = share_mode_entry_do(
+	ok = reset_share_mode_entry(
 		lck,
 		messaging_server_id(fsp->conn->sconn->msg_ctx),
 		fh_get_gen_id(fsp->fh),
-		mark_share_mode_disconnected_fn,
-		&state);
-	if (!ok) {
-		DBG_DEBUG("share_mode_entry_do failed\n");
-		return false;
-	}
-	if (!state.ok) {
-		DBG_DEBUG("mark_share_mode_disconnected_fn failed\n");
-		return false;
-	}
+		disconnected_pid,
+		UINT64_MAX,
+		fsp->op->global->open_persistent_id);
 
-	lck->data->modified = true;
-	return true;
+	return ok;
 }
 
 bool reset_share_mode_entry(
@@ -2509,7 +2477,9 @@ bool reset_share_mode_entry(
 	}
 
 	e.pid = new_pid;
-	e.op_mid = new_mid;
+	if (new_mid != UINT64_MAX) {
+		e.op_mid = new_mid;
+	}
 	e.share_file_id = new_share_file_id;
 
 	ok = share_mode_entry_put(&e, &e_buf);

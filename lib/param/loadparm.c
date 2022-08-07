@@ -2577,6 +2577,7 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 	lpcfg_do_global_parameter(lp_ctx, "debug timestamp", "Yes");
 	lpcfg_do_global_parameter(lp_ctx, "debug prefix timestamp", "No");
 	lpcfg_do_global_parameter(lp_ctx, "debug hires timestamp", "Yes");
+	lpcfg_do_global_parameter(lp_ctx, "debug syslog format", "No");
 	lpcfg_do_global_parameter(lp_ctx, "debug pid", "No");
 	lpcfg_do_global_parameter(lp_ctx, "debug uid", "No");
 	lpcfg_do_global_parameter(lp_ctx, "debug class", "No");
@@ -2712,6 +2713,8 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 	lpcfg_do_global_parameter(lp_ctx, "krb5 port", "88");
 	lpcfg_do_global_parameter(lp_ctx, "kpasswd port", "464");
 
+	lpcfg_do_global_parameter(lp_ctx, "kdc enable fast", "True");
+
 	lpcfg_do_global_parameter(lp_ctx, "nt status support", "True");
 
 	lpcfg_do_global_parameter(lp_ctx, "max wins ttl", "518400"); /* 6 days */
@@ -2826,7 +2829,7 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 
 	lpcfg_do_global_parameter(lp_ctx, "ldap page size", "1000");
 
-	lpcfg_do_global_parameter(lp_ctx, "kernel share modes", "yes");
+	lpcfg_do_global_parameter(lp_ctx, "kernel share modes", "no");
 
 	lpcfg_do_global_parameter(lp_ctx, "strict locking", "Auto");
 
@@ -3030,6 +3033,14 @@ struct loadparm_context *loadparm_init(TALLOC_CTX *mem_ctx)
 				  "min domain uid",
 				  "500");
 
+	lpcfg_do_global_parameter(lp_ctx,
+				  "min domain uid",
+				  "1000");
+
+	lpcfg_do_global_parameter(lp_ctx,
+				  "rpc start on demand helpers",
+				  "yes");
+
 	for (i = 0; parm_table[i].label; i++) {
 		if (!(lp_ctx->flags[i] & FLAG_CMDLINE)) {
 			lp_ctx->flags[i] |= FLAG_DEFAULT;
@@ -3138,6 +3149,7 @@ static bool lpcfg_update(struct loadparm_context *lp_ctx)
 	settings.timestamp_logs = lp_ctx->globals->timestamp_logs;
 	settings.debug_prefix_timestamp = lp_ctx->globals->debug_prefix_timestamp;
 	settings.debug_hires_timestamp = lp_ctx->globals->debug_hires_timestamp;
+	settings.debug_syslog_format = lp_ctx->globals->debug_syslog_format;
 	settings.debug_pid = lp_ctx->globals->debug_pid;
 	settings.debug_uid = lp_ctx->globals->debug_uid;
 	settings.debug_class = lp_ctx->globals->debug_class;

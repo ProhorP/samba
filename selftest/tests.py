@@ -49,6 +49,8 @@ pam_wrapper_so_path = config_hash.get("LIBPAM_WRAPPER_SO_PATH")
 pam_set_items_so_path = config_hash.get("PAM_SET_ITEMS_SO_PATH")
 
 planpythontestsuite("none", "samba.tests.source")
+planpythontestsuite("none", "samba.tests.source_chars")
+
 if have_man_pages_support:
     planpythontestsuite("none", "samba.tests.docs")
 
@@ -95,8 +97,11 @@ planpythontestsuite(
                 os.path.join(samba4srcdir, "..", "third_party", "waf")])
 planpythontestsuite("fileserver", "samba.tests.smbd_fuzztest")
 planpythontestsuite("nt4_dc_smb1", "samba.tests.dcerpc.binding")
-for env in [ 'ad_dc:local', 'ad_dc_fips:local' ]:
-    planpythontestsuite(env, "samba.tests.dcerpc.samr_change_password")
+planpythontestsuite('ad_dc:local', "samba.tests.dcerpc.samr_change_password")
+planpythontestsuite('ad_dc_fips:local',
+                    "samba.tests.dcerpc.samr_change_password",
+                    environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                             'OPENSSL_FORCE_FIPS_MODE': '1'})
 
 
 def cmdline(script, *args):
@@ -376,8 +381,6 @@ if with_pam:
 
 plantestsuite("samba.unittests.krb5samba", "none",
               [os.path.join(bindir(), "default/testsuite/unittests/test_krb5samba")])
-plantestsuite("samba.unittests.sambafs_srv_pipe", "none",
-              [os.path.join(bindir(), "default/testsuite/unittests/test_sambafs_srv_pipe")])
 plantestsuite("samba.unittests.lib_util_modules", "none",
               [os.path.join(bindir(), "default/testsuite/unittests/test_lib_util_modules")])
 plantestsuite("samba.unittests.background_send",
@@ -432,7 +435,15 @@ plantestsuite("samba.unittests.test_oLschema2ldif", "none",
 if with_elasticsearch_backend:
     plantestsuite("samba.unittests.mdsparser_es", "none",
                   [os.path.join(bindir(), "default/source3/test_mdsparser_es")] + [configuration])
+    plantestsuite("samba.unittests.mdsparser_es_failures", "none",
+                  [os.path.join(bindir(), "default/source3/test_mdsparser_es"),
+                  " --option=elasticsearch:testmappingfailures=yes",
+                  " --option=elasticsearch:ignoreunknownattribute=yes",
+                  " --option=elasticsearch:ignoreunknowntype=yes"] +
+                  [configuration])
 plantestsuite("samba.unittests.credentials", "none",
               [os.path.join(bindir(), "default/auth/credentials/test_creds")])
+plantestsuite("samba.unittests.tsocket_bsd_addr", "none",
+              [os.path.join(bindir(), "default/lib/tsocket/test_tsocket_bsd_addr")])
 plantestsuite("samba.unittests.adouble", "none",
               [os.path.join(bindir(), "test_adouble")])

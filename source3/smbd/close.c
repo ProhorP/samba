@@ -26,6 +26,7 @@
 #include "locking/share_mode_lock.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
+#include "smbd/smbXsrv_open.h"
 #include "smbd/scavenger.h"
 #include "fake_file.h"
 #include "transfer_file.h"
@@ -452,16 +453,15 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 	}
 
 	if (fsp->fsp_flags.kernel_share_modes_taken) {
-		int ret_flock;
-
 		/*
 		 * A file system sharemode could block the unlink;
 		 * remove filesystem sharemodes first.
 		 */
-		ret_flock = SMB_VFS_KERNEL_FLOCK(fsp, 0, 0);
-		if (ret_flock == -1) {
-			DBG_INFO("removing kernel flock for %s failed: %s\n",
-				  fsp_str_dbg(fsp), strerror(errno));
+		ret = SMB_VFS_FILESYSTEM_SHAREMODE(fsp, 0, 0);
+		if (ret == -1) {
+			DBG_INFO("Removing file system sharemode for %s "
+				 "failed: %s\n",
+				 fsp_str_dbg(fsp), strerror(errno));
 		}
 
 		fsp->fsp_flags.kernel_share_modes_taken = false;
@@ -516,14 +516,12 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
 	}
 
 	if (fsp->fsp_flags.kernel_share_modes_taken) {
-		int ret_flock;
-
 		/* remove filesystem sharemodes */
-		ret_flock = SMB_VFS_KERNEL_FLOCK(fsp, 0, 0);
-		if (ret_flock == -1) {
-			DEBUG(2, ("close_remove_share_mode: removing kernel "
-				  "flock for %s failed: %s\n",
-				  fsp_str_dbg(fsp), strerror(errno)));
+		ret = SMB_VFS_FILESYSTEM_SHAREMODE(fsp, 0, 0);
+		if (ret == -1) {
+			DBG_INFO("Removing file system sharemode for "
+				 "%s failed: %s\n",
+				 fsp_str_dbg(fsp), strerror(errno));
 		}
 	}
 
@@ -784,7 +782,6 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
 		DEBUG(10, ("%s disconnected durable handle for file %s\n",
 			   conn->session_info->unix_info->unix_name,
 			   fsp_str_dbg(fsp)));
-		file_free(req, fsp);
 		return NT_STATUS_OK;
 	}
 
@@ -835,7 +832,6 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
 		conn->num_files_open - 1,
 		nt_errstr(status) ));
 
-	file_free(req, fsp);
 	return status;
 }
 /****************************************************************************
@@ -1381,7 +1377,6 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 	if (lck == NULL) {
 		DEBUG(0, ("close_directory: Could not get share mode lock for "
 			  "%s\n", fsp_str_dbg(fsp)));
-		file_free(req, fsp);
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
@@ -1431,7 +1426,6 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 			if (!NT_STATUS_IS_OK(status)) {
 				DEBUG(5, ("delete_all_streams failed: %s\n",
 					  nt_errstr(status)));
-				file_free(req, fsp);
 				/* unbecome user. */
 				pop_sec_ctx();
 				return status;
@@ -1474,11 +1468,6 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 			  strerror(errno)));
 	}
 
-	/*
-	 * Do the code common to files and directories.
-	 */
-	file_free(req, fsp);
-
 	if (NT_STATUS_IS_OK(status) && !NT_STATUS_IS_OK(status1)) {
 		status = status1;
 	}
@@ -1486,15 +1475,14 @@ static NTSTATUS close_directory(struct smb_request *req, files_struct *fsp,
 }
 
 /****************************************************************************
- Close a files_struct.
+ Rundown all SMB-related dependencies of a files struct
 ****************************************************************************/
   
-NTSTATUS close_file(struct smb_request *req, files_struct *fsp,
-		    enum file_close_type close_type)
+NTSTATUS close_file_smb(struct smb_request *req,
+			struct files_struct *fsp,
+			enum file_close_type close_type)
 {
 	NTSTATUS status;
-	struct files_struct *base_fsp = fsp->base_fsp;
-	bool close_base_fsp = false;
 
 	/*
 	 * This fsp can never be an internal dirfsp. They must
@@ -1502,51 +1490,17 @@ NTSTATUS close_file(struct smb_request *req, files_struct *fsp,
 	 */
 	SMB_ASSERT(!fsp->fsp_flags.is_dirfsp);
 
-	if (fsp->stream_fsp != NULL) {
-		/*
-		 * fsp is the base for a stream.
-		 *
-		 * We're called with SHUTDOWN_CLOSE from files.c which walks the
-		 * complete list of files.
-		 *
-		 * We need to wait until the stream is closed.
-		 */
-		SMB_ASSERT(close_type == SHUTDOWN_CLOSE);
-		return NT_STATUS_OK;
-	}
-
-	if (base_fsp != NULL) {
-		/*
-		 * We need to remove the link in order to
-		 * recurse for the base fsp below.
-		 */
-		SMB_ASSERT(base_fsp->base_fsp == NULL);
-		SMB_ASSERT(base_fsp->stream_fsp == fsp);
-		base_fsp->stream_fsp = NULL;
-
-		if (close_type == SHUTDOWN_CLOSE) {
-			/*
-			 * We're called with SHUTDOWN_CLOSE from files.c
-			 * which walks the complete list of files.
-			 *
-			 * We may need to defer the SHUTDOWN_CLOSE
-			 * if it's the next in the linked list.
-			 *
-			 * So we only close if the base is *not* the
-			 * next in the list.
-			 */
-			close_base_fsp = (fsp->next != base_fsp);
-		} else {
-			close_base_fsp = true;
-		}
-	}
+	/*
+	 * Never call directly on a base fsp
+	 */
+	SMB_ASSERT(fsp->stream_fsp == NULL);
 
 	if (fsp->fake_file_handle != NULL) {
 		status = close_fake_file(req, fsp);
 	} else if (fsp->print_file != NULL) {
 		/* FIXME: return spool errors */
 		print_spool_end(fsp, close_type);
-		file_free(req, fsp);
+		fd_close(fsp);
 		status = NT_STATUS_OK;
 	} else if (!fsp->fsp_flags.is_fsa) {
 		if (close_type == NORMAL_CLOSE) {
@@ -1559,7 +1513,6 @@ NTSTATUS close_file(struct smb_request *req, files_struct *fsp,
 		}
 		SMB_ASSERT(close_type != NORMAL_CLOSE);
 		fd_close(fsp);
-		file_free(req, fsp);
 		status = NT_STATUS_OK;
 	} else if (fsp->fsp_flags.is_directory) {
 		status = close_directory(req, fsp, close_type);
@@ -1567,20 +1520,42 @@ NTSTATUS close_file(struct smb_request *req, files_struct *fsp,
 		status = close_normal_file(req, fsp, close_type);
 	}
 
-	if (close_base_fsp) {
+	if (fsp->base_fsp != NULL) {
+		/*
+		 * fsp was a stream, its base_fsp can't be a stream
+		 * as well
+		 */
+		SMB_ASSERT(fsp->base_fsp->base_fsp == NULL);
 
 		/*
-		 * fsp was a stream, the base fsp can't be a stream as well
-		 *
-		 * For SHUTDOWN_CLOSE this is not possible here
-		 * (if the base_fsp was the next in the linked list), because
-		 * SHUTDOWN_CLOSE only happens from files.c which walks the
-		 * complete list of files. If we mess with more than one fsp
-		 * those loops will become confused.
+		 * There's a 1:1 relationship between fsp and a base_fsp
 		 */
+		SMB_ASSERT(fsp->base_fsp->stream_fsp == fsp);
 
-		close_file(req, base_fsp, close_type);
+		/*
+		 * Make base_fsp look standalone now
+		 */
+		fsp->base_fsp->stream_fsp = NULL;
+
+		close_file_free(req, &fsp->base_fsp, close_type);
 	}
+
+	fsp_unbind_smb(req, fsp);
+
+	return status;
+}
+
+NTSTATUS close_file_free(struct smb_request *req,
+			 struct files_struct **_fsp,
+			 enum file_close_type close_type)
+{
+	struct files_struct *fsp = *_fsp;
+	NTSTATUS status;
+
+	status = close_file_smb(req, fsp, close_type);
+
+	file_free(req, fsp);
+        *_fsp = NULL;
 
 	return status;
 }
@@ -1620,5 +1595,5 @@ void msg_close_file(struct messaging_context *msg_ctx,
 		DEBUG(10,("msg_close_file: failed to find file.\n"));
 		return;
 	}
-	close_file(NULL, fsp, NORMAL_CLOSE);
+	close_file_free(NULL, &fsp, NORMAL_CLOSE);
 }

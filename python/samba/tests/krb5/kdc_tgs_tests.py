@@ -48,6 +48,7 @@ from samba.tests.krb5.rfc4120_constants import (
     KDC_ERR_TGT_REVOKED,
     KRB_ERR_TKT_NYV,
     KDC_ERR_WRONG_REALM,
+    NT_ENTERPRISE_PRINCIPAL,
     NT_PRINCIPAL,
     NT_SRV_INST,
 )
@@ -258,6 +259,238 @@ class KdcTgsTests(KDCBaseTest):
 
         pac = self.get_ticket_pac(ticket, expect_pac=False)
         self.assertIsNone(pac)
+
+    def test_request_enterprise_canon(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.USER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm()
+        client_account = f'{user_name}@{realm}'
+
+        expected_cname = self.PrincipalName_create(
+            name_type=NT_PRINCIPAL,
+            names=[user_name])
+
+        kdc_options = 'canonicalize'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_cname=expected_cname,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_cname=expected_cname,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_canon_case(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.USER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm().lower()
+        client_account = f'{user_name}@{realm}'
+
+        expected_cname = self.PrincipalName_create(
+            name_type=NT_PRINCIPAL,
+            names=[user_name])
+
+        kdc_options = 'canonicalize'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_cname=expected_cname,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_cname=expected_cname,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_canon_mac(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.COMPUTER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm()
+        client_account = f'{user_name}@{realm}'
+
+        expected_cname = self.PrincipalName_create(
+            name_type=NT_PRINCIPAL,
+            names=[user_name])
+
+        kdc_options = 'canonicalize'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_cname=expected_cname,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_cname=expected_cname,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_canon_case_mac(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.COMPUTER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm().lower()
+        client_account = f'{user_name}@{realm}'
+
+        expected_cname = self.PrincipalName_create(
+            name_type=NT_PRINCIPAL,
+            names=[user_name])
+
+        kdc_options = 'canonicalize'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_cname=expected_cname,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_cname=expected_cname,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_no_canon(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.USER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm()
+        client_account = f'{user_name}@{realm}'
+
+        kdc_options = '0'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_no_canon_case(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.USER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm().lower()
+        client_account = f'{user_name}@{realm}'
+
+        kdc_options = '0'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_no_canon_mac(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.COMPUTER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm()
+        client_account = f'{user_name}@{realm}'
+
+        kdc_options = '0'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
+
+    def test_request_enterprise_no_canon_case_mac(self):
+        upn = self.get_new_username()
+        client_creds = self.get_cached_creds(
+            account_type=self.AccountType.COMPUTER,
+            opts={'upn': upn})
+        service_creds = self.get_service_creds()
+
+        user_name = client_creds.get_username()
+        realm = client_creds.get_realm().lower()
+        client_account = f'{user_name}@{realm}'
+
+        kdc_options = '0'
+
+        tgt = self.get_tgt(client_creds,
+                           client_account=client_account,
+                           client_name_type=NT_ENTERPRISE_PRINCIPAL,
+                           expected_account_name=user_name,
+                           kdc_options=kdc_options)
+
+        self._make_tgs_request(
+            client_creds, service_creds, tgt,
+            client_account=client_account,
+            client_name_type=NT_ENTERPRISE_PRINCIPAL,
+            expected_account_name=user_name,
+            kdc_options=kdc_options)
 
     def test_client_no_auth_data_required(self):
         client_creds = self.get_cached_creds(
@@ -1327,7 +1560,7 @@ class KdcTgsTests(KDCBaseTest):
         self._user2user(service_ticket, creds,
                         expected_error=(KDC_ERR_MODIFIED, KDC_ERR_POLICY))
 
-    # Expected to fail against Windows, which does not produce a policy error.
+    # Expected to fail against Windows, which does not produce an error.
     def test_fast_service_ticket(self):
         creds = self._get_creds()
         tgt = self._get_tgt(creds)
@@ -1336,7 +1569,8 @@ class KdcTgsTests(KDCBaseTest):
         service_ticket = self.get_service_ticket(tgt, service_creds)
 
         self._fast(service_ticket, creds,
-                   expected_error=KDC_ERR_POLICY)
+                   expected_error=(KDC_ERR_POLICY,
+                                   KDC_ERR_S_PRINCIPAL_UNKNOWN))
 
     def test_pac_attrs_none(self):
         creds = self._get_creds()

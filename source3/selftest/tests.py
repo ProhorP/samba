@@ -385,6 +385,14 @@ plantestsuite("samba.vfstest.stream_depot", "nt4_dc:local", [os.path.join(samba3
 plantestsuite("samba.vfstest.xattr-tdb-1", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/xattr-tdb-1/run.sh"), binpath("vfstest"), "$PREFIX", configuration])
 plantestsuite("samba.vfstest.acl", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/vfstest-acl/run.sh"), binpath("vfstest"), "$PREFIX", configuration])
 plantestsuite("samba.vfstest.catia", "nt4_dc:local", [os.path.join(samba3srcdir, "script/tests/vfstest-catia/run.sh"), binpath("vfstest"), "$PREFIX", configuration])
+plantestsuite(
+    "samba.vfstest.full_audit_segfault",
+    "nt4_dc:local",
+    [os.path.join(samba3srcdir,
+                  "script/tests/full_audit_segfault/run.sh"),
+     binpath("vfstest"),
+     "$PREFIX",
+     configuration])
 
 plantestsuite("samba3.blackbox.smbclient_basic.NT1", "nt4_dc_schannel", [os.path.join(samba3srcdir, "script/tests/test_smbclient_basic.sh"), '$SERVER', '$SERVER_IP', '$DC_USERNAME', '$DC_PASSWORD', smbclient3, configuration, "-mNT1"])
 plantestsuite("samba3.blackbox.smbclient_basic.NT1", "nt4_dc_smb1", [os.path.join(samba3srcdir, "script/tests/test_smbclient_basic.sh"), '$SERVER', '$SERVER_IP', '$DC_USERNAME', '$DC_PASSWORD', smbclient3, configuration, "-mNT1"])
@@ -1115,6 +1123,14 @@ for s in signseal_options:
                  "none",
                  f'ncalrpc:[{a}{s}{e}] -c epmmap',
                  configuration])
+            if s != ",connect":
+                plantestsuite(
+                    f'samba3.blackbox.rpcclient over ncacn_ip_tcp with [{a}{s}{e}] ',
+                    "nt4_dc:local",
+                    [os.path.join(samba3srcdir, "script/tests/test_rpcclient.sh"),
+                     "none",
+                     f'ncacn_ip_tcp:"$SERVER_IP"[{a}{s}{e}] -c epmmap -U"$USERNAME"%"$PASSWORD"',
+                     configuration])
 
     # We should try more combinations in future, but this is all
     # the pre-calculated credentials cache supports at the moment
@@ -1197,6 +1213,12 @@ plantestsuite("samba3.blackbox.netfileenum", "simpleserver:local",
                os.path.join(bindir(), "net"),
                '$SERVER_IP',
                'tmp'])
+
+plantestsuite("samba3.blackbox.netshareenum_username", "fileserver",
+              [os.path.join(samba3srcdir,
+                            "script/tests/test_user_in_sharelist.sh"),
+               os.path.join(bindir(), "rpcclient"),
+               '$SERVER_IP'])
 
 plantestsuite("samba3.blackbox.net_tdb", "simpleserver:local",
               [os.path.join(samba3srcdir, "script/tests/test_net_tdb.sh"),
@@ -1295,6 +1317,28 @@ for env in ['fileserver', 'simpleserver']:
                   [os.path.join(samba3srcdir, "script/tests/test_smbclient_encryption.sh"),
                    "$USERNAME", "$PASSWORD", "$SERVER",
                    smbclient3, env])
+
+plantestsuite("samba3.blackbox.smbclient.kerberos", 'ad_dc',
+              [os.path.join(samba3srcdir,
+                            "script/tests/test_smbclient_kerberos.sh"),
+               "alice",
+               "$REALM",
+               "Secret007",
+               "$SERVER",
+               smbclient3,
+               env])
+for env in ['ad_dc_fips', 'ad_member_fips']:
+    plantestsuite("samba3.blackbox.smbclient.kerberos", env,
+                  [os.path.join(samba3srcdir,
+                                "script/tests/test_smbclient_kerberos.sh"),
+                   "alice",
+                   "$REALM",
+                   "Secret007",
+                   "$SERVER",
+                   smbclient3,
+                   env],
+                  environ={'GNUTLS_FORCE_FIPS_MODE': '1',
+                           'OPENSSL_FORCE_FIPS_MODE': '1'})
 
 plantestsuite("samba3.blackbox.rpcclient_netsessenum", "ad_member",
               [os.path.join(samba3srcdir,

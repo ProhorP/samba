@@ -672,7 +672,6 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 	krb5_error_code krb5_ret;
 	const char *cc = NULL;
 	const char *principal_s = NULL;
-	const char *service = NULL;
 	char *realm = NULL;
 	fstring name_namespace, name_domain, name_user;
 	time_t ticket_lifetime = 0;
@@ -752,11 +751,6 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 					      realm);
 	}
 	if (principal_s == NULL) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	service = talloc_asprintf(mem_ctx, "%s/%s@%s", KRB5_TGS_NAME, realm, realm);
-	if (service == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
@@ -848,7 +842,6 @@ static NTSTATUS winbindd_raw_kerberos_login(TALLOC_CTX *mem_ctx,
 
 		result = add_ccache_to_list(principal_s,
 					    cc,
-					    service,
 					    user,
 					    pass,
 					    realm,
@@ -1181,7 +1174,6 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 			const char *cc = NULL;
 			char *realm = NULL;
 			const char *principal_s = NULL;
-			const char *service = NULL;
 			const char *user_ccache_file;
 
 			if (domain->alt_name == NULL) {
@@ -1216,11 +1208,6 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 				return NT_STATUS_NO_MEMORY;
 			}
 
-			service = talloc_asprintf(state->mem_ctx, "%s/%s@%s", KRB5_TGS_NAME, realm, realm);
-			if (service == NULL) {
-				return NT_STATUS_NO_MEMORY;
-			}
-
 			if (user_ccache_file != NULL) {
 
 				fstrcpy(state->response->data.auth.krb5ccname,
@@ -1228,7 +1215,6 @@ static NTSTATUS winbindd_dual_pam_auth_cached(struct winbindd_domain *domain,
 
 				result = add_ccache_to_list(principal_s,
 							    cc,
-							    service,
 							    state->request->data.auth.user,
 							    state->request->data.auth.pass,
 							    realm,
@@ -1511,6 +1497,8 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 	enum netr_LogonInfoClass logon_type_n;
 	uint16_t validation_level = UINT16_MAX;
 	union netr_Validation *validation = NULL;
+	TALLOC_CTX *base_ctx = NULL;
+	struct netr_SamBaseInfo *base_info = NULL;
 
 	do {
 		struct rpc_pipe_client *netlogon_pipe;
@@ -1715,6 +1703,69 @@ static NTSTATUS winbind_samlogon_retry_loop(struct winbindd_domain *domain,
 
 	if (!NT_STATUS_IS_OK(result)) {
 		return result;
+	}
+
+	switch (validation_level) {
+	case 3:
+		base_ctx = validation->sam3;
+		base_info = &validation->sam3->base;
+		break;
+	case 6:
+		base_ctx = validation->sam6;
+		base_info = &validation->sam6->base;
+		break;
+	default:
+		smb_panic(__location__);
+	}
+
+	if (base_info->acct_flags == 0 || base_info->account_name.string == NULL) {
+		struct dom_sid user_sid;
+		struct dom_sid_buf sid_buf;
+		const char *acct_flags_src = "server";
+		const char *acct_name_src = "server";
+
+		/*
+		 * Handle the case where a NT4 DC does not fill in the acct_flags in
+		 * the samlogon reply info3. Yes, in 2021, there are still admins
+		 * arround with real NT4 DCs.
+		 *
+		 * We used to call dcerpc_samr_QueryUserInfo(level=16) to fetch
+		 * acct_flags, but as NT4 DCs reject authentication with workstation
+		 * accounts with NT_STATUS_NOLOGON_WORKSTATION_TRUST_ACCOUNT, even if
+		 * MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT is specified, we only ever got
+		 * ACB_NORMAL back (maybe with ACB_PWNOEXP in addition).
+		 *
+		 * For network logons NT4 DCs also skip the
+		 * account_name, so we have to fallback to the
+		 * one given by the client.
+		 */
+
+		if (base_info->acct_flags == 0) {
+			base_info->acct_flags = ACB_NORMAL;
+			if (base_info->force_password_change == NTTIME_MAX) {
+				base_info->acct_flags |= ACB_PWNOEXP;
+			}
+			acct_flags_src = "calculated";
+		}
+
+		if (base_info->account_name.string == NULL) {
+			base_info->account_name.string = talloc_strdup(base_ctx,
+								       username);
+			if (base_info->account_name.string == NULL) {
+				TALLOC_FREE(validation);
+				return NT_STATUS_NO_MEMORY;
+			}
+			acct_name_src = "client";
+		}
+
+		sid_compose(&user_sid, base_info->domain_sid, base_info->rid);
+
+		DBG_DEBUG("Fallback to %s_acct_flags[0x%x] %s_acct_name[%s] for %s\n",
+			  acct_flags_src,
+			  base_info->acct_flags,
+			  acct_name_src,
+			  base_info->account_name.string,
+			  dom_sid_str_buf(&user_sid, &sid_buf));
 	}
 
 	*_validation_level = validation_level;

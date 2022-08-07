@@ -1649,7 +1649,7 @@ NTSTATUS copy_internals(TALLOC_CTX *ctx,
 		NULL, NULL);				/* create context */
 
 	if (!NT_STATUS_IS_OK(status)) {
-		close_file(NULL, fsp1, ERROR_CLOSE);
+		close_file_free(NULL, &fsp1, ERROR_CLOSE);
 		goto out;
 	}
 
@@ -1663,12 +1663,12 @@ NTSTATUS copy_internals(TALLOC_CTX *ctx,
 	 * Thus we don't look at the error return from the
 	 * close of fsp1.
 	 */
-	close_file(NULL, fsp1, NORMAL_CLOSE);
+	close_file_free(NULL, &fsp1, NORMAL_CLOSE);
 
 	/* Ensure the modtime is set correctly on the destination file. */
 	set_close_write_time(fsp2, smb_fname_src->st.st_ex_mtime);
 
-	status = close_file(NULL, fsp2, NORMAL_CLOSE);
+	status = close_file_free(NULL, &fsp2, NORMAL_CLOSE);
 
 	/* Grrr. We have to do this as open_file_ntcreate adds FILE_ATTRIBUTE_ARCHIVE when it
 	   creates the file. This isn't the correct thing to do in the copy
@@ -3211,8 +3211,8 @@ void reply_nttrans(struct smb_request *req)
 
 	if (state->total_data)  {
 
-		if (trans_oob(state->total_data, 0, dscnt)
-		    || trans_oob(smb_len(req->inbuf), dsoff, dscnt)) {
+		if (smb_buffer_oob(state->total_data, 0, dscnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), dsoff, dscnt)) {
 			goto bad_param;
 		}
 
@@ -3232,8 +3232,8 @@ void reply_nttrans(struct smb_request *req)
 
 	if (state->total_param) {
 
-		if (trans_oob(state->total_param, 0, pscnt)
-		    || trans_oob(smb_len(req->inbuf), psoff, pscnt)) {
+		if (smb_buffer_oob(state->total_param, 0, pscnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), psoff, pscnt)) {
 			goto bad_param;
 		}
 
@@ -3380,16 +3380,16 @@ void reply_nttranss(struct smb_request *req)
 		goto bad_param;
 
 	if (pcnt) {
-		if (trans_oob(state->total_param, pdisp, pcnt)
-		    || trans_oob(smb_len(req->inbuf), poff, pcnt)) {
+		if (smb_buffer_oob(state->total_param, pdisp, pcnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), poff, pcnt)) {
 			goto bad_param;
 		}
 		memcpy(state->param+pdisp, smb_base(req->inbuf)+poff,pcnt);
 	}
 
 	if (dcnt) {
-		if (trans_oob(state->total_data, ddisp, dcnt)
-		    || trans_oob(smb_len(req->inbuf), doff, dcnt)) {
+		if (smb_buffer_oob(state->total_data, ddisp, dcnt)
+		    || smb_buffer_oob(smb_len(req->inbuf), doff, dcnt)) {
 			goto bad_param;
 		}
 		memcpy(state->data+ddisp, smb_base(req->inbuf)+doff,dcnt);

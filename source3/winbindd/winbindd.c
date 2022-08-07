@@ -1710,7 +1710,8 @@ int main(int argc, const char **argv)
 
 	if (log_stdout && cmdline_daemon_cfg->fork) {
 		d_fprintf(stderr, "\nERROR: "
-			  "Can't log to stdout (-S) unless daemon is in foreground +(-F) or interactive (-i)\n\n");
+			  "Can't log to stdout (-S) unless daemon is in "
+			  "foreground (-F) or interactive (-i)\n\n");
 		poptPrintUsage(pc, stderr, 0);
 		exit(1);
 	}
@@ -1945,34 +1946,6 @@ int main(int argc, const char **argv)
 	}
 
 	DBG_INFO("Registering DCE/RPC endpoint servers\n");
-
-	/* Register the endpoint server to dispatch calls locally through
-	 * the legacy api_struct */
-	ep_server = lsarpc_get_ep_server();
-	if (ep_server == NULL) {
-		DBG_ERR("Failed to get 'lsarpc' endpoint server\n");
-		exit(1);
-	}
-	status = dcerpc_register_ep_server(ep_server);
-	if (!NT_STATUS_IS_OK(status)) {
-		DBG_ERR("Failed to register 'lsarpc' endpoint "
-			"server: %s\n", nt_errstr(status));
-		exit(1);
-	}
-
-	/* Register the endpoint server to dispatch calls locally through
-	 * the legacy api_struct */
-	ep_server = samr_get_ep_server();
-	if (ep_server == NULL) {
-		DBG_ERR("Failed to get 'samr' endpoint server\n");
-		exit(1);
-	}
-	status = dcerpc_register_ep_server(ep_server);
-	if (!NT_STATUS_IS_OK(status)) {
-		DBG_ERR("Failed to register 'samr' endpoint "
-			"server: %s\n", nt_errstr(status));
-		exit(1);
-	}
 
 	ep_server = winbind_get_ep_server();
 	if (ep_server == NULL) {

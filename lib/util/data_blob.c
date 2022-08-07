@@ -82,8 +82,7 @@ free a data blob
 _PUBLIC_ void data_blob_free(DATA_BLOB *d)
 {
 	if (d) {
-		talloc_free(d->data);
-		d->data = NULL;
+		TALLOC_FREE(d->data);
 		d->length = 0;
 	}
 }
@@ -212,9 +211,11 @@ _PUBLIC_ DATA_BLOB data_blob_const(const void *p, size_t length)
 **/
 _PUBLIC_ bool data_blob_realloc(TALLOC_CTX *mem_ctx, DATA_BLOB *blob, size_t length)
 {
-	blob->data = talloc_realloc(mem_ctx, blob->data, uint8_t, length);
-	if (blob->data == NULL)
+	uint8_t *tmp = talloc_realloc(mem_ctx, blob->data, uint8_t, length);
+	if (tmp == NULL) {
 		return false;
+	}
+	blob->data = tmp;
 	blob->length = length;
 	return true;
 }
@@ -244,3 +245,24 @@ _PUBLIC_ bool data_blob_append(TALLOC_CTX *mem_ctx, DATA_BLOB *blob,
 	return true;
 }
 
+/**
+  pad the length of a data blob to a multiple of
+  'pad'. 'pad' must be a power of two.
+**/
+_PUBLIC_ bool data_blob_pad(TALLOC_CTX *mem_ctx, DATA_BLOB *blob,
+			    size_t pad)
+{
+	size_t old_len = blob->length;
+	size_t new_len = (old_len + pad - 1) & ~(pad - 1);
+
+	if (new_len < old_len) {
+		return false;
+	}
+
+	if (!data_blob_realloc(mem_ctx, blob, new_len)) {
+		return false;
+	}
+
+	memset(blob->data + old_len, 0, new_len - old_len);
+	return true;
+}

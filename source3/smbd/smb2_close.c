@@ -153,7 +153,6 @@ static void smbd_smb2_request_close_done(struct tevent_req *subreq)
 
 static void setup_close_full_information(connection_struct *conn,
 				struct smb_filename *smb_fname,
-				bool posix_open,
 				struct timespec *out_creation_ts,
 				struct timespec *out_last_access_ts,
 				struct timespec *out_last_write_ts,
@@ -164,7 +163,6 @@ static void setup_close_full_information(connection_struct *conn,
 				uint32_t *out_file_attributes)
 {
 	NTSTATUS status;
-	int ret;
 
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname);
 	if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND) &&
@@ -174,15 +172,6 @@ static void setup_close_full_information(connection_struct *conn,
 		status = NT_STATUS_OK;
 	}
 	if (!NT_STATUS_IS_OK(status)) {
-		return;
-	}
-
-	if (posix_open) {
-		ret = SMB_VFS_LSTAT(conn, smb_fname);
-	} else {
-		ret = SMB_VFS_STAT(conn, smb_fname);
-	}
-	if (ret != 0) {
 		return;
 	}
 
@@ -226,7 +215,6 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 	uint64_t file_size = 0;
 	uint32_t dos_attrs = 0;
 	uint16_t flags = 0;
-	bool posix_open = false;
 
 	*out_creation_ts = (struct timespec){0, SAMBA_UTIME_OMIT};
 	*out_last_access_ts = (struct timespec){0, SAMBA_UTIME_OMIT};
@@ -246,7 +234,6 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	posix_open = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN);
 	smb_fname = cp_smb_filename(talloc_tos(), fsp->fsp_name);
 	if (smb_fname == NULL) {
 		return NT_STATUS_NO_MEMORY;
@@ -263,7 +250,6 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 		 */
 		setup_close_full_information(conn,
 				smb_fname,
-				posix_open,
 				out_creation_ts,
 				out_last_access_ts,
 				out_last_write_ts,
@@ -274,7 +260,7 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 				&dos_attrs);
 	}
 
-	status = close_file(smbreq, fsp, NORMAL_CLOSE);
+	status = close_file_free(smbreq, &fsp, NORMAL_CLOSE);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(5,("smbd_smb2_close: close_file[%s]: %s\n",
 			 smb_fname_str_dbg(smb_fname), nt_errstr(status)));
@@ -284,7 +270,6 @@ static NTSTATUS smbd_smb2_close(struct smbd_smb2_request *req,
 	if (in_flags & SMB2_CLOSE_FLAGS_FULL_INFORMATION) {
 		setup_close_full_information(conn,
 				smb_fname,
-				posix_open,
 				out_creation_ts,
 				out_last_access_ts,
 				out_last_write_ts,
