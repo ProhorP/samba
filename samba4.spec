@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.15.9
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -146,6 +146,7 @@ BuildRequires: /usr/bin/rpcgen
 BuildRequires: libtirpc-devel
 BuildRequires: libtasn1-devel
 BuildRequires: libtasn1-utils
+BuildRequires: quota-devel
 
 %if_with mitkrb5
 BuildRequires: libssl-devel
@@ -793,6 +794,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 	--with-ads \\\
 	--with-pie \\\
 	--with-relro \\\
+	--with-quotas \\\
 	--without-fam \\\
 	--private-libraries=%_samba4_private_libraries \\\
 %if_with systemd \
@@ -1935,6 +1937,14 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Aug 19 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.9-alt2
+- Add support build with quotas explicitly.
+- Update to latest bugfixes of stable release of Samba 4.15:
+  + rpcclient can crash using setuserinfo(2) (Samba#15124).
+  + Spotlight RPC service returns wrong response when Spotlight is disabled
+    on a share (Samba#15086).
+  + Fix samba-tool domain join&leave segfault (Samba#15078).
+
 * Sun Jul 31 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.9-alt1
 - Update to security release of Samba 4.15
 - Security fixes:
