@@ -697,6 +697,13 @@ bool samba_princ_needs_pac(struct samba_kdc_entry *skdc_entry)
 	return true;
 }
 
+bool samba_ignore_requester_sid(struct samba_kdc_entry *skdc_entry)
+{
+	struct loadparm_context *lp_ctx = skdc_entry->kdc_db_ctx->lp_ctx;
+	bool ignore_requester_sid = lpcfg_ignore_requester_sid(lp_ctx);
+	return ignore_requester_sid;
+}
+
 int samba_client_requested_pac(krb5_context context,
 			       krb5_pac *pac,
 			       TALLOC_CTX *mem_ctx,

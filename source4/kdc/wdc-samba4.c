@@ -459,7 +459,8 @@ static krb5_error_code samba_wdc_reget_pac2(krb5_context context,
 		talloc_free(mem_ctx);
 		return EINVAL;
 	}
-	if (delegated_proxy_principal == NULL && requester_sid_idx == -1) {
+	if (delegated_proxy_principal == NULL && requester_sid_idx == -1 &&
+	    !samba_ignore_requester_sid(server_skdc_entry)) {
 		DEBUG(1, ("PAC_TYPE_REQUESTER_SID missing\n"));
 		SAFE_FREE(types);
 		talloc_free(mem_ctx);
