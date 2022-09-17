@@ -6,7 +6,29 @@
 %define rname samba
 %define dcname samba-DC
 %define _localstatedir /var
-%define libwbc_alternatives_version 0.15
+
+# If one of those versions change, we need to make sure we rebuilt or adapt
+# projects comsuming those. This is e.g. sssd, openchange, evolution-mapi, ...
+%define libdcerpc_binding_so_version 0
+%define libdcerpc_server_core_so_version 0
+%define libdcerpc_so_version 0
+%define libndr_krb5pac_so_version 0
+%define libndr_nbt_so_version 0
+%define libndr_so_version 3
+%define libndr_standard_so_version 0
+%define libnetapi_so_version 1
+%define libsamba_credentials_so_version 1
+%define libsamba_errors_so_version 1
+%define libsamba_hostconfig_so_version 0
+%define libsamba_passdb_so_version 0
+%define libsamba_util_so_version 0
+%define libsamdb_so_version 0
+%define libsmbconf_so_version 0
+%define libsmbldap_so_version 2
+%define libtevent_util_so_version 0
+
+%define libsmbclient_so_version 0
+%define libwbclient_so_version 0
 
 # internal libs
 %def_without talloc
@@ -75,7 +97,7 @@
 %endif
 
 Name:    samba
-Version: 4.16.5
+Version: 4.17.0
 Release: alt1
 
 Group:   System/Servers
@@ -175,22 +197,22 @@ BuildRequires: libdbus-devel
 %endif
 
 %if_without talloc
-BuildRequires: libtalloc-devel >= 2.3.3
+BuildRequires: libtalloc-devel >= 2.3.4
 BuildRequires: python3-module-talloc-devel
 %endif
 
 %if_without tevent
-BuildRequires: libtevent-devel >= 0.12.0
+BuildRequires: libtevent-devel >= 0.13.0
 BuildRequires: python3-module-tevent
 %endif
 
 %if_without tdb
-BuildRequires: libtdb-devel >= 1.4.6
+BuildRequires: libtdb-devel >= 1.4.7
 BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.5.2
+%define ldb_version 2.6.1
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -961,12 +983,6 @@ mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 
-if [ ! -f %buildroot%_libdir/libwbclient.so.%libwbc_alternatives_version ]
-then
-    echo "Expected libwbclient version not found, please check if version has changed."
-    exit -1
-fi
-
 mkdir -p %buildroot/lib/tmpfiles.d
 
 # Install other stuff
@@ -1477,13 +1493,13 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
 %files common-libs
-%_samba_libdir/libndr-krb5pac.so.*
-%_samba_libdir/libndr-nbt.so.*
-%_samba_libdir/libndr-standard.so.*
-%_samba_libdir/libndr.so.*
-%_samba_libdir/libsamba-errors.so.*
-%_samba_libdir/libsamba-util.so.*
-%_samba_libdir/libtevent-util.so.*
+%_samba_libdir/libndr-krb5pac.so.%{libndr_krb5pac_so_version}*
+%_samba_libdir/libndr-nbt.so.%{libndr_nbt_so_version}*
+%_samba_libdir/libndr-standard.so.%{libndr_standard_so_version}*
+%_samba_libdir/libndr.so.%{libndr_so_version}*
+%_samba_libdir/libsamba-errors.so.%{libsamba_errors_so_version}*
+%_samba_libdir/libsamba-util.so.%{libsamba_util_so_version}*
+%_samba_libdir/libtevent-util.so.%{libtevent_util_so_version}*
 
 # common libraries
 %_samba_mod_libdir/libCHARSET3-samba4.so
@@ -1588,16 +1604,16 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libtorture-samba4.so
 %_samba_mod_libdir/libtrusts-util-samba4.so
 
-%_samba_libdir/libdcerpc-binding.so.*
+%_samba_libdir/libdcerpc-binding.so.%{libdcerpc_binding_so_version}*
 %_samba_libdir/libdcerpc-samr.so.*
-%_samba_libdir/libdcerpc.so.*
-%_samba_libdir/libdcerpc-server-core.so.*
-%_samba_libdir/libsamba-credentials.so.*
-%_samba_libdir/libsamba-hostconfig.so.*
-%_samba_libdir/libsamdb.so.*
-%_samba_libdir/libsmbconf.so.*
-%_samba_libdir/libsamba-passdb.so.*
-%_samba_libdir/libsmbldap.so.*
+%_samba_libdir/libdcerpc.so.%{libdcerpc_so_version}*
+%_samba_libdir/libdcerpc-server-core.so.%{libdcerpc_server_core_so_version}*
+%_samba_libdir/libsamba-credentials.so.%{libsamba_credentials_so_version}*
+%_samba_libdir/libsamba-hostconfig.so.%{libsamba_hostconfig_so_version}*
+%_samba_libdir/libsamdb.so.%{libsamdb_so_version}*
+%_samba_libdir/libsmbconf.so.%{libsmbconf_so_version}*
+%_samba_libdir/libsamba-passdb.so.%{libsamba_passdb_so_version}*
+%_samba_libdir/libsmbldap.so.%{libsmbldap_so_version}*
 
 %if_with clustering_support
 %_samba_mod_libdir/libctdb-event-client-samba4.so
@@ -1724,7 +1740,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %if_with libsmbclient
 %files -n libsmbclient
-%_samba_libdir/libsmbclient.so.*
+%_samba_libdir/libsmbclient.so.%{libsmbclient_so_version}*
 
 %files -n libsmbclient-devel
 %dir %_includedir/samba-4.0
@@ -1738,7 +1754,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %if_with libwbclient
 %files -n libwbclient
-%_libdir/libwbclient.so.*
+%_libdir/libwbclient.so.%{libwbclient_so_version}*
 %_samba_mod_libdir/libreplace-samba4.so
 
 %files -n libwbclient-devel
@@ -1750,7 +1766,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %if_with libnetapi
 %files -n libnetapi
-%_samba_libdir/libnetapi.so.*
+%_samba_libdir/libnetapi.so.%{libnetapi_so_version}*
 
 %files -n libnetapi-devel
 %_samba_libdir/libnetapi.so
