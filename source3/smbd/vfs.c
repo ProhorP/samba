@@ -755,7 +755,7 @@ int vfs_fill_sparse(files_struct *fsp, off_t len)
 	num_to_write = len - fsp->fsp_name->st.st_ex_size;
 
 	/* Only do this on non-stream file handles. */
-	if (fsp->base_fsp == NULL) {
+	if (!fsp_is_alternate_stream(fsp)) {
 		/* for allocation try fallocate first. This can fail on some
 		 * platforms e.g. when the filesystem doesn't support it and no
 		 * emulation is being done by the libc (like on AIX with JFS1). In that
@@ -1395,6 +1395,7 @@ NTSTATUS vfs_stat_fsp(files_struct *fsp)
 		return map_nt_error_from_unix(errno);
 	}
 	update_stat_ex_from_saved_stat(&fsp->fsp_name->st, &saved_stat);
+	fsp->fsp_flags.is_directory = S_ISDIR(fsp->fsp_name->st.st_ex_mode);
 	return NT_STATUS_OK;
 }
 
@@ -1534,30 +1535,15 @@ NTSTATUS vfs_fget_dos_attributes(struct files_struct *fsp,
 	 * btime from the base_fsp to the stream fsp.
 	 */
 
-	if (!(fsp->base_fsp->fsp_name->st.st_ex_iflags &
-	      ST_EX_IFLAG_CALCULATED_BTIME))
-	{
-		update_stat_ex_create_time(
-			&fsp->fsp_name->st,
-			fsp->base_fsp->fsp_name->st.st_ex_btime);
+	if (fsp->base_fsp->fsp_name->st.st_ex_iflags & ST_EX_IFLAG_CALCULATED_BTIME) {
+		/*
+		 * Not a value from backend storage, ignore it
+		 */
+		return NT_STATUS_OK;
 	}
 
-	if (!(fsp->base_fsp->fsp_name->st.st_ex_iflags &
-	      ST_EX_IFLAG_CALCULATED_ITIME))
-	{
-		update_stat_ex_itime(
-			&fsp->fsp_name->st,
-			fsp->base_fsp->fsp_name->st.st_ex_itime);
-	}
-
-	if (!(fsp->base_fsp->fsp_name->st.st_ex_iflags &
-	      ST_EX_IFLAG_CALCULATED_FILE_ID))
-	{
-		update_stat_ex_file_id(
-			&fsp->fsp_name->st,
-			fsp->base_fsp->fsp_name->st.st_ex_file_id);
-	}
-
+	update_stat_ex_create_time(&fsp->fsp_name->st,
+				   fsp->base_fsp->fsp_name->st.st_ex_btime);
 
 	return NT_STATUS_OK;
 }
@@ -1728,20 +1714,19 @@ int smb_vfs_call_openat(struct vfs_handle_struct *handle,
 			const struct files_struct *dirfsp,
 			const struct smb_filename *smb_fname,
 			struct files_struct *fsp,
-			int flags,
-			mode_t mode)
+			const struct vfs_open_how *how)
 {
 	VFS_FIND(openat);
 	return handle->fns->openat_fn(handle,
 				      dirfsp,
 				      smb_fname,
 				      fsp,
-				      flags,
-				      mode);
+				      how);
 }
 
 NTSTATUS smb_vfs_call_create_file(struct vfs_handle_struct *handle,
 				  struct smb_request *req,
+				  struct files_struct *dirfsp,
 				  struct smb_filename *smb_fname,
 				  uint32_t access_mask,
 				  uint32_t share_access,
@@ -1761,7 +1746,7 @@ NTSTATUS smb_vfs_call_create_file(struct vfs_handle_struct *handle,
 {
 	VFS_FIND(create_file);
 	return handle->fns->create_file_fn(
-		handle, req, smb_fname,
+		handle, req, dirfsp, smb_fname,
 		access_mask, share_access, create_disposition, create_options,
 		file_attributes, oplock_request, lease, allocation_size,
 		private_flags, sd, ea_list,
@@ -2091,6 +2076,17 @@ int smb_vfs_call_lstat(struct vfs_handle_struct *handle,
 	return handle->fns->lstat_fn(handle, smb_filename);
 }
 
+int smb_vfs_call_fstatat(
+	struct vfs_handle_struct *handle,
+	const struct files_struct *dirfsp,
+	const struct smb_filename *smb_fname,
+	SMB_STRUCT_STAT *sbuf,
+	int flags)
+{
+	VFS_FIND(fstatat);
+	return handle->fns->fstatat_fn(handle, dirfsp, smb_fname, sbuf, flags);
+}
+
 uint64_t smb_vfs_call_get_alloc_size(struct vfs_handle_struct *handle,
 				     struct files_struct *fsp,
 				     const SMB_STRUCT_STAT *sbuf)
@@ -2304,15 +2300,15 @@ NTSTATUS smb_vfs_call_fstreaminfo(struct vfs_handle_struct *handle,
 					  num_streams, streams);
 }
 
-int smb_vfs_call_get_real_filename(struct vfs_handle_struct *handle,
-				   const struct smb_filename *path,
-				   const char *name,
-				   TALLOC_CTX *mem_ctx,
-				   char **found_name)
+NTSTATUS smb_vfs_call_get_real_filename_at(struct vfs_handle_struct *handle,
+					   struct files_struct *dirfsp,
+					   const char *name,
+					   TALLOC_CTX *mem_ctx,
+					   char **found_name)
 {
-	VFS_FIND(get_real_filename);
-	return handle->fns->get_real_filename_fn(handle, path, name, mem_ctx,
-						 found_name);
+	VFS_FIND(get_real_filename_at);
+	return handle->fns->get_real_filename_at_fn(
+		handle, dirfsp, name, mem_ctx, found_name);
 }
 
 const char *smb_vfs_call_connectpath(struct vfs_handle_struct *handle,

@@ -67,7 +67,7 @@ from samba.netcmd.common import attr_default
 from samba.common import get_bytes, get_string
 from configparser import ConfigParser
 from io import StringIO, BytesIO
-from samba.vgp_files_ext import calc_mode, stat_from_mode
+from samba.gp.vgp_files_ext import calc_mode, stat_from_mode
 import hashlib
 
 
@@ -733,7 +733,7 @@ class cmd_setlink(GPOCommand):
 
         # Check if valid GPO DN
         try:
-            msg = get_gpo_info(self.samdb, gpo=gpo)[0]
+            get_gpo_info(self.samdb, gpo=gpo)[0]
         except Exception:
             raise CommandError("GPO '%s' does not exist" % gpo)
         gpo_dn = str(get_gpo_dn(self.samdb, gpo))
@@ -1295,6 +1295,10 @@ class cmd_create(GPOCommand):
             raise
         else:
             self.samdb.transaction_commit()
+
+        if tmpdir is None:
+            # Without --tmpdir, we created one in /tmp/. It must go.
+            shutil.rmtree(self.tmpdir)
 
         self.outf.write("GPO '%s' created as %s\n" % (displayname, gpo))
 
@@ -1867,7 +1871,7 @@ samba-tool gpo manage sudoers list {31B2F340-016D-11D2-945F-00C04FB984F9}
                     else '%s%%' % u.text for u in principals])
             else:
                 uname = 'ALL'
-            nopassword = entry.find('password') == None
+            nopassword = entry.find('password') is None
             np_entry = ' NOPASSWD:' if nopassword else ''
             p = '%s ALL=(%s)%s %s' % (uname, user, np_entry, command)
             self.outf.write('%s\n' % p)
@@ -1946,7 +1950,7 @@ samba-tool gpo manage sudoers remove {31B2F340-016D-11D2-945F-00C04FB984F9} 'fak
                     else '%s%%' % u.text for u in principals])
             else:
                 uname = 'ALL'
-            nopassword = e.find('password') == None
+            nopassword = e.find('password') is None
             np_entry = ' NOPASSWD:' if nopassword else ''
             p = '%s ALL=(%s)%s %s' % (uname, user, np_entry, command)
             entries[p] = e
@@ -3702,7 +3706,7 @@ samba-tool gpo manage access list {31B2F340-016D-11D2-945F-00C04FB984F9}
 
         realm = self.lp.get('realm')
         vgp_xml = '\\'.join([realm.lower(), 'Policies', gpo,
-                             'MACHINE\\VGP\\VTLA\\VAS'
+                             'MACHINE\\VGP\\VTLA\\VAS',
                              'HostAccessControl\\Allow\\manifest.xml'])
         try:
             allow = ET.fromstring(conn.loadfile(vgp_xml))
@@ -3727,7 +3731,7 @@ samba-tool gpo manage access list {31B2F340-016D-11D2-945F-00C04FB984F9}
                 self.outf.write('+:%s\\%s:ALL\n' % (domain.text, name.text))
 
         vgp_xml = '\\'.join([realm.lower(), 'Policies', gpo,
-                             'MACHINE\\VGP\\VTLA\\VAS'
+                             'MACHINE\\VGP\\VTLA\\VAS',
                              'HostAccessControl\\Deny\\manifest.xml'])
         try:
             deny = ET.fromstring(conn.loadfile(vgp_xml))
@@ -3798,11 +3802,11 @@ samba-tool gpo manage access add {31B2F340-016D-11D2-945F-00C04FB984F9} allow go
         realm = self.lp.get('realm')
         if etype == 'allow':
             vgp_dir = '\\'.join([realm.lower(), 'Policies', gpo,
-                                 'MACHINE\\VGP\\VTLA\\VAS'
+                                 'MACHINE\\VGP\\VTLA\\VAS',
                                  'HostAccessControl\\Allow'])
         elif etype == 'deny':
             vgp_dir = '\\'.join([realm.lower(), 'Policies', gpo,
-                                 'MACHINE\\VGP\\VTLA\\VAS'
+                                 'MACHINE\\VGP\\VTLA\\VAS',
                                  'HostAccessControl\\Deny'])
         else:
             raise CommandError("The entry type must be either 'allow' or "
@@ -3930,11 +3934,11 @@ samba-tool gpo manage access remove {31B2F340-016D-11D2-945F-00C04FB984F9} allow
         realm = self.lp.get('realm')
         if etype == 'allow':
             vgp_dir = '\\'.join([realm.lower(), 'Policies', gpo,
-                                 'MACHINE\\VGP\\VTLA\\VAS'
+                                 'MACHINE\\VGP\\VTLA\\VAS',
                                  'HostAccessControl\\Allow'])
         elif etype == 'deny':
             vgp_dir = '\\'.join([realm.lower(), 'Policies', gpo,
-                                 'MACHINE\\VGP\\VTLA\\VAS'
+                                 'MACHINE\\VGP\\VTLA\\VAS',
                                  'HostAccessControl\\Deny'])
         else:
             raise CommandError("The entry type must be either 'allow' or "

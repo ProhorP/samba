@@ -19,8 +19,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
+#include "replace.h"
 #include "system/locale.h"
+#include <tevent.h>
+#include "lib/util/samba_util.h"
+#include "lib/util/debug.h"
 
 /**
  * @file
@@ -47,6 +50,20 @@ _PUBLIC_ uint64_t generate_random_u64(void)
 	return BVAL(v, 0);
 }
 
+/**
+ * @brief Generate a random number in the given range.
+ *
+ * @param lower    The lower value of the range
+
+ * @param upper    The upper value of the range
+ *
+ * @return A random number bigger than than lower and smaller than upper.
+ */
+_PUBLIC_ uint64_t generate_random_u64_range(uint64_t lower, uint64_t upper)
+{
+	return generate_random_u64() % (upper - lower) + lower;
+}
+
 _PUBLIC_ uint64_t generate_unique_u64(uint64_t veto_value)
 {
 	static struct generate_unique_u64_state {
@@ -54,7 +71,7 @@ _PUBLIC_ uint64_t generate_unique_u64(uint64_t veto_value)
 		int pid;
 	} generate_unique_u64_state;
 
-	int pid = getpid();
+	int pid = tevent_cached_getpid();
 
 	if (unlikely(pid != generate_unique_u64_state.pid)) {
 		generate_unique_u64_state = (struct generate_unique_u64_state) {
@@ -96,7 +113,6 @@ _PUBLIC_ uint64_t generate_unique_u64(uint64_t veto_value)
 _PUBLIC_ bool check_password_quality(const char *pwd)
 {
 	size_t ofs = 0;
-	size_t num_chars = 0;
 	size_t num_digits = 0;
 	size_t num_upper = 0;
 	size_t num_lower = 0;
@@ -120,7 +136,6 @@ _PUBLIC_ bool check_password_quality(const char *pwd)
 			break;
 		}
 		ofs += len;
-		num_chars += 1;
 
 		if (len == 1) {
 			const char *na = "~!@#$%^&*_-+=`|\\(){}[]:;\"'<>,.?/";

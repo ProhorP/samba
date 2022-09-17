@@ -25,6 +25,7 @@
 
 #include "replace.h"
 #include <talloc.h>
+#include <tevent.h>
 #include "system/network.h"
 #include "system/filesys.h"
 #include "system/locale.h"
@@ -36,6 +37,7 @@
 #include "samba_util.h"
 #include "lib/util/select.h"
 #include <libgen.h>
+#include <gnutls/gnutls.h>
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -421,7 +423,7 @@ _PUBLIC_ bool fcntl_lock(int fd, int op, off_t offset, off_t count, int type)
 		if ((ret != -1) &&
 				(lock.l_type != F_UNLCK) && 
 				(lock.l_pid != 0) && 
-				(lock.l_pid != getpid())) {
+				(lock.l_pid != tevent_cached_getpid())) {
 			DEBUG(3,("fcntl_lock: fd %d is locked by pid %d\n",fd,(int)lock.l_pid));
 			return true;
 		}
@@ -1095,6 +1097,14 @@ _PUBLIC_ size_t ascii_len_n(const char *src, size_t n)
 	}
 
 	return len;
+}
+
+_PUBLIC_ bool mem_equal_const_time(const void *s1, const void *s2, size_t n)
+{
+	/* Ensure we won't overflow the unsigned index used by gnutls. */
+	SMB_ASSERT(n <= UINT_MAX);
+
+	return gnutls_memcmp(s1, s2, n) == 0;
 }
 
 struct anonymous_shared_header {

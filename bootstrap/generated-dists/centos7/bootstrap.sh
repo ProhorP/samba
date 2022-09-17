@@ -42,6 +42,7 @@ yum install -y \
     hostname \
     htop \
     jansson-devel \
+    jq \
     keyutils-libs-devel \
     krb5-devel \
     krb5-server \
@@ -88,9 +89,11 @@ yum install -y \
     python36-cryptography \
     python36-devel \
     python36-dns \
+    python36-gpg \
     python36-iso8601 \
     python36-markdown \
     python36-pyasn1 \
+    python36-requests \
     python36-setproctitle \
     quota-devel \
     readline-devel \
@@ -106,6 +109,7 @@ yum install -y \
     wget \
     which \
     xfsprogs-devel \
+    xz \
     yum-utils \
     zlib-devel
 

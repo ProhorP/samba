@@ -1,586 +1,242 @@
                    ==============================
-                   Release Notes for Samba 4.16.5
-                         September 07, 2022
+                   Release Notes for Samba 4.17.0
+                         September 13, 2022
                    ==============================
 
 
-This is the latest stable release of the Samba 4.16 release series.
-
-
-Changes since 4.16.4
---------------------
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 15128: Possible use after free of connection_struct when iterating
-     smbd_server_connection->connections.
-
-o  Ralph Boehme <slow@samba.org>
-   * BUG 15086: Spotlight RPC service returns wrong response when Spotlight is
-     disabled on a share.
-   * BUG 15126: acl_xattr VFS module may unintentionally use filesystem
-     permissions instead of ACL from xattr.
-   * BUG 15153: Missing SMB2-GETINFO access checks from MS-SMB2 3.3.5.20.1.
-   * BUG 15161: assert failed: !is_named_stream(smb_fname)") at
-     ../../lib/util/fault.c:197.
-
-o  Stefan Metzmacher <metze@samba.org>
-   * BUG 15148: Missing READ_LEASE break could cause data corruption.
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 15124: rpcclient can crash using setuserinfo(2).
-   * BUG 15132: Samba fails to build with glibc 2.36 caused by including
-     <sys/mount.h> in libreplace.
-
-o  Joseph Sutton <josephsutton@catalyst.net.nz>
-   * BUG 15152: SMB1 negotiation can fail to handle connection errors.
-
-o  Michael Tokarev <mjt@tls.msk.ru>
-   * BUG 15078: samba-tool domain join segfault when joining a samba ad domain.
-
-
-#######################################
-Reporting bugs & Development Discussion
-#######################################
-
-Please discuss this release on the samba-technical mailing list or by
-joining the #samba-technical:matrix.org matrix room, or
-#samba-technical IRC channel on irc.libera.chat.
-
-
-If you do report problems then please try to send high quality
-feedback. If you don't provide vital information to help us track down
-the problem then you will probably be ignored.  All bug reports should
-be filed under the Samba 4.1 and newer product in the project's Bugzilla
-database (https://bugzilla.samba.org/).
-
-
-======================================================================
-== Our Code, Our Bugs, Our Responsibility.
-== The Samba Team
-======================================================================
-
-
-Release notes for older releases follow:
-----------------------------------------
-                   ==============================
-                   Release Notes for Samba 4.16.4
-                           July 27, 2022
-                   ==============================
-
-
-This is a security release in order to address the following defects:
-
-o CVE-2022-2031:  Samba AD users can bypass certain restrictions associated with
-                  changing passwords.
-                  https://www.samba.org/samba/security/CVE-2022-2031.html
-
-o CVE-2022-32744: Samba AD users can forge password change requests for any user.
-                  https://www.samba.org/samba/security/CVE-2022-32744.html
-
-o CVE-2022-32745: Samba AD users can crash the server process with an LDAP add
-                  or modify request.
-                  https://www.samba.org/samba/security/CVE-2022-32745.html
-
-o CVE-2022-32746: Samba AD users can induce a use-after-free in the server
-                  process with an LDAP add or modify request.
-                  https://www.samba.org/samba/security/CVE-2022-32746.html
-
-o CVE-2022-32742: Server memory information leak via SMB1.
-                  https://www.samba.org/samba/security/CVE-2022-32742.html
-
-Changes since 4.16.3
---------------------
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 15085: CVE-2022-32742.
-
-o  Andrew Bartlett <abartlet@samba.org>
-   * BUG 15009: CVE-2022-32746.
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 15047: CVE-2022-2031.
-
-o  Joseph Sutton <josephsutton@catalyst.net.nz>
-   * BUG 15008: CVE-2022-32745.
-   * BUG 15009: CVE-2022-32746.
-   * BUG 15047: CVE-2022-2031.
-   * BUG 15074: CVE-2022-32744.
-
-
-#######################################
-Reporting bugs & Development Discussion
-#######################################
-
-Please discuss this release on the samba-technical mailing list or by
-joining the #samba-technical:matrix.org matrix room, or
-#samba-technical IRC channel on irc.libera.chat.
-
-If you do report problems then please try to send high quality
-feedback. If you don't provide vital information to help us track down
-the problem then you will probably be ignored.  All bug reports should
-be filed under the Samba 4.1 and newer product in the project's Bugzilla
-database (https://bugzilla.samba.org/).
-
-
-======================================================================
-== Our Code, Our Bugs, Our Responsibility.
-== The Samba Team
-======================================================================
-
-
-----------------------------------------------------------------------
-                   ==============================
-                   Release Notes for Samba 4.16.3
-                           July 18, 2022
-                   ==============================
-
-
-This is the latest stable release of the Samba 4.16 release series.
-
-
-Changes since 4.16.2
---------------------
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 15099: Using vfs_streams_xattr and deleting a file causes a panic.
-
-o  Douglas Bagnall <douglas.bagnall@catalyst.net.nz>
-   * BUG 14986: Add support for bind 9.18.
-   * BUG 15076: logging dsdb audit to specific files does not work.
-
-o  Samuel Cabrero <scabrero@samba.org>
-   * BUG 14979: Problem when winbind renews Kerberos.
-   * BUG 15095: Samba with new lorikeet-heimdal fails to build on gcc 12.1 in
-     developer mode.
-
-o  Volker Lendecke <vl@samba.org>
-   * BUG 15105: Crash in streams_xattr because fsp->base_fsp->fsp_name is NULL.
-   * BUG 15118: Crash in rpcd_classic - NULL pointer deference in
-     mangle_is_mangled().
-
-o  Noel Power <noel.power@suse.com>
-   * BUG 15100: smbclient commands del & deltree fail with
-     NT_STATUS_OBJECT_PATH_NOT_FOUND with DFS.
-
-o  Christof Schmitt <cs@samba.org>
-   * BUG 15120: Fix check for chown when processing NFSv4 ACL.
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 15082: The pcap background queue process should not be stopped.
-   * BUG 15097: testparm: Fix typo in idmap rangesize check.
-   * BUG 15106: net ads info returns LDAP server and LDAP server name as null.
-   * BUG 15108: ldconfig: /lib64/libsmbconf.so.0 is not a symbolic link.
-
-o  Martin Schwenke <martin@meltin.net>
-   * BUG 15090: CTDB child process logging does not work as expected.
-
-
-#######################################
-Reporting bugs & Development Discussion
-#######################################
-
-Please discuss this release on the samba-technical mailing list or by
-joining the #samba-technical:matrix.org matrix room, or
-#samba-technical IRC channel on irc.libera.chat.
-
-If you do report problems then please try to send high quality
-feedback. If you don't provide vital information to help us track down
-the problem then you will probably be ignored.  All bug reports should
-be filed under the Samba 4.1 and newer product in the project's Bugzilla
-database (https://bugzilla.samba.org/).
-
-
-======================================================================
-== Our Code, Our Bugs, Our Responsibility.
-== The Samba Team
-======================================================================
-
-
-----------------------------------------------------------------------
-                   ==============================
-                   Release Notes for Samba 4.16.2
-                           June 13, 2022
-                   ==============================
-
-
-This is the latest stable release of the Samba 4.16 release series.
-
-
-Changes since 4.16.1
---------------------
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 15042: Use pathref fd instead of io fd in vfs_default_durable_cookie.
-
-o  Ralph Boehme <slow@samba.org>
-   * BUG 15069: vfs_gpfs with vfs_shadowcopy2 fail to restore file if original
-     file had been deleted.
-
-o  Samuel Cabrero <scabrero@samba.org>
-   * BUG 15087: netgroups support removed.
-
-o  Samuel Cabrero <scabrero@suse.de>
-   * BUG 14674: net ads info shows LDAP Server: 0.0.0.0 depending on contacted
-     server.
-
-o  Volker Lendecke <vl@samba.org>
-   * BUG 15062: Update from 4.15  to 4.16 breaks discovery of [homes] on
-     standalone server from Win and IOS.
-
-o  Stefan Metzmacher <metze@samba.org>
-   * BUG 15071: waf produces incorrect names for python extensions with Python
-     3.11.
-
-o  Noel Power <noel.power@suse.com>
-   * BUG 15075: smbclient -E doesn't work as advertised.
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 15071: waf produces incorrect names for python extensions with Python
-     3.11.
-   * BUG 15081: The samba background daemon doesn't refresh the printcap cache
-     on startup.
-
-o  Robert Sprowson <webpages@sprow.co.uk>
-   * BUG 14443: Out-by-4 error in smbd read reply max_send clamp..
-
-
-#######################################
-Reporting bugs & Development Discussion
-#######################################
-
-Please discuss this release on the samba-technical mailing list or by
-joining the #samba-technical:matrix.org matrix room, or
-#samba-technical IRC channel on irc.libera.chat.
-
-If you do report problems then please try to send high quality
-feedback. If you don't provide vital information to help us track down
-the problem then you will probably be ignored.  All bug reports should
-be filed under the Samba 4.1 and newer product in the project's Bugzilla
-database (https://bugzilla.samba.org/).
-
-
-======================================================================
-== Our Code, Our Bugs, Our Responsibility.
-== The Samba Team
-======================================================================
-
-
-----------------------------------------------------------------------
-                   ==============================
-                   Release Notes for Samba 4.16.1
-                            May 02, 2022
-                   ==============================
-
-
-This is the latest stable release of the Samba 4.16 release series.
-
-
-Changes since 4.16.0
---------------------
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 14831: Share and server swapped in smbget password prompt.
-   * BUG 15022: Durable handles won't reconnect if the leased file is written
-     to.
-   * BUG 15023: rmdir silently fails if directory contains unreadable files and
-     hide unreadable is yes.
-   * BUG 15038: SMB2_CLOSE_FLAGS_FULL_INFORMATION fails to return information on
-     renamed file handle.
-
-o  Andrew Bartlett <abartlet@samba.org>
-   * BUG 8731: Need to describe --builtin-libraries= better (compare with
-    --bundled-libraries).
-
-o  Ralph Boehme <slow@samba.org>
-   * BUG 14957: vfs_shadow_copy2 breaks "smbd async dosmode" sync fallback.
-   * BUG 15035: shadow_copy2 fails listing snapshotted dirs with
-     shadow:fixinodes.
-
-o  Samuel Cabrero <scabrero@samba.org>
-   * BUG 15046: PAM Kerberos authentication incorrectly fails with a clock skew
-     error.
-
-o  Pavel Filipenský <pfilipen@redhat.com>
-   * BUG 15041: Username map - samba erroneously applies unix group memberships
-     to user account entries.
-
-o  Stefan Metzmacher <metze@samba.org>
-   * BUG 14951: KVNO off by 100000.
-
-o  Christof Schmitt <cs@samba.org>
-   * BUG 15027: Uninitialized litemask in variable in vfs_gpfs module.
-   * BUG 15055: vfs_gpfs recalls=no option prevents listing files.
-
-o  Andreas Schneider <asn@cryptomilk.org>
-   * BUG 15054: smbd doesn't handle UPNs for looking up names.
-
-
-#######################################
-Reporting bugs & Development Discussion
-#######################################
-
-Please discuss this release on the samba-technical mailing list or by
-joining the #samba-technical:matrix.org matrix room, or
-#samba-technical IRC channel on irc.libera.chat.
-
-If you do report problems then please try to send high quality
-feedback. If you don't provide vital information to help us track down
-the problem then you will probably be ignored.  All bug reports should
-be filed under the Samba 4.1 and newer product in the project's Bugzilla
-database (https://bugzilla.samba.org/).
-
-
-======================================================================
-== Our Code, Our Bugs, Our Responsibility.
-== The Samba Team
-======================================================================
-
-
-----------------------------------------------------------------------
-                   ==============================
-                   Release Notes for Samba 4.16.0
-                           March 21, 2022
-                   ==============================
-
-This is the first stable release of the Samba 4.16 release series.
+This is the first stable release of the Samba 4.17 release series.
 Please read the release notes carefully before upgrading.
 
 
 NEW FEATURES/CHANGES
 ====================
 
-New samba-dcerpcd binary to provide DCERPC in the member server setup
----------------------------------------------------------------------
+SMB Server performance improvements
+-----------------------------------
 
-In order to make it much easier to break out the DCERPC services
-from smbd, a new samba-dcerpcd binary has been created.
+The security improvements in recent releases
+(4.13, 4.14, 4.15, 4.16), mainly as protection against symlink races,
+caused performance regressions for meta data heavy workloads.
 
-samba-dcerpcd can be used in two ways. In the normal case without
-startup script modification it is invoked on demand from smbd or
-winbind --np-helper to serve DCERPC over named pipes. Note that
-in order to run in this mode the smb.conf [global] section has
-a new parameter "rpc start on demand helpers = [true|false]".
-This parameter is set to "true" by default, meaning no changes to
-smb.conf files are needed to run samba-dcerpcd on demand as a named
-pipe helper.
+With 4.17 the situation improved a lot again:
 
-It can also be used in a standalone mode where it is started
-separately from smbd or winbind but this requires changes to system
-startup scripts, and in addition a change to smb.conf, setting the new
-[global] parameter "rpc start on demand helpers = false". If "rpc
-start on demand helpers" is not set to false, samba-dcerpcd will
-refuse to start in standalone mode.
+- Pathnames given by a client are devided into dirname and basename.
+  The amount of syscalls to validate dirnames is reduced to 2 syscalls
+  (openat, close) per component. On modern Linux kernels (>= 5.6) smbd
+  makes use of the openat2() syscall with RESOLVE_NO_SYMLINKS,
+  in order to just use 2 syscalls (openat2, close) for the whole dirname.
 
-Note that when Samba is run in the Active Directory Domain Controller
-mode the samba binary that provides the AD code will still provide its
-normal DCERPC services whilst allowing samba-dcerpcd to provide
-services like SRVSVC in the same way that smbd used to in this
-configuration.
+- Contended path based operations used to generate a lot of unsolicited
+  wakeup events causing thundering herd problems, which lead to masive
+  latencies for some clients. These events are now avoided in order
+  to provide stable latencies and much higher throughput of open/close
+  operations.
 
-The parameters that allowed some smbd-hosted services to be started
-externally are now gone (detailed below) as this is now the default
-setting.
+Configure without the SMB1 Server
+---------------------------------
 
-samba-dcerpcd can also be useful for use outside of the Samba
-framework, for example, use with the Linux kernel SMB2 server ksmbd or
-possibly other SMB2 server implementations.
+It is now possible to configure Samba without support for
+the SMB1 protocol in smbd. This can be selected at configure
+time with either of the options:
 
-Heimdal-8.0pre used for Samba Internal Kerberos, adds FAST support
-------------------------------------------------------------------
+--with-smb1-server
+--without-smb1-server
 
-Samba has since Samba 4.0 included a snapshot of the Heimdal Kerberos
-implementation.  This snapshot has now been updated and will closely
-match what will be released as Heimdal 8.0 shortly.
+By default (without either of these options set) Samba
+is configured to include SMB1 support (i.e. --with-smb1-server
+is the default). When Samba is configured without SMB1 support,
+none of the SMB1 code is included inside smbd except the minimal
+stub code needed to allow a client to connect as SMB1 and immediately
+negotiate the selected protocol into SMB2 (as a Windows server also
+allows).
 
-This is a major update, previously we used a snapshot of Heimdal from
-2011, and brings important new Kerberos security features such as
-Kerberos request armoring, known as FAST.  This tunnels ticket
-requests and replies that might be encrypted with a weak password
-inside a wrapper built with a stronger password, say from a machine
-account.
+None of the SMB1-only smb.conf parameters are removed when
+configured without SMB1, but these parameters are ignored by
+the smbd server. This allows deployment without having to change
+an existing smb.conf file.
 
-In Heimdal and MIT modes Samba's KDC now supports FAST, for the
-support of non-Windows clients.
+This option allows sites, OEMs and integrators to configure Samba
+to remove the old and insecure SMB1 protocol from their products.
 
-Windows clients will not use this feature however, as they do not
-attempt to do so against a server not advertising domain Functional
-Level 2012.  Samba users are of course free to modify how Samba
-advertises itself, but use with Windows clients is not supported "out
-of the box".
+Note that the Samba client libraries still support SMB1 connections
+even when Samba is configured as --without-smb1-server. This is
+to ensure maximum compatibility with environments containing old
+SMB1 servers.
 
-Finally, Samba also uses a per-KDC, not per-realm 'cookie' to secure part of
-the FAST protocol.  A future version will align this more closely with
-Microsoft AD behaviour.
+Bronze bit and S4U support now also with MIT Kerberos 1.20
+----------------------------------------------------------
 
-If FAST needs to be disabled on your Samba KDC, set
+In 2020 Microsoft Security Response Team received another Kerberos-related
+report. Eventually, that led to a security update of the CVE-2020-17049,
+Kerberos KDC Security Feature Bypass Vulnerability, also known as a ‘Bronze
+Bit’. With this vulnerability, a compromised service that is configured to use
+Kerberos constrained delegation feature could tamper with a service ticket that
+is not valid for delegation to force the KDC to accept it.
 
- kdc enable fast = no
+With the release of MIT Kerberos 1.20, Samba AD DC is able able to mitigate the
+‘Bronze Bit’ attack. MIT Kerberos KDC's KDB (Kerberos Database Driver) API was
+changed to allow passing more details between KDC and KDB components. When built
+against MIT Kerberos, Samba AD DC supports MIT Kerberos 1.19 and 1.20 versions
+but 'Bronze Bit' mitigation is provided only with MIT Kerberos 1.20.
 
-in the smb.conf.
+In addition to fixing the ‘Bronze Bit’ issue, Samba AD DC now fully supports
+S4U2Self and S4U2Proxy Kerberos extensions.
 
-The Samba project wishes to thank the numerous developers who have put
-in a massive effort to make this possible over many years.  In
-particular we thank Stefan Metzmacher, Joseph Sutton, Gary Lockyer,
-Isaac Boukris and Andrew Bartlett.  Samba's developers in turn thank
-their employers and in turn their customers who have supported this
-effort over many years.
+Note the default (Heimdal-based) KDC was already fixed in 2021,
+see https://bugzilla.samba.org/show_bug.cgi?id=14642
 
-Certificate Auto Enrollment
----------------------------
+Resource Based Constrained Delegation (RBCD) support
+----------------------------------------------------
 
-Certificate Auto Enrollment allows devices to enroll for certificates from
-Active Directory Certificate Services. It is enabled by Group Policy.
-To enable Certificate Auto Enrollment, Samba's group policy will need to be
-enabled by setting the smb.conf option `apply group policies` to Yes. Samba
-Certificate Auto Enrollment depends on certmonger, the cepces certmonger
-plugin, and sscep. Samba uses sscep to download the CA root chain, then uses
-certmonger paired with cepces to monitor the host certificate templates.
-Certificates are installed in /var/lib/samba/certs and private keys are
-installed in /var/lib/samba/private/certs.
+Samba AD DC built with MIT Kerberos 1.20 offers RBCD support now. With MIT
+Kerberos 1.20 we have complete RBCD support passing Sambas S4U testsuite.
 
-Ability to add ports to dns forwarder addresses in internal DNS backend
------------------------------------------------------------------------
+samba-tool delegation got the 'add-principal' and 'del-principal' subcommands
+in order to manage RBCD.
 
-The internal DNS server of Samba forwards queries non-AD zones to one or more
-configured forwarders. Up until now it has been assumed that these forwarders
-listen on port 53. Starting with this version it is possible to configure the
-port using host:port notation. See smb.conf for more details. Existing setups
-are not affected, as the default port is 53.
+To complete RBCD support and make it useful to Administrators we added the
+Asserted Identity [1] SID into the PAC for constrained delegation. This is
+available for Samba AD compiled with MIT Kerberos 1.20.
+
+Note the default (Heimdal-based) KDC does not support RBCD yet.
+
+[1] https://docs.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview
+
+Customizable DNS listening port
+-------------------------------
+
+It is now possible to set a custom listening port for the builtin DNS service,
+making easy to host another DNS on the same system that would bind to the
+default port and forward the domain-specific queries to Samba using the custom
+port. This is the opposite configuration of setting a forwarder in Samba.
+
+It makes possible to use another DNS server as a front and forward to Samba.
+
+Dynamic DNS updates may not be proxied by the front DNS server when forwarding
+to Samba. Dynamic DNS update proxying depends on the features of the other DNS
+server used as a front.
 
 CTDB changes
 ------------
 
-* The "recovery master" role has been renamed "leader"
+* When Samba is configured with both --with-cluster-support and
+  --systemd-install-services then a systemd service file for CTDB will
+  be installed.
 
-  Documentation and logs now refer to "leader".
+* ctdbd_wrapper has been removed.  ctdbd is now started directly from
+  a systemd service file or init script.
 
-  The following ctdb tool command names have changed:
+* The syntax for the ctdb.tunables configuration file has been
+  relaxed.  However, trailing garbage after the value, including
+  comments, is no longer permitted.  Please see ctdb-tunables(7) for
+  more details.
 
-    recmaster -> leader
-    setrecmasterrole -> setleaderrole
+Operation without the (unsalted) NT password hash
+-------------------------------------------------
 
-  Command output has changed for the following commands:
+When Samba is configured with 'nt hash store = never' then Samba will
+no longer store the (unsalted) NT password hash for users in Active
+Directory.  (Trust accounts, like computers, domain controllers and
+inter-domain trusts are not impacted).
 
-    status
-    getcapabilities
+In the next version of Samba the default for 'nt hash store' will
+change from 'always' to 'auto', where it will follow (behave as 'nt
+hash store = never' when 'ntlm auth = disabled' is set.
 
-  The "[legacy] -> recmaster capability" configuration option has been
-  renamed and moved to the cluster section, so this is now:
+Security-focused deployments of Samba that have eliminated NTLM from
+their networks will find setting 'ntlm auth = disabled' with 'nt hash
+store = always' as a useful way to improve compliance with
+best-practice guidance on password storage (which is to always use an
+interated hash).
 
-    [cluster] -> leader capability
+Note that when 'nt hash store = never' is set, then arcfour-hmac-md5
+Kerberos keys will not be available for users who subsequently change
+their password, as these keys derive their values from NT hashes.  AES
+keys are stored by default for all deployments of Samba with Domain
+Functional Level 2008 or later, are supported by all modern clients,
+and are much more secure.
 
-* The "recovery lock" has been renamed "cluster lock"
+Finally, also note that password history in Active Directory is stored
+in nTPwdHistory using a series of NT hash values.  Therefore the full
+password history feature is not available in this mode.
 
-  Documentation and logs now refer to "cluster lock".
+To provide some protection against password re-use previous Kerberos
+hash values (the current, old and older values are already stored) are
+used, providing a history length of 3.
 
-  The "[cluster] -> recovery lock" configuration option has been
-  deprecated and will be removed in a future version.  Please use
-  "[cluster] -> cluster lock" instead.
+There is one small limitation of this workaround: Changing the
+sAMAccountName, userAccountControl or userPrincipalName of an account
+can cause the Kerberos password salt to change.  This means that after
+*both* an account rename and a password change, only the current
+password will be recognised for password history purposes.
 
-  If the cluster lock is enabled then traditional elections are not
-  done and leader elections use a race for the cluster lock.  This
-  avoids various conditions where a node is elected leader but can not
-  take the cluster lock.  Such conditions included:
+Python API for smbconf
+----------------------
 
-  - At startup, a node elects itself leader of its own cluster before
-    connecting to other nodes
+Samba's smbconf library provides a generic frontend to various
+configuration backends (plain text file, registry) as a C library. A
+new Python wrapper, importable as 'samba.smbconf' is available.  An
+additional module, 'samba.samba3.smbconf', is also available to enable
+registry backend support. These libraries allow Python programs to
+read, and optionally write, Samba configuration natively.
 
-  - Cluster filesystem failover is slow
+JSON support for smbstatus
+--------------------------
 
-  The abbreviation "reclock" is still used in many places, because a
-  better abbreviation eludes us (i.e. "clock" is obvious bad) and
-  changing all instances would require a lot of churn.  If the
-  abbreviation "reclock" for "cluster lock" is confusing, please
-  consider mentally prefixing it with "really excellent".
+It is now possible to print detailed information in JSON format in
+the smbstatus program using the new option --json. The JSON output
+covers all the existing text output including sessions, connections,
+open files, byte-range locks, notifies and profile data with all
+low-level information maintained by Samba in the respective databases.
 
-* CTDB now uses leader broadcasts and an associated timeout to
-  determine if an election is required
+Protected Users security group
+------------------------------
 
-  The leader broadcast timeout can be configured via new configuration
-  option
+Samba AD DC now includes support for the Protected Users security
+group introduced in Windows Server 2012 R2. The feature reduces the
+attack surface of user accounts by preventing the use of weak
+encryption types. It also mitigates the effects of credential theft by
+limiting credential lifetime and scope.
 
-    [cluster] -> leader timeout
+The protections are intended for user accounts only, and service or
+computer accounts should not be added to the Protected Users
+group. User accounts added to the group are granted the following
+security protections:
 
-  This specifies the number of seconds without leader broadcasts
-  before a node calls an election.  The default is 5.
+   * NTLM authentication is disabled.
+   * Kerberos ticket-granting tickets (TGTs) encrypted with RC4 are
+     not issued to or accepted from affected principals. Tickets
+     encrypted with AES, and service tickets encrypted with RC4, are
+     not affected by this restriction.
+   * The lifetime of Kerberos TGTs is restricted to a maximum of four
+     hours.
+   * Kerberos constrained and unconstrained delegation is disabled.
+
+If the Protected Users group is not already present in the domain, it
+can be created with 'samba-tool group add'. The new '--special'
+parameter must be specified, with 'Protected Users' as the name of the
+group. An example command invocation is:
+
+samba-tool group add 'Protected Users' --special
+
+or against a remote server:
+
+samba-tool group add 'Protected Users' --special -H ldap://dc1.example.com -U Administrator
+
+The Protected Users group is identified in the domain by its having a
+RID of 525. Thus, it should only be created with samba-tool and the
+'--special' parameter, as above, so that it has the required RID
+to function correctly.
 
 
 REMOVED FEATURES
 ================
 
-Older SMB1 protocol SMBCopy command removed
--------------------------------------------
+LanMan Authentication and password storage removed from the AD DC
+-----------------------------------------------------------------
 
-SMB is a nearly 30-year old protocol, and some protocol commands that
-while supported in all versions, have not seen widespread use.
-
-One of those is SMBCopy, a feature for a server-side copy of a file.
-This feature has been so unmaintained that Samba has no testsuite for
-it.
-
-The SMB1 command SMB_COM_COPY (SMB1 command number 0x29) was
-introduced in the LAN Manager 1.0 dialect and it was rendered obsolete
-in the NT LAN Manager dialect.
-
-Therefore it has been removed from the Samba smbd server.
-
-We do note that a fully supported and tested server-side copy is
-present in SMB2, and can be accessed with "scopy" subcommand in
-smbclient)
-
-SMB1 server-side wildcard expansion removed
--------------------------------------------
-
-Server-side wildcard expansion is another feature that sounds useful,
-but is also rarely used and has become problematic - imposing extra
-work on the server (both in terms of code and CPU time).
-
-In actual OS design, wildcard expansion is handled in the local shell,
-not at the remote server using SMB wildcard syntax (which is not shell
-syntax).
-
-In Samba 4.16 the ability to process file name wildcards in requests
-using the SMB1 commands SMB_COM_RENAME (SMB1 command number 0x7),
-SMB_COM_NT_RENAME (SMB1 command number 0xA5) and SMB_COM_DELETE (SMB1
-command number 0x6) has been removed.
-
-SMB1 protocol has been deprecated, particularly older dialects
---------------------------------------------------------------
-
-We take this opportunity to remind that we have deprecated and
-disabled by default, but not removed, the whole SMB1 protocol since
-Samba 4.11.  If needed for security purposes or code maintenance we
-will continue to remove older protocol commands and dialects that are
-unused or have been replaced in more modern SMB1 versions.
-
-We specifically deprecate the older dialects older than "NT LM 0.12"
-(also known as "NT LANMAN 1.0" and "NT1").
-
-Please note that "NT LM 0.12" is the dialect used by software as old
-as Windows 95, Windows NT and Samba 2.0, so this deprecation applies
-to DOS and similar era clients.
-
-We do reassure that that 'simple' operation of older clients than
-these (eg DOS) will, while untested, continue for the near future, our
-purpose is not to cripple use of Samba in unique situations, but to
-reduce the maintaince burden.
-
-Eventually SMB1 as a whole will be removed, but no broader change is
-announced for 4.16.
-
-In the rare case where the above changes cause incompatibilities,
-users requiring support for these features will need to use older
-versions of Samba.
-
-No longer using Linux mandatory locks for sharemodes
-====================================================
-
-smbd mapped sharemodes to Linux mandatory locks. This code in the Linux kernel
-was broken for a long time, and is planned to be removed with Linux 5.15. This
-Samba release removes the usage of mandatory locks for sharemodes and the
-"kernel share modes" config parameter is changed to default to "no". The Samba
-VFS interface is kept, so that file-system specific VFS modules can still use
-private calls for enforcing sharemodes.
+The storage and authentication with LanMan passwords has been entirely
+removed from the Samba AD DC, even when "lanman auth = yes" is set.
 
 
 smb.conf changes
@@ -588,160 +244,99 @@ smb.conf changes
 
   Parameter Name                          Description     Default
   --------------                          -----------     -------
-  kernel share modes                      New default     No
-  dns forwarder                           Changed
-  rpc_daemon                              Removed
-  rpc_server                              Removed
-  rpc start on demand helpers             Added           true
+  dns port                                New default     53
+  fruit:zero_file_id                      New default     yes
+  nt hash store                           New parameter   always
+  smb1 unix extensions                    Replaces "unix extensions"
+  volume serial number                    New parameter   -1
+  winbind debug traceid                   New parameter   no
 
 
-CHANGES SINCE 4.16.0rc5
+CHANGES SINCE 4.17.0rc4
 =======================
 
-o  Andrew Bartlett <abartlet@samba.org>
-   * BUG 15000: Memory leak in FAST cookie handling.
+o  Ralph Boehme <slow@samba.org>
+   * BUG 15126: acl_xattr VFS module may unintentionally use filesystem
+     permissions instead of ACL from xattr.
+   * BUG 15153: Missing SMB2-GETINFO access checks from MS-SMB2 3.3.5.20.1.
+   * BUG 15161: assert failed: !is_named_stream(smb_fname)") at
+     ../../lib/util/fault.c:197.
 
-o  Elia Geretto <elia.f.geretto@gmail.com>
-   * BUG 14983: NT_STATUS_ACCESS_DENIED translates into EPERM instead of EACCES
-     in SMBC_server_internal.
+o  Volker Lendecke <vl@samba.org>
+   * BUG 15126: acl_xattr VFS module may unintentionally use filesystem
+     permissions instead of ACL from xattr.
+   * BUG 15161: assert failed: !is_named_stream(smb_fname)") at
+     ../../lib/util/fault.c:197.
 
 o  Stefan Metzmacher <metze@samba.org>
-   * BUG 13879: Simple bind doesn't work against an RODC (with non-preloaded
-     users).
-   * BUG 14641: Crash of winbind on RODC.
-   * BUG 15001: LDAP simple binds should honour "old password allowed period".
-   * BUG 15002: S4U2Self requests don't work against servers without FAST
-     support.
-   * BUG 15003: wbinfo -a doesn't work reliable with upn names.
-   * BUG 15005: A cross-realm kerberos client exchanges fail using KDCs with and
-     without FAST.
-   * BUG 15015: PKINIT: hdb_samba4_audit: Unhandled hdb_auth_status=9 =>
-     INTERNAL_ERROR.
+   * BUG 15159: Cross-node multi-channel reconnects result in SMB2 Negotiate
+     returning NT_STATUS_NOT_SUPPORTED.
 
-o  Garming Sam <garming@catalyst.net.nz>
-   * BUG 13879: Simple bind doesn't work against an RODC (with non-preloaded
-     users).
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 15016: Regression: create krb5 conf = yes doesn't work with a single
-     KDC.
-
-o  Joseph Sutton <josephsutton@catalyst.net.nz>
-   * BUG 15015: PKINIT: hdb_samba4_audit: Unhandled hdb_auth_status=9 =>
-     INTERNAL_ERROR.
+o  Noel Power <noel.power@suse.com>
+   * BUG 15160: winbind at info level debug can coredump when processing
+     wb_lookupusergroups.
 
 
-CHANGES SINCE 4.16.0rc4
+CHANGES SINCE 4.17.0rc3
+=======================
+
+o  Anoop C S <anoopcs@samba.org>
+   * BUG 15157: Make use of glfs_*at() API calls in vfs_glusterfs.
+
+
+CHANGES SINCE 4.17.0rc2
 =======================
 
 o  Jeremy Allison <jra@samba.org>
-   * BUG 14737: Samba does not response STATUS_INVALID_PARAMETER when opening 2
-     objects with same lease key.
+   * BUG 15128: Possible use after free of connection_struct when iterating
+     smbd_server_connection->connections.
+
+o  Christian Ambach <ambi@samba.org>
+   * BUG 15145: `net usershare add` fails with flag works with --long but fails
+     with -l.
+
+o  Ralph Boehme <slow@samba.org>
+   * BUG 15126: acl_xattr VFS module may unintentionally use filesystem
+     permissions instead of ACL from xattr.
+
+o  Stefan Metzmacher <metze@samba.org>
+   * BUG 15125: Performance regression on contended path based operations.
+   * BUG 15148: Missing READ_LEASE break could cause data corruption.
+
+o  Andreas Schneider <asn@samba.org>
+   * BUG 15141: libsamba-errors uses a wrong version number.
+
+o  Joseph Sutton <josephsutton@catalyst.net.nz>
+   * BUG 15152: SMB1 negotiation can fail to handle connection errors.
+
+
+CHANGES SINCE 4.17.0rc1
+=======================
+
+o  Jeremy Allison <jra@samba.org>
+   * BUG 15143: New filename parser doesn't check veto files smb.conf parameter.
+   * BUG 15144: 4.17.rc1 still uses symlink-race prone unix_convert()
+   * BUG 15146: Backport fileserver related changed to 4.17.0rc2
 
 o  Jule Anger <janger@samba.org>
-   * BUG 14999: Listing shares with smbstatus no longer works.
-
-o  Douglas Bagnall <douglas.bagnall@catalyst.net.nz>
-   * BUG 14996: Fix ldap simple bind with TLS auditing.
-
-o  Andrew Bartlett <abartlet@samba.org>
-   * BUG 14995: Use Heimdal 8.0 (pre) rather than an earlier snapshot.
+   * BUG 15147: Manpage for smbstatus json is missing
 
 o  Volker Lendecke <vl@samba.org>
-   * BUG 14989: Fix a use-after-free in SMB1 server.
+   * BUG 15146: Backport fileserver related changed to 4.17.0rc2
 
 o  Stefan Metzmacher <metze@samba.org>
-   * BUG 14865: Uncached logon on RODC always fails once.
-   * BUG 14984: Changing the machine password against an RODC likely destroys
-     the domain join.
-   * BUG 14993: authsam_make_user_info_dc() steals memory from its struct
-     ldb_message *msg argument.
-   * BUG 14995: Use Heimdal 8.0 (pre) rather than an earlier snapshot.
-
-o  Joseph Sutton <josephsutton@catalyst.net.nz>
-   * BUG 14995: Use Heimdal 8.0 (pre) rather than an earlier snapshot.
-
-
-CHANGES SINCE 4.16.0rc3
-=======================
-
-o  Samuel Cabrero <scabrero@suse.de>
-   * BUG 14979: Problem when winbind renews Kerberos.
-
-o  Björn Jacke <bj@sernet.de>
-   * BUG 13631: DFS fix for AIX broken.
-   * BUG 14974: Solaris and AIX acl modules: wrong function arguments.
-   * BUG 7239: Function aixacl_sys_acl_get_file not declared / coredump.
+   * BUG 15125: Performance regression on contended path based operations
+   * BUG 15146: Backport fileserver related changed to 4.17.0rc2
 
 o  Andreas Schneider <asn@samba.org>
-   * BUG 14967: Samba autorid fails to map AD users if id rangesize fits in the
-     id range only once.
-
-o  Martin Schwenke <martin@meltin.net>
-   * BUG 14958: CTDB can get stuck in election and recovery.
-
-
-CHANGES SINCE 4.16.0rc2
-=======================
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 14169: Renaming file on DFS root fails with
-     NT_STATUS_OBJECT_PATH_NOT_FOUND.
-   * BUG 14938: NT error code is not set when overwriting a file during rename
-     in libsmbclient.
-
-o  Ralph Boehme <slow@samba.org>
-   * BUG 14674: net ads info shows LDAP Server: 0.0.0.0 depending on contacted
-     server.
-
-o  Pavel Filipenský <pfilipen@redhat.com>
-   * BUG 14971: virusfilter_vfs_openat: Not scanned: Directory or special file.
-
-o  Volker Lendecke <vl@samba.org>
-   * BUG 14900: Regression: Samba 4.15.2 on macOS segfaults intermittently
-     during strcpy in tdbsam_getsampwnam.
-   * BUG 14975: Fix a crash in vfs_full_audit - CREATE_FILE can free a used fsp.
-
-o  Stefan Metzmacher <metze@samba.org>
-   * BUG 14968: smb2_signing_decrypt_pdu() may not decrypt with
-     gnutls_aead_cipher_decrypt() from gnutls before 3.5.2.
-
-o  Andreas Schneider <asn@samba.org>
-   * BUG 14960: SDB uses HDB flags directly which can lead to unwanted side
-     effects.
-
-
-CHANGES SINCE 4.16.0rc1
-=======================
-
-o  Jeremy Allison <jra@samba.org>
-   * BUG 14911: CVE-2021-44141: UNIX extensions in SMB1 disclose whether the
-     outside target of a symlink exists.
-
-o  Ralph Boehme <slow@samba.org>
-   * BUG 14914: CVE-2021-44142: Out-of-Bound Read/Write on Samba vfs_fruit
-     module.
-   * BUG 14961: install elasticsearch_mappings.json
-
-o  FeRD (Frank Dana) <ferdnyc@gmail.com>
-   * BUG 14947: samba-bgqd still notifying systemd, triggering log warnings
-     without NotifyAccess=all.
-
-o  Stefan Metzmacher <metze@samba.org>
-   * BUG 14867: Printing no longer works on Windows 7 with 2021-10 monthly
-     rollup patch.
-   * BUG 14956: ndr_push_string() adds implicit termination for
-     STR_NOTERM|REMAINING empty strings.
-
-o  Joseph Sutton <josephsutton@catalyst.net.nz>
-   * BUG 14950: CVE-2022-0336: Re-adding an SPN skips subsequent SPN conflict
-     checks.
+   * BUG 15140: Fix issues found by coverity in smbstatus json code
+   * BUG 15146: Backport fileserver related changed to 4.17.0rc2
 
 
 KNOWN ISSUES
 ============
 
-https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.16#Release_blocking_bugs
+https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.17#Release_blocking_bugs
 
 
 #######################################

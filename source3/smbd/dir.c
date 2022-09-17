@@ -81,10 +81,13 @@ struct dptr_struct {
 	struct memcache *dptr_cache;
 };
 
-static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
-			files_struct *fsp,
-			const char *mask,
-			uint32_t attr);
+static NTSTATUS OpenDir_fsp(
+	TALLOC_CTX *mem_ctx,
+	connection_struct *conn,
+	files_struct *fsp,
+	const char *mask,
+	uint32_t attr,
+	struct smb_Dir **_dir_hnd);
 
 static void DirCacheAdd(struct smb_Dir *dir_hnd, const char *name, long offset);
 
@@ -216,7 +219,8 @@ NTSTATUS dptr_create(connection_struct *conn,
 {
 	struct smbd_server_connection *sconn = conn->sconn;
 	struct dptr_struct *dptr = NULL;
-	struct smb_Dir *dir_hnd;
+	struct smb_Dir *dir_hnd = NULL;
+	NTSTATUS status;
 
 	DBG_INFO("dir=%s\n", fsp_str_dbg(fsp));
 
@@ -235,9 +239,9 @@ NTSTATUS dptr_create(connection_struct *conn,
 			fsp_str_dbg(fsp));
 		return NT_STATUS_ACCESS_DENIED;
 	}
-	dir_hnd = OpenDir_fsp(NULL, conn, fsp, wcard, attr);
-	if (!dir_hnd) {
-		return map_nt_error_from_unix(errno);
+	status = OpenDir_fsp(NULL, conn, fsp, wcard, attr, &dir_hnd);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	dptr = talloc_zero(NULL, struct dptr_struct);
@@ -420,7 +424,7 @@ static char *dptr_ReadDirName(TALLOC_CTX *ctx,
 	char *talloced = NULL;
 	char *pathreal = NULL;
 	char *found_name = NULL;
-	int ret;
+	NTSTATUS status;
 
 	SET_STAT_INVALID(*pst);
 
@@ -495,15 +499,16 @@ static char *dptr_ReadDirName(TALLOC_CTX *ctx,
 	 * Try case-insensitive stat if the fs has the ability. This avoids
 	 * scanning the whole directory.
 	 */
-	ret = SMB_VFS_GET_REAL_FILENAME(dptr->conn,
-					dptr->smb_dname,
-					dptr->wcard,
-					ctx,
-					&found_name);
-	if (ret == 0) {
+	status = SMB_VFS_GET_REAL_FILENAME_AT(dptr->conn,
+					      dptr->dir_hnd->fsp,
+					      dptr->wcard,
+					      ctx,
+					      &found_name);
+	if (NT_STATUS_IS_OK(status)) {
 		name = found_name;
 		goto clean;
-	} else if (errno == ENOENT) {
+	}
+	if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
 		/* The case-insensitive lookup was authoritative. */
 		goto clean;
 	}
@@ -557,9 +562,11 @@ static uint32_t map_dir_offset_to_wire(struct dptr_struct *dptr, long offset)
 
 	if (offset == END_OF_DIRECTORY_OFFSET) {
 		return WIRE_END_OF_DIRECTORY_OFFSET;
-	} else if(offset == START_OF_DIRECTORY_OFFSET) {
+	}
+	if (offset == START_OF_DIRECTORY_OFFSET) {
 		return WIRE_START_OF_DIRECTORY_OFFSET;
-	} else if (offset == DOT_DOT_DIRECTORY_OFFSET) {
+	}
+	if (offset == DOT_DOT_DIRECTORY_OFFSET) {
 		return WIRE_DOT_DOT_DIRECTORY_OFFSET;
 	}
 	if (sizeof(long) == 4) {
@@ -798,8 +805,9 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 		prev_offset = cur_offset;
 		dname = dptr_ReadDirName(ctx, dirptr, &cur_offset, &sbuf);
 
-		DEBUG(6,("smbd_dirptr_get_entry: dirptr 0x%lx now at offset %ld\n",
-			(long)dirptr, cur_offset));
+		DBG_DEBUG("dir [%s] dirptr [0x%lx] offset [%ld] => dname [%s]\n",
+			  smb_fname_str_dbg(dirptr->smb_dname), (long)dirptr,
+			  cur_offset, dname ? dname : "(finished)");
 
 		if (dname == NULL) {
 			return false;
@@ -921,7 +929,9 @@ bool smbd_dirptr_get_entry(TALLOC_CTX *ctx,
 			TALLOC_FREE(fname);
 			TALLOC_FREE(smb_fname);
 			continue;
-		} else if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
+		}
+
+		if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND)) {
 			if (!(atname->flags & SMB_FILENAME_POSIX_PATH)) {
 				check_dfs_symlink = true;
 			}
@@ -1373,10 +1383,7 @@ bool is_visible_fsp(struct files_struct *fsp)
 		return true;
 	}
 
-	if (fsp->base_fsp != NULL) {
-		/* Only operate on non-stream files. */
-		fsp = fsp->base_fsp;
-	}
+	fsp = metadata_fsp(fsp);
 
 	/* Get the last component of the base name. */
 	last_component = strrchr_m(fsp->fsp_name->base_name, '/');
@@ -1476,11 +1483,12 @@ static int smb_Dir_OpenDir_destructor(struct smb_Dir *dir_hnd)
 	return 0;
 }
 
-struct smb_Dir *OpenDir(TALLOC_CTX *mem_ctx,
-			connection_struct *conn,
-			const struct smb_filename *smb_dname,
-			const char *mask,
-			uint32_t attr)
+NTSTATUS OpenDir(TALLOC_CTX *mem_ctx,
+		 connection_struct *conn,
+		 const struct smb_filename *smb_dname,
+		 const char *mask,
+		 uint32_t attr,
+		 struct smb_Dir **_dir_hnd)
 {
 	struct files_struct *fsp = NULL;
 	struct smb_Dir *dir_hnd = NULL;
@@ -1491,46 +1499,82 @@ struct smb_Dir *OpenDir(TALLOC_CTX *mem_ctx,
 				      O_RDONLY,
 				      &fsp);
 	if (!NT_STATUS_IS_OK(status)) {
-		/* Ensure we return the actual error from status in errno. */
-		errno = map_errno_from_nt_status(status);
-		return NULL;
+		return status;
 	}
 
-	dir_hnd = OpenDir_fsp(mem_ctx, conn, fsp, mask, attr);
-	if (dir_hnd == NULL) {
-		return NULL;
+	status = OpenDir_fsp(mem_ctx, conn, fsp, mask, attr, &dir_hnd);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	/*
-	 * This overwrites the destructor set by smb_Dir_OpenDir_destructor(),
-	 * but smb_Dir_OpenDir_destructor() calls the OpenDir_fsp() destructor.
+	 * This overwrites the destructor set by OpenDir_fsp() but
+	 * smb_Dir_OpenDir_destructor() calls the OpenDir_fsp()
+	 * destructor.
 	 */
 	talloc_set_destructor(dir_hnd, smb_Dir_OpenDir_destructor);
-	return dir_hnd;
+
+	*_dir_hnd = dir_hnd;
+	return NT_STATUS_OK;
+}
+
+NTSTATUS OpenDir_from_pathref(TALLOC_CTX *mem_ctx,
+			      struct files_struct *dirfsp,
+			      const char *mask,
+			      uint32_t attr,
+			      struct smb_Dir **_dir_hnd)
+{
+	struct files_struct *fsp = NULL;
+	struct smb_Dir *dir_hnd = NULL;
+	NTSTATUS status;
+
+	status = openat_internal_dir_from_pathref(dirfsp, O_RDONLY, &fsp);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	status = OpenDir_fsp(mem_ctx, fsp->conn, fsp, mask, attr, &dir_hnd);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	/*
+	 * This overwrites the destructor set by OpenDir_fsp() but
+	 * smb_Dir_OpenDir_destructor() calls the OpenDir_fsp()
+	 * destructor.
+	 */
+	talloc_set_destructor(dir_hnd, smb_Dir_OpenDir_destructor);
+
+	*_dir_hnd = dir_hnd;
+	return NT_STATUS_OK;
 }
 
 /*******************************************************************
  Open a directory from an fsp.
 ********************************************************************/
 
-static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
-			files_struct *fsp,
-			const char *mask,
-			uint32_t attr)
+static NTSTATUS OpenDir_fsp(
+	TALLOC_CTX *mem_ctx,
+	connection_struct *conn,
+	files_struct *fsp,
+	const char *mask,
+	uint32_t attr,
+	struct smb_Dir **_dir_hnd)
 {
 	struct smb_Dir *dir_hnd = talloc_zero(mem_ctx, struct smb_Dir);
+	NTSTATUS status;
 
 	if (!dir_hnd) {
-		goto fail;
+		return NT_STATUS_NO_MEMORY;
 	}
 
 	if (!fsp->fsp_flags.is_directory) {
-		errno = EBADF;
+		status = NT_STATUS_INVALID_HANDLE;
 		goto fail;
 	}
 
 	if (fsp_get_io_fd(fsp) == -1) {
-		errno = EBADF;
+		status = NT_STATUS_INVALID_HANDLE;
 		goto fail;
 	}
 
@@ -1549,12 +1593,13 @@ static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
 
 	dir_hnd->dir_smb_fname = cp_smb_filename(dir_hnd, fsp->fsp_name);
 	if (!dir_hnd->dir_smb_fname) {
-		errno = ENOMEM;
+		status = NT_STATUS_NO_MEMORY;
 		goto fail;
 	}
 
 	dir_hnd->dir = SMB_VFS_FDOPENDIR(fsp, mask, attr);
 	if (dir_hnd->dir == NULL) {
+		status = map_nt_error_from_unix(errno);
 		goto fail;
 	}
 	dir_hnd->fsp = fsp;
@@ -1566,11 +1611,12 @@ static struct smb_Dir *OpenDir_fsp(TALLOC_CTX *mem_ctx, connection_struct *conn,
 
 	talloc_set_destructor(dir_hnd, smb_Dir_destructor);
 
-	return dir_hnd;
+	*_dir_hnd = dir_hnd;
+	return NT_STATUS_OK;
 
   fail:
 	TALLOC_FREE(dir_hnd);
-	return NULL;
+	return status;
 }
 
 
@@ -1589,7 +1635,8 @@ const char *ReadDirName(struct smb_Dir *dir_hnd, long *poffset,
 
 	/* Cheat to allow . and .. to be the first entries returned. */
 	if (((*poffset == START_OF_DIRECTORY_OFFSET) ||
-	     (*poffset == DOT_DOT_DIRECTORY_OFFSET)) && (dir_hnd->file_number < 2))
+	     (*poffset == DOT_DOT_DIRECTORY_OFFSET)) &&
+	    (dir_hnd->file_number < 2))
 	{
 		if (dir_hnd->file_number == 0) {
 			n = ".";
@@ -1613,11 +1660,9 @@ const char *ReadDirName(struct smb_Dir *dir_hnd, long *poffset,
 
 	while ((n = vfs_readdirname(conn, dir_hnd->fsp, dir_hnd->dir, sbuf, &talloced))) {
 		/* Ignore . and .. - we've already returned them. */
-		if (*n == '.') {
-			if ((n[1] == '\0') || (n[1] == '.' && n[2] == '\0')) {
-				TALLOC_FREE(talloced);
-				continue;
-			}
+		if (ISDOT(n) || ISDOTDOT(n)) {
+			TALLOC_FREE(talloced);
+			continue;
 		}
 		*poffset = dir_hnd->offset = SMB_VFS_TELLDIR(conn, dir_hnd->dir);
 		*ptalloced = talloced;
@@ -1888,14 +1933,12 @@ NTSTATUS can_delete_directory_fsp(files_struct *fsp)
 	char *talloced = NULL;
 	SMB_STRUCT_STAT st;
 	struct connection_struct *conn = fsp->conn;
-	struct smb_Dir *dir_hnd = OpenDir(talloc_tos(),
-					conn,
-					fsp->fsp_name,
-					NULL,
-					0);
+	struct smb_Dir *dir_hnd = NULL;
 
-	if (!dir_hnd) {
-		return map_nt_error_from_unix(errno);
+	status = OpenDir(
+		talloc_tos(), conn, fsp->fsp_name, NULL, 0, &dir_hnd);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
 	}
 
 	while ((dname = ReadDirName(dir_hnd, &dirpos, &st, &talloced))) {

@@ -120,7 +120,7 @@ common_provision_join_options = [
            help="choose machine password (otherwise random)"),
     Option("--plaintext-secrets", action="store_true",
            help="Store secret/sensitive values as plain text on disk" +
-           "(default is to encrypt secret/ensitive values)"),
+           "(default is to encrypt secret/sensitive values)"),
     Option("--backend-store", type="choice", metavar="BACKENDSTORE",
            choices=["tdb", "mdb"],
            help="Specify the database backend to be used "
@@ -2877,7 +2877,6 @@ class cmd_domain_trust_delete(DomainTrustCommand):
                 if not self.check_runtime_error(error, ntstatus.NT_STATUS_OBJECT_NAME_NOT_FOUND):
                     raise self.RemoteRuntimeError(self, error, "QueryTrustedDomainInfoByName(%s)" % (
                                                   lsaString.string))
-                pass
 
             if remote_tdo_info is not None:
                 if local_lsa_info.sid != remote_tdo_info.sid or \
@@ -2920,14 +2919,6 @@ class cmd_domain_trust_delete(DomainTrustCommand):
                 self.outf.write("RemoteTDO deleted.\n")
             except RuntimeError as error:
                 self.outf.write("%s\n" % self.RemoteRuntimeError(self, error, "DeleteObject() failed"))
-
-        if local_tdo_handle is not None:
-            try:
-                local_lsa.DeleteObject(local_tdo_handle)
-                local_tdo_handle = None
-                self.outf.write("LocalTDO deleted.\n")
-            except RuntimeError as error:
-                self.outf.write("%s\n" % self.LocalRuntimeError(self, error, "DeleteObject() failed"))
 
         return
 

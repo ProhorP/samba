@@ -182,7 +182,7 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
 	struct stream_io *io = (struct stream_io *)
 		VFS_FETCH_FSP_EXTENSION(handle, fsp);
 
-	if (io == NULL || fsp->base_fsp == NULL) {
+	if (io == NULL || !fsp_is_alternate_stream(fsp)) {
 		return SMB_VFS_NEXT_FSTAT(handle, fsp, sbuf);
 	}
 
@@ -315,8 +315,7 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 				const struct files_struct *dirfsp,
 				const struct smb_filename *smb_fname,
 				files_struct *fsp,
-				int flags,
-				mode_t mode)
+				const struct vfs_open_how *how)
 {
 	NTSTATUS status;
 	struct streams_xattr_config *config = NULL;
@@ -332,21 +331,23 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 
 	DBG_DEBUG("called for %s with flags 0x%x\n",
 		  smb_fname_str_dbg(smb_fname),
-		  flags);
+		  how->flags);
 
 	if (!is_named_stream(smb_fname)) {
 		return SMB_VFS_NEXT_OPENAT(handle,
 					   dirfsp,
 					   smb_fname,
 					   fsp,
-					   flags,
-					   mode);
+					   how);
 	}
 
-	/*
-	 * For now assert this, so the below SMB_VFS_SETXATTR() works.
-	 */
-	SMB_ASSERT(fsp_get_pathref_fd(dirfsp) == AT_FDCWD);
+	if (how->resolve != 0) {
+		errno = ENOSYS;
+		return -1;
+	}
+
+	SMB_ASSERT(fsp_is_alternate_stream(fsp));
+	SMB_ASSERT(dirfsp == NULL);
 
 	status = streams_xattr_get_name(handle, talloc_tos(),
 					smb_fname->stream_name, &xattr_name);
@@ -375,7 +376,7 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 			goto fail;
 		}
 
-		if (!(flags & O_CREAT)) {
+		if (!(how->flags & O_CREAT)) {
 			errno = ENOATTR;
 			goto fail;
 		}
@@ -383,7 +384,7 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 		set_empty_xattr = true;
 	}
 
-	if (flags & O_TRUNC) {
+	if (how->flags & O_TRUNC) {
 		set_empty_xattr = true;
 	}
 
@@ -403,7 +404,7 @@ static int streams_xattr_openat(struct vfs_handle_struct *handle,
 		ret = SMB_VFS_FSETXATTR(fsp->base_fsp,
 				       xattr_name,
 				       &null, sizeof(null),
-				       flags & O_EXCL ? XATTR_CREATE : 0);
+				       how->flags & O_EXCL ? XATTR_CREATE : 0);
 		if (ret != 0) {
 			goto fail;
 		}
@@ -464,7 +465,7 @@ static int streams_xattr_close(vfs_handle_struct *handle,
 	DBG_DEBUG("streams_xattr_close called [%s] fd [%d]\n",
 			smb_fname_str_dbg(fsp->fsp_name), fd);
 
-	if (!is_named_stream(fsp->fsp_name)) {
+	if (!fsp_is_alternate_stream(fsp)) {
 		return SMB_VFS_NEXT_CLOSE(handle, fsp);
 	}
 
@@ -474,7 +475,7 @@ static int streams_xattr_close(vfs_handle_struct *handle,
 	return ret;
 }
 
-static int streams_xattr_unlink_internal(vfs_handle_struct *handle,
+static int streams_xattr_unlinkat(vfs_handle_struct *handle,
 			struct files_struct *dirfsp,
 			const struct smb_filename *smb_fname,
 			int flags)
@@ -491,6 +492,9 @@ static int streams_xattr_unlink_internal(vfs_handle_struct *handle,
 					smb_fname,
 					flags);
 	}
+
+	/* A stream can never be rmdir'ed */
+	SMB_ASSERT((flags & AT_REMOVEDIR) == 0);
 
 	status = streams_xattr_get_name(handle, talloc_tos(),
 					smb_fname->stream_name, &xattr_name);
@@ -514,6 +518,7 @@ static int streams_xattr_unlink_internal(vfs_handle_struct *handle,
 		}
 		fsp = pathref->fsp;
 	} else {
+		SMB_ASSERT(fsp_is_alternate_stream(smb_fname->fsp));
 		fsp = fsp->base_fsp;
 	}
 
@@ -529,26 +534,6 @@ static int streams_xattr_unlink_internal(vfs_handle_struct *handle,
  fail:
 	TALLOC_FREE(xattr_name);
 	TALLOC_FREE(pathref);
-	return ret;
-}
-
-static int streams_xattr_unlinkat(vfs_handle_struct *handle,
-			struct files_struct *dirfsp,
-			const struct smb_filename *smb_fname,
-			int flags)
-{
-	int ret;
-	if (flags & AT_REMOVEDIR) {
-		ret = SMB_VFS_NEXT_UNLINKAT(handle,
-				dirfsp,
-				smb_fname,
-				flags);
-	} else {
-		ret = streams_xattr_unlink_internal(handle,
-				dirfsp,
-				smb_fname,
-				flags);
-	}
 	return ret;
 }
 

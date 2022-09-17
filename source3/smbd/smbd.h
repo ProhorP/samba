@@ -25,7 +25,25 @@ struct dptr_struct;
 #include "vfs.h"
 #include "smbd/proto.h"
 #include "locking/proto.h"
+#include "locking/share_mode_lock.h"
 #include "smbd/fd_handle.h"
+#if defined(WITH_SMB1SERVER)
+#include "smbd/smb1_message.h"
+#include "smbd/smb1_sesssetup.h"
+#include "smbd/smb1_lanman.h"
+#include "smbd/smb1_aio.h"
+#include "smbd/smb1_ipc.h"
+#include "smbd/smb1_negprot.h"
+#include "smbd/smb1_nttrans.h"
+#include "smbd/smb1_oplock.h"
+#include "smbd/smb1_pipes.h"
+#include "smbd/smb1_reply.h"
+#include "smbd/smb1_service.h"
+#include "smbd/smb1_signing.h"
+#include "smbd/smb1_process.h"
+#include "smbd/smb1_utils.h"
+#include "smbd/smb1_trans2.h"
+#endif
 
 struct trans_state {
 	struct trans_state *next, *prev;

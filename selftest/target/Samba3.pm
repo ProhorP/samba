@@ -247,6 +247,7 @@ sub check_env($$)
 	ad_member           => ["ad_dc", "fl2008r2dc", "fl2003dc"],
 	ad_member_rfc2307   => ["ad_dc_ntvfs"],
 	ad_member_idmap_rid => ["ad_dc"],
+	admem_idmap_autorid => ["ad_dc"],
 	ad_member_idmap_ad  => ["fl2008r2dc"],
 	ad_member_fips      => ["ad_dc_fips"],
 	ad_member_offlogon  => ["ad_dc"],
@@ -273,6 +274,8 @@ sub setup_nt4_dc
 	raw NTLMv2 auth = yes
 	server schannel = auto
 	rpc start on demand helpers = false
+
+	vfs_default:VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS = no
 
 	fss: sequence timeout = 1
 	check parent directory delete on close = yes
@@ -1114,6 +1117,102 @@ sub setup_ad_member_rfc2307
 	return $ret;
 }
 
+sub setup_admem_idmap_autorid
+{
+	my ($self, $prefix, $dcvars) = @_;
+
+	# If we didn't build with ADS, pretend this env was never available
+	if (not $self->have_ads()) {
+	        return "UNKNOWN";
+	}
+
+	print "PROVISIONING S3 AD MEMBER WITH idmap_autorid config...";
+
+	my $member_options = "
+	security = ads
+	workgroup = $dcvars->{DOMAIN}
+	realm = $dcvars->{REALM}
+	idmap config * : backend = autorid
+	idmap config * : range = 1000000-19999999
+	idmap config * : rangesize = 1000000
+
+	# Prevent overridding the provisioned lib/krb5.conf which sets certain
+	# values required for tests to succeed
+	create krb5 conf = no
+";
+
+	my $ret = $self->provision(
+	    prefix => $prefix,
+	    domain => $dcvars->{DOMAIN},
+	    realm => $dcvars->{REALM},
+	    server => "ADMEMAUTORID",
+	    password => "loCalMemberPass",
+	    extra_options => $member_options,
+	    resolv_conf => $dcvars->{RESOLV_CONF});
+
+	$ret or return undef;
+
+	$ret->{DOMAIN} = $dcvars->{DOMAIN};
+	$ret->{REALM} = $dcvars->{REALM};
+	$ret->{DOMSID} = $dcvars->{DOMSID};
+
+	my $ctx;
+	my $prefix_abs = abs_path($prefix);
+	$ctx = {};
+	$ctx->{krb5_conf} = "$prefix_abs/lib/krb5.conf";
+	$ctx->{domain} = $dcvars->{DOMAIN};
+	$ctx->{realm} = $dcvars->{REALM};
+	$ctx->{dnsname} = lc($dcvars->{REALM});
+	$ctx->{kdc_ipv4} = $dcvars->{SERVER_IP};
+	$ctx->{kdc_ipv6} = $dcvars->{SERVER_IPV6};
+	$ctx->{krb5_ccname} = "$prefix_abs/krb5cc_%{uid}";
+	Samba::mk_krb5_conf($ctx, "");
+
+	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
+
+	my $net = Samba::bindir_path($self, "net");
+	# Add hosts file for name lookups
+	my $cmd = "NSS_WRAPPER_HOSTS='$ret->{NSS_WRAPPER_HOSTS}' ";
+	$cmd .= "SOCKET_WRAPPER_DEFAULT_IFACE=\"$ret->{SOCKET_WRAPPER_DEFAULT_IFACE}\" ";
+	if (defined($ret->{RESOLV_WRAPPER_CONF})) {
+		$cmd .= "RESOLV_WRAPPER_CONF=\"$ret->{RESOLV_WRAPPER_CONF}\" ";
+	} else {
+		$cmd .= "RESOLV_WRAPPER_HOSTS=\"$ret->{RESOLV_WRAPPER_HOSTS}\" ";
+	}
+	$cmd .= "RESOLV_CONF=\"$ret->{RESOLV_CONF}\" ";
+	$cmd .= "KRB5_CONFIG=\"$ret->{KRB5_CONFIG}\" ";
+	$cmd .= "SELFTEST_WINBINDD_SOCKET_DIR=\"$ret->{SELFTEST_WINBINDD_SOCKET_DIR}\" ";
+	$cmd .= "$net join $ret->{CONFIGURATION}";
+	$cmd .= " -U$dcvars->{USERNAME}\%$dcvars->{PASSWORD}";
+
+	if (system($cmd) != 0) {
+	    warn("Join failed\n$cmd");
+	    return undef;
+	}
+
+	# We need world access to this share, as otherwise the domain
+	# administrator from the AD domain provided by Samba4 can't
+	# access the share for tests.
+	chmod 0777, "$prefix/share";
+
+	if (not $self->check_or_start(
+		env_vars => $ret,
+		nmbd => "yes",
+		winbindd => "yes",
+		smbd => "yes")) {
+		return undef;
+	}
+
+	$ret->{DC_SERVER} = $dcvars->{SERVER};
+	$ret->{DC_SERVER_IP} = $dcvars->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $dcvars->{SERVER_IPV6};
+	$ret->{DC_NETBIOSNAME} = $dcvars->{NETBIOSNAME};
+	$ret->{DC_USERNAME} = $dcvars->{USERNAME};
+	$ret->{DC_PASSWORD} = $dcvars->{PASSWORD};
+
+	return $ret;
+}
+
 sub setup_ad_member_idmap_rid
 {
 	my ($self, $prefix, $dcvars) = @_;
@@ -1690,6 +1789,9 @@ sub setup_fileserver
 	push(@dirs, "$delete_unwrite_sharedir/delete_veto_yes");
 	push(@dirs, "$delete_unwrite_sharedir/delete_veto_no");
 
+	my $volume_serial_number_sharedir="$share_dir/volume_serial_number";
+	push(@dirs, $volume_serial_number_sharedir);
+
 	my $ip4 = Samba::get_ipv4_addr("FILESERVER");
 	my $fileserver_options = "
 	kernel change notify = yes
@@ -1814,6 +1916,10 @@ sub setup_fileserver
 	path = $veto_sharedir
 	delete veto files = yes
 
+[veto_files]
+	path = $veto_sharedir
+	veto files = /veto_name*/
+
 [delete_yes_unwrite]
 	read only = no
 	path = $delete_unwrite_sharedir
@@ -1834,6 +1940,16 @@ sub setup_fileserver
 	virusfilter:infected files = *infected*
 	virusfilter:infected file action = rename
 	virusfilter:scan on close = yes
+
+[volumeserialnumber]
+	path = $volume_serial_number_sharedir
+	volume serial number = 0xdeadbeef
+
+[ea_acl_xattr]
+	path = $share_dir
+	vfs objects = acl_xattr
+	acl_xattr:security_acl_name = user.hackme
+	read only = no
 
 [homes]
 	comment = Home directories
@@ -2505,6 +2621,7 @@ sub provision($$)
 
 	chmod 0755, $ro_shrdir;
 
+	create_file_chmod("$ro_shrdir/readable_file", 0644) or return undef;
 	create_file_chmod("$ro_shrdir/unreadable_file", 0600) or return undef;
 
 	create_file_chmod("$ro_shrdir/msdfs-target", 0600) or return undef;
@@ -2655,6 +2772,7 @@ sub provision($$)
 	panic action = cd $self->{srcdir} && $self->{srcdir}/selftest/gdb_backtrace %d %\$(MAKE_TEST_BINARY)
 	smbd:suicide mode = yes
 	smbd:FSCTL_SMBTORTURE = yes
+	smbd:validate_oplock_types = yes
 
 	client min protocol = SMB2_02
 	server min protocol = SMB2_02
@@ -3317,6 +3435,14 @@ sub provision($$)
 [acls_non_canonical]
 	copy = tmp
 	acl flag inherited canonicalization = no
+
+[full_audit_success_bad_name]
+	copy = tmp
+	full_audit:success = badname
+
+[full_audit_fail_bad_name]
+	copy = tmp
+	full_audit:failure = badname
 	";
 
 	close(CONF);

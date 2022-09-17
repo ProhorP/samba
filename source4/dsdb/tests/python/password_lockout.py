@@ -80,15 +80,21 @@ class PasswordTests(password_lockout_base.BasePasswordTestCase):
                                                    username="lockout2krb5",
                                                    userpass="thatsAcomplPASS0",
                                                    kerberos_state=MUST_USE_KERBEROS)
-        self.lockout2krb5_ldb = self._readd_user(self.lockout2krb5_creds,
-                                                 lockOutObservationWindow=self.lockout_observation_window)
+        self._readd_user(self.lockout2krb5_creds,
+                         lockOutObservationWindow=self.lockout_observation_window)
+        self.lockout2krb5_ldb = SamDB(url=self.host_url,
+                                      credentials=self.lockout2krb5_creds,
+                                      lp=lp)
 
         self.lockout2ntlm_creds = self.insta_creds(self.template_creds,
                                                    username="lockout2ntlm",
                                                    userpass="thatsAcomplPASS0",
                                                    kerberos_state=DONT_USE_KERBEROS)
-        self.lockout2ntlm_ldb = self._readd_user(self.lockout2ntlm_creds,
-                                                 lockOutObservationWindow=self.lockout_observation_window)
+        self._readd_user(self.lockout2ntlm_creds,
+                         lockOutObservationWindow=self.lockout_observation_window)
+        self.lockout2ntlm_ldb = SamDB(url=self.host_url,
+                                      credentials=self.lockout2ntlm_creds,
+                                      lp=lp)
 
 
     def use_pso_lockout_settings(self, creds):
@@ -774,6 +780,283 @@ userPassword: thatsAcomplPASS2XYZ
         self.use_pso_lockout_settings(self.lockout1ntlm_creds)
         self._test_samr_password_change(self.lockout1ntlm_creds,
                                         other_creds=self.lockout2ntlm_creds)
+
+    def test_ntlm_lockout_protected(self):
+        creds = self.lockout1ntlm_creds
+        self.assertEqual(DONT_USE_KERBEROS, creds.get_kerberos_state())
+
+        # Work out the initial account values for this user.
+        username = creds.get_username()
+        userdn = f'cn={username},cn=users,{self.base_dn}'
+        res = self._check_account(userdn,
+                                  badPwdCount=0,
+                                  badPasswordTime=('greater', 0),
+                                  badPwdCountOnly=True)
+        badPasswordTime = int(res[0]['badPasswordTime'][0])
+        logonCount = int(res[0]['logonCount'][0])
+        lastLogon = int(res[0]['lastLogon'][0])
+        lastLogonTimestamp = int(res[0]['lastLogonTimestamp'][0])
+
+        # Add the user to the Protected Users group.
+
+        # Search for the Protected Users group.
+        group_dn = Dn(self.ldb,
+                      f'<SID={self.ldb.get_domain_sid()}-'
+                      f'{security.DOMAIN_RID_PROTECTED_USERS}>')
+        try:
+            group_res = self.ldb.search(base=group_dn,
+                                        scope=SCOPE_BASE,
+                                        attrs=['member'])
+        except LdbError as err:
+            self.fail(err)
+
+        orig_msg = group_res[0]
+
+        # Add the user to the list of members.
+        members = list(orig_msg.get('member', ()))
+        self.assertNotIn(userdn, members, 'account already in Protected Users')
+        members.append(userdn)
+
+        m = Message(group_dn)
+        m['member'] = MessageElement(members,
+                                     FLAG_MOD_REPLACE,
+                                     'member')
+        cleanup = self.ldb.msg_diff(m, orig_msg)
+        self.ldb.modify(m)
+
+        password = creds.get_password()
+        creds.set_password('wrong_password')
+
+        lockout_threshold = 5
+
+        lp = self.get_loadparm()
+        server = f'ldap://{self.ldb.host_dns_name()}'
+
+        for _ in range(lockout_threshold):
+            with self.assertRaises(LdbError) as err:
+                SamDB(url=server,
+                      credentials=creds,
+                      lp=lp)
+
+            num, _ = err.exception.args
+            self.assertEqual(ERR_INVALID_CREDENTIALS, num)
+
+            res = self._check_account(
+                userdn,
+                badPwdCount=0,
+                badPasswordTime=badPasswordTime,
+                logonCount=logonCount,
+                lastLogon=lastLogon,
+                lastLogonTimestamp=lastLogonTimestamp,
+                lockoutTime=None,
+                userAccountControl=dsdb.UF_NORMAL_ACCOUNT,
+                msDSUserAccountControlComputed=0)
+
+        # The user should not be locked out.
+        self.assertNotIn('lockoutTime', res[0],
+                         'account unexpectedly locked out')
+
+        # Move the account out of 'Protected Users'.
+        self.ldb.modify(cleanup)
+
+        # The account should not be locked out.
+        creds.set_password(password)
+
+        try:
+            SamDB(url=server,
+                  credentials=creds,
+                  lp=lp)
+        except LdbError:
+            self.fail('account unexpectedly locked out')
+
+    def test_samr_change_password_protected(self):
+        """Tests the SAMR password change method for Protected Users"""
+
+        creds = self.lockout1ntlm_creds
+        other_creds = self.lockout2ntlm_creds
+        lockout_threshold = 5
+
+        # Create a connection for SAMR using another user's credentials.
+        lp = self.get_loadparm()
+        net = Net(other_creds, lp, server=self.host)
+
+        # Work out the initial account values for this user.
+        username = creds.get_username()
+        userdn = f'cn={username},cn=users,{self.base_dn}'
+        res = self._check_account(userdn,
+                                  badPwdCount=0,
+                                  badPasswordTime=('greater', 0),
+                                  badPwdCountOnly=True)
+        badPasswordTime = int(res[0]['badPasswordTime'][0])
+        logonCount = int(res[0]['logonCount'][0])
+        lastLogon = int(res[0]['lastLogon'][0])
+        lastLogonTimestamp = int(res[0]['lastLogonTimestamp'][0])
+
+        # prove we can change the user password (using the correct password)
+        new_password = 'thatsAcomplPASS1'
+        net.change_password(newpassword=new_password,
+                            username=username,
+                            oldpassword=creds.get_password())
+        creds.set_password(new_password)
+
+        # Add the user to the Protected Users group.
+
+        # Search for the Protected Users group.
+        group_dn = Dn(self.ldb,
+                      f'<SID={self.ldb.get_domain_sid()}-'
+                      f'{security.DOMAIN_RID_PROTECTED_USERS}>')
+        try:
+            group_res = self.ldb.search(base=group_dn,
+                                        scope=SCOPE_BASE,
+                                        attrs=['member'])
+        except LdbError as err:
+            self.fail(err)
+
+        orig_msg = group_res[0]
+
+        # Add the user to the list of members.
+        members = list(orig_msg.get('member', ()))
+        self.assertNotIn(userdn, members, 'account already in Protected Users')
+        members.append(userdn)
+
+        m = Message(group_dn)
+        m['member'] = MessageElement(members,
+                                     FLAG_MOD_REPLACE,
+                                     'member')
+        self.ldb.modify(m)
+
+        # Try entering the correct password 'x' times in a row, which should
+        # fail, but not lock the user out.
+        new_password = 'thatsAcomplPASS2'
+        for i in range(lockout_threshold):
+            with self.assertRaises(
+                    NTSTATUSError,
+                    msg='Invalid SAMR change_password accepted') as err:
+                print(f'Trying correct password, attempt #{i}')
+                net.change_password(newpassword=new_password,
+                                    username=username,
+                                    oldpassword=creds.get_password())
+
+            enum = ctypes.c_uint32(err.exception.args[0]).value
+            self.assertEqual(enum, ntstatus.NT_STATUS_ACCOUNT_RESTRICTION)
+
+            res = self._check_account(
+                userdn,
+                badPwdCount=0,
+                badPasswordTime=badPasswordTime,
+                logonCount=logonCount,
+                lastLogon=lastLogon,
+                lastLogonTimestamp=lastLogonTimestamp,
+                lockoutTime=None,
+                userAccountControl=dsdb.UF_NORMAL_ACCOUNT,
+                msDSUserAccountControlComputed=0)
+
+        # The user should not be locked out.
+        self.assertNotIn('lockoutTime', res[0])
+
+        # Ensure that the password can still be changed via LDAP.
+        self.ldb.modify_ldif(f'''
+dn: {userdn}
+changetype: modify
+delete: userPassword
+userPassword: {creds.get_password()}
+add: userPassword
+userPassword: {new_password}
+''')
+
+    def test_samr_set_password_protected(self):
+        """Tests the SAMR password set method for Protected Users"""
+
+        creds = self.lockout1ntlm_creds
+        lockout_threshold = 5
+
+        # create a connection for SAMR using another user's credentials
+        lp = self.get_loadparm()
+        net = Net(self.global_creds, lp, server=self.host)
+
+        # work out the initial account values for this user
+        username = creds.get_username()
+        userdn = f'cn={username},cn=users,{self.base_dn}'
+        res = self._check_account(userdn,
+                                  badPwdCount=0,
+                                  badPasswordTime=('greater', 0),
+                                  badPwdCountOnly=True)
+        badPasswordTime = int(res[0]['badPasswordTime'][0])
+        logonCount = int(res[0]['logonCount'][0])
+        lastLogon = int(res[0]['lastLogon'][0])
+        lastLogonTimestamp = int(res[0]['lastLogonTimestamp'][0])
+
+        # prove we can change the user password (using the correct password)
+        new_password = 'thatsAcomplPASS1'
+        net.set_password(newpassword=new_password,
+                         account_name=username,
+                         domain_name=creds.get_domain())
+        creds.set_password(new_password)
+
+        # Add the user to the Protected Users group.
+
+        # Search for the Protected Users group.
+        group_dn = Dn(self.ldb,
+                      f'<SID={self.ldb.get_domain_sid()}-'
+                      f'{security.DOMAIN_RID_PROTECTED_USERS}>')
+        try:
+            group_res = self.ldb.search(base=group_dn,
+                                        scope=SCOPE_BASE,
+                                        attrs=['member'])
+        except LdbError as err:
+            self.fail(err)
+
+        orig_msg = group_res[0]
+
+        # Add the user to the list of members.
+        members = list(orig_msg.get('member', ()))
+        self.assertNotIn(userdn, members, 'account already in Protected Users')
+        members.append(userdn)
+
+        m = Message(group_dn)
+        m['member'] = MessageElement(members,
+                                     FLAG_MOD_REPLACE,
+                                     'member')
+        self.ldb.modify(m)
+
+        # Try entering the correct password 'x' times in a row, which should
+        # fail, but not lock the user out.
+        new_password = 'thatsAcomplPASS2'
+        for i in range(lockout_threshold):
+            with self.assertRaises(
+                    NTSTATUSError,
+                    msg='Invalid SAMR set_password accepted') as err:
+                print(f'Trying correct password, attempt #{i}')
+                net.set_password(newpassword=new_password,
+                                 account_name=username,
+                                 domain_name=creds.get_domain())
+
+            enum = ctypes.c_uint32(err.exception.args[0]).value
+            self.assertEqual(enum, ntstatus.NT_STATUS_ACCOUNT_RESTRICTION)
+
+            res = self._check_account(
+                userdn,
+                badPwdCount=0,
+                badPasswordTime=badPasswordTime,
+                logonCount=logonCount,
+                lastLogon=lastLogon,
+                lastLogonTimestamp=lastLogonTimestamp,
+                lockoutTime=None,
+                userAccountControl=dsdb.UF_NORMAL_ACCOUNT,
+                msDSUserAccountControlComputed=0)
+
+        # The user should not be locked out.
+        self.assertNotIn('lockoutTime', res[0])
+
+        # Ensure that the password can still be changed via LDAP.
+        self.ldb.modify_ldif(f'''
+dn: {userdn}
+changetype: modify
+delete: userPassword
+userPassword: {creds.get_password()}
+add: userPassword
+userPassword: {new_password}
+''')
 
 
 class PasswordTestsWithSleep(PasswordTests):

@@ -101,14 +101,17 @@ static void hdb_samba4_free_entry_context(krb5_context context, struct HDB *db, 
 	 * 'context' set, so we have to check that the context is not NULL.
 	*/
 	if (entry->context != NULL) {
+		struct samba_kdc_entry *skdc_entry =
+			talloc_get_type_abort(entry->context,
+			struct samba_kdc_entry);
+
 		/* this function is called only from hdb_free_entry().
 		 * Make sure we neutralize the destructor or we will
 		 * get a double free later when hdb_free_entry() will
 		 * try to call free_hdb_entry() */
-		talloc_set_destructor(entry->context, NULL);
-
-		/* now proceed to free the talloc part */
-		talloc_free(entry->context);
+		entry->context = NULL;
+		skdc_entry->kdc_entry = NULL;
+		TALLOC_FREE(skdc_entry);
 	}
 }
 
@@ -150,13 +153,13 @@ static int hdb_samba4_fill_fast_cookie(krb5_context context,
 
 static krb5_error_code hdb_samba4_fetch_fast_cookie(krb5_context context,
 						    struct samba_kdc_db_context *kdc_db_ctx,
-						    hdb_entry *entry_ex)
+						    hdb_entry *entry)
 {
 	krb5_error_code ret = SDB_ERR_NOENTRY;
 	TALLOC_CTX *mem_ctx;
 	struct ldb_result *res;
 	int ldb_ret;
-	struct sdb_entry_ex sdb_entry_ex = {};
+	struct sdb_entry sentry = {};
 	const char *attrs[] = {
 		"secret",
 		NULL
@@ -211,7 +214,7 @@ static krb5_error_code hdb_samba4_fetch_fast_cookie(krb5_context context,
 
 
 	ret = krb5_make_principal(context,
-				  &sdb_entry_ex.entry.principal,
+				  &sentry.principal,
 				  KRB5_WELLKNOWN_ORG_H5L_REALM,
 				  KRB5_WELLKNOWN_NAME, "org.h5l.fast-cookie",
 				  NULL);
@@ -220,16 +223,14 @@ static krb5_error_code hdb_samba4_fetch_fast_cookie(krb5_context context,
 		return ret;
 	}
 
-	ret = samba_kdc_set_fixed_keys(context, kdc_db_ctx,
-				       val, &sdb_entry_ex);
+	ret = samba_kdc_set_fixed_keys(context, val, ENC_ALL_TYPES,
+				       &sentry.keys);
 	if (ret != 0) {
 		return ret;
 	}
 
-	ret = sdb_entry_ex_to_hdb_entry_ex(context,
-					   &sdb_entry_ex,
-					   entry_ex);
-	sdb_free_entry(&sdb_entry_ex);
+	ret = sdb_entry_to_hdb_entry(context, &sentry, entry);
+	sdb_entry_free(&sentry);
 	TALLOC_FREE(mem_ctx);
 
 	return ret;
@@ -239,10 +240,10 @@ static krb5_error_code hdb_samba4_fetch_kvno(krb5_context context, HDB *db,
 					     krb5_const_principal principal,
 					     unsigned flags,
 					     krb5_kvno kvno,
-					     hdb_entry *entry_ex)
+					     hdb_entry *entry)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
-	struct sdb_entry_ex sdb_entry_ex = {};
+	struct sdb_entry sentry = {};
 	krb5_error_code code, ret;
 	uint32_t sflags;
 
@@ -252,7 +253,7 @@ static krb5_error_code hdb_samba4_fetch_kvno(krb5_context context, HDB *db,
 	if (flags & HDB_F_GET_FAST_COOKIE) {
 		return hdb_samba4_fetch_fast_cookie(context,
 						    kdc_db_ctx,
-						    entry_ex);
+						    entry);
 	}
 
 	sflags = (flags & SDB_F_HDB_MASK);
@@ -262,7 +263,7 @@ static krb5_error_code hdb_samba4_fetch_kvno(krb5_context context, HDB *db,
 			      principal,
 			      sflags,
 			      kvno,
-			      &sdb_entry_ex);
+			      &sentry);
 	switch (ret) {
 	case 0:
 		code = 0;
@@ -282,8 +283,8 @@ static krb5_error_code hdb_samba4_fetch_kvno(krb5_context context, HDB *db,
 		return ret;
 	}
 
-	ret = sdb_entry_ex_to_hdb_entry_ex(context, &sdb_entry_ex, entry_ex);
-	sdb_free_entry(&sdb_entry_ex);
+	ret = sdb_entry_to_hdb_entry(context, &sentry, entry);
+	sdb_entry_free(&sentry);
 
 	if (code != 0 && ret != 0) {
 		code = ret;
@@ -337,13 +338,13 @@ static krb5_error_code hdb_samba4_firstkey(krb5_context context, HDB *db, unsign
 					hdb_entry *entry)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
-	struct sdb_entry_ex sdb_entry_ex = {};
+	struct sdb_entry sentry = {};
 	krb5_error_code ret;
 
 	kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
 					   struct samba_kdc_db_context);
 
-	ret = samba_kdc_firstkey(context, kdc_db_ctx, &sdb_entry_ex);
+	ret = samba_kdc_firstkey(context, kdc_db_ctx, &sentry);
 	switch (ret) {
 	case 0:
 		break;
@@ -357,8 +358,8 @@ static krb5_error_code hdb_samba4_firstkey(krb5_context context, HDB *db, unsign
 		return ret;
 	}
 
-	ret = sdb_entry_ex_to_hdb_entry_ex(context, &sdb_entry_ex, entry);
-	sdb_free_entry(&sdb_entry_ex);
+	ret = sdb_entry_to_hdb_entry(context, &sentry, entry);
+	sdb_entry_free(&sentry);
 	return ret;
 }
 
@@ -366,13 +367,13 @@ static krb5_error_code hdb_samba4_nextkey(krb5_context context, HDB *db, unsigne
 				   hdb_entry *entry)
 {
 	struct samba_kdc_db_context *kdc_db_ctx;
-	struct sdb_entry_ex sdb_entry_ex = {};
+	struct sdb_entry sentry = {};
 	krb5_error_code ret;
 
 	kdc_db_ctx = talloc_get_type_abort(db->hdb_db,
 					   struct samba_kdc_db_context);
 
-	ret = samba_kdc_nextkey(context, kdc_db_ctx, &sdb_entry_ex);
+	ret = samba_kdc_nextkey(context, kdc_db_ctx, &sentry);
 	switch (ret) {
 	case 0:
 		break;
@@ -386,8 +387,8 @@ static krb5_error_code hdb_samba4_nextkey(krb5_context context, HDB *db, unsigne
 		return ret;
 	}
 
-	ret = sdb_entry_ex_to_hdb_entry_ex(context, &sdb_entry_ex, entry);
-	sdb_free_entry(&sdb_entry_ex);
+	ret = sdb_entry_to_hdb_entry(context, &sentry, entry);
+	sdb_entry_free(&sentry);
 	return ret;
 }
 

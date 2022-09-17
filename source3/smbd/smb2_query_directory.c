@@ -372,7 +372,7 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	}
 
 	if (in_flags & SMB2_CONTINUE_FLAG_REOPEN) {
-		int flags;
+		struct vfs_open_how how = { .flags = O_RDONLY, };
 
 		status = fd_close(fsp);
 		if (tevent_req_nterror(req, status)) {
@@ -384,11 +384,10 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 		 * descriptor. So we have to reopen it.
 		 */
 
-		flags = O_RDONLY;
 #ifdef O_DIRECTORY
-		flags |= O_DIRECTORY;
+		how.flags |= O_DIRECTORY;
 #endif
-		status = fd_openat(conn->cwd_fsp, fsp->fsp_name, fsp, flags, 0);
+		status = fd_openat(conn->cwd_fsp, fsp->fsp_name, fsp, &how);
 		if (tevent_req_nterror(req, status)) {
 			return tevent_req_post(req, ev);
 		}
@@ -1000,11 +999,8 @@ static void fetch_dos_mode_done(struct tevent_req *subreq)
 	uint32_t dfs_dosmode;
 	uint32_t dosmode;
 	struct timespec btime_ts = {0};
-	bool need_file_id = false;
-	uint64_t file_id;
 	off_t dosmode_off;
 	off_t btime_off;
-	off_t file_id_off;
 	NTSTATUS status;
 
 	status = dos_mode_at_recv(subreq, &dosmode);
@@ -1055,30 +1051,6 @@ static void fetch_dos_mode_done(struct tevent_req *subreq)
 	put_long_date_full_timespec(state->dir_fsp->conn->ts_res,
 			       (char *)state->entry_marshall_buf + btime_off,
 			       &btime_ts);
-
-	switch (state->info_level) {
-	case SMB_FIND_ID_BOTH_DIRECTORY_INFO:
-		file_id_off = 96;
-		need_file_id = true;
-		break;
-	case SMB_FIND_ID_FULL_DIRECTORY_INFO:
-		file_id_off = 72;
-		need_file_id = true;
-		break;
-	default:
-		break;
-	}
-
-	if (need_file_id) {
-		/*
-		 * File-ID might have been updated from calculated (based on
-		 * inode) to storage based, fetch via DOS attributes in
-		 * vfs_default.
-		 */
-		file_id = SMB_VFS_FS_FILE_ID(state->dir_fsp->conn,
-					     &state->smb_fname->st);
-		SBVAL(state->entry_marshall_buf, file_id_off, file_id);
-	}
 
 	tevent_req_done(req);
 	return;

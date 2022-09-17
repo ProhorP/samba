@@ -113,6 +113,16 @@ krb5_error_code kdb_samba_dbekd_encrypt_key_data(krb5_context context,
 						 krb5_key_data *key_data);
 
 /* from kdb_samba_policies.c */
+krb5_error_code kdb_samba_db_issue_pac(krb5_context context,
+				       unsigned int flags,
+				       krb5_db_entry *client,
+				       krb5_keyblock *replaced_reply_key,
+				       krb5_db_entry *server,
+				       krb5_db_entry *signing_krbtgt,
+				       krb5_timestamp authtime,
+				       krb5_pac old_pac,
+				       krb5_pac new_pac,
+				       krb5_data ***auth_indicators);
 
 krb5_error_code kdb_samba_db_sign_auth_data(krb5_context context,
 					    unsigned int flags,
@@ -145,6 +155,13 @@ krb5_error_code kdb_samba_db_check_allowed_to_delegate(krb5_context context,
 						       krb5_const_principal client,
 						       const krb5_db_entry *server,
 						       krb5_const_principal proxy);
+
+krb5_error_code kdb_samba_db_allowed_to_delegate_from(
+		krb5_context context,
+		krb5_const_principal client,
+		krb5_const_principal server,
+		krb5_pac header_pac,
+		const krb5_db_entry *proxy);
 
 void kdb_samba_db_audit_as_req(krb5_context kcontext,
 			       krb5_kdc_req *request,

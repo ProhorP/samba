@@ -43,6 +43,7 @@ struct g_lock {
 	struct server_id exclusive;
 	size_t num_shared;
 	uint8_t *shared;
+	uint64_t unique_lock_epoch;
 	uint64_t unique_data_epoch;
 	size_t datalen;
 	uint8_t *data;
@@ -52,6 +53,7 @@ static bool g_lock_parse(uint8_t *buf, size_t buflen, struct g_lock *lck)
 {
 	struct server_id exclusive;
 	size_t num_shared, shared_len;
+	uint64_t unique_lock_epoch;
 	uint64_t unique_data_epoch;
 
 	if (buflen < (SERVER_ID_BUF_LENGTH + /* exclusive */
@@ -59,6 +61,7 @@ static bool g_lock_parse(uint8_t *buf, size_t buflen, struct g_lock *lck)
 		      sizeof(uint32_t))) {   /* num_shared */
 		struct g_lock ret = {
 			.exclusive.pid = 0,
+			.unique_lock_epoch = generate_unique_u64(0),
 			.unique_data_epoch = generate_unique_u64(0),
 		};
 		*lck = ret;
@@ -68,6 +71,10 @@ static bool g_lock_parse(uint8_t *buf, size_t buflen, struct g_lock *lck)
 	server_id_get(&exclusive, buf);
 	buf += SERVER_ID_BUF_LENGTH;
 	buflen -= SERVER_ID_BUF_LENGTH;
+
+	unique_lock_epoch = BVAL(buf, 0);
+	buf += sizeof(uint64_t);
+	buflen -= sizeof(uint64_t);
 
 	unique_data_epoch = BVAL(buf, 0);
 	buf += sizeof(uint64_t);
@@ -90,6 +97,7 @@ static bool g_lock_parse(uint8_t *buf, size_t buflen, struct g_lock *lck)
 		.exclusive = exclusive,
 		.num_shared = num_shared,
 		.shared = buf,
+		.unique_lock_epoch = unique_lock_epoch,
 		.unique_data_epoch = unique_data_epoch,
 		.datalen = buflen-shared_len,
 		.data = buf+shared_len,
@@ -129,7 +137,7 @@ static NTSTATUS g_lock_store(
 	size_t num_new_dbufs)
 {
 	uint8_t exclusive[SERVER_ID_BUF_LENGTH];
-	uint8_t seqnum_buf[sizeof(uint64_t)];
+	uint8_t seqnum_buf[sizeof(uint64_t)*2];
 	uint8_t sizebuf[sizeof(uint32_t)];
 	uint8_t new_shared_buf[SERVER_ID_BUF_LENGTH];
 
@@ -160,7 +168,8 @@ static NTSTATUS g_lock_store(
 	}
 
 	server_id_put(exclusive, lck->exclusive);
-	SBVAL(seqnum_buf, 0, lck->unique_data_epoch);
+	SBVAL(seqnum_buf, 0, lck->unique_lock_epoch);
+	SBVAL(seqnum_buf, 8, lck->unique_data_epoch);
 
 	if (new_shared != NULL) {
 		if (lck->num_shared >= UINT32_MAX) {
@@ -227,7 +236,7 @@ struct g_lock_ctx *g_lock_ctx_init(TALLOC_CTX *mem_ctx,
 		mem_ctx,
 		db_path,
 		0,
-		TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH,
+		TDB_CLEAR_IF_FIRST|TDB_INCOMPATIBLE_HASH|TDB_VOLATILE,
 		O_RDWR|O_CREAT,
 		0600,
 		DBWRAP_LOCK_ORDER_3,
@@ -242,18 +251,15 @@ struct g_lock_ctx *g_lock_ctx_init(TALLOC_CTX *mem_ctx,
 	return ctx;
 }
 
-static NTSTATUS g_lock_cleanup_dead(
-	struct db_record *rec,
+static void g_lock_cleanup_dead(
 	struct g_lock *lck,
 	struct server_id *dead_blocker)
 {
-	bool modified = false;
 	bool exclusive_died;
-	NTSTATUS status = NT_STATUS_OK;
 	struct server_id_buf tmp;
 
 	if (dead_blocker == NULL) {
-		return NT_STATUS_OK;
+		return;
 	}
 
 	exclusive_died = server_id_equal(dead_blocker, &lck->exclusive);
@@ -262,7 +268,6 @@ static NTSTATUS g_lock_cleanup_dead(
 		DBG_DEBUG("Exclusive holder %s died\n",
 			  server_id_str_buf(lck->exclusive, &tmp));
 		lck->exclusive.pid = 0;
-		modified = true;
 	}
 
 	if (lck->num_shared != 0) {
@@ -276,19 +281,8 @@ static NTSTATUS g_lock_cleanup_dead(
 			DBG_DEBUG("Shared holder %s died\n",
 				  server_id_str_buf(shared, &tmp));
 			g_lock_del_shared(lck, 0);
-			modified = true;
 		}
 	}
-
-	if (modified) {
-		status = g_lock_store(rec, lck, NULL, NULL, 0);
-		if (!NT_STATUS_IS_OK(status)) {
-			DBG_DEBUG("g_lock_store() failed: %s\n",
-				  nt_errstr(status));
-		}
-	}
-
-	return status;
 }
 
 static ssize_t g_lock_find_shared(
@@ -353,6 +347,7 @@ struct g_lock_lock_fn_state {
 	struct server_id *dead_blocker;
 
 	struct tevent_req *watch_req;
+	uint64_t watch_instance;
 	NTSTATUS status;
 };
 
@@ -369,22 +364,22 @@ static NTSTATUS g_lock_trylock(
 	enum g_lock_type type = req_state->type;
 	bool retry = req_state->retry;
 	struct g_lock lck = { .exclusive.pid = 0 };
+	size_t orig_num_shared;
 	struct server_id_buf tmp;
 	NTSTATUS status;
 	bool ok;
 
 	ok = g_lock_parse(data.dptr, data.dsize, &lck);
 	if (!ok) {
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
 		DBG_DEBUG("g_lock_parse failed\n");
 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
 	}
+	orig_num_shared = lck.num_shared;
 
-	status = g_lock_cleanup_dead(rec, &lck, state->dead_blocker);
-	if (!NT_STATUS_IS_OK(status)) {
-		DBG_DEBUG("g_lock_cleanup_dead() failed: %s\n",
-			  nt_errstr(status));
-		return status;
-	}
+	g_lock_cleanup_dead(&lck, state->dead_blocker);
+
+	lck.unique_lock_epoch = generate_unique_u64(lck.unique_lock_epoch);
 
 	if (lck.exclusive.pid != 0) {
 		bool self_exclusive = server_id_equal(&self, &lck.exclusive);
@@ -401,6 +396,10 @@ static NTSTATUS g_lock_trylock(
 
 			if (type == G_LOCK_DOWNGRADE) {
 				struct server_id_buf tmp2;
+
+				dbwrap_watched_watch_remove_instance(rec,
+						state->watch_instance);
+
 				DBG_DEBUG("%s: Trying to downgrade %s\n",
 					  server_id_str_buf(self, &tmp),
 					  server_id_str_buf(
@@ -410,6 +409,10 @@ static NTSTATUS g_lock_trylock(
 
 			if (type == G_LOCK_UPGRADE) {
 				ssize_t shared_idx;
+
+				dbwrap_watched_watch_remove_instance(rec,
+						state->watch_instance);
+
 				shared_idx = g_lock_find_shared(&lck, &self);
 
 				if (shared_idx == -1) {
@@ -441,6 +444,18 @@ static NTSTATUS g_lock_trylock(
 			DBG_DEBUG("Waiting for lck.exclusive=%s\n",
 				  server_id_str_buf(lck.exclusive, &tmp));
 
+			/*
+			 * We will return NT_STATUS_LOCK_NOT_GRANTED
+			 * and need to monitor the record.
+			 *
+			 * If we don't have a watcher instance yet,
+			 * we should add one.
+			 */
+			if (state->watch_instance == 0) {
+				state->watch_instance =
+					dbwrap_watched_watch_add_instance(rec);
+			}
+
 			*blocker = lck.exclusive;
 			return NT_STATUS_LOCK_NOT_GRANTED;
 		}
@@ -454,10 +469,15 @@ static NTSTATUS g_lock_trylock(
 		}
 
 		if (!retry) {
+			dbwrap_watched_watch_remove_instance(rec,
+						state->watch_instance);
+
 			DBG_DEBUG("%s already locked by self\n",
 				  server_id_str_buf(self, &tmp));
 			return NT_STATUS_WAS_LOCKED;
 		}
+
+		g_lock_cleanup_shared(&lck);
 
 		if (lck.num_shared != 0) {
 			g_lock_get_shared(&lck, 0, blocker);
@@ -465,7 +485,34 @@ static NTSTATUS g_lock_trylock(
 			DBG_DEBUG("Continue waiting for shared lock %s\n",
 				  server_id_str_buf(*blocker, &tmp));
 
+			/*
+			 * We will return NT_STATUS_LOCK_NOT_GRANTED
+			 * and need to monitor the record.
+			 *
+			 * If we don't have a watcher instance yet,
+			 * we should add one.
+			 */
+			if (state->watch_instance == 0) {
+				state->watch_instance =
+					dbwrap_watched_watch_add_instance(rec);
+			}
+
 			return NT_STATUS_LOCK_NOT_GRANTED;
+		}
+
+		/*
+		 * All pending readers are gone and we no longer need
+		 * to monitor the record.
+		 */
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
+
+		if (orig_num_shared != lck.num_shared) {
+			status = g_lock_store(rec, &lck, NULL, NULL, 0);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_DEBUG("g_lock_store() failed: %s\n",
+					  nt_errstr(status));
+				return status;
+			}
 		}
 
 		talloc_set_destructor(req_state, NULL);
@@ -482,6 +529,9 @@ noexclusive:
 		ssize_t shared_idx = g_lock_find_shared(&lck, &self);
 
 		if (shared_idx == -1) {
+			dbwrap_watched_watch_remove_instance(rec,
+						state->watch_instance);
+
 			DBG_DEBUG("Trying to upgrade %s without "
 				  "existing shared lock\n",
 				  server_id_str_buf(self, &tmp));
@@ -496,12 +546,40 @@ noexclusive:
 		ssize_t shared_idx = g_lock_find_shared(&lck, &self);
 
 		if (shared_idx != -1) {
+			dbwrap_watched_watch_remove_instance(rec,
+						state->watch_instance);
 			DBG_DEBUG("Trying to writelock existing shared %s\n",
 				  server_id_str_buf(self, &tmp));
 			return NT_STATUS_WAS_LOCKED;
 		}
 
 		lck.exclusive = self;
+
+		g_lock_cleanup_shared(&lck);
+
+		if (lck.num_shared == 0) {
+			/*
+			 * If we store ourself as exclusive writter,
+			 * without any pending readers, we don't
+			 * need to monitor the record anymore...
+			 */
+			dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
+		} else if (state->watch_instance == 0) {
+			/*
+			 * Here we have lck.num_shared != 0.
+			 *
+			 * We will return NT_STATUS_LOCK_NOT_GRANTED
+			 * below.
+			 *
+			 * And don't have a watcher instance yet!
+			 *
+			 * We add it here before g_lock_store()
+			 * in order to trigger just one
+			 * low level dbwrap_do_locked() call.
+			 */
+			state->watch_instance =
+				dbwrap_watched_watch_add_instance(rec);
+		}
 
 		status = g_lock_store(rec, &lck, NULL, NULL, 0);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -530,6 +608,15 @@ noexclusive:
 	}
 
 do_shared:
+
+	/*
+	 * We are going to store us as a reader,
+	 * so we got what we were waiting for.
+	 *
+	 * So we no longer need to monitor the
+	 * record.
+	 */
+	dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
 
 	if (lck.num_shared == 0) {
 		status = g_lock_store(rec, &lck, &self, NULL, 0);
@@ -561,6 +648,15 @@ static void g_lock_lock_fn(
 	struct g_lock_lock_fn_state *state = private_data;
 	struct server_id blocker = {0};
 
+	/*
+	 * We're trying to get a lock and if we are
+	 * successful in doing that, we should not
+	 * wakeup any other waiters, all they would
+	 * find is that we're holding a lock they
+	 * are conflicting with.
+	 */
+	dbwrap_watched_watch_skip_alerting(rec);
+
 	state->status = g_lock_trylock(rec, state, value, &blocker);
 	if (!NT_STATUS_IS_OK(state->status)) {
 		DBG_DEBUG("g_lock_trylock returned %s\n",
@@ -571,7 +667,7 @@ static void g_lock_lock_fn(
 	}
 
 	state->watch_req = dbwrap_watched_watch_send(
-		state->req_state, state->req_state->ev, rec, blocker);
+		state->req_state, state->req_state->ev, rec, state->watch_instance, blocker);
 	if (state->watch_req == NULL) {
 		state->status = NT_STATUS_NO_MEMORY;
 	}
@@ -656,8 +752,9 @@ static void g_lock_lock_retry(struct tevent_req *subreq)
 	struct server_id blocker = { .pid = 0 };
 	bool blockerdead = false;
 	NTSTATUS status;
+	uint64_t instance = 0;
 
-	status = dbwrap_watched_watch_recv(subreq, &blockerdead, &blocker);
+	status = dbwrap_watched_watch_recv(subreq, &instance, &blockerdead, &blocker);
 	DBG_DEBUG("watch_recv returned %s\n", nt_errstr(status));
 	TALLOC_FREE(subreq);
 
@@ -672,6 +769,7 @@ static void g_lock_lock_retry(struct tevent_req *subreq)
 	fn_state = (struct g_lock_lock_fn_state) {
 		.req_state = state,
 		.dead_blocker = blockerdead ? &blocker : NULL,
+		.watch_instance = instance,
 	};
 
 	status = dbwrap_do_locked(state->ctx->db, state->key,
@@ -740,6 +838,15 @@ static void g_lock_lock_simple_fn(
 	struct g_lock lck = { .exclusive.pid = 0 };
 	bool ok;
 
+	/*
+	 * We're trying to get a lock and if we are
+	 * successful in doing that, we should not
+	 * wakeup any other waiters, all they would
+	 * find is that we're holding a lock they
+	 * are conflicting with.
+	 */
+	dbwrap_watched_watch_skip_alerting(rec);
+
 	ok = g_lock_parse(value.dptr, value.dsize, &lck);
 	if (!ok) {
 		DBG_DEBUG("g_lock_parse failed\n");
@@ -752,6 +859,8 @@ static void g_lock_lock_simple_fn(
 			  server_id_str_buf(lck.exclusive, &buf));
 		goto not_granted;
 	}
+
+	lck.unique_lock_epoch = generate_unique_u64(lck.unique_lock_epoch);
 
 	if (state->type == G_LOCK_WRITE) {
 		if (lck.num_shared != 0) {
@@ -913,6 +1022,22 @@ static void g_lock_unlock_fn(
 		return;
 	}
 
+	if (!exclusive && lck.exclusive.pid != 0) {
+		/*
+		 * We only had a read lock and there's
+		 * someone waiting for an exclusive lock.
+		 *
+		 * Don't alert the exclusive lock waiter
+		 * if there are still other read lock holders.
+		 */
+		g_lock_cleanup_shared(&lck);
+		if (lck.num_shared != 0) {
+			dbwrap_watched_watch_skip_alerting(rec);
+		}
+	}
+
+	lck.unique_lock_epoch = generate_unique_u64(lck.unique_lock_epoch);
+
 	state->status = g_lock_store(rec, &lck, NULL, NULL, 0);
 }
 
@@ -960,6 +1085,17 @@ static void g_lock_writev_data_fn(
 	struct g_lock lck;
 	bool exclusive;
 	bool ok;
+
+	/*
+	 * We're holding an exclusiv write lock.
+	 *
+	 * Now we're updating the content of the record.
+	 *
+	 * We should not wakeup any other waiters, all they
+	 * would find is that we're still holding a lock they
+	 * are conflicting with.
+	 */
+	dbwrap_watched_watch_skip_alerting(rec);
 
 	ok = g_lock_parse(value.dptr, value.dsize, &lck);
 	if (!ok) {
@@ -1074,7 +1210,7 @@ struct g_lock_dump_state {
 	TDB_DATA key;
 	void (*fn)(struct server_id exclusive,
 		   size_t num_shared,
-		   struct server_id *shared,
+		   const struct server_id *shared,
 		   const uint8_t *data,
 		   size_t datalen,
 		   void *private_data);
@@ -1102,12 +1238,14 @@ static void g_lock_dump_fn(TDB_DATA key, TDB_DATA data,
 		return;
 	}
 
-	shared = talloc_array(
-		state->mem_ctx, struct server_id, lck.num_shared);
-	if (shared == NULL) {
-		DBG_DEBUG("talloc failed\n");
-		state->status = NT_STATUS_NO_MEMORY;
-		return;
+	if (lck.num_shared > 0) {
+		shared = talloc_array(
+			state->mem_ctx, struct server_id, lck.num_shared);
+		if (shared == NULL) {
+			DBG_DEBUG("talloc failed\n");
+			state->status = NT_STATUS_NO_MEMORY;
+			return;
+		}
 	}
 
 	for (i=0; i<lck.num_shared; i++) {
@@ -1129,7 +1267,7 @@ static void g_lock_dump_fn(TDB_DATA key, TDB_DATA data,
 NTSTATUS g_lock_dump(struct g_lock_ctx *ctx, TDB_DATA key,
 		     void (*fn)(struct server_id exclusive,
 				size_t num_shared,
-				struct server_id *shared,
+				const struct server_id *shared,
 				const uint8_t *data,
 				size_t datalen,
 				void *private_data),
@@ -1164,7 +1302,7 @@ struct tevent_req *g_lock_dump_send(
 	TDB_DATA key,
 	void (*fn)(struct server_id exclusive,
 		   size_t num_shared,
-		   struct server_id *shared,
+		   const struct server_id *shared,
 		   const uint8_t *data,
 		   size_t datalen,
 		   void *private_data),
@@ -1230,7 +1368,9 @@ struct g_lock_watch_data_state {
 	TDB_DATA key;
 	struct server_id blocker;
 	bool blockerdead;
+	uint64_t unique_lock_epoch;
 	uint64_t unique_data_epoch;
+	uint64_t watch_instance;
 	NTSTATUS status;
 };
 
@@ -1254,12 +1394,13 @@ static void g_lock_watch_data_send_fn(
 		state->status = NT_STATUS_INTERNAL_DB_CORRUPTION;
 		return;
 	}
+	state->unique_lock_epoch = lck.unique_lock_epoch;
 	state->unique_data_epoch = lck.unique_data_epoch;
 
 	DBG_DEBUG("state->unique_data_epoch=%"PRIu64"\n", state->unique_data_epoch);
 
 	subreq = dbwrap_watched_watch_send(
-		state, state->ev, rec, state->blocker);
+		state, state->ev, rec, 0, state->blocker);
 	if (subreq == NULL) {
 		state->status = NT_STATUS_NO_MEMORY;
 		return;
@@ -1324,11 +1465,13 @@ static void g_lock_watch_data_done_fn(
 
 	ok = g_lock_parse(value.dptr, value.dsize, &lck);
 	if (!ok) {
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
 		state->status = NT_STATUS_INTERNAL_DB_CORRUPTION;
 		return;
 	}
 
 	if (lck.unique_data_epoch != state->unique_data_epoch) {
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
 		DBG_DEBUG("lck.unique_data_epoch=%"PRIu64", "
 			  "state->unique_data_epoch=%"PRIu64"\n",
 			  lck.unique_data_epoch,
@@ -1337,9 +1480,28 @@ static void g_lock_watch_data_done_fn(
 		return;
 	}
 
+	/*
+	 * The lock epoch changed, so we better
+	 * remove ourself from the waiter list
+	 * (most likely the first position)
+	 * and re-add us at the end of the list.
+	 *
+	 * This gives other lock waiters a change
+	 * to make progress.
+	 *
+	 * Otherwise we'll keep our waiter instance alive,
+	 * keep waiting (most likely at first position).
+	 */
+	if (lck.unique_lock_epoch != state->unique_lock_epoch) {
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
+		state->watch_instance = dbwrap_watched_watch_add_instance(rec);
+		state->unique_lock_epoch = lck.unique_lock_epoch;
+	}
+
 	subreq = dbwrap_watched_watch_send(
-		state, state->ev, rec, state->blocker);
+		state, state->ev, rec, state->watch_instance, state->blocker);
 	if (subreq == NULL) {
+		dbwrap_watched_watch_remove_instance(rec, state->watch_instance);
 		state->status = NT_STATUS_NO_MEMORY;
 		return;
 	}
@@ -1355,15 +1517,18 @@ static void g_lock_watch_data_done(struct tevent_req *subreq)
 	struct g_lock_watch_data_state *state = tevent_req_data(
 		req, struct g_lock_watch_data_state);
 	NTSTATUS status;
+	uint64_t instance = 0;
 
 	status = dbwrap_watched_watch_recv(
-		subreq, &state->blockerdead, &state->blocker);
+		subreq, &instance, &state->blockerdead, &state->blocker);
 	TALLOC_FREE(subreq);
 	if (tevent_req_nterror(req, status)) {
 		DBG_DEBUG("dbwrap_watched_watch_recv returned %s\n",
 			  nt_errstr(status));
 		return;
 	}
+
+	state->watch_instance = instance;
 
 	status = dbwrap_do_locked(
 		state->ctx->db, state->key, g_lock_watch_data_done_fn, req);

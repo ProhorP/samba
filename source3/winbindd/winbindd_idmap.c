@@ -68,20 +68,6 @@ struct dcerpc_binding_handle *idmap_child_handle(void)
 	return static_idmap_child.binding_handle;
 }
 
-static const struct winbindd_child_dispatch_table idmap_dispatch_table[] = {
-	{
-		.name		= "PING",
-		.struct_cmd	= WINBINDD_PING,
-		.struct_fn	= winbindd_dual_ping,
-	},{
-		.name		= "NDRCMD",
-		.struct_cmd	= WINBINDD_DUAL_NDRCMD,
-		.struct_fn	= winbindd_dual_ndrcmd,
-	},{
-		.name		= NULL,
-	}
-};
-
 static void init_idmap_child_done(struct tevent_req *subreq);
 
 void init_idmap_child(void)
@@ -343,9 +329,7 @@ static void wb_parent_idmap_setup_lookupname_next(struct tevent_req *req)
 		/*
 		 * We're done, so start the idmap child
 		 */
-		setup_child(NULL, &static_idmap_child,
-			    idmap_dispatch_table,
-			    "log.winbindd", "idmap");
+		setup_child(NULL, &static_idmap_child, "log.winbindd", "idmap");
 		tevent_req_done(req);
 		return;
 	}

@@ -141,12 +141,6 @@ static int set_sys_acl_conn(const char *fname,
 		return -1;
 	}
 
-	ret = vfs_stat(conn, smb_fname);
-	if (ret == -1) {
-		TALLOC_FREE(frame);
-		return -1;
-	}
-
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
@@ -174,6 +168,7 @@ static NTSTATUS init_files_struct(TALLOC_CTX *mem_ctx,
 				  int flags,
 				  struct files_struct **_fsp)
 {
+	struct vfs_open_how how = { .flags = flags, .mode = 0644 };
 	struct smb_filename *smb_fname = NULL;
 	int fd;
 	mode_t saved_umask;
@@ -215,8 +210,7 @@ static NTSTATUS init_files_struct(TALLOC_CTX *mem_ctx,
 			    fspcwd,
 			    smb_fname,
 			    fsp,
-			    flags,
-			    00644);
+			    &how);
 
 	umask(saved_umask);
 
@@ -306,7 +300,6 @@ static NTSTATUS get_nt_acl_conn(TALLOC_CTX *mem_ctx,
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	NTSTATUS status;
-	int ret;
 	struct smb_filename *smb_fname =  NULL;
 
 	smb_fname = synthetic_smb_fname_split(frame,
@@ -316,12 +309,6 @@ static NTSTATUS get_nt_acl_conn(TALLOC_CTX *mem_ctx,
 	if (smb_fname == NULL) {
 		TALLOC_FREE(frame);
 		return NT_STATUS_NO_MEMORY;
-	}
-
-	ret = vfs_stat(conn, smb_fname);
-	if (ret == -1) {
-		TALLOC_FREE(frame);
-		return NT_STATUS_OBJECT_NAME_NOT_FOUND;
 	}
 
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname);
@@ -994,7 +981,6 @@ static PyObject *py_smbd_get_sys_acl(PyObject *self, PyObject *args, PyObject *k
 	char *service = NULL;
 	struct smb_filename *smb_fname = NULL;
 	NTSTATUS status;
-	int ret;
 
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "siO|z",
 					 discard_const_p(char *, kwnames),
@@ -1034,11 +1020,6 @@ static PyObject *py_smbd_get_sys_acl(PyObject *self, PyObject *args, PyObject *k
 	if (smb_fname == NULL) {
 		TALLOC_FREE(frame);
 		return NULL;
-	}
-	ret = vfs_stat(conn, smb_fname);
-	if (ret == -1) {
-		TALLOC_FREE(frame);
-		return PyErr_SetFromErrno(PyExc_OSError);
 	}
 
 	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname);

@@ -2780,7 +2780,6 @@ static bool set_canon_ace_list(files_struct *fsp,
 	SMB_ACL_PERMSET_T mask_permset;
 	SMB_ACL_TYPE_T the_acl_type = (default_ace ? SMB_ACL_TYPE_DEFAULT : SMB_ACL_TYPE_ACCESS);
 	bool needs_mask = False;
-	mode_t mask_perms = 0;
 	int sret;
 
 	/* Use the psbuf that was passed in. */
@@ -2818,9 +2817,6 @@ static bool set_canon_ace_list(files_struct *fsp,
 
 		if (p_ace->type == SMB_ACL_USER || p_ace->type == SMB_ACL_GROUP) {
 			needs_mask = True;
-			mask_perms |= p_ace->perms;
-		} else if (p_ace->type == SMB_ACL_GROUP_OBJ) {
-			mask_perms |= p_ace->perms;
 		}
 
 		/*
@@ -3839,16 +3835,16 @@ NTSTATUS set_nt_acl(files_struct *fsp, uint32_t security_info_sent, const struct
  the mask bits, not the real group bits, for a file with an ACL.
 ****************************************************************************/
 
-int get_acl_group_bits( connection_struct *conn,
-			const struct smb_filename *smb_fname,
-			mode_t *mode )
+int get_acl_group_bits(connection_struct *conn,
+		       struct files_struct *fsp,
+		       mode_t *mode )
 {
 	int entry_id = SMB_ACL_FIRST_ENTRY;
 	SMB_ACL_ENTRY_T entry;
 	SMB_ACL_T posix_acl;
 	int result = -1;
 
-	posix_acl = SMB_VFS_SYS_ACL_GET_FD(metadata_fsp(smb_fname->fsp),
+	posix_acl = SMB_VFS_SYS_ACL_GET_FD(metadata_fsp(fsp),
 					   SMB_ACL_TYPE_ACCESS,
 					   talloc_tos());
 	if (posix_acl == (SMB_ACL_T)NULL)
@@ -3885,7 +3881,7 @@ int get_acl_group_bits( connection_struct *conn,
  and set the mask to rwx. Needed to preserve complex ACLs set by NT.
 ****************************************************************************/
 
-static int chmod_acl_internals( connection_struct *conn, SMB_ACL_T posix_acl, mode_t mode)
+static int chmod_acl_internals(SMB_ACL_T posix_acl, mode_t mode)
 {
 	int entry_id = SMB_ACL_FIRST_ENTRY;
 	SMB_ACL_ENTRY_T entry;
@@ -3953,24 +3949,25 @@ static int chmod_acl_internals( connection_struct *conn, SMB_ACL_T posix_acl, mo
  resulting ACL on TO.  Note that name is in UNIX character set.
 ****************************************************************************/
 
-static int copy_access_posix_acl(connection_struct *conn,
-				const struct smb_filename *smb_fname_from,
-				const struct smb_filename *smb_fname_to,
-				mode_t mode)
+static int copy_access_posix_acl(struct files_struct *from,
+				 struct files_struct *to,
+				 mode_t mode)
 {
 	SMB_ACL_T posix_acl = NULL;
 	int ret = -1;
 
-	if ((posix_acl = SMB_VFS_SYS_ACL_GET_FD(smb_fname_from->fsp,
-						  SMB_ACL_TYPE_ACCESS,
-						  talloc_tos())) == NULL)
+	posix_acl = SMB_VFS_SYS_ACL_GET_FD(
+		from, SMB_ACL_TYPE_ACCESS, talloc_tos());
+	if (posix_acl == NULL) {
 		return -1;
+	}
 
-	if ((ret = chmod_acl_internals(conn, posix_acl, mode)) == -1)
+	ret = chmod_acl_internals(posix_acl, mode);
+	if (ret == -1) {
 		goto done;
+	}
 
-	ret = SMB_VFS_SYS_ACL_SET_FD(smb_fname_to->fsp,
-			SMB_ACL_TYPE_ACCESS, posix_acl);
+	ret = SMB_VFS_SYS_ACL_SET_FD(to, SMB_ACL_TYPE_ACCESS, posix_acl);
 
  done:
 
@@ -3982,12 +3979,10 @@ static int copy_access_posix_acl(connection_struct *conn,
  Check for an existing default POSIX ACL on a directory.
 ****************************************************************************/
 
-static bool directory_has_default_posix_acl(connection_struct *conn,
-			const struct smb_filename *smb_fname)
+static bool directory_has_default_posix_acl(struct files_struct *dirfsp)
 {
-	SMB_ACL_T def_acl = SMB_VFS_SYS_ACL_GET_FD(smb_fname->fsp,
-						     SMB_ACL_TYPE_DEFAULT,
-						     talloc_tos());
+	SMB_ACL_T def_acl = SMB_VFS_SYS_ACL_GET_FD(
+		dirfsp, SMB_ACL_TYPE_DEFAULT, talloc_tos());
 	bool has_acl = False;
 	SMB_ACL_ENTRY_T entry;
 
@@ -4007,14 +4002,18 @@ static bool directory_has_default_posix_acl(connection_struct *conn,
 ****************************************************************************/
 
 int inherit_access_posix_acl(connection_struct *conn,
-			struct smb_filename *inherit_from_dir,
-			const struct smb_filename *smb_fname,
-			mode_t mode)
+			     struct files_struct *inherit_from_dirfsp,
+			     const struct smb_filename *smb_fname,
+			     mode_t mode)
 {
-	if (directory_has_default_posix_acl(conn, inherit_from_dir))
+	int ret;
+
+	if (directory_has_default_posix_acl(inherit_from_dirfsp))
 		return 0;
 
-	return copy_access_posix_acl(conn, inherit_from_dir, smb_fname, mode);
+	ret = copy_access_posix_acl(
+		inherit_from_dirfsp, smb_fname->fsp, mode);
+	return ret;
 }
 
 /****************************************************************************

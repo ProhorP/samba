@@ -29,6 +29,7 @@
 #include "../librpc/gen_ndr/ndr_smb2_lease_struct.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "messages.h"
+#include "lib/util_ea.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_SMB2
@@ -423,10 +424,13 @@ static NTSTATUS smbd_smb2_create_durable_lease_check(struct smb_request *smb1req
 	const char *requested_filename, const struct files_struct *fsp,
 	const struct smb2_lease *lease_ptr)
 {
+	struct files_struct *dirfsp = NULL;
 	char *filename = NULL;
 	struct smb_filename *smb_fname = NULL;
 	uint32_t ucf_flags;
+	NTTIME twrp = fsp->fsp_name->twrp;
 	NTSTATUS status;
+	bool is_dfs = (smb1req->flags2 & FLAGS2_DFS_PATHNAMES);
 
 	if (lease_ptr == NULL) {
 		if (fsp->oplock_type != LEASE_OPLOCK) {
@@ -456,16 +460,20 @@ static NTSTATUS smbd_smb2_create_durable_lease_check(struct smb_request *smb1req
 	}
 
 	/* This also converts '\' to '/' */
-	status = check_path_syntax(filename);
+	status = check_path_syntax_smb2(filename, is_dfs);
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(filename);
 		return status;
 	}
 
 	ucf_flags = filename_create_ucf_flags(smb1req, FILE_OPEN);
-	status = filename_convert(talloc_tos(), fsp->conn,
-				  filename, ucf_flags,
-				  0, &smb_fname);
+	status = filename_convert_dirfsp(talloc_tos(),
+					 fsp->conn,
+					 filename,
+					 ucf_flags,
+					 twrp,
+					 &dirfsp,
+					 &smb_fname);
 	TALLOC_FREE(filename);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("filename_convert returned %s\n",
@@ -704,8 +712,10 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 	struct smbd_smb2_create_state *state = NULL;
 	NTSTATUS status;
 	struct smb_request *smb1req = NULL;
+	struct files_struct *dirfsp = NULL;
 	struct smb_filename *smb_fname = NULL;
 	uint32_t ucf_flags;
+	bool is_dfs = false;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct smbd_smb2_create_state);
@@ -951,28 +961,26 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 		state->lease_ptr = NULL;
 	}
 
-	/*
-	 * For a DFS path the function parse_dfs_path()
-	 * will do the path processing.
-	 */
+	is_dfs = (smb1req->flags2 & FLAGS2_DFS_PATHNAMES);
 
-	if (!(smb1req->flags2 & FLAGS2_DFS_PATHNAMES)) {
-		/* convert '\\' into '/' */
-		status = check_path_syntax(state->fname);
-		if (!NT_STATUS_IS_OK(status)) {
-			tevent_req_nterror(req, status);
-			return tevent_req_post(req, state->ev);
-		}
+	/* convert '\\' into '/' */
+	status = check_path_syntax_smb2(state->fname, is_dfs);
+	if (!NT_STATUS_IS_OK(status)) {
+		tevent_req_nterror(req, status);
+		return tevent_req_post(req, state->ev);
 	}
 
 	ucf_flags = filename_create_ucf_flags(
 		smb1req, state->in_create_disposition);
-	status = filename_convert(req,
-				  smb1req->conn,
-				  state->fname,
-				  ucf_flags,
-				  state->twrp_time,
-				  &smb_fname);
+
+	status = filename_convert_dirfsp(
+		req,
+		smb1req->conn,
+		state->fname,
+		ucf_flags,
+		state->twrp_time,
+		&dirfsp,
+		&smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
 		tevent_req_nterror(req, status);
 		return tevent_req_post(req, state->ev);
@@ -1014,6 +1022,7 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 
 	status = SMB_VFS_CREATE_FILE(smb1req->conn,
 				     smb1req,
+				     dirfsp,
 				     smb_fname,
 				     in_desired_access,
 				     in_share_access,
@@ -1511,9 +1520,11 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
 
 	if (state->qfid != NULL) {
 		uint8_t p[32];
+		SMB_STRUCT_STAT *base_sp = state->result->base_fsp ?
+			&state->result->base_fsp->fsp_name->st :
+			&state->result->fsp_name->st;
 		uint64_t file_id = SMB_VFS_FS_FILE_ID(
-			state->result->conn,
-			&state->result->fsp_name->st);
+			state->result->conn, base_sp);
 		DATA_BLOB blob = data_blob_const(p, sizeof(p));
 
 		ZERO_STRUCT(p);
@@ -1523,7 +1534,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
 		   == inode, the second 8 bytes are the "volume id",
 		   == dev. This will be updated in the SMB2 doc. */
 		SBVAL(p, 0, file_id);
-		SIVAL(p, 8, state->result->fsp_name->st.st_ex_dev);/* FileIndexHigh */
+		SIVAL(p, 8, base_sp->st_ex_dev);/* FileIndexHigh */
 
 		status = smb2_create_blob_add(state->out_context_blobs,
 					      state->out_context_blobs,

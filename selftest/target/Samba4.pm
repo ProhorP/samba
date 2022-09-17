@@ -778,6 +778,7 @@ sub provision_raw_step1($$)
 	panic action = $RealBin/gdb_backtrace \%d
 	smbd:suicide mode = yes
 	smbd:FSCTL_SMBTORTURE = yes
+	smbd:validate_oplock_types = yes
 	wins support = yes
 	server role = $ctx->{server_role}
 	server services = +echo $services
@@ -2707,7 +2708,7 @@ sub setup_ad_dc_no_ntlm
 					 "ADNONTLMDOMAIN",
 					 "adnontlmdom.samba.example.com",
 					 undef,
-					 "ntlm auth = disabled",
+					 "ntlm auth = disabled\nnt hash store = never",
 					 undef);
 	unless ($env) {
 		return undef;

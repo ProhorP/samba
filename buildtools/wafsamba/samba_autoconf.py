@@ -146,7 +146,7 @@ def header_list(conf, headers=None, lib=None):
 
 
 @conf
-def CHECK_TYPE(conf, t, alternate=None, headers=None, define=None, lib=None, msg=None):
+def CHECK_TYPE(conf, t, alternate=None, headers=None, define=None, lib=None, msg=None, cflags=''):
     '''check for a single type'''
     if define is None:
         define = 'HAVE_' + t.upper().replace(' ', '_')
@@ -158,6 +158,7 @@ def CHECK_TYPE(conf, t, alternate=None, headers=None, define=None, lib=None, msg
                      headers=headers,
                      local_include=False,
                      msg=msg,
+                     cflags=cflags,
                      lib=lib,
                      link=False)
     if not ret and alternate:
@@ -177,9 +178,9 @@ def CHECK_TYPES(conf, list, headers=None, define=None, alternate=None, lib=None)
 
 
 @conf
-def CHECK_TYPE_IN(conf, t, headers=None, alternate=None, define=None):
+def CHECK_TYPE_IN(conf, t, headers=None, alternate=None, define=None, cflags=''):
     '''check for a single type with a header'''
-    return CHECK_TYPE(conf, t, headers=headers, alternate=alternate, define=define)
+    return CHECK_TYPE(conf, t, headers=headers, alternate=alternate, define=define, cflags=cflags)
 
 
 @conf
@@ -805,6 +806,9 @@ int main(void) {
             if not 'EXTRA_CFLAGS' in conf.env:
                 conf.env['EXTRA_CFLAGS'] = []
             conf.env['EXTRA_CFLAGS'].extend(TO_LIST("-Werror=format"))
+
+        if CHECK_CFLAGS(conf, ["-Wno-error=array-bounds"]):
+            conf.define('HAVE_WNO_ERROR_ARRAY_BOUNDS', 1)
 
         if not Options.options.disable_warnings_as_errors:
             conf.ADD_NAMED_CFLAGS('PICKY_CFLAGS', '-Werror -Wno-error=deprecated-declarations', testflags=True)

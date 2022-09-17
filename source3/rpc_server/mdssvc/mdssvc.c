@@ -464,7 +464,7 @@ static bool inode_map_add(struct sl_query *slq, uint64_t ino, const char *path)
 		 */
 
 		if (value.dsize != sizeof(void *)) {
-			DEBUG(1, ("invalide dsize\n"));
+			DEBUG(1, ("invalid dsize\n"));
 			return false;
 		}
 		memcpy(&p, value.dptr, sizeof(p));
@@ -517,7 +517,6 @@ bool mds_add_result(struct sl_query *slq, const char *path)
 {
 	struct smb_filename *smb_fname = NULL;
 	struct stat_ex sb;
-	uint32_t attr;
 	uint64_t ino64;
 	int result;
 	NTSTATUS status;
@@ -560,33 +559,21 @@ bool mds_add_result(struct sl_query *slq, const char *path)
 		return true;
 	}
 
+	sb = smb_fname->st;
+
 	status = smbd_check_access_rights_fsp(slq->mds_ctx->conn->cwd_fsp,
 					      smb_fname->fsp,
 					      false,
 					      FILE_READ_DATA);
+	unbecome_authenticated_pipe_user();
 	if (!NT_STATUS_IS_OK(status)) {
-		unbecome_authenticated_pipe_user();
 		TALLOC_FREE(smb_fname);
 		return true;
 	}
 
-	/* This is needed to fetch the itime from the DOS attribute blob */
-	status = SMB_VFS_FGET_DOS_ATTRIBUTES(slq->mds_ctx->conn,
-					     smb_fname->fsp,
-					     &attr);
-	if (!NT_STATUS_IS_OK(status)) {
-		/* Ignore the error, likely no DOS attr xattr */
-		DBG_DEBUG("SMB_VFS_FGET_DOS_ATTRIBUTES [%s]: %s\n",
-			  smb_fname_str_dbg(smb_fname),
-			  nt_errstr(status));
-	}
-
-	unbecome_authenticated_pipe_user();
-
-	smb_fname->st = smb_fname->fsp->fsp_name->st;
-	sb = smb_fname->st;
 	/* Done with smb_fname now. */
 	TALLOC_FREE(smb_fname);
+
 	ino64 = SMB_VFS_FS_FILE_ID(slq->mds_ctx->conn, &sb);
 
 	if (slq->cnids) {
@@ -1644,9 +1631,9 @@ NTSTATUS mds_init_ctx(TALLOC_CTX *mem_ctx,
 	}
 
 	iconv_hnd = smb_iconv_open_ex(mds_ctx,
-						   "UTF8-NFD",
-						   "UTF8-NFC",
-						   false);
+				      "UTF8-NFD",
+				      "UTF8-NFC",
+				      false);
 	if (iconv_hnd == (smb_iconv_t)-1) {
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto error;
@@ -1654,9 +1641,9 @@ NTSTATUS mds_init_ctx(TALLOC_CTX *mem_ctx,
 	mds_ctx->ic_nfc_to_nfd = iconv_hnd;
 
 	iconv_hnd = smb_iconv_open_ex(mds_ctx,
-						   "UTF8-NFC",
-						   "UTF8-NFD",
-						   false);
+				      "UTF8-NFC",
+				      "UTF8-NFD",
+				      false);
 	if (iconv_hnd == (smb_iconv_t)-1) {
 		status = NT_STATUS_INTERNAL_ERROR;
 		goto error;

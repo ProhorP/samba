@@ -263,8 +263,8 @@ static int cephwrap_set_quota(struct vfs_handle_struct *handle,  enum SMB_QUOTA_
 }
 
 static int cephwrap_statvfs(struct vfs_handle_struct *handle,
-				const struct smb_filename *smb_fname,
-				vfs_statvfs_struct *statbuf)
+			    const struct smb_filename *smb_fname,
+			    struct vfs_statvfs_struct *statbuf)
 {
 	struct statvfs statvfs_buf;
 	int ret;
@@ -400,13 +400,19 @@ static int cephwrap_openat(struct vfs_handle_struct *handle,
 			   const struct files_struct *dirfsp,
 			   const struct smb_filename *smb_fname,
 			   files_struct *fsp,
-			   int flags,
-			   mode_t mode)
+			   const struct vfs_open_how *how)
 {
+	int flags = how->flags;
+	mode_t mode = how->mode;
 	struct smb_filename *name = NULL;
 	bool have_opath = false;
 	bool became_root = false;
 	int result = -ENOENT;
+
+	if (how->resolve != 0) {
+		errno = ENOSYS;
+		return -1;
+	}
 
 	/*
 	 * ceph doesn't have openat().
@@ -749,12 +755,8 @@ static void init_stat_ex_from_ceph_statx(struct stat_ex *dst, const struct ceph_
 	dst->st_ex_btime = stx->stx_btime;
 	dst->st_ex_ctime = stx->stx_ctime;
 	dst->st_ex_mtime = stx->stx_mtime;
-	dst->st_ex_itime = dst->st_ex_btime;
-	dst->st_ex_iflags = ST_EX_IFLAG_CALCULATED_ITIME;
 	dst->st_ex_blksize = stx->stx_blksize;
 	dst->st_ex_blocks = stx->stx_blocks;
-	dst->st_ex_file_id = dst->st_ex_ino;
-	dst->st_ex_iflags |= ST_EX_IFLAG_CALCULATED_FILE_ID;
 }
 
 static int cephwrap_stat(struct vfs_handle_struct *handle,
@@ -1276,18 +1278,18 @@ static int cephwrap_fchflags(struct vfs_handle_struct *handle,
 	return -1;
 }
 
-static int cephwrap_get_real_filename(struct vfs_handle_struct *handle,
-				     const struct smb_filename *path,
-				     const char *name,
-				     TALLOC_CTX *mem_ctx,
-				     char **found_name)
+static NTSTATUS cephwrap_get_real_filename_at(
+	struct vfs_handle_struct *handle,
+	struct files_struct *dirfsp,
+	const char *name,
+	TALLOC_CTX *mem_ctx,
+	char **found_name)
 {
 	/*
 	 * Don't fall back to get_real_filename so callers can differentiate
 	 * between a full directory scan and an actual case-insensitive stat.
 	 */
-	errno = EOPNOTSUPP;
-	return -1;
+	return NT_STATUS_NOT_SUPPORTED;
 }
 
 static const char *cephwrap_connectpath(struct vfs_handle_struct *handle,
@@ -1638,7 +1640,7 @@ static struct vfs_fn_pointers ceph_fns = {
 	.mknodat_fn = cephwrap_mknodat,
 	.realpath_fn = cephwrap_realpath,
 	.fchflags_fn = cephwrap_fchflags,
-	.get_real_filename_fn = cephwrap_get_real_filename,
+	.get_real_filename_at_fn = cephwrap_get_real_filename_at,
 	.connectpath_fn = cephwrap_connectpath,
 
 	/* EA operations. */

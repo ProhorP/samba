@@ -20,15 +20,15 @@
 import sys
 import os
 
-import ldb
+sys.path.insert(0, "bin/python")
+os.environ["PYTHONUNBUFFERED"] = "1"
 
+import ldb
 
 from samba import dsdb
 
 from samba.dcerpc import krb5pac, security
 
-sys.path.insert(0, "bin/python")
-os.environ["PYTHONUNBUFFERED"] = "1"
 
 import samba.tests.krb5.kcrypto as kcrypto
 from samba.tests.krb5.kdc_base_test import KDCBaseTest
@@ -955,7 +955,8 @@ class KdcTgsTests(KDCBaseTest):
         creds = self._get_creds(replication_allowed=True,
                                 revealed_to_rodc=True)
         tgt = self._get_tgt(creds, from_rodc=True)
-        self._s4u2self(tgt, creds, expected_error=0)
+        self._s4u2self(tgt, creds,
+                       expected_error=KDC_ERR_C_PRINCIPAL_UNKNOWN)
 
     def test_user2user_rodc_revealed(self):
         creds = self._get_creds(replication_allowed=True,

@@ -291,8 +291,8 @@ krb5_error_code smb_krb5_mk_error(krb5_context context,
 */
 int smb_krb5_create_key_from_string(krb5_context context,
 				    krb5_const_principal host_princ,
-				    krb5_data *salt,
-				    krb5_data *password,
+				    const krb5_data *salt,
+				    const krb5_data *password,
 				    krb5_enctype enctype,
 				    krb5_keyblock *key)
 {
@@ -1084,7 +1084,8 @@ krb5_error_code smb_krb5_renew_ticket(const char *ccache_string,
 		goto done;
 	}
 
-	DBG_DEBUG("Using %s as ccache for '%s'\n", ccache_string, client_string);
+	DBG_DEBUG("Using %s as ccache for client '%s' and service '%s'\n",
+		  ccache_string, client_string, service_string);
 
 	/* FIXME: we should not fall back to defaults */
 	ret = krb5_cc_resolve(context, discard_const_p(char, ccache_string), &ccache);
@@ -2709,25 +2710,26 @@ static bool princ_compare_no_dollar(krb5_context ctx,
 				    krb5_principal a,
 				    krb5_principal b)
 {
-	bool cmp;
 	krb5_principal mod = NULL;
+	bool cmp;
 
 	if (a->length == 1 && b->length == 1 &&
 	    a->data[0].length != 0 && b->data[0].length != 0 &&
-	    a->data[0].data[a->data[0].length -1] !=
-	    b->data[0].data[b->data[0].length -1]) {
-		if (a->data[0].data[a->data[0].length -1] == '$') {
+	    a->data[0].data[a->data[0].length - 1] !=
+	    b->data[0].data[b->data[0].length - 1]) {
+		if (a->data[0].data[a->data[0].length - 1] == '$') {
 			mod = a;
 			mod->data[0].length--;
-		} else if (b->data[0].data[b->data[0].length -1] == '$') {
+		} else if (b->data[0].data[b->data[0].length - 1] == '$') {
 			mod = b;
 			mod->data[0].length--;
 		}
 	}
 
-	cmp = krb5_principal_compare_flags(ctx, a, b,
+	cmp = krb5_principal_compare_flags(ctx,
+					   a,
+					   b,
 					   KRB5_PRINCIPAL_COMPARE_CASEFOLD);
-
 	if (mod != NULL) {
 		mod->data[0].length++;
 	}
@@ -2749,24 +2751,27 @@ krb5_error_code smb_krb5_kinit_s4u2_ccache(krb5_context ctx,
 	krb5_error_code code;
 	krb5_principal self_princ = NULL;
 	krb5_principal target_princ = NULL;
-	krb5_creds *store_creds;
+	krb5_creds *store_creds = NULL;
 	krb5_creds *s4u2self_creds = NULL;
 	krb5_creds *s4u2proxy_creds = NULL;
 	krb5_creds init_creds = {0};
 	krb5_creds mcreds = {0};
 	krb5_flags options = KRB5_GC_NO_STORE;
 	krb5_ccache tmp_cc;
-	bool s4u2proxy;
+	bool s4u2proxy = false;
+	bool ok;
 
 	code = krb5_cc_new_unique(ctx, "MEMORY", NULL, &tmp_cc);
 	if (code != 0) {
 		return code;
 	}
 
-	code = krb5_get_init_creds_password(ctx, &init_creds,
+	code = krb5_get_init_creds_password(ctx,
+					    &init_creds,
 					    init_principal,
 					    init_password,
-					    NULL, NULL,
+					    NULL,
+					    NULL,
 					    0,
 					    NULL,
 					    krb_options);
@@ -2801,9 +2806,12 @@ krb5_error_code smb_krb5_kinit_s4u2_ccache(krb5_context ctx,
 		goto done;
 	}
 
-	/* MIT lacks aliases support in S4U, for S4U2Self we require the tgt
-	 * client and the request server to be the same principal name. */
-	if (!princ_compare_no_dollar(ctx, init_creds.client, self_princ)) {
+	/*
+	 * MIT lacks aliases support in S4U, for S4U2Self we require the tgt
+	 * client and the request server to be the same principal name.
+	 */
+	ok = princ_compare_no_dollar(ctx, init_creds.client, self_princ);
+	if (!ok) {
 		code = KRB5KDC_ERR_PADATA_TYPE_NOSUPP;
 		goto done;
 	}
@@ -3341,6 +3349,34 @@ void smb_krb5_principal_set_type(krb5_context context,
 #endif
 }
 
+/**
+ * @brief Check if a principal is a TGS
+ *
+ * @param[in]  context  The library context
+ *
+ * @param[inout] principal The principal to check.
+ *
+ * @returns 1 if equal, 0 if not and -1 on error.
+ */
+int smb_krb5_principal_is_tgs(krb5_context context,
+			      krb5_const_principal principal)
+{
+	char *p = NULL;
+	int eq = 1;
+
+	p = smb_krb5_principal_get_comp_string(NULL, context, principal, 0);
+	if (p == NULL) {
+		return -1;
+	}
+
+	eq = krb5_princ_size(context, principal) == 2 &&
+	     (strequal(p, KRB5_TGS_NAME));
+
+	talloc_free(p);
+
+	return eq;
+}
+
 #if !defined(HAVE_KRB5_WARNX)
 /**
  * @brief Log a Kerberos message
@@ -3776,6 +3812,10 @@ int ads_krb5_cli_get_ticket(TALLOC_CTX *mem_ctx,
 		ENCTYPE_DES_CBC_CRC,
 		ENCTYPE_NULL};
 	bool ok;
+
+	DBG_DEBUG("Getting ticket for service [%s] using creds from [%s] "
+		  "and impersonating [%s]\n",
+		  principal, ccname, impersonate_princ_s);
 
 	retval = smb_krb5_init_context_common(&context);
 	if (retval != 0) {

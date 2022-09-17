@@ -630,7 +630,7 @@ bool netlogon_creds_cli_validate(struct netlogon_creds_cli_context *context,
 	DATA_BLOB blob2;
 	NTSTATUS status;
 	enum ndr_err_code ndr_err;
-	int cmp;
+	bool equal;
 
 	status = netlogon_creds_cli_get(context, frame, &creds2);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -652,11 +652,11 @@ bool netlogon_creds_cli_validate(struct netlogon_creds_cli_context *context,
 		return false;
 	}
 
-	cmp = data_blob_cmp(&blob1, &blob2);
+	equal = data_blob_equal_const_time(&blob1, &blob2);
 
 	TALLOC_FREE(frame);
 
-	return (cmp == 0);
+	return equal;
 }
 
 static NTSTATUS netlogon_creds_cli_store_internal(
@@ -3201,7 +3201,7 @@ static void netlogon_creds_cli_ServerGetTrustInfo_done(struct tevent_req *subreq
 	NTSTATUS status;
 	NTSTATUS result;
 	const struct samr_Password zero = {};
-	int cmp;
+	bool cmp;
 	bool ok;
 
 	/*
@@ -3227,9 +3227,9 @@ static void netlogon_creds_cli_ServerGetTrustInfo_done(struct tevent_req *subreq
 		return;
 	}
 
-	cmp = memcmp(state->new_owf_password.hash,
-		     zero.hash, sizeof(zero.hash));
-	if (cmp != 0) {
+	cmp = mem_equal_const_time(state->new_owf_password.hash,
+				   zero.hash, sizeof(zero.hash));
+	if (!cmp) {
 		status = netlogon_creds_des_decrypt(&state->tmp_creds,
 						    &state->new_owf_password);
 		if (tevent_req_nterror(req, status)) {
@@ -3237,9 +3237,9 @@ static void netlogon_creds_cli_ServerGetTrustInfo_done(struct tevent_req *subreq
 			return;
 		}
 	}
-	cmp = memcmp(state->old_owf_password.hash,
-		     zero.hash, sizeof(zero.hash));
-	if (cmp != 0) {
+	cmp = mem_equal_const_time(state->old_owf_password.hash,
+				   zero.hash, sizeof(zero.hash));
+	if (!cmp) {
 		status = netlogon_creds_des_decrypt(&state->tmp_creds,
 						    &state->old_owf_password);
 		if (tevent_req_nterror(req, status)) {

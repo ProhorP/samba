@@ -40,15 +40,19 @@ enum ads_sasl_state_e {
 
 /* The following definitions come from libads/ads_struct.c  */
 
-char *ads_build_path(const char *realm, const char *sep, const char *field, int reverse);
-char *ads_build_dn(const char *realm);
+ADS_STATUS ads_build_path(const char *realm,
+			  const char *sep,
+			  const char *field,
+			  int reverse,
+			  char **_path);
+ADS_STATUS ads_build_dn(const char *realm, TALLOC_CTX *mem_ctx, char **_dn);
 char *ads_build_domain(const char *dn);
-ADS_STRUCT *ads_init(const char *realm,
+ADS_STRUCT *ads_init(TALLOC_CTX *mem_ctx,
+		     const char *realm,
 		     const char *workgroup,
 		     const char *ldap_server,
 		     enum ads_sasl_state_e sasl_state);
 bool ads_set_sasl_wrap_flags(ADS_STRUCT *ads, unsigned flags);
-void ads_destroy(ADS_STRUCT **ads);
 
 /* The following definitions come from libads/disp_sec.c  */
 

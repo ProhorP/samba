@@ -220,10 +220,8 @@ NTSTATUS kpasswd_samdb_set_password(TALLOC_CTX *mem_ctx,
 				    target_dn,
 				    NULL, /* domain_dn */
 				    password,
-				    NULL, /* lmNewHash */
 				    NULL, /* ntNewHash */
-				    NULL, /* lmOldHash */
-				    NULL, /* ntOldHash */
+				    DSDB_PASSWORD_RESET,
 				    reject_reason,
 				    dominfo);
 	if (NT_STATUS_IS_OK(status)) {

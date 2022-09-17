@@ -17,18 +17,11 @@ Vagrant.configure("2") do |config|
         v.vm.provision :shell, path: "centos7/locale.sh"
     end
 
-    config.vm.define "centos8" do |v|
-        v.vm.box = "centos/8"
-        v.vm.hostname = "centos8"
-        v.vm.provision :shell, path: "centos8/bootstrap.sh"
-        v.vm.provision :shell, path: "centos8/locale.sh"
-    end
-
-    config.vm.define "debian10" do |v|
-        v.vm.box = "debian/buster64"
-        v.vm.hostname = "debian10"
-        v.vm.provision :shell, path: "debian10/bootstrap.sh"
-        v.vm.provision :shell, path: "debian10/locale.sh"
+    config.vm.define "centos8s" do |v|
+        v.vm.box = "centos/stream8"
+        v.vm.hostname = "centos8s"
+        v.vm.provision :shell, path: "centos8s/bootstrap.sh"
+        v.vm.provision :shell, path: "centos8s/locale.sh"
     end
 
     config.vm.define "debian11" do |v|
@@ -38,32 +31,25 @@ Vagrant.configure("2") do |config|
         v.vm.provision :shell, path: "debian11/locale.sh"
     end
 
-    config.vm.define "fedora34" do |v|
-        v.vm.box = "fedora/34-cloud-base"
-        v.vm.hostname = "fedora34"
-        v.vm.provision :shell, path: "fedora34/bootstrap.sh"
-        v.vm.provision :shell, path: "fedora34/locale.sh"
+    config.vm.define "f36mit120" do |v|
+        v.vm.box = "fedora/36-cloud-base"
+        v.vm.hostname = "f36mit120"
+        v.vm.provision :shell, path: "f36mit120/bootstrap.sh"
+        v.vm.provision :shell, path: "f36mit120/locale.sh"
     end
 
-    config.vm.define "fedora35" do |v|
-        v.vm.box = "fedora/35-cloud-base"
-        v.vm.hostname = "fedora35"
-        v.vm.provision :shell, path: "fedora35/bootstrap.sh"
-        v.vm.provision :shell, path: "fedora35/locale.sh"
+    config.vm.define "fedora36" do |v|
+        v.vm.box = "fedora/36-cloud-base"
+        v.vm.hostname = "fedora36"
+        v.vm.provision :shell, path: "fedora36/bootstrap.sh"
+        v.vm.provision :shell, path: "fedora36/locale.sh"
     end
 
-    config.vm.define "opensuse151" do |v|
-        v.vm.box = "opensuse/openSUSE-15.1-x86_64"
-        v.vm.hostname = "opensuse151"
-        v.vm.provision :shell, path: "opensuse151/bootstrap.sh"
-        v.vm.provision :shell, path: "opensuse151/locale.sh"
-    end
-
-    config.vm.define "opensuse152" do |v|
-        v.vm.box = "opensuse/openSUSE-15.2-x86_64"
-        v.vm.hostname = "opensuse152"
-        v.vm.provision :shell, path: "opensuse152/bootstrap.sh"
-        v.vm.provision :shell, path: "opensuse152/locale.sh"
+    config.vm.define "opensuse153" do |v|
+        v.vm.box = "opensuse/openSUSE-15.3-x86_64"
+        v.vm.hostname = "opensuse153"
+        v.vm.provision :shell, path: "opensuse153/bootstrap.sh"
+        v.vm.provision :shell, path: "opensuse153/locale.sh"
     end
 
     config.vm.define "ubuntu1804" do |v|

@@ -703,7 +703,7 @@ int rep_strerror_r(int errnum, char *buf, size_t buflen);
 #ifdef HAVE__Bool
 #define bool _Bool
 #else
-typedef int bool;
+#error Need a real boolean type
 #endif
 #endif
 
@@ -845,6 +845,24 @@ typedef unsigned long long ptrdiff_t ;
  * Zero a given len of an array
  */
 #define ZERO_ARRAY_LEN(x, l) memset_s((char *)(x), (l), 0, (l))
+
+/**
+ * Explicitly zero data from memory. This is guaranteed to be not optimized
+ * away.
+ */
+#define BURN_DATA(x) memset_s((char *)&(x), sizeof(x), 0, sizeof(x))
+
+/**
+ * Explicitly zero data from memory. This is guaranteed to be not optimized
+ * away.
+ */
+#define BURN_DATA_SIZE(x, s) memset_s((char *)&(x), (s), 0, (s))
+
+/**
+ * Explicitly zero data from memory. This is guaranteed to be not optimized
+ * away.
+ */
+#define BURN_PTR_SIZE(x, s) memset_s((x), (s), 0, (s))
 
 /**
  * Work out how many elements there are in a static array.
@@ -998,7 +1016,7 @@ static inline bool __rep_cwrap_enabled_fn(struct __rep_cwrap_enabled_state *stat
 	state->retval = false;
 	state->cached = true;
 
-	__wrapper_enabled_fn = dlsym(RTLD_DEFAULT, state->fnname);
+	__wrapper_enabled_fn = (bool (*)(void))dlsym(RTLD_DEFAULT, state->fnname);
 	if (__wrapper_enabled_fn == NULL) {
 		return state->retval;
 	}

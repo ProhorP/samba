@@ -442,7 +442,7 @@ static NTSTATUS dcesrv_netr_ServerAuthenticate3_helper(
 	if (!(user_account_control & UF_INTERDOMAIN_TRUST_ACCOUNT)) {
 		nt_status = samdb_result_passwords_no_lockout(mem_ctx,
 					dce_call->conn->dce_ctx->lp_ctx,
-					msgs[0], NULL, &curNtHash);
+					msgs[0], &curNtHash);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			return NT_STATUS_ACCESS_DENIED;
 		}
@@ -744,11 +744,7 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet(struct dcesrv_call_state *dce_call
 {
 	struct netlogon_creds_CredentialState *creds;
 	struct ldb_context *sam_ctx;
-	const char * const attrs[] = { "unicodePwd", NULL };
-	struct ldb_message **res;
-	struct samr_Password *oldNtHash;
 	NTSTATUS nt_status;
-	int ret;
 
 	nt_status = dcesrv_netr_creds_server_step_check(dce_call,
 							mem_ctx,
@@ -765,29 +761,13 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet(struct dcesrv_call_state *dce_call
 	nt_status = netlogon_creds_des_decrypt(creds, r->in.new_password);
 	NT_STATUS_NOT_OK_RETURN(nt_status);
 
-	/* fetch the old password hashes (the NT hash has to exist) */
-
-	ret = gendb_search(sam_ctx, mem_ctx, NULL, &res, attrs,
-			   "(&(objectClass=user)(objectSid=%s))",
-			   ldap_encode_ndr_dom_sid(mem_ctx, creds->sid));
-	if (ret != 1) {
-		return NT_STATUS_WRONG_PASSWORD;
-	}
-
-	nt_status = samdb_result_passwords_no_lockout(mem_ctx,
-						      dce_call->conn->dce_ctx->lp_ctx,
-						      res[0], NULL, &oldNtHash);
-	if (!NT_STATUS_IS_OK(nt_status) || !oldNtHash) {
-		return NT_STATUS_WRONG_PASSWORD;
-	}
-
 	/* Using the sid for the account as the key, set the password */
 	nt_status = samdb_set_password_sid(sam_ctx, mem_ctx,
 					   creds->sid,
 					   NULL, /* Don't have version */
 					   NULL, /* Don't have plaintext */
-					   NULL, r->in.new_password,
-					   NULL, oldNtHash, /* Password change */
+					   r->in.new_password,
+					   DSDB_PASSWORD_CHECKED_AND_CORRECT, /* Password change */
 					   NULL, NULL);
 	return nt_status;
 }
@@ -801,9 +781,6 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet2(struct dcesrv_call_state *dce_cal
 {
 	struct netlogon_creds_CredentialState *creds;
 	struct ldb_context *sam_ctx;
-	const char * const attrs[] = { "dBCSPwd", "unicodePwd", NULL };
-	struct ldb_message **res;
-	struct samr_Password *oldLmHash, *oldNtHash;
 	struct NL_PASSWORD_VERSION version = {};
 	const uint32_t *new_version = NULL;
 	NTSTATUS nt_status;
@@ -811,7 +788,6 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet2(struct dcesrv_call_state *dce_cal
 	size_t confounder_len;
 	DATA_BLOB dec_blob = data_blob_null;
 	DATA_BLOB enc_blob = data_blob_null;
-	int ret;
 	struct samr_CryptPassword password_buf;
 
 	nt_status = dcesrv_netr_creds_server_step_check(dce_call,
@@ -897,7 +873,7 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet2(struct dcesrv_call_state *dce_cal
 	confounder_len = 512 - new_password.length;
 	enc_blob = data_blob_const(r->in.new_password->data, confounder_len);
 	dec_blob = data_blob_const(password_buf.data, confounder_len);
-	if (confounder_len > 0 && data_blob_cmp(&dec_blob, &enc_blob) == 0) {
+	if (confounder_len > 0 && data_blob_equal_const_time(&dec_blob, &enc_blob)) {
 		DBG_WARNING("Confounder buffer not encrypted Length[%zu]\n",
 			    confounder_len);
 		return NT_STATUS_WRONG_PASSWORD;
@@ -911,7 +887,7 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet2(struct dcesrv_call_state *dce_cal
 				   new_password.length);
 	dec_blob = data_blob_const(password_buf.data + confounder_len,
 				   new_password.length);
-	if (data_blob_cmp(&dec_blob, &enc_blob) == 0) {
+	if (data_blob_equal_const_time(&dec_blob, &enc_blob)) {
 		DBG_WARNING("Password buffer not encrypted Length[%zu]\n",
 			    new_password.length);
 		return NT_STATUS_WRONG_PASSWORD;
@@ -926,29 +902,13 @@ static NTSTATUS dcesrv_netr_ServerPasswordSet2(struct dcesrv_call_state *dce_cal
 		return NT_STATUS_WRONG_PASSWORD;
 	}
 
-	/* fetch the old password hashes (at least one of both has to exist) */
-
-	ret = gendb_search(sam_ctx, mem_ctx, NULL, &res, attrs,
-			   "(&(objectClass=user)(objectSid=%s))",
-			   ldap_encode_ndr_dom_sid(mem_ctx, creds->sid));
-	if (ret != 1) {
-		return NT_STATUS_WRONG_PASSWORD;
-	}
-
-	nt_status = samdb_result_passwords_no_lockout(mem_ctx,
-						      dce_call->conn->dce_ctx->lp_ctx,
-						      res[0], &oldLmHash, &oldNtHash);
-	if (!NT_STATUS_IS_OK(nt_status) || (!oldLmHash && !oldNtHash)) {
-		return NT_STATUS_WRONG_PASSWORD;
-	}
-
 	/* Using the sid for the account as the key, set the password */
 	nt_status = samdb_set_password_sid(sam_ctx, mem_ctx,
 					   creds->sid,
 					   new_version,
 					   &new_password, /* we have plaintext */
-					   NULL, NULL,
-					   oldLmHash, oldNtHash, /* Password change */
+					   NULL,
+					   DSDB_PASSWORD_CHECKED_AND_CORRECT, /* Password change */
 					   NULL, NULL);
 	return nt_status;
 }
@@ -2453,7 +2413,7 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 	};
 	const char * const attrs2[] = { "sAMAccountName", "dNSHostName",
 		"msDS-SupportedEncryptionTypes", NULL };
-	const char *sam_account_name, *old_dns_hostname, *prefix1, *prefix2;
+	const char *sam_account_name, *old_dns_hostname;
 	struct ldb_context *sam_ctx;
 	const struct GUID *our_domain_guid = NULL;
 	struct lsa_TrustDomainInfoInfoEx *our_tdo = NULL;
@@ -2462,6 +2422,7 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 	struct ldb_dn *workstation_dn;
 	struct netr_DomainInformation *domain_info;
 	struct netr_LsaPolicyInformation *lsa_policy_info;
+	struct auth_session_info *workstation_session_info = NULL;
 	uint32_t default_supported_enc_types = 0xFFFFFFFF;
 	bool update_dns_hostname = true;
 	int ret, i;
@@ -2490,7 +2451,8 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 	}
 	NT_STATUS_NOT_OK_RETURN(status);
 
-	sam_ctx = dcesrv_samdb_connect_as_system(mem_ctx, dce_call);
+	/* We want to avoid connecting as system. */
+	sam_ctx = dcesrv_samdb_connect_as_user(mem_ctx, dce_call);
 	if (sam_ctx == NULL) {
 		return NT_STATUS_INVALID_SYSTEM_SERVICE;
 	}
@@ -2506,6 +2468,33 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 		workstation_dn = ldb_dn_new_fmt(mem_ctx, sam_ctx, "<SID=%s>",
 						dom_sid_string(mem_ctx, creds->sid));
 		NT_STATUS_HAVE_NO_MEMORY(workstation_dn);
+
+		/* Get the workstation's session info from the database. */
+		status = authsam_get_session_info_principal(mem_ctx,
+							    dce_call->conn->dce_ctx->lp_ctx,
+							    sam_ctx,
+							    NULL, /* principal */
+							    workstation_dn,
+							    0, /* session_info_flags */
+							    &workstation_session_info);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+
+		/*
+		 * Reconnect to samdb as the workstation, now that we have its
+		 * session info. We do this so the database update can be
+		 * attributed to the workstation account in the audit logs --
+		 * otherwise it might be incorrectly attributed to
+		 * SID_NT_ANONYMOUS.
+		 */
+		sam_ctx = dcesrv_samdb_connect_session_info(mem_ctx,
+							    dce_call,
+							    workstation_session_info,
+							    workstation_session_info);
+		if (sam_ctx == NULL) {
+			return NT_STATUS_INVALID_SYSTEM_SERVICE;
+		}
 
 		/* Lookup for attributes in workstation object */
 		ret = gendb_search_dn(sam_ctx, mem_ctx, workstation_dn, &res1,
@@ -2523,24 +2512,7 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 
-		/*
-		 * Checks that the sam account name without a possible "$"
-		 * matches as prefix with the DNS hostname in the workstation
-		 * info structure.
-		 */
-		prefix1 = talloc_strndup(mem_ctx, sam_account_name,
-					 strcspn(sam_account_name, "$"));
-		NT_STATUS_HAVE_NO_MEMORY(prefix1);
-		if (r->in.query->workstation_info->dns_hostname != NULL) {
-			prefix2 = talloc_strndup(mem_ctx,
-						 r->in.query->workstation_info->dns_hostname,
-						 strcspn(r->in.query->workstation_info->dns_hostname, "."));
-			NT_STATUS_HAVE_NO_MEMORY(prefix2);
-
-			if (strcasecmp(prefix1, prefix2) != 0) {
-				update_dns_hostname = false;
-			}
-		} else {
+		if (r->in.query->workstation_info->dns_hostname == NULL) {
 			update_dns_hostname = false;
 		}
 
@@ -2552,13 +2524,10 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 		/*
 		 * Updates the DNS hostname when the client wishes that the
 		 * server should handle this for him
-		 * ("NETR_WS_FLAG_HANDLES_SPN_UPDATE" not set). And this is
-		 * obviously only checked when we do already have a
-		 * "dNSHostName".
+		 * ("NETR_WS_FLAG_HANDLES_SPN_UPDATE" not set).
 		 * See MS-NRPC section 3.5.4.3.9
 		 */
-		if ((old_dns_hostname != NULL) &&
-		    (r->in.query->workstation_info->workstation_flags
+		if ((r->in.query->workstation_info->workstation_flags
 		    & NETR_WS_FLAG_HANDLES_SPN_UPDATE) != 0) {
 			update_dns_hostname = false;
 		}
@@ -2667,7 +2636,7 @@ static NTSTATUS dcesrv_netr_LogonGetDomainInfo(struct dcesrv_call_state *dce_cal
 			}
 		}
 
-		if (dsdb_replace(sam_ctx, new_msg, 0) != LDB_SUCCESS) {
+		if (dsdb_replace(sam_ctx, new_msg, DSDB_FLAG_FORCE_ALLOW_VALIDATED_DNS_HOSTNAME_SPN_WRITE) != LDB_SUCCESS) {
 			DEBUG(3,("Impossible to update samdb: %s\n",
 				ldb_errstring(sam_ctx)));
 		}
@@ -4320,7 +4289,7 @@ static NTSTATUS dcesrv_netr_ServerGetTrustInfo(struct dcesrv_call_state *dce_cal
 	default:
 		nt_status = samdb_result_passwords_no_lockout(mem_ctx, lp_ctx,
 							      res[0],
-							      NULL, &curNtHash);
+							      &curNtHash);
 		if (!NT_STATUS_IS_OK(nt_status)) {
 			return nt_status;
 		}

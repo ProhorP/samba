@@ -173,12 +173,9 @@ int sys_fcntl_ptr(int fd, int cmd, void *arg);
 int sys_fcntl_long(int fd, int cmd, long arg);
 int sys_fcntl_int(int fd, int cmd, int arg);
 void update_stat_ex_mtime(struct stat_ex *dst, struct timespec write_ts);
-void update_stat_ex_itime(struct stat_ex *dst, struct timespec itime);
 void update_stat_ex_create_time(struct stat_ex *dst, struct timespec create_time);
-void update_stat_ex_file_id(struct stat_ex *dst, uint64_t file_id);
 void update_stat_ex_from_saved_stat(struct stat_ex *dst,
 				    const struct stat_ex *src);
-void create_clock_itime(struct stat_ex *dst);
 int sys_stat(const char *fname, SMB_STRUCT_STAT *sbuf,
 	     bool fake_dir_create_times);
 int sys_fstat(int fd, SMB_STRUCT_STAT *sbuf,
@@ -528,7 +525,6 @@ int poll_intr_one_fd(int fd, int events, int timeout, int *revents);
 bool next_token(const char **ptr, char *buff, const char *sep, size_t bufsize);
 bool strnequal(const char *s1,const char *s2,size_t n);
 bool strcsequal(const char *s1,const char *s2);
-bool strnorm(char *s, int case_default);
 char *skip_string(const char *base, size_t len, char *buf);
 size_t str_charnum(const char *s);
 bool trim_char(char *s,char cfront,char cback);
@@ -729,6 +725,14 @@ struct smb_filename *synthetic_smb_fname(TALLOC_CTX *mem_ctx,
 					 const SMB_STRUCT_STAT *psbuf,
 					 NTTIME twrp,
 					 uint32_t flags);
+NTSTATUS filename_convert_dirfsp(
+	TALLOC_CTX *ctx,
+	connection_struct *conn,
+	const char *name_in,
+	uint32_t ucf_flags,
+	NTTIME twrp,
+	struct files_struct **pdirfsp,
+	struct smb_filename **psmb_name_rel);
 struct smb_filename *full_path_from_dirfsp_atname(
 	TALLOC_CTX *mem_ctx,
 	const struct files_struct *dirfsp,

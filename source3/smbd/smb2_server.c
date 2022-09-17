@@ -2976,9 +2976,9 @@ NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
 	flags = IVAL(inhdr, SMB2_HDR_FLAGS);
 	opcode = SVAL(inhdr, SMB2_HDR_OPCODE);
 	mid = BVAL(inhdr, SMB2_HDR_MESSAGE_ID);
-	DEBUG(10,("smbd_smb2_request_dispatch: opcode[%s] mid = %llu\n",
-		smb2_opcode_name(opcode),
-		(unsigned long long)mid));
+	DBG_DEBUG("opcode[%s] mid = %"PRIu64"\n",
+		  smb2_opcode_name(opcode),
+		  mid);
 
 	if (xconn->protocol >= PROTOCOL_SMB2_02) {
 		/*
@@ -4461,7 +4461,7 @@ static bool is_smb2_recvfile_write(struct smbd_smb2_request_read_state *state)
 	if (IS_PRINT(fsp->conn)) {
 		return false;
 	}
-	if (fsp->base_fsp != NULL) {
+	if (fsp_is_alternate_stream(fsp)) {
 		return false;
 	}
 

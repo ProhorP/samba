@@ -17,37 +17,39 @@
 import os, grp, pwd
 import errno
 from samba import gpo, tests
-from samba.gpclass import register_gp_extension, list_gp_extensions, \
+from samba.gp.gpclass import register_gp_extension, list_gp_extensions, \
     unregister_gp_extension, GPOStorage
 from samba.param import LoadParm
-from samba.gpclass import check_refresh_gpo_list, check_safe_path, \
+from samba.gp.gpclass import check_refresh_gpo_list, check_safe_path, \
     check_guid, parse_gpext_conf, atomic_write_conf, get_deleted_gpos_list
 from subprocess import Popen, PIPE
 from tempfile import NamedTemporaryFile, TemporaryDirectory
-from samba import gpclass
+from samba.gp import gpclass
 # Disable privilege dropping for testing
 gpclass.drop_privileges = lambda _, func, *args : func(*args)
-from samba.gp_sec_ext import gp_krb_ext, gp_access_ext
-from samba.gp_scripts_ext import gp_scripts_ext, gp_user_scripts_ext
-from samba.gp_sudoers_ext import gp_sudoers_ext
-from samba.vgp_sudoers_ext import vgp_sudoers_ext
-from samba.vgp_symlink_ext import vgp_symlink_ext
-from samba.gpclass import gp_inf_ext
-from samba.gp_smb_conf_ext import gp_smb_conf_ext
-from samba.vgp_files_ext import vgp_files_ext
-from samba.vgp_openssh_ext import vgp_openssh_ext
-from samba.vgp_startup_scripts_ext import vgp_startup_scripts_ext
-from samba.vgp_motd_ext import vgp_motd_ext
-from samba.vgp_issue_ext import vgp_issue_ext
-from samba.vgp_access_ext import vgp_access_ext
-from samba.gp_gnome_settings_ext import gp_gnome_settings_ext
-from samba.gp_cert_auto_enroll_ext import gp_cert_auto_enroll_ext
-from samba.gp_firefox_ext import gp_firefox_ext
-from samba.gp_chromium_ext import gp_chromium_ext
-from samba.gp_firewalld_ext import gp_firewalld_ext
-import logging
+from samba.gp.gp_sec_ext import gp_krb_ext, gp_access_ext
+from samba.gp.gp_scripts_ext import gp_scripts_ext, gp_user_scripts_ext
+from samba.gp.gp_sudoers_ext import gp_sudoers_ext
+from samba.gp.vgp_sudoers_ext import vgp_sudoers_ext
+from samba.gp.vgp_symlink_ext import vgp_symlink_ext
+from samba.gp.gpclass import gp_inf_ext
+from samba.gp.gp_smb_conf_ext import gp_smb_conf_ext
+from samba.gp.vgp_files_ext import vgp_files_ext
+from samba.gp.vgp_openssh_ext import vgp_openssh_ext
+from samba.gp.vgp_startup_scripts_ext import vgp_startup_scripts_ext
+from samba.gp.vgp_motd_ext import vgp_motd_ext
+from samba.gp.vgp_issue_ext import vgp_issue_ext
+from samba.gp.vgp_access_ext import vgp_access_ext
+from samba.gp.gp_gnome_settings_ext import gp_gnome_settings_ext
+from samba.gp import gp_cert_auto_enroll_ext as cae
+from samba.gp.gp_firefox_ext import gp_firefox_ext
+from samba.gp.gp_chromium_ext import gp_chromium_ext
+from samba.gp.gp_firewalld_ext import gp_firewalld_ext
 from samba.credentials import Credentials
-from samba.gp_msgs_ext import gp_msgs_ext
+from samba.gp.gp_msgs_ext import gp_msgs_ext
+from samba.gp.gp_centrify_sudoers_ext import gp_centrify_sudoers_ext
+from samba.gp.gp_centrify_crontab_ext import gp_centrify_crontab_ext, \
+                                             gp_user_centrify_crontab_ext
 from samba.common import get_bytes
 from samba.dcerpc import preg
 from samba.ndr import ndr_pack
@@ -58,11 +60,57 @@ import hashlib
 from samba.gp_parse.gp_pol import GPPolParser
 from glob import glob
 from configparser import ConfigParser
-from samba.gpclass import get_dc_hostname
+from samba.gp.gpclass import get_dc_hostname
 from samba import Ldb
+import ldb as _ldb
 from samba.auth import system_session
 import json
 from shutil import which
+import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import Encoding
+from datetime import datetime, timedelta
+
+def dummy_certificate():
+    name = x509.Name([
+        x509.NameAttribute(x509.NameOID.COMMON_NAME,
+                           os.environ.get('SERVER'))
+    ])
+    cons = x509.BasicConstraints(ca=True, path_length=0)
+    now = datetime.utcnow()
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048,
+                                   backend=default_backend())
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1000)
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(seconds=300))
+        .add_extension(cons, False)
+        .sign(key, hashes.SHA256(), default_backend())
+    )
+
+    return cert.public_bytes(encoding=Encoding.DER)
+
+# Dummy requests structure for Certificate Auto Enrollment
+class dummy_requests(object):
+    @staticmethod
+    def get(url=None, params=None):
+        dummy = requests.Response()
+        dummy._content = dummy_certificate()
+        dummy.headers = {'Content-Type': 'application/x-x509-ca-cert'}
+        return dummy
+
+    class exceptions(object):
+        ConnectionError = Exception
+cae.requests = dummy_requests
 
 realm = os.environ.get('REALM')
 policies = realm + '/POLICIES'
@@ -229,6 +277,163 @@ b"""
                 <ValueName>OfflineExpirationStoreNames</ValueName>
                 <Value>MY</Value>
         </Entry>
+</PolFile>
+"""
+
+advanced_enroll_reg_pol = \
+b"""
+<?xml version="1.0" encoding="utf-8"?>
+<PolFile num_entries="30" signature="PReg" version="1">
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography</Key>
+        <ValueName>**DeleteKeys</ValueName>
+        <Value>Software\Policies\Microsoft\Cryptography\PolicyServers</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\AutoEnrollment</Key>
+        <ValueName>AEPolicy</ValueName>
+        <Value>7</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\AutoEnrollment</Key>
+        <ValueName>OfflineExpirationPercent</ValueName>
+        <Value>25</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\AutoEnrollment</Key>
+        <ValueName>OfflineExpirationStoreNames</ValueName>
+        <Value>MY</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers</Key>
+        <ValueName/>
+        <Value>{5AD0BE6D-3393-4940-BFC3-6E19555A8919}</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers</Key>
+        <ValueName>Flags</ValueName>
+        <Value>0</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>URL</ValueName>
+        <Value>LDAP:</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>PolicyID</ValueName>
+        <Value>%s</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>FriendlyName</ValueName>
+        <Value>Example</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>Flags</ValueName>
+        <Value>16</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>AuthFlags</ValueName>
+        <Value>2</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\37c9dc30f207f27f61a2f7c3aed598a6e2920b54</Key>
+        <ValueName>Cost</ValueName>
+        <Value>2147483645</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>URL</ValueName>
+        <Value>https://example2.com/ADPolicyProvider_CEP_Certificate/service.svc/CEP</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>PolicyID</ValueName>
+        <Value>%s</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>FriendlyName</ValueName>
+        <Value>Example2</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>Flags</ValueName>
+        <Value>16</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>AuthFlags</ValueName>
+        <Value>8</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\144bdbb8e4717c26e408f3c9a0cb8d6cfacbcbbe</Key>
+        <ValueName>Cost</ValueName>
+        <Value>10</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>URL</ValueName>
+        <Value>https://example0.com/ADPolicyProvider_CEP_Kerberos/service.svc/CEP</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>PolicyID</ValueName>
+        <Value>%s</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>FriendlyName</ValueName>
+        <Value>Example0</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>Flags</ValueName>
+        <Value>16</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>AuthFlags</ValueName>
+        <Value>2</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\20d46e856e9b9746c0b1265c328f126a7b3283a9</Key>
+        <ValueName>Cost</ValueName>
+        <Value>1</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>URL</ValueName>
+        <Value>https://example1.com/ADPolicyProvider_CEP_Kerberos/service.svc/CEP</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>PolicyID</ValueName>
+        <Value>%s</Value>
+    </Entry>
+    <Entry type="1" type_name="REG_SZ">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>FriendlyName</ValueName>
+        <Value>Example1</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>Flags</ValueName>
+        <Value>16</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>AuthFlags</ValueName>
+        <Value>2</Value>
+    </Entry>
+    <Entry type="4" type_name="REG_DWORD">
+        <Key>Software\Policies\Microsoft\Cryptography\PolicyServers\\855b5246433a48402ac4f5c3427566df26ccc9ac</Key>
+        <ValueName>Cost</ValueName>
+        <Value>1</Value>
+    </Entry>
 </PolFile>
 """
 
@@ -7016,7 +7221,7 @@ class GPOTests(tests.TestCase):
     def test_gpt_ext_register(self):
         this_path = os.path.dirname(os.path.realpath(__file__))
         samba_path = os.path.realpath(os.path.join(this_path, '../../../'))
-        ext_path = os.path.join(samba_path, 'python/samba/gp_sec_ext.py')
+        ext_path = os.path.join(samba_path, 'python/samba/gp/gp_sec_ext.py')
         ext_guid = '{827D319E-6EAC-11D2-A4EA-00C04F79F83A}'
         ret = register_gp_extension(ext_guid, 'gp_access_ext', ext_path,
                                     smb_conf=self.lp.configfile,
@@ -7116,7 +7321,6 @@ class GPOTests(tests.TestCase):
                  '{6AC1786C-016F-11D2-945F-00C04FB984F9}']
         gpofile = '%s/' + policies + '/%s/MACHINE/MICROSOFT/' \
                   'WINDOWS NT/SECEDIT/GPTTMPL.INF'
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7125,7 +7329,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_krb_ext(logger, self.lp, machine_creds,
+        ext = gp_krb_ext(self.lp, machine_creds,
                          machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7171,7 +7375,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7180,7 +7383,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_scripts_ext(logger, self.lp, machine_creds,
+        ext = gp_scripts_ext(self.lp, machine_creds,
                              machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7230,7 +7433,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7239,7 +7441,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_sudoers_ext(logger, self.lp, machine_creds,
+        ext = gp_sudoers_ext(self.lp, machine_creds,
                              machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7282,7 +7484,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         manifest = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/SUDO/SUDOERSCONFIGURATION/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7291,7 +7492,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_sudoers_ext(logger, self.lp, machine_creds,
+        ext = vgp_sudoers_ext(self.lp, machine_creds,
                               machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7377,7 +7578,6 @@ class GPOTests(tests.TestCase):
         unstage_file(manifest)
 
     def test_gp_inf_ext_utf(self):
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7385,7 +7585,7 @@ class GPOTests(tests.TestCase):
         machine_creds.guess(self.lp)
         machine_creds.set_machine_account()
 
-        ext = gp_inf_ext(logger, self.lp, machine_creds,
+        ext = gp_inf_ext(self.lp, machine_creds,
                          machine_creds.get_username(), store)
         test_data = '[Kerberos Policy]\nMaxTicketAge = 99\n'
 
@@ -7411,7 +7611,6 @@ class GPOTests(tests.TestCase):
                               '99', 'MaxTicketAge was not read from the file')
 
     def test_rsop(self):
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         local_path = self.lp.cache_path('gpo_cache')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
@@ -7471,7 +7670,7 @@ class GPOTests(tests.TestCase):
             self.assertTrue(ret, 'Could not create the target %s' %
                                  (reg_pol % g.name))
             for ext in gp_extensions:
-                ext = ext(logger, self.lp, machine_creds,
+                ext = ext(self.lp, machine_creds,
                           machine_creds.get_username(), store)
                 ret = ext.rsop(g)
                 self.assertEquals(len(ret.keys()), 1,
@@ -7520,7 +7719,6 @@ class GPOTests(tests.TestCase):
         self.assertEquals(ret, 0, 'gpupdate --rsop failed!')
 
     def test_gp_unapply(self):
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         local_path = self.lp.cache_path('gpo_cache')
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
@@ -7571,7 +7769,7 @@ class GPOTests(tests.TestCase):
         remove = []
         with TemporaryDirectory() as dname:
             for ext in gp_extensions:
-                ext = ext(logger, self.lp, machine_creds,
+                ext = ext(self.lp, machine_creds,
                           machine_creds.get_username(), store)
                 if type(ext) == gp_krb_ext:
                     ext.process_group_policy([], gpos)
@@ -7605,7 +7803,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7648,7 +7845,7 @@ class GPOTests(tests.TestCase):
             lp = LoadParm(f.name)
 
             # Initialize the group policy extension
-            ext = gp_smb_conf_ext(logger, lp, machine_creds,
+            ext = gp_smb_conf_ext(lp, machine_creds,
                                   machine_creds.get_username(), store)
             ext.process_group_policy([], gpos)
             lp = LoadParm(f.name)
@@ -7687,7 +7884,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7696,7 +7892,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_msgs_ext(logger, self.lp, machine_creds,
+        ext = gp_msgs_ext(self.lp, machine_creds,
                           machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7751,7 +7947,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         manifest = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/UNIX/SYMLINK/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7760,7 +7955,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_symlink_ext(logger, self.lp, machine_creds,
+        ext = vgp_symlink_ext(self.lp, machine_creds,
                               machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7829,7 +8024,6 @@ class GPOTests(tests.TestCase):
         source_data = '#!/bin/sh\necho hello world'
         ret = stage_file(source_file, source_data)
         self.assertTrue(ret, 'Could not create the target %s' % source_file)
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7838,7 +8032,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_files_ext(logger, self.lp, machine_creds,
+        ext = vgp_files_ext(self.lp, machine_creds,
                             machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7914,7 +8108,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         manifest = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/SSHCFG/SSHD/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7923,7 +8116,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_openssh_ext(logger, self.lp, machine_creds,
+        ext = vgp_openssh_ext(self.lp, machine_creds,
                               machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -7985,7 +8178,6 @@ class GPOTests(tests.TestCase):
         test_data = '#!/bin/sh\necho $@ hello world'
         ret = stage_file(test_script, test_data)
         self.assertTrue(ret, 'Could not create the target %s' % test_script)
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -7994,7 +8186,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_startup_scripts_ext(logger, self.lp, machine_creds,
+        ext = vgp_startup_scripts_ext(self.lp, machine_creds,
                                       machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8102,7 +8294,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         manifest = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/UNIX/MOTD/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8111,7 +8302,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_motd_ext(logger, self.lp, machine_creds,
+        ext = vgp_motd_ext(self.lp, machine_creds,
                            machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8152,7 +8343,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         manifest = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/UNIX/ISSUE/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8161,7 +8351,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_issue_ext(logger, self.lp, machine_creds,
+        ext = vgp_issue_ext(self.lp, machine_creds,
                             machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8204,7 +8394,6 @@ class GPOTests(tests.TestCase):
             'VGP/VTLA/VAS/HOSTACCESSCONTROL/ALLOW/MANIFEST.XML')
         deny = os.path.join(local_path, policies, guid, 'MACHINE',
             'VGP/VTLA/VAS/HOSTACCESSCONTROL/DENY/MANIFEST.XML')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8213,7 +8402,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = vgp_access_ext(logger, self.lp, machine_creds,
+        ext = vgp_access_ext(self.lp, machine_creds,
                              machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8333,7 +8522,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8342,7 +8530,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_gnome_settings_ext(logger, self.lp, machine_creds,
+        ext = gp_gnome_settings_ext(self.lp, machine_creds,
                                     machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8556,7 +8744,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8565,8 +8752,8 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_cert_auto_enroll_ext(logger, self.lp, machine_creds,
-                                      machine_creds.get_username(), store)
+        ext = cae.gp_cert_auto_enroll_ext(self.lp, machine_creds,
+                                          machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
         if ads.connect():
@@ -8655,7 +8842,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'USER/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8664,7 +8850,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_user_scripts_ext(logger, self.lp, machine_creds,
+        ext = gp_user_scripts_ext(self.lp, machine_creds,
                                   os.environ.get('DC_USERNAME'), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8716,7 +8902,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8725,7 +8910,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_firefox_ext(logger, self.lp, machine_creds,
+        ext = gp_firefox_ext(self.lp, machine_creds,
                              machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8774,7 +8959,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8783,7 +8967,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_chromium_ext(logger, self.lp, machine_creds,
+        ext = gp_chromium_ext(self.lp, machine_creds,
                               machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8850,7 +9034,6 @@ class GPOTests(tests.TestCase):
         guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
         reg_pol = os.path.join(local_path, policies, guid,
                                'MACHINE/REGISTRY.POL')
-        logger = logging.getLogger('gpo_tests')
         cache_dir = self.lp.get('cache directory')
         store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
 
@@ -8859,7 +9042,7 @@ class GPOTests(tests.TestCase):
         machine_creds.set_machine_account()
 
         # Initialize the group policy extension
-        ext = gp_firewalld_ext(logger, self.lp, machine_creds,
+        ext = gp_firewalld_ext(self.lp, machine_creds,
                                machine_creds.get_username(), store)
 
         ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
@@ -8913,6 +9096,280 @@ class GPOTests(tests.TestCase):
         out, err = p.communicate()
         self.assertNotIn(b'work', out, 'Failed to unapply zones')
         self.assertNotIn(b'home', out, 'Failed to unapply zones')
+
+        # Unstage the Registry.pol file
+        unstage_file(reg_pol)
+
+    def test_advanced_gp_cert_auto_enroll_ext(self):
+        local_path = self.lp.cache_path('gpo_cache')
+        guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        reg_pol = os.path.join(local_path, policies, guid,
+                               'MACHINE/REGISTRY.POL')
+        cache_dir = self.lp.get('cache directory')
+        store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
+
+        machine_creds = Credentials()
+        machine_creds.guess(self.lp)
+        machine_creds.set_machine_account()
+
+        # Initialize the group policy extension
+        ext = cae.gp_cert_auto_enroll_ext(self.lp, machine_creds,
+                                          machine_creds.get_username(), store)
+
+        ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
+        if ads.connect():
+            gpos = ads.get_gpo_list(machine_creds.get_username())
+
+        admin_creds = Credentials()
+        admin_creds.set_username(os.environ.get('DC_USERNAME'))
+        admin_creds.set_password(os.environ.get('DC_PASSWORD'))
+        admin_creds.set_realm(os.environ.get('REALM'))
+        hostname = get_dc_hostname(machine_creds, self.lp)
+        url = 'ldap://%s' % hostname
+        ldb = Ldb(url=url, session_info=system_session(),
+                  lp=self.lp, credentials=admin_creds)
+
+        # Stage the Registry.pol file with test data
+        res = ldb.search('', _ldb.SCOPE_BASE, '(objectClass=*)',
+                         ['rootDomainNamingContext'])
+        self.assertTrue(len(res) == 1, 'rootDomainNamingContext not found')
+        res2 = ldb.search(res[0]['rootDomainNamingContext'][0],
+                          _ldb.SCOPE_BASE, '(objectClass=*)', ['objectGUID'])
+        self.assertTrue(len(res2) == 1, 'objectGUID not found')
+        objectGUID = b'{%s}' % \
+            cae.octet_string_to_objectGUID(res2[0]['objectGUID'][0]).upper().encode()
+        parser = GPPolParser()
+        parser.load_xml(etree.fromstring(advanced_enroll_reg_pol.strip() % \
+            (objectGUID, objectGUID, objectGUID, objectGUID)))
+        ret = stage_file(reg_pol, ndr_pack(parser.pol_file))
+        self.assertTrue(ret, 'Could not create the target %s' % reg_pol)
+
+        # Write the dummy CA entry
+        confdn = 'CN=Public Key Services,CN=Services,CN=Configuration,%s' % base_dn
+        ca_cn = '%s-CA' % hostname.replace('.', '-')
+        certa_dn = 'CN=%s,CN=Certification Authorities,%s' % (ca_cn, confdn)
+        ldb.add({'dn': certa_dn,
+                 'objectClass': 'certificationAuthority',
+                 'authorityRevocationList': ['XXX'],
+                 'cACertificate': 'XXX',
+                 'certificateRevocationList': ['XXX'],
+                })
+        # Write the dummy pKIEnrollmentService
+        enroll_dn = 'CN=%s,CN=Enrollment Services,%s' % (ca_cn, confdn)
+        ldb.add({'dn': enroll_dn,
+                 'objectClass': 'pKIEnrollmentService',
+                 'cACertificate': 'XXXX',
+                 'certificateTemplates': ['Machine'],
+                 'dNSHostName': hostname,
+                })
+        # Write the dummy pKICertificateTemplate
+        template_dn = 'CN=Machine,CN=Certificate Templates,%s' % confdn
+        ldb.add({'dn': template_dn,
+                 'objectClass': 'pKICertificateTemplate',
+                })
+
+        with TemporaryDirectory() as dname:
+            ext.process_group_policy([], gpos, dname, dname)
+            ca_list = [ca_cn, 'example0-com-CA', 'example1-com-CA',
+                       'example2-com-CA']
+            for ca in ca_list:
+                ca_crt = os.path.join(dname, '%s.crt' % ca)
+                self.assertTrue(os.path.exists(ca_crt),
+                                'Root CA certificate was not requested')
+                machine_crt = os.path.join(dname, '%s.Machine.crt' % ca)
+                self.assertTrue(os.path.exists(machine_crt),
+                                'Machine certificate was not requested')
+                machine_key = os.path.join(dname, '%s.Machine.key' % ca)
+                self.assertTrue(os.path.exists(machine_crt),
+                                'Machine key was not generated')
+
+            # Verify RSOP does not fail
+            ext.rsop([g for g in gpos if g.name == guid][0])
+
+            # Remove policy
+            gp_db = store.get_gplog(machine_creds.get_username())
+            del_gpos = get_deleted_gpos_list(gp_db, [])
+            ext.process_group_policy(del_gpos, [], dname)
+            self.assertFalse(os.path.exists(ca_crt),
+                            'Root CA certificate was not removed')
+            self.assertFalse(os.path.exists(machine_crt),
+                            'Machine certificate was not removed')
+            self.assertFalse(os.path.exists(machine_crt),
+                            'Machine key was not removed')
+            out, _ = Popen(['getcert', 'list-cas'], stdout=PIPE).communicate()
+            for ca in ca_list:
+                self.assertNotIn(get_bytes(ca), out, 'CA was not removed')
+            out, _ = Popen(['getcert', 'list'], stdout=PIPE).communicate()
+            self.assertNotIn(b'Machine', out,
+                             'Machine certificate not removed')
+
+        # Remove the dummy CA, pKIEnrollmentService, and pKICertificateTemplate
+        ldb.delete(certa_dn)
+        ldb.delete(enroll_dn)
+        ldb.delete(template_dn)
+
+        # Unstage the Registry.pol file
+        unstage_file(reg_pol)
+
+    def test_gp_centrify_sudoers_ext(self):
+        local_path = self.lp.cache_path('gpo_cache')
+        guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        reg_pol = os.path.join(local_path, policies, guid,
+                               'MACHINE/REGISTRY.POL')
+        cache_dir = self.lp.get('cache directory')
+        store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
+
+        machine_creds = Credentials()
+        machine_creds.guess(self.lp)
+        machine_creds.set_machine_account()
+
+        # Initialize the group policy extension
+        ext = gp_centrify_sudoers_ext(self.lp, machine_creds,
+                                      machine_creds.get_username(), store)
+
+        ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
+        if ads.connect():
+            gpos = ads.get_gpo_list(machine_creds.get_username())
+
+        # Stage the Registry.pol file with test data
+        stage = preg.file()
+        e1 = preg.entry()
+        e1.keyname = b'Software\\Policies\\Centrify\\UnixSettings'
+        e1.valuename = b'sudo.enabled'
+        e1.type = 4
+        e1.data = 1
+        e2 = preg.entry()
+        e2.keyname = b'Software\\Policies\\Centrify\\UnixSettings\\SuDo'
+        e2.valuename = b'1'
+        e2.type = 1
+        e2.data = b'fakeu ALL=(ALL) NOPASSWD: ALL'
+        stage.num_entries = 2
+        stage.entries = [e1, e2]
+        ret = stage_file(reg_pol, ndr_pack(stage))
+        self.assertTrue(ret, 'Could not create the target %s' % reg_pol)
+
+        # Process all gpos, with temp output directory
+        with TemporaryDirectory() as dname:
+            ext.process_group_policy([], gpos, dname)
+            sudoers = os.listdir(dname)
+            self.assertEquals(len(sudoers), 1, 'The sudoer file was not created')
+            self.assertIn(e2.data,
+                    open(os.path.join(dname, sudoers[0]), 'r').read(),
+                    'The sudoers entry was not applied')
+
+            # Remove policy
+            gp_db = store.get_gplog(machine_creds.get_username())
+            del_gpos = get_deleted_gpos_list(gp_db, [])
+            ext.process_group_policy(del_gpos, [])
+            self.assertEquals(len(os.listdir(dname)), 0,
+                              'Unapply failed to cleanup scripts')
+
+        # Unstage the Registry.pol file
+        unstage_file(reg_pol)
+
+    def test_gp_centrify_crontab_ext(self):
+        local_path = self.lp.cache_path('gpo_cache')
+        guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        reg_pol = os.path.join(local_path, policies, guid,
+                               'MACHINE/REGISTRY.POL')
+        cache_dir = self.lp.get('cache directory')
+        store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
+
+        machine_creds = Credentials()
+        machine_creds.guess(self.lp)
+        machine_creds.set_machine_account()
+
+        # Initialize the group policy extension
+        ext = gp_centrify_crontab_ext(self.lp, machine_creds,
+                                      machine_creds.get_username(), store)
+
+        ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
+        if ads.connect():
+            gpos = ads.get_gpo_list(machine_creds.get_username())
+
+        # Stage the Registry.pol file with test data
+        stage = preg.file()
+        e = preg.entry()
+        e.keyname = \
+            b'Software\\Policies\\Centrify\\UnixSettings\\CrontabEntries'
+        e.valuename = b'Command1'
+        e.type = 1
+        e.data = b'17 * * * * root echo hello world'
+        stage.num_entries = 1
+        stage.entries = [e]
+        ret = stage_file(reg_pol, ndr_pack(stage))
+        self.assertTrue(ret, 'Could not create the target %s' % reg_pol)
+
+        # Process all gpos, with temp output directory
+        with TemporaryDirectory() as dname:
+            ext.process_group_policy([], gpos, dname)
+            cron_entries = os.listdir(dname)
+            self.assertEquals(len(cron_entries), 1, 'Cron entry not created')
+            fname = os.path.join(dname, cron_entries[0])
+            data = open(fname, 'rb').read()
+            self.assertIn(get_bytes(e.data), data, 'Cron entry is missing')
+
+            # Remove policy
+            gp_db = store.get_gplog(machine_creds.get_username())
+            del_gpos = get_deleted_gpos_list(gp_db, [])
+            ext.process_group_policy(del_gpos, [])
+            self.assertEquals(len(os.listdir(dname)), 0,
+                              'Unapply failed to cleanup script')
+
+            # Unstage the Registry.pol file
+            unstage_file(reg_pol)
+
+    def test_gp_user_centrify_crontab_ext(self):
+        local_path = self.lp.cache_path('gpo_cache')
+        guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        reg_pol = os.path.join(local_path, policies, guid,
+                               'USER/REGISTRY.POL')
+        cache_dir = self.lp.get('cache directory')
+        store = GPOStorage(os.path.join(cache_dir, 'gpo.tdb'))
+
+        machine_creds = Credentials()
+        machine_creds.guess(self.lp)
+        machine_creds.set_machine_account()
+
+        # Initialize the group policy extension
+        ext = gp_user_centrify_crontab_ext(self.lp, machine_creds,
+                                           os.environ.get('DC_USERNAME'),
+                                           store)
+
+        ads = gpo.ADS_STRUCT(self.server, self.lp, machine_creds)
+        if ads.connect():
+            gpos = ads.get_gpo_list(machine_creds.get_username())
+
+        # Stage the Registry.pol file with test data
+        stage = preg.file()
+        e = preg.entry()
+        e.keyname = \
+            b'Software\\Policies\\Centrify\\UnixSettings\\CrontabEntries'
+        e.valuename = b'Command1'
+        e.type = 1
+        e.data = b'17 * * * * echo hello world'
+        stage.num_entries = 1
+        stage.entries = [e]
+        ret = stage_file(reg_pol, ndr_pack(stage))
+        self.assertTrue(ret, 'Could not create the target %s' % reg_pol)
+
+        # Process all gpos, intentionally skipping the privilege drop
+        ext.process_group_policy([], gpos)
+        # Dump the fake crontab setup for testing
+        p = Popen(['crontab', '-l'], stdout=PIPE)
+        crontab, _ = p.communicate()
+        self.assertIn(get_bytes(e.data), crontab,
+            'The crontab entry was not installed')
+
+        # Remove policy
+        gp_db = store.get_gplog(os.environ.get('DC_USERNAME'))
+        del_gpos = get_deleted_gpos_list(gp_db, [])
+        ext.process_group_policy(del_gpos, [])
+        # Dump the fake crontab setup for testing
+        p = Popen(['crontab', '-l'], stdout=PIPE)
+        crontab, _ = p.communicate()
+        self.assertNotIn(get_bytes(e.data), crontab,
+            'Unapply failed to cleanup crontab entry')
 
         # Unstage the Registry.pol file
         unstage_file(reg_pol)

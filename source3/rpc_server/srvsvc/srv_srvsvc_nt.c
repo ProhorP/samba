@@ -282,8 +282,12 @@ static void init_srv_share_info_2(struct pipes_struct *p,
 	char *remark = NULL;
 	char *path = NULL;
 	int max_connections = lp_max_connections(snum);
-	uint32_t max_uses = max_connections!=0 ? max_connections : (uint32_t)-1;
+	uint32_t max_uses = UINT32_MAX;
 	char *net_name = lp_servicename(talloc_tos(), lp_sub, snum);
+
+	if (max_connections > 0) {
+		max_uses = MIN(max_connections, UINT32_MAX);
+	}
 
 	remark = lp_comment(p->mem_ctx, lp_sub, snum);
 	if (remark) {
@@ -322,7 +326,7 @@ static void init_srv_share_info_2(struct pipes_struct *p,
 
 static void map_generic_share_sd_bits(struct security_descriptor *psd)
 {
-	int i;
+	uint32_t i;
 	struct security_acl *ps_dacl = NULL;
 
 	if (!psd)
@@ -563,16 +567,14 @@ static bool is_enumeration_allowed(struct pipes_struct *p,
 
 static int count_for_all_fn(struct smbXsrv_tcon_global0 *tcon, void *udp)
 {
-	union srvsvc_NetShareCtr *ctr = NULL;
-	struct srvsvc_NetShareInfo2 *info2 = NULL;
-	int share_entries = 0;
-	int i = 0;
+	union srvsvc_NetShareCtr *ctr = udp;
 
-	ctr = (union srvsvc_NetShareCtr *) udp;
+	/* Only called for level2 */
+	struct srvsvc_NetShareCtr2 *ctr2 = ctr->ctr2;
 
-	/* for level 2 */
-	share_entries  = ctr->ctr2->count;
-	info2 = &ctr->ctr2->array[0];
+	uint32_t share_entries = ctr2->count;
+	struct srvsvc_NetShareInfo2 *info2 = ctr2->array;
+	uint32_t i = 0;
 
 	for (i = 0; i < share_entries; i++, info2++) {
 		if (strequal(tcon->share_name, info2->name)) {
@@ -974,7 +976,7 @@ static int count_sess_files_fn(struct file_id fid,
 {
 	struct sess_file_info *info = data;
 	uint32_t rh = info->resume_handle;
-	int i;
+	uint32_t i;
 
 	for (i=0; i < info->num_entries; i++) {
 		/* rh+info->num_entries is safe, as we've
@@ -1968,12 +1970,12 @@ WERROR _srvsvc_NetShareSetInfo(struct pipes_struct *p,
 				     SHARE_1005_CSC_POLICY_MASK) >>
 				    SHARE_1005_CSC_POLICY_SHIFT;
 
-		if (client_csc_policy == lp_csc_policy(snum))
+		if (client_csc_policy == (uint32_t)lp_csc_policy(snum)) {
 			return WERR_OK;
-		else {
-			csc_policy = csc_policies[client_csc_policy];
-			csc_policy_changed = true;
 		}
+
+		csc_policy = csc_policies[client_csc_policy];
+		csc_policy_changed = true;
 
 		pathname = lp_path(ctx, lp_sub, snum);
 		comment = lp_comment(ctx, lp_sub, snum);
@@ -2496,9 +2498,11 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 	struct conn_struct_tos *c = NULL;
 	connection_struct *conn = NULL;
 	struct sec_desc_buf *sd_buf = NULL;
+	struct files_struct *dirfsp = NULL;
 	files_struct *fsp = NULL;
 	int snum;
 	uint32_t ucf_flags = 0;
+	NTTIME twrp = 0;
 
 	ZERO_STRUCT(st);
 
@@ -2530,12 +2534,13 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 	}
 	conn = c->conn;
 
-	nt_status = filename_convert(frame,
-					conn,
-					r->in.file,
-					ucf_flags,
-					0,
-					&smb_fname);
+	nt_status = filename_convert_dirfsp(frame,
+					    conn,
+					    r->in.file,
+					    ucf_flags,
+					    twrp,
+					    &dirfsp,
+					    &smb_fname);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		werr = ntstatus_to_werror(nt_status);
 		goto error_exit;
@@ -2544,6 +2549,7 @@ WERROR _srvsvc_NetGetFileSecurity(struct pipes_struct *p,
 	nt_status = SMB_VFS_CREATE_FILE(
 		conn,					/* conn */
 		NULL,					/* req */
+		dirfsp,					/* dirfsp */
 		smb_fname,				/* fname */
 		FILE_READ_ATTRIBUTES,			/* access_mask */
 		FILE_SHARE_READ|FILE_SHARE_WRITE,	/* share_access */
@@ -2624,6 +2630,7 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 		loadparm_s3_global_substitution();
 	struct smb_filename *smb_fname = NULL;
 	char *servicename = NULL;
+	struct files_struct *dirfsp = NULL;
 	files_struct *fsp = NULL;
 	SMB_STRUCT_STAT st;
 	NTSTATUS nt_status;
@@ -2634,6 +2641,7 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 	struct security_descriptor *psd = NULL;
 	uint32_t security_info_sent = 0;
 	uint32_t ucf_flags = 0;
+	NTTIME twrp = 0;
 
 	ZERO_STRUCT(st);
 
@@ -2667,12 +2675,13 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 	}
 	conn = c->conn;
 
-	nt_status = filename_convert(frame,
-					conn,
-					r->in.file,
-					ucf_flags,
-					0,
-					&smb_fname);
+	nt_status = filename_convert_dirfsp(frame,
+					    conn,
+					    r->in.file,
+					    ucf_flags,
+					    twrp,
+					    &dirfsp,
+					    &smb_fname);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		werr = ntstatus_to_werror(nt_status);
 		goto error_exit;
@@ -2681,6 +2690,7 @@ WERROR _srvsvc_NetSetFileSecurity(struct pipes_struct *p,
 	nt_status = SMB_VFS_CREATE_FILE(
 		conn,					/* conn */
 		NULL,					/* req */
+		dirfsp,					/* dirfsp */
 		smb_fname,				/* fname */
 		FILE_WRITE_ATTRIBUTES,			/* access_mask */
 		FILE_SHARE_READ|FILE_SHARE_WRITE,	/* share_access */

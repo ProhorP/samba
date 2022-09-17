@@ -71,6 +71,7 @@
 #include "dbwrap/dbwrap_rbt.h"
 #include "../lib/util/bitmap.h"
 #include "librpc/gen_ndr/nbt.h"
+#include "librpc/gen_ndr/dns.h"
 #include "source4/lib/tls/tls.h"
 #include "libcli/auth/ntlm_check.h"
 #include "lib/crypto/gnutls_helpers.h"
@@ -255,6 +256,7 @@ static const struct loadparm_service _sDefault =
 	.smbd_getinfo_ask_sharemode = true,
 	.spotlight_backend = SPOTLIGHT_BACKEND_NOINDEX,
 	.honor_change_notify_privilege = false,
+	.volume_serial_number = -1,
 	.dummy = ""
 };
 
@@ -704,6 +706,7 @@ static void init_globals(struct loadparm_context *lp_ctx, bool reinit_globals)
 	Globals.client_plaintext_auth = false;	/* Do NOT use a plaintext password even if is requested by the server */
 	Globals._lanman_auth = false;	/* Do NOT use the LanMan hash, even if it is supplied */
 	Globals.ntlm_auth = NTLM_AUTH_NTLMV2_ONLY;	/* Do NOT use NTLMv1 if it is supplied by the client (otherwise NTLMv2) */
+	Globals.nt_hash_store = NT_HASH_STORE_ALWAYS;	/* Fill in NT hash when setting password */
 	Globals.raw_ntlmv2_auth = false; /* Reject NTLMv2 without NTLMSSP */
 	Globals.client_ntlmv2_auth = true; /* Client should always use use NTLMv2, as we can't tell that the server supports it, but most modern servers do */
 	/* Note, that we will also use NTLM2 session security (which is different), if it is available */
@@ -716,7 +719,7 @@ static void init_globals(struct loadparm_context *lp_ctx, bool reinit_globals)
 	Globals.lock_spin_time = WINDOWS_MINIMUM_LOCK_TIMEOUT_MS; /* msec. */
 	Globals.use_mmap = true;
 	Globals.unicode = true;
-	Globals.unix_extensions = true;
+	Globals.smb1_unix_extensions = true;
 	Globals.reset_on_zero_vc = false;
 	Globals.log_writeable_files_on_exit = false;
 	Globals.create_krb5_conf = true;
@@ -787,6 +790,7 @@ static void init_globals(struct loadparm_context *lp_ctx, bool reinit_globals)
 	Globals.init_logon_delay = 100; /* 100 ms default delay */
 
 	Globals.wins_dns_proxy = true;
+	Globals.dns_port = DNS_SERVICE_PORT;
 
 	Globals.allow_trusted_domains = true;
 	lpcfg_string_set(Globals.ctx, &Globals.idmap_backend, "tdb");
@@ -4663,18 +4667,27 @@ void widelinks_warning(int snum)
 		return;
 	}
 
-	if (lp_unix_extensions() && lp_wide_links(snum)) {
-		DBG_ERR("Share '%s' has wide links and unix extensions enabled. "
+	if (lp_wide_links(snum)) {
+		if (lp_smb1_unix_extensions()) {
+			DBG_ERR("Share '%s' has wide links and SMB1 unix "
+			"extensions enabled. "
 			"These parameters are incompatible. "
 			"Wide links will be disabled for this share.\n",
 			 lp_const_servicename(snum));
+		} else if (lp_smb2_unix_extensions()) {
+			DBG_ERR("Share '%s' has wide links and SMB2 unix "
+			"extensions enabled. "
+			"These parameters are incompatible. "
+			"Wide links will be disabled for this share.\n",
+			 lp_const_servicename(snum));
+		}
 	}
 }
 
 bool lp_widelinks(int snum)
 {
 	/* wide links is always incompatible with unix extensions */
-	if (lp_unix_extensions()) {
+	if (lp_smb1_unix_extensions() || lp_smb2_unix_extensions()) {
 		/*
 		 * Unless we have "allow insecure widelinks"
 		 * turned on.
@@ -4813,4 +4826,10 @@ uint32_t lp_get_async_dns_timeout(void)
 	 * as per the man page.
 	 */
 	return MAX(Globals.async_dns_timeout, 1);
+}
+
+/* SMB2 POSIX extensions. For now, *always* disabled. */
+bool lp_smb2_unix_extensions(void)
+{
+	return false;
 }

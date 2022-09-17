@@ -49,19 +49,30 @@ int mit_samba_get_nextkey(struct mit_samba_context *ctx,
 
 int mit_samba_get_pac(struct mit_samba_context *smb_ctx,
 		      krb5_context context,
+		      uint32_t flags,
 		      krb5_db_entry *client,
 		      krb5_db_entry *server,
-		      krb5_keyblock *client_key,
+		      krb5_keyblock *replaced_reply_key,
 		      krb5_pac *pac);
 
 krb5_error_code mit_samba_reget_pac(struct mit_samba_context *ctx,
 				    krb5_context context,
 				    int flags,
+				    krb5_const_principal client_principal,
 				    krb5_db_entry *client,
 				    krb5_db_entry *server,
 				    krb5_db_entry *krbtgt,
 				    krb5_keyblock *krbtgt_keyblock,
 				    krb5_pac *pac);
+
+krb5_error_code mit_samba_update_pac(struct mit_samba_context *ctx,
+				    krb5_context context,
+				    int flags,
+				    krb5_db_entry *client,
+				    krb5_db_entry *server,
+				    krb5_db_entry *signing_krbtgt,
+				    krb5_pac old_pac,
+				    krb5_pac new_pac);
 
 int mit_samba_check_client_access(struct mit_samba_context *ctx,
 				  krb5_db_entry *client,
@@ -75,6 +86,12 @@ int mit_samba_check_client_access(struct mit_samba_context *ctx,
 int mit_samba_check_s4u2proxy(struct mit_samba_context *ctx,
 			      const krb5_db_entry *server,
 			      krb5_const_principal target_principal);
+krb5_error_code mit_samba_check_allowed_to_delegate_from(
+		struct mit_samba_context *ctx,
+		krb5_const_principal client,
+		krb5_const_principal server,
+		krb5_pac header_pac,
+		const krb5_db_entry *proxy);
 
 int mit_samba_kpasswd_change_password(struct mit_samba_context *ctx,
 				      char *pwd,

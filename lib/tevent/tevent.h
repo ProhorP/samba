@@ -1,4 +1,4 @@
-/* 
+/*
    Unix SMB/CIFS implementation.
 
    generalised event loop handling
@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <talloc.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <stdbool.h>
 
 /* for old gcc releases that don't have the feature test macro __has_attribute */
@@ -1908,6 +1909,22 @@ struct timeval tevent_timeval_add(const struct timeval *tv, uint32_t secs,
  */
 struct timeval tevent_timeval_current_ofs(uint32_t secs, uint32_t usecs);
 
+/**
+ *
+ * @brief A cached version of getpid()
+ *
+ * We use getpid() in a lot a performance critical situations
+ * in order to check if caches are still valid in the current process.
+ *
+ * Calling getpid() always add the cost of an additional syscall!
+ *
+ * When tevent is build with pthread support, we already make use
+ * of pthread_atfork(), so it's trivial to use it maintain a cache for getpid().
+ *
+ * @return              The pid of the current process.
+ */
+pid_t tevent_cached_getpid(void);
+
 /* @} */
 
 
@@ -1929,6 +1946,55 @@ struct timeval tevent_timeval_current_ofs(uint32_t secs, uint32_t usecs);
 
 struct tevent_queue;
 struct tevent_queue_entry;
+
+/**
+ * @brief Associate a custom tag with the queue entry.
+ *
+ * This tag can be then retrieved with tevent_queue_entry_get_tag()
+ *
+ * @param[in]  qe   The queue entry.
+ *
+ * @param[in]  tag  Custom tag.
+ */
+void tevent_queue_entry_set_tag(struct tevent_queue_entry *qe, uint64_t tag);
+
+/**
+ * @brief Get custom queue entry tag.
+ */
+uint64_t tevent_queue_entry_get_tag(const struct tevent_queue_entry *qe);
+
+typedef void (*tevent_trace_queue_callback_t)(struct tevent_queue_entry *qe,
+					      enum tevent_event_trace_point,
+					      void *private_data);
+
+/**
+ * Register a callback to be called at certain trace points of queue.
+ *
+ * @param[in] ev             Event context
+ * @param[in] cb             Trace callback
+ * @param[in] private_data   Data to be passed to callback
+ *
+ * @note The callback will be called at trace points defined by
+ * tevent_event_trace_point. Call with NULL to reset.
+ */
+void tevent_set_trace_queue_callback(struct tevent_context *ev,
+				     tevent_trace_queue_callback_t cb,
+				     void *private_data);
+
+/**
+ * Retrieve the current trace callback of queue.
+ *
+ * @param[in] ev             Event context
+ * @param[out] cb            Registered trace callback
+ * @param[out] p_private_data  Registered data to be passed to callback
+ *
+ * @note This can be used to allow one component that wants to
+ * register a callback to respect the callback that another component
+ * has already registered.
+ */
+void tevent_get_trace_queue_callback(struct tevent_context *ev,
+				     tevent_trace_queue_callback_t *cb,
+				     void *p_private_data);
 
 #ifdef DOXYGEN
 /**

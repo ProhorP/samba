@@ -261,6 +261,7 @@ static bool ads_try_connect(ADS_STRUCT *ads, bool gc,
 	TALLOC_CTX *frame = talloc_stackframe();
 	bool ret = false;
 	char addr[INET6_ADDRSTRLEN];
+	ADS_STATUS status;
 
 	if (ss == NULL) {
 		TALLOC_FREE(frame);
@@ -291,12 +292,12 @@ static bool ads_try_connect(ADS_STRUCT *ads, bool gc,
 
 	/* Fill in the ads->config values */
 
-	SAFE_FREE(ads->config.realm);
-	SAFE_FREE(ads->config.bind_path);
-	SAFE_FREE(ads->config.ldap_server_name);
-	SAFE_FREE(ads->config.server_site_name);
-	SAFE_FREE(ads->config.client_site_name);
-	SAFE_FREE(ads->server.workgroup);
+	TALLOC_FREE(ads->config.realm);
+	TALLOC_FREE(ads->config.bind_path);
+	TALLOC_FREE(ads->config.ldap_server_name);
+	TALLOC_FREE(ads->config.server_site_name);
+	TALLOC_FREE(ads->config.client_site_name);
+	TALLOC_FREE(ads->server.workgroup);
 
 	if (!check_cldap_reply_required_flags(cldap_reply.server_type,
 					      ads->config.flags)) {
@@ -304,23 +305,57 @@ static bool ads_try_connect(ADS_STRUCT *ads, bool gc,
 		goto out;
 	}
 
-	ads->config.ldap_server_name   = SMB_STRDUP(cldap_reply.pdc_dns_name);
-	ads->config.realm              = SMB_STRDUP(cldap_reply.dns_domain);
-	if (!strupper_m(ads->config.realm)) {
+	ads->config.ldap_server_name = talloc_strdup(ads,
+						     cldap_reply.pdc_dns_name);
+	if (ads->config.ldap_server_name == NULL) {
+		DBG_WARNING("Out of memory\n");
 		ret = false;
 		goto out;
 	}
 
-	ads->config.bind_path          = ads_build_dn(ads->config.realm);
+	ads->config.realm = talloc_asprintf_strupper_m(ads,
+						       "%s",
+						       cldap_reply.dns_domain);
+	if (ads->config.realm == NULL) {
+		DBG_WARNING("Out of memory\n");
+		ret = false;
+		goto out;
+	}
+
+	status = ads_build_dn(ads->config.realm, ads, &ads->config.bind_path);
+	if (!ADS_ERR_OK(status)) {
+		DBG_DEBUG("Failed to build bind path: %s\n",
+			  ads_errstr(status));
+		ret = false;
+		goto out;
+	}
+
 	if (*cldap_reply.server_site) {
 		ads->config.server_site_name =
-			SMB_STRDUP(cldap_reply.server_site);
+			talloc_strdup(ads, cldap_reply.server_site);
+		if (ads->config.server_site_name == NULL) {
+			DBG_WARNING("Out of memory\n");
+			ret = false;
+			goto out;
+		}
 	}
+
 	if (*cldap_reply.client_site) {
 		ads->config.client_site_name =
-			SMB_STRDUP(cldap_reply.client_site);
+			talloc_strdup(ads, cldap_reply.client_site);
+		if (ads->config.client_site_name == NULL) {
+			DBG_WARNING("Out of memory\n");
+			ret = false;
+			goto out;
+		}
 	}
-	ads->server.workgroup          = SMB_STRDUP(cldap_reply.domain_name);
+
+	ads->server.workgroup = talloc_strdup(ads, cldap_reply.domain_name);
+	if (ads->server.workgroup == NULL) {
+		DBG_WARNING("Out of memory\n");
+		ret = false;
+		goto out;
+	}
 
 	ads->ldap.port = gc ? LDAP_GC_PORT : LDAP_PORT;
 	ads->ldap.ss = *ss;
@@ -630,8 +665,8 @@ ADS_STATUS ads_connect(ADS_STRUCT *ads)
 	 * to ads_find_dc() in the reuse case.
 	 *
 	 * If a caller wants a clean ADS_STRUCT they
-	 * will re-initialize by calling ads_init(), or
-	 * call ads_destroy() both of which ensures
+	 * will TALLOC_FREE it and allocate a new one
+	 * by calling ads_init(), which ensures
 	 * ads->ldap.ss is a properly zero'ed out valid IP
 	 * address.
 	 */
@@ -721,20 +756,31 @@ got_connection:
 	if (!ads->auth.user_name) {
 		/* Must use the userPrincipalName value here or sAMAccountName
 		   and not servicePrincipalName; found by Guenther Deschner */
-
-		if (asprintf(&ads->auth.user_name, "%s$", lp_netbios_name() ) == -1) {
-			DEBUG(0,("ads_connect: asprintf fail.\n"));
-			ads->auth.user_name = NULL;
+		ads->auth.user_name = talloc_asprintf(ads,
+						      "%s$",
+						      lp_netbios_name());
+		if (ads->auth.user_name == NULL) {
+			DBG_ERR("talloc_asprintf failed\n");
+			status = ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
+			goto out;
 		}
 	}
 
-	if (!ads->auth.realm) {
-		ads->auth.realm = SMB_STRDUP(ads->config.realm);
+	if (ads->auth.realm == NULL) {
+		ads->auth.realm = talloc_strdup(ads, ads->config.realm);
+		if (ads->auth.realm == NULL) {
+			status = ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
+			goto out;
+		}
 	}
 
 	if (!ads->auth.kdc_server) {
 		print_sockaddr(addr, sizeof(addr), &ads->ldap.ss);
-		ads->auth.kdc_server = SMB_STRDUP(addr);
+		ads->auth.kdc_server = talloc_strdup(ads, addr);
+		if (ads->auth.kdc_server == NULL) {
+			status = ADS_ERROR_NT(NT_STATUS_NO_MEMORY);
+			goto out;
+		}
 	}
 
 	/* If the caller() requested no LDAP bind, then we are done */
@@ -1756,7 +1802,9 @@ ADS_STATUS ads_del_dn(ADS_STRUCT *ads, char *del_dn)
  **/
 char *ads_ou_string(ADS_STRUCT *ads, const char *org_unit)
 {
+	ADS_STATUS status;
 	char *ret = NULL;
+	char *dn = NULL;
 
 	if (!org_unit || !*org_unit) {
 
@@ -1773,7 +1821,12 @@ char *ads_ou_string(ADS_STRUCT *ads, const char *org_unit)
 	/* jmcd: removed "\\" from the separation chars, because it is
 	   needed as an escape for chars like '#' which are valid in an
 	   OU name */
-	return ads_build_path(org_unit, "/", "ou=", 1);
+	status = ads_build_path(org_unit, "/", "ou=", 1, &dn);
+	if (!ADS_ERR_OK(status)) {
+		return NULL;
+	}
+
+	return dn;
 }
 
 /**
@@ -3286,12 +3339,8 @@ ADS_STATUS ads_current_time(ADS_STRUCT *ads)
 	ADS_STATUS status;
 	LDAPMessage *res;
 	char *timestr;
-	TALLOC_CTX *ctx;
+	TALLOC_CTX *tmp_ctx = talloc_stackframe();
 	ADS_STRUCT *ads_s = ads;
-
-	if (!(ctx = talloc_init("ads_current_time"))) {
-		return ADS_ERROR(LDAP_NO_MEMORY);
-	}
 
         /* establish a new ldap tcp session if necessary */
 
@@ -3310,7 +3359,8 @@ ADS_STATUS ads_current_time(ADS_STRUCT *ads)
 		 * through ads_find_dc() again we want to avoid repeating.
 		 */
 		if (is_zero_addr(&ads->ldap.ss)) {
-			ads_s = ads_init(ads->server.realm,
+			ads_s = ads_init(tmp_ctx,
+					 ads->server.realm,
 					 ads->server.workgroup,
 					 ads->server.ldap_server,
 					 ADS_SASL_PLAIN );
@@ -3337,7 +3387,7 @@ ADS_STATUS ads_current_time(ADS_STRUCT *ads)
 		goto done;
 	}
 
-	timestr = ads_pull_string(ads_s, ctx, res, "currentTime");
+	timestr = ads_pull_string(ads_s, tmp_ctx, res, "currentTime");
 	if (!timestr) {
 		ads_msgfree(ads_s, res);
 		status = ADS_ERROR(LDAP_NO_RESULTS_RETURNED);
@@ -3358,11 +3408,7 @@ ADS_STATUS ads_current_time(ADS_STRUCT *ads)
 	status = ADS_SUCCESS;
 
 done:
-	/* free any temporary ads connections */
-	if ( ads_s != ads ) {
-		ads_destroy( &ads_s );
-	}
-	talloc_destroy(ctx);
+	TALLOC_FREE(tmp_ctx);
 
 	return status;
 }
@@ -3372,6 +3418,7 @@ done:
 
 ADS_STATUS ads_domain_func_level(ADS_STRUCT *ads, uint32_t *val)
 {
+	TALLOC_CTX *tmp_ctx = talloc_stackframe();
 	const char *attrs[] = {"domainFunctionality", NULL};
 	ADS_STATUS status;
 	LDAPMessage *res;
@@ -3396,7 +3443,8 @@ ADS_STATUS ads_domain_func_level(ADS_STRUCT *ads, uint32_t *val)
 		 * through ads_find_dc() again we want to avoid repeating.
 		 */
 		if (is_zero_addr(&ads->ldap.ss)) {
-			ads_s = ads_init(ads->server.realm,
+			ads_s = ads_init(tmp_ctx,
+					 ads->server.realm,
 					 ads->server.workgroup,
 					 ads->server.ldap_server,
 					 ADS_SASL_PLAIN );
@@ -3405,6 +3453,13 @@ ADS_STATUS ads_domain_func_level(ADS_STRUCT *ads, uint32_t *val)
 				goto done;
 			}
 		}
+
+		/*
+		 * Reset ads->config.flags as it can contain the flags
+		 * returned by the previous CLDAP ping when reusing the struct.
+		 */
+		ads_s->config.flags = 0;
+
 		ads_s->auth.flags = ADS_AUTH_ANON_BIND;
 		status = ads_connect( ads_s );
 		if ( !ADS_ERR_OK(status))
@@ -3428,13 +3483,10 @@ ADS_STATUS ads_domain_func_level(ADS_STRUCT *ads, uint32_t *val)
 	DEBUG(3,("ads_domain_func_level: %d\n", *val));
 
 
-	ads_msgfree(ads, res);
+	ads_msgfree(ads_s, res);
 
 done:
-	/* free any temporary ads connections */
-	if ( ads_s != ads ) {
-		ads_destroy( &ads_s );
-	}
+	TALLOC_FREE(tmp_ctx);
 
 	return status;
 }

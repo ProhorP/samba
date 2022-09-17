@@ -1464,8 +1464,6 @@ server_lookup:
     if (priv->server)
         _kdc_free_ent(context, serverdb, priv->server);
     priv->server = NULL;
-    kdc_log(context, config, 6,
-       "tgs_build_reply: _kdc_db_fetch() with HDB_F_GET_SERVER");
     ret = _kdc_db_fetch(context, config, priv->server_princ,
                         HDB_F_GET_SERVER | HDB_F_DELAY_NEW_KEYS | flags,
 			NULL, &serverdb, &priv->server);

@@ -30,7 +30,6 @@ struct sdb_salt {
 };
 
 struct sdb_key {
-	unsigned int *mkvno;
 	krb5_keyblock key;
 	struct sdb_salt *salt;
 };
@@ -81,9 +80,12 @@ struct SDBFlags {
 };
 
 struct sdb_entry {
+	struct samba_kdc_entry *skdc_entry;
 	krb5_principal principal;
 	unsigned int kvno;
 	struct sdb_keys keys;
+	struct sdb_keys old_keys;
+	struct sdb_keys older_keys;
 	struct sdb_event created_by;
 	struct sdb_event *modified_by;
 	time_t *valid_start;
@@ -92,12 +94,6 @@ struct sdb_entry {
 	unsigned int *max_life;
 	unsigned int *max_renew;
 	struct SDBFlags flags;
-};
-
-struct sdb_entry_ex {
-	void *ctx;
-	struct sdb_entry entry;
-	void (*free_entry)(struct sdb_entry_ex *);
 };
 
 #define SDB_ERR_NOENTRY 36150275
@@ -130,8 +126,9 @@ struct sdb_entry_ex {
 /* This is not supported by HDB */
 #define SDB_F_FORCE_CANON	16384	/* force canonicalition */
 
-void sdb_free_entry(struct sdb_entry_ex *e);
-void free_sdb_entry(struct sdb_entry *s);
+void sdb_key_free(struct sdb_key *key);
+void sdb_keys_free(struct sdb_keys *keys);
+void sdb_entry_free(struct sdb_entry *e);
 struct SDBFlags int2SDBFlags(unsigned n);
 
 #endif /* _KDC_SDB_H_ */

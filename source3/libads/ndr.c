@@ -45,12 +45,13 @@ void ndr_print_ads_struct(struct ndr_print *ndr, const char *name, const struct 
 {
 	ndr_print_struct(ndr, name, "ads_struct");
 	ndr->depth++;
-	ndr_print_bool(ndr, "is_mine", r->is_mine);
 	ndr_print_struct(ndr, name, "server");
 	ndr->depth++;
 	ndr_print_string(ndr, "realm", r->server.realm);
 	ndr_print_string(ndr, "workgroup", r->server.workgroup);
 	ndr_print_string(ndr, "ldap_server", r->server.ldap_server);
+	ndr_print_bool(ndr, "gc", r->server.gc);
+	ndr_print_bool(ndr, "no_fallback", r->server.no_fallback);
 	ndr->depth--;
 	ndr_print_struct(ndr, name, "auth");
 	ndr->depth++;
@@ -64,6 +65,7 @@ void ndr_print_ads_struct(struct ndr_print *ndr, const char *name, const struct 
 	ndr_print_string(ndr, "kdc_server", r->auth.kdc_server);
 	ndr_print_ads_auth_flags(ndr, "flags", r->auth.flags);
 	ndr_print_uint32(ndr, "time_offset", r->auth.time_offset);
+	ndr_print_string(ndr, "ccache_name", r->auth.ccache_name);
 	ndr_print_time_t(ndr, "tgt_expire", r->auth.tgt_expire);
 	ndr_print_time_t(ndr, "tgs_expire", r->auth.tgs_expire);
 	ndr_print_time_t(ndr, "renewable", r->auth.renewable);

@@ -104,7 +104,7 @@ struct smbXcli_conn {
 
 		uint16_t mid;
 
-		struct smb_signing_state *signing;
+		struct smb1_signing_state *signing;
 		struct smb_trans_enc_state *trans_enc;
 
 		struct tevent_req *read_braw_req;
@@ -425,7 +425,7 @@ struct smbXcli_conn *smbXcli_conn_create(TALLOC_CTX *mem_ctx,
 	conn->smb1.mid = 1;
 
 	/* initialise signing */
-	conn->smb1.signing = smb_signing_init(conn,
+	conn->smb1.signing = smb1_signing_init(conn,
 					      conn->allow_signing,
 					      conn->desire_signing,
 					      conn->mandatory_signing);
@@ -790,7 +790,7 @@ bool smb1cli_conn_activate_signing(struct smbXcli_conn *conn,
 				   const DATA_BLOB user_session_key,
 				   const DATA_BLOB response)
 {
-	return smb_signing_activate(conn->smb1.signing,
+	return smb1_signing_activate(conn->smb1.signing,
 				    user_session_key,
 				    response);
 }
@@ -801,12 +801,12 @@ bool smb1cli_conn_check_signing(struct smbXcli_conn *conn,
 	const uint8_t *hdr = buf + NBT_HDR_SIZE;
 	size_t len = smb_len_nbt(buf);
 
-	return smb_signing_check_pdu(conn->smb1.signing, hdr, len, seqnum);
+	return smb1_signing_check_pdu(conn->smb1.signing, hdr, len, seqnum);
 }
 
 bool smb1cli_conn_signing_is_active(struct smbXcli_conn *conn)
 {
-	return smb_signing_is_active(conn->smb1.signing);
+	return smb1_signing_is_active(conn->smb1.signing);
 }
 
 void smb1cli_conn_set_encryption(struct smbXcli_conn *conn,
@@ -949,7 +949,7 @@ static NTSTATUS smbXcli_req_cancel_write_req(struct tevent_req *req)
 		 * pending, we're able to recover the signing
 		 * state.
 		 */
-		smb_signing_cancel_reply(conn->smb1.signing,
+		smb1_signing_cancel_reply(conn->smb1.signing,
 					 state->smb1.one_way_seqnum);
 		return NT_STATUS_OK;
 	}
@@ -1673,9 +1673,9 @@ static NTSTATUS smb1cli_conn_signv(struct smbXcli_conn *conn,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	*seqnum = smb_signing_next_seqnum(conn->smb1.signing,
+	*seqnum = smb1_signing_next_seqnum(conn->smb1.signing,
 					  one_way_seqnum);
-	status = smb_signing_sign_pdu(conn->smb1.signing,
+	status = smb1_signing_sign_pdu(conn->smb1.signing,
 				      buf,
 				      talloc_get_size(buf),
 				      *seqnum);
@@ -1761,7 +1761,7 @@ static NTSTATUS smb1cli_req_writev_submit(struct tevent_req *req,
 	}
 
 	/*
-	 * If we supported multiple encrytion contexts
+	 * If we supported multiple encryption contexts
 	 * here we'd look up based on tid.
 	 */
 	if (common_encryption_on(state->conn->smb1.trans_enc)) {
@@ -2228,7 +2228,7 @@ static NTSTATUS smb1cli_conn_dispatch_incoming(struct smbXcli_conn *conn,
 	}
 
 	/*
-	 * If we supported multiple encrytion contexts
+	 * If we supported multiple encryption contexts
 	 * here we'd look up based on tid.
 	 */
 	if (common_encryption_on(conn->smb1.trans_enc)
@@ -2295,7 +2295,7 @@ static NTSTATUS smb1cli_conn_dispatch_incoming(struct smbXcli_conn *conn,
 	state = tevent_req_data(req, struct smbXcli_req_state);
 
 	if (!oplock_break /* oplock breaks are not signed */
-	    && !smb_signing_check_pdu(conn->smb1.signing,
+	    && !smb1_signing_check_pdu(conn->smb1.signing,
 				      inhdr, len, state->smb1.seqnum+1)) {
 		DEBUG(10, ("cli_check_sign_mac failed\n"));
 		return NT_STATUS_ACCESS_DENIED;
@@ -3996,12 +3996,12 @@ static NTSTATUS smb2cli_conn_dispatch_incoming(struct smbXcli_conn *conn,
 			 * to the caller.
 			 */
 			if (signing_key) {
-				int cmp;
+				bool cmp;
 
-				cmp = memcmp(inhdr+SMB2_HDR_SIGNATURE,
-					     state->smb2.hdr+SMB2_HDR_SIGNATURE,
-					     16);
-				if (cmp == 0) {
+				cmp = mem_equal_const_time(inhdr+SMB2_HDR_SIGNATURE,
+							   state->smb2.hdr+SMB2_HDR_SIGNATURE,
+							   16);
+				if (cmp) {
 					state->smb2.signing_skipped = true;
 					signing_key = NULL;
 				}
@@ -4663,7 +4663,7 @@ static void smbXcli_negprot_smb1_done(struct tevent_req *subreq)
 			server_mandatory = true;
 		}
 
-		ok = smb_signing_set_negotiated(conn->smb1.signing,
+		ok = smb1_signing_set_negotiated(conn->smb1.signing,
 						server_allowed,
 						server_mandatory);
 		if (!ok) {
@@ -5090,6 +5090,21 @@ static void smbXcli_negprot_smb2_done(struct tevent_req *subreq)
 
 	security_offset = SVAL(body, 56);
 	security_length = SVAL(body, 58);
+
+	if (security_offset == 0) {
+		/*
+		 * Azure sends security_offset = 0 and security_length = 0
+		 *
+		 * We just set security_offset to the expected value
+		 * in order to allow the further logic to work
+		 * as before.
+		 */
+		if (security_length != 0) {
+			tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
+		}
+		security_offset = SMB2_HDR_BODY + iov[1].iov_len;
+	}
 
 	if (security_offset != SMB2_HDR_BODY + iov[1].iov_len) {
 		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
@@ -6146,7 +6161,7 @@ NTSTATUS smb1cli_session_protect_session_key(struct smbXcli_session *session)
 		return NT_STATUS_INVALID_PARAMETER_MIX;
 	}
 
-	status = smb_key_derivation(session->smb1.application_key.data,
+	status = smb1_key_derivation(session->smb1.application_key.data,
 				    session->smb1.application_key.length,
 				    session->smb1.application_key.data);
 	if (!NT_STATUS_IS_OK(status)) {

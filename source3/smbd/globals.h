@@ -247,6 +247,7 @@ NTSTATUS reply_smb20ff(struct smb_request *req, uint16_t choice);
 NTSTATUS smbd_smb2_process_negprot(struct smbXsrv_connection *xconn,
 			       uint64_t expected_seq_low,
 			       const uint8_t *inpdu, size_t size);
+NTSTATUS smb2_multi_protocol_reply_negprot(struct smb_request *req);
 
 DATA_BLOB smbd_smb2_generate_outbody(struct smbd_smb2_request *req, size_t size);
 
@@ -385,6 +386,7 @@ struct smbXsrv_connection {
 		struct smbd_smb2_send_queue *queue;
 	} ack;
 
+#if defined(WITH_SMB1SERVER)
 	struct {
 		struct {
 			/*
@@ -439,7 +441,7 @@ struct smbXsrv_connection {
 			 */
 			int max_send;
 		} sessions;
-		struct smb_signing_state *signing_state;
+		struct smb1_signing_state *signing_state;
 
 		struct {
 			uint16_t client_major;
@@ -450,6 +452,7 @@ struct smbXsrv_connection {
 
 		struct msg_state *msg_state;
 	} smb1;
+#endif
 	struct {
 		struct smbd_smb2_request_read_state {
 			struct smbd_smb2_request *req;
@@ -532,6 +535,7 @@ struct smbXsrv_connection {
 			uint32_t max_write;
 			uint16_t sign_algo;
 			uint16_t cipher;
+			bool posix_extensions_negotiated;
 		} server;
 
 		struct smbXsrv_preauth preauth;
@@ -541,6 +545,8 @@ struct smbXsrv_connection {
 		struct {
 			uint8_t read_body_padding;
 		} smbtorture;
+
+		bool signing_mandatory;
 	} smb2;
 };
 
@@ -896,9 +902,7 @@ struct smbd_server_connection {
 		struct kernel_oplocks *kernel_ops;
 	} oplocks;
 
-	struct {
-		struct notify_mid_map *notify_mid_maps;
-	} smb1;
+	struct notify_mid_map *notify_mid_maps;
 
 	struct pthreadpool_tevent *pool;
 
@@ -908,5 +912,19 @@ struct smbd_server_connection {
 extern struct smbXsrv_client *global_smbXsrv_client;
 
 void smbd_init_globals(void);
+
+/****************************************************************************
+ The buffer we keep around whilst an aio request is in process.
+*****************************************************************************/
+
+struct aio_extra {
+	files_struct *fsp;
+	struct smb_request *smbreq;
+	DATA_BLOB outbuf;
+	struct lock_struct lock;
+	size_t nbyte;
+	off_t offset;
+	bool write_through;
+};
 
 #endif /* _SOURCE3_SMBD_GLOBALS_H_ */

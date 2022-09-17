@@ -529,10 +529,10 @@ static int acl_sDRightsEffective(struct ldb_module *module,
 
 static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 				  struct ldb_context *ldb,
-				  const char *spn_value,
+				  const struct ldb_val *spn_value,
 				  uint32_t userAccountControl,
-				  const char *samAccountName,
-				  const char *dnsHostName,
+				  const struct ldb_val *samAccountName,
+				  const struct ldb_val *dnsHostName,
 				  const char *netbios_name,
 				  const char *ntds_guid)
 {
@@ -543,6 +543,8 @@ static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 	char *instanceName;
 	char *serviceType;
 	char *serviceName;
+	const char *spn_value_str = NULL;
+	size_t account_name_len;
 	const char *forest_name = samdb_forest_name(ldb, mem_ctx);
 	const char *base_domain = samdb_default_domain_name(ldb, mem_ctx);
 	struct loadparm_context *lp_ctx = talloc_get_type(ldb_get_opaque(ldb, "loadparm"),
@@ -550,7 +552,18 @@ static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 	bool is_dc = (userAccountControl & UF_SERVER_TRUST_ACCOUNT) ||
 		(userAccountControl & UF_PARTIAL_SECRETS_ACCOUNT);
 
-	if (strcasecmp_m(spn_value, samAccountName) == 0) {
+	spn_value_str = talloc_strndup(mem_ctx,
+				       (const char *)spn_value->data,
+				       spn_value->length);
+	if (spn_value_str == NULL) {
+		return ldb_oom(ldb);
+	}
+
+	if (spn_value->length == samAccountName->length &&
+	    strncasecmp((const char *)spn_value->data,
+			(const char *)samAccountName->data,
+			spn_value->length) == 0)
+	{
 		/* MacOS X sets this value, and setting an SPN of your
 		 * own samAccountName is both pointless and safe */
 		return LDB_SUCCESS;
@@ -564,7 +577,7 @@ static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 				 "Could not initialize kerberos context.");
 	}
 
-	ret = krb5_parse_name(krb_ctx, spn_value, &principal);
+	ret = krb5_parse_name(krb_ctx, spn_value_str, &principal);
 	if (ret) {
 		krb5_free_context(krb_ctx);
 		return LDB_ERR_CONSTRAINT_VIOLATION;
@@ -616,15 +629,30 @@ static int acl_validate_spn_value(TALLOC_CTX *mem_ctx,
 			}
 		}
 	}
+
+	account_name_len = samAccountName->length;
+	if (account_name_len &&
+	    samAccountName->data[account_name_len - 1] == '$')
+	{
+		/* Account for the '$' character. */
+		--account_name_len;
+	}
+
 	/* instanceName can be samAccountName without $ or dnsHostName
 	 * or "ntds_guid._msdcs.forest_domain for DC objects */
-	if (strlen(instanceName) == (strlen(samAccountName) - 1)
-	    && strncasecmp(instanceName, samAccountName,
-			   strlen(samAccountName) - 1) == 0) {
+	if (strlen(instanceName) == account_name_len
+	    && strncasecmp(instanceName,
+			   (const char *)samAccountName->data,
+			   account_name_len) == 0)
+	{
 		goto success;
 	}
 	if ((dnsHostName != NULL) &&
-	    (strcasecmp(instanceName, dnsHostName) == 0)) {
+	    strlen(instanceName) == dnsHostName->length &&
+	    (strncasecmp(instanceName,
+			 (const char *)dnsHostName->data,
+			 dnsHostName->length) == 0))
+	{
 		goto success;
 	}
 	if (is_dc) {
@@ -642,10 +670,13 @@ fail:
 	krb5_free_context(krb_ctx);
 	ldb_debug_set(ldb, LDB_DEBUG_WARNING,
 		      "acl: spn validation failed for "
-		      "spn[%s] uac[0x%x] account[%s] hostname[%s] "
+		      "spn[%.*s] uac[0x%x] account[%.*s] hostname[%.*s] "
 		      "nbname[%s] ntds[%s] forest[%s] domain[%s]\n",
-		      spn_value, (unsigned)userAccountControl,
-		      samAccountName, dnsHostName,
+		      (int)spn_value->length, spn_value->data,
+		      (unsigned)userAccountControl,
+		      (int)samAccountName->length, samAccountName->data,
+		      dnsHostName != NULL ? (int)dnsHostName->length : 0,
+		      dnsHostName != NULL ? (const char *)dnsHostName->data : "",
 		      netbios_name, ntds_guid,
 		      forest_name, base_domain);
 	return LDB_ERR_CONSTRAINT_VIOLATION;
@@ -667,7 +698,8 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 			 struct security_descriptor *sd,
 			 struct dom_sid *sid,
 			 const struct dsdb_attribute *attr,
-			 const struct dsdb_class *objectclass)
+			 const struct dsdb_class *objectclass,
+			 const struct ldb_control *implicit_validated_write_control)
 {
 	int ret;
 	unsigned int i;
@@ -677,9 +709,9 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	struct ldb_result *netbios_res;
 	struct ldb_dn *partitions_dn = samdb_partitions_dn(ldb, tmp_ctx);
 	uint32_t userAccountControl;
-	const char *samAccountName;
-	const char *dnsHostName;
 	const char *netbios_name;
+	const struct ldb_val *dns_host_name_val = NULL;
+	const struct ldb_val *sam_account_name_val = NULL;
 	struct GUID ntds;
 	char *ntds_guid = NULL;
 
@@ -694,34 +726,44 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 		NULL
 	};
 
-	/* if we have wp, we can do whatever we like */
-	if (acl_check_access_on_attribute(module,
-					  tmp_ctx,
-					  sd,
-					  sid,
-					  SEC_ADS_WRITE_PROP,
-					  attr, objectclass) == LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
-		return LDB_SUCCESS;
-	}
+	if (implicit_validated_write_control != NULL) {
+		/*
+		 * The validated write control dispenses with ACL
+		 * checks. We act as if we have an implicit Self Write
+		 * privilege, but, assuming we don't have Write
+		 * Property, still proceed with further validation
+		 * checks.
+		 */
+	} else {
+		/* if we have wp, we can do whatever we like */
+		if (acl_check_access_on_attribute(module,
+						  tmp_ctx,
+						  sd,
+						  sid,
+						  SEC_ADS_WRITE_PROP,
+						  attr, objectclass) == LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return LDB_SUCCESS;
+		}
 
-	ret = acl_check_extended_right(tmp_ctx,
-				       module,
-				       req,
-				       objectclass,
-				       sd,
-				       acl_user_token(module),
-				       GUID_DRS_VALIDATE_SPN,
-				       SEC_ADS_SELF_WRITE,
-				       sid);
+		ret = acl_check_extended_right(tmp_ctx,
+					       module,
+					       req,
+					       objectclass,
+					       sd,
+					       acl_user_token(module),
+					       GUID_DRS_VALIDATE_SPN,
+					       SEC_ADS_SELF_WRITE,
+					       sid);
 
-	if (ret != LDB_SUCCESS) {
-		dsdb_acl_debug(sd, acl_user_token(module),
-			       req->op.mod.message->dn,
-			       true,
-			       10);
-		talloc_free(tmp_ctx);
-		return ret;
+		if (ret != LDB_SUCCESS) {
+			dsdb_acl_debug(sd, acl_user_token(module),
+				       req->op.mod.message->dn,
+				       true,
+				       10);
+			talloc_free(tmp_ctx);
+			return ret;
+		}
 	}
 
 	/*
@@ -754,9 +796,31 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 		return ret;
 	}
 
+	dns_host_name_val = ldb_msg_find_ldb_val(acl_res->msgs[0], "dNSHostName");
+
+	ret = dsdb_msg_get_single_value(req->op.mod.message,
+					"dNSHostName",
+					dns_host_name_val,
+					&dns_host_name_val,
+					req->operation);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
 	userAccountControl = ldb_msg_find_attr_as_uint(acl_res->msgs[0], "userAccountControl", 0);
-	dnsHostName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "dnsHostName", NULL);
-	samAccountName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL);
+
+	sam_account_name_val = ldb_msg_find_ldb_val(acl_res->msgs[0], "sAMAccountName");
+
+	ret = dsdb_msg_get_single_value(req->op.mod.message,
+					"sAMAccountName",
+					sam_account_name_val,
+					&sam_account_name_val,
+					req->operation);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
 
 	ret = dsdb_module_search(module, tmp_ctx,
 				 &netbios_res, partitions_dn,
@@ -787,10 +851,10 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	for (i=0; i < el->num_values; i++) {
 		ret = acl_validate_spn_value(tmp_ctx,
 					     ldb,
-					     (char *)el->values[i].data,
+					     &el->values[i],
 					     userAccountControl,
-					     samAccountName,
-					     dnsHostName,
+					     sam_account_name_val,
+					     dns_host_name_val,
 					     netbios_name,
 					     ntds_guid);
 		if (ret != LDB_SUCCESS) {
@@ -800,6 +864,288 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	}
 	talloc_free(tmp_ctx);
 	return LDB_SUCCESS;
+}
+
+static int acl_check_dns_host_name(TALLOC_CTX *mem_ctx,
+				   struct ldb_module *module,
+				   struct ldb_request *req,
+				   const struct ldb_message_element *el,
+				   struct security_descriptor *sd,
+				   struct dom_sid *sid,
+				   const struct dsdb_attribute *attr,
+				   const struct dsdb_class *objectclass,
+				   const struct ldb_control *implicit_validated_write_control)
+{
+	int ret;
+	unsigned i;
+	TALLOC_CTX *tmp_ctx = NULL;
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	const struct dsdb_schema *schema = NULL;
+	const struct ldb_message_element *allowed_suffixes = NULL;
+	struct ldb_result *nc_res = NULL;
+	struct ldb_dn *nc_root = NULL;
+	const char *nc_dns_name = NULL;
+	const char *dnsHostName_str = NULL;
+	size_t dns_host_name_len;
+	size_t account_name_len;
+	const struct ldb_message *msg = NULL;
+	const struct ldb_message *search_res = NULL;
+	const struct ldb_val *samAccountName = NULL;
+	const struct ldb_val *dnsHostName = NULL;
+	const struct dsdb_class *computer_objectclass = NULL;
+	bool is_subclass;
+
+	static const char *nc_attrs[] = {
+		"msDS-AllowedDNSSuffixes",
+		NULL
+	};
+
+	if (el->num_values == 0) {
+		return LDB_SUCCESS;
+	}
+	dnsHostName = &el->values[0];
+
+	tmp_ctx = talloc_new(mem_ctx);
+	if (tmp_ctx == NULL) {
+		return ldb_oom(ldb);
+	}
+
+	if (implicit_validated_write_control != NULL) {
+		/*
+		 * The validated write control dispenses with ACL
+		 * checks. We act as if we have an implicit Self Write
+		 * privilege, but, assuming we don't have Write
+		 * Property, still proceed with further validation
+		 * checks.
+		 */
+	} else {
+		/* if we have wp, we can do whatever we like */
+		ret = acl_check_access_on_attribute(module,
+						    tmp_ctx,
+						    sd,
+						    sid,
+						    SEC_ADS_WRITE_PROP,
+						    attr, objectclass);
+		if (ret == LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return LDB_SUCCESS;
+		}
+
+		ret = acl_check_extended_right(tmp_ctx,
+					       module,
+					       req,
+					       objectclass,
+					       sd,
+					       acl_user_token(module),
+					       GUID_DRS_DNS_HOST_NAME,
+					       SEC_ADS_SELF_WRITE,
+					       sid);
+
+		if (ret != LDB_SUCCESS) {
+			dsdb_acl_debug(sd, acl_user_token(module),
+				       req->op.mod.message->dn,
+				       true,
+				       10);
+			talloc_free(tmp_ctx);
+			return ret;
+		}
+	}
+
+	/*
+	 * If we have "validated write dnshostname", allow delete of
+	 * any existing value (this keeps constrained delete to the
+	 * same rules as unconstrained)
+	 */
+	if (req->operation == LDB_MODIFY) {
+		struct ldb_result *acl_res = NULL;
+
+		static const char *acl_attrs[] = {
+			"sAMAccountName",
+			NULL
+		};
+
+		msg = req->op.mod.message;
+
+		/*
+		 * If not add or replace (eg delete),
+		 * return success
+		 */
+		if ((el->flags
+		     & (LDB_FLAG_MOD_ADD|LDB_FLAG_MOD_REPLACE)) == 0)
+		{
+			talloc_free(tmp_ctx);
+			return LDB_SUCCESS;
+		}
+
+		ret = dsdb_module_search_dn(module, tmp_ctx,
+					    &acl_res, msg->dn,
+					    acl_attrs,
+					    DSDB_FLAG_NEXT_MODULE |
+					    DSDB_FLAG_AS_SYSTEM |
+					    DSDB_SEARCH_SHOW_RECYCLED,
+					    req);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(tmp_ctx);
+			return ret;
+		}
+
+		search_res = acl_res->msgs[0];
+	} else if (req->operation == LDB_ADD) {
+		msg = req->op.add.message;
+		search_res = msg;
+	} else {
+		talloc_free(tmp_ctx);
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
+        /* Check if the account has objectclass 'computer' or 'server'. */
+
+	schema = dsdb_get_schema(ldb, req);
+	if (schema == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	computer_objectclass = dsdb_class_by_lDAPDisplayName(schema, "computer");
+	if (computer_objectclass == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	is_subclass = dsdb_is_subclass_of(schema, objectclass, computer_objectclass);
+	if (!is_subclass) {
+		/* The account is not a computer -- check if it's a server. */
+
+		const struct dsdb_class *server_objectclass = NULL;
+
+		server_objectclass = dsdb_class_by_lDAPDisplayName(schema, "server");
+		if (server_objectclass == NULL) {
+			talloc_free(tmp_ctx);
+			return ldb_operr(ldb);
+		}
+
+		is_subclass = dsdb_is_subclass_of(schema, objectclass, server_objectclass);
+		if (!is_subclass) {
+			/* Not a computer or server, so no need to validate. */
+			talloc_free(tmp_ctx);
+			return LDB_SUCCESS;
+		}
+	}
+
+	samAccountName = ldb_msg_find_ldb_val(search_res, "sAMAccountName");
+
+	ret = dsdb_msg_get_single_value(msg,
+					"sAMAccountName",
+					samAccountName,
+					&samAccountName,
+					req->operation);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	account_name_len = samAccountName->length;
+	if (account_name_len && samAccountName->data[account_name_len - 1] == '$') {
+		/* Account for the '$' character. */
+		--account_name_len;
+	}
+
+	dnsHostName_str = (const char *)dnsHostName->data;
+	dns_host_name_len = dnsHostName->length;
+
+	/* Check that sAMAccountName matches the new dNSHostName. */
+
+	if (dns_host_name_len < account_name_len) {
+		goto fail;
+	}
+	if (strncasecmp(dnsHostName_str,
+			(const char *)samAccountName->data,
+			account_name_len) != 0)
+	{
+		goto fail;
+	}
+
+	dnsHostName_str += account_name_len;
+	dns_host_name_len -= account_name_len;
+
+	/* Check the '.' character */
+
+	if (dns_host_name_len == 0 || *dnsHostName_str != '.') {
+		goto fail;
+	}
+
+	++dnsHostName_str;
+	--dns_host_name_len;
+
+	/* Now we check the suffix. */
+
+	ret = dsdb_find_nc_root(ldb,
+				tmp_ctx,
+				search_res->dn,
+				&nc_root);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	nc_dns_name = samdb_dn_to_dns_domain(tmp_ctx, nc_root);
+	if (nc_dns_name == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	if (strlen(nc_dns_name) == dns_host_name_len &&
+	    strncasecmp(dnsHostName_str,
+			nc_dns_name,
+			dns_host_name_len) == 0)
+	{
+		/* It matches -- success. */
+		talloc_free(tmp_ctx);
+		return LDB_SUCCESS;
+	}
+
+	/* We didn't get a match, so now try msDS-AllowedDNSSuffixes. */
+
+	ret = dsdb_module_search_dn(module, tmp_ctx,
+				    &nc_res, nc_root,
+				    nc_attrs,
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
+				    DSDB_SEARCH_SHOW_RECYCLED,
+				    req);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	allowed_suffixes = ldb_msg_find_element(nc_res->msgs[0],
+						"msDS-AllowedDNSSuffixes");
+	if (allowed_suffixes == NULL) {
+		goto fail;
+	}
+
+	for (i = 0; i < allowed_suffixes->num_values; ++i) {
+		const struct ldb_val *suffix = &allowed_suffixes->values[i];
+
+		if (suffix->length == dns_host_name_len &&
+		    strncasecmp(dnsHostName_str,
+				(const char *)suffix->data,
+				dns_host_name_len) == 0)
+		{
+			/* It matches -- success. */
+			talloc_free(tmp_ctx);
+			return LDB_SUCCESS;
+		}
+	}
+
+fail:
+	ldb_debug_set(ldb, LDB_DEBUG_WARNING,
+		      "acl: hostname validation failed for "
+		      "hostname[%.*s] account[%.*s]\n",
+		      (int)dnsHostName->length, dnsHostName->data,
+		      (int)samAccountName->length, samAccountName->data);
+	talloc_free(tmp_ctx);
+	return LDB_ERR_CONSTRAINT_VIOLATION;
 }
 
 static int acl_add(struct ldb_module *module, struct ldb_request *req)
@@ -1043,12 +1389,12 @@ static int acl_check_password_rights(
 	 */
 	*control_for_response = pav;
 
-	c = ldb_request_get_control(req, DSDB_CONTROL_PASSWORD_CHANGE_OID);
+	c = ldb_request_get_control(req, DSDB_CONTROL_PASSWORD_CHANGE_OLD_PW_CHECKED_OID);
 	if (c != NULL) {
 		pav->pwd_reset = false;
 
 		/*
-		 * The "DSDB_CONTROL_PASSWORD_CHANGE_OID" control means that we
+		 * The "DSDB_CONTROL_PASSWORD_CHANGE_OLD_PW_CHECKED_OID" control means that we
 		 * have a user password change and not a set as the message
 		 * looks like. In it's value blob it contains the NT and/or LM
 		 * hash of the old password specified by the user.  This control
@@ -1076,7 +1422,7 @@ static int acl_check_password_rights(
 
 		/*
 		 * The "DSDB_CONTROL_PASSWORD_HASH_VALUES_OID" control, without
-		 * "DSDB_CONTROL_PASSWORD_CHANGE_OID" control means that we
+		 * "DSDB_CONTROL_PASSWORD_CHANGE_OLD_PW_CHECKED_OID" control means that we
 		 * have a force password set.
 		 * This control is used by the SAMR/NETLOGON/LSA password
 		 * reset mechanisms.
@@ -1350,6 +1696,7 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 	struct dom_sid *sid = NULL;
 	struct ldb_control *as_system;
 	struct ldb_control *is_undelete;
+	struct ldb_control *implicit_validated_write_control = NULL;
 	bool userPassword;
 	bool password_rights_checked = false;
 	TALLOC_CTX *tmp_ctx;
@@ -1375,6 +1722,12 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 	}
 
 	is_undelete = ldb_request_get_control(req, DSDB_CONTROL_RESTORE_TOMBSTONE_OID);
+
+	implicit_validated_write_control = ldb_request_get_control(
+		req, DSDB_CONTROL_FORCE_ALLOW_VALIDATED_DNS_HOSTNAME_SPN_WRITE_OID);
+	if (implicit_validated_write_control != NULL) {
+		implicit_validated_write_control->critical = 0;
+	}
 
 	/* Don't print this debug statement if elements[0].name is going to be NULL */
 	if (msg->num_elements > 0) {
@@ -1532,7 +1885,21 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 					    sd,
 					    sid,
 					    attr,
-					    objectclass);
+					    objectclass,
+					    implicit_validated_write_control);
+			if (ret != LDB_SUCCESS) {
+				goto fail;
+			}
+		} else if (ldb_attr_cmp("dnsHostName", el->name) == 0) {
+			ret = acl_check_dns_host_name(tmp_ctx,
+						      module,
+						      req,
+						      el,
+						      sd,
+						      sid,
+						      attr,
+						      objectclass,
+						      implicit_validated_write_control);
 			if (ret != LDB_SUCCESS) {
 				goto fail;
 			}
@@ -1543,6 +1910,9 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 			 * distinguishedName is removed by the
 			 * tombstone_reanimate module
 			 */
+			continue;
+		} else if (implicit_validated_write_control != NULL) {
+			/* Allow the update. */
 			continue;
 		} else {
 			ret = acl_check_access_on_attribute(module,

@@ -99,7 +99,7 @@ bool secrets_clear_domain_protection(const char *domain)
 {
 	bool ret;
 	void *protection = secrets_fetch(protect_ids_keystr(domain), NULL);
-	
+
 	if (protection) {
 		SAFE_FREE(protection);
 		ret = secrets_delete_entry(protect_ids_keystr(domain));
@@ -462,7 +462,7 @@ bool secrets_delete_domain_sid(const char *domain)
 /************************************************************************
  Set the machine trust account password, the old pw and last change
  time, domain SID and salting principals based on values passed in
- (added to supprt the secrets_tdb_sync module on secrets.ldb)
+ (added to support the secrets_tdb_sync module on secrets.ldb)
 ************************************************************************/
 
 bool secrets_store_machine_pw_sync(const char *pass, const char *oldpass, const char *domain,
@@ -510,7 +510,7 @@ bool secrets_store_machine_pw_sync(const char *pass, const char *oldpass, const 
 		}
 	} else {
 		SIVAL(&sec_channel_bytes, 0, secure_channel_type);
-		ret = secrets_store(machine_sec_channel_type_keystr(domain), 
+		ret = secrets_store(machine_sec_channel_type_keystr(domain),
 				    &sec_channel_bytes, sizeof(sec_channel_bytes));
 		if (!ret) {
 			TALLOC_FREE(frame);
@@ -778,8 +778,7 @@ void secrets_debug_domain_info(int lvl, const struct secrets_domain_info1 *info1
 
 	sdib.info.info1 = discard_const_p(struct secrets_domain_info1, info1);
 
-	ndr_print_debug((ndr_print_fn_t)ndr_print_secrets_domain_infoB,
-			name, &sdib);
+	NDR_PRINT_DEBUG_LEVEL(lvl, secrets_domain_infoB, &sdib);
 }
 
 char *secrets_domain_info_string(TALLOC_CTX *mem_ctx, const struct secrets_domain_info1 *info1,
@@ -1778,7 +1777,7 @@ static NTSTATUS secrets_check_password_change(const struct secrets_domain_info1 
 	struct secrets_domain_info1_change *sn = NULL;
 	struct secrets_domain_info1_change *cn = NULL;
 	NTSTATUS status;
-	int cmp;
+	bool cmp;
 
 	if (cookie->next_change == NULL) {
 		DBG_ERR("cookie->next_change == NULL for %s.\n", domain);
@@ -1873,20 +1872,20 @@ static NTSTATUS secrets_check_password_change(const struct secrets_domain_info1 
 		return NT_STATUS_NETWORK_CREDENTIAL_CONFLICT;
 	}
 
-	cmp = memcmp(sn->password->nt_hash.hash,
-		     cn->password->nt_hash.hash,
-		     16);
-	if (cmp != 0) {
+	cmp = mem_equal_const_time(sn->password->nt_hash.hash,
+				   cn->password->nt_hash.hash,
+				   16);
+	if (!cmp) {
 		DBG_ERR("next password.nt_hash differs for %s.\n",
 			domain);
 		TALLOC_FREE(stored);
 		return NT_STATUS_NETWORK_CREDENTIAL_CONFLICT;
 	}
 
-	cmp = memcmp(stored->password->nt_hash.hash,
-		     cookie->password->nt_hash.hash,
-		     16);
-	if (cmp != 0) {
+	cmp = mem_equal_const_time(stored->password->nt_hash.hash,
+				   cookie->password->nt_hash.hash,
+				   16);
+	if (!cmp) {
 		DBG_ERR("password.nt_hash differs for %s.\n",
 			domain);
 		TALLOC_FREE(stored);
