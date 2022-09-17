@@ -97,6 +97,7 @@ Source12: ctdb.init
 Source13: samba.limits
 Source20: samba.init
 Source21: smbusers
+Source22: smb.conf.example
 
 Source200: README.dc
 Source201: README.downgrade
@@ -971,6 +972,7 @@ mkdir -p %buildroot/lib/tmpfiles.d
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
 install -m644 %SOURCE9 %buildroot%_sysconfdir/samba/smb.conf
+install -m644 %SOURCE22 %buildroot%_sysconfdir/samba/smb.conf.example
 install -m644 %SOURCE11 %buildroot%_sysconfdir/security
 install -m644 %SOURCE6 %buildroot%_sysconfdir/pam.d/samba
 echo 127.0.0.1 localhost > %buildroot%_sysconfdir/samba/lmhosts
@@ -1348,6 +1350,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %files common-client
 %attr(755,root,root) %dir %_sysconfdir/samba
 %config(noreplace) %_sysconfdir/samba/smb.conf
+%config %_sysconfdir/samba/smb.conf.example
 %config(noreplace) %_sysconfdir/samba/lmhosts
 
 %if_with doc
