@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.15.9
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1937,6 +1937,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Sep 23 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.9-alt3
+- Add support (Heimdal only) of "ignore requester sid" global option for the
+  correct operation of trust relationships with oldest versions of MS AD without
+  KB5008380 Authentication updates (CVE-2021-42287).
+
 * Fri Aug 19 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.15.9-alt2
 - Add support build with quotas explicitly.
 - Update to latest bugfixes of stable release of Samba 4.15:
