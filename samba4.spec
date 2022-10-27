@@ -97,6 +97,7 @@ Source12: ctdb.init
 Source13: samba.limits
 Source20: samba.init
 Source21: smbusers
+Source22: smb.conf.example
 
 Source200: README.dc
 Source201: README.downgrade
@@ -949,7 +950,7 @@ mkdir -p %buildroot/%_lib/security
 mkdir -p %buildroot/var/lib/samba
 mkdir -p %buildroot/var/lib/ctdb
 mkdir -p %buildroot%_localstatedir/cache/samba
-mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol}
+mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol,drivers}
 mkdir -p %buildroot/var/log/samba/old
 mkdir -p %buildroot/var/spool/samba
 mkdir -p %buildroot%_samba_piddir/winbindd
@@ -971,6 +972,7 @@ mkdir -p %buildroot/lib/tmpfiles.d
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
 install -m644 %SOURCE9 %buildroot%_sysconfdir/samba/smb.conf
+install -m644 %SOURCE22 %buildroot%_sysconfdir/samba/smb.conf.example
 install -m644 %SOURCE11 %buildroot%_sysconfdir/security
 install -m644 %SOURCE6 %buildroot%_sysconfdir/pam.d/samba
 echo 127.0.0.1 localhost > %buildroot%_sysconfdir/samba/lmhosts
@@ -1111,6 +1113,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %preun_service smb
 %preun_service nmb
 
+%pre common
+%_sbindir/groupadd -f -r printadmin >/dev/null 2>&1 || :
+
 %if_with dc
 %post dc
 %post_service samba
@@ -1178,6 +1183,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %dir %_samba_mod_libdir/auth
 %_samba_mod_libdir/auth/unix.so
+
+%attr(775,root,printadmin) %dir /var/lib/samba/drivers
 
 %if_with dc
 %files -n admx-samba
@@ -1348,6 +1355,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %files common-client
 %attr(755,root,root) %dir %_sysconfdir/samba
 %config(noreplace) %_sysconfdir/samba/smb.conf
+%_sysconfdir/samba/smb.conf.example
 %config(noreplace) %_sysconfdir/samba/lmhosts
 
 %if_with doc
