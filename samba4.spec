@@ -98,6 +98,8 @@ Source13: samba.limits
 Source20: samba.init
 Source21: smbusers
 Source22: smb.conf.example
+Source23: usershares.conf
+Source24: smb-conf-usershares.control
 
 Source200: README.dc
 Source201: README.downgrade
@@ -583,6 +585,18 @@ Obsoletes: %dcname-test < 4.10
 %rname-test provides testing tools for both the server and client
 packages of Samba.
 
+%package usershares
+Summary: Provides support for non-root user shares
+Group: System/Servers
+PreReq: control
+Requires: %name = %version-%release
+Requires: %name-common-tools = %version-%release
+
+%description usershares
+Installing this package will provide a configuration file, group and
+directories to support non-root user shares. You can configure them
+as a user using the `net usershare` command.
+
 %package winbind-common
 Summary: Files used by MIT and Heimdal Winbind servers
 Group: System/Servers
@@ -950,7 +964,7 @@ mkdir -p %buildroot/%_lib/security
 mkdir -p %buildroot/var/lib/samba
 mkdir -p %buildroot/var/lib/ctdb
 mkdir -p %buildroot%_localstatedir/cache/samba
-mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol,drivers}
+mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol,drivers,usershares}
 mkdir -p %buildroot/var/log/samba/old
 mkdir -p %buildroot/var/spool/samba
 mkdir -p %buildroot%_samba_piddir/winbindd
@@ -973,12 +987,14 @@ mkdir -p %buildroot/lib/tmpfiles.d
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
 install -m644 %SOURCE9 %buildroot%_sysconfdir/samba/smb.conf
 install -m644 %SOURCE22 %buildroot%_sysconfdir/samba/smb.conf.example
+install -m644 %SOURCE23 %buildroot%_sysconfdir/samba/usershares.conf
 install -m644 %SOURCE11 %buildroot%_sysconfdir/security
 install -m644 %SOURCE6 %buildroot%_sysconfdir/pam.d/samba
 echo 127.0.0.1 localhost > %buildroot%_sysconfdir/samba/lmhosts
 mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
+install -Dm755 %SOURCE24 %buildroot%_controldir/smb-conf-usershares
 
 cp packaging/systemd/samba.sysconfig packaging/systemd/samba.sysconfig.alt
 echo "KRB5CCNAME=FILE:/run/samba/krb5cc_samba" >>packaging/systemd/samba.sysconfig.alt
@@ -1134,6 +1150,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %preun winbind
 %preun_service winbind
 %endif
+
+%pre usershares
+%_sbindir/groupadd -f -r usershares >/dev/null 2>&1 || :
 
 %files
 %doc COPYING README.md WHATSNEW.txt
@@ -1815,6 +1834,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libsocket-wrapper-samba4.so
 %_samba_mod_libdir/libuid-wrapper-samba4.so
 %endif
+
+%files usershares
+%config(noreplace) %_sysconfdir/samba/usershares.conf
+%attr(1770,root,usershares) %dir /var/lib/samba/usershares
+%_controldir/smb-conf-usershares
 
 %if_with winbind
 %files winbind-common

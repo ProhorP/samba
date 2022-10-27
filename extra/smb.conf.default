@@ -18,6 +18,9 @@
 	load printers = yes
 	cups options = raw
 
+	# Install samba-usershares package for support
+	include = /etc/samba/usershares.conf
+
 [homes]
 	comment = Home Directories
 	valid users = %S, %D%w%S
