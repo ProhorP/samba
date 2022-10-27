@@ -75,7 +75,7 @@
 %endif
 
 Name:    samba
-Version: 4.16.5
+Version: 4.16.6
 Release: alt1
 
 Group:   System/Servers
@@ -1978,6 +1978,17 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Oct 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.6-alt1
+- Update to maintenance release of Samba 4.16 (Samba#15134)
+- Security fixes:
+  + CVE-2022-3437: There is a limited write heap buffer overflow in the GSSAPI
+                   unwrap_des() and unwrap_des3() routines of Heimdal (included
+                   in Samba).
+                   https://www.samba.org/samba/security/CVE-2022-3437.html
+- Add samba-usershares package for support for non-root user shares.
+- Default smb.conf simplified - homes, printers and print$ shares enabled by
+  default. Original large default example smb.conf replaced to smb.conf.example.
+
 * Mon Sep 12 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.5-alt1
 - Update to latest stable release of Samba 4.16
 - Major fixes:
