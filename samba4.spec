@@ -972,7 +972,7 @@ mkdir -p %buildroot/%_lib/security
 mkdir -p %buildroot/var/lib/samba
 mkdir -p %buildroot/var/lib/ctdb
 mkdir -p %buildroot%_localstatedir/cache/samba
-mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol}
+mkdir -p %buildroot/var/lib/samba/{private,winbindd_privileged,scripts,sysvol,drivers}
 mkdir -p %buildroot/var/log/samba/old
 mkdir -p %buildroot/var/spool/samba
 mkdir -p %buildroot%_samba_piddir/winbindd
@@ -1129,6 +1129,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %preun_service smb
 %preun_service nmb
 
+%pre common
+%_sbindir/groupadd -f -r printadmin >/dev/null 2>&1 || :
+
 %if_with dc
 %post dc
 %post_service samba
@@ -1196,6 +1199,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %dir %_samba_mod_libdir/auth
 %_samba_mod_libdir/auth/unix.so
+
+%attr(775,root,printadmin) %dir /var/lib/samba/drivers
 
 %if_with dc
 %files -n admx-samba
@@ -1366,7 +1371,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %files common-client
 %attr(755,root,root) %dir %_sysconfdir/samba
 %config(noreplace) %_sysconfdir/samba/smb.conf
-%config %_sysconfdir/samba/smb.conf.example
+%_sysconfdir/samba/smb.conf.example
 %config(noreplace) %_sysconfdir/samba/lmhosts
 
 %if_with doc

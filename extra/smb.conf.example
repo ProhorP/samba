@@ -63,8 +63,7 @@
 
 # ----------------------- Network-Related Options -------------------------
 #
-# workgroup = the Windows NT domain name or workgroup name,
-#             for example, WORKGROUP.
+# workgroup = the Windows NT domain name or workgroup name, for example, MYGROUP.
 #
 # server string = the equivalent of the Windows NT Description field.
 #
@@ -82,7 +81,7 @@
 # hosts deny = the hosts not allowed to connect. This option can also be used on
 # a per-share basis.
 #
-	workgroup = WORKGROUP
+	workgroup = MYGROUP
 	server string = Samba Server Version %v
 
 ;	netbios name = MYSERVER

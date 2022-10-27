@@ -8,7 +8,7 @@
 # SMB3 are no longer able to connect to smbd (by default).
 
 [global]
-	workgroup = WORKGROUP
+	workgroup = SAMBA
 	security = user
 
 	passdb backend = tdbsam
@@ -24,16 +24,16 @@
 [homes]
 	comment = Home Directories
 	valid users = %S, %D%w%S
-	browseable = No
-	read only = No
-	inherit acls = Yes
+	browseable = no
+	read only = no
+	inherit acls = yes
 
 [printers]
 	comment = All Printers
 	path = /var/tmp
-	printable = Yes
+	printable = yes
 	create mask = 0600
-	browseable = No
+	browseable = no
 
 [print$]
 	comment = Printer Drivers
