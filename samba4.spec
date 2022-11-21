@@ -75,8 +75,8 @@
 %endif
 
 Name:    samba
-Version: 4.16.6
-Release: alt2
+Version: 4.16.7
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1978,6 +1978,18 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Nov 22 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt1
+- Update to maintenance release of Samba 4.16 (Samba#15203)
+- Security fixes:
+  + CVE-2022-42898: Samba's Kerberos libraries and AD DC failed to guard against
+                    integer overflows when parsing a PAC on a 32-bit system, which
+                    allowed an attacker with a forged PAC to corrupt the heap.
+                    https://www.samba.org/samba/security/CVE-2022-42898.html
+    Workaround and mitigations:
+    * No workaround on 32-bit systems as an AD DC
+    * file servers are only impacted if in a non-AD domain
+    * 64-bit systems are not exploitable
+
 * Mon Nov 07 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.6-alt2
 - Don't treat a missing include file as an error in handle_include().
   This behavior differs between the source3 and source4 parts of Samba.
