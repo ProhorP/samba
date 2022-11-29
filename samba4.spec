@@ -122,6 +122,8 @@ Source21: smbusers
 Source22: smb.conf.example
 Source23: usershares.conf
 Source24: smb-conf-usershares.control
+Source25: role-usershares.control
+Source26: samba-usershares.role
 
 Source200: README.dc
 Source201: README.downgrade
@@ -613,6 +615,7 @@ Group: System/Servers
 PreReq: control
 Requires: %name = %version-%release
 Requires: %name-common-tools = %version-%release
+Requires: libnss-role
 
 %description usershares
 Installing this package will provide a configuration file, group and
@@ -1011,6 +1014,8 @@ mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 install -Dm755 %SOURCE24 %buildroot%_controldir/smb-conf-usershares
+install -Dm755 %SOURCE25 %buildroot%_controldir/role-usershares
+install -Dm644 %SOURCE26 %buildroot%_sysconfdir/role.d/samba-usershares.role
 
 cp packaging/systemd/samba.sysconfig packaging/systemd/samba.sysconfig.alt
 echo "KRB5CCNAME=FILE:/run/samba/krb5cc_samba" >>packaging/systemd/samba.sysconfig.alt
@@ -1853,8 +1858,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %files usershares
 %config(noreplace) %_sysconfdir/samba/usershares.conf
+%config(noreplace) %_sysconfdir/role.d/samba-usershares.role
 %attr(1770,root,usershares) %dir /var/lib/samba/usershares
 %_controldir/smb-conf-usershares
+%_controldir/role-usershares
 
 %if_with winbind
 %files winbind-common

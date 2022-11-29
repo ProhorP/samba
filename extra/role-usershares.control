@@ -1,0 +1,14 @@
+#!/bin/sh
+
+. /etc/control.d/functions
+
+CONFIG=/etc/role.d/samba-usershares.role
+
+new_subst enabled '^\s*users[[:space:]]*:[[:space:]]*usershares\s*$' 's,^\s*#[[:space:]#]*\(users[[:space:]]*:[[:space:]]*usershares\)\s*,\1,'
+new_subst disabled '^\s*#[[:space:]#]*users[[:space:]]*:[[:space:]]*usershares\s*$' 's,^[[:space:]]*\(users[[:space:]]*:[[:space:]]*usershares\)\s*$,#\1,'
+
+new_summary "Group users can use samba usershares"
+new_help enabled "Privilege group \"usershares\" assigned to group \"users\""
+new_help disabled "Privilege group \"usershares\" assigned only explicitly"
+
+control_subst "$CONFIG" "$*"
