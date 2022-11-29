@@ -1,0 +1,22 @@
+object 212ebbf7f4f30a0555c87e7ed23139fc08415215
+type commit
+tag samba-4.17.3
+tagger Jule Anger <janger@samba.org> 1668496236 +0100
+
+samba: tag release samba-4.17.3
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAABCgAdFiEEgfXigyvSVFoYl7cTqplEL7aAtiAFAmNzO2wACgkQqplEL7aA
+tiDGOQ//UxykIUqdQBfm/JnmGGp8QzCKjMcgEEa63WuxFt+xAIJ3B6+8mB/uwXP+
+bNuma7IjZAoXmu6b7ZPu9G0dl3U++5qIj4JVkO5qIikGyDAfFl2+Exq0W9H5pGF4
+PTk02PN0lkpU8VvGouge+mRj5HlIFh4TrdJrg6F2mfAVGBshi/wnFzR9Oha2P3HD
+b+G+D8ci6nAuWPUO8CEt6tNAQNj8ZC7vrB/5ktsDEIqpyfwCo4J50AIpDFrqo3tg
+wan6YbOLmn0I5h9JhqTcTMfK4vETjt5LLiOwQM2/k1pE6XV3I4vBPA9uVqGkBScz
+TTnavL/z3DLdsmLjjUFRPsMBcf6JL35GN8/bBJ2a4z3gYiNFoC23z4YEPaR3UF4l
+jrqjxywlnucpIKTGZeMsrclkaMQDI8ncavQ0xP5WFfJ0nvPR0Shj29AbAbboz/ov
+xXLQe6dq4BcX0Hl6qF1/JHUtH775XtfawyQn0pITI9uKJZA7l0Hm/AQ7Lxus32OT
+r4d7/VSVtohhwXh8G2mTh4jA+WCJRNwYquHfeCqWlLIPDWzvBO00nKO5B8JgFdWf
+moE0yiH+Vl2Df4T1s6vxBsonz2hLKVMaKlYkH9AOQqyGIqBDlU3PKHMb59maioAk
+lm1XbBwdz5Qt1YHEhrDVzCjpjK75fo0Mu6FNRYOHPvEiewigBuY=
+=5JXp
+-----END PGP SIGNATURE-----
