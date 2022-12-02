@@ -97,7 +97,7 @@
 %endif
 
 Name:    samba
-Version: 4.17.0
+Version: 4.17.3
 Release: alt1
 
 Group:   System/Servers
@@ -308,6 +308,17 @@ The %rname-client package provides some SMB/CIFS clients to complement
 the built-in SMB/CIFS filesystem in Linux. These clients allow access
 of SMB/CIFS shares and printing to SMB/CIFS printers.
 
+%package gpupdate
+Summary: Samba GPO support for clients
+Group: Networking/Other
+Requires: cepces
+Requires: certmonger
+Requires: libldb-modules-ldap = %version-%release
+
+%description gpupdate
+This package provides the samba-gpupdate tool to apply Group Policy Objects
+(GPO) on Samba clients.
+
 %package dc-client
 Summary: Samba Active Directory client programs
 Group: Networking/Other
@@ -451,9 +462,21 @@ Summary: The LDB domain controller modules
 Group: System/Libraries
 Provides: libldb-modules-DC = %version-%release
 Obsoletes: libldb-modules-DC < 4.10
+Requires: libldb-modules-ldap = %version-%release
 
 %description -n libldb-modules-dc
 The libldb-modules-dc contains the ldb library modules from the Samba domain controller.
+
+%package -n libldb-modules-ldap
+Summary: Samba ldap modules for ldb
+Group: System/Libraries
+Requires: %name-libs = %version-%release
+Provides: ldbsamba_extensions = %version-%release
+Provides: %name-ldb-ldap-modules = %version-%release
+
+%description -n libldb-modules-ldap
+This package contains the ldb ldap modules required by samba-tool and
+samba-gpupdate.
 
 %package -n libsmbclient-devel
 Summary: Developer tools for the SMB client library
@@ -512,6 +535,7 @@ Group: Networking/Other
 #Requires: %name-libs = %version-%release
 Provides: python3-module-%dcname = %version-%release
 Obsoletes: python3-module-%dcname < 4.10
+Requires: %name-libs = %version-%release
 
 # these modules currently don't support Python3 and aren't packaged
 %add_python3_req_skip dsdb
@@ -837,10 +861,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 	--without-fam \\\
 	--private-libraries=%_samba4_private_libraries \\\
 %if_with systemd \
-	--with-systemd \\\
-%else \
-	--without-systemd \\\
-%endif \
+	--systemd-install-services \\\
 %if_with winbind \
 	--with-winbind \\\
 %else \
@@ -1280,6 +1301,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %_samba_mod_libdir/auth/samba4.so
 
+%files gpupdate
+%_sbindir/samba-gpupdate
+%_man8dir/samba-gpupdate.8*
+
 %files dc-client
 %if_with separate_heimdal_server
 %_altdir/samba-mit-dc-client
@@ -1289,10 +1314,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_bindir/samba-tool
 %_sbindir/samba_downgrade_db
 %endif
-%_sbindir/samba-gpupdate
 %if_with doc
 %_man8dir/samba-tool.8*
-%_man8dir/samba-gpupdate.8*
 %_man8dir/samba_downgrade_db.8*
 %endif #doc
 %endif #dc
@@ -1532,35 +1555,96 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 # common libraries
 %_samba_mod_libdir/libCHARSET3-samba4.so
+%_samba_mod_libdir/libMESSAGING-samba4.so
 %_samba_mod_libdir/libMESSAGING-SEND-samba4.so
+%_samba_mod_libdir/libLIBWBCLIENT-OLD-samba4.so
+%_samba_mod_libdir/libcluster-samba4.so
+%_samba_mod_libdir/libaddns-samba4.so
+%_samba_mod_libdir/libads-samba4.so
 %_samba_mod_libdir/libasn1util-samba4.so
-%_samba_mod_libdir/libgenrand-samba4.so
+%_samba_mod_libdir/libauth-samba4.so
+%_samba_mod_libdir/libauth4-samba4.so
+%_samba_mod_libdir/libauth-unix-token-samba4.so
+%_samba_mod_libdir/libauthkrb5-samba4.so
+%_samba_mod_libdir/libcli-cldap-samba4.so
+%_samba_mod_libdir/libcli-ldap-common-samba4.so
+%_samba_mod_libdir/libcli-ldap-samba4.so
+%_samba_mod_libdir/libcli-nbt-samba4.so
+%_samba_mod_libdir/libcli-smb-common-samba4.so
+%_samba_mod_libdir/libcli-spoolss-samba4.so
+%_samba_mod_libdir/libcmdline-samba4.so
+%_samba_mod_libdir/libcmdline-contexts-samba4.so
+%_samba_mod_libdir/libcliauth-samba4.so
+%_samba_mod_libdir/libclidns-samba4.so
+%_samba_mod_libdir/libcommon-auth-samba4.so
+%if_with clustering_support
+%_samba_mod_libdir/libctdb-event-client-samba4.so
+%endif
 %_samba_mod_libdir/libdbwrap-samba4.so
+%_samba_mod_libdir/libdcerpc-pkt-auth-samba4.so
+%_samba_mod_libdir/libdcerpc-samba-samba4.so
+%_samba_mod_libdir/libdcerpc-samba4.so
+%if_with dc
+%_samba_mod_libdir/libdfs-server-ad-samba4.so
+%endif
+%_samba_mod_libdir/libevents-samba4.so
+%_samba_mod_libdir/libgensec-samba4.so
+%_samba_mod_libdir/libgenrand-samba4.so
+%_samba_mod_libdir/libgpext-samba4.so
+%_samba_mod_libdir/libgpo-samba4.so
+%_samba_mod_libdir/libgse-samba4.so
 %_samba_mod_libdir/libflag-mapping-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
 %_samba_mod_libdir/libiov-buf-samba4.so
+%_samba_mod_libdir/libhttp-samba4.so
+%_samba_mod_libdir/libkrb5samba-samba4.so
+%_samba_mod_libdir/libldbsamba-samba4.so
+%_samba_mod_libdir/liblibsmb-samba4.so
+%_samba_mod_libdir/liblibcli-lsa3-samba4.so
+%_samba_mod_libdir/liblibcli-netlogon3-samba4.so
+%_samba_mod_libdir/libsamba-cluster-support-samba4.so
 %_samba_mod_libdir/libmessages-dgm-samba4.so
 %_samba_mod_libdir/libmessages-util-samba4.so
 %_samba_mod_libdir/libmsghdr-samba4.so
 %_samba_mod_libdir/libmscat-samba4.so
+%_samba_mod_libdir/libmsrpc3-samba4.so
+%_samba_mod_libdir/libnet-keytab-samba4.so
+%_samba_mod_libdir/libnetif-samba4.so
+%_samba_mod_libdir/libnpa-tstream-samba4.so
 %_samba_mod_libdir/libndr-samba-samba4.so
 %_samba_mod_libdir/libndr-samba4.so
 %if_without libwbclient
 %_samba_mod_libdir/libreplace-samba4.so
 %_samba_mod_libdir/libwbclient.so.*
 %endif
+%_samba_mod_libdir/libprinter-driver-samba4.so
+%_samba_mod_libdir/libprinting-migrate-samba4.so
+%_samba_mod_libdir/libposix-eadb-samba4.so
+%_samba_mod_libdir/libregistry-samba4.so
 %_samba_mod_libdir/libsamba-debug-samba4.so
 %_samba_mod_libdir/libsamba-modules-samba4.so
 %_samba_mod_libdir/libsamba-security-samba4.so
 %_samba_mod_libdir/libsamba-sockets-samba4.so
 %_samba_mod_libdir/libsamba3-util-samba4.so
+%_samba_mod_libdir/libsamdb-common-samba4.so
+%_samba_mod_libdir/libsecrets3-samba4.so
 %_samba_mod_libdir/libserver-id-db-samba4.so
+%_samba_mod_libdir/libserver-role-samba4.so
+%_samba_mod_libdir/libshares-samba4.so
 %_samba_mod_libdir/libsocket-blocking-samba4.so
+%_samba_mod_libdir/libsmbclient-raw-samba4.so
+%_samba_mod_libdir/libsmbldaphelper-samba4.so
+%_samba_mod_libdir/libsmbpasswdparser-samba4.so
+%_samba_mod_libdir/libsmbd-base-samba4.so
+%_samba_mod_libdir/libsmbd-shim-samba4.so
+%_samba_mod_libdir/libsmb-transport-samba4.so
 %_samba_mod_libdir/libsys-rw-samba4.so
 %_samba_mod_libdir/libtalloc-report-printf-samba4.so
 %_samba_mod_libdir/libtalloc-report-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
 %_samba_mod_libdir/libtime-basic-samba4.so
+%_samba_mod_libdir/libtorture-samba4.so
+%_samba_mod_libdir/libtrusts-util-samba4.so
 %_samba_mod_libdir/libutil-reg-samba4.so
 %_samba_mod_libdir/libutil-setid-samba4.so
 %_samba_mod_libdir/libutil-tdb-samba4.so
@@ -1574,65 +1658,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/pdb
 
 # libraries needed by the public libraries
-%_samba_mod_libdir/libMESSAGING-samba4.so
-%_samba_mod_libdir/libLIBWBCLIENT-OLD-samba4.so
-%_samba_mod_libdir/libaddns-samba4.so
-%_samba_mod_libdir/libads-samba4.so
-%_samba_mod_libdir/libauth-samba4.so
-%_samba_mod_libdir/libauth4-samba4.so
-%_samba_mod_libdir/libauth-unix-token-samba4.so
-%_samba_mod_libdir/libauthkrb5-samba4.so
-%_samba_mod_libdir/libcli-ldap-common-samba4.so
-%_samba_mod_libdir/libcli-ldap-samba4.so
-%_samba_mod_libdir/libcli-nbt-samba4.so
-%_samba_mod_libdir/libcli-cldap-samba4.so
-%_samba_mod_libdir/libcli-smb-common-samba4.so
-%_samba_mod_libdir/libcli-spoolss-samba4.so
-%_samba_mod_libdir/libcliauth-samba4.so
-%_samba_mod_libdir/libclidns-samba4.so
-%_samba_mod_libdir/libcluster-samba4.so
-%_samba_mod_libdir/libcmdline-samba4.so
-%_samba_mod_libdir/libcmdline-contexts-samba4.so
-%_samba_mod_libdir/libcommon-auth-samba4.so
-%_samba_mod_libdir/libdcerpc-pkt-auth-samba4.so
-%_samba_mod_libdir/libdcerpc-samba-samba4.so
-%_samba_mod_libdir/libdcerpc-samba4.so
-%_samba_mod_libdir/libevents-samba4.so
-%_samba_mod_libdir/libgensec-samba4.so
-%_samba_mod_libdir/libgpo-samba4.so
-%_samba_mod_libdir/libgse-samba4.so
-%_samba_mod_libdir/libgpext-samba4.so
-%if_with dc
-%_samba_mod_libdir/libdfs-server-ad-samba4.so
-%endif
-%_samba_mod_libdir/libhttp-samba4.so
-%_samba_mod_libdir/libkrb5samba-samba4.so
-%_samba_mod_libdir/libldbsamba-samba4.so
-%_samba_mod_libdir/liblibcli-lsa3-samba4.so
-%_samba_mod_libdir/liblibcli-netlogon3-samba4.so
-%_samba_mod_libdir/liblibsmb-samba4.so
-%_samba_mod_libdir/libsmb-transport-samba4.so
-%_samba_mod_libdir/libmsrpc3-samba4.so
-%_samba_mod_libdir/libnet-keytab-samba4.so
-%_samba_mod_libdir/libnetif-samba4.so
-%_samba_mod_libdir/libnpa-tstream-samba4.so
-%_samba_mod_libdir/libposix-eadb-samba4.so
-%_samba_mod_libdir/libprinter-driver-samba4.so
-%_samba_mod_libdir/libprinting-migrate-samba4.so
-%_samba_mod_libdir/libregistry-samba4.so
-%_samba_mod_libdir/libsamba-cluster-support-samba4.so
-%_samba_mod_libdir/libsamdb-common-samba4.so
-%_samba_mod_libdir/libsecrets3-samba4.so
-%_samba_mod_libdir/libserver-role-samba4.so
-%_samba_mod_libdir/libshares-samba4.so
-%_samba_mod_libdir/libsmbclient-raw-samba4.so
-%_samba_mod_libdir/libsmbd-base-samba4.so
-%_samba_mod_libdir/libsmbd-shim-samba4.so
-%_samba_mod_libdir/libsmbldaphelper-samba4.so
-%_samba_mod_libdir/libsmbpasswdparser-samba4.so
-%_samba_mod_libdir/libtorture-samba4.so
-%_samba_mod_libdir/libtrusts-util-samba4.so
-
 %_samba_libdir/libdcerpc-binding.so.%{libdcerpc_binding_so_version}*
 %_samba_libdir/libdcerpc-samr.so.*
 %_samba_libdir/libdcerpc.so.%{libdcerpc_so_version}*
@@ -1643,10 +1668,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_libdir/libsmbconf.so.%{libsmbconf_so_version}*
 %_samba_libdir/libsamba-passdb.so.%{libsamba_passdb_so_version}*
 %_samba_libdir/libsmbldap.so.%{libsmbldap_so_version}*
-
-%if_with clustering_support
-%_samba_mod_libdir/libctdb-event-client-samba4.so
-%endif
 
 %if_with ldb
 %_samba_libdir/libldb.so.*
@@ -1760,10 +1781,23 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %if_with ldb_modules
 %files -n libldb-modules-dc
 %if_with separate_heimdal_server
-%_altdir/samba-mit-dc-modules
 %_samba_mod_libdir/ldb.mit
+%exclude %_samba_mod_libdir/ldb.mit/ldbsamba_extensions.so
+%exclude %_samba_mod_libdir/ldb.mit/ildap.so
 %else
 %_samba_mod_libdir/ldb
+%exclude %_samba_mod_libdir/ldb/ldbsamba_extensions.so
+%exclude %_samba_mod_libdir/ldb/ildap.so
+%endif
+
+%files -n libldb-modules-ldap
+%if_with separate_heimdal_server
+%_altdir/samba-mit-dc-modules
+%_samba_mod_libdir/ldb.mit/ldbsamba_extensions.so
+%_samba_mod_libdir/ldb.mit/ildap.so
+%else
+%_samba_mod_libdir/ldb/ldbsamba_extensions.so
+%_samba_mod_libdir/ldb/ildap.so
 %endif
 %endif
 
@@ -1947,7 +1981,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %dir %_datadir/ctdb/events/legacy
 %_datadir/ctdb/events/legacy/*.script
 %_sbindir/ctdbd
-%_sbindir/ctdbd_wrapper
 %_bindir/ctdb
 %_bindir/ctdb_diagnostics
 %_bindir/ltdbtool
@@ -1974,7 +2007,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_man1dir/ltdbtool.1*
 %_man1dir/ping_pong.1*
 %_man1dir/ctdb_diagnostics.1*
-%_man1dir/ctdbd_wrapper.1*
 %_man5dir/ctdb.conf.5*
 %_man5dir/ctdb-script.options.5*
 %_man5dir/ctdb.sysconfig.5*
@@ -2001,6 +2033,43 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Nov 30 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.17.3-alt1
+- update
+
+* Tue Nov 29 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt2
+- Add role-usershares control allow or disallow for group users using of
+  samba usershares as privilege.
+- Add compatibility support for sambashare group as common privilege assigned
+  to usershares group (Closes: #44379).
+
+* Tue Nov 22 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt1
+- Update to maintenance release of Samba 4.16 (Samba#15203)
+- Security fixes:
+  + CVE-2022-42898: Samba's Kerberos libraries and AD DC failed to guard against
+                    integer overflows when parsing a PAC on a 32-bit system, which
+                    allowed an attacker with a forged PAC to corrupt the heap.
+                    https://www.samba.org/samba/security/CVE-2022-42898.html
+    Workaround and mitigations:
+    * No workaround on 32-bit systems as an AD DC
+    * file servers are only impacted if in a non-AD domain
+    * 64-bit systems are not exploitable
+
+* Mon Nov 07 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.6-alt2
+- Don't treat a missing include file as an error in handle_include().
+  This behavior differs between the source3 and source4 parts of Samba.
+  So, it should be the same and just not an error (Closes #44214).
+
+* Thu Oct 27 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.6-alt1
+- Update to maintenance release of Samba 4.16 (Samba#15134)
+- Security fixes:
+  + CVE-2022-3437: There is a limited write heap buffer overflow in the GSSAPI
+                   unwrap_des() and unwrap_des3() routines of Heimdal (included
+                   in Samba).
+                   https://www.samba.org/samba/security/CVE-2022-3437.html
+- Add samba-usershares package for support for non-root user shares.
+- Default smb.conf simplified - homes, printers and print$ shares enabled by
+  default. Original large default example smb.conf replaced to smb.conf.example.
+
 * Mon Sep 12 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.5-alt1
 - Update to latest stable release of Samba 4.16
 - Major fixes:
