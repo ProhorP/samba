@@ -1253,8 +1253,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_datadir/PolicyDefinitions/*/*.adml
 
 %files dc-common
-%attr(755,root,root) %_initdir/samba
-%_unitdir/samba.service
 %dir /var/lib/samba/sysvol
 %dir %_datadir/samba/setup
 %_datadir/samba/setup
@@ -1263,6 +1261,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif #doc
 
 %files dc
+%attr(755,root,root) %_initdir/samba
+%_unitdir/samba.service
 %if_without separate_heimdal_server
 %_sbindir/samba
 %_sbindir/samba_kcc
@@ -1271,6 +1271,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_sbindir/samba_upgradedns
 %_sbindir/samba_downgrade_db
 %else #!separate_heimdal_server
+%_unitdir/winbind.service
+%attr(755,root,root) %_initrddir/winbind
+%_sysconfdir/NetworkManager/dispatcher.d/30-winbind
 %doc COPYING README.md WHATSNEW.txt
 %doc examples/autofs examples/LDAP examples/misc
 %doc examples/printer-accounting examples/printing
@@ -1291,6 +1294,8 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %files -n task-samba-dc-mitkrb5
 
 %files dc-mitkrb5
+%attr(755,root,root) %_initdir/samba
+%_unitdir/samba.service
 %_altdir/samba-mit-dc
 %_samba_mod_libdir/sbin/samba
 %_samba_mod_libdir/sbin/samba_kcc
@@ -1900,16 +1905,16 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %if_with winbind
 %files winbind-common
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
-%_unitdir/winbind.service
-%attr(755,root,root) %_initrddir/winbind
 %dir %_samba_piddir/winbindd
-%_sysconfdir/NetworkManager/dispatcher.d/30-winbind
 %if_with doc
 %_man8dir/winbindd.8*
 %_man8dir/idmap_*.8*
 %endif
 
 %files winbind -f pam_winbind.lang
+%_unitdir/winbind.service
+%attr(755,root,root) %_initrddir/winbind
+%_sysconfdir/NetworkManager/dispatcher.d/30-winbind
 %_samba_mod_libdir/idmap
 %_samba_mod_libdir/nss_info
 %_samba_mod_libdir/libnss-info-samba4.so
