@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.16.7
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1991,6 +1991,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Dec 03 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt3
+- Avoid cycle dependencies on common service files.
+- Fix cycle dependencies on libRPC and libREG samba4 libraries.
+
 * Tue Nov 29 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt2
 - Add role-usershares control allow or disallow for group users using of
   samba usershares as privilege.
