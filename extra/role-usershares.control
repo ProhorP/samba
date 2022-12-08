@@ -9,6 +9,6 @@ new_subst disabled '^\s*#[[:space:]#]*users[[:space:]]*:[[:space:]]*usershares\s
 
 new_summary "Group users can use samba usershares"
 new_help enabled "Privilege group \"usershares\" assigned to group \"users\""
-new_help disabled "Privilege group \"usershares\" assigned only explicitly"
+new_help disabled "Privilege group \"usershares\" assigned to users explicitly"
 
 control_subst "$CONFIG" "$*"

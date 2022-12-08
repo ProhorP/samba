@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.16.7
-Release: alt3
+Release: alt4
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -102,6 +102,7 @@ Source23: usershares.conf
 Source24: smb-conf-usershares.control
 Source25: role-usershares.control
 Source26: samba-usershares.role
+Source27: role-sambashare.control
 
 Source200: README.dc
 Source201: README.downgrade
@@ -999,6 +1000,7 @@ install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 install -Dm755 %SOURCE24 %buildroot%_controldir/smb-conf-usershares
 install -Dm755 %SOURCE25 %buildroot%_controldir/role-usershares
+install -Dm755 %SOURCE27 %buildroot%_controldir/role-sambashare
 install -Dm644 %SOURCE26 %buildroot%_sysconfdir/role.d/samba-usershares.role
 
 cp packaging/systemd/samba.sysconfig packaging/systemd/samba.sysconfig.alt
@@ -1158,6 +1160,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 
 %pre usershares
 %_sbindir/groupadd -f -r usershares >/dev/null 2>&1 || :
+
+# Enable sambashare group as role with usershares priviledge for compatility
+# during upgrade from previous manual managed installations.
+%triggerin -n %name-usershares -- %name < 4.16.7-alt4
+control role-sambashare enabled
 
 %files
 %doc COPYING README.md WHATSNEW.txt
@@ -1852,6 +1859,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %attr(1770,root,usershares) %dir /var/lib/samba/usershares
 %_controldir/smb-conf-usershares
 %_controldir/role-usershares
+%_controldir/role-sambashare
 
 %if_with winbind
 %files winbind-common
@@ -1991,6 +1999,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Dec 08 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt4
+- Add role-sambashare control for compatibility during upgrade from previous
+  manual managed settings of usershares.
+- Trigger sambashare as role with privilege usershares (Closes: #44379).
+
 * Sat Dec 03 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt3
 - Avoid cycle dependencies on common service files.
 - Fix cycle dependencies on libRPC and libREG samba4 libraries.

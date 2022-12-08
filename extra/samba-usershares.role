@@ -1,2 +1,2 @@
-usershares: sambashare
+sambashare: usershares
 users: usershares
