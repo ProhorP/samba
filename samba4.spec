@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.16.7
-Release: alt4
+Release: alt5
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -103,6 +103,10 @@ Source24: smb-conf-usershares.control
 Source25: role-usershares.control
 Source26: samba-usershares.role
 Source27: role-sambashare.control
+Source28: smb-conf-usershare-allow-list.control
+Source29: smb-conf-usershare-deny-list.control
+Source30: smb-conf-usershare-owner-only.control
+Source31: smb-conf-usershare-allow-guests.control
 
 Source200: README.dc
 Source201: README.downgrade
@@ -999,6 +1003,10 @@ mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 install -Dm755 %SOURCE24 %buildroot%_controldir/smb-conf-usershares
+install -Dm755 %SOURCE28 %buildroot%_controldir/smb-conf-usershare-allow-list
+install -Dm755 %SOURCE29 %buildroot%_controldir/smb-conf-usershare-deny-list
+install -Dm755 %SOURCE30 %buildroot%_controldir/smb-conf-usershare-owner-only
+install -Dm755 %SOURCE31 %buildroot%_controldir/smb-conf-usershare-allow-guests
 install -Dm755 %SOURCE25 %buildroot%_controldir/role-usershares
 install -Dm755 %SOURCE27 %buildroot%_controldir/role-sambashare
 install -Dm644 %SOURCE26 %buildroot%_sysconfdir/role.d/samba-usershares.role
@@ -1860,6 +1868,10 @@ control role-sambashare enabled
 %_controldir/smb-conf-usershares
 %_controldir/role-usershares
 %_controldir/role-sambashare
+%_controldir/smb-conf-usershare-allow-list
+%_controldir/smb-conf-usershare-deny-list
+%_controldir/smb-conf-usershare-owner-only
+%_controldir/smb-conf-usershare-allow-guests
 
 %if_with winbind
 %files winbind-common
@@ -1999,6 +2011,17 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Dec 12 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt5
+- Update text of summary for role-usershares and smb-conf-usershares.
+- Update default usershare prefix allow and deny lists:
+  + usershare prefix deny list = /etc /dev /sys /proc
+  + usershare prefix allow list = /home /srv /mnt /media /var
+- Add new controls for samba-usershares:
+  + smb-conf-usershare-allow-list
+  + smb-conf-usershare-deny-list
+  + smb-conf-usershare-owner-only
+  + smb-conf-usershare-allow-guests
+
 * Thu Dec 08 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt4
 - Add role-sambashare control for compatibility during upgrade from previous
   manual managed settings of usershares.
