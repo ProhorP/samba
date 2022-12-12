@@ -97,7 +97,7 @@
 %endif
 
 Name:    samba
-Version: 4.17.3
+Version: 4.17.5
 Release: alt1
 
 Group:   System/Servers
@@ -124,6 +124,11 @@ Source23: usershares.conf
 Source24: smb-conf-usershares.control
 Source25: role-usershares.control
 Source26: samba-usershares.role
+Source27: role-sambashare.control
+Source28: smb-conf-usershare-allow-list.control
+Source29: smb-conf-usershare-deny-list.control
+Source30: smb-conf-usershare-owner-only.control
+Source31: smb-conf-usershare-allow-guests.control
 
 Source200: README.dc
 Source201: README.downgrade
@@ -141,9 +146,6 @@ Requires: tdb-utils
 
 Requires(pre): %name-common = %version-%release
 Requires: %name-libs = %version-%release
-%if_with winbind
-Requires: %name-winbind-clients = %version-%release
-%endif
 %if_with libwbclient
 Requires: libwbclient = %version-%release
 %endif
@@ -258,6 +260,7 @@ Requires: %name-dc-client = %version-%release
 Requires: %name-dc-common = %version-%release
 %if_without separate_heimdal_server
 Requires: %name = %version-%release
+Requires: %name-winbind = %version-%release
 %if_with mitkrb5
 Requires: krb5-kdc
 %endif
@@ -341,6 +344,9 @@ BuildArch: noarch
 Summary: Files used by both Samba servers
 Group: System/Servers
 BuildArch: noarch
+%if_with winbind
+Requires: %name-winbind-common = %version-%release
+%endif
 Requires: %name-common-client = %version-%release
 Provides: %dcname-common = %version-%release
 Obsoletes: %dcname-common < 4.10
@@ -416,9 +422,13 @@ Summary: Samba libraries
 Group: System/Libraries
 Provides: %dcname-libs = %version-%release
 Obsoletes: %dcname-libs < 4.10
+Provides: libldb-modules-DC = %version-%release
+Obsoletes: libldb-modules-DC < 4.10
+Provides: libldb-modules-dc = %version-%release
+Obsoletes: libldb-modules-dc < 4.17
 
 %if_with ldb_modules
-Requires: libldb-modules-dc = %version-%release
+Requires: libldb-modules-ldap = %version-%release
 %endif
 
 %description dc-libs
@@ -456,16 +466,6 @@ Obsoletes: libsmbclient-DC < 4.10
 
 %description -n libsmbclient
 The libsmbclient contains the SMB client library from the Samba suite.
-
-%package -n libldb-modules-dc
-Summary: The LDB domain controller modules
-Group: System/Libraries
-Provides: libldb-modules-DC = %version-%release
-Obsoletes: libldb-modules-DC < 4.10
-Requires: libldb-modules-ldap = %version-%release
-
-%description -n libldb-modules-dc
-The libldb-modules-dc contains the ldb library modules from the Samba domain controller.
 
 %package -n libldb-modules-ldap
 Summary: Samba ldap modules for ldb
@@ -649,7 +649,7 @@ as a user using the `net usershare` command.
 %package winbind-common
 Summary: Files used by MIT and Heimdal Winbind servers
 Group: System/Servers
-Requires: %name-common = %version-%release
+Requires: %name-common-client = %version-%release
 
 %description winbind-common
 %rname-winbind-common provides files necessary for both MIT and Heimdal
@@ -658,6 +658,7 @@ Winbind servers separately builded and packaged.
 %package winbind
 Summary: Samba winbind
 Group: System/Servers
+Requires: %name-libs = %version-%release
 Requires: %name-winbind-common = %version-%release
 Provides: %dcname-winbind = %version-%release
 Obsoletes: %dcname-winbind < 4.10
@@ -862,6 +863,8 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 	--private-libraries=%_samba4_private_libraries \\\
 %if_with systemd \
 	--systemd-install-services \\\
+	--with-systemddir=%_unitdir \\\
+%endif \
 %if_with winbind \
 	--with-winbind \\\
 %else \
@@ -1035,7 +1038,12 @@ mkdir -p %buildroot%_sysconfdir/openldap/schema
 install -m644 examples/LDAP/samba.schema %buildroot%_sysconfdir/openldap/schema/samba.schema
 install -m755 packaging/printing/smbprint %buildroot%_bindir/smbprint
 install -Dm755 %SOURCE24 %buildroot%_controldir/smb-conf-usershares
+install -Dm755 %SOURCE28 %buildroot%_controldir/smb-conf-usershare-allow-list
+install -Dm755 %SOURCE29 %buildroot%_controldir/smb-conf-usershare-deny-list
+install -Dm755 %SOURCE30 %buildroot%_controldir/smb-conf-usershare-owner-only
+install -Dm755 %SOURCE31 %buildroot%_controldir/smb-conf-usershare-allow-guests
 install -Dm755 %SOURCE25 %buildroot%_controldir/role-usershares
+install -Dm755 %SOURCE27 %buildroot%_controldir/role-sambashare
 install -Dm644 %SOURCE26 %buildroot%_sysconfdir/role.d/samba-usershares.role
 
 cp packaging/systemd/samba.sysconfig packaging/systemd/samba.sysconfig.alt
@@ -1053,15 +1061,9 @@ install -m755 %SOURCE20 %buildroot%_initrddir/samba
 # Put README in builddir
 cp %SOURCE200 %SOURCE201 .
 
-for i in nmb smb winbind samba; do
-    cat packaging/systemd/$i.service.in | sed -e 's|@PIDDIR@|%_samba_piddir|g' -e 's|@SYSCONFDIR@|%_sysconfdir|g' -e 's|@SBINDIR@|%_sbindir|g' \
-        -e '/@systemd_smb_extra@/d' -e '/@systemd_nmb_extra@/d' -e '/@systemd_winbind_extra@/d' -e '/@systemd_samba_extra@/d'  >packaging/systemd/$i.service
-    install -m 0644 packaging/systemd/$i.service %buildroot%_unitdir/$i.service
-done
 subst 's,Type=notify,Type=forking,' %buildroot%_unitdir/*.service
 %if_with clustering_support
 install -m755 %SOURCE12 %buildroot%_initrddir/ctdb
-install -m 0644 ctdb/config/ctdb.service %buildroot%_unitdir
 echo "d %_samba_piddir/ctdb 755 root root" >> %buildroot%_tmpfilesdir/ctdb.conf
 touch %buildroot%_sysconfdir/ctdb/nodes
 %endif
@@ -1196,6 +1198,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %pre usershares
 %_sbindir/groupadd -f -r usershares >/dev/null 2>&1 || :
 
+# Enable sambashare group as role with usershares priviledge for compatility
+# during upgrade from previous manual managed installations.
+%triggerin -n %name-usershares -- %name < 4.16.7-alt4
+control role-sambashare enabled
+
 %files
 %doc COPYING README.md WHATSNEW.txt
 %doc examples/autofs examples/LDAP examples/misc
@@ -1257,6 +1264,7 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_datadir/PolicyDefinitions/*/*.adml
 
 %files dc-common
+%_sysconfdir/pam.d/samba
 %dir /var/lib/samba/sysvol
 %dir %_datadir/samba/setup
 %_datadir/samba/setup
@@ -1436,6 +1444,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
 %files common
+%if_without winbind
+%dir /var/lib/samba
+%attr(710,root,root) %dir /var/lib/samba/private
+%endif
 %_tmpfilesdir/%rname.conf
 %config(noreplace) %_sysconfdir/logrotate.d/samba
 %config(noreplace) %_sysconfdir/security/limits.d/90-samba.conf
@@ -1443,11 +1455,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %attr(0700,root,root) %dir /var/log/samba/old
 %dir %_samba_sockets_dir
 %attr(755,root,root) %dir %_localstatedir/cache/samba
-%attr(710,root,root) %dir /var/lib/samba/private
 %config(noreplace) %_sysconfdir/sysconfig/samba
 %attr(1777,root,root) %dir /var/spool/samba
 %_sysconfdir/openldap/schema/samba.schema
-%_sysconfdir/pam.d/samba
 
 %dir %_datadir/samba
 %if_enabled spotlight
@@ -1554,126 +1564,130 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
 %files common-libs
+%_samba_libdir/libdcerpc-samr.so.*
+%_samba_libdir/libdcerpc-binding.so.%{libdcerpc_binding_so_version}*
 %_samba_libdir/libndr-krb5pac.so.%{libndr_krb5pac_so_version}*
 %_samba_libdir/libndr-nbt.so.%{libndr_nbt_so_version}*
 %_samba_libdir/libndr-standard.so.%{libndr_standard_so_version}*
 %_samba_libdir/libndr.so.%{libndr_so_version}*
+%_samba_libdir/libsamba-credentials.so.%{libsamba_credentials_so_version}*
 %_samba_libdir/libsamba-errors.so.%{libsamba_errors_so_version}*
+%_samba_libdir/libsamba-hostconfig.so.%{libsamba_hostconfig_so_version}*
 %_samba_libdir/libsamba-util.so.%{libsamba_util_so_version}*
+%_samba_libdir/libsmbconf.so.%{libsmbconf_so_version}*
+%_samba_libdir/libsmbldap.so.%{libsmbldap_so_version}*
 %_samba_libdir/libtevent-util.so.%{libtevent_util_so_version}*
 
 # common libraries
 %_samba_mod_libdir/libCHARSET3-samba4.so
-%_samba_mod_libdir/libMESSAGING-samba4.so
-%_samba_mod_libdir/libMESSAGING-SEND-samba4.so
 %_samba_mod_libdir/libLIBWBCLIENT-OLD-samba4.so
-%_samba_mod_libdir/libcluster-samba4.so
+%_samba_mod_libdir/libMESSAGING-SEND-samba4.so
 %_samba_mod_libdir/libaddns-samba4.so
-%_samba_mod_libdir/libads-samba4.so
 %_samba_mod_libdir/libasn1util-samba4.so
-%_samba_mod_libdir/libauth-samba4.so
-%_samba_mod_libdir/libauth4-samba4.so
 %_samba_mod_libdir/libauth-unix-token-samba4.so
 %_samba_mod_libdir/libauthkrb5-samba4.so
 %_samba_mod_libdir/libcli-cldap-samba4.so
 %_samba_mod_libdir/libcli-ldap-common-samba4.so
-%_samba_mod_libdir/libcli-ldap-samba4.so
 %_samba_mod_libdir/libcli-nbt-samba4.so
-%_samba_mod_libdir/libcli-smb-common-samba4.so
-%_samba_mod_libdir/libcli-spoolss-samba4.so
-%_samba_mod_libdir/libcmdline-samba4.so
-%_samba_mod_libdir/libcmdline-contexts-samba4.so
 %_samba_mod_libdir/libcliauth-samba4.so
 %_samba_mod_libdir/libclidns-samba4.so
+%_samba_mod_libdir/libcluster-samba4.so
+%_samba_mod_libdir/libcmdline-contexts-samba4.so
 %_samba_mod_libdir/libcommon-auth-samba4.so
 %if_with clustering_support
 %_samba_mod_libdir/libctdb-event-client-samba4.so
 %endif
 %_samba_mod_libdir/libdbwrap-samba4.so
-%_samba_mod_libdir/libdcerpc-pkt-auth-samba4.so
 %_samba_mod_libdir/libdcerpc-samba-samba4.so
-%_samba_mod_libdir/libdcerpc-samba4.so
 %if_with dc
 %_samba_mod_libdir/libdfs-server-ad-samba4.so
 %endif
 %_samba_mod_libdir/libevents-samba4.so
-%_samba_mod_libdir/libgensec-samba4.so
-%_samba_mod_libdir/libgenrand-samba4.so
-%_samba_mod_libdir/libgpext-samba4.so
-%_samba_mod_libdir/libgpo-samba4.so
-%_samba_mod_libdir/libgse-samba4.so
 %_samba_mod_libdir/libflag-mapping-samba4.so
+%_samba_mod_libdir/libgenrand-samba4.so
 %_samba_mod_libdir/libinterfaces-samba4.so
 %_samba_mod_libdir/libiov-buf-samba4.so
-%_samba_mod_libdir/libhttp-samba4.so
 %_samba_mod_libdir/libkrb5samba-samba4.so
 %_samba_mod_libdir/libldbsamba-samba4.so
-%_samba_mod_libdir/liblibsmb-samba4.so
 %_samba_mod_libdir/liblibcli-lsa3-samba4.so
-%_samba_mod_libdir/liblibcli-netlogon3-samba4.so
-%_samba_mod_libdir/libsamba-cluster-support-samba4.so
 %_samba_mod_libdir/libmessages-dgm-samba4.so
 %_samba_mod_libdir/libmessages-util-samba4.so
 %_samba_mod_libdir/libmsghdr-samba4.so
-%_samba_mod_libdir/libmscat-samba4.so
-%_samba_mod_libdir/libmsrpc3-samba4.so
-%_samba_mod_libdir/libnet-keytab-samba4.so
+%_samba_mod_libdir/libndr-samba-samba4.so
 %_samba_mod_libdir/libnetif-samba4.so
 %_samba_mod_libdir/libnpa-tstream-samba4.so
-%_samba_mod_libdir/libndr-samba-samba4.so
-%_samba_mod_libdir/libndr-samba4.so
+%_samba_mod_libdir/libposix-eadb-samba4.so
 %if_without libwbclient
 %_samba_mod_libdir/libreplace-samba4.so
 %_samba_mod_libdir/libwbclient.so.*
 %endif
-%_samba_mod_libdir/libprinter-driver-samba4.so
-%_samba_mod_libdir/libprinting-migrate-samba4.so
-%_samba_mod_libdir/libposix-eadb-samba4.so
-%_samba_mod_libdir/libregistry-samba4.so
+%_samba_mod_libdir/libsamba-cluster-support-samba4.so
 %_samba_mod_libdir/libsamba-debug-samba4.so
 %_samba_mod_libdir/libsamba-modules-samba4.so
 %_samba_mod_libdir/libsamba-security-samba4.so
 %_samba_mod_libdir/libsamba-sockets-samba4.so
 %_samba_mod_libdir/libsamba3-util-samba4.so
 %_samba_mod_libdir/libsamdb-common-samba4.so
-%_samba_mod_libdir/libsecrets3-samba4.so
 %_samba_mod_libdir/libserver-id-db-samba4.so
 %_samba_mod_libdir/libserver-role-samba4.so
 %_samba_mod_libdir/libshares-samba4.so
-%_samba_mod_libdir/libsocket-blocking-samba4.so
-%_samba_mod_libdir/libsmbclient-raw-samba4.so
-%_samba_mod_libdir/libsmbldaphelper-samba4.so
-%_samba_mod_libdir/libsmbpasswdparser-samba4.so
-%_samba_mod_libdir/libsmbd-base-samba4.so
-%_samba_mod_libdir/libsmbd-shim-samba4.so
 %_samba_mod_libdir/libsmb-transport-samba4.so
+%_samba_mod_libdir/libsmbd-shim-samba4.so
+%_samba_mod_libdir/libsmbpasswdparser-samba4.so
+%_samba_mod_libdir/libsocket-blocking-samba4.so
 %_samba_mod_libdir/libsys-rw-samba4.so
 %_samba_mod_libdir/libtalloc-report-printf-samba4.so
 %_samba_mod_libdir/libtalloc-report-samba4.so
 %_samba_mod_libdir/libtdb-wrap-samba4.so
 %_samba_mod_libdir/libtime-basic-samba4.so
 %_samba_mod_libdir/libtorture-samba4.so
-%_samba_mod_libdir/libtrusts-util-samba4.so
 %_samba_mod_libdir/libutil-reg-samba4.so
 %_samba_mod_libdir/libutil-setid-samba4.so
 %_samba_mod_libdir/libutil-tdb-samba4.so
 %_samba_mod_libdir/libxattr-tdb-samba4.so
 
 %files libs
+# libraries needed by the public libraries
+%_samba_libdir/libdcerpc.so.%{libdcerpc_so_version}*
+%_samba_libdir/libdcerpc-server-core.so.%{libdcerpc_server_core_so_version}*
+%_samba_libdir/libsamdb.so.%{libsamdb_so_version}*
+%_samba_libdir/libsamba-passdb.so.%{libsamba_passdb_so_version}*
+
 %dir %_samba_mod_libdir/pdb
 %_samba_mod_libdir/pdb
 
-# libraries needed by the public libraries
-%_samba_libdir/libdcerpc-binding.so.%{libdcerpc_binding_so_version}*
-%_samba_libdir/libdcerpc-samr.so.*
-%_samba_libdir/libdcerpc.so.%{libdcerpc_so_version}*
-%_samba_libdir/libdcerpc-server-core.so.%{libdcerpc_server_core_so_version}*
-%_samba_libdir/libsamba-credentials.so.%{libsamba_credentials_so_version}*
-%_samba_libdir/libsamba-hostconfig.so.%{libsamba_hostconfig_so_version}*
-%_samba_libdir/libsamdb.so.%{libsamdb_so_version}*
-%_samba_libdir/libsmbconf.so.%{libsmbconf_so_version}*
-%_samba_libdir/libsamba-passdb.so.%{libsamba_passdb_so_version}*
-%_samba_libdir/libsmbldap.so.%{libsmbldap_so_version}*
+%_samba_mod_libdir/libMESSAGING-samba4.so
+%_samba_mod_libdir/libads-samba4.so
+%_samba_mod_libdir/libauth-samba4.so
+%_samba_mod_libdir/libauth4-samba4.so
+%_samba_mod_libdir/libcli-ldap-samba4.so
+%_samba_mod_libdir/libcli-smb-common-samba4.so
+%_samba_mod_libdir/libcli-spoolss-samba4.so
+%_samba_mod_libdir/libcmdline-samba4.so
+%_samba_mod_libdir/libdb-glue-samba4.so
+%_samba_mod_libdir/libdcerpc-pkt-auth-samba4.so
+%_samba_mod_libdir/libdcerpc-samba4.so
+%_samba_mod_libdir/libgensec-samba4.so
+%_samba_mod_libdir/libgpext-samba4.so
+%_samba_mod_libdir/libgpo-samba4.so
+%_samba_mod_libdir/libgse-samba4.so
+%_samba_mod_libdir/libhttp-samba4.so
+%_samba_mod_libdir/liblibcli-netlogon3-samba4.so
+%_samba_mod_libdir/liblibsmb-samba4.so
+%_samba_mod_libdir/libmscat-samba4.so
+%_samba_mod_libdir/libmsrpc3-samba4.so
+%_samba_mod_libdir/libnet-keytab-samba4.so
+%_samba_mod_libdir/libndr-samba4.so
+
+%_samba_mod_libdir/libpac-samba4.so
+%_samba_mod_libdir/libprinter-driver-samba4.so
+%_samba_mod_libdir/libprinting-migrate-samba4.so
+%_samba_mod_libdir/libregistry-samba4.so
+%_samba_mod_libdir/libsecrets3-samba4.so
+%_samba_mod_libdir/libsmbclient-raw-samba4.so
+%_samba_mod_libdir/libsmbldaphelper-samba4.so
+%_samba_mod_libdir/libsmbd-base-samba4.so
+%_samba_mod_libdir/libtrusts-util-samba4.so
 
 %if_with ldb
 %_samba_libdir/libldb.so.*
@@ -1738,23 +1752,33 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libheimntlm-samba4.so.1.0.1
 %_samba_mod_libdir/libkdc-samba4.so.2
 %_samba_mod_libdir/libkdc-samba4.so.2.0.0
-%_samba_mod_libdir/libpac-samba4.so
 %endif #!mitkrb5
 %_samba_mod_libdir/libdnsserver-common-samba4.so
 %_samba_mod_libdir/libdsdb-module-samba4.so
 %_samba_mod_libdir/libdsdb-garbage-collect-tombstones-samba4.so
 %_samba_mod_libdir/libscavenge-dns-records-samba4.so
-%if_without ldb_modules
+%if_with ldb_modules
+%if_with separate_heimdal_server
+%_samba_mod_libdir/ldb.mit
+%exclude %_samba_mod_libdir/ldb.mit/ldbsamba_extensions.so
+%exclude %_samba_mod_libdir/ldb.mit/ildap.so
+%else
+%_samba_mod_libdir/ldb
+%exclude %_samba_mod_libdir/ldb/ldbsamba_extensions.so
+%exclude %_samba_mod_libdir/ldb/ildap.so
+%endif
+%else
 %if_with separate_heimdal_server
 %_altdir/samba-mit-dc-modules
+%dir %_samba_mod_libdir/ldb.mit
 %_samba_mod_libdir/ldb.mit
 %else
+%dir %_samba_mod_libdir/ldb
 %_samba_mod_libdir/ldb
 %endif
 %endif
 %dir %_samba_mod_libdir/gensec
 %_samba_mod_libdir/gensec
-%_samba_mod_libdir/libdb-glue-samba4.so
 %if_without mitkrb5
 %_samba_mod_libdir/libHDB-SAMBA4-samba4.so
 %_samba_mod_libdir/libasn1-samba4.so.*
@@ -1768,7 +1792,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libroken-samba4.so.*
 %_samba_mod_libdir/libwind-samba4.so.*
 %else
-%_samba_mod_libdir/libpac-samba4.so
 %_samba_libdir/krb5/plugins/kdb/samba.so
 %endif #!mitkrb5
 %_samba_mod_libdir/libprocess-model-samba4.so
@@ -1785,23 +1808,14 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
 %if_with ldb_modules
-%files -n libldb-modules-dc
-%if_with separate_heimdal_server
-%_samba_mod_libdir/ldb.mit
-%exclude %_samba_mod_libdir/ldb.mit/ldbsamba_extensions.so
-%exclude %_samba_mod_libdir/ldb.mit/ildap.so
-%else
-%_samba_mod_libdir/ldb
-%exclude %_samba_mod_libdir/ldb/ldbsamba_extensions.so
-%exclude %_samba_mod_libdir/ldb/ildap.so
-%endif
-
 %files -n libldb-modules-ldap
 %if_with separate_heimdal_server
 %_altdir/samba-mit-dc-modules
+%dir %_samba_mod_libdir/ldb.mit
 %_samba_mod_libdir/ldb.mit/ldbsamba_extensions.so
 %_samba_mod_libdir/ldb.mit/ildap.so
 %else
+%dir %_samba_mod_libdir/ldb
 %_samba_mod_libdir/ldb/ldbsamba_extensions.so
 %_samba_mod_libdir/ldb/ildap.so
 %endif
@@ -1902,9 +1916,16 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %attr(1770,root,usershares) %dir /var/lib/samba/usershares
 %_controldir/smb-conf-usershares
 %_controldir/role-usershares
+%_controldir/role-sambashare
+%_controldir/smb-conf-usershare-allow-list
+%_controldir/smb-conf-usershare-deny-list
+%_controldir/smb-conf-usershare-owner-only
+%_controldir/smb-conf-usershare-allow-guests
 
 %if_with winbind
 %files winbind-common
+%dir /var/lib/samba
+%attr(710,root,root) %dir /var/lib/samba/private
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %dir %_samba_piddir/winbindd
 %if_with doc
@@ -1930,6 +1951,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_bindir/wbinfo
 %_sbindir/winbindd
 %endif
+%if_with doc
+%_man1dir/ntlm_auth.1.*
+%_man1dir/wbinfo.1*
+%endif
 
 %files winbind-clients
 %_samba_libdir/libnss_winbind.so*
@@ -1939,8 +1964,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 /%_lib/security/pam_winbind.so
 %config(noreplace) %_sysconfdir/security/pam_winbind.conf
 %if_with doc
-%_man1dir/ntlm_auth.1.*
-%_man1dir/wbinfo.1*
 %_man5dir/pam_winbind.conf.5*
 %_man8dir/pam_winbind.8*
 %endif
@@ -2039,8 +2062,54 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
-* Wed Nov 30 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.17.3-alt1
-- update
+* Sat Feb 04 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.5-alt1
+- Update to stable release of Samba 4.17 with latest bugfixes.
+
+* Mon Dec 15 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.8-alt1
+- Update to maintenance release of Samba 4.16 with fixes of the Samba CVE for
+  the Windows Kerberos Elevation of Privilege Vulnerability disclosed by
+  Microsoft on Nov 8 2022 (CVE-2022-37967, CVE-2022-37966).
+- Security fixes:
+  + CVE-2022-37966: A Samba Active Directory DC will issue weak rc4-hmac
+                    session keys for use between modern clients and servers
+                    despite all modern Kerberos implementations supporting
+                    the aes256-cts-hmac-sha1-96 cipher.
+                    On Samba Active Directory DCs and members
+                    'kerberos encryption types = legacy' would force
+                    rc4-hmac as a client even if the server supports
+                    aes128-cts-hmac-sha1-96 and/or aes256-cts-hmac-sha1-96
+                    (Samba#13135, Samba#15219, Samba#15237).
+                     https://www.samba.org/samba/security/CVE-2022-37966.html
+
+  + CVE-2022-37967: A service account with the special constrained
+                    delegation permission could forge a more powerful
+                    ticket than the one it was presented with (Samba#15231).
+                     https://www.samba.org/samba/security/CVE-2022-37967.html
+
+  + CVE-2022-38023: The "RC4" protection of the NetLogon Secure channel uses the
+                    same algorithms as rc4-hmac cryptography in Kerberos,
+                    and so must also be assumed to be weak (Samba#15240).
+                     https://www.samba.org/samba/security/CVE-2022-38023.html
+
+* Mon Dec 12 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt5
+- Update text of summary for role-usershares and smb-conf-usershares.
+- Update default usershare prefix allow and deny lists:
+  + usershare prefix deny list = /etc /dev /sys /proc
+  + usershare prefix allow list = /home /srv /mnt /media /var
+- Add new controls for samba-usershares:
+  + smb-conf-usershare-allow-list
+  + smb-conf-usershare-deny-list
+  + smb-conf-usershare-owner-only
+  + smb-conf-usershare-allow-guests
+
+* Thu Dec 08 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt4
+- Add role-sambashare control for compatibility during upgrade from previous
+  manual managed settings of usershares.
+- Trigger sambashare as role with privilege usershares (Closes: #44379).
+
+* Sat Dec 03 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt3
+- Avoid cycle dependencies on common service files.
+- Fix cycle dependencies on libRPC and libREG samba4 libraries.
 
 * Tue Nov 29 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.7-alt2
 - Add role-usershares control allow or disallow for group users using of

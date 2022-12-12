@@ -1,0 +1,16 @@
+#!/bin/sh
+
+. /etc/control.d/functions
+
+CONFIG=/etc/samba/usershares.conf
+
+new_subst disabled '^\s*usershare\s+allow\s+guests\s*=\s*([Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|0)\s*' 's,^[[:space:]#;]*\(usershare\s\+allow\s\+guests\s*\)=\(.*\)$,\t\1= no,'
+new_subst enabled '^\s*usershare\s+allow\s+guests\s*=\s*([Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|1)\s*' 's,^[[:space:]#;]*\(usershare\s\+allow\s\+guests\s*\)=\(.*\)$,\t\1= yes,'
+new_subst default '^\s*[#;][[:space:]#;]*usershare\s+allow\s+guests\s*=' 's,^\(\s*usershare\s\+allow\s\+guests\s*=.*\)$,#\1,'
+
+new_summary "Determines samba restriction of permit guest access by usershares"
+new_help disabled "Disable restriction of permit guest access by samba usershares"
+new_help enabled "Enable restriction of permit guest access by samba usershares"
+new_help default "Default (disable) restriction of permit guest access by samba usershares"
+
+control_subst "$CONFIG" "$*"

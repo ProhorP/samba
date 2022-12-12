@@ -15,9 +15,9 @@ new_subst default '^\s*#[#[:space:]]*usershare[[:space:]]+max[[:space:]]+shares\
 
 new_help disabled 'Disable smb usershare options'
 new_help enabled 'Enable smb usershare options'
-new_help default 'Disable smb usershare options, as default'
+new_help default 'Disable smb usershare options as default'
 
-new_summary 'Control for work usershare options'
+new_summary 'Control for work usershare options (controlled by "usershare max shares")'
 
 CONFIG="$GLOBAL_CONFIG"
 if is_file_exists "$GLOBAL_CONFIG"; then

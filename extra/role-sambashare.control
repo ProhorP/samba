@@ -1,0 +1,16 @@
+#!/bin/sh
+
+. /etc/control.d/functions
+
+CONFIG=/etc/role.d/samba-usershares.role
+
+new_subst enabled '^\s*sambashare\s*:\s*usershares\s*$' 's,^[[:space:]#]*\(sambashare\s*:\s*usershares\|usershares\s*:\s*sambashare\)\s*,sambashare: usershares,'
+new_subst default '^\s*usershares\s*:\s*sambashare\s*$' 's,^[[:space:]#]*\(sambashare\s*:\s*usershares\|usershares\s*:\s*sambashare\)\s*,usershares: sambashare,'
+new_subst disabled '^\s*#[[:space:]#]*(sambashare\s*:\s*usershares|usershares\s*:\s*sambashare)\s*$' 's,^\s*\(sambashare\s*:\s*usershares\|usershares\s*:\s*sambashare\)\s*$,#\1,'
+
+new_summary "Control group \"sambashare\" to use samba usershares"
+new_help enabled "Allow users in group \"sambashare\" to use samba usershares"
+new_help default "Allow users in group \"sambashare\" to use samba usershares if they are in the \"users\" group"
+new_help disabled "Disallow users in group \"sambashare\" to use samba usershares"
+
+control_subst "$CONFIG" "$*"

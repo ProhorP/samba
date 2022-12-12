@@ -1,0 +1,14 @@
+#!/bin/sh
+
+. /etc/control.d/functions
+
+CONFIG=/etc/samba/usershares.conf
+
+new_subst enabled '^\s*usershare\s+prefix\s+deny\s+list\s*=' 's,^[[:space:]#;]*[#;]\(\s*usershare\s\+prefix\s\+deny\s\+list\s*\)=\(.*\)$,\1=\2,'
+new_subst disabled '^\s*[#;][[:space:]#;]*usershare\s+prefix\s+deny\s+list\s*=' 's,^\(\s*usershare\s\+prefix\s\+deny\s\+list\s*=.*\)$,#\1,'
+
+new_summary "Determines samba restriction of prohibited directories to be shared by usershares"
+new_help enabled "Enable list of prohibited directories to be shared by samba usershares"
+new_help disabled "Disable list of prohibited directories to be shared by samba usershares"
+
+control_subst "$CONFIG" "$*"
