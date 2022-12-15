@@ -434,6 +434,8 @@ plantestsuite("samba.unittests.test_registry_regfio", "none",
               [os.path.join(bindir(), "default/source3/test_registry_regfio")])
 plantestsuite("samba.unittests.test_oLschema2ldif", "none",
               [os.path.join(bindir(), "default/source4/utils/oLschema2ldif/test_oLschema2ldif")])
+plantestsuite("samba.unittests.auth.sam", "none",
+              [os.path.join(bindir(), "test_auth_sam")])
 if have_heimdal_support and not using_system_gssapi:
     plantestsuite("samba.unittests.auth.heimdal_gensec_unwrap_des", "none",
                   [valgrindify(os.path.join(bindir(), "test_heimdal_gensec_unwrap_des"))])
@@ -450,5 +452,8 @@ plantestsuite("samba.unittests.credentials", "none",
               [os.path.join(bindir(), "default/auth/credentials/test_creds")])
 plantestsuite("samba.unittests.tsocket_bsd_addr", "none",
               [os.path.join(bindir(), "default/lib/tsocket/test_tsocket_bsd_addr")])
+plantestsuite("samba.unittests.tsocket_tstream", "none",
+              [os.path.join(bindir(), "default/lib/tsocket/test_tstream")],
+              environ={'SOCKET_WRAPPER_DIR': ''})
 plantestsuite("samba.unittests.adouble", "none",
               [os.path.join(bindir(), "test_adouble")])
