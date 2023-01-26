@@ -75,7 +75,7 @@
 
 Name:    samba
 Version: 4.14.14
-Release: alt1
+Release: alt0.c9.1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -188,11 +188,8 @@ BuildRequires: python3-module-tdb
 
 %if_without ldb
 %define ldb_version 2.3.4
-%define ldb_version_release %nil
-BuildRequires: libldb-devel = %ldb_version
-%if "%ldb_version_release" != ""
+%define ldb_version_release %ldb_version
 BuildRequires: libldb-devel >= %ldb_version_release
-%endif
 BuildRequires: python3-module-pyldb-devel
 %endif
 %{?_with_testsuite:BuildRequires: ldb-tools}
@@ -1921,6 +1918,9 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Jan 26 2023 Andrey Cherepanov <cas@altlinux.org> 4.14.14-alt0.c9.1
+- Backported new verions with security fixes to c9 branch.
+
 * Sun Jul 31 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.14.14-alt1
 - Update to security release of Samba 4.14
   + CVE-2022-2031:  Samba AD users can bypass certain restrictions associated
