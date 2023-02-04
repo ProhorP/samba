@@ -1227,6 +1227,10 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_unitdir/nmb.service
 %_unitdir/smb.service
 
+%_samba_mod_libdir/libREG-FULL-samba4.so
+%_samba_mod_libdir/libRPC-SERVER-LOOP-samba4.so
+%_samba_mod_libdir/libRPC-WORKER-samba4.so
+
 %dir %_samba_mod_libdir/vfs
 %_samba_mod_libdir/vfs/*.so
 
@@ -1654,9 +1658,6 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %_samba_mod_libdir/libutil-setid-samba4.so
 %_samba_mod_libdir/libutil-tdb-samba4.so
 %_samba_mod_libdir/libxattr-tdb-samba4.so
-%_samba_mod_libdir/libREG-FULL-samba4.so
-%_samba_mod_libdir/libRPC-SERVER-LOOP-samba4.so
-%_samba_mod_libdir/libRPC-WORKER-samba4.so
 
 %files libs
 %dir %_samba_mod_libdir/pdb
