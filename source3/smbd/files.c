@@ -1053,9 +1053,9 @@ next:
 	}
 
 	if (dirfsp != conn->cwd_fsp) {
-		dirfsp->fsp_name = NULL;
 		SMB_ASSERT(fsp_get_pathref_fd(dirfsp) != -1);
 		fd_close(dirfsp);
+		dirfsp->fsp_name = NULL;
 		file_free(NULL, dirfsp);
 		dirfsp = NULL;
 	}
@@ -1117,9 +1117,9 @@ fail:
 	}
 
 	if ((dirfsp != NULL) && (dirfsp != conn->cwd_fsp)) {
-		dirfsp->fsp_name = NULL;
 		SMB_ASSERT(fsp_get_pathref_fd(dirfsp) != -1);
 		fd_close(dirfsp);
+		dirfsp->fsp_name = NULL;
 		file_free(NULL, dirfsp);
 		dirfsp = NULL;
 	}
@@ -1196,7 +1196,7 @@ NTSTATUS synthetic_pathref(TALLOC_CTX *mem_ctx,
 
 	status = openat_pathref_fsp(dirfsp, smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
-		DBG_ERR("opening [%s] failed\n",
+		DBG_NOTICE("opening [%s] failed\n",
 			smb_fname_str_dbg(smb_fname));
 		TALLOC_FREE(smb_fname);
 		return status;
