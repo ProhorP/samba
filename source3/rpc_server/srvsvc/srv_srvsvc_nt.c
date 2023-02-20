@@ -536,6 +536,7 @@ static bool is_hidden_share(int snum)
 static bool is_enumeration_allowed(struct pipes_struct *p,
                                    int snum)
 {
+	bool allowed;
 	struct dcesrv_call_state *dce_call = p->dce_call;
 	struct auth_session_info *session_info =
 		dcesrv_call_session_info(dce_call);
@@ -552,9 +553,19 @@ static bool is_enumeration_allowed(struct pipes_struct *p,
 		return false;
 	}
 
-	return share_access_check(session_info->security_token,
-				  lp_servicename(talloc_tos(), lp_sub, snum),
-				  FILE_READ_DATA, NULL);
+
+	/*
+	 * share_access_check() must be opened as root
+	 * because it ultimately gets a R/W db handle on share_info.tdb
+	 * which has 0o600 permissions
+	 */
+	become_root();
+	allowed = share_access_check(session_info->security_token,
+				     lp_servicename(talloc_tos(), lp_sub, snum),
+				     FILE_READ_DATA, NULL);
+	unbecome_root();
+
+	return allowed;
 }
 
 /****************************************************************************
@@ -626,30 +637,34 @@ static WERROR init_srv_share_info_ctr(struct pipes_struct *p,
 	union srvsvc_NetShareCtr ctr;
 	uint32_t resume_handle = resume_handle_p ? *resume_handle_p : 0;
 	const char *unix_name = session_info->unix_info->unix_name;
-	int existing_home = lp_servicenumber(unix_name);
+	int existing_home = -1;
 	int added_home = -1;
 	WERROR ret = WERR_OK;
 
 	DEBUG(5,("init_srv_share_info_ctr\n"));
 
-	/* Ensure all the usershares are loaded. */
+	/*
+	 * We need to make sure to reload the services for the connecting user.
+	 * It is possible that we have includes with substitutions.
+	 *
+	 *  include = /etc/samba/%U.conf
+	 *
+	 * We also need all printers and usershares.
+	 *
+	 * We need to be root in order to have access to registry shares
+	 * and root only smb.conf files.
+	 */
 	become_root();
+	lp_kill_all_services();
+	lp_load_with_shares(get_dyn_CONFIGFILE());
 	delete_and_reload_printers();
 	load_usershare_shares(NULL, connections_snum_used);
 	load_registry_shares();
-	unbecome_root();
-
+	existing_home = lp_servicenumber(unix_name);
 	if (existing_home == -1) {
 		added_home = register_homes_share(unix_name);
 	}
-
-	/*
-	 * We need to make sure to reload the services for the connecting user.
-	 * It is possible that the we have includes with substitutions.
-	 *
-	 *  include = /etc/samba/%U.conf
-	 */
-	reload_services(NULL, NULL, false);
+	unbecome_root();
 
 	num_services = lp_numservices();
 
