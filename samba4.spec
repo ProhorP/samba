@@ -146,6 +146,7 @@ Requires: tdb-utils
 
 Requires(pre): %name-common = %version-%release
 Requires: %name-libs = %version-%release
+Requires: %name-dcerpc = %version-%release
 %if_with libwbclient
 Requires: libwbclient = %version-%release
 %endif
@@ -659,6 +660,7 @@ Winbind servers separately builded and packaged.
 Summary: Samba winbind
 Group: System/Servers
 Requires: %name-libs = %version-%release
+Requires: %name-dcerpc = %version-%release
 Requires: %name-winbind-common = %version-%release
 Provides: %dcname-winbind = %version-%release
 Obsoletes: %dcname-winbind < 4.10
@@ -698,6 +700,14 @@ Obsoletes: %dcname-winbind-krb5-localauth < 4.10
 %description winbind-krb5-localauth
 The winbind krb5 localauth is a plugin that permits the MIT Kerberos libraries
 that Kerberos principals can be validated against local user accounts.
+
+%package dcerpc
+Summary: DCE RPC binaries
+Group: System/Servers
+Requires: samba-libs = %version-%release
+
+%description dcerpc
+The samba-dcerpc package contains binaries that serve DCERPC over named pipes.
 
 %package ctdb
 Summary: A Clustered Database based on Samba's Trivial Database (TDB)
@@ -1219,24 +1229,11 @@ control role-sambashare enabled
 %_sbindir/smbd
 %endif
 %_samba_libexecdir/samba-bgqd
-%_samba_libexecdir/samba-dcerpcd
-%_samba_libexecdir/rpcd_classic
-%_samba_libexecdir/rpcd_epmapper
-%_samba_libexecdir/rpcd_fsrvp
-%_samba_libexecdir/rpcd_lsad
-%_samba_libexecdir/rpcd_mdssvc
-%_samba_libexecdir/rpcd_rpcecho
-%_samba_libexecdir/rpcd_spoolss
-%_samba_libexecdir/rpcd_winreg
 %config(noreplace) %_sysconfdir/samba/smbusers
 %attr(755,root,root) %_initdir/smb
 %attr(755,root,root) %_initdir/nmb
 %_unitdir/nmb.service
 %_unitdir/smb.service
-
-%_samba_mod_libdir/libREG-FULL-samba4.so
-%_samba_mod_libdir/libRPC-SERVER-LOOP-samba4.so
-%_samba_mod_libdir/libRPC-WORKER-samba4.so
 
 %dir %_samba_mod_libdir/vfs
 %_samba_mod_libdir/vfs/*.so
@@ -1257,6 +1254,19 @@ control role-sambashare enabled
 %_samba_mod_libdir/auth/unix.so
 
 %attr(775,root,printadmin) %dir /var/lib/samba/drivers
+
+%files dcerpc
+%dir %_samba_libexecdir
+%_samba_libexecdir/samba-dcerpcd
+%_samba_libexecdir/rpcd_classic
+%_samba_libexecdir/rpcd_epmapper
+%_samba_libexecdir/rpcd_fsrvp
+%_samba_libexecdir/rpcd_lsad
+%_samba_libexecdir/rpcd_mdssvc
+%_samba_libexecdir/rpcd_rpcecho
+%_samba_libexecdir/rpcd_spoolss
+%_samba_libexecdir/rpcd_winreg
+%_man8dir/samba-dcerpcd.8*
 
 %if_with dc
 %files -n admx-samba
@@ -1472,7 +1482,6 @@ control role-sambashare enabled
 %_man8dir/smbd.8*
 %_man8dir/nmbd.8*
 %_man8dir/samba-bgqd.8*
-%_man8dir/samba-dcerpcd.8*
 %_man8dir/vfs_*.8*
 
 %if_with libcephfs
@@ -1655,6 +1664,10 @@ control role-sambashare enabled
 
 %dir %_samba_mod_libdir/pdb
 %_samba_mod_libdir/pdb
+
+%_samba_mod_libdir/libREG-FULL-samba4.so
+%_samba_mod_libdir/libRPC-SERVER-LOOP-samba4.so
+%_samba_mod_libdir/libRPC-WORKER-samba4.so
 
 %_samba_mod_libdir/libMESSAGING-samba4.so
 %_samba_mod_libdir/libads-samba4.so
