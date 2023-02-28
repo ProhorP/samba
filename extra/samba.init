@@ -24,19 +24,17 @@
 # used by Windows 2000 and above.
 ### END INIT INFO
 
+# Do not load RH compatibility interface.
+WITHOUT_RC_COMPAT=1
+
 # Source function library.
-if [ -f /etc/rc.d/init.d/functions ] ; then
-. /etc/rc.d/init.d/functions
-fi
+. /etc/init.d/functions
+
 # Source networking configuration.
-if [ -f /etc/sysconfig/network ] ; then
-. /etc/sysconfig/network
-fi
+SourceIfNotEmpty /etc/sysconfig/network
 
 # Read SAMBA parameters
-if [ -f /etc/sysconfig/samba ]; then
-. /etc/sysconfig/samba
-fi
+SourceIfNotEmpty /etc/sysconfig/samba
 
 prog=samba
 prog_dir=/usr/local/samba/sbin/
