@@ -318,6 +318,7 @@ Group: Networking/Other
 Requires: cepces
 Requires: certmonger
 Requires: libldb-modules-ldap = %version-%release
+Requires: python3-module-%name = %version-%release
 
 %description gpupdate
 This package provides the samba-gpupdate tool to apply Group Policy Objects
@@ -1166,6 +1167,10 @@ install -m755 script/traffic_replay %buildroot%_bindir/traffic_replay
 
 # Compatiblity symlink for admx policy templates
 #ln -s ../PolicyDefinitions %buildroot%_datadir/samba/admx
+
+# Provide compatiblity with __init__ function for samba.gp.* classes
+touch %buildroot%python3_sitelibdir/samba/gp/__init__.py
+touch %buildroot%python3_sitelibdir/samba/gp/util/__init__.py
 
 %find_lang pam_winbind
 %find_lang net
@@ -2075,8 +2080,36 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
-* Sat Feb 04 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.5-alt1
-- Update to stable release of Samba 4.17 with latest bugfixes.
+* Tue Feb 28 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.5-alt1
+- Update to stable release of Samba 4.17 with latest bugfixes and new features:
+  + Support Protected Users security group introduced in Windows Server 2012 R2.
+  + Resource Based Constrained Delegation (RBCD) support with samba-dc-mitkrb5.
+  + Customizable DNS listening port to use another DNS server as a front and
+    forward to Samba.
+  + Operation without the (unsalted) NT password hash security support.
+  + Suppport for modern Python API for smbconf.
+  + JSON support for smbstatus.
+  + LanMan Authentication and password storage removed from the AD DC.
+- Configure without the SMB1 Server not enabled yet.
+
+* Mon Feb 20 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.9-alt1
+- Update to maintenance release of Samba 4.16
+- Security fixes:
+  + CVE-2022-38023: Samba should refuse RC4 (aka md5) based SChannel on
+    NETLOGON (Samba#15240).
+- Major fixes:
+  + smbc_getxattr() return value is incorrect (Samba#14808).
+  + samba-tool gpo listall fails IPv6 only - finddcs() fails to find DC when
+    there is only an AAAA record for the DC in DNS (Samba#15226).
+  + smbd crashes if an FSCTL request is done on a stream handle (Samba#15236).
+  + auth3_generate_session_info_pac leaks wbcAuthUserInfo (Samba#15286).
+  + Leak in wbcCtxPingDc2 (Samba#15164).
+  + irpc_destructor may crash during shutdown (Samba#15280).
+- Share enumeration (netshareenum) fixes:
+  + %U for include directive doesn't work for share listing (Samba#15243).
+  + Shares missing from netshareenum response in samba 4.17.4 (Samba#15266).
+  + Access based share enum does not work in Samba 4.16+ (Samba#15265).
+  + Crash during share enumeration (Samba#15267).
 
 * Mon Dec 15 2022 Evgeny Sinelnikov <sin@altlinux.org> 4.16.8-alt1
 - Update to maintenance release of Samba 4.16 with fixes of the Samba CVE for
