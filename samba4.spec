@@ -1012,7 +1012,7 @@ printf "%_bindir/samba-tool\t%_samba_mod_libdir/bin/samba-tool\t20\n" > %buildro
 chmod 0755 %buildroot%_samba_mod_libdir/bin/samba-tool
 
 mv %buildroot%_sbindir/samba_downgrade_db %buildroot%_samba_mod_libdir/sbin/
-printf "%_bindir/samba_downgrade_db\t%_samba_mod_libdir/sbin/samba_downgrade_db\t20\n" >> %buildroot%_altdir/samba-mit-dc-client
+printf "%_sbindir/samba_downgrade_db\t%_samba_mod_libdir/sbin/samba_downgrade_db\t20\n" >> %buildroot%_altdir/samba-mit-dc-client
 chmod 0755 %buildroot%_samba_mod_libdir/sbin/samba_downgrade_db
 
 %endif
