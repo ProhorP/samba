@@ -1271,7 +1271,9 @@ control role-sambashare enabled
 %_samba_libexecdir/rpcd_rpcecho
 %_samba_libexecdir/rpcd_spoolss
 %_samba_libexecdir/rpcd_winreg
+%if_with doc
 %_man8dir/samba-dcerpcd.8*
+%endif
 
 %if_with dc
 %files -n admx-samba
@@ -1335,7 +1337,9 @@ control role-sambashare enabled
 
 %files gpupdate
 %_sbindir/samba-gpupdate
+%if_with doc
 %_man8dir/samba-gpupdate.8*
+%endif
 
 %files dc-client
 %if_with separate_heimdal_server
@@ -1355,7 +1359,9 @@ control role-sambashare enabled
 %files krb5-printing
 %_altdir/samba-krb5-printing
 %attr(0700,root,root) %_samba_libexecdir/smbspool_krb5_wrapper
+%if_with doc
 %_man8dir/smbspool_krb5_wrapper.8*
+%endif
 
 %files client
 %_bindir/cifsdd
