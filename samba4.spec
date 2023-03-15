@@ -97,8 +97,8 @@
 %endif
 
 Name:    samba
-Version: 4.17.5
-Release: alt2
+Version: 4.17.6
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2086,6 +2086,20 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Mar 15 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.6-alt1
+- Update to maintenance release of Samba 4.17:
+  + streams_xattr is creating unexpected locks on folders (Samba#15314).
+  + Use of the Azure AD Connect cloud sync tool is now supported for password
+    hash synchronisation, allowing Samba AD Domains to synchronise passwords
+    with this popular cloud environment (Samba#10635).
+  + New samba-dcerpc architecture does not scale gracefully (Samba#15310).
+  + vfs_ceph incorrectly uses fsp_get_io_fd() instead of fsp_get_pathref_fd()
+    in close and fstat (Samba#15307).
+  + fd_load() function implicitly closes the fd where it should not (Samba#15311).
+- Revert not treat of missing include file as an error in handle_include().
+  This behavior differs between the source3 and source4 parts of Samba.
+  So, it should be the same and just not an error (Closes #44214).
+
 * Sat Mar 11 2023 Michael Shigorin <mike@altlinux.org> 4.17.5-alt2
 - Fix doc knob
 
