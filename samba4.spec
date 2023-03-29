@@ -75,7 +75,7 @@
 %endif
 
 Name:    samba
-Version: 4.16.9
+Version: 4.16.10
 Release: alt1
 
 Group:   System/Servers
@@ -199,7 +199,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.5.2
+%define ldb_version 2.5.3
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -2011,6 +2011,24 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Mar 29 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.10-alt1
+- Update to security release of Samba 4.16 with update libldb to 2.5.3:
+  + ldb wildcard matching makes excessive allocations (Samba#15331).
+
+- Security fixes (Samba#15270, Samba#15315):
+  + CVE-2023-0922: The Samba AD DC administration tool, when operating against a
+                   remote LDAP server, will by default send new or reset
+                   passwords over a signed-only connection.
+                   https://www.samba.org/samba/security/CVE-2023-0922.html
+
+  + CVE-2023-0614: The fix in 4.6.16, 4.7.9, 4.8.4 and 4.9.7 for CVE-2018-10919
+                   Confidential attribute disclosure via LDAP filters was
+                   insufficient and an attacker may be able to obtain
+                   confidential BitLocker recovery keys from a Samba AD DC.
+                   Installations with such secrets in their Samba AD should
+                   assume they have been obtained and need replacing.
+                   https://www.samba.org/samba/security/CVE-2023-0614.html
+
 * Mon Feb 20 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.9-alt1
 - Update to maintenance release of Samba 4.16
 - Security fixes:
