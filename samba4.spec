@@ -97,7 +97,7 @@
 %endif
 
 Name:    samba
-Version: 4.17.8
+Version: 4.17.9
 Release: alt1
 
 Group:   System/Servers
@@ -2105,6 +2105,20 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon Jul 10 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.9-alt1
+- Update to maintenance release of Samba 4.18:
+  + smbd_scavenger crashes when service smbd is stopped (Samba#15275).
+  + vfs_fruit might cause a failing open for delete (Samba#15378).
+  + named crashes on DLZ zone update (Samba#14030).
+  + winbind recurses into itself via rpcd_lsad (Samba#15361).
+  + cli_list loops 100% CPU against pre-lanman2 servers (Samba#15382).
+  + smbclient leaks fds with showacls (Samba#15391).
+  + aes256 smb3 encryption algorithms are not allowed in
+    smb3_sid_parse() (Samba#15374).
+  + winbindd gets stuck on NT_STATUS_RPC_SEC_PKG_ERROR (Samba#15413).
+  + smbget memory leak if failed to download files recursively (Samba#15403).
+- Add check with admx-lint for group policy templates validation.
+
 * Sun May 21 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.8-alt1
 - Update to maintenance release of Samba 4.18:
   + log flood: smbd_calculate_access_mask_fsp: Access denied: message level
