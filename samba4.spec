@@ -238,6 +238,8 @@ Summary: Samba ADMX policy templates
 Group: System/Configuration/Other
 BuildArch: noarch
 
+BuildRequires: admx-lint
+
 %description -n admx-samba
 admx-samba provides ADMX policy templates for Samba project.
 
@@ -1168,6 +1170,16 @@ install -m755 script/traffic_replay %buildroot%_bindir/traffic_replay
 # Compatiblity symlink for admx policy templates
 #ln -s ../PolicyDefinitions %buildroot%_datadir/samba/admx
 
+# Prepare to validation admx policy templates
+for file in %buildroot%_datadir/PolicyDefinitions/*.admx %buildroot%_datadir/PolicyDefinitions/*-*/*.adml; do
+    grep -q "^\(<policyDefinitions\|<policyDefinitionResources\) .*xmlns:xsd=" "$file" ||
+        sed -i 's/^\(<policyDefinitions\|<policyDefinitionResources\)/\1 xmlns:xsd="http:\/\/www.w3.org\/2001\/XMLSchema"/' "$file"
+    grep -q "^\(<policyDefinitions\|<policyDefinitionResources\) .*xmlns:xsi=" "$file" ||
+        sed -i 's/^\(<policyDefinitions\|<policyDefinitionResources\)/\1 xmlns:xsi="http:\/\/www.w3.org\/2001\/XMLSchema-instance"/' "$file"
+    grep -q "^\(<policyDefinitions\|<policyDefinitionResources\) .*xmlns=" "$file" ||
+        sed -i 's/^\(<policyDefinitions\|<policyDefinitionResources\)/\1 xmlns="http:\/\/schemas.microsoft.com\/GroupPolicy\/2006\/07\/PolicyDefinitions"/' "$file"
+done
+
 # Provide compatiblity with __init__ function for samba.gp.* classes
 touch %buildroot%python3_sitelibdir/samba/gp/__init__.py
 touch %buildroot%python3_sitelibdir/samba/gp/util/__init__.py
@@ -1175,8 +1187,15 @@ touch %buildroot%python3_sitelibdir/samba/gp/util/__init__.py
 %find_lang pam_winbind
 %find_lang net
 
-%if_with testsuite
 %check
+for file in \
+            %buildroot%_datadir/PolicyDefinitions/*.admx \
+            %buildroot%_datadir/PolicyDefinitions/*/*.adml
+do
+    admx-lint --input_file "$file"
+done
+
+%if_with testsuite
 TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %endif
 
