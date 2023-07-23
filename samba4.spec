@@ -76,7 +76,7 @@
 
 Name:    samba
 Version: 4.16.11
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2030,6 +2030,9 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Sun Jul 23 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt2
+- Add check with admx-lint for group policy templates validation.
+
 * Sun Jul 23 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt1
 - Update to security release of Samba 4.16 (Closes: 46966):
   + Secure channel faulty since Windows 10/11 update 07/2023 (KB5028166).
