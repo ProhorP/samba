@@ -4353,10 +4353,13 @@ static PyObject *py_register_module(PyObject *module, PyObject *args)
 
 	tmp = PyObject_GetAttrString(input, discard_const_p(char, "name"));
 	if (tmp == NULL) {
+		TALLOC_FREE(ops);
 		return NULL;
 	}
 	name = PyUnicode_AsUTF8(tmp);
 	if (name == NULL) {
+		Py_DECREF(tmp);
+		TALLOC_FREE(ops);
 		return NULL;
 	}
 	Py_XDECREF(tmp);
@@ -4378,6 +4381,7 @@ static PyObject *py_register_module(PyObject *module, PyObject *args)
 
 	ret = ldb_register_module(ops);
 	if (ret != LDB_SUCCESS) {
+		Py_DECREF(input);
 		TALLOC_FREE(ops);
 	}
 
