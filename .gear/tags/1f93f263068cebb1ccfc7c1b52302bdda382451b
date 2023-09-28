@@ -1,0 +1,22 @@
+object 5b5f4deb88a5677c82e29c1e9812741662c0cb05
+type commit
+tag samba-4.14.2
+tagger Karolin Seeger <kseeger@samba.org> 1616580807 +0100
+
+samba: tag release samba-4.14.2
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAABCgAdFiEEgfXigyvSVFoYl7cTqplEL7aAtiAFAmBbEMcACgkQqplEL7aA
+tiBLBQ//b7oxluu+o7rE2uvoR6wT7rWGm7urY+8Y+v+99vHtwf9ujfy1FAeLvEnO
+BY6jaZy4Whoi1WZU5FFCA7pfc4am5ay76r0w0wTV7aTcF47niGPurEGcK9Y9S3Uw
+VHVB6GRCEVUIP2SJYkY7LOV971PxoMk7I9Q130rLKIrlgsNxAhRkN/x2cfwwS0qC
+PUozITdTWoIbRZr1H/PMiM7WxN/aYFWz/1WNCVIstJR2OrYtWd1u3SGMB8Vjj7ia
+tK14TrtrEIs/w4O5Xpk8rPXT7AnfTnjvURelDlEv9ggYr5Y+K0vEl4EexCqrD3p8
+oHO6JSuV/g2NI+C/rSXKebxKD0J8o17pBHPyjC/YJ9bcxGWkdrSGcBME9KinzB3M
+RrefK3mxtSUdUYBUz37zHb+SCNP4iy6ph/MJyl/BlCzg5vnmMwgMaUofnBci3XbA
+qVLA1bYXj7dP1grp4XX7irN3/z4WCrKV8fGu8Oc2bpG404KujXH8D/DlMIQy2zse
+osNsbBBz53xEsOduDourAg3M+L899iUy9Ay4CWfXQe1dBHVplcGNb+CMVMTZ6zIV
+FO6zhHKuDYUfPxsRnaVG5oiaoIDujnU3jWIbYPxDWamEp20NbYuONJsALHU4rDoK
+Tn3R3t//LfilaAHxl+T1MwfcNyuNAdurZvQQ8MqnmEl9/eHibfA=
+=lQ48
+-----END PGP SIGNATURE-----

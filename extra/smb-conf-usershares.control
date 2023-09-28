@@ -1,0 +1,42 @@
+#!/bin/sh
+
+. /etc/control.d/functions-local-policy
+
+GLOBAL_CONFIG=/etc/samba/smb.conf
+SHARES_CONFIG=/etc/samba/usershares.conf
+DEFAULT_MAX_SHARES=100
+
+new_subst disabled '^[[:space:]]*usershare[[:space:]]+max[[:space:]]+shares\s*=\s*0\s*$' \
+                    's,^[#[:space:]]*\(usershare[[:space:]]\+max[[:space:]]\+shares\).*,\t\1 = 0,g'
+new_subst enabled '^[[:space:]]*usershare[[:space:]]+max[[:space:]]+shares\s*=\s*[1-9]+[0-9]*\s*' \
+                  "s,^[#[:space:]]*\(usershare[[:space:]]\+max[[:space:]]\+shares\)\s*,\t\1,; s,^\([[:space:]]*usershare[[:space:]]\+max[[:space:]]\+shares\)\s*=\s*0\s*$,\1 = $DEFAULT_MAX_SHARES,"
+new_subst default '^\s*#[#[:space:]]*usershare[[:space:]]+max[[:space:]]+shares\s*=\s*[0-9]+\s*' \
+                  's,^\([[:space:]]*usershare[[:space:]]\+max[[:space:]]\+shares\s*=\s*\),#\1,'
+
+new_help disabled 'Disable smb usershare options'
+new_help enabled 'Enable smb usershare options'
+new_help default 'Disable smb usershare options as default'
+
+new_summary 'Control for work usershare options (controlled by "usershare max shares")'
+
+CONFIG="$GLOBAL_CONFIG"
+if is_file_exists "$GLOBAL_CONFIG"; then
+	if grep -q "^\s*include\s*=\s*$SHARES_CONFIG\s*\$" "$GLOBAL_CONFIG"; then
+		CONFIG="$SHARES_CONFIG"
+	fi
+fi
+
+if is_file_exists "$CONFIG" && ! is_builtin_mode "$1"; then
+	case "$1" in
+	disabled|enabled|default)
+		if [ "$CONFIG" = "$SHARES_CONFIG" ]; then
+			sed -i --follow-symlinks -e 's,^\([[:space:]]*usershare[[:space:]]\+\)\s*,#\1,g' "$GLOBAL_CONFIG"
+		fi
+		if ! grep -q '^[#[:space:]]*usershare\s\+max\s\+shares\s*=\s*' "$CONFIG"; then
+			sed -i --follow-symlinks -e "/\[global\]/a \\\tusershare max shares = $DEFAULT_MAX_SHARES" $CONFIG
+		fi
+		;;
+	esac
+fi
+
+control_subst_with_file_check "$CONFIG" "$*" "disabled enabled default"
