@@ -102,7 +102,7 @@
 
 Name:    samba
 Version: 4.17.12
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -466,6 +466,7 @@ link against the SMB, RPC and other protocols provided by the Samba suite.
 %package common-tools
 Summary: Tools for Samba servers and clients
 Group: System/Servers
+Requires: %name-common-client = %version-%release
 Provides: %dcname-common-tools = %version-%release
 Obsoletes: %dcname-common-tools < 4.10
 Conflicts: gnustep-gworkspace
@@ -2114,6 +2115,15 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Dec 05 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.12-alt3
+- Security update of Samba 4.17 with fixes of the Samba CVE for Deleted Object
+  tombstones visible in AD LDAP to normal users (CVE-2018-14628).
+- Security fixes:
+  + CVE-2018-14628: Wrong ntSecurityDescriptor values for "CN=Deleted Objects"
+                    allow read of object tombstones over LDAP
+                    (Administrator action required!)
+                    https://www.samba.org/samba/security/CVE-2018-14628.html
+
 * Sun Oct 22 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.12-alt2
 - Revert services type from forking to notify.
 
