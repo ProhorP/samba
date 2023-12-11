@@ -1379,7 +1379,6 @@ control role-sambashare enabled
 %_datadir/PolicyDefinitions/*/*.adml
 
 %files dc-common
-%_sysconfdir/pam.d/samba
 %dir /var/lib/samba/sysvol
 %dir %_datadir/samba/setup
 %_datadir/samba/setup
@@ -1562,6 +1561,7 @@ control role-sambashare enabled
 %endif
 
 %files common
+%_sysconfdir/pam.d/samba
 %if_without winbind
 %dir /var/lib/samba
 %attr(710,root,root) %dir /var/lib/samba/private
