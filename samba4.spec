@@ -102,7 +102,7 @@
 
 Name:    samba
 Version: 4.17.12
-Release: alt3
+Release: alt4
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2115,6 +2115,10 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Dec 12 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.12-alt4
+- Replace samba service pam config to samba-common due regression with password
+  authentication in security = user mode with obey pam restrictions = yes.
+
 * Tue Dec 05 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.17.12-alt3
 - Security update of Samba 4.17 with fixes of the Samba CVE for Deleted Object
   tombstones visible in AD LDAP to normal users (CVE-2018-14628).
