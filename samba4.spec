@@ -24,7 +24,7 @@
 %def_without libnetapi
 %def_with doc
 
-%def_with dc
+%def_without dc
 %def_without ntvfs
 %def_with clustering_support
 %def_without testsuite
@@ -34,9 +34,7 @@
 %force_with dc
 %endif
 
-%if_with dc
 %def_with ldb_modules
-%endif
 
 %def_with mitkrb5
 %def_with separate_heimdal_server
@@ -76,7 +74,7 @@
 
 Name:    samba
 Version: 4.16.11
-Release: alt1
+Release: alt0.c9.1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -166,10 +164,8 @@ BuildRequires: krb5-kdc
 %endif
 %endif
 
-%if_with dc
 BuildRequires: python3-module-markdown
 BuildRequires: python3-module-dns
-%endif
 
 BuildRequires: glibc-devel glibc-kernheaders
 # https://bugzilla.samba.org/show_bug.cgi?id=9863
@@ -248,8 +244,12 @@ Requires: krb5-kdc
 Requires: tdb-utils
 Requires: %name-winbind-common = %version-%release
 Requires(pre): %name-common = %version-%release
-%endif
+%if_with dc
 Conflicts: %name-dc-mitkrb5
+%else
+Provides: %name-dc-mitkrb5 = %version-%release
+%endif
+%endif
 
 # Workaround for unneeded python2.7 requires
 %add_python_req_skip bisect
@@ -558,6 +558,14 @@ Obsoletes: libwbclient-devel < %version-%release
 %if_without libnetapi
 Provides: libnetapi-devel = %version-%release
 Obsoletes: libnetapi-devel < %version-%release
+%endif
+
+%if_with separate_heimdal_server
+%if_without dc
+# Add /usr/bin/gpg-agent dependency due freeipa tests implicitly dependend to
+#  gnupg2 < libgpgme.so.11 < samba-dc-libs < samba-dc-mitkrb5.
+Requires: /usr/bin/gpg-agent
+%endif
 %endif
 
 %description devel
@@ -937,10 +945,6 @@ for f in eventlogadm nmbd smbd; do
     mv %buildroot%_sbindir/$f %buildroot%_samba_mod_libdir/sbin/
     printf "%_sbindir/$f\t%_samba_mod_libdir/sbin/$f\t20\n" >> %buildroot%_altdir/samba-mit
 done
-for f in samba samba_kcc samba_dnsupdate samba_spnupdate samba_upgradedns; do
-    mv %buildroot%_sbindir/$f %buildroot%_samba_mod_libdir/sbin/
-    printf "%_sbindir/$f\t%_samba_mod_libdir/sbin/$f\t20\n" >> %buildroot%_altdir/samba-mit-dc
-done
 
 mkdir %buildroot%_samba_mod_libdir/bin
 mv %buildroot%_bindir/wbinfo %buildroot%_samba_mod_libdir/bin/
@@ -959,10 +963,6 @@ printf "%_samba_mod_libdir/ldb\t%_samba_mod_libdir/ldb.mit\t20\n" > %buildroot%_
 mv %buildroot%_bindir/samba-tool %buildroot%_samba_mod_libdir/bin/
 printf "%_bindir/samba-tool\t%_samba_mod_libdir/bin/samba-tool\t20\n" > %buildroot%_altdir/samba-mit-dc-client
 chmod 0755 %buildroot%_samba_mod_libdir/bin/samba-tool
-
-mv %buildroot%_sbindir/samba_downgrade_db %buildroot%_samba_mod_libdir/sbin/
-printf "%_sbindir/samba_downgrade_db\t%_samba_mod_libdir/sbin/samba_downgrade_db\t20\n" >> %buildroot%_altdir/samba-mit-dc-client
-chmod 0755 %buildroot%_samba_mod_libdir/sbin/samba_downgrade_db
 
 %endif
 
@@ -1019,9 +1019,7 @@ install -m644 %SOURCE21 %buildroot%_sysconfdir/samba/smbusers
 install -m755 %SOURCE10 %buildroot%_initrddir/nmb
 install -m755 %SOURCE5 %buildroot%_initrddir/smb
 install -m755 %SOURCE8 %buildroot%_initrddir/winbind
-%if_with dc
 install -m755 %SOURCE20 %buildroot%_initrddir/samba
-%endif
 
 # Put README in builddir
 cp %SOURCE200 %SOURCE201 .
@@ -1147,13 +1145,11 @@ TDB_NO_FSYNC=1 %make_build test V=2 -Onone
 %pre common
 %_sbindir/groupadd -f -r printadmin >/dev/null 2>&1 || :
 
-%if_with dc
 %post dc
 %post_service samba
 
 %preun dc
 %preun_service samba
-%endif
 
 %if_with winbind
 %pre winbind-common
@@ -1229,7 +1225,6 @@ control role-sambashare enabled
 
 %attr(775,root,printadmin) %dir /var/lib/samba/drivers
 
-%if_with dc
 %files -n admx-samba
 %_datadir/PolicyDefinitions/*.admx
 %_datadir/PolicyDefinitions/*/*.adml
@@ -1272,7 +1267,9 @@ control role-sambashare enabled
 #_samba_dc_mod_libdir/bin/
 %dir %_samba_dc_mod_libdir
 %_samba_dc_libdir/
+%endif #!separate_heimdal_server
 
+%if_with dc
 %files -n task-samba-dc-mitkrb5
 
 %files dc-mitkrb5
@@ -1284,18 +1281,22 @@ control role-sambashare enabled
 %_samba_mod_libdir/sbin/samba_dnsupdate
 %_samba_mod_libdir/sbin/samba_spnupdate
 %_samba_mod_libdir/sbin/samba_upgradedns
-%endif #!separate_heimdal_server
 
 %_samba_mod_libdir/auth/samba4.so
+%endif #dc
 
 %files dc-client
 %if_with separate_heimdal_server
 %_altdir/samba-mit-dc-client
 %_samba_mod_libdir/bin/samba-tool
+%if_with dc
 %_samba_mod_libdir/sbin/samba_downgrade_db
+%endif #dc
 %else
 %_bindir/samba-tool
+%if_with dc
 %_sbindir/samba_downgrade_db
+%endif #dc
 %endif
 %_sbindir/samba-gpupdate
 %if_with doc
@@ -1303,7 +1304,6 @@ control role-sambashare enabled
 %_man8dir/samba-gpupdate.8*
 %_man8dir/samba_downgrade_db.8*
 %endif #doc
-%endif #dc
 
 %files krb5-printing
 %_altdir/samba-krb5-printing
@@ -1497,6 +1497,7 @@ control role-sambashare enabled
 
 %_samba_libdir/libdcerpc-binding.so
 %_samba_libdir/libdcerpc-samr.so
+%_samba_libdir/libdcerpc-server-core.so
 %_samba_libdir/libdcerpc.so
 %_samba_libdir/libndr-krb5pac.so
 %_samba_libdir/libndr-nbt.so
@@ -1524,7 +1525,6 @@ control role-sambashare enabled
 %_pkgconfigdir/samdb.pc
 
 %if_with dc
-%_samba_libdir/libdcerpc-server-core.so
 %_samba_libdir/libdcerpc-server.so
 %_pkgconfigdir/dcerpc_server.pc
 %endif
@@ -1758,7 +1758,7 @@ control role-sambashare enabled
 %_samba_mod_libdir/libntvfs-samba4.so
 %endif
 %else
-%doc README.dc-libs
+#doc README.dc-libs
 %_samba_mod_libdir/libdnsserver-common-samba4.so
 %endif
 
@@ -2011,6 +2011,14 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Dec 15 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt0.c9.1
+- Backport new version of Samba 4.16 with security fixes to c9 branch.
+- Disable samba-dc-mitkrb5 (aka MIT KRB5 build with Samba AD) due it requires at
+  least krb5-1.19.x:
+  + samba build as Samba FS (File Server) use the option --without-ad-dc;
+  + samba-dc build with embedded Heimdal Kerberos;
+  + samba-dc provides samba-dc-mitrkb5.
+
 * Sun Jul 23 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt1
 - Update to security release of Samba 4.16 (Closes: 46966):
   + Secure channel faulty since Windows 10/11 update 07/2023 (KB5028166).
