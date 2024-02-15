@@ -1180,8 +1180,6 @@ popd
 # winbind
 %if_with winbind
 mkdir -p %buildroot/%_lib
-ln -sf ..%_samba_libdir/libnss_winbind.so.2 %buildroot/%_lib/libnss_winbind.so.2
-ln -sf ..%_samba_libdir/libnss_wins.so.2    %buildroot/%_lib/libnss_wins.so.2
 
 mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
 mv %buildroot%_samba_mod_libdir/krb5/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
@@ -2084,9 +2082,7 @@ control role-sambashare enabled
 
 %files winbind-clients
 %_samba_libdir/libnss_winbind.so*
-/%_lib/libnss_winbind.so.*
 %_samba_libdir/libnss_wins.so*
-/%_lib/libnss_wins.so.*
 /%_lib/security/pam_winbind.so
 %config(noreplace) %_sysconfdir/security/pam_winbind.conf
 %if_with doc
