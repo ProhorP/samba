@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.4
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2208,6 +2208,10 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Feb 15 2024 Arseny Maslennikov <arseny@altlinux.org> 4.19.4-alt2
+- NMU: remove useless symlinks to nss_winbind and nss_wins.
+  See also: https://altlinux.org/Usrmerge.
+
 * Tue Jan 16 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.4-alt1
 - Update to stable release of Samba 4.19
 - Fixes from upstream:
