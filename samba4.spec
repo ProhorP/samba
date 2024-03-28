@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.20.0
-Release: alt0.rc4
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2214,8 +2214,8 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
-* Fri Mar 15 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.0-alt0.rc4
-- Update to release candidate of Samba 4.20
+* Tue Apr 09 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.0-alt1
+- Update to stable release of Samba 4.20
 - Major changes from upstream:
   + The password access tool "samba-tool user getpassword" and the password sync
     tool "samba-tool user syncpasswords" allow attributes to be chosen for output.
@@ -2235,6 +2235,25 @@ control role-sambashare enabled
   + The Workstation Service Remote Protocol [MS-WKST] calls NetWkstaGetInfo
     and NetWkstaEnumUsers) returns the list of locally logged on users, which
     getting the list from utmp, is not Y2038 safe and has been removed.
+
+* Tue Apr 09 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.6-alt1
+- Update to maintenance release of Samba 4.19
+- Fixes from upstream (Samba#15580):
+  + Packet marshalling push support missing for
+     CTDB_CONTROL_TCP_CLIENT_DISCONNECTED and
+     CTDB_CONTROL_TCP_CLIENT_PASSED.
+
+* Thu Mar 28 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.5-alt2
+- Add support 'client force dns canonicalize hostname' global parameter, enables
+  client library tries to resolve canonical name. This feature allows to
+  communicate via kerberos to services using CNAME records without adding SPNs.
+- Fixes updated from upstream for smbd:
+  + If we fail to close file_handle ensure we should reset the fd (Samba#15527).
+  + simplify handling of failing fstat() after unlinking file (Samba#15527).
+- Fixes updated from upstream for gpo:
+  + libgpo: Do not segfault if we don't have a valid security descriptor (Samba#15599).
+  + python:gp: Implement client site lookup in site_dn_for_machine() (Samba#15588).
+  + librpc:idl: Make netlogon_samlogon_response public (Samba#15588).
 
 * Mon Mar 11 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.5-alt1
 - Update to stable release of Samba 4.19
