@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.6
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2208,6 +2208,13 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri May 10 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.6-alt2
+- Add support separate builds generated with samba-pidl.
+- Backport latest fixes to maintenance release of Samba 4.19
+  + Smbcacls incorrectly propagates inheritance with Inherit-Only
+    flag (Samba#15636).
+  + http library doesn't support 'chunked transfer encoding' (Samba#15611).
+
 * Tue Apr 09 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.6-alt1
 - Update to maintenance release of Samba 4.19
 - Fixes from upstream (Samba#15580):
