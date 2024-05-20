@@ -74,7 +74,7 @@
 
 Name:    samba
 Version: 4.16.11
-Release: alt0.c9.1
+Release: alt0.c9.2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1192,7 +1192,6 @@ control role-sambashare enabled
 %_samba_libexecdir/rpcd_fsrvp
 %_samba_libexecdir/rpcd_lsad
 %_samba_libexecdir/rpcd_mdssvc
-%_samba_libexecdir/rpcd_rpcecho
 %_samba_libexecdir/rpcd_spoolss
 %_samba_libexecdir/rpcd_winreg
 %config(noreplace) %_sysconfdir/samba/smbusers
@@ -2011,6 +2010,33 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Mon May 20 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt0.c9.2
+- Backport security fixes from Samba 4.17
+- Security fixes (Samba#15422, Samba#15424, Samba#15439, Samba#15473, Samba#15474):
+ + CVE-2023-3961:  Unsanitized pipe names allow SMB clients to connect as root
+                   to existing unix domain sockets on the file system.
+                   https://www.samba.org/samba/security/CVE-2023-3961.html
+
+ + CVE-2023-4091:  SMB client can truncate files to 0 bytes by opening files
+                   with OVERWRITE disposition when using the acl_xattr Samba VFS
+                   module with the smb.conf setting
+                   "acl_xattr:ignore system acls = yes"
+                   https://www.samba.org/samba/security/CVE-2023-4091.html
+
+ + CVE-2023-4154:  An RODC and a user with the GET_CHANGES right can view all
+                   attributes, including secrets and passwords.  Additionally,
+                   the access check fails open on error conditions.
+                   https://www.samba.org/samba/security/CVE-2023-4154.html
+
+ + CVE-2023-42669: Calls to the rpcecho server on the AD DC can request that the
+                   server block for a user-defined amount of time, denying
+                   service.
+                   https://www.samba.org/samba/security/CVE-2023-42669.html
+
+ + CVE-2023-42670: Samba can be made to start multiple incompatible RPC
+                   listeners, disrupting service on the AD DC.
+                   https://www.samba.org/samba/security/CVE-2023-42670.htm
+
 * Fri Dec 15 2023 Evgeny Sinelnikov <sin@altlinux.org> 4.16.11-alt0.c9.1
 - Backport new version of Samba 4.16 with security fixes to c9 branch.
 - Disable samba-dc-mitkrb5 (aka MIT KRB5 build with Samba AD) due it requires at
