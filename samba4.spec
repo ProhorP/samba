@@ -120,8 +120,8 @@
 %endif
 
 Name:    samba
-Version: 4.19.6
-Release: alt3
+Version: 4.19.7
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -260,7 +260,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.8.0
+%define ldb_version 2.8.1
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -2208,6 +2208,22 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Jun 15 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt1
+- Update to maintenance release of Samba 4.19
+- Fixes from upstream (Samba#15569, Samba#15625, Samba#14981, Samba#15412,
+                       Samba#14981, Samba#15642, Samba#15636, Samba#15611):
+  + ldb qsort might r/w out of bounds with an intransitive compare
+     function (ldb 2.8.1 is already released).
+  + Many qsort() comparison functions are non-transitive, which can
+    lead to out-of-bounds access in some circumstances (ldb 2.8.1 released).
+  + netr_LogonSamLogonEx returns NR_STATUS_ACCESS_DENIED with SysvolReady=0.
+  + Anonymous smb3 signing/encryption should be allowed (similar to
+    Windows Server 2022).
+  + Panic in dreplsrv_op_pull_source_apply_changes_trigger.
+  + winbindd, net ads join and other things don't work on an ipv6 only host.
+  + Smbcacls incorrectly propagates inheritance with Inherit-Only flag.
+  + http library doesn't support 'chunked transfer encoding'.
+
 * Mon May 27 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.6-alt3
 - Fix clean memory for force dns canonicalize destination hostname option.
 
