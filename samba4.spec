@@ -1066,6 +1066,11 @@ chmod 0755 %buildroot%_samba_dc_mod_libdir/bin/samba-tool
 printf "%_sbindir/samba_downgrade_db\t%_samba_dc_mod_libdir/sbin/samba_downgrade_db\t50\n" >> %buildroot%_altdir/samba-heimdal
 chmod 0755 %buildroot%_samba_dc_mod_libdir/sbin/samba_downgrade_db
 
+mkdir -p %buildroot%_libdir/krb5/plugins/libkrb5
+touch %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+printf "%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so\t%_samba_dc_mod_libdir/krb5/winbind_krb5_locator.so\t50\n" >> %buildroot%_altdir/samba-heimdal
+printf "%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so\t%_samba_dc_mod_libdir/krb5/async_dns_krb5_locator.so\t40\n" >> %buildroot%_altdir/samba-heimdal
+
 %makeinstall_std V=2 -Onone %_smp_mflags
 
 rm -f %buildroot%_altdir/samba-mit
@@ -1184,9 +1189,10 @@ popd
 %if_with winbind
 mkdir -p %buildroot/%_lib
 
-mkdir -p  %buildroot%_libdir/krb5/plugins/libkrb5
-mv %buildroot%_samba_mod_libdir/krb5/winbind_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
-mv %buildroot%_samba_mod_libdir/krb5/async_dns_krb5_locator.so %buildroot%_libdir/krb5/plugins/libkrb5/
+mkdir -p %buildroot%_libdir/krb5/plugins/libkrb5
+touch %buildroot%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+printf "%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so\t%_samba_mod_libdir/krb5/winbind_krb5_locator.so\t20\n" >> %buildroot%_altdir/samba-mit-winbind-krb5-locator
+printf "%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so\t%_samba_mod_libdir/krb5/async_dns_krb5_locator.so\t10\n" >> %buildroot%_altdir/samba-mit-winbind-krb5-locator
 %if_with mitkrb5
 mv %buildroot%_samba_mod_libdir/krb5/winbind_krb5_localauth.so %buildroot%_libdir/krb5/plugins/libkrb5/
 %endif
@@ -1419,6 +1425,7 @@ control role-sambashare enabled
 #_samba_dc_mod_libdir/bin/
 %dir %_samba_dc_mod_libdir
 %_samba_dc_libdir/
+%ghost %_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
 
 %files -n task-samba-dc-mitkrb5
 
@@ -2098,8 +2105,10 @@ control role-sambashare enabled
 %endif
 
 %files winbind-krb5-locator
-%_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
-%_libdir/krb5/plugins/libkrb5/async_dns_krb5_locator.so
+%ghost %_libdir/krb5/plugins/libkrb5/winbind_krb5_locator.so
+%_altdir/samba-mit-winbind-krb5-locator
+%_samba_mod_libdir/krb5/winbind_krb5_locator.so
+%_samba_mod_libdir/krb5/async_dns_krb5_locator.so
 %if_with doc
 %_man8dir/winbind_krb5_locator.8*
 %endif #doc
