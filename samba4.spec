@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.7
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2217,6 +2217,11 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Jul 12 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt2
+- Replace winbind_krb5_locator.so and async_dns_krb5_locator.so
+  to mutually exclusive alterantives placed into libkrb5 plugins directory as
+  symlink named winbind_krb5_locator.so.
+
 * Sat Jun 15 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt1
 - Update to maintenance release of Samba 4.19
 - Fixes from upstream (Samba#15569, Samba#15625, Samba#14981, Samba#15412,
