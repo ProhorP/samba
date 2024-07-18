@@ -120,8 +120,8 @@
 %endif
 
 Name:    samba
-Version: 4.20.1
-Release: alt2
+Version: 4.20.2
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -260,7 +260,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.9.0
+%define ldb_version 2.9.1
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -935,6 +935,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 %define configure_common() \
 	%configure \\\
 	--enable-fhs \\\
+	--vendor-name=%release \\\
 	--with-piddir=%_samba_piddir \\\
 	--with-sockets-dir=%_samba_sockets_dir \\\
 	--with-lockdir=%_localstatedir/lib/samba \\\
@@ -1126,7 +1127,7 @@ mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 
-mkdir -p %buildroot/lib/tmpfiles.d
+mkdir -p %buildroot%_tmpfilesdir
 
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
@@ -2224,6 +2225,36 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Thu Jul 18 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.2-alt1
+- Update to stable release of Samba 4.20
+- Replace winbind_krb5_locator.so and async_dns_krb5_locator.so
+  to mutually exclusive alterantives placed into libkrb5 plugins directory as
+  symlink named winbind_krb5_locator.so.
+- Major fixes from upstream (Samba#15662, Samba#15569, Samba#15625, Samba#15654,
+                             Samba#13019, Samba#14981, Samba#15412, Samba#15573,
+                             Samba#15620, Samba#15642, Samba#15659, Samba#15664,
+                             Samba#15666, Samba#15435, Samba#15633, Samba#15653)
+  + Regression DFS not working with widelinks = true.
+  + vfs_widelinks with DFS shares breaks case insensitivity.
+  + ldb qsort might r/w out of bounds with an intransitive compare function.
+  + Many qsort() comparison functions are non-transitive, which can lead to
+    out-of-bounds access in some circumstances.
+  + New options --vendor-name and --vendor-patch-revision arguments allows
+    distributions and packagers to put their name in the Samba version string.
+  + Dynamic DNS updates with the internal DNS are not working.
+  + netr_LogonSamLogonEx returns NR_STATUS_ACCESS_DENIED with SysvolReady=0.
+  + Anonymous smb3 signing/encryption should be allowed (similar to
+    Windows Server 2022).
+  + Panic in dreplsrv_op_pull_source_apply_changes_trigger.
+  + s4:nbt_server: does not provide unexpected handling, so winbindd can't use
+    nmb requests instead cldap.
+  + winbindd, net ads join and other things don't work on an ipv6 only host.
+  + Segmentation fault when deleting files in vfs_recycle.
+  * Panic in vfs_offload_token_db_fetch_fsp().
+  + "client use kerberos" and --use-kerberos is ignored for the machine account.
+  + samba-gpupdate - Invalid NtVer in netlogon_samlogon_response.
+  + idmap_ad creates an incorrect local krb5.conf in case of trusted domain lookups.
+
 * Sun May 26 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.1-alt2
 - Fix clean memory for force dns canonicalize destination hostname option.
 
