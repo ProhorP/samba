@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.7
-Release: alt2
+Release: alt3
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -935,6 +935,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 %define configure_common() \
 	%configure \\\
 	--enable-fhs \\\
+	--vendor-name=%release \\\
 	--with-piddir=%_samba_piddir \\\
 	--with-sockets-dir=%_samba_sockets_dir \\\
 	--with-lockdir=%_localstatedir/lib/samba \\\
@@ -1123,7 +1124,7 @@ mkdir -p %buildroot%_initdir
 mkdir -p %buildroot%_unitdir
 mkdir -p %buildroot%_sysconfdir/{pam.d,logrotate.d,security,sysconfig}
 
-mkdir -p %buildroot/lib/tmpfiles.d
+mkdir -p %buildroot%_tmpfilesdir
 
 # Install other stuff
 install -m644 %SOURCE1 %buildroot%_sysconfdir/logrotate.d/samba
@@ -2217,6 +2218,17 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Jul 19 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt3
+- Backport from stable release of Samba 4.20
+  + New options --vendor-name and --vendor-patch-revision arguments allows
+    distributions and packagers to put their name in the Samba version string.
+- New option 'idmap reverse cache update' to control reverse name to sid cache
+  behaviour that Winbind's idmap interface additionally saved to namemap cache,
+  when found unknown sid during sid to name query. This option solves the
+  compatibility problem of foreign SIDs getting stuck in trust relationships
+  from the SIDHistory attribute.
+  By default, this option is disabled (so, compatibility behaviour is enabled).
+
 * Fri Jul 12 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt2
 - Replace winbind_krb5_locator.so and async_dns_krb5_locator.so
   to mutually exclusive alterantives placed into libkrb5 plugins directory as
