@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.7
-Release: alt3
+Release: alt4
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -935,7 +935,7 @@ cp -a ../%rname-%version ../%rname-%version-separate-heimdal-server
 %define configure_common() \
 	%configure \\\
 	--enable-fhs \\\
-	--vendor-name=%release \\\
+	--vendor-suffix=%release \\\
 	--with-piddir=%_samba_piddir \\\
 	--with-sockets-dir=%_samba_sockets_dir \\\
 	--with-lockdir=%_localstatedir/lib/samba \\\
@@ -2218,6 +2218,11 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Aug 02 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt4
+- Backport from stable release of Samba 4.20
+  + Samba does not parse SDDL found in defaultSecurityDescriptor in
+    AD_DS_Classes_Windows_Server_v1903.ldf
+
 * Fri Jul 19 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt3
 - Backport from stable release of Samba 4.20
   + New options --vendor-name and --vendor-patch-revision arguments allows
