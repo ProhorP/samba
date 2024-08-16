@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.20.3
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2225,6 +2225,9 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Aug 16 2024 Andrey Limachko <liannnix@altlinux.org> 4.20.3-alt2
+- Fix duplication of pdc srv record after role transfer (thx Evgenii Sozonov).
+
 * Fri Aug 02 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.3-alt1
 - Update to stable release of Samba 4.20
 - Major fixes from upstream (Samba#15683, Samba#15655, Samba#15685, Samba#15603,
