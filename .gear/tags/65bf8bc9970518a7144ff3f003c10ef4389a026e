@@ -1,0 +1,22 @@
+object 8209a1035d362673a87bccc9264efce05402a2f2
+type commit
+tag samba-4.20.4
+tagger Stefan Metzmacher <metze@samba.org> 1722940645 +0200
+
+samba: tag release samba-4.20.4
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAABCgAdFiEEgfXigyvSVFoYl7cTqplEL7aAtiAFAmax/OUACgkQqplEL7aA
+tiCuuw/9EHieO75zc6pCjf6mgFktlht8uWHXDCI6qPnXAofHKF+fAwgRgICwjiJM
+5k0tY7T2MBWeCFTexggx2yPg+USsUhk3Mx5Gyi+e/lTH5AtD3ybCWFE1JkdxPy3n
+PwgPd+NSdf9L3GuZsNE6fArsfY13Tv7sRuH8QuphE4DoAsLwbdFpyDsuQBmC17mG
+AfLhUxfdFaqwPqYj+PQfhETPY3yfZ3PitBusdcEVXQ4iCe0TGZoRkkb8rWOT0rDb
+KFoSBnsGpWr96mTGYmMa1WUSWDIUBa1AMaLjmcqq0SvRmq15M6eVrWtq69Ny2LSc
+K/EJASzNFiZWSfbQx9sGiY90m/sL2ePTOj40CeL4jCiKQpaOyS+wp1pXzA83jUa0
+v17J8UOwOXSmebAVMxT8V7se2Ay5DdqJK3CT8CA3FTvT8vsoC2X4dvzwlXc03rmx
+Y9duBewihuVjHibpq7/Nn/7Og5WWs0AvKq5wo+CYUgybZAd234ySJqtC9ceGistQ
+PwZ68Oz4MrjubkOTqCqhfINrYP1hmJ6sghf6ISNNiuhLMfX9yQnxg82k2H98Qq7w
+ZYSDjnYbnO+Dksxk/+o9zFXGs5QwRbTkamVYNVvu3Lm1klOl2zZvBT9gqdabMCjJ
+DnD0AQVuuHf5srJAh+I/30rjd9o7RA73DHRvyY1PSm52bqKwJqM=
+=13Y5
+-----END PGP SIGNATURE-----
