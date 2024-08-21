@@ -120,8 +120,8 @@
 %endif
 
 Name:    samba
-Version: 4.19.7
-Release: alt4
+Version: 4.19.8
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2218,6 +2218,25 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Aug 21 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.8-alt1
+- Update to maintenance release of Samba 4.19
+- Major fixes from upstream (Samba#15671, Samba#15674, Samba#15655, Samba#15676,
+                             Samba#13019, Samba#15620, Samba#15664, Samba#15666,
+                             Samba#15435):
+  + Invalid client warning about command line passwords.
+  + cmdline_burn does not always burn secrets.
+  + When claims enabled with heimdal kerberos, unable to log on to a Windows
+    computer when user account need to change their own password.
+  + Fix clock skew error message and memory cache clock skew recovery.
+  + Dynamic DNS updates with the internal DNS are not working.
+  + s4:nbt_server: does not provide unexpected handling, so winbindd can't use
+    nmb requests instead cldap.
+  + Panic in vfs_offload_token_db_fetch_fsp().
+  + "client use kerberos" and --use-kerberos is ignored for the machine account.
+  + Regression DFS not working with widelinks = true.
+- Backport from stable release of Samba 4.20.3-alt2 (initial for Samba#14518):
+  + Fix duplication of pdc srv record after role transfer (thx Evgenii Sozonov).
+
 * Fri Aug 02 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.7-alt4
 - Backport from stable release of Samba 4.20
   + Samba does not parse SDDL found in defaultSecurityDescriptor in
