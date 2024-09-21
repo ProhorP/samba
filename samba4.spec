@@ -121,8 +121,8 @@
 %endif
 
 Name:    samba
-Version: 4.20.4
-Release: alt2
+Version: 4.20.5
+Release: alt1
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -1608,6 +1608,7 @@ control role-sambashare enabled
 
 %if_with libcephfs
 %exclude %_man8dir/vfs_ceph.8*
+%exclude %_man8dir/vfs_ceph_new.8*
 %exclude %_man8dir/vfs_ceph_snapshots.8*
 %endif
 %if_enabled glusterfs
@@ -1864,6 +1865,7 @@ control role-sambashare enabled
 %_samba_mod_libdir/vfs/ceph*.so
 %if_with doc
 %_man8dir/vfs_ceph.8*
+%_man8dir/vfs_ceph_new.8*
 %_man8dir/vfs_ceph_snapshots.8*
 %endif
 %endif
@@ -2236,6 +2238,19 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Sat Sep 21 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.5-alt1
+- Update to maintenance release of Samba 4.20
+- Major fixes from upstream (Samba#15695, Samba#15699, Samba#15698, Samba#15696,
+                             Samba#15686, Samba#15700, Samba#15677)
+  + "inherit permissions = yes" triggers assert() in vfs_default.
+  + Incorrect FSCTL_QUERY_ALLOCATED_RANGES response when truncated.
+  + samba-tool can not load the default configuration file (upstream update).
+  + Compound SMB2 requests don't return NT_STATUS_NETWORK_SESSION_EXPIRED for
+    all requests, confuses MacOSX clients.
+  + Add vfs_ceph_new module (based on low level API).
+  + Crash when readlinkat fails.
+  + ntlm_auth make logs more consistent with length check.
+
 * Thu Aug 22 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.4-alt2
 - Replace all libraries needed by the public libraries to common-libs:
   + libdcerpc.so.0
