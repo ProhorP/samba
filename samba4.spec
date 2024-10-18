@@ -394,9 +394,6 @@ BuildArch: noarch
 Summary: Files used by both Samba servers
 Group: System/Servers
 BuildArch: noarch
-%if_with winbind
-Requires: %name-winbind-common = %version-%release
-%endif
 Requires: %name-common-client = %version-%release
 Provides: %dcname-common = %version-%release
 Obsoletes: %dcname-common < 4.10
@@ -701,6 +698,7 @@ as a user using the `net usershare` command.
 Summary: Files used by MIT and Heimdal Winbind servers
 Group: System/Servers
 Requires: %name-common-client = %version-%release
+Requires: %name-common = %version-%release
 
 %description winbind-common
 %rname-winbind-common provides files necessary for both MIT and Heimdal
@@ -1576,10 +1574,8 @@ control role-sambashare enabled
 
 %files common
 %_sysconfdir/pam.d/samba
-%if_without winbind
 %dir /var/lib/samba
 %attr(710,root,root) %dir /var/lib/samba/private
-%endif
 %_tmpfilesdir/%rname.conf
 %config(noreplace) %_sysconfdir/logrotate.d/samba
 %config(noreplace) %_sysconfdir/security/limits.d/90-samba.conf
@@ -2076,8 +2072,6 @@ control role-sambashare enabled
 
 %if_with winbind
 %files winbind-common
-%dir /var/lib/samba
-%attr(710,root,root) %dir /var/lib/samba/private
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %dir %_samba_piddir/winbindd
 %if_with doc
