@@ -120,7 +120,7 @@
 %endif
 
 Name:    samba
-Version: 4.19.8
+Version: 4.19.9
 Release: alt1
 
 Group:   System/Servers
@@ -260,7 +260,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.8.1
+%define ldb_version 2.8.2
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -2212,6 +2212,18 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Fri Oct 18 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.9-alt1
+- Update to security release of Samba 4.19
+- Major fixes from upstream (Samba#15590, Samba#15624, Samba#15699, Samba#15280,
+                             Samba#15696, Samba#15700):
+  + libldb: performance issue with indexes (ldb 2.8.2 is already released).
+  + DH reconnect error handling can lead to stale sharemode entries.
+  + Incorrect FSCTL_QUERY_ALLOCATED_RANGES response when truncated.
+  + irpc_destructor may crash during shutdown.
+  + Compound SMB2 requests don't return NT_STATUS_NETWORK_SESSION_EXPIRED for
+    all requests, confuses MacOSX clients.
+  + Crash when readlinkat fails.
+
 * Wed Aug 21 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.8-alt1
 - Update to maintenance release of Samba 4.19
 - Major fixes from upstream (Samba#15671, Samba#15674, Samba#15655, Samba#15676,
