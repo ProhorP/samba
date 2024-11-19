@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.9
-Release: alt1
+Release: alt2
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2212,6 +2212,12 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Tue Nov 19 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.9-alt2
+- Backport from maintenance release of Samba 4.20 to Samba 4.19:
+ + [MS-LSAD]: LsarOpenPolicy3 support from called to contact the Local Security
+   Authority (Domain Policy) (LSAD) Remote Protocol database.
+ + Fixes for various kerberos, python and rpc memory leaks and runtime checks.
+
 * Fri Oct 18 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.9-alt1
 - Update to security release of Samba 4.19
 - Major fixes from upstream (Samba#15590, Samba#15624, Samba#15699, Samba#15280,
