@@ -121,7 +121,7 @@
 %endif
 
 Name:    samba
-Version: 4.20.5
+Version: 4.20.6
 Release: alt1
 
 Group:   System/Servers
@@ -261,7 +261,7 @@ BuildRequires: python3-module-tdb
 %endif
 
 %if_without ldb
-%define ldb_version 2.9.1
+%define ldb_version 2.9.2
 BuildRequires: libldb-devel = %ldb_version
 BuildRequires: python3-module-pyldb-devel
 %endif
@@ -2232,6 +2232,16 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Nov 20 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.6-alt1
+- Update to maintenance release of Samba 4.20
+- Major fixes from upstream (Samba#15590, Samba#15692):
+  + libldb: performance issue with indexes (ldb 2.9.2 is already released).
+  + Missing conversion for msDS-UserTGTLifetime, msDS-ComputerTGTLifetime and
+    msDS-ServiceTGTLifetime on "samba-tool domain auth policy modify".
+- Error handling fixes (Samba#15624, Samba#15732, Samba#14356, Samba#15280,
+                        Samba#15425, Samba#15649, Samba#15651, Samba#15708,
+                        Samba#15740, Samba#15749, Samba#15730, Samba#15706).
+
 * Sat Sep 21 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.20.5-alt1
 - Update to maintenance release of Samba 4.20
 - Major fixes from upstream (Samba#15695, Samba#15699, Samba#15698, Samba#15696,
