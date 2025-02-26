@@ -1654,10 +1654,21 @@ char *fill_domain_username_talloc(TALLOC_CTX *mem_ctx,
 	if (can_assume && assume_domain(domain)) {
 		name = tmp_user;
 	} else {
+		/*
+		 * Делается проверка на UPN, если это UPN, то возвращает только его без указания домена
+		 * Такой подход был оспорен Иваном Мельниковымs:
+		 * "мне кажется, что решение о том, что username уже готово и его не надо
+		 * собирать из username и домена должно приниматься на другом уровне
+		 * абстракции."
+		*/
+		if (lp_winbind_use_upn() && strchr(tmp_user, '@') != NULL) {
+		name = talloc_asprintf(mem_ctx, "%s", tmp_user);
+		} else {
 		name = talloc_asprintf(mem_ctx, "%s%c%s",
 				       domain,
 				       *lp_winbind_separator(),
 				       tmp_user);
+		}
 		TALLOC_FREE(tmp_user);
 	}
 

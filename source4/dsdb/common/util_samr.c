@@ -28,6 +28,7 @@
 #include "../libds/common/flags.h"
 #include "libcli/security/security.h"
 
+#include "param/param.h"
 #include "libds/common/flag_mapping.h"
 
 /* Add a user, SAMR style, including the correct transaction
@@ -535,7 +536,7 @@ NTSTATUS dsdb_lookup_rids(struct ldb_context *ldb,
 			  const char **names,
 			  enum lsa_SidType *lsa_attrs)
 {
-	const char *attrs[] = { "sAMAccountType", "sAMAccountName", NULL };
+	const char *attrs[] = { "sAMAccountType", "sAMAccountName", "userPrincipalName", NULL };
 	unsigned int i, num_mapped;
 
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
@@ -567,10 +568,28 @@ NTSTATUS dsdb_lookup_rids(struct ldb_context *ldb,
 			return NT_STATUS_INTERNAL_DB_CORRUPTION;
 		}
 
+		/*
+		 * Делаем попытку получить UPN, если он есть, если нет, то работает поведение
+		 * по умолчанию: возвращается обычное имя пользователя
+		 * Этот метод ломает протокол SAMR - и его не одобрил Евгений Синельников*/
+		struct loadparm_context *lp_ctx = NULL;
+		lp_ctx = talloc_get_type(ldb_get_opaque(ldb, "loadparm"),
+					struct loadparm_context);
+		if (lpcfg_winbind_use_upn(lp_ctx)){
+			names[i] = ldb_msg_find_attr_as_string(msg, "userPrincipalName", NULL);
+			if (names[i] == NULL) {
+				names[i] = ldb_msg_find_attr_as_string(msg, "samAccountName", NULL);
+				if (names[i] == NULL) {
+					DEBUG(10, ("no samAccountName\n"));
+					continue;
+				}
+			}
+		} else {
 		names[i] = ldb_msg_find_attr_as_string(msg, "samAccountName", NULL);
 		if (names[i] == NULL) {
 			DEBUG(10, ("no samAccountName\n"));
 			continue;
+		}
 		}
 		talloc_steal(names, names[i]);
 		attr = ldb_msg_find_attr_as_uint(msg, "samAccountType", 0);
