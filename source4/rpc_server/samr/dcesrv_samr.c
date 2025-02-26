@@ -2152,9 +2152,19 @@ static NTSTATUS dcesrv_samr_LookupNames(struct dcesrv_call_state *dce_call, TALL
 		r->out.rids->ids[i] = 0;
 		r->out.types->ids[i] = SID_NAME_UNKNOWN;
 
+		/*
+		 * Делаем получение sid по upn как в патче v1
+		 * Это оптимальнее чем в патчке v2 и совпадает с тем как в протоколе LSA выполняется аналогичная функция
+		 * */
+		if (lpcfg_winbind_use_upn(dce_call->conn->dce_ctx->lp_ctx) && strchr(ldb_binary_encode_string(mem_ctx, r->in.names[i].string), '@') != NULL){
+		count = gendb_search(d_state->sam_ctx, mem_ctx, d_state->domain_dn, &res, attrs,
+				     "userPrincipalName=%s",
+				     ldb_binary_encode_string(mem_ctx, r->in.names[i].string));
+		} else {
 		count = gendb_search(d_state->sam_ctx, mem_ctx, d_state->domain_dn, &res, attrs,
 				     "sAMAccountName=%s",
 				     ldb_binary_encode_string(mem_ctx, r->in.names[i].string));
+		}
 		if (count != 1) {
 			status = STATUS_SOME_UNMAPPED;
 			continue;

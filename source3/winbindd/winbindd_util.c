@@ -38,6 +38,13 @@
 #include "lib/global_contexts.h"
 #include "librpc/gen_ndr/ndr_winbind_c.h"
 
+#include "source4/lib/events/events.h"
+#include "source4/auth/session.h"
+#include "lib/param/param.h"
+#include "source4/dsdb/samdb/samdb.h"
+#include "lib/util/util_ldb.h"
+#include "winbindd_ads.h"
+
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
@@ -2181,3 +2188,121 @@ fail:
 	TALLOC_FREE(xids);
 	return false;
 }
+
+/* функция переименована в direct, т.к. безопасно работает с базой sam.ldb напрямую
+ * Прямое подключение к sam.ldb используется в разных процессах samba.
+ * Это значит что можно безопасно напрямую подключиться к этой базе и из winbindd
+ * */
+char* winbind_get_upn_direct(TALLOC_CTX *mem_ctx, const struct dom_sid *sid)
+{
+
+	char *upn = NULL;
+	static bool disconnected = false;
+        struct tevent_context *sam_ev = NULL;
+
+	if (disconnected)
+		goto end;
+
+        sam_ev = s4_event_context_init(mem_ctx);
+
+        if (sam_ev == NULL) {
+                DEBUG(0, ("s4_event_context_init failed\n"));
+		goto end;
+        }
+
+        struct loadparm_context * lp_ctx = NULL;
+        lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
+        if (lp_ctx == NULL) {
+                DEBUG(0, ("loadparm_init_s3 failed\n"));
+		goto end;
+        }
+
+        struct ldb_context *ldb = NULL;
+        ldb = samdb_connect(mem_ctx,
+                            sam_ev,
+                            lp_ctx,
+                            system_session(lp_ctx),
+                            NULL,
+                            0);
+
+        if (ldb == NULL) {
+                DEBUG(0, ("samdb_connect failed\n"));
+		disconnected = true;
+		goto end;
+        }
+
+        const char *attrs[] = { "sAMAccountName", "userPrincipalName", NULL };
+	struct ldb_message **res = NULL;
+	int ret;
+        const char* name = NULL;
+
+        struct dom_sid_buf buf;
+	ret = gendb_search(ldb, mem_ctx, NULL, &res, attrs, "objectSid=%s", dom_sid_str_buf(sid, &buf));
+	if (ret != 1) 
+		goto end; // not an error to not match
+				  
+	name = ldb_msg_find_attr_as_string(res[0], "userPrincipalName", NULL);
+
+        if (name != NULL){
+		upn = talloc_strdup(mem_ctx, name);
+        }
+
+end:
+
+	return upn;
+
+}
+
+/* Объявление функции-переходника, для использования статических функци из модуля winbind_ads.c,
+ * которые работают в том же самом процессе winbind и в том же самом потоке*/
+ADS_STATUS ads_cached_connection_ldap(struct winbindd_domain *domain, ADS_STRUCT **adsp);
+
+char* winbind_get_upn_ldap(TALLOC_CTX *mem_ctx, const struct dom_sid *sid, struct winbindd_domain *domain)
+{
+	char *upn = NULL;
+        LDAPMessage *res = NULL;
+        ADS_STRUCT *ads = NULL;
+        ADS_STATUS rc;
+
+        rc = ads_cached_connection_ldap(domain, &ads);
+        if (!ADS_ERR_OK(rc)) {
+                domain->last_status = NT_STATUS_SERVER_DISABLED;
+                DEBUG(5,("sid_to_name LDAP: not connect to LDAP server!\n"));
+                goto out;
+        }
+
+        char *expr;
+        const char *attrs[] = {
+                "userPrincipalName",
+                NULL
+        };
+
+	struct dom_sid_buf buf;
+        expr = talloc_asprintf(mem_ctx, "(objectSid=%s)", dom_sid_str_buf(sid, &buf));
+        if (expr == NULL) {
+                DEBUG(5,("sid_to_name LDAP: no memory for search %s\n", dom_sid_str_buf(sid, &buf)));
+                goto out;
+        }
+
+        rc = ads_search(ads, &res, expr, attrs);
+        int count = 0;
+        if (ADS_ERR_OK(rc))
+                if ((count = ads_count_replies(ads, res)) != 1)
+                        rc = ADS_ERROR_LDAP(LDAP_NO_SUCH_OBJECT);
+
+        if (!ADS_ERR_OK(rc)) {
+                DEBUG(5,("sid_to_name LDAP: Failed to find %s\n", dom_sid_str_buf(sid, &buf)));
+                goto out;
+        }
+
+        if ( (upn = ads_pull_string(ads, mem_ctx, res, "userPrincipalName")) == NULL ) {
+                DEBUG(5,("sid_to_name LDAP: No userPrincipalName attribute!\n"));
+                goto out;
+        }
+out:
+        ads_msgfree(ads, res);
+
+	return upn;
+
+}
+

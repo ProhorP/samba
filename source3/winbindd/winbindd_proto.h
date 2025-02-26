@@ -1021,4 +1021,6 @@ bool reset_cm_connection_on_error(struct winbindd_domain *domain,
 				  struct dcerpc_binding_handle *b,
 				  NTSTATUS status);
 
+char* winbind_get_upn_direct(TALLOC_CTX *mem_ctx, const struct dom_sid *sid);
+char* winbind_get_upn_ldap(TALLOC_CTX *mem_ctx, const struct dom_sid *sid, struct winbindd_domain *domain);
 #endif /*  _WINBINDD_PROTO_H_  */

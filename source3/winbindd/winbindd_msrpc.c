@@ -337,6 +337,18 @@ static NTSTATUS msrpc_sid_to_name(struct winbindd_domain *domain,
 		DEBUG(5,("returning mapped name -- %s\n", *name));
 	}
 
+	/*
+	 * делаем получение upn по LDAP, используя кэшируемое подключение к LDAP
+	 * которое находится в модуле winbind_ads.c
+	 * Это 100% бюезопасно, т.к. работает в том же самом процессе winbindd(и в том же самом потоке)
+	 * */
+	if (lp_winbind_use_upn())
+	{
+		char* upn_by_sid = winbind_get_upn_ldap(mem_ctx, sid, domain);
+		if (upn_by_sid != NULL)
+			*name = upn_by_sid;
+	}
+
 	return NT_STATUS_OK;
 }
 

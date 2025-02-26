@@ -117,6 +117,16 @@ static void wb_getpwsid_queryuser_done(struct tevent_req *subreq)
 		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
 		return;
 	}
+	
+	/*
+	 * Здесь функция работает только для контроллера домена(и она переименована для ясности)
+	 * Функция оптимизирована(она запоминает что прежнее подключение к базе sam.ldb было неуспешным)
+	 * */
+	if (lp_winbind_use_upn() && strchr(output_username, '@') == NULL) {
+        	char* upn_by_sid = winbind_get_upn_direct(state, &state->sid);
+		if (upn_by_sid != NULL)
+        		output_username = upn_by_sid;
+	}
 
 	strlcpy(pw->pw_name, output_username, sizeof(pw->pw_name));
 
