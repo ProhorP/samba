@@ -121,7 +121,7 @@
 
 Name:    samba
 Version: 4.19.9
-Release: alt4
+Release: alt5
 
 Group:   System/Servers
 Summary: The Samba4 CIFS and AD client and server suite
@@ -2212,6 +2212,9 @@ control role-sambashare enabled
 %_includedir/samba-4.0/private
 
 %changelog
+* Wed Feb 26 2025 Petr Usoltsev <usoltsevpv@altlinux.org> 4.19.9-alt5
+- upn: get upn in winbindd (thx Petr Usoltsev).
+
 * Fri Dec 27 2024 Evgeny Sinelnikov <sin@altlinux.org> 4.19.9-alt4
 - gse_krb5: gain root privilege during get server keytab (thx Ivan Volchenko).
   Fix PAM Winbind kerberos auth requires user access to keytab (Samba#12491).
