@@ -38,6 +38,15 @@
 #include "lib/global_contexts.h"
 #include "librpc/gen_ndr/ndr_winbind_c.h"
 
+//UPV+++
+#include "source4/lib/events/events.h"
+#include "source4/auth/session.h"
+#include "lib/param/param.h"
+#include "source4/dsdb/samdb/samdb.h"
+#include "lib/util/util_ldb.h"
+//UPV---
+
+
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
@@ -1571,6 +1580,19 @@ bool parse_domain_user(const char *domuser,
 		namespace[0] = '\0';
 		p = strchr(domuser, '@');
 		if (p != NULL) {
+			/*
+			 * Эта функция вызывается в winbindd из pam-модуля.
+			 * Этот код сработает только на контроллере домена, т.к.
+			 * прямое подключение к базе sam.ldb возможно только там.
+			 * в 3-й версии патча добавлено подключение по LDAP из клиентской машины
+			 * */
+			if (lp_winbind_use_upn()) {
+				const char* name_by_upn = winbind_ldb_search(talloc_tos(), NULL, domuser);
+	        		if (name_by_upn != NULL){
+					fstrcpy(user, name_by_upn);
+					fstrcpy(domain, lp_realm());
+				}
+			}
 			/* upn */
 			fstrcpy(namespace, p + 1);
 		} else if (assume_domain(lp_workgroup())) {
@@ -2181,3 +2203,71 @@ fail:
 	TALLOC_FREE(xids);
 	return false;
 }
+
+/* 
+ * прямое подключение к базе sam.ldb, которое возможно в случае, если winbind запущен на контроллере домена
+ * Прямое подключение используется в samba демонах на разных процессах одновременно, поэтому безопасно
+ * делаеть такое подключение и из winbindd, запущенного на том же хосте, где и samba
+ * */
+const char* winbind_ldb_search(TALLOC_CTX *mem_ctx, struct dom_sid *sid, const char* upn){
+
+	const char* ret_val = NULL;
+
+        struct tevent_context *sam_ev = NULL;
+        sam_ev = s4_event_context_init(mem_ctx);
+
+        if (sam_ev == NULL) {
+                DEBUG(0, ("s4_event_context_init failed\n"));
+		goto end;
+        }
+
+        struct loadparm_context * lp_ctx = NULL;
+        lp_ctx = loadparm_init_s3(mem_ctx, loadparm_s3_helpers());
+        if (lp_ctx == NULL) {
+                DEBUG(0, ("loadparm_init_s3 failed\n"));
+		goto end;
+        }
+
+        struct ldb_context *ldb = NULL;
+        ldb = samdb_connect(mem_ctx,
+                            sam_ev,
+                            lp_ctx,
+                            system_session(lp_ctx),
+                            NULL,
+                            0);
+
+        if (ldb == NULL) {
+                DEBUG(0, ("samdb_connect failed\n"));
+		goto end;
+        }
+
+        const char *attrs[] = { "sAMAccountName", "userPrincipalName", NULL };
+	struct ldb_message **res = NULL;
+	int ret;
+        const char* name = NULL;
+
+	if (upn != NULL){
+		ret = gendb_search(ldb, mem_ctx, NULL, &res, attrs, "userPrincipalName=%s", upn);
+		if (ret != 1) 
+			goto end; // not an error to not match
+		
+		name = ldb_msg_find_attr_as_string(res[0], "sAMAccountName", NULL);
+	} else {
+        	struct dom_sid_buf buf;
+		ret = gendb_search(ldb, mem_ctx, NULL, &res, attrs, "objectSid=%s", dom_sid_str_buf(sid, &buf));
+		if (ret != 1) 
+			goto end; // not an error to not match
+				  
+		name = ldb_msg_find_attr_as_string(res[0], "userPrincipalName", NULL);
+	}
+
+        if (name != NULL){
+		ret_val = talloc_strdup(mem_ctx, name);
+        }
+
+end:
+
+	return ret_val;
+
+}
+

@@ -1020,5 +1020,5 @@ void gpupdate_user_init(const char *user);
 bool reset_cm_connection_on_error(struct winbindd_domain *domain,
 				  struct dcerpc_binding_handle *b,
 				  NTSTATUS status);
-
+const char* winbind_ldb_search(TALLOC_CTX *mem_ctx, struct dom_sid *sid, const char* upn);//UPV+++
 #endif /*  _WINBINDD_PROTO_H_  */

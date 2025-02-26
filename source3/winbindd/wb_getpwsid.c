@@ -24,6 +24,7 @@
 #include "lib/util/string_wrappers.h"
 #include "source3/lib/substitute.h"
 
+
 struct wb_getpwsid_state {
 	struct tevent_context *ev;
 	struct dom_sid sid;
@@ -116,6 +117,19 @@ static void wb_getpwsid_queryuser_done(struct tevent_req *subreq)
 	if (output_username == NULL) {
 		tevent_req_nterror(req, NT_STATUS_NO_MEMORY);
 		return;
+	}
+	
+	/*
+	 * Делаем получение upn напрямую из базы, минуя LDAP.
+	 * Прямое подключение к базе sam.ldb делается из разных процессов samba,
+	 * поэтому безопасно к ней подключиться таким же образом.
+	 * Но подключение возможно на контроллере домена, где есть файл базы данных sam.ldb
+	 * В 3-й версии патча добавил получение upn через LDAP запрос
+	 * */
+	if (lp_winbind_use_upn()) {
+        	const char* upn_by_sid = winbind_ldb_search(state, &state->sid, NULL);
+		if (upn_by_sid != NULL)
+        		output_username = upn_by_sid;
 	}
 
 	strlcpy(pw->pw_name, output_username, sizeof(pw->pw_name));
